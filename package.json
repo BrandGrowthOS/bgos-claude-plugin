@@ -1,0 +1,17 @@
+{
+  "name": "claude-channel-bgos",
+  "version": "0.1.0",
+  "description": "Claude Code channel plugin for BGOS — chat with Claude Code through the BGOS desktop/mobile app",
+  "license": "Apache-2.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "socket.io-client": "^4.8.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}

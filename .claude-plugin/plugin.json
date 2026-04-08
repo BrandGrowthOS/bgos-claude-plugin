@@ -1,0 +1,31 @@
+{
+  "name": "bgos",
+  "description": "BGOS channel for Claude Code — chat through the BGOS desktop/mobile app with built-in access control",
+  "version": "0.1.0",
+  "author": {
+    "name": "BrandGrowthOS"
+  },
+  "channels": [
+    {
+      "server": "bgos",
+      "userConfig": {
+        "backend_url": {
+          "description": "BGOS backend URL (e.g., https://api.brandgrowthos.ai)",
+          "sensitive": false
+        },
+        "api_key": {
+          "description": "BGOS API key (X-API-Key for authentication)",
+          "sensitive": true
+        },
+        "user_id": {
+          "description": "Your BGOS user ID",
+          "sensitive": false
+        },
+        "assistant_id": {
+          "description": "Assistant ID to monitor for incoming messages",
+          "sensitive": false
+        }
+      }
+    }
+  ]
+}

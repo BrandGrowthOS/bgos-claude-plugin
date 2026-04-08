@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Contains credentials for dev testing — use .mcp.json.example as template
+.mcp.json

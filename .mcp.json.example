@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "bgos": {
+      "command": "npx",
+      "args": ["tsx", "./server.ts"],
+      "env": {
+        "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
+        "BGOS_API_KEY": "your-api-key-here",
+        "BGOS_USER_ID": "your-user-id-here",
+        "BGOS_ASSISTANT_ID": "your-assistant-id-here"
+      }
+    }
+  }
+}
