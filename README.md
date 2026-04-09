@@ -29,37 +29,33 @@ Claude Code (full agent capabilities)
 - **A BGOS account** with API key access
 - **Git** (to clone this repo)
 
-## Quick Start
+## Quick Start (Per-Project Setup)
 
-### 1. Clone the repo
+This is the recommended approach. You install the plugin **once** on your machine, then each project gets its own `.mcp.json` pointing to the shared installation with its own assistant ID. This lets you run **multiple AI agents simultaneously** on the same machine — one per project.
+
+### 1. Install the plugin (one-time)
+
+Clone the plugin to your home directory and install dependencies:
 
 ```bash
+cd ~
 git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
 cd bgos-claude-plugin
-```
-
-### 2. Install dependencies
-
-```bash
 npm install
 ```
 
-### 3. Create your `.mcp.json` config
+This creates `~/bgos-claude-plugin/` — you only do this once per machine.
 
-Copy the example and fill in your credentials:
+### 2. Create a `.mcp.json` in your project
 
-```bash
-cp .mcp.json.example .mcp.json
-```
-
-Edit `.mcp.json` with your values:
+In **your project's root directory** (not the plugin directory), create a `.mcp.json` file:
 
 ```json
 {
   "mcpServers": {
     "bgos": {
       "command": "npx",
-      "args": ["tsx", "./server.ts"],
+      "args": ["tsx", "/absolute/path/to/bgos-claude-plugin/server.ts"],
       "env": {
         "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
         "BGOS_API_KEY": "your-api-key-here",
@@ -72,25 +68,66 @@ Edit `.mcp.json` with your values:
 }
 ```
 
-### 4. Launch Claude Code with the plugin
+**Replace the path** with the actual absolute path to `server.ts`:
+- **Linux/Mac**: `"/home/username/bgos-claude-plugin/server.ts"`
+- **Windows**: `"C:/Users/username/bgos-claude-plugin/server.ts"`
+
+### 3. Launch Claude Code from your project
 
 ```bash
+cd /path/to/your/project
 claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
 ```
 
-> **Important**: You must run this command from the `bgos-claude-plugin/` directory so Claude Code finds the `.mcp.json` file.
+Claude Code reads the `.mcp.json` from your current directory and starts the plugin with your project's assistant ID.
 
-### 5. Verify the plugin loaded
+### 4. Verify the plugin loaded
 
 In the Claude Code CLI, type `/mcp` — you should see `bgos` listed as a connected server.
 
-### 6. Test
+### 5. Test
 
-Open the BGOS desktop/mobile app, navigate to the chat for your configured assistant, and send a message like:
+Open the BGOS app, navigate to the chat for your configured assistant, and send a message like:
 
 > "What directory are you in and what OS is this machine running?"
 
-You should see Claude Code processing the request in the CLI (using Bash tool to run commands), and the response will appear in the BGOS chat UI.
+## Multiple Agents on One Machine
+
+Each project gets its own `.mcp.json` with a unique `BGOS_ASSISTANT_ID`. You can run multiple Claude Code sessions simultaneously, each responding through a different BGOS assistant.
+
+```
+~/project-a/
+  .mcp.json          → BGOS_ASSISTANT_ID=841  (e.g., "Code Review Agent")
+  
+~/project-b/
+  .mcp.json          → BGOS_ASSISTANT_ID=842  (e.g., "DevOps Agent")
+  
+~/project-c/
+  .mcp.json          → BGOS_ASSISTANT_ID=843  (e.g., "Data Pipeline Agent")
+```
+
+All three share the same plugin installation at `~/bgos-claude-plugin/`.
+
+**To set up a new agent:**
+1. Create a new Claude Code assistant in the BGOS app (select "Claude Code" type)
+2. Copy the setup prompt from the creation dialog — it pre-fills your credentials
+3. Paste the prompt into a Claude Code session in your target project
+4. Claude Code creates the `.mcp.json` automatically and tells you to relaunch
+
+## Alternative: Clone-and-Run (Single Project)
+
+If you only need one agent, or prefer a self-contained setup:
+
+```bash
+git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
+cd bgos-claude-plugin
+npm install
+cp .mcp.json.example .mcp.json
+# Edit .mcp.json with your credentials
+claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
+```
+
+> **Note**: With this approach you must run Claude Code from the plugin directory. For multi-agent setups, use the per-project method above.
 
 ## Getting Your Credentials
 
@@ -111,24 +148,17 @@ Your Clerk user ID (format: `user_xxxxx`). Found in:
 
 The numeric ID of the BGOS assistant you want Claude Code to respond through. You can:
 - Check the AdminJS panel
+- Create one in the BGOS app (New Assistant → Claude Code type → the ID is shown after creation)
 - Or call: `curl -H "X-API-Key: YOUR_KEY" https://api.brandgrowthos.ai/api/v1/webhooks/assistants`
-
-> **Tip**: Create a dedicated assistant for Claude Code (e.g., "Claude Code Agent") so it doesn't interfere with your n8n-powered assistants.
 
 ### Assistant Setup
 
-The assistant you use should ideally have:
-- **No webhook URL** (or a dummy URL like `https://httpbin.org/post`) — this prevents n8n workflows from also responding to messages meant for Claude Code
-- A descriptive name (e.g., "Claude Code Agent")
+Claude Code assistants should have:
+- **Type**: "Claude Code" (set `code: "claude-code"`) — this tells the backend to skip the n8n forwarder
+- **No webhook URL** — the plugin polls for messages, no webhook needed
+- A descriptive name (e.g., "My Project Agent")
 
-To set a dummy webhook URL (prevents the forwarder from sending to n8n):
-```bash
-curl -X PATCH \
-  -H "X-API-Key: YOUR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"userId":"YOUR_USER_ID","assistantId":ASSISTANT_ID,"webhookUrl":"https://httpbin.org/post"}' \
-  "https://api.brandgrowthos.ai/api/v1/assistants/ASSISTANT_ID"
-```
+When you create a Claude Code assistant in the BGOS app, the type is set automatically.
 
 ## Configuration Reference
 
@@ -153,7 +183,7 @@ curl -X PATCH \
 **Interactive** (`BGOS_AUTO_APPROVE=false` or omitted):
 - When Claude Code needs permission, a prompt appears in the BGOS chat:
   ```
-  🔐 Permission Request
+  Permission Request
   Claude wants to use Bash
   Run test suite
   
@@ -180,11 +210,11 @@ Claude Code also retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`
 bgos-claude-plugin/
 ├── .claude-plugin/
 │   └── plugin.json          # Plugin manifest
-├── .mcp.json                # MCP server config (YOUR credentials — gitignored)
 ├── .mcp.json.example        # Template for .mcp.json
 ├── server.ts                # MCP channel server (~350 lines)
 ├── package.json
 ├── tsconfig.json
+├── CLAUDE.md                # Project context for Claude Code
 └── README.md
 ```
 
@@ -220,17 +250,19 @@ Claude Code needs tool permission
 
 ### Plugin doesn't appear in `/mcp`
 
-Make sure you're running `claude` from the `bgos-claude-plugin/` directory where `.mcp.json` is located.
+Make sure your project's `.mcp.json` has the correct absolute path to `server.ts`. The path must point to the actual file on disk.
 
 ### No messages appearing in Claude Code
 
-1. Check that `BGOS_ASSISTANT_ID` matches the assistant you're chatting with
+1. Check that `BGOS_ASSISTANT_ID` matches the assistant you're chatting with in the BGOS app
 2. Verify the API key works: `curl -H "X-API-Key: YOUR_KEY" https://api.brandgrowthos.ai/api/v1/service-options/health`
 3. Check stderr logs in the terminal for `[bgos]` messages
 
 ### Duplicate responses
 
-If you're getting multiple responses per message, your assistant's `webhookUrl` might be empty, causing the BGOS forwarder to send to n8n webhook subscriptions. Set a dummy webhook URL on the assistant (see "Assistant Setup" above).
+If you're getting multiple responses per message:
+1. Make sure the assistant has `code: "claude-code"` set (the backend skips the forwarder for Claude Code agents)
+2. If the assistant was created manually (not via the BGOS app), set `code` to `"claude-code"` via the API
 
 ### Permission prompts blocking in CLI
 
@@ -253,6 +285,6 @@ npx tsx server.ts
 ## Known Limitations
 
 - **Polling-based**: Messages are detected via polling (default 2s interval), not real-time WebSocket. This adds a small delay.
-- **Single assistant**: Each plugin instance monitors one assistant. Run multiple instances for multiple assistants.
+- **Single assistant per session**: Each Claude Code session monitors one assistant. Use per-project `.mcp.json` files with different `BGOS_ASSISTANT_ID` values for multiple agents.
 - **No file attachments**: Text messages only (file support planned).
 - **No streaming**: Responses appear as complete messages, not streamed token-by-token.
