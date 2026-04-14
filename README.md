@@ -22,40 +22,42 @@ Claude Code (full agent capabilities)
 6. Plugin posts the reply via the BGOS REST API
 7. BGOS backend pushes it to the frontend via WebSocket — appears as a chat bubble
 
-## Prerequisites
+## Requirements
 
-- **Claude Code CLI** installed and authenticated (`claude` command available)
-- **Node.js 18+** (for `npx tsx`)
-- **A BGOS account** with API key access
-- **Git** (to clone this repo)
+You **must** have all of the following installed before setting up the plugin:
 
-## Quick Start (Per-Project Setup)
+| Requirement | Minimum Version | Check Command | Install |
+|-------------|----------------|---------------|---------|
+| **Bun** | 1.0+ | `bun --version` | [bun.sh](https://bun.sh) — `curl -fsSL https://bun.sh/install \| bash` |
+| **Claude Code CLI** | Any | `claude --version` | [claude.ai/code](https://claude.ai/code) |
+| **Git** | Any | `git --version` | Pre-installed on most systems |
+| **A BGOS account** | — | — | Contact your BGOS admin |
 
-This is the recommended approach. You install the plugin **once** on your machine, then each project gets its own `.mcp.json` pointing to the shared installation with its own assistant ID. This lets you run **multiple AI agents simultaneously** on the same machine — one per project.
+> **Why Bun?** The plugin requires Bun as its runtime (not Node.js). Bun handles the stdio MCP transport reliably across all platforms. Node.js/tsx may cause connection drops on Windows.
 
-### 1. Install the plugin (one-time)
+## Quick Start
 
-Clone the plugin to your home directory and install dependencies:
+### Step 1: Install the plugin (one-time per machine)
 
 ```bash
 cd ~
 git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
 cd bgos-claude-plugin
-npm install
+bun install
 ```
 
-This creates `~/bgos-claude-plugin/` — you only do this once per machine.
+This creates `~/bgos-claude-plugin/`. You only do this once.
 
-### 2. Create a `.mcp.json` in your project
+### Step 2: Create `.mcp.json` in your project
 
-In **your project's root directory** (not the plugin directory), create a `.mcp.json` file:
+In your **project's root directory**, create a `.mcp.json` file with your BGOS credentials:
 
 ```json
 {
   "mcpServers": {
     "bgos": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/bgos-claude-plugin/server.ts"],
+      "command": "bun",
+      "args": ["/absolute/path/to/bgos-claude-plugin/server.ts"],
       "env": {
         "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
         "BGOS_API_KEY": "your-api-key-here",
@@ -68,121 +70,56 @@ In **your project's root directory** (not the plugin directory), create a `.mcp.
 }
 ```
 
-**Replace the path** with the actual absolute path to `server.ts`:
-- **Linux/Mac**: `"/home/username/bgos-claude-plugin/server.ts"`
+**Replace the path** with the absolute path to `server.ts` on your machine:
+- **Linux**: `"/home/username/bgos-claude-plugin/server.ts"`
+- **Mac**: `"/Users/username/bgos-claude-plugin/server.ts"`
 - **Windows**: `"C:/Users/username/bgos-claude-plugin/server.ts"`
 
-### 3. Launch Claude Code from your project
+> **Important:** Add `.mcp.json` to your project's `.gitignore` — it contains your API key.
+
+### Step 3: Launch Claude Code
 
 ```bash
 cd /path/to/your/project
 claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
 ```
 
-Claude Code reads the `.mcp.json` from your current directory and starts the plugin with your project's assistant ID.
+Both flags are required:
+- `--dangerously-skip-permissions` — allows the plugin to auto-approve tool usage
+- `--dangerously-load-development-channels server:bgos` — enables receiving messages from the BGOS chat
 
-### 4. Verify the plugin loaded
+### Step 4: Verify
 
-In the Claude Code CLI, type `/mcp` — you should see `bgos` listed as a connected server.
-
-### 5. Test
-
-Open the BGOS app, navigate to the chat for your configured assistant, and send a message like:
-
-> "What directory are you in and what OS is this machine running?"
-
-## Multiple Agents on One Machine
-
-Each project gets its own `.mcp.json` with a unique `BGOS_ASSISTANT_ID`. You can run multiple Claude Code sessions simultaneously, each responding through a different BGOS assistant.
-
-```
-~/project-a/
-  .mcp.json          → BGOS_ASSISTANT_ID=101  (e.g., "Code Review Agent")
-  
-~/project-b/
-  .mcp.json          → BGOS_ASSISTANT_ID=102  (e.g., "DevOps Agent")
-  
-~/project-c/
-  .mcp.json          → BGOS_ASSISTANT_ID=103  (e.g., "Data Pipeline Agent")
-```
-
-All three share the same plugin installation at `~/bgos-claude-plugin/`.
-
-**To set up a new agent:**
-1. Create a new Claude Code assistant in the BGOS app (select "Claude Code" type)
-2. Copy the setup prompt from the creation dialog — it pre-fills your credentials
-3. Paste the prompt into a Claude Code session in your target project
-4. Claude Code creates the `.mcp.json` automatically and tells you to relaunch
-
-## Alternative: Clone-and-Run (Single Project)
-
-If you only need one agent, or prefer a self-contained setup:
-
-```bash
-git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
-cd bgos-claude-plugin
-npm install
-cp .mcp.json.example .mcp.json
-# Edit .mcp.json with your credentials
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
-```
-
-> **Note**: With this approach you must run Claude Code from the plugin directory. For multi-agent setups, use the per-project method above.
+1. Type `/mcp` in the Claude Code CLI — you should see `bgos` listed as connected
+2. You should see: `Listening for channel messages from: server:bgos`
+3. Open the BGOS app, go to your assistant's chat, and send a message
+4. The message should appear in the Claude Code terminal as a `<channel>` event
 
 ## Getting Your Credentials
 
 All credentials are available from the BGOS app:
 
-### API Key
-
-Found in your **BGOS account settings**. Each user has a unique API key for machine-to-machine access.
-
-### User ID
-
-Your unique user identifier, shown in your **BGOS account settings**.
-
-### Assistant ID
-
-The numeric ID of the assistant you want Claude Code to respond through:
-1. Open the BGOS app
-2. Create a new assistant and select **"Claude Code"** as the type
-3. The assistant ID is shown after creation
+| Credential | Where to find it |
+|------------|-----------------|
+| **API Key** | BGOS app → Account Settings → API Key |
+| **User ID** | BGOS app → Account Settings → User ID |
+| **Assistant ID** | Create a new assistant (select "Claude Code" type) → ID shown after creation |
 
 > **Tip:** When you create a Claude Code assistant in the BGOS app, a setup prompt with all your credentials pre-filled is shown. Just paste it into a Claude Code session.
 
-## Configuration Reference
+## Multiple Agents on One Machine
 
-### Environment Variables (in `.mcp.json`)
+Each project gets its own `.mcp.json` with a unique `BGOS_ASSISTANT_ID`:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BGOS_BACKEND_URL` | Yes | BGOS backend URL (provided during account setup) |
-| `BGOS_API_KEY` | Yes | Your BGOS API key |
-| `BGOS_USER_ID` | Yes | Your BGOS user ID |
-| `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to monitor |
-| `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (recommended for testing) |
-| `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
+```
+~/project-a/.mcp.json  → BGOS_ASSISTANT_ID=101  ("Code Review Agent")
+~/project-b/.mcp.json  → BGOS_ASSISTANT_ID=102  ("DevOps Agent")
+~/project-c/.mcp.json  → BGOS_ASSISTANT_ID=103  ("Data Pipeline Agent")
+```
 
-### Permission Modes
+All share the same plugin installation at `~/bgos-claude-plugin/`.
 
-**Auto-approve** (`BGOS_AUTO_APPROVE=true`):
-- All tool permissions are automatically approved
-- No user interaction needed for Claude Code to use Bash, Write, Edit, etc.
-- Best for trusted environments / testing
-
-**Interactive** (`BGOS_AUTO_APPROVE=false` or omitted):
-- When Claude Code needs permission, a prompt appears in the BGOS chat:
-  ```
-  Permission Request
-  Claude wants to use Bash
-  Run test suite
-  
-  Reply "yes abcde" to approve or "no abcde" to deny.
-  ```
-- Type your verdict directly in the BGOS chat
-- 120s timeout (auto-denies if no response)
-
-## Tools Provided to Claude Code
+## Tools
 
 | Tool | Description |
 |------|-------------|
@@ -190,32 +127,30 @@ The numeric ID of the assistant you want Claude Code to respond through:
 | `edit_message` | Edit a previously sent message |
 | `rename_chat` | Set a descriptive title on a chat |
 
-Claude Code also retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.
+Claude Code retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.
 
 ## Media Support
 
-The `reply` tool supports rich media content beyond plain text.
+The `reply` tool supports rich media — images, videos, documents, and interactive buttons.
 
 ### Sending Files
-
-Pass a `files` array to attach images, videos, or documents:
 
 ```json
 {
   "chat_id": "123",
-  "text": "Here's the chart you asked for:",
+  "text": "Here's the chart:",
   "files": [
     { "url": "https://example.com/chart.png" }
   ]
 }
 ```
 
-For local files on the machine running Claude Code:
+For local files:
 
 ```json
 {
   "chat_id": "123",
-  "text": "Generated report attached.",
+  "text": "Report attached.",
   "files": [
     { "path": "/tmp/report.pdf", "file_name": "Q1 Report.pdf" }
   ]
@@ -231,138 +166,91 @@ For local files on the machine running Claude Code:
 | Audio | MP3, WAV, OGG, M4A, AAC, FLAC | 20 MB |
 | Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 25 MB |
 
-- Files under 5 MB are sent inline (base64). Larger files are uploaded via presigned URL.
-- Images display as thumbnails the user can tap to view full-size.
-- Videos play inline in the chat UI.
-- Documents appear as download cards.
+Files under 5 MB are sent inline (base64). Larger files are uploaded via S3 presigned URL.
 
 ### Sending Interactive Buttons
 
-Pass an `options` array to show tappable buttons below your message:
-
 ```json
 {
   "chat_id": "123",
-  "text": "What would you like to do next?",
+  "text": "What next?",
   "options": [
     { "text": "Run tests", "callback_data": "run_tests" },
-    { "text": "Deploy", "callback_data": "deploy" },
-    { "text": "Cancel", "callback_data": "cancel" }
+    { "text": "Deploy", "callback_data": "deploy" }
   ]
 }
 ```
 
-> **Note:** Button click callbacks are not yet delivered back to Claude Code agents. Users should type their choice as a text reply for now.
+> Button clicks are not yet relayed back to Claude Code. Users should type their choice as text.
 
 ### Receiving Files from Users
 
-When a user sends files in the BGOS chat, the channel event includes:
-- Text descriptions: `[Attached image: photo.jpg]`
-- File metadata in `meta.files[]`: `file_name`, `mime_type`, `url` (presigned URL, valid ~1 hour), `type`
-
-Claude Code can view images via URL or fetch documents using `WebFetch`.
+When a user sends files, the channel event content includes the file URL inline:
+```
+[Attached image: photo.jpg — https://s3-presigned-url...]
+```
+You can download and view images with `curl` + `Read`, or fetch documents with `WebFetch`.
 
 ### Mixed Content
 
-You can combine text, files, and buttons in a single reply:
+Text + files + buttons in a single reply:
 
 ```json
 {
   "chat_id": "123",
-  "text": "Analysis complete. Here's the summary chart:",
-  "files": [
-    { "path": "/tmp/chart.png" },
-    { "path": "/tmp/data.csv", "file_name": "Raw Data.csv" }
-  ],
+  "text": "Analysis complete:",
+  "files": [{ "path": "/tmp/chart.png" }],
   "options": [
-    { "text": "Refine analysis", "callback_data": "refine" },
-    { "text": "Export full report", "callback_data": "export" }
+    { "text": "Refine", "callback_data": "refine" },
+    { "text": "Export", "callback_data": "export" }
   ]
 }
 ```
 
-## Architecture
+## Configuration Reference
 
-### Plugin Structure
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BGOS_BACKEND_URL` | Yes | BGOS API URL (provided during account setup) |
+| `BGOS_API_KEY` | Yes | Your BGOS API key |
+| `BGOS_USER_ID` | Yes | Your BGOS user ID |
+| `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
+| `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
+| `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 
-```
-bgos-claude-plugin/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin manifest
-├── .mcp.json.example        # Template for .mcp.json
-├── server.ts                # MCP channel server
-├── package.json
-├── tsconfig.json
-└── README.md
-```
+### Permission Modes
 
-### Message Flow
+**Auto-approve** (`BGOS_AUTO_APPROVE=true`): All tool permissions are automatically approved. Best for trusted environments.
 
-```
-User types in BGOS chat
-  → Message saved via BGOS API
-  → Plugin polls for new messages
-  → Detects new user message (id > lastSeen)
-  → Pushes channel notification to Claude Code
-  → Claude Code processes with full agent loop
-  → Claude calls reply tool
-  → Plugin sends reply via BGOS API
-  → Backend pushes to frontend via WebSocket
-  → BGOS app displays the reply
+**Interactive** (default): Permission prompts appear in the BGOS chat. User types `yes <code>` or `no <code>` to approve/deny. 120s timeout auto-denies.
+
+## Updating the Plugin
+
+```bash
+cd ~/bgos-claude-plugin
+git pull origin main
+bun install
 ```
 
-### Permission Flow (Interactive Mode)
-
-```
-Claude Code needs tool permission
-  → Plugin receives permission request
-  → Plugin posts permission prompt to BGOS chat
-  → User types "yes abcde" in BGOS chat
-  → Plugin polls and detects verdict message
-  → Plugin sends permission verdict back to Claude Code
-  → Claude Code proceeds with tool execution
-```
+Then relaunch Claude Code. No changes needed to your project's `.mcp.json`.
 
 ## Troubleshooting
 
-### Plugin doesn't appear in `/mcp`
-
-Make sure your project's `.mcp.json` has the correct absolute path to `server.ts`. The path must point to the actual file on disk.
-
-### No messages appearing in Claude Code
-
-1. Check that `BGOS_ASSISTANT_ID` matches the assistant you're chatting with in the BGOS app
-2. Verify your API key is valid (check BGOS app settings)
-3. Check stderr logs in the terminal for `[bgos]` messages
-
-### Duplicate responses
-
-Make sure the assistant was created as "Claude Code" type in the BGOS app. If you created it manually, ensure the type is set correctly.
-
-### Permission prompts blocking in CLI
-
-Add `BGOS_AUTO_APPROVE=true` to your `.mcp.json` env section. This auto-approves all tool permissions via the channel permission relay.
-
-## Development
-
-```bash
-# Type-check
-npx tsc --noEmit
-
-# Run standalone (for debugging, without Claude Code)
-BGOS_BACKEND_URL=https://your-instance.example.com/api/v1 \
-BGOS_API_KEY=your-key \
-BGOS_USER_ID=your-id \
-BGOS_ASSISTANT_ID=42 \
-npx tsx server.ts
-```
+| Problem | Solution |
+|---------|----------|
+| Plugin doesn't appear in `/mcp` | Check `.mcp.json` has the correct absolute path to `server.ts` |
+| "Not connected" when using reply tool | Make sure you're using `bun` (not `npx tsx`) as the command in `.mcp.json` |
+| No messages from BGOS arriving | Check `BGOS_ASSISTANT_ID` matches the assistant you're chatting with |
+| MCP connects then disconnects | Ensure you installed with `bun install` (not `npm install`). Verify bun version: `bun --version` |
+| Duplicate responses | Assistant must be "Claude Code" type in the BGOS app |
+| Permission prompts blocking | Add `BGOS_AUTO_APPROVE=true` to `.mcp.json` env |
 
 ## Known Limitations
 
-- **Polling-based**: Messages are detected via polling (default 2s interval), not real-time WebSocket. This adds a small delay.
-- **Single assistant per session**: Each Claude Code session monitors one assistant. Use per-project `.mcp.json` files with different `BGOS_ASSISTANT_ID` values for multiple agents.
-- **Button callbacks not delivered**: Users can see and click buttons, but clicks aren't relayed back to Claude Code yet. Users should type their choice as text.
-- **No streaming**: Responses appear as complete messages, not streamed token-by-token.
+- **Polling-based**: ~2 second delay (not real-time WebSocket)
+- **Single assistant per session**: Use separate `.mcp.json` files per project for multiple agents
+- **Button callbacks not delivered**: Users should type their choice as text
+- **No streaming**: Responses appear as complete messages
 
 ## License
 
