@@ -51,7 +51,6 @@ function log(msg: string): void {
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
 
-/** Extension → MIME type map (mirrors backend ALLOWED_MIMES) */
 const MIME_MAP: Record<string, string> = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
@@ -71,20 +70,15 @@ const MIME_MAP: Record<string, string> = {
   '.json': 'application/json', '.zip': 'application/zip',
 }
 
-/** Per-category file size limits in bytes (mirrors backend FILE_SIZE_LIMITS) */
 const SIZE_LIMITS: Record<string, number> = {
-  image: 10 * 1024 * 1024,
-  video: 100 * 1024 * 1024,
-  audio: 20 * 1024 * 1024,
-  document: 25 * 1024 * 1024,
+  image: 10 * 1024 * 1024, video: 100 * 1024 * 1024,
+  audio: 20 * 1024 * 1024, document: 25 * 1024 * 1024,
 }
 
-/** Files above this threshold are uploaded via S3 instead of inline base64. */
 const S3_THRESHOLD = 5 * 1024 * 1024
 
 const DOC_MIMES = new Set([
-  'application/pdf', 'text/plain', 'text/csv',
-  'application/msword',
+  'application/pdf', 'text/plain', 'text/csv', 'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -94,8 +88,7 @@ const DOC_MIMES = new Set([
 ])
 
 function guessMimeType(filePath: string): string | null {
-  const ext = extname(filePath).toLowerCase()
-  return MIME_MAP[ext] ?? null
+  return MIME_MAP[extname(filePath).toLowerCase()] ?? null
 }
 
 function getFileCategory(mime: string): string | null {
@@ -153,7 +146,7 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
 
 interface ResolvedFile {
   fileName: string
-  fileData: string       // URL or base64 data-URI
+  fileData: string
   fileMimeType: string
   s3Key?: string | null
   isImage: boolean
@@ -162,108 +155,66 @@ interface ResolvedFile {
   isAudio: boolean
 }
 
-/**
- * Upload a large file via the S3 presigned URL flow.
- * 1. POST /api/v1/files/upload-url → presigned PUT URL + key
- * 2. PUT buffer to S3
- * 3. POST /api/v1/files → save metadata, get download URL
- */
 async function uploadViaS3(
-  fileName: string,
-  contentType: string,
-  fileBuffer: Buffer,
+  fileName: string, contentType: string, fileBuffer: Buffer,
 ): Promise<{ s3Key: string; downloadUrl: string }> {
   const uploadInfo = (await bgosPost(
     `files/upload-url?userId=${encodeURIComponent(USER_ID)}`,
     { fileName, contentType, size: fileBuffer.length },
   )) as { uploadUrl: string; key: string }
-
   const putResp = await fetch(uploadInfo.uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': contentType },
+    method: 'PUT', headers: { 'Content-Type': contentType },
     body: new Uint8Array(fileBuffer),
   })
-  if (!putResp.ok) {
-    throw new Error(`S3 upload failed (HTTP ${putResp.status})`)
-  }
-
+  if (!putResp.ok) throw new Error(`S3 upload failed (HTTP ${putResp.status})`)
   const fileMeta = (await bgosPost(
     `files?userId=${encodeURIComponent(USER_ID)}`,
     { key: uploadInfo.key, type: contentType, size: fileBuffer.length },
   )) as { id: string; url: string; key: string }
-
   return { s3Key: uploadInfo.key, downloadUrl: fileMeta.url }
 }
 
-/**
- * Resolve a file spec (URL or local path) into the backend's expected format.
- */
 async function resolveFile(fileSpec: {
-  url?: string
-  path?: string
-  file_name?: string
-  mime_type?: string
+  url?: string; path?: string; file_name?: string; mime_type?: string
 }): Promise<ResolvedFile> {
-  // Case 1: URL — use directly
   if (fileSpec.url) {
     const urlPath = fileSpec.url.split('/').pop()?.split('?')[0] ?? 'file'
     const fileName = fileSpec.file_name ?? urlPath
     const mime = fileSpec.mime_type ?? guessMimeType(fileName) ?? 'application/octet-stream'
     const category = getFileCategory(mime)
     return {
-      fileName,
-      fileData: fileSpec.url,
-      fileMimeType: mime,
-      isImage: category === 'image',
-      isVideo: category === 'video',
-      isDocument: category === 'document',
-      isAudio: category === 'audio',
+      fileName, fileData: fileSpec.url, fileMimeType: mime,
+      isImage: category === 'image', isVideo: category === 'video',
+      isDocument: category === 'document', isAudio: category === 'audio',
     }
   }
-
-  // Case 2: Local file path — read and encode/upload
   if (fileSpec.path) {
     const filePath = fileSpec.path
     const fileName = fileSpec.file_name ?? basename(filePath)
     const mime = fileSpec.mime_type ?? guessMimeType(filePath)
-    if (!mime) throw new Error(`Cannot determine MIME type for "${filePath}". Specify mime_type explicitly.`)
-
+    if (!mime) throw new Error(`Cannot determine MIME type for "${filePath}"`)
     const category = getFileCategory(mime)
     if (!category) throw new Error(`Unsupported file type: ${mime}`)
-
     const fileStat = await stat(filePath)
     const limit = SIZE_LIMITS[category]
-    if (fileStat.size > limit) {
-      const limitMB = Math.round(limit / (1024 * 1024))
-      throw new Error(`File exceeds ${limitMB}MB limit for ${category}: ${fileName}`)
-    }
-
+    if (fileStat.size > limit) throw new Error(`File exceeds ${Math.round(limit / 1024 / 1024)}MB limit`)
     const buffer = Buffer.from(await readFile(filePath))
-
     let fileData: string
     let s3Key: string | null = null
-
     if (buffer.length > S3_THRESHOLD) {
-      log(`Uploading ${fileName} (${(buffer.length / 1024 / 1024).toFixed(1)}MB) via S3...`)
+      log(`Uploading ${fileName} via S3...`)
       const result = await uploadViaS3(fileName, mime, buffer)
       fileData = result.downloadUrl
       s3Key = result.s3Key
     } else {
       fileData = `data:${mime};base64,${buffer.toString('base64')}`
     }
-
     return {
-      fileName,
-      fileData,
-      fileMimeType: mime,
-      s3Key,
-      isImage: category === 'image',
-      isVideo: category === 'video',
-      isDocument: category === 'document',
-      isAudio: category === 'audio',
+      fileName, fileData, fileMimeType: mime, s3Key,
+      isImage: category === 'image', isVideo: category === 'video',
+      isDocument: category === 'document', isAudio: category === 'audio',
     }
   }
-
   throw new Error('File must specify either "url" or "path"')
 }
 
@@ -496,22 +447,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: {
               type: 'object',
               properties: {
-                url: {
-                  type: 'string',
-                  description: 'URL of the file (image URL, video URL, etc.). Use for remote/web files.',
-                },
-                path: {
-                  type: 'string',
-                  description: 'Absolute local file path. Plugin reads and uploads the file. Use for local files.',
-                },
-                file_name: {
-                  type: 'string',
-                  description: 'Display name (optional — inferred from URL/path if omitted).',
-                },
-                mime_type: {
-                  type: 'string',
-                  description: 'MIME type override (optional — inferred from extension). E.g. "image/png", "application/pdf".',
-                },
+                url: { type: 'string', description: 'URL of the file. Use for remote/web files.' },
+                path: { type: 'string', description: 'Absolute local file path. Plugin reads and uploads the file.' },
+                file_name: { type: 'string', description: 'Display name (optional).' },
+                mime_type: { type: 'string', description: 'MIME type override (optional).' },
               },
             },
           },
@@ -521,8 +460,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: {
               type: 'object',
               properties: {
-                text: { type: 'string', description: 'Button label shown to the user.' },
-                callback_data: { type: 'string', description: 'Identifier sent when button is clicked.' },
+                text: { type: 'string', description: 'Button label.' },
+                callback_data: { type: 'string', description: 'Identifier sent when clicked.' },
               },
               required: ['text', 'callback_data'],
             },
@@ -580,20 +519,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
 
       try {
-        // Resolve file attachments
         const resolvedFiles: ResolvedFile[] = []
         if (filesInput?.length) {
           for (const fileSpec of filesInput) {
             resolvedFiles.push(await resolveFile(fileSpec))
           }
         }
-
-        // Map options to backend format
         const resolvedOptions = (optionsInput ?? []).map(opt => ({
-          text: opt.text,
-          callbackData: opt.callback_data,
+          text: opt.text, callbackData: opt.callback_data,
         }))
-
         const hasAttachment = resolvedFiles.length > 0
         const categories = new Set(resolvedFiles.map(f => getFileCategory(f.fileMimeType)))
         const isMixedAttachments = resolvedFiles.length > 1 && categories.size > 1
@@ -609,7 +543,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           files: resolvedFiles,
           options: resolvedOptions,
         })
-
         const msgId = (result as any)?.message?.id
         const parts: string[] = []
         if (msgId) parts.push(`message_id: ${msgId}`)
@@ -686,14 +619,6 @@ interface MessageFileInfo {
   isAudio: boolean | null
 }
 
-interface MessageOptionInfo {
-  id: number
-  messageId: number
-  text: string
-  callbackData: string
-  createdAt: string
-}
-
 interface ChatMessage {
   message: {
     id: number
@@ -702,11 +627,9 @@ interface ChatMessage {
     text: string | null
     sentDate: string | null
     hasAttachment?: boolean
-    isAudioMessage?: boolean | null
-    audioDuration?: number | null
   }
-  messageFiles: MessageFileInfo[]
-  messageOptions: MessageOptionInfo[]
+  messageFiles?: MessageFileInfo[]
+  messageOptions?: unknown[]
 }
 
 interface ChatHistoryResponse {
@@ -751,31 +674,23 @@ async function pollChat(chatId: string): Promise<void> {
       // Skip verdict messages — don't forward "yes abcde" / "no abcde" to Claude
       if (VERDICT_RE.test(text)) continue
 
-      // Build content string including attachment descriptions
+      // Build content with attachment descriptions
       const contentParts: string[] = []
       if (text.trim()) contentParts.push(text)
 
       const files = msg.messageFiles ?? []
       for (const f of files) {
         const type = f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document'
-        contentParts.push(`[Attached ${type}: ${f.fileName}]`)
+        contentParts.push(`[Attached ${type}: ${f.fileName} — ${f.fileData}]`)
       }
 
-      // Skip if nothing to forward
       if (contentParts.length === 0) continue
 
       const content = contentParts.join('\n')
       log(`New message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
-      // Build file metadata for the meta object
-      const fileMeta = files.map(f => ({
-        file_name: f.fileName,
-        mime_type: f.fileMimeType,
-        url: f.fileData,
-        type: f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document',
-      }))
-
       // Push channel notification to Claude Code (fire-and-forget)
+      // Keep meta simple — file URLs are embedded in the content text
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -787,8 +702,6 @@ async function pollChat(chatId: string): Promise<void> {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
-            has_attachment: files.length > 0 || (msg.message.hasAttachment ?? false),
-            files: fileMeta.length > 0 ? fileMeta : undefined,
           },
         },
       }).catch((err) => {

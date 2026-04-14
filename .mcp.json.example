@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "bgos": {
-      "command": "npx",
-      "args": ["tsx", "./server.ts"],
+      "command": "bun",
+      "args": ["run", "--cwd", "/path/to/bgos-claude-plugin", "--shell=bun", "--silent", "start"],
       "env": {
         "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
         "BGOS_API_KEY": "your-api-key-here",
