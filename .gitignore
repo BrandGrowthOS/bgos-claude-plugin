@@ -2,3 +2,6 @@ node_modules/
 dist/
 # Contains credentials for dev testing — use .mcp.json.example as template
 .mcp.json
+# Internal dev context — not for public distribution
+CLAUDE.md
+*.backup

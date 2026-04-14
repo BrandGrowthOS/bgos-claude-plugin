@@ -7,7 +7,7 @@ Chat with **Claude Code** through the BGOS desktop/mobile app. This plugin bridg
 ```
 BGOS App (Electron/Mobile)
   ↕ WebSocket + REST
-BGOS Backend (api.brandgrowthos.ai)
+BGOS Backend
   ↕ REST (polling + replies)
 This Plugin (MCP channel server)
   ↕ stdio (MCP protocol)
@@ -97,13 +97,13 @@ Each project gets its own `.mcp.json` with a unique `BGOS_ASSISTANT_ID`. You can
 
 ```
 ~/project-a/
-  .mcp.json          → BGOS_ASSISTANT_ID=841  (e.g., "Code Review Agent")
+  .mcp.json          → BGOS_ASSISTANT_ID=101  (e.g., "Code Review Agent")
   
 ~/project-b/
-  .mcp.json          → BGOS_ASSISTANT_ID=842  (e.g., "DevOps Agent")
+  .mcp.json          → BGOS_ASSISTANT_ID=102  (e.g., "DevOps Agent")
   
 ~/project-c/
-  .mcp.json          → BGOS_ASSISTANT_ID=843  (e.g., "Data Pipeline Agent")
+  .mcp.json          → BGOS_ASSISTANT_ID=103  (e.g., "Data Pipeline Agent")
 ```
 
 All three share the same plugin installation at `~/bgos-claude-plugin/`.
@@ -131,34 +131,24 @@ claude --dangerously-skip-permissions --dangerously-load-development-channels se
 
 ## Getting Your Credentials
 
+All credentials are available from the BGOS app:
+
 ### API Key
 
-Your BGOS API key is in the `users` table (`api_key` column). You can find it via:
-- The AdminJS panel at `https://api.brandgrowthos.ai/admin`
-- Or via the API: `POST /api/v1/users` returns the key
+Found in your **BGOS account settings**. Each user has a unique API key for machine-to-machine access.
 
 ### User ID
 
-Your Clerk user ID (format: `user_xxxxx`). Found in:
-- The AdminJS panel
-- Your Clerk dashboard
-- The response from `POST /api/v1/users`
+Your unique user identifier, shown in your **BGOS account settings**.
 
 ### Assistant ID
 
-The numeric ID of the BGOS assistant you want Claude Code to respond through. You can:
-- Check the AdminJS panel
-- Create one in the BGOS app (New Assistant → Claude Code type → the ID is shown after creation)
-- Or call: `curl -H "X-API-Key: YOUR_KEY" https://api.brandgrowthos.ai/api/v1/webhooks/assistants`
+The numeric ID of the assistant you want Claude Code to respond through:
+1. Open the BGOS app
+2. Create a new assistant and select **"Claude Code"** as the type
+3. The assistant ID is shown after creation
 
-### Assistant Setup
-
-Claude Code assistants should have:
-- **Type**: "Claude Code" (set `code: "claude-code"`) — this tells the backend to skip the n8n forwarder
-- **No webhook URL** — the plugin polls for messages, no webhook needed
-- A descriptive name (e.g., "My Project Agent")
-
-When you create a Claude Code assistant in the BGOS app, the type is set automatically.
+> **Tip:** When you create a Claude Code assistant in the BGOS app, a setup prompt with all your credentials pre-filled is shown. Just paste it into a Claude Code session.
 
 ## Configuration Reference
 
@@ -166,9 +156,9 @@ When you create a Claude Code assistant in the BGOS app, the type is set automat
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BGOS_BACKEND_URL` | Yes | BGOS backend URL (e.g., `https://api.brandgrowthos.ai/api/v1`) |
-| `BGOS_API_KEY` | Yes | Your BGOS API key (`X-API-Key` header) |
-| `BGOS_USER_ID` | Yes | Your BGOS user ID (Clerk format: `user_xxxxx`) |
+| `BGOS_BACKEND_URL` | Yes | BGOS backend URL (provided during account setup) |
+| `BGOS_API_KEY` | Yes | Your BGOS API key |
+| `BGOS_USER_ID` | Yes | Your BGOS user ID |
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to monitor |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (recommended for testing) |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
@@ -196,11 +186,100 @@ When you create a Claude Code assistant in the BGOS app, the type is set automat
 
 | Tool | Description |
 |------|-------------|
-| `reply` | Send a message to the BGOS chat (appears as assistant bubble) |
+| `reply` | Send a message with optional file attachments and interactive buttons |
 | `edit_message` | Edit a previously sent message |
 | `rename_chat` | Set a descriptive title on a chat |
 
 Claude Code also retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.
+
+## Media Support
+
+The `reply` tool supports rich media content beyond plain text.
+
+### Sending Files
+
+Pass a `files` array to attach images, videos, or documents:
+
+```json
+{
+  "chat_id": "123",
+  "text": "Here's the chart you asked for:",
+  "files": [
+    { "url": "https://example.com/chart.png" }
+  ]
+}
+```
+
+For local files on the machine running Claude Code:
+
+```json
+{
+  "chat_id": "123",
+  "text": "Generated report attached.",
+  "files": [
+    { "path": "/tmp/report.pdf", "file_name": "Q1 Report.pdf" }
+  ]
+}
+```
+
+**Supported types:**
+
+| Category | Formats | Max Size |
+|----------|---------|----------|
+| Image | JPEG, PNG, GIF, WebP, SVG, BMP, TIFF | 10 MB |
+| Video | MP4, WebM, MOV, AVI, MKV | 100 MB |
+| Audio | MP3, WAV, OGG, M4A, AAC, FLAC | 20 MB |
+| Document | PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP | 25 MB |
+
+- Files under 5 MB are sent inline (base64). Larger files are uploaded via presigned URL.
+- Images display as thumbnails the user can tap to view full-size.
+- Videos play inline in the chat UI.
+- Documents appear as download cards.
+
+### Sending Interactive Buttons
+
+Pass an `options` array to show tappable buttons below your message:
+
+```json
+{
+  "chat_id": "123",
+  "text": "What would you like to do next?",
+  "options": [
+    { "text": "Run tests", "callback_data": "run_tests" },
+    { "text": "Deploy", "callback_data": "deploy" },
+    { "text": "Cancel", "callback_data": "cancel" }
+  ]
+}
+```
+
+> **Note:** Button click callbacks are not yet delivered back to Claude Code agents. Users should type their choice as a text reply for now.
+
+### Receiving Files from Users
+
+When a user sends files in the BGOS chat, the channel event includes:
+- Text descriptions: `[Attached image: photo.jpg]`
+- File metadata in `meta.files[]`: `file_name`, `mime_type`, `url` (presigned URL, valid ~1 hour), `type`
+
+Claude Code can view images via URL or fetch documents using `WebFetch`.
+
+### Mixed Content
+
+You can combine text, files, and buttons in a single reply:
+
+```json
+{
+  "chat_id": "123",
+  "text": "Analysis complete. Here's the summary chart:",
+  "files": [
+    { "path": "/tmp/chart.png" },
+    { "path": "/tmp/data.csv", "file_name": "Raw Data.csv" }
+  ],
+  "options": [
+    { "text": "Refine analysis", "callback_data": "refine" },
+    { "text": "Export full report", "callback_data": "export" }
+  ]
+}
+```
 
 ## Architecture
 
@@ -211,10 +290,9 @@ bgos-claude-plugin/
 ├── .claude-plugin/
 │   └── plugin.json          # Plugin manifest
 ├── .mcp.json.example        # Template for .mcp.json
-├── server.ts                # MCP channel server (~350 lines)
+├── server.ts                # MCP channel server
 ├── package.json
 ├── tsconfig.json
-├── CLAUDE.md                # Project context for Claude Code
 └── README.md
 ```
 
@@ -222,27 +300,26 @@ bgos-claude-plugin/
 
 ```
 User types in BGOS chat
-  → POST /api/v1/send-message (saved to DB)
-  → Plugin polls GET /api/v1/chats/:id/messages
+  → Message saved via BGOS API
+  → Plugin polls for new messages
   → Detects new user message (id > lastSeen)
-  → Pushes notifications/claude/channel to Claude Code
+  → Pushes channel notification to Claude Code
   → Claude Code processes with full agent loop
   → Claude calls reply tool
-  → Plugin calls POST /api/v1/send-message (sender=assistant)
-  → Backend saves + pushes via WebSocket
-  → BGOS frontend displays the reply
+  → Plugin sends reply via BGOS API
+  → Backend pushes to frontend via WebSocket
+  → BGOS app displays the reply
 ```
 
 ### Permission Flow (Interactive Mode)
 
 ```
 Claude Code needs tool permission
-  → Claude Code sends notifications/claude/channel/permission_request
-  → Plugin receives it (permission handler)
+  → Plugin receives permission request
   → Plugin posts permission prompt to BGOS chat
   → User types "yes abcde" in BGOS chat
   → Plugin polls and detects verdict message
-  → Plugin sends notifications/claude/channel/permission (behavior: allow)
+  → Plugin sends permission verdict back to Claude Code
   → Claude Code proceeds with tool execution
 ```
 
@@ -255,14 +332,12 @@ Make sure your project's `.mcp.json` has the correct absolute path to `server.ts
 ### No messages appearing in Claude Code
 
 1. Check that `BGOS_ASSISTANT_ID` matches the assistant you're chatting with in the BGOS app
-2. Verify the API key works: `curl -H "X-API-Key: YOUR_KEY" https://api.brandgrowthos.ai/api/v1/service-options/health`
+2. Verify your API key is valid (check BGOS app settings)
 3. Check stderr logs in the terminal for `[bgos]` messages
 
 ### Duplicate responses
 
-If you're getting multiple responses per message:
-1. Make sure the assistant has `code: "claude-code"` set (the backend skips the forwarder for Claude Code agents)
-2. If the assistant was created manually (not via the BGOS app), set `code` to `"claude-code"` via the API
+Make sure the assistant was created as "Claude Code" type in the BGOS app. If you created it manually, ensure the type is set correctly.
 
 ### Permission prompts blocking in CLI
 
@@ -275,7 +350,7 @@ Add `BGOS_AUTO_APPROVE=true` to your `.mcp.json` env section. This auto-approves
 npx tsc --noEmit
 
 # Run standalone (for debugging, without Claude Code)
-BGOS_BACKEND_URL=https://api.brandgrowthos.ai/api/v1 \
+BGOS_BACKEND_URL=https://your-instance.example.com/api/v1 \
 BGOS_API_KEY=your-key \
 BGOS_USER_ID=your-id \
 BGOS_ASSISTANT_ID=42 \
@@ -286,5 +361,9 @@ npx tsx server.ts
 
 - **Polling-based**: Messages are detected via polling (default 2s interval), not real-time WebSocket. This adds a small delay.
 - **Single assistant per session**: Each Claude Code session monitors one assistant. Use per-project `.mcp.json` files with different `BGOS_ASSISTANT_ID` values for multiple agents.
-- **No file attachments**: Text messages only (file support planned).
+- **Button callbacks not delivered**: Users can see and click buttons, but clicks aren't relayed back to Claude Code yet. Users should type their choice as text.
 - **No streaming**: Responses appear as complete messages, not streamed token-by-token.
+
+## License
+
+Apache-2.0
