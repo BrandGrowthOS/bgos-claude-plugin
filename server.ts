@@ -659,14 +659,29 @@ async function pollChat(chatId: string): Promise<void> {
 
     const lastSeen = chatLastSeen.get(chatId) ?? 0
     const maxId = Math.max(...data.messages.map((m) => m.message.id))
+
+    let newUserMessages: ChatMessage[]
+    if (lastSeen === 0) {
+      // First poll — forward any user messages that haven't been answered yet
+      // (messages newer than the most recent assistant reply). This prevents
+      // losing the user's first message when the plugin starts AFTER the
+      // message was already sent (race condition).
+      let lastAssistantId = 0
+      for (const m of data.messages) {
+        if (m.message.sender === 'assistant' && m.message.id > lastAssistantId) {
+          lastAssistantId = m.message.id
+        }
+      }
+      newUserMessages = data.messages.filter(
+        (m) => m.message.sender === 'user' && m.message.id > lastAssistantId,
+      )
+    } else {
+      newUserMessages = data.messages.filter(
+        (m) => m.message.id > lastSeen && m.message.sender === 'user',
+      )
+    }
+
     chatLastSeen.set(chatId, maxId)
-
-    // First poll — just set baseline, don't forward old messages
-    if (lastSeen === 0) return
-
-    const newUserMessages = data.messages.filter(
-      (m) => m.message.id > lastSeen && m.message.sender === 'user',
-    )
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
