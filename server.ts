@@ -270,8 +270,32 @@ const mcp = new Server(
       '',
       'Pass an `options` array to show tappable buttons below your message:',
       '- Each button needs `text` (label) and `callback_data` (identifier).',
-      '- Note: button clicks are not yet delivered back to Claude Code agents.',
-      '  Users should type their choice as a text message instead.',
+      '- Note: button clicks via `reply` are not yet delivered back to agents.',
+      '  Use the `ask_user_input` tool when you need the user\'s answer.',
+      '',
+      '## Asking the User to Choose (ask_user_input)',
+      '',
+      'Use `ask_user_input` ONLY when you need the user to pick from a clear set',
+      'of mutually exclusive options. The BGOS app shows a polished modal/sheet',
+      'with numbered choices, optional free-text fallback, and per-question Skip.',
+      'The tool BLOCKS until every question is answered (option picked, free',
+      'text typed, or skipped) — when it returns you have structured answers.',
+      '',
+      'Use it for: choosing an approach, picking a destination, ranking',
+      'priorities, confirming intent before a destructive action, multi-step',
+      'wizards (e.g. setting up a feature, onboarding, surveys).',
+      '',
+      'Do NOT use it for: open-ended questions ("what should I do?"), pure',
+      'confirmations (use the permission-request flow), questions you can',
+      'answer yourself, or anything you would normally just send as a `reply`.',
+      '',
+      'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
+      'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
+      '`reply` message instead — the modal exists to make CHOOSING easier, not',
+      'to wrap every question.',
+      '',
+      'Keep questions short and option labels under ~30 chars. Limit a single',
+      'ask group to 1–4 questions; longer flows feel like an interrogation.',
       '',
       '## Receiving Attachments',
       '',
@@ -494,6 +518,81 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id', 'title'],
       },
     },
+    {
+      name: 'ask_user_input',
+      description:
+        'Ask the user one or more multiple-choice questions through a polished ' +
+        'modal/sheet in the BGOS app. BLOCKS until every question is answered ' +
+        '(option picked, free text typed, or skipped) and returns structured ' +
+        'answers. Use ONLY when you need the user to pick from a clear set of ' +
+        'options — for open-ended questions, use `reply` instead. See the ' +
+        'top-level instructions for full guidance on when this fits.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          chat_id: {
+            type: 'string',
+            description: 'The chat to ask in (from the channel event attributes).',
+          },
+          questions: {
+            type: 'array',
+            description:
+              '1–4 questions to ask, in order. Each must have at least one option ' +
+              '(if you have no options, just send a regular reply instead).',
+            items: {
+              type: 'object',
+              properties: {
+                text: {
+                  type: 'string',
+                  description: 'The question to display. Keep under ~80 chars.',
+                },
+                options: {
+                  type: 'array',
+                  description:
+                    'Selectable choices. 2–6 items. Each label under ~30 chars.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      label: {
+                        type: 'string',
+                        description: 'Visible button text.',
+                      },
+                      value: {
+                        type: 'string',
+                        description:
+                          'Identifier returned in the answer when this option is picked.',
+                      },
+                    },
+                    required: ['label', 'value'],
+                  },
+                  minItems: 2,
+                },
+                allow_free_text: {
+                  type: 'boolean',
+                  description:
+                    'Show "Your answer…" input below the options. Default true.',
+                },
+                allow_skip: {
+                  type: 'boolean',
+                  description:
+                    'Show a Skip button so the user can move past without answering. Default true.',
+                },
+              },
+              required: ['text', 'options'],
+            },
+            minItems: 1,
+            maxItems: 4,
+          },
+          timeout_seconds: {
+            type: 'number',
+            description:
+              'Hard upper bound to wait for answers. Default 600 (10 minutes). ' +
+              'On timeout, any unanswered questions return as { skipped: true }.',
+          },
+        },
+        required: ['chat_id', 'questions'],
+      },
+    },
   ],
 }))
 
@@ -596,6 +695,177 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'ask_user_input': {
+      const chat_id = rawArgs.chat_id as string | undefined
+      const questions = rawArgs.questions as
+        | Array<{
+            text: string
+            options: Array<{ label: string; value: string }>
+            allow_free_text?: boolean
+            allow_skip?: boolean
+          }>
+        | undefined
+      const timeoutSeconds = (rawArgs.timeout_seconds as number | undefined) ?? 600
+
+      if (!chat_id) {
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
+      }
+      if (!questions?.length) {
+        return {
+          content: [{ type: 'text', text: 'Error: at least one question is required' }],
+        }
+      }
+      for (const q of questions) {
+        if (!q.text || !q.options?.length) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Error: every question needs `text` and at least one option (use `reply` for open-ended questions).',
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      try {
+        // Post each question. The first one returns an ask_id we reuse for
+        // the rest so they group into one carousel.
+        let askId: string | null = null
+        const postedIds: number[] = []
+        for (let i = 0; i < questions.length; i++) {
+          const q = questions[i]
+          const result = (await bgosPost('messages', {
+            chatId: Number(chat_id),
+            sender: 'assistant',
+            text: q.text,
+            messageType: 'ask_user_input',
+            ...(askId ? { askId } : {}),
+            askOrder: i + 1,
+            allowFreeText: q.allow_free_text ?? true,
+            allowSkip: q.allow_skip ?? true,
+            options: q.options.map((o) => ({
+              text: o.label,
+              callbackData: o.value,
+            })),
+          })) as { id: number; askId: string | null }
+          postedIds.push(result.id)
+          if (!askId && result.askId) askId = result.askId
+        }
+        log(
+          `ask_user_input: posted ${questions.length} question(s) to chat ${chat_id} (askId=${askId})`,
+        )
+
+        // Poll until every posted message has answeredAt set, or timeout.
+        const targetIds = new Set(postedIds)
+        const answers = new Map<
+          number,
+          {
+            freeText?: string
+            skipped?: boolean
+            optionLabel?: string
+            optionValue?: string
+          }
+        >()
+        const startTime = Date.now()
+        const deadline = startTime + timeoutSeconds * 1000
+
+        while (Date.now() < deadline && answers.size < targetIds.size) {
+          await new Promise((r) => setTimeout(r, 1500))
+          try {
+            const data = (await bgosGet(
+              `chats/${chat_id}/messages?userId=${USER_ID}`,
+            )) as {
+              messages: Array<{
+                message: {
+                  id: number
+                  text: string | null
+                  answeredAt: string | null
+                  answerPayload: {
+                    optionId?: number
+                    freeText?: string
+                    skipped?: boolean
+                  } | null
+                }
+                messageOptions: Array<{
+                  id: number
+                  text: string
+                  callbackData: string
+                }>
+              }>
+            }
+            for (const entry of data.messages ?? []) {
+              if (!targetIds.has(entry.message.id)) continue
+              if (answers.has(entry.message.id)) continue
+              if (!entry.message.answeredAt || !entry.message.answerPayload) continue
+              const payload = entry.message.answerPayload
+              const matched = payload.optionId
+                ? entry.messageOptions.find((o) => o.id === payload.optionId)
+                : undefined
+              answers.set(entry.message.id, {
+                ...(payload.freeText !== undefined && { freeText: payload.freeText }),
+                ...(payload.skipped === true && { skipped: true }),
+                ...(matched && {
+                  optionLabel: matched.text,
+                  optionValue: matched.callbackData,
+                }),
+              })
+            }
+          } catch (err) {
+            log(`ask_user_input poll error: ${err}`)
+          }
+        }
+
+        // Timeout fallback: any still-unanswered question is reported as skipped.
+        const timedOut = answers.size < targetIds.size
+        if (timedOut) {
+          for (const id of targetIds) {
+            if (!answers.has(id)) {
+              answers.set(id, { skipped: true })
+            }
+          }
+        }
+
+        // Build the structured response in question order.
+        const result = postedIds.map((id, i) => {
+          const a = answers.get(id) ?? { skipped: true }
+          return {
+            question: questions[i].text,
+            ...(a.optionValue !== undefined && {
+              picked_option_value: a.optionValue,
+              picked_option_label: a.optionLabel,
+            }),
+            ...(a.freeText !== undefined && { free_text: a.freeText }),
+            ...(a.skipped === true && { skipped: true }),
+          }
+        })
+
+        log(
+          `ask_user_input: ${answers.size}/${targetIds.size} answered${timedOut ? ' (some timed out → skipped)' : ''}`,
+        )
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                (timedOut
+                  ? `Some questions timed out (${timeoutSeconds}s) — those are reported as skipped.\n\n`
+                  : '') +
+                JSON.stringify(result, null, 2),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
+          isError: true,
+        }
       }
     }
 
