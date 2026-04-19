@@ -266,13 +266,6 @@ const mcp = new Server(
       '- Documents show as download cards.',
       '- You can send text + files + buttons in a single reply.',
       '',
-      '## Sending Interactive Buttons',
-      '',
-      'Pass an `options` array to show tappable buttons below your message:',
-      '- Each button needs `text` (label) and `callback_data` (identifier).',
-      '- Note: button clicks via `reply` are not yet delivered back to agents.',
-      '  Use the `ask_user_input` tool when you need the user\'s answer.',
-      '',
       '## Asking the User to Choose (ask_user_input)',
       '',
       'Use `ask_user_input` ONLY when you need the user to pick from a clear set',
@@ -452,8 +445,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'reply',
       description:
         'Send a reply message to the user through the BGOS chat app. ' +
-        'Supports text (markdown), file attachments (images, videos, documents), ' +
-        'and interactive buttons. At least one of text, files, or options is required.',
+        'Supports text (markdown) and file attachments (images, videos, documents). ' +
+        'At least one of text or files is required. ' +
+        'For multiple-choice questions use the `ask_user_input` tool — `reply` ' +
+        'has no buttons because clicks would not be delivered back to you.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -463,7 +458,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           text: {
             type: 'string',
-            description: 'The message text to send. Supports markdown. Optional if sending files or buttons.',
+            description: 'The message text to send. Supports markdown. Optional if sending files.',
           },
           files: {
             type: 'array',
@@ -476,18 +471,6 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 file_name: { type: 'string', description: 'Display name (optional).' },
                 mime_type: { type: 'string', description: 'MIME type override (optional).' },
               },
-            },
-          },
-          options: {
-            type: 'array',
-            description: 'Interactive buttons shown below the message.',
-            items: {
-              type: 'object',
-              properties: {
-                text: { type: 'string', description: 'Button label.' },
-                callback_data: { type: 'string', description: 'Identifier sent when clicked.' },
-              },
-              required: ['text', 'callback_data'],
             },
           },
         },
@@ -606,15 +589,29 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const filesInput = rawArgs.files as Array<{
         url?: string; path?: string; file_name?: string; mime_type?: string
       }> | undefined
-      const optionsInput = rawArgs.options as Array<{
-        text: string; callback_data: string
-      }> | undefined
+      // `options` is no longer accepted on reply — it silently steered agents
+      // toward dead-end buttons. If the model still passes it, surface a
+      // helpful error pointing at ask_user_input instead of just dropping it.
+      if (rawArgs.options !== undefined) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Error: `reply` no longer accepts `options`. For multiple-choice ' +
+                'questions, use the `ask_user_input` tool — its answers are ' +
+                'delivered back to you. For plain replies, omit the `options` field.',
+            },
+          ],
+          isError: true,
+        }
+      }
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
       }
-      if (!text && !filesInput?.length && !optionsInput?.length) {
-        return { content: [{ type: 'text', text: 'Error: at least one of text, files, or options is required' }] }
+      if (!text && !filesInput?.length) {
+        return { content: [{ type: 'text', text: 'Error: at least one of text or files is required' }] }
       }
 
       try {
@@ -624,9 +621,6 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             resolvedFiles.push(await resolveFile(fileSpec))
           }
         }
-        const resolvedOptions = (optionsInput ?? []).map(opt => ({
-          text: opt.text, callbackData: opt.callback_data,
-        }))
         const hasAttachment = resolvedFiles.length > 0
         const categories = new Set(resolvedFiles.map(f => getFileCategory(f.fileMimeType)))
         const isMixedAttachments = resolvedFiles.length > 1 && categories.size > 1
@@ -640,13 +634,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           hasAttachment,
           isMixedAttachments: isMixedAttachments || null,
           files: resolvedFiles,
-          options: resolvedOptions,
+          options: [],
         })
         const msgId = (result as any)?.message?.id
         const parts: string[] = []
         if (msgId) parts.push(`message_id: ${msgId}`)
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
-        if (resolvedOptions.length) parts.push(`${resolvedOptions.length} button(s)`)
         log(`reply sent to chat ${chat_id} (${parts.join(', ')})`)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
