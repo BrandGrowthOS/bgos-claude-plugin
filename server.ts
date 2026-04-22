@@ -296,7 +296,7 @@ const mcp = new Server(
       'Keep questions short and option labels under ~30 chars. Limit a single',
       'ask group to 1–4 questions; longer flows feel like an interrogation.',
       '',
-      '## Inline Buttons (Telegram-style, Async) — COMING SOON',
+      '## Inline Buttons (Telegram-style, Async)',
       '',
       'The BGOS app renders a second button style: "inline buttons" — a small',
       'card with tappable chips that sits in the chat thread, never blocks the',
@@ -304,11 +304,28 @@ const mcp = new Server(
       'for scheduled check-ins, proactive nudges, and any situation where the',
       'user is NOT actively waiting on you.',
       '',
-      'This plugin does not yet expose inline buttons (`reply` is text-only,',
-      '`ask_user_input` is modal-only). Until that lands, for async scenarios',
-      'send plain `reply` text and phrase the choices as questions the user',
-      'can answer when they get around to it. Do not use `ask_user_input` as',
-      'a stand-in — a blocking modal is worse than no buttons.',
+      'Send inline buttons by passing a `buttons: [{ label, value }]` array to',
+      '`reply`. Default render mode is "inline" — use `render_mode: "modal"`',
+      'ONLY when the user is actively in conversation and you want their',
+      'immediate choice. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
+      '',
+      'When the user taps a button, you receive a channel event:',
+      '  <channel source="bgos" event_type="button_clicked">',
+      '    [button_clicked] Clicked: <label>',
+      '    (in reply to message_id=N)',
+      '  </channel>',
+      'with `meta.callback_data` = the button\'s `value`, `meta.button_text` =',
+      'the label, and `meta.message_id` = the original reply. React to it as',
+      'you would any user message — send a follow-up `reply`, kick off work,',
+      'etc. NEVER call `ask_user_input` as a substitute just because you want',
+      'buttons — a blocking modal is wrong for anything async.',
+      '',
+      'Sentinels on `callback_data`:',
+      '  - "__skip__" — user tapped Skip. Acknowledge briefly or move on.',
+      '  - "__custom__" — user tapped Custom reply AND submitted free text.',
+      '    `meta.custom_text` carries what they typed. You will ALSO receive',
+      '    the free text as a normal user message right before/after — treat',
+      '    them as correlated by message_id.',
       '',
       '## Receiving Attachments',
       '',
@@ -465,12 +482,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'reply',
       description:
         'Send a reply message to the user through the BGOS chat app. ' +
-        'Supports text (markdown) and file attachments (images, videos, documents). ' +
-        'At least one of text or files is required. ' +
-        'For blocking multiple-choice questions where the user is actively ' +
-        'in conversation, use `ask_user_input`. For async scenarios (scheduled ' +
-        'check-ins, proactive nudges), prefer plain `reply` text — inline ' +
-        'buttons are not yet wired through this plugin.',
+        'Supports text (markdown), file attachments (images, videos, documents), ' +
+        'and optional tappable buttons (inline Telegram-style chips or modal ' +
+        'pop-under). At least one of text, files, or buttons is required. ' +
+        'When buttons are sent, clicks arrive back as a channel event with ' +
+        'callback_data (= the button\'s `value`) and message_id. Skip sentinel ' +
+        'is "__skip__", Custom-reply sentinel is "__custom__" (with free text). ' +
+        'Use `ask_user_input` instead only when you need blocking multi-question ' +
+        'flow + free-text + skip semantics.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -480,7 +499,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           text: {
             type: 'string',
-            description: 'The message text to send. Supports markdown. Optional if sending files.',
+            description: 'The message text to send. Supports markdown. Optional if sending files or buttons.',
           },
           files: {
             type: 'array',
@@ -494,6 +513,32 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 mime_type: { type: 'string', description: 'MIME type override (optional).' },
               },
             },
+          },
+          buttons: {
+            type: 'array',
+            description:
+              'Optional tappable choices (2–6). Clicks come back as a channel event with `callback_data = button.value`. ' +
+              'Labels should be under ~24 chars. Use this for async prompts where you do NOT want to block the session — ' +
+              'e.g. "Review these 3 options when you get a chance." Chat shows a "Skip" and "Custom reply" affordance ' +
+              'automatically; no need to include them yourself.',
+            maxItems: 6,
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', description: 'Visible button text (user-facing).' },
+                value: { type: 'string', description: 'Stable identifier returned to you in the click callback_data.' },
+              },
+              required: ['label', 'value'],
+            },
+          },
+          render_mode: {
+            type: 'string',
+            enum: ['inline', 'modal'],
+            description:
+              'Only meaningful when `buttons` is non-empty. "inline" (DEFAULT) — Telegram-style chips in the chat thread; ' +
+              'never interrupts; stays clickable indefinitely. Use for async/scheduled/proactive sends. ' +
+              '"modal" — pops over the chat demanding attention; use only when the user is actively in conversation ' +
+              'and you want their immediate choice. When in doubt, omit (defaults to inline).',
           },
         },
         required: ['chat_id'],
@@ -614,29 +659,48 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const filesInput = rawArgs.files as Array<{
         url?: string; path?: string; file_name?: string; mime_type?: string
       }> | undefined
-      // `options` is no longer accepted on reply — it silently steered agents
-      // toward dead-end buttons. If the model still passes it, surface a
-      // helpful error pointing at ask_user_input instead of just dropping it.
-      if (rawArgs.options !== undefined) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                'Error: `reply` no longer accepts `options`. For multiple-choice ' +
-                'questions, use the `ask_user_input` tool — its answers are ' +
-                'delivered back to you. For plain replies, omit the `options` field.',
-            },
-          ],
-          isError: true,
-        }
-      }
+      const buttonsInput = rawArgs.buttons as Array<{
+        label?: string; value?: string
+      }> | undefined
+      const renderModeRaw = rawArgs.render_mode as string | undefined
+      const renderMode: 'inline' | 'modal' | undefined =
+        renderModeRaw === 'inline' || renderModeRaw === 'modal'
+          ? renderModeRaw
+          : undefined
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
       }
-      if (!text && !filesInput?.length) {
-        return { content: [{ type: 'text', text: 'Error: at least one of text or files is required' }] }
+      if (!text && !filesInput?.length && !buttonsInput?.length) {
+        return {
+          content: [
+            { type: 'text', text: 'Error: at least one of text, files, or buttons is required' },
+          ],
+        }
+      }
+
+      // Button validation — inline mode caps at 6 choices (backend rejects >6).
+      let options: Array<{ text: string; callbackData: string }> = []
+      if (buttonsInput?.length) {
+        if (buttonsInput.length > 6) {
+          return {
+            content: [
+              { type: 'text', text: 'Error: buttons must have 6 or fewer entries (inline rendering limit).' },
+            ],
+            isError: true,
+          }
+        }
+        for (const b of buttonsInput) {
+          if (!b.label || !b.value) {
+            return {
+              content: [
+                { type: 'text', text: 'Error: each button needs both `label` and `value`.' },
+              ],
+              isError: true,
+            }
+          }
+          options.push({ text: b.label, callbackData: b.value })
+        }
       }
 
       try {
@@ -650,7 +714,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const categories = new Set(resolvedFiles.map(f => getFileCategory(f.fileMimeType)))
         const isMixedAttachments = resolvedFiles.length > 1 && categories.size > 1
 
-        const result = await bgosPost('send-message', {
+        const body: Record<string, unknown> = {
           chatId: Number(chat_id),
           assistantId: Number(ASSISTANT_ID),
           text,
@@ -659,12 +723,19 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           hasAttachment,
           isMixedAttachments: isMixedAttachments || null,
           files: resolvedFiles,
-          options: [],
-        })
+          options,
+        }
+        // Default: inline when buttons present (matches backend + n8n defaults).
+        // Agents can still force modal via render_mode = 'modal'.
+        if (renderMode) body.renderMode = renderMode
+        else if (options.length > 0) body.renderMode = 'inline'
+
+        const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
         const parts: string[] = []
         if (msgId) parts.push(`message_id: ${msgId}`)
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
+        if (options.length) parts.push(`${options.length} button(s) (${body.renderMode})`)
         log(`reply sent to chat ${chat_id} (${parts.join(', ')})`)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
@@ -907,6 +978,20 @@ interface MessageFileInfo {
   isAudio: boolean | null
 }
 
+interface MessageOptionInfo {
+  id: number
+  messageId: number
+  text: string
+  callbackData: string
+}
+
+interface AnswerPayload {
+  option_id?: string | null
+  callback_data?: string
+  button_text?: string
+  custom_text?: string
+}
+
 interface ChatMessage {
   message: {
     id: number
@@ -915,9 +1000,13 @@ interface ChatMessage {
     text: string | null
     sentDate: string | null
     hasAttachment?: boolean
+    messageType?: string | null
+    answeredAt?: string | null
+    answerPayload?: AnswerPayload | null
+    renderMode?: 'inline' | 'modal' | string | null
   }
   messageFiles?: MessageFileInfo[]
-  messageOptions?: unknown[]
+  messageOptions?: MessageOptionInfo[]
 }
 
 interface ChatHistoryResponse {
@@ -925,6 +1014,14 @@ interface ChatHistoryResponse {
 }
 
 const chatLastSeen = new Map<string, number>()
+/**
+ * Per-chat set of assistant message IDs that carried buttons and were
+ * unanswered last time we polled. Used to detect click transitions
+ * (unanswered → answered) so we can surface them as channel events.
+ * ask_user_input messages are NOT tracked here — the ask_user_input tool
+ * handles its own polling/blocking.
+ */
+const chatUnansweredButtons = new Map<string, Set<number>>()
 let monitoredChatIds: string[] = []
 
 async function discoverChats(): Promise<void> {
@@ -970,6 +1067,77 @@ async function pollChat(chatId: string): Promise<void> {
     }
 
     chatLastSeen.set(chatId, maxId)
+
+    // ── Detect inline/modal button-click transitions ──────────────────────
+    // For every assistant message that still has options attached and is
+    // NOT an ask_user_input (that tool owns its own polling), we watch the
+    // answered_at field. When it flips from null → set, emit a channel
+    // event carrying callback_data / button_text / (optional) custom_text.
+    const prevUnanswered = chatUnansweredButtons.get(chatId) ?? new Set<number>()
+    const nextUnanswered = new Set<number>()
+    for (const m of data.messages) {
+      const mm = m.message
+      if (mm.sender !== 'assistant') continue
+      if (mm.messageType === 'ask_user_input') continue
+      const options = m.messageOptions ?? []
+      if (options.length === 0) continue
+
+      if (!mm.answeredAt) {
+        nextUnanswered.add(mm.id)
+        continue
+      }
+      // Answered. Only emit if we previously saw it unanswered OR this is
+      // the first poll (lastSeen === 0) and the message is fresh. Avoids
+      // re-emitting historical clicks every time the plugin restarts.
+      if (!prevUnanswered.has(mm.id) && lastSeen !== 0) continue
+      if (prevUnanswered.has(mm.id) || lastSeen === 0) {
+        const payload = mm.answerPayload ?? {}
+        const callbackData = payload.callback_data ?? ''
+        const buttonText = payload.button_text ?? ''
+        const customText = payload.custom_text ?? undefined
+        const kind =
+          callbackData === '__skip__'
+            ? 'Skipped'
+            : callbackData === '__custom__'
+              ? 'Custom reply'
+              : 'Clicked'
+        const summary =
+          customText
+            ? `${kind}: "${customText}"`
+            : buttonText
+              ? `${kind}: ${buttonText}`
+              : `${kind}: ${callbackData}`
+        const contentLines = [
+          `[button_clicked] ${summary}`,
+          `(in reply to message_id=${mm.id})`,
+        ]
+        if (mm.text && mm.text.trim().length > 0) {
+          const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
+          contentLines.push(`Original question: ${quoted}`)
+        }
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: contentLines.join('\n'),
+            meta: {
+              chat_id: chatId,
+              message_id: String(mm.id),
+              event_type: 'button_clicked',
+              callback_data: callbackData,
+              button_text: buttonText,
+              ...(customText ? { custom_text: customText } : {}),
+              user: 'User',
+              user_id: USER_ID,
+              assistant_id: ASSISTANT_ID,
+              ts: mm.answeredAt,
+            },
+          },
+        }).catch((err) => {
+          log(`Failed to deliver button_clicked to Claude: ${err}`)
+        })
+      }
+    }
+    chatUnansweredButtons.set(chatId, nextUnanswered)
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
