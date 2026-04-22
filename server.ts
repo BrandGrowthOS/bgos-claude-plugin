@@ -269,10 +269,13 @@ const mcp = new Server(
       '## Asking the User to Choose (ask_user_input)',
       '',
       'Use `ask_user_input` ONLY when you need the user to pick from a clear set',
-      'of mutually exclusive options. The BGOS app shows a polished modal/sheet',
-      'with numbered choices, optional free-text fallback, and per-question Skip.',
-      'The tool BLOCKS until every question is answered (option picked, free',
-      'text typed, or skipped) — when it returns you have structured answers.',
+      'of mutually exclusive options AND the user is actively in this',
+      'conversation (they just sent you a message and you need their answer to',
+      'continue). The BGOS app shows a polished modal/sheet that pops over the',
+      'chat with numbered choices, optional free-text fallback, and per-question',
+      'Skip. The tool BLOCKS until every question is answered (option picked,',
+      'free text typed, or skipped) — when it returns you have structured',
+      'answers.',
       '',
       'Use it for: choosing an approach, picking a destination, ranking',
       'priorities, confirming intent before a destructive action, multi-step',
@@ -280,7 +283,10 @@ const mcp = new Server(
       '',
       'Do NOT use it for: open-ended questions ("what should I do?"), pure',
       'confirmations (use the permission-request flow), questions you can',
-      'answer yourself, or anything you would normally just send as a `reply`.',
+      'answer yourself, anything you would normally just send as a `reply`,',
+      'OR situations where the user is not actively waiting on you (scheduled',
+      'check-ins, background notifications, unsolicited suggestions). Modals',
+      'demand immediate attention — they are inappropriate for async work.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
       'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
@@ -289,6 +295,20 @@ const mcp = new Server(
       '',
       'Keep questions short and option labels under ~30 chars. Limit a single',
       'ask group to 1–4 questions; longer flows feel like an interrogation.',
+      '',
+      '## Inline Buttons (Telegram-style, Async) — COMING SOON',
+      '',
+      'The BGOS app renders a second button style: "inline buttons" — a small',
+      'card with tappable chips that sits in the chat thread, never blocks the',
+      'session, and stays clickable indefinitely. This is the correct affordance',
+      'for scheduled check-ins, proactive nudges, and any situation where the',
+      'user is NOT actively waiting on you.',
+      '',
+      'This plugin does not yet expose inline buttons (`reply` is text-only,',
+      '`ask_user_input` is modal-only). Until that lands, for async scenarios',
+      'send plain `reply` text and phrase the choices as questions the user',
+      'can answer when they get around to it. Do not use `ask_user_input` as',
+      'a stand-in — a blocking modal is worse than no buttons.',
       '',
       '## Receiving Attachments',
       '',
@@ -447,8 +467,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Send a reply message to the user through the BGOS chat app. ' +
         'Supports text (markdown) and file attachments (images, videos, documents). ' +
         'At least one of text or files is required. ' +
-        'For multiple-choice questions use the `ask_user_input` tool — `reply` ' +
-        'has no buttons because clicks would not be delivered back to you.',
+        'For blocking multiple-choice questions where the user is actively ' +
+        'in conversation, use `ask_user_input`. For async scenarios (scheduled ' +
+        'check-ins, proactive nudges), prefer plain `reply` text — inline ' +
+        'buttons are not yet wired through this plugin.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -507,8 +529,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Ask the user one or more multiple-choice questions through a polished ' +
         'modal/sheet in the BGOS app. BLOCKS until every question is answered ' +
         '(option picked, free text typed, or skipped) and returns structured ' +
-        'answers. Use ONLY when you need the user to pick from a clear set of ' +
-        'options — for open-ended questions, use `reply` instead. See the ' +
+        'answers. Use ONLY when (a) you need the user to pick from a clear ' +
+        'set of options AND (b) the user is actively in this conversation. ' +
+        'For open-ended questions use `reply`. For async/unprompted scenarios ' +
+        '(scheduled check-ins, proactive nudges) DO NOT use this — a blocking ' +
+        'modal is inappropriate when the user is not waiting on you. See the ' +
         'top-level instructions for full guidance on when this fits.',
       inputSchema: {
         type: 'object' as const,
