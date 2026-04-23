@@ -81,12 +81,18 @@ In your **project's root directory**, create a `.mcp.json` file with your BGOS c
 
 ```bash
 cd /path/to/your/project
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
+claude --dangerously-skip-permissions --channels server:bgos
 ```
 
 Both flags are required:
 - `--dangerously-skip-permissions` — allows the plugin to auto-approve tool usage
-- `--dangerously-load-development-channels server:bgos` — enables receiving messages from the BGOS chat
+- `--channels server:bgos` — enables receiving messages from the BGOS chat
+
+> **Note on the `--channels` flag:** In earlier Claude Code versions this flag was
+> `--dangerously-load-development-channels`. The new short form is `--channels`.
+> The old long form is silently accepted on newer versions but does NOT wire up
+> channel delivery — if inbound messages suddenly stop reaching your agent after
+> a Claude Code update, switch to `--channels server:bgos`.
 
 ### Step 4: Verify
 
