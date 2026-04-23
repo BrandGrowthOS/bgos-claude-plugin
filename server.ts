@@ -1045,23 +1045,53 @@ async function pollChat(chatId: string): Promise<void> {
     const lastSeen = chatLastSeen.get(chatId) ?? 0
     const maxId = Math.max(...data.messages.map((m) => m.message.id))
 
+    // Messages are returned oldest → newest by message id. Make sure we
+    // operate on a stable ordered copy (defensive; the backend already
+    // orders them, but a bad sort would silently corrupt the heuristic).
+    const ordered = [...data.messages].sort(
+      (a, b) => a.message.id - b.message.id,
+    )
+
     let newUserMessages: ChatMessage[]
     if (lastSeen === 0) {
-      // First poll — forward any user messages that haven't been answered yet
-      // (messages newer than the most recent assistant reply). This prevents
-      // losing the user's first message when the plugin starts AFTER the
-      // message was already sent (race condition).
-      let lastAssistantId = 0
-      for (const m of data.messages) {
-        if (m.message.sender === 'assistant' && m.message.id > lastAssistantId) {
-          lastAssistantId = m.message.id
+      // First poll — we have no persisted cursor, so we need to forward
+      // user messages that haven't been answered yet WITHOUT over-forwarding
+      // historic ones.
+      //
+      // The old heuristic (forward user messages newer than the LATEST
+      // assistant message) silently dropped messages when the latest
+      // assistant message was a PROACTIVE send (cron check-in, external
+      // trigger) rather than a reply — prior user messages looked "already
+      // answered" when they weren't.
+      //
+      // New rule: walk backward and collect trailing user messages, only
+      // stopping at a real user→assistant REPLY (an assistant message
+      // whose immediately preceding message is a user message). Proactive
+      // assistant messages (preceded by another assistant or by nothing)
+      // do NOT terminate the scan. Capped to the last 10 to avoid dumping
+      // half the chat on first boot.
+      const collected: ChatMessage[] = []
+      const MAX_FIRST_POLL_FORWARD = 10
+      for (let i = ordered.length - 1; i >= 0; i--) {
+        const m = ordered[i]!
+        if (m.message.sender === 'user') {
+          collected.push(m)
+          if (collected.length >= MAX_FIRST_POLL_FORWARD) break
+          continue
+        }
+        if (m.message.sender === 'assistant') {
+          const prev = i > 0 ? ordered[i - 1]! : null
+          if (prev && prev.message.sender === 'user') {
+            // Real reply — everything older was handled. Stop here.
+            break
+          }
+          // Proactive assistant message — skip, keep scanning backward.
+          continue
         }
       }
-      newUserMessages = data.messages.filter(
-        (m) => m.message.sender === 'user' && m.message.id > lastAssistantId,
-      )
+      newUserMessages = collected.reverse()
     } else {
-      newUserMessages = data.messages.filter(
+      newUserMessages = ordered.filter(
         (m) => m.message.id > lastSeen && m.message.sender === 'user',
       )
     }
