@@ -35,6 +35,32 @@ You **must** have all of the following installed before setting up the plugin:
 
 > **Why Bun?** The plugin requires Bun as its runtime (not Node.js). Bun handles the stdio MCP transport reliably across all platforms. Node.js/tsx may cause connection drops on Windows.
 
+> ## ⚠️ Claude Subscription Required (not API-key auth)
+>
+> The `--channels` feature this plugin depends on **only works when Claude Code
+> is authenticated through a Claude subscription** (Pro / Max / Team). It does
+> **not** work when Claude Code is authenticated via a raw Anthropic API key
+> (`ANTHROPIC_API_KEY`).
+>
+> Symptoms if you try to use this plugin on API-key auth:
+> - The plugin appears connected in `/mcp` and the `reply` tool works
+>   (you can send messages from the agent → BGOS chat)
+> - But inbound messages from BGOS → agent are **silently dropped** —
+>   the channel subscription is never wired up, so the agent never sees
+>   what the user types in the BGOS app
+>
+> To use the plugin, sign in with your Claude subscription:
+>
+> ```bash
+> # If you're currently on API-key auth:
+> unset ANTHROPIC_API_KEY
+> claude /login    # sign in with your Claude.ai subscription
+> ```
+>
+> Verify with `claude /status` — the "Auth" line should say `Claude subscription`,
+> not `API key`. Only then will `--channels` deliver inbound messages to your
+> session.
+
 ## Quick Start
 
 ### Step 1: Install the plugin (one-time per machine)
