@@ -1071,10 +1071,17 @@ async function pollChat(chatId: string): Promise<void> {
     // ── Detect inline/modal button-click transitions ──────────────────────
     // For every assistant message that still has options attached and is
     // NOT an ask_user_input (that tool owns its own polling), we watch the
-    // answered_at field. When it flips from null → set, emit a channel
-    // event carrying callback_data / button_text / (optional) custom_text.
+    // answered_at field. When it flips from null → set between polls, emit
+    // a channel event carrying callback_data / button_text / custom_text?.
+    //
+    // On the FIRST poll for a chat (lastSeen === 0) we ONLY baseline the
+    // unanswered set — never emit. Historic clicks that happened before
+    // the plugin started are not replayed (previously they were, which
+    // flooded Claude Code's context on every restart and could cause the
+    // agent to silently stop responding).
     const prevUnanswered = chatUnansweredButtons.get(chatId) ?? new Set<number>()
     const nextUnanswered = new Set<number>()
+    const isFirstPoll = lastSeen === 0 && !chatUnansweredButtons.has(chatId)
     for (const m of data.messages) {
       const mm = m.message
       if (mm.sender !== 'assistant') continue
@@ -1086,56 +1093,55 @@ async function pollChat(chatId: string): Promise<void> {
         nextUnanswered.add(mm.id)
         continue
       }
-      // Answered. Only emit if we previously saw it unanswered OR this is
-      // the first poll (lastSeen === 0) and the message is fresh. Avoids
-      // re-emitting historical clicks every time the plugin restarts.
-      if (!prevUnanswered.has(mm.id) && lastSeen !== 0) continue
-      if (prevUnanswered.has(mm.id) || lastSeen === 0) {
-        const payload = mm.answerPayload ?? {}
-        const callbackData = payload.callback_data ?? ''
-        const buttonText = payload.button_text ?? ''
-        const customText = payload.custom_text ?? undefined
-        const kind =
-          callbackData === '__skip__'
-            ? 'Skipped'
-            : callbackData === '__custom__'
-              ? 'Custom reply'
-              : 'Clicked'
-        const summary =
-          customText
-            ? `${kind}: "${customText}"`
-            : buttonText
-              ? `${kind}: ${buttonText}`
-              : `${kind}: ${callbackData}`
-        const contentLines = [
-          `[button_clicked] ${summary}`,
-          `(in reply to message_id=${mm.id})`,
-        ]
-        if (mm.text && mm.text.trim().length > 0) {
-          const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
-          contentLines.push(`Original question: ${quoted}`)
-        }
-        mcp.notification({
-          method: 'notifications/claude/channel',
-          params: {
-            content: contentLines.join('\n'),
-            meta: {
-              chat_id: chatId,
-              message_id: String(mm.id),
-              event_type: 'button_clicked',
-              callback_data: callbackData,
-              button_text: buttonText,
-              ...(customText ? { custom_text: customText } : {}),
-              user: 'User',
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
-              ts: mm.answeredAt,
-            },
-          },
-        }).catch((err) => {
-          log(`Failed to deliver button_clicked to Claude: ${err}`)
-        })
+      // Answered. Only emit when we previously saw this exact message id
+      // in the unanswered set — i.e. a real live transition.
+      if (isFirstPoll) continue
+      if (!prevUnanswered.has(mm.id)) continue
+
+      const payload = mm.answerPayload ?? {}
+      const callbackData = payload.callback_data ?? ''
+      const buttonText = payload.button_text ?? ''
+      const customText = payload.custom_text ?? undefined
+      const kind =
+        callbackData === '__skip__'
+          ? 'Skipped'
+          : callbackData === '__custom__'
+            ? 'Custom reply'
+            : 'Clicked'
+      const summary =
+        customText
+          ? `${kind}: "${customText}"`
+          : buttonText
+            ? `${kind}: ${buttonText}`
+            : `${kind}: ${callbackData}`
+      const contentLines = [
+        `[button_clicked] ${summary}`,
+        `(in reply to message_id=${mm.id})`,
+      ]
+      if (mm.text && mm.text.trim().length > 0) {
+        const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
+        contentLines.push(`Original question: ${quoted}`)
       }
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: contentLines.join('\n'),
+          meta: {
+            chat_id: chatId,
+            message_id: String(mm.id),
+            event_type: 'button_clicked',
+            callback_data: callbackData,
+            button_text: buttonText,
+            ...(customText ? { custom_text: customText } : {}),
+            user: 'User',
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            ts: mm.answeredAt,
+          },
+        },
+      }).catch((err) => {
+        log(`Failed to deliver button_clicked to Claude: ${err}`)
+      })
     }
     chatUnansweredButtons.set(chatId, nextUnanswered)
 
