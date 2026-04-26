@@ -986,6 +986,16 @@ interface MessageOptionInfo {
 }
 
 interface AnswerPayload {
+  // Canonical (current backend) — camelCase. Backend writes this shape into
+  // messages.answer_payload as of the 2026-04-22 inline-buttons release.
+  optionId?: number | null
+  callbackData?: string
+  buttonText?: string
+  customText?: string
+  freeText?: string
+  skipped?: boolean
+  // Legacy rows written before the camelCase migration. Read as a fallback
+  // so old answered messages continue to surface correctly.
   option_id?: string | null
   callback_data?: string
   button_text?: string
@@ -1129,9 +1139,9 @@ async function pollChat(chatId: string): Promise<void> {
       if (!prevUnanswered.has(mm.id)) continue
 
       const payload = mm.answerPayload ?? {}
-      const callbackData = payload.callback_data ?? ''
-      const buttonText = payload.button_text ?? ''
-      const customText = payload.custom_text ?? undefined
+      const callbackData = payload.callbackData ?? payload.callback_data ?? ''
+      const buttonText = payload.buttonText ?? payload.button_text ?? ''
+      const customText = payload.customText ?? payload.custom_text ?? undefined
       const kind =
         callbackData === '__skip__'
           ? 'Skipped'
