@@ -142,6 +142,46 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
   return response.json()
 }
 
+// ── BGOS REST Client (peer endpoints — adds X-Caller-Assistant-Id) ───────────
+//
+// Cross-channel agent-to-agent feature requires every peer call to carry
+// X-Caller-Assistant-Id (this assistant's id) in addition to X-API-Key.
+// The plugin already reads ASSISTANT_ID from env (BGOS_ASSISTANT_ID) — that
+// is exactly what this header needs.
+
+async function bgosPeerGet(path: string): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, {
+    headers: {
+      'X-API-Key': API_KEY,
+      'X-Caller-Assistant-Id': ASSISTANT_ID,
+    },
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+  }
+  return response.json()
+}
+
+async function bgosPeerPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': API_KEY,
+      'X-Caller-Assistant-Id': ASSISTANT_ID,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+  }
+  return response.json()
+}
+
 // ── File Upload & Resolution ─────────────────────────────────────────────────
 
 interface ResolvedFile {
@@ -646,6 +686,80 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id', 'questions'],
       },
     },
+    {
+      name: 'list_peers',
+      description:
+        "List the user's other assistants (peer agents) on this BGOS account. " +
+        'Each entry includes `assistantId` (the integer to pass to send_to_peer), ' +
+        '`name`, `avatarUrl`, and crucially `introduced` — true ONLY if the user ' +
+        'has enabled this direction in the Agent Permissions matrix. If introduced ' +
+        'is false, you can suggest the peer in your reply ("Want me to ask Hades?") ' +
+        'but send_to_peer will return requires_introduction until the user enables it. ' +
+        'system_hint is intentionally omitted to prevent capability leakage between agents.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+    {
+      name: 'send_to_peer',
+      description:
+        "Send a message into another BGOS assistant's side-thread. The peer receives " +
+        'it as a normal inbound message tagged with `fromAgent` so they know it came ' +
+        'from a peer, not the user. The user sees the exchange unfold inline as a ' +
+        'minimalist SideConversationCard rendered against the parent message in this ' +
+        "chat. Set parent_message_id to the id of one of YOUR previous reply messages " +
+        "(the one the card visually anchors to in this chat). Set wait_for_reply=true " +
+        'to BLOCK until the peer replies (their reply must include reply_to_id pointing ' +
+        'to the message_id you sent). Returns { status, sideThreadChatId, messageId, reply? }. ' +
+        "Status='requires_introduction' means the user has not enabled this direction.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          target_assistant_id: {
+            type: 'number',
+            description: 'The peer assistant id (from list_peers).',
+          },
+          text: { type: 'string', description: 'The message body for the peer agent.' },
+          parent_message_id: {
+            type: 'number',
+            description:
+              'A message id in YOUR chat that anchors the SideConversationCard. ' +
+              'Typically the id of a reply you just sent saying "Looping in <peer>...".',
+          },
+          wait_for_reply: { type: 'boolean', description: 'Block until peer replies. Default false.' },
+          timeout_seconds: {
+            type: 'number',
+            description: 'How long to wait when wait_for_reply=true. 1–600s. Default 60s.',
+          },
+        },
+        required: ['target_assistant_id', 'text', 'parent_message_id'],
+      },
+    },
+    {
+      name: 'complete_side_thread',
+      description:
+        'Mark a side conversation complete with a one-line synthesis. The user ' +
+        'sees this in the SideConversationCard once the live exchange ends — it ' +
+        'flips the card from live (pulsing dot + last 2 turns) to ' +
+        'completed-collapsed (static dot + this summary). Only the agent that ' +
+        'initiated the side-thread (i.e., the chat owner) may call this.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          parent_message_id: {
+            type: 'number',
+            description: 'Same parent_message_id you used in send_to_peer.',
+          },
+          summary: {
+            type: 'string',
+            description:
+              'One-line synthesis of what the peer accomplished (e.g., "Hades created bgos-dev-uploads in us-east-1, public access blocked").',
+          },
+        },
+        required: ['parent_message_id', 'summary'],
+      },
+    },
   ],
 }))
 
@@ -955,6 +1069,67 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
           isError: true,
         }
+      }
+    }
+
+    case 'list_peers': {
+      try {
+        const result = await bgosPeerGet('peers')
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `list_peers failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'send_to_peer': {
+      const target_assistant_id = rawArgs.target_assistant_id as number | undefined
+      const text = (rawArgs.text as string | undefined) ?? ''
+      const parent_message_id = rawArgs.parent_message_id as number | undefined
+      const wait_for_reply = rawArgs.wait_for_reply === true
+      const timeout_seconds = rawArgs.timeout_seconds as number | undefined
+
+      if (!target_assistant_id || !parent_message_id || !text) {
+        return {
+          content: [{ type: 'text', text: 'Error: target_assistant_id, parent_message_id and text are required.' }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await bgosPeerPost(
+          `peers/${target_assistant_id}/send`,
+          {
+            text,
+            parentMessageId: parent_message_id,
+            waitForReply: wait_for_reply,
+            ...(timeout_seconds !== undefined && { timeoutSeconds: timeout_seconds }),
+          },
+        )
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `send_to_peer failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'complete_side_thread': {
+      const parent_message_id = rawArgs.parent_message_id as number | undefined
+      const summary = rawArgs.summary as string | undefined
+      if (!parent_message_id || !summary) {
+        return {
+          content: [{ type: 'text', text: 'Error: parent_message_id and summary are required.' }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await bgosPeerPost(
+          `peers/threads/${parent_message_id}/complete`,
+          { summary },
+        )
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `complete_side_thread failed: ${errMsg}` }], isError: true }
       }
     }
 
