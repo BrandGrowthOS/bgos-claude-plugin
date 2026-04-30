@@ -45,8 +45,16 @@ function getApiBaseUrl(): string {
 
 const API_BASE = getApiBaseUrl()
 
+import { appendFileSync } from 'node:fs'
+
+const LOG_FILE = process.env.BGOS_LOG_FILE ?? ''
+
 function log(msg: string): void {
-  process.stderr.write(`[bgos] ${msg}\n`)
+  const line = `[bgos] ${msg}\n`
+  process.stderr.write(line)
+  if (LOG_FILE) {
+    try { appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`) } catch {}
+  }
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
@@ -580,6 +588,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               '"modal" — pops over the chat demanding attention; use only when the user is actively in conversation ' +
               'and you want their immediate choice. When in doubt, omit (defaults to inline).',
           },
+          reply_to_id: {
+            type: 'number',
+            description:
+              "Set this to the inbound peer message id when you're replying to " +
+              "another agent in a side-thread. Lets the initiating agent's " +
+              "wait_for_reply resolve cleanly. Omit for normal replies to the user.",
+          },
         },
         required: ['chat_id'],
       },
@@ -712,7 +727,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         "(the one the card visually anchors to in this chat). Set wait_for_reply=true " +
         'to BLOCK until the peer replies (their reply must include reply_to_id pointing ' +
         'to the message_id you sent). Returns { status, sideThreadChatId, messageId, reply? }. ' +
-        "Status='requires_introduction' means the user has not enabled this direction.",
+        "Status='requires_introduction' means the user has not enabled this direction. " +
+        "Do NOT retry on timeout — the message is already saved server-side. " +
+        "Either drop wait_for_reply (cap is 85s anyway) and poll the side-thread " +
+        "later, or accept the timeout and check " +
+        "GET /api/v1/peers/threads/{parent_message_id} for any reply with " +
+        "replyToId matching your sent messageId.",
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -781,6 +801,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         renderModeRaw === 'inline' || renderModeRaw === 'modal'
           ? renderModeRaw
           : undefined
+      const reply_to_id = rawArgs.reply_to_id as number | undefined
 
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
@@ -838,6 +859,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isMixedAttachments: isMixedAttachments || null,
           files: resolvedFiles,
           options,
+          ...(reply_to_id !== undefined && { replyToId: reply_to_id }),
         }
         // Default: inline when buttons present (matches backend + n8n defaults).
         // Agents can still force modal via render_mode = 'modal'.
@@ -1211,8 +1233,8 @@ let monitoredChatIds: string[] = []
 
 async function discoverChats(): Promise<void> {
   try {
-    const data = (await bgosGet('webhooks/assistants')) as {
-      chats: { id: number; assistantId: number }[]
+    const data = (await bgosPeerGet('peers/inbox')) as {
+      chats: { id: number; assistantId: number; kind?: 'main' | 'a2a' }[]
     }
     monitoredChatIds = data.chats
       .filter((c) => c.assistantId === Number(ASSISTANT_ID))
