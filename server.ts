@@ -1571,7 +1571,10 @@ function connectWebsocket(): void {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 30000,
-    query: {
+    // Use Socket.IO `auth` so the API key never enters the URL or any
+    // intermediate proxy access log. Backend reads from
+    // client.handshake.auth and falls back to query for compatibility.
+    auth: {
       apiKey: API_KEY,
       assistantId: ASSISTANT_ID,
     },
