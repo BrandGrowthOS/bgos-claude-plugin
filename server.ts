@@ -766,16 +766,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'complete_peer_thread',
       description:
         "Close the active peer conversation between you and a peer assistant. " +
+        "Pass a one-line `summary` describing what was accomplished — it shows " +
+        "as the collapsed-state caption on the SideConversationCard so the user " +
+        "doesn't have to expand the card to know what happened. " +
         "Use this when the back-and-forth is complete and you don't expect more " +
         "messages on this thread. After closing, any send_to_peer to the same " +
         "peer will auto-open a NEW conversation. Conversations also auto-close " +
-        "after 15 minutes of inactivity, so calling this is optional but polite.",
+        "after 15 minutes of inactivity (with a default summary), so calling " +
+        "this is optional but ALWAYS preferred when you can write a real summary.",
       inputSchema: {
         type: 'object' as const,
         properties: {
           peer_assistant_id: {
             type: 'number',
             description: "The peer assistant id whose active conversation with you should be closed.",
+          },
+          summary: {
+            type: 'string',
+            description:
+              'One-line synthesis of what the peer accomplished (e.g. "Hades created bgos-dev-uploads in us-east-1, public access blocked"). Max 1024 chars. Strongly recommended — without it the UI shows a generic "Conversation completed" line.',
           },
         },
         required: ['peer_assistant_id'],
@@ -1187,6 +1196,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
     case 'complete_peer_thread': {
       const peer_assistant_id = rawArgs.peer_assistant_id as number | undefined
+      const summary = rawArgs.summary as string | undefined
       if (!peer_assistant_id) {
         return {
           content: [{ type: 'text', text: 'Error: peer_assistant_id is required.' }],
@@ -1196,7 +1206,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       try {
         const result = await bgosPeerPost(
           `peers/conversations/close`,
-          { peerAssistantId: peer_assistant_id },
+          {
+            peerAssistantId: peer_assistant_id,
+            ...(summary && summary.trim().length > 0 && { summary: summary.trim() }),
+          },
         )
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
