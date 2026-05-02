@@ -752,8 +752,53 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: 'How long to wait when wait_for_reply=true. 1–600s. Default 60s.',
           },
+          turn_state: {
+            type: 'string',
+            enum: ['expecting_reply', 'more_coming', 'final'],
+            description:
+              "Lifecycle hint for the peer conversation. 'expecting_reply' (default) yields the turn to the peer. 'more_coming' keeps the turn so multiple updates land back-to-back without releasing it. 'final' closes the conversation; further sends from either side require a fresh send_to_peer (which will auto-open a new conversation).",
+          },
         },
         required: ['target_assistant_id', 'text', 'parent_message_id'],
+      },
+    },
+    {
+      name: 'complete_peer_thread',
+      description:
+        "Close the active peer conversation between you and a peer assistant. " +
+        "Use this when the back-and-forth is complete and you don't expect more " +
+        "messages on this thread. After closing, any send_to_peer to the same " +
+        "peer will auto-open a NEW conversation. Conversations also auto-close " +
+        "after 15 minutes of inactivity, so calling this is optional but polite.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          peer_assistant_id: {
+            type: 'number',
+            description: "The peer assistant id whose active conversation with you should be closed.",
+          },
+        },
+        required: ['peer_assistant_id'],
+      },
+    },
+    {
+      name: 'peer_status',
+      description:
+        "Check whether a peer assistant is currently online (an MCP plugin or " +
+        "channel adapter is connected for them right now) and whether you have " +
+        "an open conversation with them. Use this BEFORE send_to_peer when you " +
+        "want to know if the peer will see your message immediately or only on " +
+        "their next reconnect. Returns { online, lastSeenAt, hasOpenConversation, " +
+        "conversationId, turnHolderId }.",
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          peer_assistant_id: {
+            type: 'number',
+            description: 'The peer assistant id to check status for.',
+          },
+        },
+        required: ['peer_assistant_id'],
       },
     },
     {
@@ -1110,6 +1155,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       const parent_message_id = rawArgs.parent_message_id as number | undefined
       const wait_for_reply = rawArgs.wait_for_reply === true
       const timeout_seconds = rawArgs.timeout_seconds as number | undefined
+      const turn_state = rawArgs.turn_state as
+        | 'expecting_reply'
+        | 'more_coming'
+        | 'final'
+        | undefined
 
       if (!target_assistant_id || !parent_message_id || !text) {
         return {
@@ -1125,12 +1175,50 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             parentMessageId: parent_message_id,
             waitForReply: wait_for_reply,
             ...(timeout_seconds !== undefined && { timeoutSeconds: timeout_seconds }),
+            ...(turn_state !== undefined && { turnState: turn_state }),
           },
         )
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `send_to_peer failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'complete_peer_thread': {
+      const peer_assistant_id = rawArgs.peer_assistant_id as number | undefined
+      if (!peer_assistant_id) {
+        return {
+          content: [{ type: 'text', text: 'Error: peer_assistant_id is required.' }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await bgosPeerPost(
+          `peers/conversations/close`,
+          { peerAssistantId: peer_assistant_id },
+        )
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `complete_peer_thread failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'peer_status': {
+      const peer_assistant_id = rawArgs.peer_assistant_id as number | undefined
+      if (!peer_assistant_id) {
+        return {
+          content: [{ type: 'text', text: 'Error: peer_assistant_id is required.' }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await bgosPeerGet(`peers/${peer_assistant_id}/status`)
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `peer_status failed: ${errMsg}` }], isError: true }
       }
     }
 
@@ -1433,6 +1521,152 @@ async function pollAllChats(): Promise<void> {
   }
 }
 
+// ── Realtime WS subscription ─────────────────────────────────────────────────
+//
+// Connects to BGOS via socket.io-client, authenticates with X-API-Key (via
+// `apiKey` query param) and joins both `user:<id>` and `assistant:<id>` rooms.
+// When the WS is healthy, polling backs off to every 60s as a heartbeat
+// safety net. When the WS disconnects, polling resumes its normal cadence.
+//
+// We listen to:
+//   - `inbound_message` — peer / integration messages routed to assistant:<id>
+//   - `peer_conversation_closed` — surfaces lifecycle to the agent
+//   - `peer_turn_yielded` — informational; not yet bubbled to MCP
+//
+// Existing `pollChat` flow stays in place; it's the cold-start backfill +
+// reliability fallback. Duplicate forwards are deduped by `chatLastSeen`
+// inside pollChat — a WS-pushed message updates lastSeen so a subsequent
+// poll won't re-emit it. (For the WS path itself we maintain a small Set
+// of processed message ids to suppress duplicates if the WS push and the
+// poll overlap.)
+
+import { io as socketIoClient, type Socket as IOClientSocket } from 'socket.io-client'
+
+const WS_URL = (() => {
+  const base = BACKEND_URL.replace(/\/$/, '').replace(/\/api\/v1$/, '')
+  return base
+})()
+
+const wsForwardedMessageIds = new Set<number>()
+const WS_FORWARD_CACHE_MAX = 500
+let realtimeSocket: IOClientSocket | null = null
+
+function rememberForwarded(id: number): void {
+  if (wsForwardedMessageIds.has(id)) return
+  wsForwardedMessageIds.add(id)
+  // Bound the set so a long-running plugin doesn't grow forever.
+  if (wsForwardedMessageIds.size > WS_FORWARD_CACHE_MAX) {
+    const first = wsForwardedMessageIds.values().next().value
+    if (first !== undefined) wsForwardedMessageIds.delete(first)
+  }
+}
+
+function isWsHealthy(): boolean {
+  return !!realtimeSocket?.connected
+}
+
+function connectWebsocket(): void {
+  realtimeSocket = socketIoClient(WS_URL, {
+    transports: ['websocket'],
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 30000,
+    query: {
+      apiKey: API_KEY,
+      assistantId: ASSISTANT_ID,
+    },
+  })
+
+  realtimeSocket.on('connect', () => {
+    log(`WS connected (id=${realtimeSocket?.id}) — polling will throttle`)
+  })
+
+  realtimeSocket.on('disconnect', (reason: string) => {
+    log(`WS disconnected: ${reason} — polling resumes normal cadence`)
+  })
+
+  realtimeSocket.on('connect_error', (err: Error) => {
+    log(`WS connect error: ${err.message}`)
+  })
+
+  realtimeSocket.on('inbound_message', (payload: any) => {
+    try {
+      const messageId = Number(payload?.messageId ?? payload?.message_id)
+      if (!Number.isFinite(messageId)) return
+      if (wsForwardedMessageIds.has(messageId)) return
+      rememberForwarded(messageId)
+
+      // Also bump chatLastSeen so the subsequent poll cycle won't re-emit
+      // this same message. Number(chatId) → string, matching the keying
+      // pollChat uses.
+      const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
+      if (chatId) {
+        const seen = chatLastSeen.get(chatId) ?? 0
+        if (messageId > seen) chatLastSeen.set(chatId, messageId)
+      }
+
+      const text = (payload?.text as string | undefined) ?? ''
+      if (!text) return
+
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content: text,
+          meta: {
+            chat_id: chatId,
+            message_id: String(messageId),
+            user: 'User',
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            ts: new Date().toISOString(),
+            transport: 'ws',
+            ...(payload?.peer_conversation_id !== undefined && {
+              peer_conversation_id: String(payload.peer_conversation_id),
+            }),
+            ...(payload?.peerConversationId !== undefined && {
+              peer_conversation_id: String(payload.peerConversationId),
+            }),
+            ...(payload?.turn_state && { turn_state: payload.turn_state }),
+            ...(payload?.turnState && { turn_state: payload.turnState }),
+          },
+        },
+      }).catch((err) => log(`WS forward error: ${err}`))
+    } catch (err) {
+      log(`WS inbound_message handler error: ${err}`)
+    }
+  })
+
+  realtimeSocket.on('peer_conversation_closed', (payload: any) => {
+    log(
+      `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
+    )
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content:
+          `[peer_conversation_closed] reason=${payload?.reason ?? 'unknown'}\n` +
+          `(conversation_id=${payload?.conversation_id ?? '?'}, ` +
+          `closed_by=${payload?.closed_by_id ?? '?'})\n` +
+          `Send to this peer again to start a new conversation.`,
+        meta: {
+          event_type: 'peer_conversation_closed',
+          conversation_id: String(payload?.conversation_id ?? ''),
+          reason: payload?.reason ?? 'unknown',
+          user_id: USER_ID,
+          assistant_id: ASSISTANT_ID,
+          transport: 'ws',
+        },
+      },
+    }).catch(() => {})
+  })
+
+  realtimeSocket.on('peer_turn_yielded', (payload: any) => {
+    log(
+      `peer_turn_yielded conv=${payload?.conversation_id} → ${payload?.turn_holder_id}`,
+    )
+  })
+}
+
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1451,12 +1685,36 @@ async function main(): Promise<void> {
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
   await pollAllChats()
 
-  // Step 3: Start polling loop
-  log(`Polling every ${POLL_INTERVAL_MS}ms — waiting for messages...`)
-  setInterval(async () => {
-    await discoverChats()
-    await pollAllChats()
-  }, POLL_INTERVAL_MS)
+  // Step 3: Open the WS subscription. Failure here is non-fatal — polling
+  // keeps the plugin functional even if the WS path is unavailable.
+  try {
+    connectWebsocket()
+  } catch (err) {
+    log(`WS connect failed: ${err}; falling back to polling only`)
+  }
+
+  // Step 4: Start adaptive polling loop. When WS is healthy we throttle to
+  // 30× the configured interval (default 2s → 60s heartbeat). When the WS
+  // is down we revert to the configured cadence so the plugin still
+  // delivers messages without a working WS.
+  const HEALTHY_MULTIPLIER = 30
+  log(
+    `Adaptive polling — base=${POLL_INTERVAL_MS}ms, ` +
+      `WS-healthy=${POLL_INTERVAL_MS * HEALTHY_MULTIPLIER}ms`,
+  )
+  const tick = async (): Promise<void> => {
+    try {
+      await discoverChats()
+      await pollAllChats()
+    } catch (err) {
+      log(`Poll cycle error: ${err}`)
+    }
+    const interval = isWsHealthy()
+      ? POLL_INTERVAL_MS * HEALTHY_MULTIPLIER
+      : POLL_INTERVAL_MS
+    setTimeout(tick, interval)
+  }
+  setTimeout(tick, POLL_INTERVAL_MS)
 }
 
 main().catch((err) => {
