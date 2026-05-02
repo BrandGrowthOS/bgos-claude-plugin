@@ -1,6 +1,6 @@
 {
   "name": "claude-channel-bgos",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Claude Code channel plugin for BGOS — chat with Claude Code through the BGOS desktop/mobile app",
   "license": "Apache-2.0",
   "type": "module",
