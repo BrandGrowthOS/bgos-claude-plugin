@@ -834,6 +834,44 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['parent_message_id', 'summary'],
       },
     },
+    {
+      name: 'meeting_reply',
+      description:
+        'Send a message into an active Command Center meeting room. Use ONLY ' +
+        'when you are the current speaker — the channel notification you ' +
+        'received will say "your_turn=YES" in its meta header. If your_turn=NO ' +
+        'you must observe silently; the backend will reject calls (HTTP 409) ' +
+        'while it is not your turn. End your reply text with "@<name>" to ' +
+        'suggest the next speaker (the user can override). Send the literal ' +
+        'token "PASS" to decline this turn without contributing — turn returns ' +
+        'to the user.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          meeting_id: {
+            type: 'number',
+            description:
+              'Meeting room id from the channel notification meta. Required.',
+          },
+          text: {
+            type: 'string',
+            description:
+              'Your reply. Plain text or markdown. Trailing "@<name>" suggests next speaker.',
+          },
+          next_speaker_id: {
+            type: 'number',
+            description:
+              'Optional explicit next-speaker assistantId. If omitted, the backend infers from any @-mention in `text`.',
+          },
+          yield_only: {
+            type: 'boolean',
+            description:
+              'When true, send "PASS" and yield without contributing. Equivalent to setting text="PASS".',
+          },
+        },
+        required: ['meeting_id'],
+      },
+    },
   ],
 }))
 
@@ -1253,6 +1291,42 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `complete_side_thread failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'meeting_reply': {
+      const meeting_id = rawArgs.meeting_id as number | undefined
+      const yield_only = rawArgs.yield_only === true
+      const text = yield_only
+        ? 'PASS'
+        : ((rawArgs.text as string | undefined) ?? '').trim()
+      const next_speaker_id = rawArgs.next_speaker_id as number | undefined
+      if (!meeting_id) {
+        return {
+          content: [{ type: 'text', text: 'Error: meeting_id is required.' }],
+          isError: true,
+        }
+      }
+      if (!text) {
+        return {
+          content: [{ type: 'text', text: 'Error: text is required (or set yield_only=true).' }],
+          isError: true,
+        }
+      }
+      // Resolve our own assistantId from env so the backend recognises this
+      // call as agent-side (turn-protocol enforced).
+      const body: Record<string, unknown> = {
+        text,
+        asAssistantId: Number(ASSISTANT_ID),
+        ...(next_speaker_id != null && { nextSpeakerAssistantId: next_speaker_id }),
+        ...(yield_only && { yieldTurn: true }),
+      }
+      try {
+        const result = await bgosPost(`meetings/${meeting_id}/messages`, body)
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `meeting_reply failed: ${errMsg}` }], isError: true }
       }
     }
 
@@ -1698,6 +1772,149 @@ function connectWebsocket(): void {
     log(
       `peer_turn_yielded conv=${payload?.conversation_id} → ${payload?.turn_holder_id}`,
     )
+  })
+
+  // ── Command Center meetings (V3) ──────────────────────────────────────
+  // The user dragged this assistant into an N-party meeting. We forward
+  // every meeting_message to Claude as a channel notification, with a
+  // meta header telling the model whether this is its turn. Claude calls
+  // the `meeting_reply` MCP tool only when your_turn=YES; the backend
+  // enforces the turn protocol with HTTP 409 if it tries otherwise.
+
+  // Meeting context — keyed by meetingId.
+  const meetingContext = new Map<number, {
+    chatId: number
+    title: string | null
+    participants: Array<{ assistantId: number; name: string; avatarUrl: string | null }>
+    speakerPolicy: string
+  }>()
+
+  realtimeSocket.on('meeting_invitation', (payload: any) => {
+    try {
+      const meetingId = Number(payload?.meetingId)
+      const invitedFor = Number(payload?.invitedAssistantId)
+      if (!Number.isFinite(meetingId)) return
+      if (invitedFor !== Number(ASSISTANT_ID)) return
+      meetingContext.set(meetingId, {
+        chatId: Number(payload?.chatId),
+        title: payload?.title ?? null,
+        participants: Array.isArray(payload?.participants) ? payload.participants : [],
+        speakerPolicy: String(payload?.speakerPolicy ?? 'user_mediated'),
+      })
+      const peerNames = (payload?.participants ?? [])
+        .filter((p: any) => Number(p?.assistantId) !== Number(ASSISTANT_ID))
+        .map((p: any) => p?.name)
+        .filter(Boolean)
+        .join(', ')
+      log(`meeting_invitation accepted (id=${meetingId}, peers=${peerNames})`)
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content:
+            `[meeting_invitation] You have been added to meeting #${meetingId}` +
+            `${payload?.title ? ` "${payload.title}"` : ''}.\n` +
+            `Other participants: ${peerNames || '(none yet)'}\n` +
+            `Speaker policy: ${payload?.speakerPolicy ?? 'user_mediated'}.\n` +
+            `Wait for messages with your_turn=YES before calling the meeting_reply tool.`,
+          meta: {
+            event_type: 'meeting_invitation',
+            meeting_id: String(meetingId),
+            chat_id: String(payload?.chatId ?? ''),
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            transport: 'ws',
+          },
+        },
+      }).catch(() => {})
+    } catch (err) {
+      log(`meeting_invitation handler error: ${err}`)
+    }
+  })
+
+  realtimeSocket.on('meeting_message', (payload: any) => {
+    try {
+      const meetingId = Number(payload?.meetingId)
+      if (!Number.isFinite(meetingId)) return
+      const ctx = meetingContext.get(meetingId)
+      const yourTurnFor: number[] = Array.isArray(payload?.yourTurnFor)
+        ? payload.yourTurnFor.map((x: any) => Number(x))
+        : []
+      const yourTurn = yourTurnFor.includes(Number(ASSISTANT_ID))
+      const senderId = payload?.senderAssistantId != null
+        ? Number(payload.senderAssistantId)
+        : null
+      // Skip our own outbound replies — we'd already see them via the
+      // POST response. Self-loops would confuse the model.
+      if (senderId != null && senderId === Number(ASSISTANT_ID)) return
+      const senderName = String(payload?.senderName ?? 'Unknown')
+      const text = String(payload?.text ?? '')
+      const participantList = (ctx?.participants ?? [])
+        .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
+        .map((p) => p.name)
+        .join(', ')
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content:
+            `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
+            `participants: ${participantList || 'unknown'}]\n` +
+            `${senderName}: ${text}`,
+          meta: {
+            event_type: 'meeting_message',
+            meeting_id: String(meetingId),
+            chat_id: String(payload?.chatId ?? ctx?.chatId ?? ''),
+            sender_type: payload?.senderType ?? 'user',
+            sender_assistant_id: senderId == null ? null : String(senderId),
+            sender_name: senderName,
+            your_turn: yourTurn ? 'true' : 'false',
+            current_speaker_id:
+              payload?.currentSpeakerId == null
+                ? null
+                : String(payload.currentSpeakerId),
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            transport: 'ws',
+          },
+        },
+      }).catch(() => {})
+    } catch (err) {
+      log(`meeting_message handler error: ${err}`)
+    }
+  })
+
+  realtimeSocket.on('meeting_turn_changed', (payload: any) => {
+    const meetingId = Number(payload?.meetingId)
+    if (!Number.isFinite(meetingId)) return
+    const me = Number(ASSISTANT_ID)
+    const becameMyTurn =
+      Number(payload?.currentSpeakerId) === me &&
+      Number(payload?.previousSpeakerId) !== me
+    if (becameMyTurn) {
+      log(`meeting_turn_changed → my turn in meeting #${meetingId}`)
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content:
+            `[Meeting #${meetingId}] It is now your turn. Reply via the ` +
+            `meeting_reply tool with meeting_id=${meetingId}, or send "PASS" ` +
+            `to yield without contributing.`,
+          meta: {
+            event_type: 'meeting_turn_changed',
+            meeting_id: String(meetingId),
+            your_turn: 'true',
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+          },
+        },
+      }).catch(() => {})
+    }
+  })
+
+  realtimeSocket.on('meeting_closed', (payload: any) => {
+    const meetingId = Number(payload?.meetingId)
+    if (!Number.isFinite(meetingId)) return
+    meetingContext.delete(meetingId)
+    log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
   })
 }
 
