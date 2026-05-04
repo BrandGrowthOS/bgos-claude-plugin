@@ -1915,6 +1915,40 @@ function connectWebsocket(): void {
     if (!Number.isFinite(meetingId)) return
     meetingContext.delete(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content:
+          `[Meeting #${meetingId}] Meeting closed (reason: ${payload?.reason ?? 'unknown'}).` +
+          ` Stop sending meeting_reply for this meeting.`,
+        meta: {
+          event_type: 'meeting_closed',
+          meeting_id: String(meetingId),
+          reason: payload?.reason ?? 'unknown',
+          user_id: USER_ID,
+          assistant_id: ASSISTANT_ID,
+        },
+      },
+    }).catch(() => {})
+  })
+
+  realtimeSocket.on('meeting_participant_left', (payload: any) => {
+    const meetingId = Number(payload?.meetingId)
+    if (!Number.isFinite(meetingId)) return
+    const leaverId = Number(payload?.assistantId)
+    // If WE were the one removed, drop our local context entry. Otherwise,
+    // refresh the participant list cached against this meeting so future
+    // notifications carry the correct names.
+    if (leaverId === Number(ASSISTANT_ID)) {
+      meetingContext.delete(meetingId)
+      return
+    }
+    const ctx = meetingContext.get(meetingId)
+    if (ctx) {
+      ctx.participants = ctx.participants.filter(
+        (p) => Number(p.assistantId) !== leaverId,
+      )
+    }
   })
 }
 
