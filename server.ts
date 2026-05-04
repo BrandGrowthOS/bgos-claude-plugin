@@ -1621,13 +1621,31 @@ function connectWebsocket(): void {
         if (messageId > seen) chatLastSeen.set(chatId, messageId)
       }
 
+      // Mirror pollChat's content-building: text PLUS attachment lines.
+      // Backend ships files as { id, filename, mime, url?, dataUri? } in the
+      // inbound_message payload. Without this block the WS path silently
+      // drops attachments while bumping lastSeen, so the poll fallback (which
+      // DOES handle files) never re-emits — agents end up with text-only
+      // copies of image/video/document messages.
       const text = (payload?.text as string | undefined) ?? ''
-      if (!text) return
+      const wsFiles = Array.isArray(payload?.files) ? payload.files : []
+      const contentParts: string[] = []
+      if (text.trim()) contentParts.push(text)
+      for (const f of wsFiles) {
+        const mime = String(f?.mime ?? '')
+        const category = getFileCategory(mime) ?? 'document'
+        const fileName = String(f?.filename ?? 'file')
+        const ref = String(f?.url ?? f?.dataUri ?? '')
+        if (!ref) continue
+        contentParts.push(`[Attached ${category}: ${fileName} — ${ref}]`)
+      }
+      if (contentParts.length === 0) return
+      const content = contentParts.join('\n')
 
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: text,
+          content,
           meta: {
             chat_id: chatId,
             message_id: String(messageId),
