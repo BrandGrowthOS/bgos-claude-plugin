@@ -297,6 +297,13 @@ const mcp = new Server(
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
       'other Claude Code tools to help the user.',
       '',
+      'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
+      'your turn output never reaches their chat — it stays in your local terminal',
+      'only. Every response to a BGOS message MUST go through the `reply` tool.',
+      'If you forget to call `reply`, the user sees nothing. The plugin enforces',
+      'this by sending a [reply-overdue] notification 2 minutes after any inbound',
+      'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
+      '',
       'Once you have a response, use the `reply` tool to send it back.',
       'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
       'You can use markdown in your replies.',
@@ -965,6 +972,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
         if (options.length) parts.push(`${options.length} button(s) (${body.renderMode})`)
         log(`reply sent to chat ${chat_id} (${parts.join(', ')})`)
+        clearInbound(chat_id)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1396,6 +1404,67 @@ interface ChatHistoryResponse {
 }
 
 const chatLastSeen = new Map<string, number>()
+
+// ── Reply-overdue tracking ──────────────────────────────────────────────────
+// Per-chat: most recent unanswered inbound user/peer message. If the agent
+// doesn't call `reply` within REPLY_OVERDUE_MS, fire ONE channel notification
+// reminding the agent to reply (or to explicitly stay silent). Deterministic
+// backstop for a known failure mode where the agent outputs plain text in
+// its turn instead of calling `reply`, leaving the user with no response.
+//
+// Meeting chat ids are excluded — meetings use the meeting_reply tool path
+// gated by user_mediated turn assignment, so absence of reply is expected
+// while waiting for a turn.
+interface PendingInbound {
+  messageId: number
+  ts: number
+  reminded: boolean
+}
+const pendingInbounds = new Map<string, PendingInbound>()
+const meetingChatIds = new Set<string>()
+const REPLY_OVERDUE_MS = 120_000
+
+function recordInbound(chatId: string, messageId: number): void {
+  if (!chatId) return
+  if (meetingChatIds.has(chatId)) return
+  if (!Number.isFinite(messageId)) return
+  const existing = pendingInbounds.get(chatId)
+  if (existing && existing.messageId >= messageId) return
+  pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false })
+}
+
+function clearInbound(chatId: string | undefined): void {
+  if (!chatId) return
+  pendingInbounds.delete(chatId)
+}
+
+function checkReplyOverdue(): void {
+  const now = Date.now()
+  for (const [chatId, p] of pendingInbounds.entries()) {
+    if (p.reminded) continue
+    if (now - p.ts < REPLY_OVERDUE_MS) continue
+    p.reminded = true
+    const ageSec = Math.round((now - p.ts) / 1000)
+    log(`reply-overdue fired for chat ${chatId} message ${p.messageId} (${ageSec}s)`)
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content:
+          `[reply-overdue] Message in chat_id=${chatId} (message_id=${p.messageId}) ` +
+          `arrived ${ageSec}s ago and no reply has been sent yet. ` +
+          `If you intended to respond, call the \`reply\` tool now. ` +
+          `If you intended to stay silent, ignore this notification.`,
+        meta: {
+          event_type: 'reply_overdue',
+          chat_id: chatId,
+          message_id: String(p.messageId),
+          age_seconds: String(ageSec),
+          ts: new Date(now).toISOString(),
+        },
+      },
+    }).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+  }
+}
 /**
  * Per-chat set of assistant message IDs that carried buttons and were
  * unanswered last time we polled. Used to detect click transitions
@@ -1485,6 +1554,19 @@ async function pollChat(chatId: string): Promise<void> {
     }
 
     chatLastSeen.set(chatId, maxId)
+
+    // If an assistant message has already been written that supersedes our
+    // pending unanswered inbound (covers replies sent via non-Claude paths
+    // like n8n agents or scheduled callbacks), clear the overdue tracker.
+    const pendingForChat = pendingInbounds.get(chatId)
+    if (pendingForChat) {
+      const supersedingAssistant = ordered.find(
+        (m) =>
+          m.message.id > pendingForChat.messageId &&
+          m.message.sender === 'assistant',
+      )
+      if (supersedingAssistant) clearInbound(chatId)
+    }
 
     // ── Detect inline/modal button-click transitions ──────────────────────
     // For every assistant message that still has options attached and is
@@ -1613,6 +1695,7 @@ async function pollChat(chatId: string): Promise<void> {
       }).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
+      recordInbound(chatId, msg.message.id)
     }
   } catch {
     // Silent — network blips
@@ -1763,6 +1846,7 @@ function connectWebsocket(): void {
           },
         },
       }).catch((err) => log(`WS forward error: ${err}`))
+      recordInbound(chatId, messageId)
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
@@ -1825,6 +1909,12 @@ function connectWebsocket(): void {
         participants: Array.isArray(payload?.participants) ? payload.participants : [],
         speakerPolicy: String(payload?.speakerPolicy ?? 'user_mediated'),
       })
+      if (payload?.chatId != null) {
+        // Mark this chat id as meeting-routed so the reply-overdue tracker
+        // skips it — meetings use meeting_reply gated by user_mediated turn
+        // assignment, so absence of `reply` is expected.
+        meetingChatIds.add(String(payload.chatId))
+      }
       const peerNames = (payload?.participants ?? [])
         .filter((p: any) => Number(p?.assistantId) !== Number(ASSISTANT_ID))
         .map((p: any) => p?.name)
@@ -1937,6 +2027,8 @@ function connectWebsocket(): void {
   realtimeSocket.on('meeting_closed', (payload: any) => {
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
+    const ctx = meetingContext.get(meetingId)
+    if (ctx?.chatId != null) meetingChatIds.delete(String(ctx.chatId))
     meetingContext.delete(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
     mcp.notification({
@@ -1964,6 +2056,8 @@ function connectWebsocket(): void {
     // refresh the participant list cached against this meeting so future
     // notifications carry the correct names.
     if (leaverId === Number(ASSISTANT_ID)) {
+      const ctx = meetingContext.get(meetingId)
+      if (ctx?.chatId != null) meetingChatIds.delete(String(ctx.chatId))
       meetingContext.delete(meetingId)
       return
     }
@@ -2024,6 +2118,13 @@ async function main(): Promise<void> {
     setTimeout(tick, interval)
   }
   setTimeout(tick, POLL_INTERVAL_MS)
+
+  // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
+  // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
+  // (default 2 minutes). Deterministic backstop for the reply-tool-not-called
+  // failure mode.
+  setInterval(checkReplyOverdue, 30_000)
+  log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
 }
 
 main().catch((err) => {
