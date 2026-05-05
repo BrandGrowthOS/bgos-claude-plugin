@@ -1695,7 +1695,13 @@ async function pollChat(chatId: string): Promise<void> {
       }).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
-      recordInbound(chatId, msg.message.id)
+      // Skip overdue tracking for backlog messages: they were forwarded
+      // because the daemon was offline, not because they're new live
+      // traffic. The previous session may have already handled them via
+      // a different process, or they might be stale. The backlog framing
+      // itself prompts the agent to respond if relevant; double-tracking
+      // creates false positives on plugin restart.
+      if (!isBacklog) recordInbound(chatId, msg.message.id)
     }
   } catch {
     // Silent — network blips
