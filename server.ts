@@ -1435,6 +1435,7 @@ async function pollChat(chatId: string): Promise<void> {
     )
 
     let newUserMessages: ChatMessage[]
+    let isBacklog = false
     if (lastSeen === 0) {
       // First poll — we have no persisted cursor, so we need to forward
       // user messages that haven't been answered yet WITHOUT over-forwarding
@@ -1472,6 +1473,11 @@ async function pollChat(chatId: string): Promise<void> {
         }
       }
       newUserMessages = collected.reverse()
+      // Mark these as a backlog so the notification framing makes it
+      // explicit to Claude that these came in WHILE OFFLINE. Without
+      // this, Claude can't tell a fresh user message apart from a
+      // crash-recovered one and may treat it as already-handled.
+      isBacklog = newUserMessages.length > 0
     } else {
       newUserMessages = ordered.filter(
         (m) => m.message.id > lastSeen && m.message.sender === 'user',
@@ -1565,6 +1571,16 @@ async function pollChat(chatId: string): Promise<void> {
 
       // Build content with attachment descriptions
       const contentParts: string[] = []
+      if (isBacklog) {
+        // Explicit backlog framing — tells Claude this message arrived
+        // while the daemon was offline so it knows to respond now rather
+        // than treat it as already-handled context. Without this prefix
+        // a freshly-restarted plugin's catch-up looks indistinguishable
+        // from normal chat history that Claude has already seen.
+        contentParts.push(
+          `[backlog — message arrived while you were offline; please respond]`,
+        )
+      }
       if (text.trim()) contentParts.push(text)
 
       const files = msg.messageFiles ?? []
@@ -1576,7 +1592,7 @@ async function pollChat(chatId: string): Promise<void> {
       if (contentParts.length === 0) continue
 
       const content = contentParts.join('\n')
-      log(`New message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
+      log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
       // Push channel notification to Claude Code (fire-and-forget)
       // Keep meta simple — file URLs are embedded in the content text
@@ -1591,6 +1607,7 @@ async function pollChat(chatId: string): Promise<void> {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
+            ...(isBacklog ? { backlog: true } : {}),
           },
         },
       }).catch((err) => {
@@ -1669,6 +1686,13 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}) — polling will throttle`)
+    // Catch-up after a WS reconnect: server-side WS pushes that fired
+    // while we were disconnected don't replay, so trigger an immediate
+    // poll cycle to pull in anything we missed. Without this we'd have
+    // to wait up to 60s (the WS-healthy poll interval) before noticing.
+    pollAllChats().catch((err) => {
+      log(`Post-reconnect catch-up poll failed: ${err}`)
+    })
   })
 
   realtimeSocket.on('disconnect', (reason: string) => {
