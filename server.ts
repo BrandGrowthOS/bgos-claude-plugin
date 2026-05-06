@@ -290,7 +290,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.1.1' },
+  { name: 'bgos', version: '0.2.0' },
   {
     capabilities: {
       tools: {},
