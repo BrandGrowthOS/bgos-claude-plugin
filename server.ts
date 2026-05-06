@@ -290,7 +290,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.2.0' },
+  { name: 'bgos', version: '0.2.1' },
   {
     capabilities: {
       tools: {},
@@ -1659,15 +1659,13 @@ async function discoverChats(): Promise<void> {
     //    peers/inbox now UNIONs in meeting chats where this assistant is
     //    an active meeting_participants row, so trust kind='meeting' as
     //    sufficient — the server already gated that row on this assistant
-    //    being an active participant. Without this, an invited-participant
-    //    plugin (e.g. David in a meeting hosted by Ava) would have ZERO
-    //    polling fallback for meeting messages and depend entirely on
-    //    realtime WS events, which is fragile (silent half-open sockets,
-    //    brief reconnect races, etc.).
-    monitoredChatIds = data.chats
+    //    being an active participant. We still reconcile the raw inbox
+    //    meeting ids against /meetings below so closed owner meetings do
+    //    not keep the daemon in fast-poll mode forever.
+    const ownedChatIds = data.chats
       .filter(
         (c) =>
-          c.assistantId === Number(ASSISTANT_ID) || c.kind === 'meeting',
+          c.assistantId === Number(ASSISTANT_ID) && c.kind !== 'meeting',
       )
       .map((c) => String(c.id))
     const meetingChatSet = new Set(
@@ -1675,15 +1673,19 @@ async function discoverChats(): Promise<void> {
         .filter((c) => c.kind === 'meeting')
         .map((c) => String(c.id)),
     )
-    reconcileMeetingContexts(meetingChatSet)
+    const openMeetingChatSet = new Set<string>()
     if (meetingChatSet.size > 0) {
       const meetings = (await bgosGet('meetings')) as any[]
       for (const meeting of meetings ?? []) {
         if (meeting?.status !== 'open') continue
         const chatId = String(meeting?.chatId ?? meeting?.chat_id ?? '')
-        if (meetingChatSet.has(chatId)) rememberMeetingContext(meeting)
+        if (!meetingChatSet.has(chatId)) continue
+        openMeetingChatSet.add(chatId)
+        rememberMeetingContext(meeting)
       }
     }
+    reconcileMeetingContexts(openMeetingChatSet)
+    monitoredChatIds = [...new Set([...ownedChatIds, ...openMeetingChatSet])]
   } catch (err) {
     log(`Failed to discover chats: ${err}`)
   }
