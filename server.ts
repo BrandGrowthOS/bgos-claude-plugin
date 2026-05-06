@@ -1233,6 +1233,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             ...(turn_state !== undefined && { turnState: turn_state }),
           },
         )
+        // Clear any pending reply-overdue tracker for the side-thread chat
+        // — the peer's inbound was just responded to, so the 2-min timer
+        // should not fire for it.
+        const sideThreadChatId = (result as any)?.sideThreadChatId
+        if (sideThreadChatId != null) clearInbound(String(sideThreadChatId))
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1422,6 +1427,12 @@ interface PendingInbound {
 }
 const pendingInbounds = new Map<string, PendingInbound>()
 const meetingChatIds = new Set<string>()
+// Maps a peer_conversation_id → side-thread chatId, populated when a peer
+// inbound carries peer_conversation_id. Used by peer_conversation_closed
+// handler to clear the overdue tracker for that side-thread when the peer
+// (not us) closes it — otherwise the inbound stays pending and fires a
+// false-positive overdue 2 min after the close.
+const peerConvChats = new Map<string, string>()
 const REPLY_OVERDUE_MS = 120_000
 
 function recordInbound(chatId: string, messageId: number): void {
@@ -1874,6 +1885,14 @@ function connectWebsocket(): void {
         },
       }).catch((err) => log(`WS forward error: ${err}`))
       recordInbound(chatId, messageId)
+      // If this inbound carries a peer_conversation_id, remember which
+      // side-thread chat hosts it so peer_conversation_closed can clear
+      // the overdue tracker without needing chatId in its own payload.
+      const convId =
+        payload?.peer_conversation_id ?? payload?.peerConversationId
+      if (convId != null && chatId) {
+        peerConvChats.set(String(convId), chatId)
+      }
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
@@ -1883,6 +1902,17 @@ function connectWebsocket(): void {
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
     )
+    // Clear any reply-overdue tracker pinned to this side-thread chat —
+    // the conversation is closed, no reply path remains, and continuing
+    // to track it would fire false-positive overdues 2 min later.
+    const convId = payload?.conversation_id
+    if (convId != null) {
+      const chatId = peerConvChats.get(String(convId))
+      if (chatId) {
+        clearInbound(chatId)
+        peerConvChats.delete(String(convId))
+      }
+    }
     mcp.notification({
       method: 'notifications/claude/channel',
       params: {
