@@ -2043,6 +2043,19 @@ function connectWebsocket(): void {
         .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
         .map((p) => p.name)
         .join(', ')
+      // Meta schema MUST mirror the polling-path notification (chat_id,
+      // message_id, user, user_id, assistant_id, ts). Without those four
+      // canonical fields, Claude Code's notifications/claude/channel
+      // renderer silently drops the notification on the agent side —
+      // which is why meeting_message notifications were never reaching
+      // the agent's conversation context even though the WS handler was
+      // firing and your_turn was being computed correctly. Confirmed via
+      // /tmp/bgos-plugin-<id>.log: receipts logged, but agents only saw
+      // pollChat-emitted notifications (which have the canonical schema).
+      // Meeting-specific fields (event_type, meeting_id, your_turn, etc.)
+      // are kept as additions on top.
+      const messageIdStr =
+        payload?.messageId != null ? String(payload.messageId) : ''
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2051,9 +2064,17 @@ function connectWebsocket(): void {
             `participants: ${participantList || 'unknown'}]\n` +
             `${senderName}: ${text}`,
           meta: {
+            // Canonical channel-envelope fields (rendered as XML attrs).
+            chat_id: String(payload?.chatId ?? ctx?.chatId ?? ''),
+            message_id: messageIdStr,
+            user: payload?.senderType === 'agent' ? senderName : 'User',
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            ts: new Date().toISOString(),
+            // Meeting-specific extras (additive — Claude Code reads what
+            // it knows, ignores the rest).
             event_type: 'meeting_message',
             meeting_id: String(meetingId),
-            chat_id: String(payload?.chatId ?? ctx?.chatId ?? ''),
             sender_type: payload?.senderType ?? 'user',
             sender_assistant_id: senderId == null ? null : String(senderId),
             sender_name: senderName,
@@ -2062,12 +2083,10 @@ function connectWebsocket(): void {
               payload?.currentSpeakerId == null
                 ? null
                 : String(payload.currentSpeakerId),
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
             transport: 'ws',
           },
         },
-      }).catch(() => {})
+      }).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
     }
