@@ -2014,6 +2014,16 @@ function connectWebsocket(): void {
       const senderId = payload?.senderAssistantId != null
         ? Number(payload.senderAssistantId)
         : null
+      // Diagnostic — log every meeting_message receipt so we can confirm
+      // (or rule out) WS delivery from the plugin side. Without this, a
+      // "stuck meeting" symptom is ambiguous between (a) backend never
+      // sent, (b) backend sent but socket didn't deliver, (c) plugin
+      // received but Claude didn't act on the notification.
+      log(
+        `meeting_message rx (meeting=${meetingId} msg=${payload?.messageId ?? '?'} ` +
+          `senderId=${senderId} yourTurnFor=[${yourTurnFor.join(',')}] ` +
+          `your_turn=${yourTurn ? 'YES' : 'NO'})`,
+      )
       // Skip our own outbound replies — we'd already see them via the
       // POST response. Self-loops would confuse the model.
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
