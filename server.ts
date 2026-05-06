@@ -1478,10 +1478,31 @@ let monitoredChatIds: string[] = []
 async function discoverChats(): Promise<void> {
   try {
     const data = (await bgosPeerGet('peers/inbox')) as {
-      chats: { id: number; assistantId: number; kind?: 'main' | 'a2a' }[]
+      chats: {
+        id: number
+        assistantId: number
+        kind?: 'main' | 'a2a' | 'meeting'
+      }[]
     }
+    // Two acceptance rules:
+    //  - Owned chats (main + a2a): plugin owns the chat directly →
+    //    assistantId === ASSISTANT_ID.
+    //  - Meeting chats: the chat is owned by the FIRST-listed participant
+    //    (see backend meetings.service.ts), so other participants' plugins
+    //    never match the strict assistantId equality. The backend's
+    //    peers/inbox now UNIONs in meeting chats where this assistant is
+    //    an active meeting_participants row, so trust kind='meeting' as
+    //    sufficient — the server already gated that row on this assistant
+    //    being an active participant. Without this, an invited-participant
+    //    plugin (e.g. David in a meeting hosted by Ava) would have ZERO
+    //    polling fallback for meeting messages and depend entirely on
+    //    realtime WS events, which is fragile (silent half-open sockets,
+    //    brief reconnect races, etc.).
     monitoredChatIds = data.chats
-      .filter((c) => c.assistantId === Number(ASSISTANT_ID))
+      .filter(
+        (c) =>
+          c.assistantId === Number(ASSISTANT_ID) || c.kind === 'meeting',
+      )
       .map((c) => String(c.id))
   } catch (err) {
     log(`Failed to discover chats: ${err}`)
