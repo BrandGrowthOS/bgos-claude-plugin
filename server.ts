@@ -46,15 +46,25 @@ function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl()
 
 import { appendFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join as pathJoin } from 'node:path'
 
-const LOG_FILE = process.env.BGOS_LOG_FILE ?? ''
+// Default to a stable, predictable log path so remote agents (where
+// stderr isn't easily reachable from inside the agent loop) can read
+// it via their Read tool. Override with BGOS_LOG_FILE if you want
+// per-deployment routing.
+const DEFAULT_LOG_PATH = pathJoin(
+  tmpdir(),
+  `bgos-plugin-${ASSISTANT_ID || 'unknown'}.log`,
+)
+const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
 
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
   process.stderr.write(line)
-  if (LOG_FILE) {
-    try { appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`) } catch {}
-  }
+  try {
+    appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
+  } catch {}
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
@@ -2144,6 +2154,7 @@ async function main(): Promise<void> {
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
+  log(`Log file: ${LOG_FILE}`)
 
   // Step 1: Connect MCP transport FIRST
   const transport = new StdioServerTransport()
