@@ -290,7 +290,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.1.0' },
+  { name: 'bgos', version: '0.1.1' },
   {
     capabilities: {
       tools: {},
@@ -923,6 +923,33 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
 
+      const meetingIdForChat = meetingIdByChatId.get(String(chat_id))
+      if (meetingIdForChat != null) {
+        if (filesInput?.length || buttonsInput?.length) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: 'Error: meeting replies currently support text only. Use meeting_reply with meeting_id.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        try {
+          const result = await bgosPost(`meetings/${meetingIdForChat}/messages`, {
+            text,
+            asAssistantId: Number(ASSISTANT_ID),
+          })
+          log(`meeting reply sent via reply tool to meeting ${meetingIdForChat} (chat ${chat_id})`)
+          clearInbound(chat_id)
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          return { content: [{ type: 'text', text: `meeting reply failed: ${errMsg}` }], isError: true }
+        }
+      }
+
       // Button validation — inline mode caps at 6 choices (backend rejects >6).
       let options: Array<{ text: string; callbackData: string }> = []
       if (buttonsInput?.length) {
@@ -1346,6 +1373,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
       try {
         const result = await bgosPost(`meetings/${meeting_id}/messages`, body)
+        const ctx = meetingContexts.get(Number(meeting_id))
+        if (ctx?.chatId != null) clearInbound(String(ctx.chatId))
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1437,6 +1466,20 @@ interface PendingInbound {
 }
 const pendingInbounds = new Map<string, PendingInbound>()
 const meetingChatIds = new Set<string>()
+interface MeetingParticipantSummary {
+  assistantId: number
+  name: string
+  avatarUrl: string | null
+}
+interface MeetingContext {
+  chatId: number
+  title: string | null
+  participants: MeetingParticipantSummary[]
+  speakerPolicy: string
+  currentSpeakerId: number | null
+}
+const meetingContexts = new Map<number, MeetingContext>()
+const meetingIdByChatId = new Map<string, number>()
 // Maps a peer_conversation_id → side-thread chatId, populated when a peer
 // inbound carries peer_conversation_id. Used by peer_conversation_closed
 // handler to clear the overdue tracker for that side-thread when the peer
@@ -1457,6 +1500,108 @@ function recordInbound(chatId: string, messageId: number): void {
 function clearInbound(chatId: string | undefined): void {
   if (!chatId) return
   pendingInbounds.delete(chatId)
+}
+
+function normalizeMeetingParticipant(raw: any): MeetingParticipantSummary | null {
+  const assistantId = Number(raw?.assistantId ?? raw?.id)
+  if (!Number.isFinite(assistantId)) return null
+  return {
+    assistantId,
+    name: String(raw?.name ?? `Assistant ${assistantId}`),
+    avatarUrl: raw?.avatarUrl ?? raw?.avatar_url ?? null,
+  }
+}
+
+function rememberMeetingContext(meeting: any): void {
+  const meetingId = Number(meeting?.id ?? meeting?.meetingId)
+  const chatId = Number(meeting?.chatId ?? meeting?.chat_id)
+  if (!Number.isFinite(meetingId) || !Number.isFinite(chatId)) return
+  const participants = Array.isArray(meeting?.participants)
+    ? meeting.participants
+        .map((p: any) => normalizeMeetingParticipant(p?.assistant ? p.assistant : p))
+        .filter((p: MeetingParticipantSummary | null): p is MeetingParticipantSummary => p != null)
+    : []
+  const currentRaw = meeting?.currentSpeakerId ?? meeting?.current_speaker_id
+  const currentSpeakerId =
+    currentRaw == null || currentRaw === ''
+      ? null
+      : Number.isFinite(Number(currentRaw))
+        ? Number(currentRaw)
+        : null
+  meetingContexts.set(meetingId, {
+    chatId,
+    title: meeting?.title ?? null,
+    participants,
+    speakerPolicy: String(meeting?.speakerPolicy ?? meeting?.speaker_policy ?? 'parallel'),
+    currentSpeakerId,
+  })
+  meetingChatIds.add(String(chatId))
+  meetingIdByChatId.set(String(chatId), meetingId)
+}
+
+function forgetMeetingContext(meetingId: number): void {
+  const ctx = meetingContexts.get(meetingId)
+  if (ctx?.chatId != null) {
+    const chatId = String(ctx.chatId)
+    meetingChatIds.delete(chatId)
+    meetingIdByChatId.delete(chatId)
+  }
+  meetingContexts.delete(meetingId)
+}
+
+function reconcileMeetingContexts(activeMeetingChatIds: Set<string>): void {
+  for (const chatId of Array.from(meetingChatIds)) {
+    if (activeMeetingChatIds.has(chatId)) continue
+    const meetingId = meetingIdByChatId.get(chatId)
+    meetingChatIds.delete(chatId)
+    meetingIdByChatId.delete(chatId)
+    if (meetingId != null) meetingContexts.delete(meetingId)
+    clearInbound(chatId)
+  }
+
+  for (const [meetingId, ctx] of Array.from(meetingContexts.entries())) {
+    const chatId = String(ctx.chatId)
+    if (activeMeetingChatIds.has(chatId)) continue
+    meetingContexts.delete(meetingId)
+    meetingIdByChatId.delete(chatId)
+    meetingChatIds.delete(chatId)
+    clearInbound(chatId)
+  }
+}
+
+function parseMeetingMentions(text: string, ctx: MeetingContext): number[] {
+  if (!text || ctx.participants.length === 0) return []
+  const byKey = new Map<string, number>()
+  for (const p of ctx.participants) {
+    const lower = p.name.toLowerCase()
+    const first = lower.split(/\s+/)[0]!
+    if (!byKey.has(first)) byKey.set(first, p.assistantId)
+    if (!byKey.has(lower)) byKey.set(lower, p.assistantId)
+  }
+  const out: number[] = []
+  const seen = new Set<number>()
+  const re = /\B@([a-zA-Z][\w-]{0,49})\b/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(text)) != null) {
+    const id = byKey.get(match[1]!.toLowerCase())
+    if (id != null && !seen.has(id)) {
+      seen.add(id)
+      out.push(id)
+    }
+  }
+  return out
+}
+
+function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
+  const me = Number(ASSISTANT_ID)
+  const mentioned = parseMeetingMentions(text, ctx)
+  if (mentioned.length > 0) {
+    if (ctx.speakerPolicy === 'sequential') return mentioned[0] === me
+    if (ctx.speakerPolicy === 'parallel' || ctx.speakerPolicy === 'user_mediated') {
+      return mentioned.includes(me)
+    }
+  }
+  return ctx.currentSpeakerId === me
 }
 
 function checkReplyOverdue(): void {
@@ -1525,6 +1670,20 @@ async function discoverChats(): Promise<void> {
           c.assistantId === Number(ASSISTANT_ID) || c.kind === 'meeting',
       )
       .map((c) => String(c.id))
+    const meetingChatSet = new Set(
+      data.chats
+        .filter((c) => c.kind === 'meeting')
+        .map((c) => String(c.id)),
+    )
+    reconcileMeetingContexts(meetingChatSet)
+    if (meetingChatSet.size > 0) {
+      const meetings = (await bgosGet('meetings')) as any[]
+      for (const meeting of meetings ?? []) {
+        if (meeting?.status !== 'open') continue
+        const chatId = String(meeting?.chatId ?? meeting?.chat_id ?? '')
+        if (meetingChatSet.has(chatId)) rememberMeetingContext(meeting)
+      }
+    }
   } catch (err) {
     log(`Failed to discover chats: ${err}`)
   }
@@ -1692,6 +1851,53 @@ async function pollChat(chatId: string): Promise<void> {
 
       // Skip verdict messages — don't forward "yes abcde" / "no abcde" to Claude
       if (VERDICT_RE.test(text)) continue
+
+      const meetingId = meetingIdByChatId.get(chatId)
+      const meetingCtx = meetingId != null ? meetingContexts.get(meetingId) : undefined
+      if (meetingId != null && meetingCtx) {
+        const yourTurn = isMyMeetingTurn(text, meetingCtx)
+        const participantList = meetingCtx.participants
+          .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
+          .map((p) => p.name)
+          .join(', ')
+        log(
+          `${isBacklog ? 'Backlog' : 'New'} meeting message in chat ${chatId}: ` +
+            `meeting=${meetingId} your_turn=${yourTurn ? 'YES' : 'NO'}`,
+        )
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content:
+              `${isBacklog ? '[backlog — meeting message arrived while you were offline]\n' : ''}` +
+              `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
+              `participants: ${participantList || 'unknown'}]\n` +
+              `User: ${text}`,
+            meta: {
+              chat_id: chatId,
+              message_id: String(msg.message.id),
+              user: 'User',
+              user_id: USER_ID,
+              assistant_id: ASSISTANT_ID,
+              ts: msg.message.sentDate ?? new Date().toISOString(),
+              event_type: 'meeting_message',
+              meeting_id: String(meetingId),
+              sender_type: 'user',
+              sender_assistant_id: null,
+              sender_name: 'User',
+              your_turn: yourTurn ? 'YES' : 'NO',
+              current_speaker_id:
+                meetingCtx.currentSpeakerId == null
+                  ? null
+                  : String(meetingCtx.currentSpeakerId),
+              transport: 'poll',
+              ...(isBacklog ? { backlog: true } : {}),
+            },
+          },
+        }).catch((err) => {
+          log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
+        })
+        continue
+      }
 
       // Build content with attachment descriptions
       const contentParts: string[] = []
@@ -1956,31 +2162,30 @@ function connectWebsocket(): void {
   // the `meeting_reply` MCP tool only when your_turn=YES; the backend
   // enforces the turn protocol with HTTP 409 if it tries otherwise.
 
-  // Meeting context — keyed by meetingId.
-  const meetingContext = new Map<number, {
-    chatId: number
-    title: string | null
-    participants: Array<{ assistantId: number; name: string; avatarUrl: string | null }>
-    speakerPolicy: string
-  }>()
-
   realtimeSocket.on('meeting_invitation', (payload: any) => {
     try {
       const meetingId = Number(payload?.meetingId)
       const invitedFor = Number(payload?.invitedAssistantId)
       if (!Number.isFinite(meetingId)) return
       if (invitedFor !== Number(ASSISTANT_ID)) return
-      meetingContext.set(meetingId, {
+      meetingContexts.set(meetingId, {
         chatId: Number(payload?.chatId),
         title: payload?.title ?? null,
-        participants: Array.isArray(payload?.participants) ? payload.participants : [],
+        participants: Array.isArray(payload?.participants)
+          ? payload.participants
+              .map((p: any) => normalizeMeetingParticipant(p))
+              .filter((p: MeetingParticipantSummary | null): p is MeetingParticipantSummary => p != null)
+          : [],
         speakerPolicy: String(payload?.speakerPolicy ?? 'user_mediated'),
+        currentSpeakerId: null,
       })
       if (payload?.chatId != null) {
         // Mark this chat id as meeting-routed so the reply-overdue tracker
         // skips it — meetings use meeting_reply gated by user_mediated turn
         // assignment, so absence of `reply` is expected.
-        meetingChatIds.add(String(payload.chatId))
+        const chatId = String(payload.chatId)
+        meetingChatIds.add(chatId)
+        meetingIdByChatId.set(chatId, meetingId)
       }
       const peerNames = (payload?.participants ?? [])
         .filter((p: any) => Number(p?.assistantId) !== Number(ASSISTANT_ID))
@@ -2016,7 +2221,7 @@ function connectWebsocket(): void {
     try {
       const meetingId = Number(payload?.meetingId)
       if (!Number.isFinite(meetingId)) return
-      const ctx = meetingContext.get(meetingId)
+      let ctx = meetingContexts.get(meetingId)
       const yourTurnFor: number[] = Array.isArray(payload?.yourTurnFor)
         ? payload.yourTurnFor.map((x: any) => Number(x))
         : []
@@ -2024,6 +2229,39 @@ function connectWebsocket(): void {
       const senderId = payload?.senderAssistantId != null
         ? Number(payload.senderAssistantId)
         : null
+      const chatId = String(payload?.chatId ?? ctx?.chatId ?? '')
+      if (chatId) {
+        meetingChatIds.add(chatId)
+        meetingIdByChatId.set(chatId, meetingId)
+        if (!ctx) {
+          ctx = {
+            chatId: Number(chatId),
+            title: null,
+            participants: [],
+            speakerPolicy: 'parallel',
+            currentSpeakerId: null,
+          }
+          meetingContexts.set(meetingId, ctx)
+        }
+      }
+      const messageId = Number(payload?.messageId)
+      if (Number.isFinite(messageId)) {
+        if (wsForwardedMessageIds.has(messageId)) return
+        rememberForwarded(messageId)
+        if (chatId) {
+          const seen = chatLastSeen.get(chatId) ?? 0
+          if (messageId > seen) chatLastSeen.set(chatId, messageId)
+        }
+      }
+      if (ctx) {
+        const currentRaw = payload?.currentSpeakerId
+        ctx.currentSpeakerId =
+          currentRaw == null || currentRaw === ''
+            ? null
+            : Number.isFinite(Number(currentRaw))
+              ? Number(currentRaw)
+              : null
+      }
       // Diagnostic — log every meeting_message receipt so we can confirm
       // (or rule out) WS delivery from the plugin side. Without this, a
       // "stuck meeting" symptom is ambiguous between (a) backend never
@@ -2065,7 +2303,7 @@ function connectWebsocket(): void {
             `${senderName}: ${text}`,
           meta: {
             // Canonical channel-envelope fields (rendered as XML attrs).
-            chat_id: String(payload?.chatId ?? ctx?.chatId ?? ''),
+            chat_id: chatId,
             message_id: messageIdStr,
             user: payload?.senderType === 'agent' ? senderName : 'User',
             user_id: USER_ID,
@@ -2078,7 +2316,7 @@ function connectWebsocket(): void {
             sender_type: payload?.senderType ?? 'user',
             sender_assistant_id: senderId == null ? null : String(senderId),
             sender_name: senderName,
-            your_turn: yourTurn ? 'true' : 'false',
+            your_turn: yourTurn ? 'YES' : 'NO',
             current_speaker_id:
               payload?.currentSpeakerId == null
                 ? null
@@ -2099,6 +2337,16 @@ function connectWebsocket(): void {
     const becameMyTurn =
       Number(payload?.currentSpeakerId) === me &&
       Number(payload?.previousSpeakerId) !== me
+    const ctx = meetingContexts.get(meetingId)
+    if (ctx) {
+      const currentRaw = payload?.currentSpeakerId
+      ctx.currentSpeakerId =
+        currentRaw == null || currentRaw === ''
+          ? null
+          : Number.isFinite(Number(currentRaw))
+            ? Number(currentRaw)
+            : null
+    }
     if (becameMyTurn) {
       log(`meeting_turn_changed → my turn in meeting #${meetingId}`)
       mcp.notification({
@@ -2111,7 +2359,7 @@ function connectWebsocket(): void {
           meta: {
             event_type: 'meeting_turn_changed',
             meeting_id: String(meetingId),
-            your_turn: 'true',
+            your_turn: 'YES',
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
@@ -2123,9 +2371,7 @@ function connectWebsocket(): void {
   realtimeSocket.on('meeting_closed', (payload: any) => {
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
-    const ctx = meetingContext.get(meetingId)
-    if (ctx?.chatId != null) meetingChatIds.delete(String(ctx.chatId))
-    meetingContext.delete(meetingId)
+    forgetMeetingContext(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
     mcp.notification({
       method: 'notifications/claude/channel',
@@ -2152,17 +2398,46 @@ function connectWebsocket(): void {
     // refresh the participant list cached against this meeting so future
     // notifications carry the correct names.
     if (leaverId === Number(ASSISTANT_ID)) {
-      const ctx = meetingContext.get(meetingId)
-      if (ctx?.chatId != null) meetingChatIds.delete(String(ctx.chatId))
-      meetingContext.delete(meetingId)
+      forgetMeetingContext(meetingId)
       return
     }
-    const ctx = meetingContext.get(meetingId)
+    const ctx = meetingContexts.get(meetingId)
     if (ctx) {
       ctx.participants = ctx.participants.filter(
         (p) => Number(p.assistantId) !== leaverId,
       )
     }
+  })
+
+  realtimeSocket.on('meeting_participant_added', (payload: any) => {
+    const meetingId = Number(payload?.meetingId)
+    if (!Number.isFinite(meetingId)) return
+    const ctx = meetingContexts.get(meetingId)
+    if (!ctx) return
+    const added = normalizeMeetingParticipant({
+      assistantId: payload?.assistantId,
+      name: payload?.name,
+      avatarUrl: payload?.avatarUrl,
+    })
+    if (!added) return
+    if (!ctx.participants.some((p) => p.assistantId === added.assistantId)) {
+      ctx.participants.push(added)
+    }
+  })
+
+  realtimeSocket.on('meeting_policy_changed', (payload: any) => {
+    const meetingId = Number(payload?.meetingId)
+    if (!Number.isFinite(meetingId)) return
+    const ctx = meetingContexts.get(meetingId)
+    if (!ctx) return
+    ctx.speakerPolicy = String(payload?.speakerPolicy ?? ctx.speakerPolicy)
+    const currentRaw = payload?.currentSpeakerId
+    ctx.currentSpeakerId =
+      currentRaw == null || currentRaw === ''
+        ? null
+        : Number.isFinite(Number(currentRaw))
+          ? Number(currentRaw)
+          : null
   })
 }
 
@@ -2209,7 +2484,7 @@ async function main(): Promise<void> {
     } catch (err) {
       log(`Poll cycle error: ${err}`)
     }
-    const interval = isWsHealthy()
+    const interval = isWsHealthy() && meetingChatIds.size === 0
       ? POLL_INTERVAL_MS * HEALTHY_MULTIPLIER
       : POLL_INTERVAL_MS
     setTimeout(tick, interval)
