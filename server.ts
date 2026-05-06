@@ -290,7 +290,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.2.1' },
+  { name: 'bgos', version: '0.2.2' },
   {
     capabilities: {
       tools: {},
@@ -1977,11 +1977,12 @@ async function pollAllChats(): Promise<void> {
 //   - `peer_turn_yielded` — informational; not yet bubbled to MCP
 //
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
-// reliability fallback. Duplicate forwards are deduped by `chatLastSeen`
-// inside pollChat — a WS-pushed message updates lastSeen so a subsequent
-// poll won't re-emit it. (For the WS path itself we maintain a small Set
-// of processed message ids to suppress duplicates if the WS push and the
-// poll overlap.)
+// reliability fallback. Normal WS-pushed messages update `chatLastSeen` so
+// a subsequent poll won't re-emit them. Meeting WS events intentionally do
+// not update `chatLastSeen`; pollChat gets one chance to replay the turn in
+// case the channel renderer drops the specialized meeting notification.
+// For the WS path itself we maintain a small Set of processed message ids
+// to suppress repeated socket events.
 
 import { io as socketIoClient, type Socket as IOClientSocket } from 'socket.io-client'
 
@@ -2250,10 +2251,11 @@ function connectWebsocket(): void {
       if (Number.isFinite(messageId)) {
         if (wsForwardedMessageIds.has(messageId)) return
         rememberForwarded(messageId)
-        if (chatId) {
-          const seen = chatLastSeen.get(chatId) ?? 0
-          if (messageId > seen) chatLastSeen.set(chatId, messageId)
-        }
+        // Do NOT advance chatLastSeen for meeting WS events. Claude Code's
+        // channel renderer can drop meeting notifications even after this
+        // handler receives the socket event; if we bump the cursor here, the
+        // 2s poll fallback never replays the user turn and the meeting goes
+        // silent. Let pollChat confirm delivery for meeting messages.
       }
       if (ctx) {
         const currentRaw = payload?.currentSpeakerId
