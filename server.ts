@@ -290,7 +290,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.2.2' },
+  { name: 'bgos', version: '0.2.3' },
   {
     capabilities: {
       tools: {},
@@ -1884,13 +1884,11 @@ async function pollChat(chatId: string): Promise<void> {
               event_type: 'meeting_message',
               meeting_id: String(meetingId),
               sender_type: 'user',
-              sender_assistant_id: null,
               sender_name: 'User',
               your_turn: yourTurn ? 'YES' : 'NO',
-              current_speaker_id:
-                meetingCtx.currentSpeakerId == null
-                  ? null
-                  : String(meetingCtx.currentSpeakerId),
+              ...(meetingCtx.currentSpeakerId == null
+                ? {}
+                : { current_speaker_id: String(meetingCtx.currentSpeakerId) }),
               transport: 'poll',
               ...(isBacklog ? { backlog: true } : {}),
             },
@@ -2318,13 +2316,14 @@ function connectWebsocket(): void {
             event_type: 'meeting_message',
             meeting_id: String(meetingId),
             sender_type: payload?.senderType ?? 'user',
-            sender_assistant_id: senderId == null ? null : String(senderId),
             sender_name: senderName,
             your_turn: yourTurn ? 'YES' : 'NO',
-            current_speaker_id:
-              payload?.currentSpeakerId == null
-                ? null
-                : String(payload.currentSpeakerId),
+            ...(senderId == null
+              ? {}
+              : { sender_assistant_id: String(senderId) }),
+            ...(payload?.currentSpeakerId == null
+              ? {}
+              : { current_speaker_id: String(payload.currentSpeakerId) }),
             transport: 'ws',
           },
         },
