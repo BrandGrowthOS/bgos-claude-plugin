@@ -160,6 +160,20 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
   return response.json()
 }
 
+async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
+  }
+  return response.json()
+}
+
 // ── BGOS REST Client (peer endpoints — adds X-Caller-Assistant-Id) ───────────
 //
 // Cross-channel agent-to-agent feature requires every peer call to carry
@@ -290,7 +304,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.2.3' },
+  { name: 'bgos', version: '0.3.0' },
   {
     capabilities: {
       tools: {},
@@ -392,6 +406,19 @@ const mcp = new Server(
       '    the free text as a normal user message right before/after — treat',
       '    them as correlated by message_id.',
       '',
+      '## Slash Commands From the User',
+      '',
+      'Users can pick slash commands from the BGOS app\'s composer. When they',
+      'type `/`, the app shows an autocomplete picker populated from the catalog',
+      'this plugin syncs on boot (built-in commands like `/help`, `/clear`,',
+      '`/compact`, `/cost`, plus your user/project/plugin commands).',
+      '',
+      'A slash-command turn arrives as a normal `<channel source="bgos">` event',
+      'with `meta.event_type = "slash_command"`, `meta.command_name = "<name>"`,',
+      'and `meta.command_args = "<rest of message>"`. The `content` field is the',
+      'literal text the user sent (e.g. `/help`). Treat the command exactly as you',
+      'would in the CLI — invoke its behavior, then `reply` with the result.',
+      '',
       '## Receiving Attachments',
       '',
       'When a user sends files, the channel event includes:',
@@ -454,15 +481,17 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
-  // Send the permission prompt as a message in the BGOS chat
+  // Send the permission prompt as an inline-button message. Click handling
+  // lives in pollChat / WS — perm:* callback_data is swallowed there and
+  // resolves the verdict via the pendingPermissions map. Text-reply
+  // ("yes abcde" / "no abcde") is kept as a fallback path for older clients
+  // without button rendering.
   const promptText = [
     `🔐 **Permission Request**`,
     ``,
     `Claude wants to use **${tool_name}**`,
     `${description}`,
     input_preview ? `\n\`\`\`\n${input_preview}\n\`\`\`` : '',
-    ``,
-    `Reply **yes ${request_id}** to approve or **no ${request_id}** to deny.`,
   ]
     .filter(Boolean)
     .join('\n')
@@ -476,13 +505,23 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       sentDate: new Date().toISOString(),
       hasAttachment: false,
       files: [],
-      options: [],
+      options: [
+        { text: '✅ Allow', callbackData: `perm:allow:${request_id}`, style: 'success' },
+        { text: '❌ Deny',  callbackData: `perm:deny:${request_id}`,  style: 'danger'  },
+      ],
+      renderMode: 'inline',
     })
 
     log(`Permission prompt sent to chat ${chatId} for ${tool_name} [${request_id}]`)
 
-    // Wait for the user's verdict via polling (timeout: 120s)
-    const verdict = await waitForVerdict(request_id, chatId, 120_000)
+    // Race: inline-button click vs. text-reply verdict vs. 120s timeout.
+    const verdict = await Promise.race<'allow' | 'deny'>([
+      new Promise<'allow' | 'deny'>((resolve) => {
+        pendingPermissions.set(request_id, { chatId, resolve })
+      }),
+      waitForVerdict(request_id, chatId, 120_000),
+    ])
+    pendingPermissions.delete(request_id)
 
     log(`Verdict for ${tool_name} [${request_id}]: ${verdict}`)
     mcp.notification({
@@ -492,6 +531,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       log(`Failed to send verdict: ${err}`)
     })
   } catch (err) {
+    pendingPermissions.delete(request_id)
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
     mcp.notification({
@@ -1448,6 +1488,8 @@ interface ChatMessage {
     answeredAt?: string | null
     answerPayload?: AnswerPayload | null
     renderMode?: 'inline' | 'modal' | string | null
+    commandName?: string | null
+    commandArgs?: string | null
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
@@ -1815,6 +1857,24 @@ async function pollChat(chatId: string): Promise<void> {
       const callbackData = payload.callbackData ?? payload.callback_data ?? ''
       const buttonText = payload.buttonText ?? payload.button_text ?? ''
       const customText = payload.customText ?? payload.custom_text ?? undefined
+
+      // Internal permission-flow intercept: perm:(allow|deny):<request_id>.
+      // Swallow these — do NOT forward to Claude as a channel event; resolve
+      // the pending verdict instead.
+      const permMatch = /^perm:(allow|deny):(.+)$/.exec(callbackData)
+      if (permMatch) {
+        const [, verdict, requestId] = permMatch
+        const pending = pendingPermissions.get(requestId)
+        if (pending) {
+          log(`Permission inline-button click: ${verdict} [${requestId}]`)
+          pending.resolve(verdict as 'allow' | 'deny')
+          pendingPermissions.delete(requestId)
+        } else {
+          log(`Stale permission click ${verdict} [${requestId}] — no pending entry`)
+        }
+        continue
+      }
+
       const kind =
         callbackData === '__skip__'
           ? 'Skipped'
@@ -1936,6 +1996,7 @@ async function pollChat(chatId: string): Promise<void> {
 
       // Push channel notification to Claude Code (fire-and-forget)
       // Keep meta simple — file URLs are embedded in the content text
+      const isSlashCommand = msg.message.messageType === 'slash_command'
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -1948,6 +2009,13 @@ async function pollChat(chatId: string): Promise<void> {
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
             ...(isBacklog ? { backlog: true } : {}),
+            ...(isSlashCommand
+              ? {
+                  event_type: 'slash_command',
+                  command_name: msg.message.commandName ?? '',
+                  command_args: msg.message.commandArgs ?? '',
+                }
+              : {}),
           },
         },
       }).catch((err) => {
@@ -2088,6 +2156,8 @@ function connectWebsocket(): void {
       if (contentParts.length === 0) return
       const content = contentParts.join('\n')
 
+      const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
+      const isWsSlashCommand = wsMessageType === 'slash_command'
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2100,6 +2170,13 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
             transport: 'ws',
+            ...(isWsSlashCommand
+              ? {
+                  event_type: 'slash_command',
+                  command_name: String(payload?.commandName ?? payload?.command_name ?? ''),
+                  command_args: String(payload?.commandArgs ?? payload?.command_args ?? ''),
+                }
+              : {}),
             ...(payload?.peer_conversation_id !== undefined && {
               peer_conversation_id: String(payload.peer_conversation_id),
             }),
@@ -2454,6 +2531,194 @@ function connectWebsocket(): void {
   })
 }
 
+// ── Slash-command discovery + sync ───────────────────────────────────────────
+//
+// Claude Code's slash command catalog (built-in + user + project + plugin) is
+// pushed to the BGOS backend so the frontend's slash picker can autocomplete
+// when the user types `/`. The backend endpoint is documented in
+// hermes-channel-bgos/docs/bgos-agent-capabilities.md §7.
+
+interface SlashCommandEntry {
+  command: string
+  description: string
+  scope: 'all'
+}
+
+// Built-in Claude Code commands. Curated against the CLI as of 2026-05.
+// Missing entries are not catastrophic — users can still type them
+// manually. Add new ones here when CC ships them.
+const BUILTIN_COMMANDS: SlashCommandEntry[] = [
+  { command: '/help',          description: 'Show usage and supported tools',          scope: 'all' },
+  { command: '/clear',         description: 'Reset the conversation context',          scope: 'all' },
+  { command: '/compact',       description: 'Compact prior turns to free context',     scope: 'all' },
+  { command: '/cost',          description: 'Show token usage and cost for this session', scope: 'all' },
+  { command: '/model',         description: 'Switch the active Claude model',          scope: 'all' },
+  { command: '/agents',        description: 'List and configure subagents',            scope: 'all' },
+  { command: '/permissions',   description: 'Review and manage tool permissions',      scope: 'all' },
+  { command: '/hooks',         description: 'Manage shell hooks for events',           scope: 'all' },
+  { command: '/mcp',           description: 'Manage MCP server connections',           scope: 'all' },
+  { command: '/memory',        description: 'View or edit project memory',             scope: 'all' },
+  { command: '/init',          description: 'Initialize CLAUDE.md for this project',   scope: 'all' },
+  { command: '/doctor',        description: 'Diagnose configuration issues',           scope: 'all' },
+  { command: '/status',        description: 'Show session status',                     scope: 'all' },
+  { command: '/release-notes', description: 'Show release notes for Claude Code',      scope: 'all' },
+  { command: '/bug',           description: 'Open a bug report',                       scope: 'all' },
+  { command: '/login',         description: 'Sign in to Claude',                       scope: 'all' },
+  { command: '/logout',        description: 'Sign out',                                scope: 'all' },
+]
+
+async function readMdCommand(
+  filePath: string,
+  namePrefix = '',
+): Promise<SlashCommandEntry | null> {
+  try {
+    const raw = await readFile(filePath, 'utf8')
+    const base = basename(filePath, '.md')
+    // Filter dotfiles AND leading-underscore files. The `_conventions.md` /
+    // `_internal.md` convention is used by Claude Code itself (e.g. the
+    // vercel plugin) for shared docs that should not appear in the picker.
+    if (!base || base.startsWith('.') || base.startsWith('_')) return null
+    const command = `/${namePrefix}${base}`
+    let description = ''
+    const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n/)
+    if (fmMatch) {
+      const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m)
+      if (descMatch) description = descMatch[1].trim()
+    }
+    if (!description) {
+      const body = fmMatch ? raw.slice(fmMatch[0].length) : raw
+      const first = body.split('\n').map((l) => l.trim()).find((l) => l.length > 0)
+      description = (first ?? '').slice(0, 200)
+    }
+    return { command, description: description || command, scope: 'all' }
+  } catch {
+    return null
+  }
+}
+
+async function walkCommandsDir(
+  dir: string,
+  namePrefix = '',
+): Promise<SlashCommandEntry[]> {
+  try {
+    const { readdir } = await import('node:fs/promises')
+    const entries = await readdir(dir, { withFileTypes: true })
+    const out: SlashCommandEntry[] = []
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.md')) continue
+      const cmd = await readMdCommand(pathJoin(dir, e.name), namePrefix)
+      if (cmd) out.push(cmd)
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+// Plugin commands live in two parallel layouts:
+//   marketplaces/<marketplace>/plugins/<plugin>/commands/*.md  (3 levels under rootDir)
+//   cache/<marketplace>/<plugin>/<version>/commands/*.md       (4 levels under rootDir)
+// Names get namespaced as `/<plugin>:<command>`. When multiple versions of
+// a cached plugin exist (e.g. `vercel/0.42.1/` and `vercel/61f1903bed7b/`),
+// the LAST `readdir` entry wins via the dedupe map — readdir order is OS-
+// dependent but for our purposes "last write wins" is acceptable since all
+// versions describe the same command set.
+async function walkPluginCommands(
+  rootDir: string,
+  layout: 'marketplaces' | 'cache',
+): Promise<SlashCommandEntry[]> {
+  const out: SlashCommandEntry[] = []
+  try {
+    const { readdir } = await import('node:fs/promises')
+    const level1 = await readdir(rootDir, { withFileTypes: true })
+    for (const a of level1) {
+      if (!a.isDirectory()) continue
+      if (layout === 'marketplaces') {
+        // <root>/<marketplace>/plugins/<plugin>/commands
+        const pluginsDir = pathJoin(rootDir, a.name, 'plugins')
+        try {
+          const level2 = await readdir(pluginsDir, { withFileTypes: true })
+          for (const b of level2) {
+            if (!b.isDirectory()) continue
+            const cmdDir = pathJoin(pluginsDir, b.name, 'commands')
+            const cmds = await walkCommandsDir(cmdDir, `${b.name}:`)
+            out.push(...cmds)
+          }
+        } catch {}
+      } else {
+        // <root>/<marketplace>/<plugin>/<version>/commands
+        const marketplaceDir = pathJoin(rootDir, a.name)
+        try {
+          const level2 = await readdir(marketplaceDir, { withFileTypes: true })
+          for (const b of level2) {
+            if (!b.isDirectory()) continue
+            const pluginDir = pathJoin(marketplaceDir, b.name)
+            try {
+              const level3 = await readdir(pluginDir, { withFileTypes: true })
+              for (const c of level3) {
+                if (!c.isDirectory()) continue
+                const cmdDir = pathJoin(pluginDir, c.name, 'commands')
+                const cmds = await walkCommandsDir(cmdDir, `${b.name}:`)
+                out.push(...cmds)
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return out
+}
+
+async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
+  const cwd = process.cwd()
+
+  const [project, user, marketplace, cache] = await Promise.all([
+    walkCommandsDir(pathJoin(cwd, '.claude', 'commands')),
+    walkCommandsDir(pathJoin(home, '.claude', 'commands')),
+    walkPluginCommands(pathJoin(home, '.claude', 'plugins', 'marketplaces'), 'marketplaces'),
+    walkPluginCommands(pathJoin(home, '.claude', 'plugins', 'cache'), 'cache'),
+  ])
+
+  // Priority (lower → higher): built-in < marketplace < cache < user < project.
+  const byName = new Map<string, SlashCommandEntry>()
+  for (const c of BUILTIN_COMMANDS) byName.set(c.command, c)
+  for (const c of marketplace) byName.set(c.command, c)
+  for (const c of cache) byName.set(c.command, c)
+  for (const c of user) byName.set(c.command, c)
+  for (const c of project) byName.set(c.command, c)
+
+  // Built-ins first (in their curated order), then plugin/user/project alphabetical.
+  const builtinSet = new Set(BUILTIN_COMMANDS.map((c) => c.command))
+  const builtins = BUILTIN_COMMANDS.filter((c) => byName.has(c.command))
+  const rest = [...byName.values()]
+    .filter((c) => !builtinSet.has(c.command))
+    .sort((a, b) => a.command.localeCompare(b.command))
+  return [...builtins, ...rest]
+}
+
+let lastSyncedCommandsHash = ''
+async function syncSlashCommands(): Promise<void> {
+  try {
+    const commands = await discoverSlashCommands()
+    // Defensive cap — keep the manifest payload reasonable.
+    const trimmed = commands.slice(0, 200)
+    const hash = trimmed.map((c) => `${c.command}|${c.description}`).join('\n')
+    if (hash === lastSyncedCommandsHash) {
+      log(`slash-command sync: unchanged (${trimmed.length} entries)`)
+      return
+    }
+    await bgosPut(`integrations/assistants/${ASSISTANT_ID}/commands`, {
+      commands: trimmed,
+    })
+    lastSyncedCommandsHash = hash
+    log(`slash-command sync: pushed ${trimmed.length} commands`)
+  } catch (err) {
+    log(`slash-command sync failed: ${err}`)
+  }
+}
+
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -2497,9 +2762,15 @@ async function main(): Promise<void> {
     } catch (err) {
       log(`Poll cycle error: ${err}`)
     }
-    const interval = isWsHealthy() && meetingChatIds.size === 0
-      ? POLL_INTERVAL_MS * HEALTHY_MULTIPLIER
-      : POLL_INTERVAL_MS
+    // Force fast cadence whenever:
+    //  - WS is unhealthy (poll IS the delivery path)
+    //  - There are active meetings (turn changes feel snappy)
+    //  - There's a pending permission awaiting a user click (so the inline
+    //    Allow/Deny button click gets picked up within ~2s instead of ~60s)
+    const interval =
+      isWsHealthy() && meetingChatIds.size === 0 && pendingPermissions.size === 0
+        ? POLL_INTERVAL_MS * HEALTHY_MULTIPLIER
+        : POLL_INTERVAL_MS
     setTimeout(tick, interval)
   }
   setTimeout(tick, POLL_INTERVAL_MS)
@@ -2510,6 +2781,12 @@ async function main(): Promise<void> {
   // failure mode.
   setInterval(checkReplyOverdue, 30_000)
   log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
+
+  // Step 6: Push the Claude Code slash-command catalog to BGOS so the
+  // frontend slash picker can autocomplete. Sync once on boot, then refresh
+  // every 5 minutes to catch newly-installed plugins / added .md files.
+  void syncSlashCommands()
+  setInterval(() => void syncSlashCommands(), 5 * 60_000).unref()
 }
 
 main().catch((err) => {
