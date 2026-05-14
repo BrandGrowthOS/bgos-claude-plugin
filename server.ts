@@ -304,7 +304,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.3.0' },
+  { name: 'bgos', version: '0.3.1' },
   {
     capabilities: {
       tools: {},
@@ -2709,7 +2709,14 @@ async function syncSlashCommands(): Promise<void> {
       log(`slash-command sync: unchanged (${trimmed.length} entries)`)
       return
     }
-    await bgosPut(`integrations/assistants/${ASSISTANT_ID}/commands`, {
+    // NOTE: use the user-scoped PUT (Clerk-or-API-key auth with userId
+    // ownership check), NOT `integrations/assistants/.../commands` which
+    // requires a pairing token. The Claude Code plugin authenticates with
+    // X-API-Key, not a pairing token — and a user-created assistant has
+    // pairingId=null, so the pairing-scoped path would 401 regardless.
+    // Both endpoints write the same assistant_commands table via the
+    // same SyncCommandsDto. See bgos-claude-plugin v0.8.1 release notes.
+    await bgosPut(`assistants/${ASSISTANT_ID}/commands`, {
       commands: trimmed,
     })
     lastSyncedCommandsHash = hash
