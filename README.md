@@ -359,7 +359,20 @@ Text + files + buttons in a single reply:
 
 **Auto-approve** (`BGOS_AUTO_APPROVE=true`): All tool permissions are automatically approved. Best for trusted environments.
 
-**Interactive** (default): Permission prompts appear in the BGOS chat. User types `yes <code>` or `no <code>` to approve/deny. 120s timeout auto-denies.
+**Interactive** (default, v0.8.0+): Permission prompts appear in the BGOS chat as an inline-button card with **✅ Allow** and **❌ Deny** buttons. Tapping a button resolves the verdict immediately. The legacy text-reply path (`yes <code>` / `no <code>`) still works as a fallback for older clients. 120s timeout auto-denies.
+
+## Slash Commands (v0.8.0+)
+
+The plugin syncs Claude Code's full slash-command catalog to the BGOS backend on boot and every 5 minutes thereafter. When the user types `/` in the BGOS composer, the autocomplete picker shows:
+
+- Built-in Claude Code commands (`/help`, `/clear`, `/compact`, `/cost`, `/model`, `/agents`, `/permissions`, `/hooks`, `/mcp`, `/memory`, `/init`, `/doctor`, `/status`, `/release-notes`, `/bug`, `/login`, `/logout`).
+- User commands from `~/.claude/commands/*.md`.
+- Project commands from `$PROJECT/.claude/commands/*.md`.
+- Plugin commands from `~/.claude/plugins/marketplaces/*/plugins/*/commands/*.md` and `~/.claude/plugins/cache/*/*/commands/*.md`, namespaced as `/plugin-name:command-name`.
+
+When the user picks a command and sends, the plugin delivers it to Claude Code as a normal channel event with `meta.event_type='slash_command'`, `meta.command_name=<name>`, and `meta.command_args=<rest>` — Claude interprets it exactly as it would in the CLI.
+
+The catalog refresh is best-effort: if `PUT /integrations/assistants/:id/commands` is unreachable, the plugin keeps working and re-tries on the next 5-minute tick.
 
 ## Updating the Plugin
 
