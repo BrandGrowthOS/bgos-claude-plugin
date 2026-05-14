@@ -304,7 +304,7 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.3.1' },
+  { name: 'bgos', version: '0.3.2' },
   {
     capabilities: {
       tools: {},
@@ -2698,15 +2698,56 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
   return [...builtins, ...rest]
 }
 
+// Normalize a discovered command name to the backend's wire format. The
+// CommandDto regex is /^[a-z0-9_]{1,32}$/ — no leading slash, no `:`,
+// no `-`, no uppercase. The frontend re-derives the user-facing label
+// from this stored name (prepending `/`), so the round-trip is
+// `/help` → store `help` → display `/help`. Plugin-namespaced commands
+// like `/feature-dev:feature-dev` get sanitized to `feature_dev_feature_dev`
+// for storage; until the backend regex permits `:` and `-` the
+// frontend will show that sanitized form. Tracked separately.
+function normalizeCommandName(raw: string): string | null {
+  // Strip leading slash if present.
+  let s = raw.startsWith('/') ? raw.slice(1) : raw
+  s = s.toLowerCase()
+  // Replace any non-conforming character with `_`. Coalesce runs to a
+  // single `_` so `feature-dev:feature-dev` → `feature_dev_feature_dev`,
+  // not `feature_dev__feature_dev`.
+  s = s.replace(/[^a-z0-9_]+/g, '_')
+  // Trim leading/trailing underscores.
+  s = s.replace(/^_+|_+$/g, '')
+  if (!s) return null
+  return s.slice(0, 32)
+}
+
 let lastSyncedCommandsHash = ''
 async function syncSlashCommands(): Promise<void> {
   try {
     const commands = await discoverSlashCommands()
-    // Defensive cap — keep the manifest payload reasonable.
-    const trimmed = commands.slice(0, 200)
-    const hash = trimmed.map((c) => `${c.command}|${c.description}`).join('\n')
+    // Sanitize for the backend DTO: command name regex + description
+    // length cap + array size cap. Drop entries that can't be coerced.
+    const seen = new Set<string>()
+    const sanitized: SlashCommandEntry[] = []
+    let dropped = 0
+    for (const c of commands) {
+      const name = normalizeCommandName(c.command)
+      if (!name) {
+        dropped++
+        continue
+      }
+      if (seen.has(name)) {
+        dropped++
+        continue
+      }
+      seen.add(name)
+      const description = (c.description || name).slice(0, 100)
+      sanitized.push({ command: name, description, scope: 'all' })
+      if (sanitized.length >= 50) break // backend ArrayMaxSize(50)
+    }
+
+    const hash = sanitized.map((c) => `${c.command}|${c.description}`).join('\n')
     if (hash === lastSyncedCommandsHash) {
-      log(`slash-command sync: unchanged (${trimmed.length} entries)`)
+      log(`slash-command sync: unchanged (${sanitized.length} entries)`)
       return
     }
     // NOTE: use the user-scoped PUT (Clerk-or-API-key auth with userId
@@ -2715,12 +2756,15 @@ async function syncSlashCommands(): Promise<void> {
     // X-API-Key, not a pairing token — and a user-created assistant has
     // pairingId=null, so the pairing-scoped path would 401 regardless.
     // Both endpoints write the same assistant_commands table via the
-    // same SyncCommandsDto. See bgos-claude-plugin v0.8.1 release notes.
+    // same SyncCommandsDto.
     await bgosPut(`assistants/${ASSISTANT_ID}/commands`, {
-      commands: trimmed,
+      commands: sanitized,
     })
     lastSyncedCommandsHash = hash
-    log(`slash-command sync: pushed ${trimmed.length} commands`)
+    log(
+      `slash-command sync: pushed ${sanitized.length} commands` +
+        (dropped > 0 ? ` (${dropped} dropped — invalid name or dupe)` : ''),
+    )
   } catch (err) {
     log(`slash-command sync failed: ${err}`)
   }

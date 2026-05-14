@@ -1,7 +1,7 @@
 {
   "name": "bgos",
   "description": "BGOS channel for Claude Code — chat through the BGOS desktop/mobile app with built-in access control",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": {
     "name": "BrandGrowthOS"
   },
