@@ -658,9 +658,19 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           reply_to_id: {
             type: 'number',
             description:
-              "Set this to the inbound peer message id when you're replying to " +
-              "another agent in a side-thread. Lets the initiating agent's " +
-              "wait_for_reply resolve cleanly. Omit for normal replies to the user.",
+              'Set this to the source message id when you want to anchor this ' +
+              'reply to a specific earlier message — BGOS renders a Telegram-' +
+              'style quoted-reply header (tap → jump to source) and persists a ' +
+              'frozen text/sender snapshot. Two use-cases: ' +
+              '(1) USER REPLY-QUOTE — answering a question from N messages ago ' +
+              "where the user would otherwise have to scroll up, following up on " +
+              "your own past commitment, correcting a specific earlier statement, " +
+              "or surfacing a cron-triggered nudge tied to an older message. " +
+              "Don't quote the immediately preceding user turn (alignment already " +
+              'implies the subject) or for pure acknowledgements ("Got it"). ' +
+              '(2) AGENT-TO-AGENT SIDE-THREAD — when replying to an inbound peer ' +
+              "agent message so the initiating agent's wait_for_reply resolves. " +
+              'Same-chat constraint enforced server-side (400 otherwise).',
           },
         },
         required: ['chat_id'],
