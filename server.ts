@@ -220,14 +220,66 @@ async function resolveFile(fileSpec: {
 
 // ── Permission Relay State ───────────────────────────────────────────────────
 
-/** Pending permission requests waiting for user verdict from BGOS chat. */
-const pendingPermissions = new Map<
-  string,
-  { chatId: string; resolve: (behavior: 'allow' | 'deny') => void }
->()
+type PermissionBehavior = 'allow' | 'deny'
+type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
 
-/** Regex matching user verdict: "yes abcde" or "no abcde" */
+interface PendingPermission {
+  chatId: string
+  toolName: string
+  description: string
+  inputPreview?: string
+  createdAt: number
+}
+
+/** Pending permission requests waiting for user verdict from BGOS chat. */
+const pendingPermissions = new Map<string, PendingPermission>()
+
+/** Regex matching typed fallback verdict: "yes abcde" or "no abcde" */
 const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+
+/** Regex matching BGOS permission button callback identifiers. */
+const PERMISSION_CALLBACK_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
+
+function permissionOptions(requestId: string): Array<{ text: string; callbackData: string }> {
+  return [
+    { text: 'Allow once', callbackData: `perm:once:${requestId}` },
+    { text: 'Allow for session', callbackData: `perm:session:${requestId}` },
+    { text: 'Allow permanently', callbackData: `perm:permanent:${requestId}` },
+    { text: 'Do not allow', callbackData: `perm:deny:${requestId}` },
+  ]
+}
+
+function choiceToBehavior(choice: PermissionChoice): PermissionBehavior {
+  // Claude Code's current channel permission protocol, as used by the
+  // official Telegram plugin, accepts only behavior='allow' or 'deny'. Keep
+  // the richer BGOS UX now and collapse all allow scopes to 'allow' until the
+  // upstream channel protocol exposes scoped behaviors.
+  return choice === 'deny' ? 'deny' : 'allow'
+}
+
+function parsePermissionChoice(text: string, requestId: string): PermissionChoice | null {
+  const trimmed = text.trim()
+  const callback = PERMISSION_CALLBACK_RE.exec(trimmed)
+  if (callback && callback[2]?.toLowerCase() === requestId.toLowerCase()) {
+    return callback[1]!.toLowerCase() as PermissionChoice
+  }
+
+  const typed = VERDICT_RE.exec(trimmed)
+  if (typed && typed[2]?.toLowerCase() === requestId.toLowerCase()) {
+    return typed[1]!.toLowerCase().startsWith('y') ? 'once' : 'deny'
+  }
+
+  // Some BGOS clients materialize option clicks as a user message containing
+  // the visible label rather than callbackData. This is still safe here because
+  // waitForVerdict only inspects messages newer than the permission prompt.
+  const normalized = trimmed.toLowerCase().replace(/[✅🔒❌]/g, '').trim()
+  if (normalized === 'allow once') return 'once'
+  if (normalized === 'allow for session') return 'session'
+  if (normalized === 'allow permanently' || normalized === 'always allow') return 'permanent'
+  if (normalized === 'do not allow' || normalized === 'deny' || normalized === 'not allowed') return 'deny'
+
+  return null
+}
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
@@ -313,8 +365,9 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
-  // Interactive mode: send permission prompt to BGOS chat for user to approve/deny
-  // Find the most recent active chat for this assistant
+  // Interactive mode: send a Telegram-style BGOS approval prompt with
+  // clickable options. We still keep the typed yes/no fallback below for old
+  // clients or if a button-click event is not materialized in chat history.
   const chatId = monitoredChatIds[0]
   if (!chatId) {
     log(`No monitored chat found — auto-denying ${tool_name} [${request_id}]`)
@@ -325,7 +378,14 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     return
   }
 
-  // Send the permission prompt as a message in the BGOS chat
+  pendingPermissions.set(request_id, {
+    chatId,
+    toolName: tool_name,
+    description,
+    inputPreview: input_preview,
+    createdAt: Date.now(),
+  })
+
   const promptText = [
     `🔐 **Permission Request**`,
     ``,
@@ -333,7 +393,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     `${description}`,
     input_preview ? `\n\`\`\`\n${input_preview}\n\`\`\`` : '',
     ``,
-    `Reply **yes ${request_id}** to approve or **no ${request_id}** to deny.`,
+    `Choose an option below. Fallback: type **yes ${request_id}** or **no ${request_id}**.`,
   ]
     .filter(Boolean)
     .join('\n')
@@ -347,22 +407,25 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
       sentDate: new Date().toISOString(),
       hasAttachment: false,
       files: [],
-      options: [],
+      options: permissionOptions(request_id),
     })
 
     log(`Permission prompt sent to chat ${chatId} for ${tool_name} [${request_id}]`)
 
     // Wait for the user's verdict via polling (timeout: 120s)
-    const verdict = await waitForVerdict(request_id, chatId, 120_000)
+    const choice = await waitForVerdict(request_id, chatId, 120_000)
+    const behavior = choiceToBehavior(choice)
 
-    log(`Verdict for ${tool_name} [${request_id}]: ${verdict}`)
+    log(`Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}`)
+    pendingPermissions.delete(request_id)
     mcp.notification({
       method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: verdict },
+      params: { request_id, behavior },
     }).catch((err) => {
       log(`Failed to send verdict: ${err}`)
     })
   } catch (err) {
+    pendingPermissions.delete(request_id)
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
     mcp.notification({
@@ -373,14 +436,15 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
 })
 
 /**
- * Wait for the user to reply with "yes <id>" or "no <id>" in the BGOS chat.
- * Polls the chat history for matching user messages.
+ * Wait for the user to choose a permission verdict in the BGOS chat.
+ * Accepts either a button materialized as callbackData/text, or the typed
+ * fallback "yes <id>" / "no <id>".
  */
 async function waitForVerdict(
   requestId: string,
   chatId: string,
   timeoutMs: number,
-): Promise<'allow' | 'deny'> {
+): Promise<PermissionChoice> {
   const startTime = Date.now()
   const baselineId = chatLastSeen.get(chatId) ?? 0
 
@@ -391,25 +455,21 @@ async function waitForVerdict(
       const data = (await bgosGet(
         `chats/${chatId}/messages?userId=${USER_ID}`,
       )) as ChatHistoryResponse
-
       if (!data.messages?.length) continue
 
-      // Look for new user messages that match the verdict format
+      // Look for new user messages that match one of the verdict formats.
       for (const msg of data.messages) {
         if (msg.message.id <= baselineId) continue
         if (msg.message.sender !== 'user') continue
 
         const text = msg.message.text ?? ''
-        const match = VERDICT_RE.exec(text)
-        if (!match) continue
-
-        const [, yesNo, id] = match
-        if (id.toLowerCase() !== requestId.toLowerCase()) continue
+        const choice = parsePermissionChoice(text, requestId)
+        if (!choice) continue
 
         // Update last seen so we don't re-process this message
         chatLastSeen.set(chatId, Math.max(chatLastSeen.get(chatId) ?? 0, msg.message.id))
 
-        return yesNo.toLowerCase().startsWith('y') ? 'allow' : 'deny'
+        return choice
       }
     } catch {
       // Poll error, retry
@@ -686,8 +746,17 @@ async function pollChat(chatId: string): Promise<void> {
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
 
-      // Skip verdict messages — don't forward "yes abcde" / "no abcde" to Claude
-      if (VERDICT_RE.test(text)) continue
+      // Skip permission verdict messages/clicks — don't forward them to Claude
+      let isPermissionVerdict = VERDICT_RE.test(text)
+      if (!isPermissionVerdict) {
+        for (const requestId of pendingPermissions.keys()) {
+          if (parsePermissionChoice(text, requestId)) {
+            isPermissionVerdict = true
+            break
+          }
+        }
+      }
+      if (isPermissionVerdict) continue
 
       // Build content with attachment descriptions
       const contentParts: string[] = []
