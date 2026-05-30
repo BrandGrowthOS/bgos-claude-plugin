@@ -301,8 +301,23 @@ interface PendingPermission {
   description: string
   inputPreview?: string
   createdAt: number
+  // User who is driving the session that triggered this permission request.
+  // The verdict is bound to this user so that, in a shared-assistant chat,
+  // an unrelated user cannot approve/deny a permission prompt that wasn't
+  // theirs. Best-available value: the user_id of the most recent inbound user
+  // message (falls back to the configured account owner USER_ID).
+  requesterUserId: string
   resolve: (choice: PermissionChoice) => void
 }
+
+// Tracks the user_id of the most recent inbound USER message per chat. Used to
+// bind a permission verdict to the user who actually drove the session, rather
+// than accepting a verdict from any user in a shared-assistant chat. The plugin
+// currently only ever sees the configured account owner (USER_ID) because the
+// chat-message payload carries no per-sender user id — but this indirection
+// means that once the backend starts shipping a distinct sender user_id, the
+// binding tightens automatically with no further wiring.
+const lastInboundUserByChat = new Map<string, string>()
 
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
@@ -312,6 +327,72 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 
 /** Regex matching BGOS permission button callback identifiers. */
 const PERMISSION_CALLBACK_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
+
+// ── Button-value namespace isolation ─────────────────────────────────────────
+// Agent-authored button `value`s share the callback_data namespace with the
+// plugin's reserved control prefixes (perm:* permission relay, sc:* slash
+// commands, ea:* approvals) and the reserved sentinels __skip__ / __custom__.
+// An agent that emits one of those would either be silently swallowed by the
+// permission/slash intercepts or collide with a sentinel. To keep agent values
+// fully opaque AND safe, every agent-authored value is namespace-escaped with a
+// reserved `u:` (user/agent) sentinel before it leaves the plugin, and the
+// prefix is stripped on the callback round-trip so the agent sees its original
+// value unchanged.
+const AGENT_VALUE_PREFIX = 'u:'
+const RESERVED_VALUE_SENTINELS = new Set(['__skip__', '__custom__'])
+const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:']
+
+/**
+ * Escape an agent-authored button value into a collision-proof namespace.
+ * Always prefixes with `u:` so it can never be mistaken for a reserved control
+ * value, and so the strip on the way back is unambiguous.
+ */
+function escapeAgentButtonValue(value: string): string {
+  return `${AGENT_VALUE_PREFIX}${value}`
+}
+
+/**
+ * Reverse of escapeAgentButtonValue — strips the `u:` sentinel so the agent
+ * receives the exact value it authored in the click callback. Reserved control
+ * values (perm:/sc:/ea:/__skip__/__custom__) are never escaped, so they pass
+ * through untouched.
+ */
+function unescapeAgentButtonValue(callbackData: string): string {
+  return callbackData.startsWith(AGENT_VALUE_PREFIX)
+    ? callbackData.slice(AGENT_VALUE_PREFIX.length)
+    : callbackData
+}
+
+/**
+ * True when an agent-authored value collides with a reserved sentinel or
+ * control prefix. Used only for diagnostics — the escape makes the collision
+ * harmless regardless, but we log it so unexpected agent behavior is visible.
+ */
+function collidesWithReserved(value: string): boolean {
+  if (RESERVED_VALUE_SENTINELS.has(value)) return true
+  return RESERVED_VALUE_PREFIXES.some((p) => value.startsWith(p))
+}
+
+/**
+ * Best-effort extraction of the sender's user id from an inbound message-ish
+ * object. The current backend does not stamp a per-sender user id on chat
+ * messages, so this almost always resolves to the configured account owner
+ * (USER_ID). Written to read a distinct field if/when the backend adds one, so
+ * the permission-verdict binding tightens with zero further plumbing.
+ *
+ * TODO(backend): once chat messages carry a real per-sender user id
+ * (e.g. message.senderUserId), this returns it and the verdict binding becomes
+ * a true per-user check instead of the current account-owner fallback.
+ */
+function senderUserIdOf(message: unknown): string {
+  const m = message as Record<string, unknown> | null | undefined
+  const candidate =
+    (m?.senderUserId as string | undefined) ??
+    (m?.sender_user_id as string | undefined) ??
+    (m?.userId as string | undefined) ??
+    (m?.user_id as string | undefined)
+  return typeof candidate === 'string' && candidate ? candidate : USER_ID
+}
 
 function permissionOptions(requestId: string): Array<{ text: string; callbackData: string }> {
   return [
@@ -540,12 +621,18 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     resolveButtonChoice = resolve
   })
 
+  // Bind the verdict to the user who is driving the session in this chat.
+  // Falls back to the configured account owner when no inbound user has been
+  // seen for this chat yet (e.g. a proactive/cron-triggered tool use).
+  const requesterUserId = lastInboundUserByChat.get(chatId) ?? USER_ID
+
   pendingPermissions.set(request_id, {
     chatId,
     toolName: tool_name,
     description,
     inputPreview: input_preview,
     createdAt: Date.now(),
+    requesterUserId,
     resolve: resolveButtonChoice,
   })
 
@@ -584,7 +671,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     // Race: inline-button click vs. text-reply verdict vs. 120s timeout.
     const choice = await Promise.race<PermissionChoice>([
       buttonChoice,
-      waitForVerdict(request_id, chatId, 120_000),
+      waitForVerdict(request_id, chatId, 120_000, requesterUserId),
     ])
     const behavior = choiceToBehavior(choice)
 
@@ -611,11 +698,19 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
  * Wait for the user to choose a permission verdict in the BGOS chat.
  * Accepts either a button materialized as callbackData/text, or the typed
  * fallback "yes <id>" / "no <id>".
+ *
+ * The verdict is bound to `requesterUserId` — the user who drove the session
+ * that triggered this permission request. In a shared-assistant chat this
+ * prevents an unrelated user from approving/denying a prompt that wasn't
+ * theirs. The binding is only enforced when the resolving message carries a
+ * comparable per-sender user id; if it doesn't (current backend), we fall back
+ * to the existing `sender === 'user'` behavior (see TODO below).
  */
 async function waitForVerdict(
   requestId: string,
   chatId: string,
   timeoutMs: number,
+  requesterUserId: string,
 ): Promise<PermissionChoice> {
   const startTime = Date.now()
   const baselineId = chatLastSeen.get(chatId) ?? 0
@@ -633,6 +728,27 @@ async function waitForVerdict(
       for (const msg of data.messages) {
         if (msg.message.id <= baselineId) continue
         if (msg.message.sender !== 'user') continue
+
+        // User binding: only accept the verdict from the user who triggered
+        // the request. We extract a per-sender user id from the message when
+        // present and require it to equal requesterUserId.
+        //
+        // TODO(backend): the chat-message payload does not yet carry a distinct
+        // per-sender user id (senderUserIdOf falls back to USER_ID), so in a
+        // multi-user shared-assistant chat this comparison is currently a
+        // no-op (USER_ID === USER_ID) and we still accept any user-sent verdict
+        // — the same as the pre-hardening behavior. Once the backend stamps a
+        // real sender user id, this binding tightens automatically with no
+        // further code change. The button-click path (PERMISSION_CALLBACK_RE in
+        // pollChat) carries the same limitation and the same future fix.
+        const resolverUserId = senderUserIdOf(msg.message)
+        if (resolverUserId !== requesterUserId) {
+          log(
+            `Ignoring permission verdict for [${requestId}] from user ` +
+              `${resolverUserId} (request belongs to ${requesterUserId})`,
+          )
+          continue
+        }
 
         const text = msg.message.text ?? ''
         const choice = parsePermissionChoice(text, requestId)
@@ -673,7 +789,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           chat_id: {
             type: 'string',
-            description: 'The chat to reply in (from the channel event attributes)',
+            description:
+              'The chat to reply in. Pass back the chat_id (or, if present, the ' +
+              'session_handle) from the channel event you are answering. The ' +
+              'plugin rejects chat ids it has not received an inbound event for.',
           },
           text: {
             type: 'string',
@@ -780,7 +899,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           chat_id: {
             type: 'string',
-            description: 'The chat to ask in (from the channel event attributes).',
+            description:
+              'The chat to ask in. Pass back the chat_id (or session_handle) ' +
+              'from the channel event. Rejected if not a chat you received an ' +
+              'inbound event for.',
           },
           questions: {
             type: 'array',
@@ -1046,7 +1168,15 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
 
-      const meetingIdForChat = meetingIdByChatId.get(String(chat_id))
+      // Membership check: refuse to forward a chat_id we were never authorized
+      // to see. Resolves an opaque sessionHandle back to its raw chat id and
+      // returns the handle to prefer on the way back.
+      const replyAuth = resolveAuthorizedChat(chat_id)
+      if (!replyAuth.ok) return replyAuth.error
+      const resolvedChatId = replyAuth.chatId
+      const replySessionHandle = replyAuth.sessionHandle
+
+      const meetingIdForChat = meetingIdByChatId.get(String(resolvedChatId))
       if (meetingIdForChat != null) {
         if (filesInput?.length || buttonsInput?.length) {
           return {
@@ -1064,8 +1194,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             text,
             asAssistantId: Number(ASSISTANT_ID),
           })
-          log(`meeting reply sent via reply tool to meeting ${meetingIdForChat} (chat ${chat_id})`)
-          clearInbound(chat_id)
+          log(`meeting reply sent via reply tool to meeting ${meetingIdForChat} (chat ${resolvedChatId})`)
+          clearInbound(resolvedChatId)
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err)
@@ -1093,7 +1223,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
               isError: true,
             }
           }
-          options.push({ text: b.label, callbackData: b.value })
+          // Namespace-escape the agent value so it can never collide with the
+          // plugin's reserved control prefixes/sentinels. Stripped on the way
+          // back in pollChat's click-transition handler.
+          if (collidesWithReserved(b.value)) {
+            log(
+              `reply: agent button value "${b.value}" collides with a reserved ` +
+                `namespace — escaping with "${AGENT_VALUE_PREFIX}" sentinel`,
+            )
+          }
+          options.push({ text: b.label, callbackData: escapeAgentButtonValue(b.value) })
         }
       }
 
@@ -1109,7 +1248,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const isMixedAttachments = resolvedFiles.length > 1 && categories.size > 1
 
         const body: Record<string, unknown> = {
-          chatId: Number(chat_id),
+          chatId: Number(resolvedChatId),
           assistantId: Number(ASSISTANT_ID),
           text,
           sender: 'assistant',
@@ -1118,6 +1257,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isMixedAttachments: isMixedAttachments || null,
           files: resolvedFiles,
           options,
+          // Prefer the opaque, server-minted handle when we have one — the
+          // hardened backend treats it as authoritative for chat resolution.
+          ...(replySessionHandle ? { sessionHandle: replySessionHandle } : {}),
           ...(reply_to_id !== undefined && { replyToId: reply_to_id }),
         }
         // Default: inline when buttons present (matches backend + n8n defaults).
@@ -1131,8 +1273,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (msgId) parts.push(`message_id: ${msgId}`)
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
         if (options.length) parts.push(`${options.length} button(s) (${body.renderMode})`)
-        log(`reply sent to chat ${chat_id} (${parts.join(', ')})`)
-        clearInbound(chat_id)
+        log(`reply sent to chat ${resolvedChatId} (${parts.join(', ')})`)
+        clearInbound(resolvedChatId)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1174,8 +1316,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (!chat_id || !title) {
         return { content: [{ type: 'text', text: 'Error: chat_id and title required' }] }
       }
+      // Membership check before forwarding the agent-supplied chat_id.
+      const renameAuth = resolveAuthorizedChat(chat_id)
+      if (!renameAuth.ok) return renameAuth.error
       try {
-        await bgosPatch(`chats/${chat_id}/title`, { title })
+        await bgosPatch(`chats/${renameAuth.chatId}/title`, { title })
         return { content: [{ type: 'text', text: `Renamed to "${title}"` }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1198,6 +1343,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       if (!chat_id) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }] }
       }
+      // Membership check before forwarding the agent-supplied chat_id.
+      const askAuth = resolveAuthorizedChat(chat_id)
+      if (!askAuth.ok) return askAuth.error
+      const askChatId = askAuth.chatId
       if (!questions?.length) {
         return {
           content: [{ type: 'text', text: 'Error: at least one question is required' }],
@@ -1225,7 +1374,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i]
           const result = (await bgosPost('messages', {
-            chatId: Number(chat_id),
+            chatId: Number(askChatId),
             sender: 'assistant',
             text: q.text,
             messageType: 'ask_user_input',
@@ -1233,16 +1382,17 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             askOrder: i + 1,
             allowFreeText: q.allow_free_text ?? true,
             allowSkip: q.allow_skip ?? true,
+            // Namespace-escape agent option values (same isolation as `reply`).
             options: q.options.map((o) => ({
               text: o.label,
-              callbackData: o.value,
+              callbackData: escapeAgentButtonValue(o.value),
             })),
           })) as { id: number; askId: string | null }
           postedIds.push(result.id)
           if (!askId && result.askId) askId = result.askId
         }
         log(
-          `ask_user_input: posted ${questions.length} question(s) to chat ${chat_id} (askId=${askId})`,
+          `ask_user_input: posted ${questions.length} question(s) to chat ${askChatId} (askId=${askId})`,
         )
 
         // Poll until every posted message has answeredAt set, or timeout.
@@ -1263,7 +1413,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           await new Promise((r) => setTimeout(r, 1500))
           try {
             const data = (await bgosGet(
-              `chats/${chat_id}/messages?userId=${USER_ID}`,
+              `chats/${askChatId}/messages?userId=${USER_ID}`,
             )) as {
               messages: Array<{
                 message: {
@@ -1296,7 +1446,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
                 ...(payload.skipped === true && { skipped: true }),
                 ...(matched && {
                   optionLabel: matched.text,
-                  optionValue: matched.callbackData,
+                  // Strip the `u:` sentinel so the agent gets its original value.
+                  optionValue: unescapeAgentButtonValue(matched.callbackData),
                 }),
               })
             }
@@ -1563,6 +1714,11 @@ interface ChatMessage {
     renderMode?: 'inline' | 'modal' | string | null
     commandName?: string | null
     commandArgs?: string | null
+    // Opaque, server-minted handle the agent should round-trip instead of a
+    // raw chat_id. Present on inbound events from a hardened backend; absent
+    // on older backends (in which case we fall back to the raw chat_id).
+    sessionHandle?: string | null
+    session_handle?: string | null
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
@@ -1615,6 +1771,10 @@ const REPLY_OVERDUE_MS = 120_000
 
 function recordInbound(chatId: string, messageId: number): void {
   if (!chatId) return
+  // Authorize the chat for outbound dispatch even before the overdue-tracker
+  // guards below short-circuit (meeting chats, malformed ids). Receiving an
+  // inbound is proof the backend routed this chat to us.
+  noteMonitoredChat(chatId)
   if (meetingChatIds.has(chatId)) return
   if (!Number.isFinite(messageId)) return
   const existing = pendingInbounds.get(chatId)
@@ -1662,6 +1822,7 @@ function rememberMeetingContext(meeting: any): void {
   })
   meetingChatIds.add(String(chatId))
   meetingIdByChatId.set(String(chatId), meetingId)
+  noteMonitoredChat(String(chatId))
 }
 
 function forgetMeetingContext(meetingId: number): void {
@@ -1766,6 +1927,103 @@ function checkReplyOverdue(): void {
 const chatUnansweredButtons = new Map<string, Set<number>>()
 let monitoredChatIds: string[] = []
 
+// ── Chat membership authority ────────────────────────────────────────────────
+// Defense-in-depth: the backend is the sole authority for chat resolution +
+// participation, but we additionally refuse to forward an agent-supplied
+// chat_id we have never been authorized to see. The set is seeded by
+// discoverChats() (filtered to assistantId === ASSISTANT_ID + active meetings)
+// and grows as inbound channel events (poll + WS) arrive for a chat. A chat we
+// have never discovered NOR received an inbound from is rejected before any
+// reply/rename/ask dispatch instead of being forwarded verbatim.
+const monitoredChatSet = new Set<string>()
+
+// Opaque, server-minted session handles. The backend now mints a fresh
+// sessionHandle on every inbound event that agents should round-trip instead
+// of naming a raw chat_id. We capture the latest handle per chat and, when we
+// have one, prefer sending it back (as `sessionHandle` in the POST body) over
+// the raw chat_id. Agents may also pass a handle directly as `chat_id` — any
+// value present here (as key OR value) is treated as authorized.
+const sessionHandleByChat = new Map<string, string>()
+const knownSessionHandles = new Set<string>()
+
+/** Mark a chat id as authorized (seen via discovery or an inbound event). */
+function noteMonitoredChat(chatId: string | undefined | null): void {
+  if (!chatId) return
+  monitoredChatSet.add(String(chatId))
+}
+
+/**
+ * Capture an opaque sessionHandle the adapter received on an inbound event,
+ * binding it to its chat so we can (a) prefer it on the way back and (b) treat
+ * it as an authorized identifier if an agent echoes it as `chat_id`.
+ */
+function rememberSessionHandle(
+  chatId: string | undefined | null,
+  handle: unknown,
+): void {
+  if (typeof handle !== 'string' || !handle) return
+  knownSessionHandles.add(handle)
+  if (chatId) sessionHandleByChat.set(String(chatId), handle)
+}
+
+/**
+ * Validate an agent-supplied `chat_id` before dispatching reply/rename/ask.
+ * Accepts either (a) a chat id in the monitored set, or (b) an opaque
+ * sessionHandle the adapter previously received. Returns the resolved raw
+ * chat id on success, or an MCP error content payload on rejection.
+ *
+ * Returns `{ ok: true, chatId }` where chatId is always the RAW chat id usable
+ * for REST paths, plus `sessionHandle` (preferred for POST bodies) when known.
+ */
+function resolveAuthorizedChat(rawChatId: string):
+  | { ok: true; chatId: string; sessionHandle?: string }
+  | { ok: false; error: { content: Array<{ type: 'text'; text: string }>; isError: true } } {
+  const id = String(rawChatId)
+
+  // Case (b): the agent round-tripped an opaque sessionHandle. Resolve it back
+  // to the raw chat id it was minted for (if we still have that mapping).
+  if (knownSessionHandles.has(id)) {
+    let mappedChat: string | undefined
+    for (const [chat, handle] of sessionHandleByChat.entries()) {
+      if (handle === id) {
+        mappedChat = chat
+        break
+      }
+    }
+    return {
+      ok: true,
+      chatId: mappedChat ?? id,
+      sessionHandle: id,
+    }
+  }
+
+  // Case (a): a raw chat id we have been authorized to see.
+  if (monitoredChatSet.has(id)) {
+    return { ok: true, chatId: id, sessionHandle: sessionHandleByChat.get(id) }
+  }
+
+  log(
+    `Rejected dispatch to unauthorized chat_id=${id} ` +
+      `(not in monitored set [${[...monitoredChatSet].join(',') || 'empty'}] ` +
+      `and not a known sessionHandle)`,
+  )
+  return {
+    ok: false,
+    error: {
+      content: [
+        {
+          type: 'text' as const,
+          text:
+            `Error: chat_id "${id}" is not one this assistant is a participant of. ` +
+            `Only reply/rename/ask in chats you received an inbound event from. ` +
+            `Pass back the chat_id (or sessionHandle) from the channel event you are answering.`,
+        },
+      ],
+      isError: true as const,
+    },
+  }
+}
+
 async function discoverChats(): Promise<void> {
   try {
     const data = (await bgosPeerGet('peers/inbox')) as {
@@ -1811,6 +2069,11 @@ async function discoverChats(): Promise<void> {
     }
     reconcileMeetingContexts(openMeetingChatSet)
     monitoredChatIds = [...new Set([...ownedChatIds, ...openMeetingChatSet])]
+    // Seed the membership authority. We only ADD here (never prune): a chat we
+    // have received a live inbound from but that has momentarily dropped out of
+    // the inbox snapshot must stay answerable. Stale ids cost nothing — the
+    // backend remains the final gate on every POST.
+    for (const id of monitoredChatIds) noteMonitoredChat(id)
   } catch (err) {
     log(`Failed to discover chats: ${err}`)
   }
@@ -1940,6 +2203,21 @@ async function pollChat(chatId: string): Promise<void> {
         const [, choice, requestId] = permMatch
         const pending = pendingPermissions.get(requestId)
         if (pending) {
+          // User binding (mirrors waitForVerdict): only the user who triggered
+          // the request may resolve it via a button click.
+          //
+          // TODO(backend): the answer payload carries no clicker user id, so
+          // senderUserIdOf falls back to USER_ID and this comparison is a
+          // no-op today (same limitation as the text-verdict path). It tightens
+          // automatically once the backend stamps a clicker user id.
+          const clickerUserId = senderUserIdOf(payload)
+          if (clickerUserId !== pending.requesterUserId) {
+            log(
+              `Ignoring permission button click ${choice} [${requestId}] from ` +
+                `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
+            )
+            continue
+          }
           log(`Permission inline-button click: ${choice} [${requestId}]`)
           pending.resolve(choice!.toLowerCase() as PermissionChoice)
           pendingPermissions.delete(requestId)
@@ -1949,10 +2227,15 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
+      // Strip the `u:` namespace sentinel so the agent receives the exact value
+      // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
+      // and pass through untouched.
+      const agentCallbackData = unescapeAgentButtonValue(callbackData)
+
       const kind =
-        callbackData === '__skip__'
+        agentCallbackData === '__skip__'
           ? 'Skipped'
-          : callbackData === '__custom__'
+          : agentCallbackData === '__custom__'
             ? 'Custom reply'
             : 'Clicked'
       const summary =
@@ -1960,7 +2243,7 @@ async function pollChat(chatId: string): Promise<void> {
           ? `${kind}: "${customText}"`
           : buttonText
             ? `${kind}: ${buttonText}`
-            : `${kind}: ${callbackData}`
+            : `${kind}: ${agentCallbackData}`
       const contentLines = [
         `[button_clicked] ${summary}`,
         `(in reply to message_id=${mm.id})`,
@@ -1977,7 +2260,7 @@ async function pollChat(chatId: string): Promise<void> {
             chat_id: chatId,
             message_id: String(mm.id),
             event_type: 'button_clicked',
-            callback_data: callbackData,
+            callback_data: agentCallbackData,
             button_text: buttonText,
             ...(customText ? { custom_text: customText } : {}),
             user: 'User',
@@ -2080,6 +2363,14 @@ async function pollChat(chatId: string): Promise<void> {
       // Push channel notification to Claude Code (fire-and-forget)
       // Keep meta simple — file URLs are embedded in the content text
       const isSlashCommand = msg.message.messageType === 'slash_command'
+      // Capture + surface any server-minted session handle so the agent can
+      // round-trip it on the reply (preferred over the raw chat_id).
+      const pollSessionHandle =
+        msg.message.sessionHandle ?? msg.message.session_handle ?? undefined
+      rememberSessionHandle(chatId, pollSessionHandle)
+      // Remember who drove this chat so a permission verdict can be bound to
+      // them (see lastInboundUserByChat / PendingPermission.requesterUserId).
+      lastInboundUserByChat.set(chatId, senderUserIdOf(msg.message))
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2091,6 +2382,9 @@ async function pollChat(chatId: string): Promise<void> {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
+            ...(typeof pollSessionHandle === 'string' && pollSessionHandle
+              ? { session_handle: pollSessionHandle }
+              : {}),
             ...(isBacklog ? { backlog: true } : {}),
             ...(isSlashCommand
               ? {
@@ -2216,7 +2510,14 @@ function connectWebsocket(): void {
       if (chatId) {
         const seen = chatLastSeen.get(chatId) ?? 0
         if (messageId > seen) chatLastSeen.set(chatId, messageId)
+        noteMonitoredChat(chatId)
       }
+      // Capture any opaque session handle the backend minted for this inbound
+      // so we can prefer round-tripping it (over the raw chat_id) on the reply.
+      const wsSessionHandle = payload?.sessionHandle ?? payload?.session_handle
+      rememberSessionHandle(chatId, wsSessionHandle)
+      // Remember who drove this chat (for permission-verdict user binding).
+      if (chatId) lastInboundUserByChat.set(chatId, senderUserIdOf(payload))
 
       // Mirror pollChat's content-building: text PLUS attachment lines.
       // Backend ships files as { id, filename, mime, url?, dataUri? } in the
@@ -2253,6 +2554,9 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
             transport: 'ws',
+            ...(typeof wsSessionHandle === 'string' && wsSessionHandle
+              ? { session_handle: wsSessionHandle }
+              : {}),
             ...(isWsSlashCommand
               ? {
                   event_type: 'slash_command',
@@ -2357,6 +2661,7 @@ function connectWebsocket(): void {
         const chatId = String(payload.chatId)
         meetingChatIds.add(chatId)
         meetingIdByChatId.set(chatId, meetingId)
+        noteMonitoredChat(chatId)
       }
       const peerNames = (payload?.participants ?? [])
         .filter((p: any) => Number(p?.assistantId) !== Number(ASSISTANT_ID))
@@ -2404,6 +2709,7 @@ function connectWebsocket(): void {
       if (chatId) {
         meetingChatIds.add(chatId)
         meetingIdByChatId.set(chatId, meetingId)
+        noteMonitoredChat(chatId)
         if (!ctx) {
           ctx = {
             chatId: Number(chatId),
