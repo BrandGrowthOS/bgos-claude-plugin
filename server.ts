@@ -464,7 +464,17 @@ const mcp = new Server(
       '',
       'Once you have a response, use the `reply` tool to send it back.',
       'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
-      'You can use markdown in your replies.',
+      'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
+      'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
+      'Tables do not render on mobile — use lists instead.',
+      '',
+      'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
+      'domains like foo.com incl. modern TLDs .dev/.app, and emails) — no',
+      '[text](url) needed. A masked link ([text](url) where the text differs',
+      'from the target) shows the user an "Open this link?" confirmation with',
+      'the full URL before opening, so prefer bare URLs when transparency',
+      'matters. URLs inside code spans/fences never linkify — use code when',
+      'the user should copy a URL rather than open it.',
       '',
       '## Sending Files & Media',
       '',
@@ -796,7 +806,11 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           text: {
             type: 'string',
-            description: 'The message text to send. Supports markdown. Optional if sending files or buttons.',
+            description:
+              'The message text to send. Supports markdown. Bare URLs/emails ' +
+              'auto-link (Telegram-style); masked [text](url) links show the ' +
+              'user an "Open this link?" confirmation, so prefer bare URLs. ' +
+              'URLs in code spans stay plain. Optional if sending files or buttons.',
           },
           files: {
             type: 'array',
