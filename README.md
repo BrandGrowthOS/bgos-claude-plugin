@@ -37,8 +37,8 @@ You **must** have all of the following installed before setting up the plugin:
 
 > ## ⚠️ Claude Subscription Required (not API-key auth)
 >
-> The `--channels` feature this plugin depends on **only works when Claude Code
-> is authenticated through a Claude subscription** (Pro / Max / Team). It does
+> The development-channels feature this plugin depends on **only works when
+> Claude Code is authenticated through a Claude subscription** (Pro / Max / Team). It does
 > **not** work when Claude Code is authenticated via a raw Anthropic API key
 > (`ANTHROPIC_API_KEY`).
 >
@@ -58,7 +58,7 @@ You **must** have all of the following installed before setting up the plugin:
 > ```
 >
 > Verify with `claude /status` — the "Auth" line should say `Claude subscription`,
-> not `API key`. Only then will `--channels` deliver inbound messages to your
+> not `API key`. Only then will the channel deliver inbound messages to your
 > session.
 
 ## Quick Start
@@ -107,18 +107,22 @@ In your **project's root directory**, create a `.mcp.json` file with your BGOS c
 
 ```bash
 cd /path/to/your/project
-claude --dangerously-skip-permissions --channels server:bgos
+claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
 ```
 
 Both flags are required:
 - `--dangerously-skip-permissions` — allows the plugin to auto-approve tool usage
-- `--channels server:bgos` — enables receiving messages from the BGOS chat
+- `--dangerously-load-development-channels server:bgos` — enables receiving messages from the BGOS chat
 
-> **Note on the `--channels` flag:** In earlier Claude Code versions this flag was
-> `--dangerously-load-development-channels`. The new short form is `--channels`.
-> The old long form is silently accepted on newer versions but does NOT wire up
-> channel delivery — if inbound messages suddenly stop reaching your agent after
-> a Claude Code update, switch to `--channels server:bgos`.
+> **Note on the launch flag — local clone vs. plugin store:** Because you
+> installed this plugin by **cloning it locally** (Step 1 above), it is a
+> *development channel* and MUST be loaded with
+> `--dangerously-load-development-channels server:bgos`. The shorter
+> `--channels server:bgos` form **only loads channels installed from the Claude
+> Code plugin store** — for a local clone it is silently accepted but never
+> wires up inbound delivery, so messages you send from the BGOS app never reach
+> the agent. If inbound messages aren't arriving, confirm you launched with
+> `--dangerously-load-development-channels`, not `--channels`.
 
 ### Step 4: Verify
 

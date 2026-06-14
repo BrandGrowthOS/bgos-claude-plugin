@@ -2,12 +2,13 @@
   "mcpServers": {
     "bgos": {
       "command": "bun",
-      "args": ["run", "--cwd", "/path/to/bgos-claude-plugin", "--shell=bun", "--silent", "start"],
+      "args": ["/absolute/path/to/bgos-claude-plugin/server.ts"],
       "env": {
         "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
         "BGOS_API_KEY": "your-api-key-here",
         "BGOS_USER_ID": "your-user-id-here",
-        "BGOS_ASSISTANT_ID": "your-assistant-id-here"
+        "BGOS_ASSISTANT_ID": "your-assistant-id-here",
+        "BGOS_AUTO_APPROVE": "true"
       }
     }
   }
