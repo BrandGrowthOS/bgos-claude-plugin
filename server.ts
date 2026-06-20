@@ -13,6 +13,9 @@
 
 import { readFile, stat } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
@@ -3173,6 +3176,65 @@ async function syncSlashCommands(): Promise<void> {
   }
 }
 
+// ── Always-on reconcile ───────────────────────────────────────────────────────
+// If the user flips the "Always-on" toggle in the BGOS app, install the
+// bgos-agent supervisor on THIS host so the session survives restart/reboot; if
+// they flip it off, remove it. Deterministic + self-healing (re-checked on a
+// timer) — no LLM involvement. Only for claude-code agents (Hermes/OpenClaw/
+// Gobot run under their own supervision). The CLI's singleton guard ensures
+// installing while this very session is live doesn't double-connect — the
+// supervisor waits behind this session and takes over only when it ends.
+const execFileAsync = promisify(execFile)
+const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
+let reconcileBusy = false
+
+async function isAlwaysOnInstalled(): Promise<boolean> {
+  try {
+    await execFileAsync(BGOS_AGENT_BIN, ['is-installed', '--assistant', ASSISTANT_ID])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function reconcileAlwaysOn(): Promise<void> {
+  if (reconcileBusy) return
+  reconcileBusy = true
+  try {
+    const a = (await bgosGet(`assistants/${ASSISTANT_ID}`)) as {
+      code?: string | null
+      alwaysOn?: boolean
+    }
+    // Only manage claude-code agents; others self-manage their own process.
+    if (a?.code !== 'claude-code') return
+    // Act only when the backend explicitly reports the flag. If alwaysOn is
+    // absent (older/transitional backend, pre-deploy), do nothing — never tear
+    // down a wanted supervisor just because the field is missing.
+    if (typeof a?.alwaysOn !== 'boolean') return
+    const desired = a.alwaysOn === true
+    const installed = await isAlwaysOnInstalled()
+    if (desired && !installed) {
+      log('always-on: enabled in BGOS — installing supervisor on this host')
+      await execFileAsync(
+        BGOS_AGENT_BIN,
+        ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
+        { timeout: 120_000 },
+      )
+      log('always-on: supervisor installed (takes over when this session ends)')
+    } else if (!desired && installed) {
+      log('always-on: disabled in BGOS — removing supervisor')
+      await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
+        timeout: 60_000,
+      })
+      log('always-on: supervisor removed')
+    }
+  } catch (err) {
+    log(`always-on reconcile error: ${err}`)
+  } finally {
+    reconcileBusy = false
+  }
+}
+
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -3241,6 +3303,13 @@ async function main(): Promise<void> {
   // every 5 minutes to catch newly-installed plugins / added .md files.
   void syncSlashCommands()
   setInterval(() => void syncSlashCommands(), 5 * 60_000).unref()
+
+  // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or
+  // removes the bgos-agent supervisor to match the assistant's alwaysOn flag.
+  // Checked on boot + every 2 min — snappy enough that flipping the toggle feels
+  // near-immediate, cheap enough to ignore.
+  void reconcileAlwaysOn()
+  setInterval(() => void reconcileAlwaysOn(), 2 * 60_000).unref()
 }
 
 main().catch((err) => {
