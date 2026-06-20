@@ -1,0 +1,570 @@
+#!/usr/bin/env bash
+# =============================================================================
+# bgos-agent — installer + always-on supervisor for a BGOS Claude Code agent.
+#
+# One command to set up (and optionally keep alive forever) a Claude Code agent
+# that talks to the BGOS app via the bgos channel plugin. It packages the recipe
+# a human would otherwise do by hand:
+#
+#   • ensure the plugin is cloned + `bun install`ed
+#   • write the agent's .mcp.json (BGOS creds) + a CLAUDE.md stub
+#   • (with --always-on) install a per-agent service — launchd on macOS,
+#     systemd --user on Linux — that launches the agent, auto-accepts the two
+#     --dangerously-* prompts, and restarts it on crash / quit / logout / reboot,
+#     with crash-loop detection so a wedged agent is visible, not silently churning.
+#
+# Per-agent and keyed by assistant id, so one host can run several. Auditable on
+# purpose: plain bash, no runtime deps beyond what the agent already needs
+# (bun, claude, git, expect).
+#
+# Usage:
+#   bgos-agent install --assistant <id> [--key <k> --user <u>] [--always-on] [opts]
+#   bgos-agent status   [--assistant <id>]
+#   bgos-agent start | stop | restart | logs | uninstall --assistant <id>
+#   bgos-agent link
+#   bgos-agent help
+# =============================================================================
+set -euo pipefail
+
+VERSION="0.1.0"
+DEFAULT_BACKEND="https://api.brandgrowthos.ai/api/v1"
+DEFAULT_CHANNEL="server:bgos"
+
+# --- resolve self + plugin root (bin/bgos-agent -> repo root) ----------------
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SOURCE" ]; do                      # follow symlinks (e.g. ~/.local/bin)
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SELF="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)/$(basename "$SOURCE")"
+BIN_DIR="$(dirname "$SELF")"
+PLUGIN_DIR="${BGOS_PLUGIN_DIR:-$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd)}"
+PLUGIN_REPO="https://github.com/BrandGrowthOS/bgos-claude-plugin.git"
+STATE_ROOT="$HOME/.bgos-agent"
+OS="$(uname -s)"
+
+# --- pretty output -----------------------------------------------------------
+if [ -t 1 ]; then
+  B=$'\033[1m'; R=$'\033[31m'; G=$'\033[32m'; Y=$'\033[33m'; Z=$'\033[0m'
+else B=""; R=""; G=""; Y=""; Z=""; fi
+info() { printf '%s▸%s %s\n' "$B" "$Z" "$*"; }
+ok()   { printf '%s✓%s %s\n' "$G" "$Z" "$*"; }
+warn() { printf '%s!%s %s\n' "$Y" "$Z" "$*" >&2; }
+die()  { printf '%s✗%s %s\n' "$R" "$Z" "$*" >&2; exit 1; }
+
+# --- per-agent path helpers --------------------------------------------------
+# State (supervisor artifacts: run.sh, run.expect, logs) and the default
+# workspace are SIBLINGS, so uninstall can wipe state without touching user data.
+label_for()    { printf 'ai.bgos.agent.%s' "$1"; }
+unit_for()     { printf 'bgos-agent-%s' "$1"; }
+plist_for()    { printf '%s/Library/LaunchAgents/%s.plist' "$HOME" "$(label_for "$1")"; }
+unitfile_for() { printf '%s/.config/systemd/user/%s.service' "$HOME" "$(unit_for "$1")"; }
+statedir_for() { printf '%s/%s' "$STATE_ROOT" "$1"; }
+default_workdir_for() { printf '%s/%s-workspace' "$STATE_ROOT" "$1"; }
+
+# --- validators (everything user-supplied that lands in a generated file) ----
+valid_id()      { [[ "$1" =~ ^[0-9]+$ ]]; }
+valid_channel() { [[ "$1" =~ ^[A-Za-z0-9:_.-]+$ ]]; }
+valid_bool()    { [[ "$1" =~ ^(true|false)$ ]]; }
+xml_escape()    { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
+require_id()    { [ -n "${ASSISTANT_ID:-}" ] || die "missing --assistant <id>"; valid_id "$ASSISTANT_ID" || die "--assistant must be a positive integer"; }
+
+# Ensure the systemd --user bus is reachable (headless / SSH / cloud-init hosts
+# often have no login session, so XDG_RUNTIME_DIR is unset and the user bus is
+# down). Enables linger FIRST so the user manager can run without a session.
+ensure_user_bus() {
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || warn "could not enable linger (service may stop on logout)"
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    die "systemd --user is unreachable (no user bus / XDG_RUNTIME_DIR). Run this as the target user with a login session, or first: loginctl enable-linger $(id -un) && (re-login)"
+  fi
+}
+
+# =============================================================================
+# install
+# =============================================================================
+cmd_install() {
+  require_id
+  local backend="${BACKEND:-$DEFAULT_BACKEND}"
+  local channel="${CHANNEL:-$DEFAULT_CHANNEL}"
+  local auto="${AUTO_APPROVE:-true}"
+  local workdir="${WORKDIR:-$(default_workdir_for "$ASSISTANT_ID")}"
+  local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
+  valid_channel "$channel" || die "--channel must match [A-Za-z0-9:_.-] (got '$channel')"
+  valid_bool "$auto"       || die "--auto-approve must be 'true' or 'false'"
+
+  info "Preflight"
+  command -v git    >/dev/null 2>&1 || die "git not found — install it first"
+  command -v bun    >/dev/null 2>&1 || die "bun not found — install from https://bun.sh"
+  command -v claude >/dev/null 2>&1 || die "claude not found — install Claude Code (claude.ai/code)"
+  command -v expect >/dev/null 2>&1 || die "expect not found — macOS ships it; on Linux: apt install expect"
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    warn "ANTHROPIC_API_KEY is set in your shell. The plugin needs a Claude *subscription*"
+    warn "login (Pro/Max/Team), not API-key auth, or inbound messages are silently dropped."
+    warn "The service runs with a clean env so it won't inherit this — but 'claude /status'"
+    warn "must show 'Claude subscription'."
+  fi
+  ok "git, bun, claude, expect present"
+
+  # --- ensure plugin clone + deps ------------------------------------------
+  if [ ! -f "$PLUGIN_DIR/server.ts" ]; then
+    [ "${NO_CLONE:-}" = "1" ] && die "plugin not found at $PLUGIN_DIR and --no-clone was given"
+    info "Cloning plugin → $PLUGIN_DIR"
+    git clone --depth 1 "$PLUGIN_REPO" "$PLUGIN_DIR"
+  fi
+  info "Installing plugin deps (bun install)"
+  ( cd "$PLUGIN_DIR" && bun install --no-summary >/dev/null 2>&1 ) || warn "bun install reported an issue (continuing)"
+  ok "plugin ready at $PLUGIN_DIR"
+
+  # --- workspace + .mcp.json ------------------------------------------------
+  mkdir -p "$workdir" "$statedir"
+  local mcp="$workdir/.mcp.json"
+  if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then
+    [ -f "$mcp" ] && cp "$mcp" "$mcp.bak" && warn "backed up existing .mcp.json → $mcp.bak"
+    write_mcp_json "$mcp" "$backend" "$API_KEY" "$USER_ID" "$ASSISTANT_ID" "$auto"
+    bun -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$mcp" >/dev/null 2>&1 \
+      || die "generated .mcp.json is not valid JSON — check your --key/--user/--backend for special characters"
+    ok "wrote $mcp"
+  elif [ ! -f "$mcp" ]; then
+    die "no .mcp.json in $workdir and no creds given. Pass --key <api-key> --user <user-id> (or --dir <existing-project>)."
+  else
+    info "using existing $mcp (pass --key/--user to regenerate)"
+  fi
+  if [ ! -f "$workdir/CLAUDE.md" ]; then
+    write_claude_md_stub "$workdir/CLAUDE.md"
+    ok "wrote $workdir/CLAUDE.md (stub — see plugin README Step 5 for full peer rules)"
+  fi
+
+  if [ "${ALWAYS_ON:-}" != "1" ]; then
+    say_launch_hint "$workdir" "$channel"
+    return 0
+  fi
+
+  # --- always-on supervisor -------------------------------------------------
+  info "Installing always-on supervisor (auto-restart + survive reboot)"
+  local claude_bin bun_bin expect_bin path
+  claude_bin="$(command -v claude)"
+  bun_bin="$(command -v bun)"
+  expect_bin="$(command -v expect)"
+  path="$(dirname "$claude_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+  write_run_expect "$statedir/run.expect" "$statedir" "$claude_bin" "$channel" "${CONTINUE:-}"
+  write_run_sh     "$statedir/run.sh"     "$statedir" "$statedir/run.expect" "$expect_bin"
+  chmod +x "$statedir/run.expect" "$statedir/run.sh"
+
+  case "$OS" in
+    Darwin) install_launchd "$ASSISTANT_ID" "$workdir" "$statedir" "$path" ;;
+    Linux)  install_systemd "$ASSISTANT_ID" "$workdir" "$statedir" "$path" ;;
+    *)      die "unsupported OS '$OS' (macOS + Linux only; on Windows use WSL)" ;;
+  esac
+
+  cmd_link >/dev/null 2>&1 || true
+  echo
+  ok "Agent $ASSISTANT_ID is always-on."
+  printf '  workspace : %s\n' "$workdir"
+  printf '  logs      : bgos-agent logs --assistant %s   (%s/agent.log)\n' "$ASSISTANT_ID" "$statedir"
+  printf '  status    : bgos-agent status --assistant %s\n' "$ASSISTANT_ID"
+  printf '  off       : bgos-agent uninstall --assistant %s\n' "$ASSISTANT_ID"
+}
+
+# --- file generators ---------------------------------------------------------
+# JSON via bun + JSON.stringify: values are passed as env vars (no shell/JSON
+# interpolation), so a key/url with quotes or backslashes can't corrupt or
+# inject into the config.
+write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto
+  BGOS_SERVER="$PLUGIN_DIR/server.ts" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" \
+  bun -e '
+    const e = process.env;
+    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_SERVER],
+      env: { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
+             BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO } } } };
+    process.stdout.write(JSON.stringify(cfg, null, 2) + "\n");
+  ' > "$1"
+}
+
+write_claude_md_stub() { # $1 path
+  cat > "$1" <<'MD'
+## BGOS plugin
+
+You are connected to the BGOS chat app via the `bgos` MCP plugin. Messages from
+the user (and other agents) arrive as `<channel source="bgos">` events.
+
+- Always answer the user through the `reply` tool — plain terminal output never
+  reaches their chat.
+- For peer-agent messages (meta carries `peer_conversation_id` / `turn_state`),
+  use `send_to_peer`, not `reply`.
+
+See the plugin README "Step 5" for the full peer-tool guidance and paste it here
+if this agent talks to other agents.
+MD
+}
+
+# run.expect: spawn the agent + auto-accept the --dangerous* prompt(s). The
+# Claude TUI separates words with cursor-move escapes, so we match single
+# contiguous words ("confirm" to accept; "experimental"/"connecting"/"bypass
+# permissions on" = live). Blind Enters on timeout are capped at 2 (the expected
+# prompt count) so we never spam the live REPL; lifecycle is governed by run.sh.
+write_run_expect() { # $1 path $2 statedir $3 claude_bin $4 channel $5 continue(1/empty)
+  local cont=""
+  [ "$5" = "1" ] && cont="--continue "
+  cat > "$1" <<EXP
+#!/usr/bin/expect -f
+# Auto-generated by bgos-agent.
+log_user 1
+log_file -a "$2/expect.log"
+spawn "$3" ${cont}--dangerously-skip-permissions --dangerously-load-development-channels "$4"
+set timeout 12
+set done 0
+set sent 0
+for {set i 0} {\$i < 8 && !\$done} {incr i} {
+    expect {
+        -re {(?i)experimental}          { set done 1 }
+        -re {(?i)connecting}            { set done 1 }
+        -re {(?i)bypass permissions on} { set done 1 }
+        -re {(?i)confirm}               { sleep 1; send "\r"; incr sent }
+        timeout { if {\$sent < 2} { send "\r"; incr sent } else { set done 1 } }
+        eof { exit 0 }
+    }
+}
+set timeout -1
+expect eof
+EXP
+}
+
+# run.sh: portable service entry point. Logs to agent.log, detects a crash-loop
+# (claude failing to start) and backs off + surfaces it, then runs the agent.
+# The OS service (launchd KeepAlive / systemd Restart=always) relaunches this on
+# exit — that is the always-on restart; run.sh just adds visibility + backoff.
+write_run_sh() { # $1 outpath $2 statedir $3 expectfile $4 expect_bin
+  cat > "$1" <<SH
+#!/usr/bin/env bash
+# Auto-generated by bgos-agent.
+sd="$2"
+expectfile="$3"
+expect_bin="$4"
+exec >> "\$sd/agent.log" 2>&1
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+workdir="\$(pwd -P)"
+# Singleton handoff: wait for any incumbent 'claude' already running in THIS
+# workspace (e.g. a manual session started before Always-on was flipped, or the
+# session that just installed this supervisor) to exit, so we never
+# double-connect as the same assistant. Sessions in other dirs are ignored.
+others_in_workdir() {
+  local pid cwd
+  # Match the basename so both a bare-name launch (comm=claude) and an absolute-
+  # path launch (comm=/path/claude, used by this supervisor) are caught. NOTE: a
+  # node-hosted claude (comm=node) isn't detected — native + path installs are.
+  for pid in \$(ps -axww -o pid=,comm= | awk '{n=\$2; sub(/.*\//,"",n); if(n=="claude") print \$1}'); do
+    if [ "\$(uname -s)" = "Darwin" ]; then
+      cwd="\$(lsof -a -d cwd -p "\$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+    else
+      cwd="\$(readlink "/proc/\$pid/cwd" 2>/dev/null)"
+    fi
+    [ "\$cwd" = "\$workdir" ] && printf '%s ' "\$pid"
+  done
+}
+while [ -n "\$(others_in_workdir)" ]; do
+  echo "[\$(ts)] waiting for an incumbent claude in \$workdir to exit before taking over"
+  sleep 5
+done
+fails=\$(cat "\$sd/failcount" 2>/dev/null || echo 0)
+start=\$(date +%s)
+echo "[\$(ts)] starting agent (consecutive fast-fails: \$fails)"
+"\$expect_bin" "\$expectfile" || true
+dur=\$(( \$(date +%s) - start ))
+if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
+echo "\$fails" > "\$sd/failcount"
+if [ "\$fails" -ge 3 ]; then
+  echo "[\$(ts)] WEDGED: agent exited after \${dur}s, \$fails times in a row."
+  echo "[\$(ts)]   Likely auth — run 'claude /status' (must say 'Claude subscription') — or a bad .mcp.json."
+  sleep 60
+fi
+SH
+}
+
+# --- macOS launchd -----------------------------------------------------------
+# bootout is async; poll for the label to actually unload before bootstrapping,
+# and retry bootstrap on transient EBUSY, so re-install / restart don't race.
+launchd_reload() { # $1 plist $2 label  -> returns nonzero on hard failure
+  local plist="$1" label="$2" domain n=0 tries=0
+  domain="gui/$(id -u)"
+  launchctl bootout "$domain" "$plist" >/dev/null 2>&1 || true
+  while launchctl print "$domain/$label" >/dev/null 2>&1; do
+    n=$((n + 1)); [ "$n" -ge 40 ] && break; sleep 0.25
+  done
+  until launchctl bootstrap "$domain" "$plist" 2>/dev/null; do
+    tries=$((tries + 1)); [ "$tries" -ge 5 ] && return 1; sleep 0.5
+  done
+  return 0
+}
+
+install_launchd() { # $1 id $2 workdir $3 statedir $4 path
+  local id="$1" workdir="$2" statedir="$3" path="$4"
+  local label; label="$(label_for "$id")"
+  local plist; plist="$(plist_for "$id")"
+  local x_wd x_sd x_path x_home
+  x_wd="$(xml_escape "$workdir")"; x_sd="$(xml_escape "$statedir")"
+  x_path="$(xml_escape "$path")";  x_home="$(xml_escape "$HOME")"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$x_sd/run.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>$x_wd</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>StandardOutPath</key><string>$x_sd/service.out.log</string>
+  <key>StandardErrorPath</key><string>$x_sd/service.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$x_path</string>
+    <key>HOME</key><string>$x_home</string>
+    <key>TERM</key><string>xterm-256color</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+  plutil -lint "$plist" >/dev/null || die "generated plist failed validation: $plist"
+  launchd_reload "$plist" "$label" || die "launchctl bootstrap failed for $label (try: bgos-agent status --assistant $id)"
+  ok "launchd service $label loaded"
+}
+
+# --- Linux systemd --user ----------------------------------------------------
+install_systemd() { # $1 id $2 workdir $3 statedir $4 path
+  local id="$1" workdir="$2" statedir="$3" path="$4"
+  local unit; unit="$(unit_for "$id")"
+  local unitfile; unitfile="$(unitfile_for "$id")"
+  ensure_user_bus
+  mkdir -p "$HOME/.config/systemd/user"
+  # StartLimitIntervalSec=0 → never give up restarting (matches launchd KeepAlive);
+  # crash-loop visibility comes from run.sh, not from systemd marking it failed.
+  # Logs go to $statedir/agent.log (run.sh redirects); journal captures the rest
+  # (append: is avoided — it needs systemd v240+, breaking Ubuntu 18.04).
+  cat > "$unitfile" <<UNIT
+[Unit]
+Description=BGOS Claude Code agent $id
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=$workdir
+ExecStart=/bin/bash "$statedir/run.sh"
+Restart=always
+RestartSec=10
+Environment=PATH=$path
+Environment=HOME=$HOME
+Environment=TERM=xterm-256color
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+  systemctl --user enable --now "$unit" || die "systemctl --user enable failed for $unit"
+  ok "systemd --user service $unit enabled + started"
+}
+
+say_launch_hint() { # $1 workdir $2 channel
+  echo
+  ok "Config ready (no supervisor — foreground mode)."
+  printf '  Run it with:\n    cd %s\n    claude --dangerously-skip-permissions --dangerously-load-development-channels %s\n' "$1" "$2"
+  printf '  Re-run with %s--always-on%s to keep it running + survive reboot.\n' "$B" "$Z"
+}
+
+# =============================================================================
+# status / start / stop / restart / logs / uninstall
+# =============================================================================
+cmd_status() {
+  if [ -z "${ASSISTANT_ID:-}" ]; then
+    info "BGOS agents on this host:"
+    case "$OS" in
+      Darwin) launchctl list 2>/dev/null | awk '$3 ~ /^ai\.bgos\.agent\./ {print "  "$0}' | grep . || echo "  (none)";;
+      Linux)  ensure_user_bus; systemctl --user list-units --all 'bgos-agent-*' --no-legend 2>/dev/null | grep . || echo "  (none)";;
+    esac
+    return 0
+  fi
+  require_id
+  local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
+  case "$OS" in
+    Darwin)
+      local label; label="$(label_for "$ASSISTANT_ID")"
+      if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
+        ok "$label is loaded"
+        # Columns: PID  LAST-EXIT  LABEL. Warn when not running + last exit nonzero.
+        launchctl list 2>/dev/null | awk -v l="$label" '$3==l {
+          print "  pid="$1"  last-exit="$2;
+          if ($1=="-" && $2!="0") print "  ! not running and last exit was nonzero — check logs"
+        }'
+      else warn "$label is not loaded (install with: bgos-agent install --assistant $ASSISTANT_ID --always-on)"; fi
+      ;;
+    Linux) ensure_user_bus; systemctl --user status "$(unit_for "$ASSISTANT_ID")" --no-pager || true;;
+  esac
+  if [ -f "$statedir/agent.log" ]; then
+    echo; info "recent agent.log:"; tail -n 10 "$statedir/agent.log" || true
+  fi
+}
+
+cmd_stop() {
+  require_id
+  case "$OS" in
+    Darwin) launchctl bootout "gui/$(id -u)" "$(plist_for "$ASSISTANT_ID")" >/dev/null 2>&1 && ok "stopped $(label_for "$ASSISTANT_ID")" || warn "was not running";;
+    Linux)  ensure_user_bus; systemctl --user stop "$(unit_for "$ASSISTANT_ID")" && ok "stopped" || warn "was not running";;
+  esac
+}
+
+cmd_start() {
+  require_id
+  case "$OS" in
+    Darwin)
+      local plist; plist="$(plist_for "$ASSISTANT_ID")"
+      [ -f "$plist" ] || die "not installed — run: bgos-agent install --assistant $ASSISTANT_ID --always-on"
+      launchd_reload "$plist" "$(label_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(label_for "$ASSISTANT_ID")";;
+    Linux)  ensure_user_bus; systemctl --user start "$(unit_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(unit_for "$ASSISTANT_ID")";;
+  esac
+}
+
+cmd_restart() {
+  require_id
+  case "$OS" in
+    Darwin)
+      local plist; plist="$(plist_for "$ASSISTANT_ID")"
+      [ -f "$plist" ] || die "not installed"
+      launchd_reload "$plist" "$(label_for "$ASSISTANT_ID")" && ok "restarted" || die "restart failed";;
+    Linux)  ensure_user_bus; systemctl --user restart "$(unit_for "$ASSISTANT_ID")" && ok "restarted" || die "restart failed for $(unit_for "$ASSISTANT_ID")";;
+  esac
+}
+
+cmd_logs() {
+  require_id
+  local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
+  [ -d "$statedir" ] || die "no state for agent $ASSISTANT_ID"
+  tail -n 60 "$statedir/agent.log" "$statedir/expect.log" 2>/dev/null || echo "(no logs yet)"
+}
+
+cmd_uninstall() {
+  require_id
+  local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
+  # Remove the manifest + state FIRST, so the agent reads as uninstalled even if
+  # the stop/bootout below kills this very process — which happens when the
+  # toggle is flipped off from INSIDE the supervised session (the teardown is a
+  # descendant of the job). Workspace + .mcp.json are a sibling dir, never touched.
+  case "$OS" in
+    Darwin) rm -f "$(plist_for "$ASSISTANT_ID")" ;;
+    Linux)  rm -f "$(unitfile_for "$ASSISTANT_ID")" ;;
+  esac
+  [ -d "$statedir" ] && rm -rf "$statedir"
+  ok "removed supervisor manifest + state for agent $ASSISTANT_ID"
+  # Now stop the running job by label/unit (works even though the file is gone).
+  # This may terminate this process tree — fine, the cleanup above already ran.
+  case "$OS" in
+    Darwin)
+      launchctl bootout "gui/$(id -u)/$(label_for "$ASSISTANT_ID")" >/dev/null 2>&1 || true ;;
+    Linux)
+      export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+      systemctl --user stop "$(unit_for "$ASSISTANT_ID")" >/dev/null 2>&1 || true
+      systemctl --user daemon-reload >/dev/null 2>&1 || true ;;
+  esac
+  info "Always-on removed. The plugin ($PLUGIN_DIR) and your workspace + .mcp.json are kept."
+}
+
+cmd_is_installed() { # exit 0 if the supervisor is installed for this id, else 1
+  require_id
+  case "$OS" in
+    Darwin) [ -f "$(plist_for "$ASSISTANT_ID")" ] && exit 0 || exit 1 ;;
+    Linux)  [ -f "$(unitfile_for "$ASSISTANT_ID")" ] && exit 0 || exit 1 ;;
+    *) exit 1 ;;
+  esac
+}
+
+cmd_link() {
+  mkdir -p "$HOME/.local/bin"
+  ln -sf "$SELF" "$HOME/.local/bin/bgos-agent"
+  ok "linked → $HOME/.local/bin/bgos-agent"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) : ;;
+    *) warn "add ~/.local/bin to PATH:  export PATH=\"\$HOME/.local/bin:\$PATH\"";;
+  esac
+}
+
+usage() {
+  cat <<USAGE
+${B}bgos-agent${Z} v$VERSION — set up + keep alive a BGOS Claude Code agent.
+
+${B}Commands${Z}
+  install   --assistant <id> [opts]   set up the agent (and supervisor with --always-on)
+  status    [--assistant <id>]        show service state (+ recent log); no id = list all
+  start | stop | restart  --assistant <id>
+  logs      --assistant <id>          tail the agent's logs
+  uninstall --assistant <id>          remove the supervisor + state (keeps plugin + workspace)
+  is-installed --assistant <id>       exit 0 if the always-on supervisor is installed (for scripts)
+  link                                symlink this script to ~/.local/bin
+  help
+
+${B}install options${Z}
+  --assistant <id>     (required) BGOS assistant id
+  --key <api-key>      BGOS_API_KEY        --user <user-id>   BGOS_USER_ID
+  --backend <url>      default $DEFAULT_BACKEND
+  --dir <path>         working dir (default ~/.bgos-agent/<id>-workspace)
+  --always-on          install the auto-restart + survive-reboot supervisor
+  --continue           resume the latest session on each (re)start (default: fresh)
+  --auto-approve <t/f> default true
+  --channel <name>     dev channel (default $DEFAULT_CHANNEL; advanced/testing)
+  --no-clone           assume the plugin is already at \$BGOS_PLUGIN_DIR
+
+${B}examples${Z}
+  bgos-agent install --assistant 42 --key sk_... --user user_abc --always-on
+  bgos-agent status --assistant 42
+  bgos-agent uninstall --assistant 42
+USAGE
+}
+
+# =============================================================================
+# arg parsing + dispatch
+# =============================================================================
+[ $# -ge 1 ] || { usage; exit 1; }
+SUB="$1"; shift || true
+
+# need_val <flag> <remaining-arg-count>  — guards "shift 2" from aborting under
+# set -e when a value-taking flag is the final token.
+need_val() { [ "$2" -ge 2 ] || die "$1 requires a value"; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --assistant) need_val "$1" "$#"; ASSISTANT_ID="$2"; shift 2;;
+    --key)       need_val "$1" "$#"; API_KEY="$2"; shift 2;;
+    --user)      need_val "$1" "$#"; USER_ID="$2"; shift 2;;
+    --backend)   need_val "$1" "$#"; BACKEND="$2"; shift 2;;
+    --dir)       need_val "$1" "$#"; WORKDIR="$2"; shift 2;;
+    --channel)   need_val "$1" "$#"; CHANNEL="$2"; shift 2;;
+    --auto-approve) need_val "$1" "$#"; AUTO_APPROVE="$2"; shift 2;;
+    --always-on) ALWAYS_ON=1; shift;;
+    --continue)  CONTINUE=1; shift;;
+    --no-clone)  NO_CLONE=1; shift;;
+    -h|--help)   usage; exit 0;;
+    *) die "unknown option: $1 (try: bgos-agent help)";;
+  esac
+done
+
+case "$SUB" in
+  install)   cmd_install;;
+  status)    cmd_status;;
+  start)     cmd_start;;
+  stop)      cmd_stop;;
+  restart)   cmd_restart;;
+  logs)      cmd_logs;;
+  uninstall) cmd_uninstall;;
+  is-installed) cmd_is_installed;;
+  link)      cmd_link;;
+  help|-h|--help) usage;;
+  *) die "unknown command: $SUB (try: bgos-agent help)";;
+esac

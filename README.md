@@ -61,6 +61,56 @@ You **must** have all of the following installed before setting up the plugin:
 > not `API key`. Only then will the channel deliver inbound messages to your
 > session.
 
+## One-command setup: `bgos-agent` (recommended)
+
+[`bin/bgos-agent`](bin/bgos-agent) does the whole setup — and can keep the agent
+**always-on** (auto-restart + survive reboot) — in a single command. It's plain
+bash you can read before it touches your machine; **macOS** (launchd) and
+**Linux** (systemd --user) are supported.
+
+```bash
+# one-time: put it on your PATH (from your plugin clone)
+~/bgos-claude-plugin/bin/bgos-agent link
+
+# set up an agent AND keep it running forever:
+bgos-agent install --assistant <id> --key <api-key> --user <user-id> --always-on
+```
+
+That single command:
+
+1. checks prerequisites (bun, claude, git, expect),
+2. ensures the plugin is cloned + `bun install`ed,
+3. writes the agent's `.mcp.json` (+ a `CLAUDE.md` stub),
+4. installs a **per-agent service** that launches Claude Code, **auto-accepts the
+   two `--dangerously-*` prompts**, and restarts it on crash / quit / logout /
+   reboot.
+
+> **Even simpler — let the app do it:** flip the **Always-on** toggle on a Claude
+> Code agent in the BGOS app and the plugin runs this `install --always-on` for
+> you on the host automatically (and `uninstall` when you flip it off). It waits
+> behind your current session and takes over only when that session ends, so it
+> never double-connects.
+
+Drop `--always-on` to just write the config and print the launch command (no
+service). Manage a running agent with:
+
+```bash
+bgos-agent status    --assistant <id>     # running? + recent log  (no id = list all)
+bgos-agent logs      --assistant <id>
+bgos-agent restart   --assistant <id>
+bgos-agent uninstall --assistant <id>     # removes the service; keeps your workspace
+```
+
+Each agent is keyed by its assistant id, so one host can run several. Full
+options: `bgos-agent help`.
+
+> **Subscription auth still required** (see the warning above) — the supervisor
+> runs Claude Code with a clean environment so it won't inherit `ANTHROPIC_API_KEY`,
+> but `claude /status` must show `Claude subscription`.
+
+> Prefer to wire it up by hand? The manual **Quick Start** below does exactly the
+> same thing, step by step.
+
 ## Quick Start
 
 ### Step 1: Install the plugin (one-time per machine)
