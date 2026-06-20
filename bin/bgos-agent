@@ -302,9 +302,12 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path
   local id="$1" workdir="$2" statedir="$3" path="$4"
   local label; label="$(label_for "$id")"
   local plist; plist="$(plist_for "$id")"
-  local x_wd x_sd x_path x_home
+  local x_wd x_sd x_path x_home x_user
   x_wd="$(xml_escape "$workdir")"; x_sd="$(xml_escape "$statedir")"
   x_path="$(xml_escape "$path")";  x_home="$(xml_escape "$HOME")"
+  # USER/LOGNAME so a headless Claude can find its Keychain login (keyed by
+  # username) — without them it falls to a "Not logged in" wall and never serves.
+  x_user="$(xml_escape "$(id -un)")"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -329,6 +332,8 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path
     <key>PATH</key><string>$x_path</string>
     <key>HOME</key><string>$x_home</string>
     <key>TERM</key><string>xterm-256color</string>
+    <key>USER</key><string>$x_user</string>
+    <key>LOGNAME</key><string>$x_user</string>
   </dict>
 </dict>
 </plist>
@@ -343,6 +348,7 @@ install_systemd() { # $1 id $2 workdir $3 statedir $4 path
   local id="$1" workdir="$2" statedir="$3" path="$4"
   local unit; unit="$(unit_for "$id")"
   local unitfile; unitfile="$(unitfile_for "$id")"
+  local user_name; user_name="$(id -un)"
   ensure_user_bus
   mkdir -p "$HOME/.config/systemd/user"
   # StartLimitIntervalSec=0 → never give up restarting (matches launchd KeepAlive);
@@ -363,6 +369,8 @@ RestartSec=10
 Environment=PATH=$path
 Environment=HOME=$HOME
 Environment=TERM=xterm-256color
+Environment=USER=$user_name
+Environment=LOGNAME=$user_name
 StandardOutput=journal
 StandardError=journal
 
