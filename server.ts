@@ -486,7 +486,7 @@ const mcp = new Server(
       '- Optional fields: `file_name` (display name), `mime_type` (override auto-detection).',
       '- Supported images: JPEG, PNG, GIF, WebP, SVG, BMP, TIFF (max 10 MB).',
       '- Supported videos: MP4, WebM, MOV, AVI, MKV (max 100 MB).',
-      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, ZIP (max 25 MB).',
+      '- Supported documents: PDF, TXT, CSV, DOC/DOCX, XLS/XLSX, PPT/PPTX, JSON, YAML/YML, ZIP (max 25 MB).',
       '- Images display as thumbnails the user can tap to view full-size.',
       '- Videos play inline in the chat.',
       '- Documents show as download cards.',
