@@ -89,6 +89,7 @@ const MIME_MAP: Record<string, string> = {
   '.ppt': 'application/vnd.ms-powerpoint',
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   '.json': 'application/json', '.zip': 'application/zip',
+  '.yaml': 'application/yaml', '.yml': 'application/yaml',
 }
 
 const SIZE_LIMITS: Record<string, number> = {
@@ -106,6 +107,7 @@ const DOC_MIMES = new Set([
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   'application/json', 'application/zip',
+  'application/yaml', 'text/yaml', 'application/x-yaml',
 ])
 
 function guessMimeType(filePath: string): string | null {
