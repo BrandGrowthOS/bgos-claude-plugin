@@ -1045,14 +1045,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'complete_peer_thread',
       description:
         "Close the active peer conversation between you and a peer assistant. " +
-        "Pass a one-line `summary` describing what was accomplished — it shows " +
-        "as the collapsed-state caption on the SideConversationCard so the user " +
-        "doesn't have to expand the card to know what happened. " +
+        "Pass a one-line `summary` describing what was accomplished. CLOSE " +
+        "POLICY: either participant (initiator OR peer) may close at any time " +
+        "once they consider the exchange finished; you do NOT have to be the " +
+        "initiator, and whoever is satisfied first should close rather than " +
+        "waiting. This performs a real both-sides close: the conversation is " +
+        "truly ended and BOTH sides are notified with your one-line summary, " +
+        "which shows as the collapsed-state caption on the SideConversationCard " +
+        "so the user doesn't have to expand the card to know what happened. " +
         "Use this when the back-and-forth is complete and you don't expect more " +
         "messages on this thread. After closing, any send_to_peer to the same " +
-        "peer will auto-open a NEW conversation. Conversations also auto-close " +
-        "after 15 minutes of inactivity (with a default summary), so calling " +
-        "this is optional but ALWAYS preferred when you can write a real summary.",
+        "peer will auto-open a NEW conversation. FAILSAFE: if nobody closes, an " +
+        "idle sweeper hard-closes the stale conversation after the configured " +
+        "idle window (default 15 minutes, env PEER_CONV_IDLE_CLOSE_MS) with a " +
+        "generated summary and a both-sides notification, so nothing is left " +
+        "stuck on 'Live'. Calling this explicitly is still ALWAYS preferred " +
+        "when you can write a real summary.",
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -1095,8 +1103,16 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Mark a side conversation complete with a one-line synthesis. The user ' +
         'sees this in the SideConversationCard once the live exchange ends — it ' +
         'flips the card from live (pulsing dot + last 2 turns) to ' +
-        'completed-collapsed (static dot + this summary). Only the agent that ' +
-        'initiated the side-thread (i.e., the chat owner) may call this.',
+        'completed-collapsed (static dot + this summary). CLOSE POLICY: either ' +
+        'participant (initiator OR peer) may call this at any time once they ' +
+        'consider the exchange finished. You do not have to be the initiator. ' +
+        'When an open conversation exists this performs a real both-sides close ' +
+        '(neither agent, nor a cross-user counterpart, is left stuck on Live) ' +
+        'and notifies both sides with your one-line summary. FAILSAFE: if ' +
+        'nobody closes, an idle sweeper hard-closes the stale conversation ' +
+        'after the configured idle window (default 15 minutes, env ' +
+        'PEER_CONV_IDLE_CLOSE_MS) with a generated summary and a both-sides ' +
+        'notification, so nothing is left stuck on Live.',
       inputSchema: {
         type: 'object' as const,
         properties: {
