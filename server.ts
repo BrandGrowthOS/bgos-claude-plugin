@@ -38,6 +38,7 @@ import {
   collidesWithReserved,
   protectBackslashesForMarkdown,
   buildInboundContent,
+  buildEventMeta,
 } from './lib/message-text.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -158,11 +159,11 @@ async function bgosPut(path: string, body: Record<string, unknown>): Promise<unk
   return response.json()
 }
 
-// ── BGOS REST Client (peer endpoints — adds X-Caller-Assistant-Id) ───────────
+// ── BGOS REST Client (peer endpoints, adds X-Caller-Assistant-Id) ───────────
 //
 // Cross-channel agent-to-agent feature requires every peer call to carry
 // X-Caller-Assistant-Id (this assistant's id) in addition to X-API-Key.
-// The plugin already reads ASSISTANT_ID from env (BGOS_ASSISTANT_ID) — that
+// The plugin already reads ASSISTANT_ID from env (BGOS_ASSISTANT_ID), that
 // is exactly what this header needs.
 
 async function bgosPeerGet(path: string): Promise<unknown> {
@@ -298,7 +299,7 @@ interface PendingPermission {
 // bind a permission verdict to the user who actually drove the session, rather
 // than accepting a verdict from any user in a shared-assistant chat. The plugin
 // currently only ever sees the configured account owner (USER_ID) because the
-// chat-message payload carries no per-sender user id — but this indirection
+// chat-message payload carries no per-sender user id, but this indirection
 // means that once the backend starts shipping a distinct sender user_id, the
 // binding tightens automatically with no further wiring.
 const lastInboundUserByChat = new Map<string, string>()
@@ -386,7 +387,7 @@ function parsePermissionChoice(text: string, requestId: string): PermissionChoic
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.3.2' },
+  { name: 'bgos', version: '0.4.0' },
   {
     capabilities: {
       tools: {},
@@ -399,12 +400,12 @@ const mcp = new Server(
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
       '',
-      'When you receive a message, process it using your full capabilities —',
+      'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
       'other Claude Code tools to help the user.',
       '',
       'IMPORTANT: The user reads BGOS, not this session transcript. Plain text in',
-      'your turn output never reaches their chat — it stays in your local terminal',
+      'your turn output never reaches their chat, it stays in your local terminal',
       'only. Every response to a BGOS message MUST go through the `reply` tool.',
       'If you forget to call `reply`, the user sees nothing. The plugin enforces',
       'this by sending a [reply-overdue] notification 2 minutes after any inbound',
@@ -424,11 +425,11 @@ const mcp = new Server(
       'is preserved verbatim and never linkified.',
       '',
       'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
-      'domains like foo.com incl. modern TLDs .dev/.app, and emails) — no',
+      'domains like foo.com incl. modern TLDs .dev/.app, and emails), no',
       '[text](url) needed. A masked link ([text](url) where the text differs',
       'from the target) shows the user an "Open this link?" confirmation with',
       'the full URL before opening, so prefer bare URLs when transparency',
-      'matters. URLs inside code spans/fences never linkify — use code when',
+      'matters. URLs inside code spans/fences never linkify, use code when',
       'the user should copy a URL rather than open it.',
       '',
       '## Sending Files & Media',
@@ -452,7 +453,7 @@ const mcp = new Server(
       'continue). The BGOS app shows a polished modal/sheet that pops over the',
       'chat with numbered choices, optional free-text fallback, and per-question',
       'Skip. The tool BLOCKS until every question is answered (option picked,',
-      'free text typed, or skipped) — when it returns you have structured',
+      'free text typed, or skipped), when it returns you have structured',
       'answers.',
       '',
       'Use it for: choosing an approach, picking a destination, ranking',
@@ -464,26 +465,26 @@ const mcp = new Server(
       'answer yourself, anything you would normally just send as a `reply`,',
       'OR situations where the user is not actively waiting on you (scheduled',
       'check-ins, background notifications, unsolicited suggestions). Modals',
-      'demand immediate attention — they are inappropriate for async work.',
+      'demand immediate attention, they are inappropriate for async work.',
       '',
       'Each question: `{ text, options?: [{ label, value }], allow_free_text?,',
       'allow_skip? }`. If `options` is omitted or empty, send it as a regular',
-      '`reply` message instead — the modal exists to make CHOOSING easier, not',
+      '`reply` message instead, the modal exists to make CHOOSING easier, not',
       'to wrap every question.',
       '',
       'Keep questions short and option labels under ~30 chars. Limit a single',
-      'ask group to 1–4 questions; longer flows feel like an interrogation.',
+      'ask group to 1, 4 questions; longer flows feel like an interrogation.',
       '',
       '## Inline Buttons (Telegram-style, Async)',
       '',
-      'The BGOS app renders a second button style: "inline buttons" — a small',
+      'The BGOS app renders a second button style: "inline buttons", a small',
       'card with tappable chips that sits in the chat thread, never blocks the',
       'session, and stays clickable indefinitely. This is the correct affordance',
       'for scheduled check-ins, proactive nudges, and any situation where the',
       'user is NOT actively waiting on you.',
       '',
       'Send inline buttons by passing a `buttons: [{ label, value }]` array to',
-      '`reply`. Default render mode is "inline" — use `render_mode: "modal"`',
+      '`reply`. Default render mode is "inline", use `render_mode: "modal"`',
       'ONLY when the user is actively in conversation and you want their',
       'immediate choice. Max 6 buttons. Labels ≤ 24 chars render cleanly.',
       '',
@@ -494,15 +495,15 @@ const mcp = new Server(
       '  </channel>',
       'with `meta.callback_data` = the button\'s `value`, `meta.button_text` =',
       'the label, and `meta.message_id` = the original reply. React to it as',
-      'you would any user message — send a follow-up `reply`, kick off work,',
+      'you would any user message, send a follow-up `reply`, kick off work,',
       'etc. NEVER call `ask_user_input` as a substitute just because you want',
-      'buttons — a blocking modal is wrong for anything async.',
+      'buttons, a blocking modal is wrong for anything async.',
       '',
       'Sentinels on `callback_data`:',
-      '  - "__skip__" — user tapped Skip. Acknowledge briefly or move on.',
-      '  - "__custom__" — user tapped Custom reply AND submitted free text.',
+      '  - "__skip__", user tapped Skip. Acknowledge briefly or move on.',
+      '  - "__custom__", user tapped Custom reply AND submitted free text.',
       '    `meta.custom_text` carries what they typed. You will ALSO receive',
-      '    the free text as a normal user message right before/after — treat',
+      '    the free text as a normal user message right before/after, treat',
       '    them as correlated by message_id.',
       '',
       '## Slash Commands From the User',
@@ -516,7 +517,7 @@ const mcp = new Server(
       'with `meta.event_type = "slash_command"`, `meta.command_name = "<name>"`,',
       'and `meta.command_args = "<rest of message>"`. The `content` field is the',
       'literal text the user sent (e.g. `/help`). Treat the command exactly as you',
-      'would in the CLI — invoke its behavior, then `reply` with the result.',
+      'would in the CLI, invoke its behavior, then `reply` with the result.',
       '',
       '## Receiving Attachments',
       '',
@@ -535,6 +536,39 @@ const mcp = new Server(
       '',
       'If you store data per-user (memory, files, preferences), key it by `user_id` so',
       'recipients are isolated from the owner and from each other.',
+      '',
+      '## Setting Your Status (set_status)',
+      '',
+      'Use `set_status` to publish a short "what I am doing right now" line for',
+      'the BGOS Command Center agent-roster view. This is OPTIONAL enrichment.',
+      'BGOS already derives a live status (idle / thinking / working / blocked /',
+      'done) from your messages and tool activity, so a self-report just makes the',
+      'one-liner crisper ("Drafting headlines" instead of the derived "Working").',
+      '',
+      'Fields: `status_text` (≤120 chars; "" CLEARS it), `status_emoji` (≤8 chars,',
+      'optional emoji on the avatar; "" clears), `detail` (≤280 chars, a richer',
+      'one-sentence "what I am doing right now" for the context card; ephemeral;',
+      '"" clears). Omit a field to leave it unchanged.',
+      '',
+      'Call it when you START a task or CHANGE phase ("Researching competitors",',
+      '"Compiling the report", "Waiting on the API"); clear it ("") when you go',
+      'idle. Do NOT PATCH it on every step (it is a coarse focus line, not a',
+      'transcript), and never use it for your actual reply (use `reply`) or for',
+      'anything the user must act on (use `ask_user_input`). Never required.',
+      '',
+      '## Machine-Delivered Events (inbound)',
+      '',
+      'Some inbound messages are machine-generated, not the human typing:',
+      'dashboard-button dispatches, reply-watcher pushes, scheduled sweeps,',
+      'voice-call transcripts, and n8n notifications. These arrive in the same',
+      'user-message slot (so they wake you exactly like a human message) but the',
+      'channel event carries `meta.event_type = "event"` plus `meta.event_source`',
+      '(dashboard | voice-call | sweep | reply-watcher | n8n | unknown),',
+      'and optionally `meta.event_title`, `meta.event_peek`, and `meta.event_payload`',
+      '(arbitrary JSON). The `content` body is always the canonical, full message:',
+      'act on it normally; your reply renders as a standard assistant message.',
+      'Treat the event meta as a signal that this is data delivered TO you, not',
+      'your user speaking.',
     ].join('\n'),
   },
 )
@@ -554,7 +588,7 @@ const PermissionRequestSchema = z.object({
 mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   const { request_id, tool_name, description, input_preview } = params
 
-  log(`Permission request: ${tool_name} [${request_id}] — ${description}`)
+  log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
   if (AUTO_APPROVE) {
     // Auto-approve mode: immediately allow all tool usage
@@ -573,7 +607,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   // clients or if a button-click event is not materialized in chat history.
   const chatId = monitoredChatIds[0]
   if (!chatId) {
-    log(`No monitored chat found — auto-denying ${tool_name} [${request_id}]`)
+    log(`No monitored chat found, auto-denying ${tool_name} [${request_id}]`)
     mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'deny' },
@@ -602,7 +636,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   })
 
   // Send the permission prompt as an inline-button message. Click handling
-  // lives in pollChat — perm:* callback_data is swallowed there and resolves
+  // lives in pollChat, perm:* callback_data is swallowed there and resolves
   // the verdict via the pendingPermissions map. Text-reply ("yes abcde" /
   // "no abcde") is kept as a fallback path for older clients without button
   // rendering.
@@ -664,7 +698,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
  * Accepts either a button materialized as callbackData/text, or the typed
  * fallback "yes <id>" / "no <id>".
  *
- * The verdict is bound to `requesterUserId` — the user who drove the session
+ * The verdict is bound to `requesterUserId`, the user who drove the session
  * that triggered this permission request. In a shared-assistant chat this
  * prevents an unrelated user from approving/denying a prompt that wasn't
  * theirs. The binding is only enforced when the resolving message carries a
@@ -702,7 +736,7 @@ async function waitForVerdict(
         // per-sender user id (senderUserIdOf falls back to USER_ID), so in a
         // multi-user shared-assistant chat this comparison is currently a
         // no-op (USER_ID === USER_ID) and we still accept any user-sent verdict
-        // — the same as the pre-hardening behavior. Once the backend stamps a
+        //, the same as the pre-hardening behavior. Once the backend stamps a
         // real sender user id, this binding tightens automatically with no
         // further code change. The button-click path (PERMISSION_CALLBACK_RE in
         // pollChat) carries the same limitation and the same future fix.
@@ -729,7 +763,7 @@ async function waitForVerdict(
     }
   }
 
-  log(`Permission timeout for [${requestId}] — denying`)
+  log(`Permission timeout for [${requestId}], denying`)
   return 'deny'
 }
 
@@ -783,8 +817,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           buttons: {
             type: 'array',
             description:
-              'Optional tappable choices (2–6). Clicks come back as a channel event with `callback_data = button.value`. ' +
-              'Labels should be under ~24 chars. Use this for async prompts where you do NOT want to block the session — ' +
+              'Optional tappable choices (2, 6). Clicks come back as a channel event with `callback_data = button.value`. ' +
+              'Labels should be under ~24 chars. Use this for async prompts where you do NOT want to block the session, ' +
               'e.g. "Review these 3 options when you get a chance." Chat shows a "Skip" and "Custom reply" affordance ' +
               'automatically; no need to include them yourself.',
             maxItems: 6,
@@ -801,25 +835,25 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             enum: ['inline', 'modal'],
             description:
-              'Only meaningful when `buttons` is non-empty. "inline" (DEFAULT) — Telegram-style chips in the chat thread; ' +
+              'Only meaningful when `buttons` is non-empty. "inline" (DEFAULT), Telegram-style chips in the chat thread; ' +
               'never interrupts; stays clickable indefinitely. Use for async/scheduled/proactive sends. ' +
-              '"modal" — pops over the chat demanding attention; use only when the user is actively in conversation ' +
+              '"modal", pops over the chat demanding attention; use only when the user is actively in conversation ' +
               'and you want their immediate choice. When in doubt, omit (defaults to inline).',
           },
           reply_to_id: {
             type: 'number',
             description:
               'Set this to the source message id when you want to anchor this ' +
-              'reply to a specific earlier message — BGOS renders a Telegram-' +
+              'reply to a specific earlier message, BGOS renders a Telegram-' +
               'style quoted-reply header (tap → jump to source) and persists a ' +
               'frozen text/sender snapshot. Two use-cases: ' +
-              '(1) USER REPLY-QUOTE — answering a question from N messages ago ' +
+              '(1) USER REPLY-QUOTE, answering a question from N messages ago ' +
               "where the user would otherwise have to scroll up, following up on " +
               "your own past commitment, correcting a specific earlier statement, " +
               "or surfacing a cron-triggered nudge tied to an older message. " +
               "Don't quote the immediately preceding user turn (alignment already " +
               'implies the subject) or for pure acknowledgements ("Got it"). ' +
-              '(2) AGENT-TO-AGENT SIDE-THREAD — when replying to an inbound peer ' +
+              '(2) AGENT-TO-AGENT SIDE-THREAD, when replying to an inbound peer ' +
               "agent message so the initiating agent's wait_for_reply resolves. " +
               'Same-chat constraint enforced server-side (400 otherwise).',
           },
@@ -852,6 +886,48 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'set_status',
+      description:
+        'Publish this agent\'s "what I am doing right now" line for the BGOS ' +
+        'Command Center agent-roster view (capability #11). OPTIONAL enrichment: ' +
+        'BGOS already derives a live status (idle / thinking / working / blocked / ' +
+        'done) from your messages and tool activity, so a self-report only makes ' +
+        'the one-liner crisper and more human ("Drafting headlines" instead of the ' +
+        'derived "Working"). Call it when you START a task or CHANGE phase; pass an ' +
+        'empty string ("") for status_text to CLEAR it when you go idle. Do NOT ' +
+        'call it on every step (it is a coarse "current focus", not a transcript) ' +
+        'and never use it for your actual reply to the user (use `reply`) or for ' +
+        'anything the user must act on (use `ask_user_input`). Maps to ' +
+        'PATCH /api/v1/assistants/:id/status (user-scoped, X-API-Key).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          status_text: {
+            type: 'string',
+            description:
+              'Short "current focus" line, max 120 chars (e.g. "Researching ' +
+              'competitors"). Pass "" to CLEAR the status. Omit to leave it ' +
+              'unchanged while only updating the emoji or detail.',
+          },
+          status_emoji: {
+            type: 'string',
+            description:
+              'Optional single emoji that rides the agent avatar, max 8 chars ' +
+              '(ZWJ sequences ok). Pass "" to clear. Omit to leave unchanged.',
+          },
+          detail: {
+            type: 'string',
+            description:
+              'Optional richer one-sentence "what I am doing right now" for the ' +
+              'Command Center context card, max 280 chars (e.g. "Cross-checking ' +
+              'the Q3 invoices against the bank export"). Ephemeral (not persisted ' +
+              'on the assistant row); dropped if the agent has no live activity ' +
+              'entry yet. Pass "" to clear. Omit to leave unchanged.',
+          },
+        },
+      },
+    },
+    {
       name: 'ask_user_input',
       description:
         'Ask the user one or more multiple-choice questions through a polished ' +
@@ -860,7 +936,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'answers. Use ONLY when (a) you need the user to pick from a clear ' +
         'set of options AND (b) the user is actively in this conversation. ' +
         'For open-ended questions use `reply`. For async/unprompted scenarios ' +
-        '(scheduled check-ins, proactive nudges) DO NOT use this — a blocking ' +
+        '(scheduled check-ins, proactive nudges) DO NOT use this, a blocking ' +
         'modal is inappropriate when the user is not waiting on you. See the ' +
         'top-level instructions for full guidance on when this fits.',
       inputSchema: {
@@ -876,7 +952,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           questions: {
             type: 'array',
             description:
-              '1–4 questions to ask, in order. Each must have at least one option ' +
+              '1, 4 questions to ask, in order. Each must have at least one option ' +
               '(if you have no options, just send a regular reply instead).',
             items: {
               type: 'object',
@@ -888,7 +964,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
                 options: {
                   type: 'array',
                   description:
-                    'Selectable choices. 2–6 items. Each label under ~30 chars.',
+                    'Selectable choices. 2, 6 items. Each label under ~30 chars.',
                   items: {
                     type: 'object',
                     properties: {
@@ -937,7 +1013,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         "List the user's other assistants (peer agents) on this BGOS account. " +
         'Each entry includes `assistantId` (the integer to pass to send_to_peer), ' +
-        '`name`, `avatarUrl`, and crucially `introduced` — true ONLY if the user ' +
+        '`name`, `avatarUrl`, and crucially `introduced`, true ONLY if the user ' +
         'has enabled this direction in the Agent Permissions matrix. If introduced ' +
         'is false, you can suggest the peer in your reply ("Want me to ask Hades?") ' +
         'but send_to_peer will return requires_introduction until the user enables it. ' +
@@ -959,7 +1035,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'to BLOCK until the peer replies (their reply must include reply_to_id pointing ' +
         'to the message_id you sent). Returns { status, sideThreadChatId, messageId, reply? }. ' +
         "Status='requires_introduction' means the user has not enabled this direction. " +
-        "Do NOT retry on timeout — the message is already saved server-side. " +
+        "Do NOT retry on timeout, the message is already saved server-side. " +
         "Either drop wait_for_reply (cap is 85s anyway) and poll the side-thread " +
         "later, or accept the timeout and check " +
         "GET /api/v1/peers/threads/{parent_message_id} for any reply with " +
@@ -981,7 +1057,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           wait_for_reply: { type: 'boolean', description: 'Block until peer replies. Default false.' },
           timeout_seconds: {
             type: 'number',
-            description: 'How long to wait when wait_for_reply=true. 1–600s. Default 60s.',
+            description: 'How long to wait when wait_for_reply=true. 1, 600s. Default 60s.',
           },
           turn_state: {
             type: 'string',
@@ -1023,7 +1099,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           summary: {
             type: 'string',
             description:
-              'One-line synthesis of what the peer accomplished (e.g. "Hades created bgos-dev-uploads in us-east-1, public access blocked"). Max 1024 chars. Strongly recommended — without it the UI shows a generic "Conversation completed" line.',
+              'One-line synthesis of what the peer accomplished (e.g. "Hades created bgos-dev-uploads in us-east-1, public access blocked"). Max 1024 chars. Strongly recommended, without it the UI shows a generic "Conversation completed" line.',
           },
         },
         required: ['peer_assistant_id'],
@@ -1053,7 +1129,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'complete_side_thread',
       description:
         'Mark a side conversation complete with a one-line synthesis. The user ' +
-        'sees this in the SideConversationCard once the live exchange ends — it ' +
+        'sees this in the SideConversationCard once the live exchange ends, it ' +
         'flips the card from live (pulsing dot + last 2 turns) to ' +
         'completed-collapsed (static dot + this summary). CLOSE POLICY: either ' +
         'participant (initiator OR peer) may call this at any time once they ' +
@@ -1085,12 +1161,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'meeting_reply',
       description:
         'Send a message into an active Command Center meeting room. Use ONLY ' +
-        'when you are the current speaker — the channel notification you ' +
+        'when you are the current speaker, the channel notification you ' +
         'received will say "your_turn=YES" in its meta header. If your_turn=NO ' +
         'you must observe silently; the backend will reject calls (HTTP 409) ' +
         'while it is not your turn. End your reply text with "@<name>" to ' +
         'suggest the next speaker (the user can override). Send the literal ' +
-        'token "PASS" to decline this turn without contributing — turn returns ' +
+        'token "PASS" to decline this turn without contributing, turn returns ' +
         'to the user.',
       inputSchema: {
         type: 'object' as const,
@@ -1188,7 +1264,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         }
       }
 
-      // Button validation — inline mode caps at 6 choices (backend rejects >6).
+      // Button validation, inline mode caps at 6 choices (backend rejects >6).
       let options: Array<{ text: string; callbackData: string }> = []
       if (buttonsInput?.length) {
         if (buttonsInput.length > 6) {
@@ -1214,7 +1290,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           if (collidesWithReserved(b.value)) {
             log(
               `reply: agent button value "${b.value}" collides with a reserved ` +
-                `namespace — escaping with "${AGENT_VALUE_PREFIX}" sentinel`,
+                `namespace, escaping with "${AGENT_VALUE_PREFIX}" sentinel`,
             )
           }
           options.push({ text: b.label, callbackData: escapeAgentButtonValue(b.value) })
@@ -1252,7 +1328,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           isMixedAttachments: isMixedAttachments || null,
           files: resolvedFiles,
           options,
-          // Prefer the opaque, server-minted handle when we have one — the
+          // Prefer the opaque, server-minted handle when we have one, the
           // hardened backend treats it as authoritative for chat resolution.
           ...(replySessionHandle ? { sessionHandle: replySessionHandle } : {}),
           ...(reply_to_id !== undefined && { replyToId: reply_to_id }),
@@ -1284,7 +1360,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'Error: message_id and text required' }] }
       }
       try {
-        // Same CommonMark backslash protection as the reply path — an edited
+        // Same CommonMark backslash protection as the reply path, an edited
         // message is rendered the same way, so it needs the same fix.
         const safeText = protectBackslashesForMarkdown(text)
         const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
@@ -1323,6 +1399,53 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'set_status': {
+      // Optional enrichment over the derived activity status (capability #11).
+      // Only forward fields the caller actually supplied: omitting a field
+      // leaves the corresponding column unchanged; passing "" clears it.
+      // Empty string is a meaningful CLEAR, so we test `!== undefined`, never
+      // truthiness.
+      const status_text = rawArgs.status_text as string | undefined
+      const status_emoji = rawArgs.status_emoji as string | undefined
+      const detail = rawArgs.detail as string | undefined
+
+      if (
+        status_text === undefined &&
+        status_emoji === undefined &&
+        detail === undefined
+      ) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Error: provide at least one of status_text, status_emoji, or detail (pass "" to clear a field).',
+            },
+          ],
+          isError: true,
+        }
+      }
+
+      const body: Record<string, unknown> = {}
+      if (status_text !== undefined) body.statusText = status_text
+      if (status_emoji !== undefined) body.statusEmoji = status_emoji
+      if (detail !== undefined) body.detail = detail
+
+      try {
+        await bgosPatch(`assistants/${ASSISTANT_ID}/status`, body)
+        const cleared =
+          (status_text !== undefined && status_text === '') &&
+          status_emoji === undefined &&
+          detail === undefined
+        const summary = cleared
+          ? 'Status cleared.'
+          : `Status set${status_text ? `: "${status_text}"` : ''}${status_emoji ? ` ${status_emoji}` : ''}.`
+        return { content: [{ type: 'text', text: summary }] }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `Failed to set status: ${errMsg}` }], isError: true }
       }
     }
 
@@ -1488,7 +1611,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
               type: 'text',
               text:
                 (timedOut
-                  ? `Some questions timed out (${timeoutSeconds}s) — those are reported as skipped.\n\n`
+                  ? `Some questions timed out (${timeoutSeconds}s), those are reported as skipped.\n\n`
                   : '') +
                 JSON.stringify(result, null, 2),
             },
@@ -1543,7 +1666,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           },
         )
         // Clear any pending reply-overdue tracker for the side-thread chat
-        // — the peer's inbound was just responded to, so the 2-min timer
+        //, the peer's inbound was just responded to, so the 2-min timer
         // should not fire for it.
         const sideThreadChatId = (result as any)?.sideThreadChatId
         if (sideThreadChatId != null) clearInbound(String(sideThreadChatId))
@@ -1682,7 +1805,7 @@ interface MessageOptionInfo {
 }
 
 interface AnswerPayload {
-  // Canonical (current backend) — camelCase. Backend writes this shape into
+  // Canonical (current backend), camelCase. Backend writes this shape into
   // messages.answer_payload as of the 2026-04-22 inline-buttons release.
   optionId?: number | null
   callbackData?: string
@@ -1712,6 +1835,18 @@ interface ChatMessage {
     renderMode?: 'inline' | 'modal' | string | null
     commandName?: string | null
     commandArgs?: string | null
+    // Machine-delivered event envelope (capability #12). Present when the
+    // inbound user-slot message is machine-generated (dashboard dispatch,
+    // reply-watcher, sweep, voice-call transcript, n8n notification) rather
+    // than the human typing. The `text` body is canonical regardless; this is
+    // surfaced to the agent as meta so it can tell data-delivered-to-me apart
+    // from my-user-speaking.
+    eventMeta?: {
+      source?: string | null
+      title?: string | null
+      peek?: string | null
+      payload?: unknown
+    } | null
     // Opaque, server-minted handle the agent should round-trip instead of a
     // raw chat_id. Present on inbound events from a hardened backend; absent
     // on older backends (in which case we fall back to the raw chat_id).
@@ -1735,7 +1870,7 @@ const chatLastSeen = new Map<string, number>()
 // backstop for a known failure mode where the agent outputs plain text in
 // its turn instead of calling `reply`, leaving the user with no response.
 //
-// Meeting chat ids are excluded — meetings use the meeting_reply tool path
+// Meeting chat ids are excluded, meetings use the meeting_reply tool path
 // gated by user_mediated turn assignment, so absence of reply is expected
 // while waiting for a turn.
 interface PendingInbound {
@@ -1762,7 +1897,7 @@ const meetingIdByChatId = new Map<string, number>()
 // Maps a peer_conversation_id → side-thread chatId, populated when a peer
 // inbound carries peer_conversation_id. Used by peer_conversation_closed
 // handler to clear the overdue tracker for that side-thread when the peer
-// (not us) closes it — otherwise the inbound stays pending and fires a
+// (not us) closes it, otherwise the inbound stays pending and fires a
 // false-positive overdue 2 min after the close.
 const peerConvChats = new Map<string, string>()
 const REPLY_OVERDUE_MS = 120_000
@@ -1919,7 +2054,7 @@ function checkReplyOverdue(): void {
  * Per-chat set of assistant message IDs that carried buttons and were
  * unanswered last time we polled. Used to detect click transitions
  * (unanswered → answered) so we can surface them as channel events.
- * ask_user_input messages are NOT tracked here — the ask_user_input tool
+ * ask_user_input messages are NOT tracked here, the ask_user_input tool
  * handles its own polling/blocking.
  */
 const chatUnansweredButtons = new Map<string, Set<number>>()
@@ -1939,7 +2074,7 @@ const monitoredChatSet = new Set<string>()
 // sessionHandle on every inbound event that agents should round-trip instead
 // of naming a raw chat_id. We capture the latest handle per chat and, when we
 // have one, prefer sending it back (as `sessionHandle` in the POST body) over
-// the raw chat_id. Agents may also pass a handle directly as `chat_id` — any
+// the raw chat_id. Agents may also pass a handle directly as `chat_id`, any
 // value present here (as key OR value) is treated as authorized.
 const sessionHandleByChat = new Map<string, string>()
 const knownSessionHandles = new Set<string>()
@@ -2039,7 +2174,7 @@ async function discoverChats(): Promise<void> {
     //    never match the strict assistantId equality. The backend's
     //    peers/inbox now UNIONs in meeting chats where this assistant is
     //    an active meeting_participants row, so trust kind='meeting' as
-    //    sufficient — the server already gated that row on this assistant
+    //    sufficient, the server already gated that row on this assistant
     //    being an active participant. We still reconcile the raw inbox
     //    meeting ids against /meetings below so closed owner meetings do
     //    not keep the daemon in fast-poll mode forever.
@@ -2069,7 +2204,7 @@ async function discoverChats(): Promise<void> {
     monitoredChatIds = [...new Set([...ownedChatIds, ...openMeetingChatSet])]
     // Seed the membership authority. We only ADD here (never prune): a chat we
     // have received a live inbound from but that has momentarily dropped out of
-    // the inbox snapshot must stay answerable. Stale ids cost nothing — the
+    // the inbox snapshot must stay answerable. Stale ids cost nothing, the
     // backend remains the final gate on every POST.
     for (const id of monitoredChatIds) noteMonitoredChat(id)
   } catch (err) {
@@ -2095,14 +2230,14 @@ async function pollChat(chatId: string): Promise<void> {
     let newUserMessages: ChatMessage[]
     let isBacklog = false
     if (lastSeen === 0) {
-      // First poll — we have no persisted cursor, so we need to forward
+      // First poll, we have no persisted cursor, so we need to forward
       // user messages that haven't been answered yet WITHOUT over-forwarding
       // historic ones.
       //
       // The old heuristic (forward user messages newer than the LATEST
       // assistant message) silently dropped messages when the latest
       // assistant message was a PROACTIVE send (cron check-in, external
-      // trigger) rather than a reply — prior user messages looked "already
+      // trigger) rather than a reply, prior user messages looked "already
       // answered" when they weren't.
       //
       // New rule: walk backward and collect trailing user messages, only
@@ -2123,10 +2258,10 @@ async function pollChat(chatId: string): Promise<void> {
         if (m.message.sender === 'assistant') {
           const prev = i > 0 ? ordered[i - 1]! : null
           if (prev && prev.message.sender === 'user') {
-            // Real reply — everything older was handled. Stop here.
+            // Real reply, everything older was handled. Stop here.
             break
           }
-          // Proactive assistant message — skip, keep scanning backward.
+          // Proactive assistant message, skip, keep scanning backward.
           continue
         }
       }
@@ -2164,7 +2299,7 @@ async function pollChat(chatId: string): Promise<void> {
     // a channel event carrying callback_data / button_text / custom_text?.
     //
     // On the FIRST poll for a chat (lastSeen === 0) we ONLY baseline the
-    // unanswered set — never emit. Historic clicks that happened before
+    // unanswered set, never emit. Historic clicks that happened before
     // the plugin started are not replayed (previously they were, which
     // flooded Claude Code's context on every restart and could cause the
     // agent to silently stop responding).
@@ -2183,7 +2318,7 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
       // Answered. Only emit when we previously saw this exact message id
-      // in the unanswered set — i.e. a real live transition.
+      // in the unanswered set, i.e. a real live transition.
       if (isFirstPoll) continue
       if (!prevUnanswered.has(mm.id)) continue
 
@@ -2193,7 +2328,7 @@ async function pollChat(chatId: string): Promise<void> {
       const customText = payload.customText ?? payload.custom_text ?? undefined
 
       // Internal permission-flow intercept: perm:(once|session|permanent|deny):<request_id>.
-      // Swallow these — do NOT forward to Claude as a channel event; resolve
+      // Swallow these, do NOT forward to Claude as a channel event; resolve
       // the pending verdict instead. The three allow scopes currently collapse
       // to Claude's binary allow behavior in choiceToBehavior().
       const permMatch = PERMISSION_CALLBACK_RE.exec(callbackData)
@@ -2220,7 +2355,7 @@ async function pollChat(chatId: string): Promise<void> {
           pending.resolve(choice!.toLowerCase() as PermissionChoice)
           pendingPermissions.delete(requestId)
         } else {
-          log(`Stale permission click ${choice} [${requestId}] — no pending entry`)
+          log(`Stale permission click ${choice} [${requestId}], no pending entry`)
         }
         continue
       }
@@ -2276,7 +2411,7 @@ async function pollChat(chatId: string): Promise<void> {
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
 
-      // Skip permission verdict messages/clicks — don't forward them to Claude
+      // Skip permission verdict messages/clicks, don't forward them to Claude
       let isPermissionVerdict = VERDICT_RE.test(text)
       if (!isPermissionVerdict) {
         for (const requestId of pendingPermissions.keys()) {
@@ -2304,7 +2439,7 @@ async function pollChat(chatId: string): Promise<void> {
           method: 'notifications/claude/channel',
           params: {
             content:
-              `${isBacklog ? '[backlog — meeting message arrived while you were offline]\n' : ''}` +
+              `${isBacklog ? '[backlog, meeting message arrived while you were offline]\n' : ''}` +
               `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
               `participants: ${participantList || 'unknown'}]\n` +
               `User: ${text}`,
@@ -2350,8 +2485,16 @@ async function pollChat(chatId: string): Promise<void> {
       log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
       // Push channel notification to Claude Code (fire-and-forget)
-      // Keep meta simple — file URLs are embedded in the content text
+      // Keep meta simple, file URLs are embedded in the content text
       const isSlashCommand = msg.message.messageType === 'slash_command'
+      // Machine-delivered event enrichment (capability #12): tag inbound
+      // dashboard dispatches / watcher pushes / sweeps / transcripts / n8n
+      // notifications so the agent can tell them apart from the human typing.
+      // The `content` body is already canonical (forwarded verbatim above).
+      const pollEventMeta = buildEventMeta(
+        msg.message.messageType,
+        msg.message.eventMeta,
+      )
       // Capture + surface any server-minted session handle so the agent can
       // round-trip it on the reply (preferred over the raw chat_id).
       const pollSessionHandle =
@@ -2382,6 +2525,7 @@ async function pollChat(chatId: string): Promise<void> {
                   command_args: msg.message.commandArgs ?? '',
                 }
               : {}),
+            ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
           },
         },
       }).catch((err) => {
@@ -2396,7 +2540,7 @@ async function pollChat(chatId: string): Promise<void> {
       if (!isBacklog) recordInbound(chatId, msg.message.id)
     }
   } catch {
-    // Silent — network blips
+    // Silent, network blips
   }
 }
 
@@ -2414,9 +2558,9 @@ async function pollAllChats(): Promise<void> {
 // safety net. When the WS disconnects, polling resumes its normal cadence.
 //
 // We listen to:
-//   - `inbound_message` — peer / integration messages routed to assistant:<id>
-//   - `peer_conversation_closed` — surfaces lifecycle to the agent
-//   - `peer_turn_yielded` — informational; not yet bubbled to MCP
+//   - `inbound_message`, peer / integration messages routed to assistant:<id>
+//   - `peer_conversation_closed`, surfaces lifecycle to the agent
+//   - `peer_turn_yielded`, informational; not yet bubbled to MCP
 //
 // Existing `pollChat` flow stays in place; it's the cold-start backfill +
 // reliability fallback. Normal WS-pushed messages update `chatLastSeen` so
@@ -2467,7 +2611,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('connect', () => {
-    log(`WS connected (id=${realtimeSocket?.id}) — polling will throttle`)
+    log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
     // Catch-up after a WS reconnect: server-side WS pushes that fired
     // while we were disconnected don't replay, so trigger an immediate
     // poll cycle to pull in anything we missed. Without this we'd have
@@ -2478,7 +2622,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('disconnect', (reason: string) => {
-    log(`WS disconnected: ${reason} — polling resumes normal cadence`)
+    log(`WS disconnected: ${reason}, polling resumes normal cadence`)
   })
 
   realtimeSocket.on('connect_error', (err: Error) => {
@@ -2522,6 +2666,16 @@ function connectWebsocket(): void {
 
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
       const isWsSlashCommand = wsMessageType === 'slash_command'
+      // Machine-delivered event enrichment (capability #12), same as the poll
+      // path. Backend ships the envelope as `eventMeta` (camelCase) on the
+      // inbound_message payload; accept event_meta defensively too.
+      const wsEventMeta = buildEventMeta(
+        wsMessageType,
+        (payload?.eventMeta ?? payload?.event_meta) as
+          | { source?: string | null; title?: string | null; peek?: string | null; payload?: unknown }
+          | null
+          | undefined,
+      )
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2544,6 +2698,7 @@ function connectWebsocket(): void {
                   command_args: String(payload?.commandArgs ?? payload?.command_args ?? ''),
                 }
               : {}),
+            ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
             ...(payload?.peer_conversation_id !== undefined && {
               peer_conversation_id: String(payload.peer_conversation_id),
             }),
@@ -2573,7 +2728,7 @@ function connectWebsocket(): void {
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
     )
-    // Clear any reply-overdue tracker pinned to this side-thread chat —
+    // Clear any reply-overdue tracker pinned to this side-thread chat, 
     // the conversation is closed, no reply path remains, and continuing
     // to track it would fire false-positive overdues 2 min later.
     const convId = payload?.conversation_id
@@ -2636,7 +2791,7 @@ function connectWebsocket(): void {
       })
       if (payload?.chatId != null) {
         // Mark this chat id as meeting-routed so the reply-overdue tracker
-        // skips it — meetings use meeting_reply gated by user_mediated turn
+        // skips it, meetings use meeting_reply gated by user_mediated turn
         // assignment, so absence of `reply` is expected.
         const chatId = String(payload.chatId)
         meetingChatIds.add(chatId)
@@ -2720,7 +2875,7 @@ function connectWebsocket(): void {
               ? Number(currentRaw)
               : null
       }
-      // Diagnostic — log every meeting_message receipt so we can confirm
+      // Diagnostic, log every meeting_message receipt so we can confirm
       // (or rule out) WS delivery from the plugin side. Without this, a
       // "stuck meeting" symptom is ambiguous between (a) backend never
       // sent, (b) backend sent but socket didn't deliver, (c) plugin
@@ -2730,7 +2885,7 @@ function connectWebsocket(): void {
           `senderId=${senderId} yourTurnFor=[${yourTurnFor.join(',')}] ` +
           `your_turn=${yourTurn ? 'YES' : 'NO'})`,
       )
-      // Skip our own outbound replies — we'd already see them via the
+      // Skip our own outbound replies, we'd already see them via the
       // POST response. Self-loops would confuse the model.
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
       const senderName = String(payload?.senderName ?? 'Unknown')
@@ -2742,7 +2897,7 @@ function connectWebsocket(): void {
       // Meta schema MUST mirror the polling-path notification (chat_id,
       // message_id, user, user_id, assistant_id, ts). Without those four
       // canonical fields, Claude Code's notifications/claude/channel
-      // renderer silently drops the notification on the agent side —
+      // renderer silently drops the notification on the agent side, 
       // which is why meeting_message notifications were never reaching
       // the agent's conversation context even though the WS handler was
       // firing and your_turn was being computed correctly. Confirmed via
@@ -2767,7 +2922,7 @@ function connectWebsocket(): void {
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
-            // Meeting-specific extras (additive — Claude Code reads what
+            // Meeting-specific extras (additive, Claude Code reads what
             // it knows, ignores the rest).
             event_type: 'meeting_message',
             meeting_id: String(meetingId),
@@ -2914,7 +3069,7 @@ interface SlashCommandEntry {
 }
 
 // Built-in Claude Code commands. Curated against the CLI as of 2026-05.
-// Missing entries are not catastrophic — users can still type them
+// Missing entries are not catastrophic, users can still type them
 // manually. Add new ones here when CC ships them.
 const BUILTIN_COMMANDS: SlashCommandEntry[] = [
   { command: '/help',          description: 'Show usage and supported tools',          scope: 'all' },
@@ -2989,7 +3144,7 @@ async function walkCommandsDir(
 //   cache/<marketplace>/<plugin>/<version>/commands/*.md       (4 levels under rootDir)
 // Names get namespaced as `/<plugin>:<command>`. When multiple versions of
 // a cached plugin exist (e.g. `vercel/0.42.1/` and `vercel/61f1903bed7b/`),
-// the LAST `readdir` entry wins via the dedupe map — readdir order is OS-
+// the LAST `readdir` entry wins via the dedupe map, readdir order is OS-
 // dependent but for our purposes "last write wins" is acceptable since all
 // versions describe the same command set.
 async function walkPluginCommands(
@@ -3068,7 +3223,7 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
 }
 
 // Normalize a discovered command name to the backend's wire format. The
-// CommandDto regex is /^[a-z0-9_]{1,32}$/ — no leading slash, no `:`,
+// CommandDto regex is /^[a-z0-9_]{1,32}$/, no leading slash, no `:`,
 // no `-`, no uppercase. The frontend re-derives the user-facing label
 // from this stored name (prepending `/`), so the round-trip is
 // `/help` → store `help` → display `/help`. Plugin-namespaced commands
@@ -3122,7 +3277,7 @@ async function syncSlashCommands(): Promise<void> {
     // NOTE: use the user-scoped PUT (Clerk-or-API-key auth with userId
     // ownership check), NOT `integrations/assistants/.../commands` which
     // requires a pairing token. The Claude Code plugin authenticates with
-    // X-API-Key, not a pairing token — and a user-created assistant has
+    // X-API-Key, not a pairing token, and a user-created assistant has
     // pairingId=null, so the pairing-scoped path would 401 regardless.
     // Both endpoints write the same assistant_commands table via the
     // same SyncCommandsDto.
@@ -3132,7 +3287,7 @@ async function syncSlashCommands(): Promise<void> {
     lastSyncedCommandsHash = hash
     log(
       `slash-command sync: pushed ${sanitized.length} commands` +
-        (dropped > 0 ? ` (${dropped} dropped — invalid name or dupe)` : ''),
+        (dropped > 0 ? ` (${dropped} dropped, invalid name or dupe)` : ''),
     )
   } catch (err) {
     log(`slash-command sync failed: ${err}`)
@@ -3143,9 +3298,9 @@ async function syncSlashCommands(): Promise<void> {
 // If the user flips the "Always-on" toggle in the BGOS app, install the
 // bgos-agent supervisor on THIS host so the session survives restart/reboot; if
 // they flip it off, remove it. Deterministic + self-healing (re-checked on a
-// timer) — no LLM involvement. Only for claude-code agents (Hermes/OpenClaw/
+// timer), no LLM involvement. Only for claude-code agents (Hermes/OpenClaw/
 // Gobot run under their own supervision). The CLI's singleton guard ensures
-// installing while this very session is live doesn't double-connect — the
+// installing while this very session is live doesn't double-connect, the
 // supervisor waits behind this session and takes over only when it ends.
 const execFileAsync = promisify(execFile)
 const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
@@ -3171,13 +3326,13 @@ async function reconcileAlwaysOn(): Promise<void> {
     // Only manage claude-code agents; others self-manage their own process.
     if (a?.code !== 'claude-code') return
     // Act only when the backend explicitly reports the flag. If alwaysOn is
-    // absent (older/transitional backend, pre-deploy), do nothing — never tear
+    // absent (older/transitional backend, pre-deploy), do nothing, never tear
     // down a wanted supervisor just because the field is missing.
     if (typeof a?.alwaysOn !== 'boolean') return
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
     if (desired && !installed) {
-      log('always-on: enabled in BGOS — installing supervisor on this host')
+      log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
         ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
@@ -3185,7 +3340,7 @@ async function reconcileAlwaysOn(): Promise<void> {
       )
       log('always-on: supervisor installed (takes over when this session ends)')
     } else if (!desired && installed) {
-      log('always-on: disabled in BGOS — removing supervisor')
+      log('always-on: disabled in BGOS, removing supervisor')
       await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
         timeout: 60_000,
       })
@@ -3217,7 +3372,7 @@ async function main(): Promise<void> {
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
   await pollAllChats()
 
-  // Step 3: Open the WS subscription. Failure here is non-fatal — polling
+  // Step 3: Open the WS subscription. Failure here is non-fatal, polling
   // keeps the plugin functional even if the WS path is unavailable.
   try {
     connectWebsocket()
@@ -3231,7 +3386,7 @@ async function main(): Promise<void> {
   // delivers messages without a working WS.
   const HEALTHY_MULTIPLIER = 30
   log(
-    `Adaptive polling — base=${POLL_INTERVAL_MS}ms, ` +
+    `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
       `WS-healthy=${POLL_INTERVAL_MS * HEALTHY_MULTIPLIER}ms`,
   )
   const tick = async (): Promise<void> => {
@@ -3269,7 +3424,7 @@ async function main(): Promise<void> {
 
   // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or
   // removes the bgos-agent supervisor to match the assistant's alwaysOn flag.
-  // Checked on boot + every 2 min — snappy enough that flipping the toggle feels
+  // Checked on boot + every 2 min, snappy enough that flipping the toggle feels
   // near-immediate, cheap enough to ignore.
   void reconcileAlwaysOn()
   setInterval(() => void reconcileAlwaysOn(), 2 * 60_000).unref()
