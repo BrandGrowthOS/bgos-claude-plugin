@@ -1,12 +1,14 @@
 {
   "name": "claude-channel-bgos",
   "version": "0.10.1",
-  "description": "Claude Code channel plugin for BGOS — chat with Claude Code through the BGOS desktop/mobile app",
+  "description": "Claude Code channel plugin for BGOS - chat with Claude Code through the BGOS desktop/mobile app",
   "license": "Apache-2.0",
   "type": "module",
   "bin": "./server.ts",
   "scripts": {
-    "start": "bun install --no-summary 1>&2 && bun server.ts"
+    "start": "bun install --no-summary 1>&2 && bun server.ts",
+    "build": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

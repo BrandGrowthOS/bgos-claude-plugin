@@ -12,7 +12,7 @@
  */
 
 import { readFile, stat } from 'node:fs/promises'
-import { basename, extname } from 'node:path'
+import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,21 @@ import {
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
+
+import {
+  MIME_MAP,
+  DOC_MIMES,
+  guessMimeType,
+  getFileCategory,
+  AGENT_VALUE_PREFIX,
+  RESERVED_VALUE_SENTINELS,
+  RESERVED_VALUE_PREFIXES,
+  escapeAgentButtonValue,
+  unescapeAgentButtonValue,
+  collidesWithReserved,
+  protectBackslashesForMarkdown,
+  buildInboundContent,
+} from './lib/message-text.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -71,26 +86,9 @@ function log(msg: string): void {
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
-
-const MIME_MAP: Record<string, string> = {
-  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
-  '.bmp': 'image/bmp', '.tiff': 'image/tiff',
-  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
-  '.avi': 'video/x-msvideo', '.mkv': 'video/x-matroska',
-  '.ogg': 'video/ogg', '.mpeg': 'video/mpeg', '.3gp': 'video/3gpp',
-  '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
-  '.m4a': 'audio/m4a', '.aac': 'audio/aac', '.flac': 'audio/flac',
-  '.pdf': 'application/pdf', '.txt': 'text/plain', '.csv': 'text/csv',
-  '.doc': 'application/msword',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xls': 'application/vnd.ms-excel',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.ppt': 'application/vnd.ms-powerpoint',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.json': 'application/json', '.zip': 'application/zip',
-  '.yaml': 'application/yaml', '.yml': 'application/yaml',
-}
+// MIME_MAP, DOC_MIMES, guessMimeType and getFileCategory now live in
+// ./lib/message-text.ts (pure + eval-tested) and are imported above. Size limits
+// and the S3 threshold remain here since they govern upload behavior, not text.
 
 const SIZE_LIMITS: Record<string, number> = {
   image: 10 * 1024 * 1024, video: 100 * 1024 * 1024,
@@ -99,29 +97,10 @@ const SIZE_LIMITS: Record<string, number> = {
 
 const S3_THRESHOLD = 5 * 1024 * 1024
 
-const DOC_MIMES = new Set([
-  'application/pdf', 'text/plain', 'text/csv', 'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/json', 'application/zip',
-  'application/yaml', 'text/yaml', 'application/x-yaml',
-])
-
-function guessMimeType(filePath: string): string | null {
-  return MIME_MAP[extname(filePath).toLowerCase()] ?? null
-}
-
-function getFileCategory(mime: string): string | null {
-  const m = mime.trim().toLowerCase()
-  if (m.startsWith('image/')) return 'image'
-  if (m.startsWith('video/')) return 'video'
-  if (m.startsWith('audio/')) return 'audio'
-  if (DOC_MIMES.has(m)) return 'document'
-  return null
-}
+// Keep imported symbols referenced so a future tree-shake / unused-import lint
+// never drops the MIME tables that resolveFile relies on transitively.
+void MIME_MAP
+void DOC_MIMES
 
 // ── BGOS REST Client ─────────────────────────────────────────────────────────
 
@@ -334,49 +313,13 @@ const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 const PERMISSION_CALLBACK_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
 
 // ── Button-value namespace isolation ─────────────────────────────────────────
-// Agent-authored button `value`s share the callback_data namespace with the
-// plugin's reserved control prefixes (perm:* permission relay, sc:* slash
-// commands, ea:* approvals) and the reserved sentinels __skip__ / __custom__.
-// An agent that emits one of those would either be silently swallowed by the
-// permission/slash intercepts or collide with a sentinel. To keep agent values
-// fully opaque AND safe, every agent-authored value is namespace-escaped with a
-// reserved `u:` (user/agent) sentinel before it leaves the plugin, and the
-// prefix is stripped on the callback round-trip so the agent sees its original
-// value unchanged.
-const AGENT_VALUE_PREFIX = 'u:'
-const RESERVED_VALUE_SENTINELS = new Set(['__skip__', '__custom__'])
-const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:']
-
-/**
- * Escape an agent-authored button value into a collision-proof namespace.
- * Always prefixes with `u:` so it can never be mistaken for a reserved control
- * value, and so the strip on the way back is unambiguous.
- */
-function escapeAgentButtonValue(value: string): string {
-  return `${AGENT_VALUE_PREFIX}${value}`
-}
-
-/**
- * Reverse of escapeAgentButtonValue — strips the `u:` sentinel so the agent
- * receives the exact value it authored in the click callback. Reserved control
- * values (perm:/sc:/ea:/__skip__/__custom__) are never escaped, so they pass
- * through untouched.
- */
-function unescapeAgentButtonValue(callbackData: string): string {
-  return callbackData.startsWith(AGENT_VALUE_PREFIX)
-    ? callbackData.slice(AGENT_VALUE_PREFIX.length)
-    : callbackData
-}
-
-/**
- * True when an agent-authored value collides with a reserved sentinel or
- * control prefix. Used only for diagnostics — the escape makes the collision
- * harmless regardless, but we log it so unexpected agent behavior is visible.
- */
-function collidesWithReserved(value: string): boolean {
-  if (RESERVED_VALUE_SENTINELS.has(value)) return true
-  return RESERVED_VALUE_PREFIXES.some((p) => value.startsWith(p))
-}
+// escapeAgentButtonValue / unescapeAgentButtonValue / collidesWithReserved and
+// the AGENT_VALUE_PREFIX + reserved-sentinel/prefix constants now live in
+// ./lib/message-text.ts (pure + eval-tested) and are imported above. Keep the
+// constants referenced so an unused-import lint never drops them.
+void AGENT_VALUE_PREFIX
+void RESERVED_VALUE_SENTINELS
+void RESERVED_VALUE_PREFIXES
 
 /**
  * Best-effort extraction of the sender's user id from an inbound message-ish
@@ -471,7 +414,14 @@ const mcp = new Server(
       'The reply will appear as a chat bubble in the BGOS desktop/mobile app.',
       'You can use markdown in your replies: **bold**, *italic*, `inline code`,',
       'fenced code blocks, [links](url), #/##/### headers, lists, > blockquotes.',
-      'Tables do not render on mobile — use lists instead.',
+      'Tables do not render on mobile - use lists instead.',
+      '',
+      'Backslashes: the chat renders CommonMark, which (outside code) eats a',
+      'backslash before punctuation - `a\\*b` would show as `a*b`. The plugin',
+      'auto-protects backslashes in prose so file paths and regexes survive, but',
+      'for anything the user must COPY EXACTLY (a Windows path, a regex, a shell',
+      'snippet) prefer a code span or fenced block - inside code, every character',
+      'is preserved verbatim and never linkified.',
       '',
       'Links are Telegram-style: bare URLs auto-link (https://…, www.…, bare',
       'domains like foo.com incl. modern TLDs .dev/.app, and emails) — no',
@@ -1282,10 +1232,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const categories = new Set(resolvedFiles.map(f => getFileCategory(f.fileMimeType)))
         const isMixedAttachments = resolvedFiles.length > 1 && categories.size > 1
 
+        // Backslash fix: the BGOS frontend renders replies as CommonMark
+        // (react-native-markdown-display / markdown-it). CommonMark consumes a
+        // backslash that precedes ASCII punctuation (e.g. `\*`, `\_`, `\[`, `\\`),
+        // so an agent that writes a Windows path or a regex in PROSE would lose
+        // the backslash on screen. protectBackslashesForMarkdown doubles exactly
+        // those backslashes, OUTSIDE code spans/fences, so one literal backslash
+        // survives rendering. Backslashes inside code and before non-escapable
+        // chars (\d, \w, \U) are left untouched.
+        const safeText = protectBackslashesForMarkdown(text)
+
         const body: Record<string, unknown> = {
           chatId: Number(resolvedChatId),
           assistantId: Number(ASSISTANT_ID),
-          text,
+          text: safeText,
           sender: 'assistant',
           sentDate: new Date().toISOString(),
           hasAttachment,
@@ -1324,6 +1284,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         return { content: [{ type: 'text', text: 'Error: message_id and text required' }] }
       }
       try {
+        // Same CommonMark backslash protection as the reply path — an edited
+        // message is rendered the same way, so it needs the same fix.
+        const safeText = protectBackslashesForMarkdown(text)
         const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
         await fetch(`${baseUrl}/webhook/edited_message`, {
           method: 'POST',
@@ -1334,8 +1297,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
             chat_id: '0',
             user_id: USER_ID,
             timestamp: new Date().toISOString(),
-            text,
-            message: { text },
+            text: safeText,
+            message: { text: safeText },
           }),
         })
         return { content: [{ type: 'text', text: 'Edited' }] }
@@ -2370,29 +2333,20 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
-      // Build content with attachment descriptions
-      const contentParts: string[] = []
-      if (isBacklog) {
-        // Explicit backlog framing — tells Claude this message arrived
-        // while the daemon was offline so it knows to respond now rather
-        // than treat it as already-handled context. Without this prefix
-        // a freshly-restarted plugin's catch-up looks indistinguishable
-        // from normal chat history that Claude has already seen.
-        contentParts.push(
-          `[backlog — message arrived while you were offline; please respond]`,
-        )
-      }
-      if (text.trim()) contentParts.push(text)
+      // Build content with attachment descriptions. User text is forwarded
+      // VERBATIM (buildInboundContent does not transform it) so the agent sees
+      // backslashes, code fences, quotes and newlines exactly as typed.
+      // The backlog prefix tells Claude this message arrived while the daemon
+      // was offline so it knows to respond now rather than treat it as
+      // already-handled chat history.
+      const content = buildInboundContent(text, msg.messageFiles ?? [], {
+        backlogPrefix: isBacklog
+          ? '[backlog - message arrived while you were offline; please respond]'
+          : undefined,
+      })
 
-      const files = msg.messageFiles ?? []
-      for (const f of files) {
-        const type = f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document'
-        contentParts.push(`[Attached ${type}: ${f.fileName} — ${f.fileData}]`)
-      }
+      if (!content) continue
 
-      if (contentParts.length === 0) continue
-
-      const content = contentParts.join('\n')
       log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
       // Push channel notification to Claude Code (fire-and-forget)
@@ -2554,26 +2508,17 @@ function connectWebsocket(): void {
       // Remember who drove this chat (for permission-verdict user binding).
       if (chatId) lastInboundUserByChat.set(chatId, senderUserIdOf(payload))
 
-      // Mirror pollChat's content-building: text PLUS attachment lines.
-      // Backend ships files as { id, filename, mime, url?, dataUri? } in the
-      // inbound_message payload. Without this block the WS path silently
-      // drops attachments while bumping lastSeen, so the poll fallback (which
-      // DOES handle files) never re-emits — agents end up with text-only
-      // copies of image/video/document messages.
+      // Mirror pollChat's content-building: text PLUS attachment lines, with
+      // the user's text forwarded VERBATIM. Backend ships files as
+      // { id, filename, mime, url?, dataUri? } in the inbound_message payload.
+      // buildInboundContent handles both that WS shape and the poll shape, so
+      // the two transports stay byte-for-byte consistent. Without attachment
+      // handling the WS path silently drops files while bumping lastSeen, so the
+      // poll fallback never re-emits and agents get text-only copies of media.
       const text = (payload?.text as string | undefined) ?? ''
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
-      const contentParts: string[] = []
-      if (text.trim()) contentParts.push(text)
-      for (const f of wsFiles) {
-        const mime = String(f?.mime ?? '')
-        const category = getFileCategory(mime) ?? 'document'
-        const fileName = String(f?.filename ?? 'file')
-        const ref = String(f?.url ?? f?.dataUri ?? '')
-        if (!ref) continue
-        contentParts.push(`[Attached ${category}: ${fileName} — ${ref}]`)
-      }
-      if (contentParts.length === 0) return
-      const content = contentParts.join('\n')
+      const content = buildInboundContent(text, wsFiles)
+      if (!content) return
 
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
       const isWsSlashCommand = wsMessageType === 'slash_command'
