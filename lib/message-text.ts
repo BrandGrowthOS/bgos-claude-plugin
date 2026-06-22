@@ -248,7 +248,7 @@ export interface InboundFileLike {
 /**
  * Build the channel-notification `content` string the agent sees for an inbound
  * user message: the (untouched) user text followed by one bracketed line per
- * attachment. User text is forwarded VERBATIM — backslashes, code fences, quotes
+ * attachment. User text is forwarded VERBATIM, backslashes, code fences, quotes
  * and newlines are preserved so the agent sees precisely what was typed. Returns
  * '' when there is nothing to forward.
  */
@@ -279,4 +279,57 @@ export function buildInboundContent(
     parts.push(`[Attached ${type}: ${name} - ${ref}]`)
   }
   return parts.join('\n')
+}
+
+// ── Machine-event meta (capability #12) ──────────────────────────────────────
+
+/** The raw event envelope shape as it arrives on a BGOS message (poll or WS). */
+export interface RawEventMeta {
+  source?: string | null
+  title?: string | null
+  peek?: string | null
+  payload?: unknown
+}
+
+/** The flat meta fragment surfaced to the agent's channel notification. */
+export interface EventMetaFragment {
+  event_type: 'event'
+  event_source: string
+  event_title?: string
+  event_peek?: string
+  event_payload?: unknown
+}
+
+/**
+ * Build the channel-notification meta fragment for a machine-delivered event
+ * message (capability #12). Returns `null` when the message is NOT a machine
+ * event (i.e. its `messageType` is not "event" AND it carries no `eventMeta`).
+ *
+ * The `text` body of an event is always canonical (forwarded verbatim by
+ * `buildInboundContent`), so this fragment is pure enrichment: it lets a plugin
+ * tag the inbound so the agent can tell "data delivered to me" (a dashboard
+ * dispatch, reply-watcher push, sweep, voice transcript, n8n notification)
+ * apart from "my user is speaking". Empty/whitespace-only string fields are
+ * dropped; `source` defaults to "unknown" so the agent always knows it is a
+ * machine event even when the sender omitted the source.
+ */
+export function buildEventMeta(
+  messageType: string | null | undefined,
+  eventMeta: RawEventMeta | null | undefined,
+): EventMetaFragment | null {
+  const isEvent = messageType === 'event' || (eventMeta != null && typeof eventMeta === 'object')
+  if (!isEvent) return null
+  const src = (eventMeta?.source ?? '').toString().trim()
+  const out: EventMetaFragment = {
+    event_type: 'event',
+    event_source: src || 'unknown',
+  }
+  const title = (eventMeta?.title ?? '').toString().trim()
+  if (title) out.event_title = title
+  const peek = (eventMeta?.peek ?? '').toString().trim()
+  if (peek) out.event_peek = peek
+  if (eventMeta?.payload !== undefined && eventMeta?.payload !== null) {
+    out.event_payload = eventMeta.payload
+  }
+  return out
 }

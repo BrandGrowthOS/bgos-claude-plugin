@@ -27,6 +27,7 @@ import {
   collidesWithReserved,
   protectBackslashesForMarkdown,
   buildInboundContent,
+  buildEventMeta,
 } from '../lib/message-text.ts'
 
 // ── Deterministic CommonMark backslash simulator ─────────────────────────────
@@ -156,8 +157,8 @@ test('inbound: WS file shape produces an attachment line (no em dash)', () => {
     content,
     'look\n[Attached image: a.png - https://cdn/x.png]\n[Attached document: doc.pdf - data:application/pdf;base64,AAA]',
   )
-  assert.ok(!content.includes('—'), 'must not contain an em dash')
-  assert.ok(!content.includes('–'), 'must not contain an en dash')
+  assert.ok(!content.includes(', '), 'must not contain an em dash')
+  assert.ok(!content.includes(', '), 'must not contain an en dash')
 })
 
 test('inbound: poll file shape produces an attachment line', () => {
@@ -235,4 +236,55 @@ test('buttons: collidesWithReserved flags only reserved shapes', () => {
   assert.equal(collidesWithReserved('sc:foo'), true)
   assert.equal(collidesWithReserved('u:already'), true)
   assert.equal(collidesWithReserved('normal-value'), false)
+})
+
+// ── 7. Machine-event meta (capability #12) ───────────────────────────────────
+
+test('event: plain user message yields no event meta', () => {
+  assert.equal(buildEventMeta('standard', null), null)
+  assert.equal(buildEventMeta(null, null), null)
+  assert.equal(buildEventMeta(undefined, undefined), null)
+})
+
+test('event: messageType="event" alone is recognized (source defaults to unknown)', () => {
+  const frag = buildEventMeta('event', null)
+  assert.deepEqual(frag, { event_type: 'event', event_source: 'unknown' })
+})
+
+test('event: eventMeta presence alone is recognized even without messageType', () => {
+  const frag = buildEventMeta('standard', { source: 'n8n' })
+  assert.deepEqual(frag, { event_type: 'event', event_source: 'n8n' })
+})
+
+test('event: full envelope maps source/title/peek/payload to flat fields', () => {
+  const frag = buildEventMeta('event', {
+    source: 'dashboard',
+    title: 'Done - Luz Columna interview',
+    peek: 'Kc marked this DONE',
+    payload: { status: 'done', topThree: true },
+  })
+  assert.deepEqual(frag, {
+    event_type: 'event',
+    event_source: 'dashboard',
+    event_title: 'Done - Luz Columna interview',
+    event_peek: 'Kc marked this DONE',
+    event_payload: { status: 'done', topThree: true },
+  })
+})
+
+test('event: empty/whitespace string fields are dropped; payload null/undefined dropped', () => {
+  const frag = buildEventMeta('event', {
+    source: '   ',
+    title: '',
+    peek: '   ',
+    payload: null,
+  })
+  // source falls back to "unknown"; the rest are dropped entirely.
+  assert.deepEqual(frag, { event_type: 'event', event_source: 'unknown' })
+})
+
+test('event: falsy-but-valid payload (0, false, empty string) is preserved', () => {
+  assert.equal(buildEventMeta('event', { payload: 0 })?.event_payload, 0)
+  assert.equal(buildEventMeta('event', { payload: false })?.event_payload, false)
+  assert.equal(buildEventMeta('event', { payload: '' })?.event_payload, '')
 })
