@@ -1891,6 +1891,11 @@ interface MeetingContext {
   participants: MeetingParticipantSummary[]
   speakerPolicy: string
   currentSpeakerId: number | null
+  // Highest meeting message id this plugin has observed/acted on. Used to make
+  // the meeting_state_resync reconnect catch-up idempotent: a resync whose
+  // lastMessageId is <= this is stale (we already saw that far) and must not
+  // re-trigger a turn notification.
+  lastSeenMessageId: number
 }
 const meetingContexts = new Map<number, MeetingContext>()
 const meetingIdByChatId = new Map<string, number>()
@@ -1952,6 +1957,9 @@ function rememberMeetingContext(meeting: any): void {
     participants,
     speakerPolicy: String(meeting?.speakerPolicy ?? meeting?.speaker_policy ?? 'parallel'),
     currentSpeakerId,
+    // Preserve any idempotency cursor already learned for this meeting; a
+    // re-remember from discovery must not rewind it to 0.
+    lastSeenMessageId: meetingContexts.get(meetingId)?.lastSeenMessageId ?? 0,
   })
   meetingChatIds.add(String(chatId))
   meetingIdByChatId.set(String(chatId), meetingId)
@@ -2788,6 +2796,8 @@ function connectWebsocket(): void {
           : [],
         speakerPolicy: String(payload?.speakerPolicy ?? 'user_mediated'),
         currentSpeakerId: null,
+        lastSeenMessageId:
+          meetingContexts.get(meetingId)?.lastSeenMessageId ?? 0,
       })
       if (payload?.chatId != null) {
         // Mark this chat id as meeting-routed so the reply-overdue tracker
@@ -2852,12 +2862,19 @@ function connectWebsocket(): void {
             participants: [],
             speakerPolicy: 'parallel',
             currentSpeakerId: null,
+            lastSeenMessageId: 0,
           }
           meetingContexts.set(meetingId, ctx)
         }
       }
       const messageId = Number(payload?.messageId)
       if (Number.isFinite(messageId)) {
+        // Advance the meeting idempotency cursor so a later meeting_state_resync
+        // (reconnect catch-up) whose lastMessageId is <= this is recognised as
+        // stale and does not re-fire a turn notification.
+        if (ctx && messageId > ctx.lastSeenMessageId) {
+          ctx.lastSeenMessageId = messageId
+        }
         if (wsForwardedMessageIds.has(messageId)) return
         rememberForwarded(messageId)
         // Do NOT advance chatLastSeen for meeting WS events. Claude Code's
@@ -2979,6 +2996,81 @@ function connectWebsocket(): void {
           },
         },
       }).catch(() => {})
+    }
+  })
+
+  // Reconnect catch-up for the turn protocol. A meeting_turn_changed is a
+  // fire-and-forget emit; if we were disconnected when the floor passed to us
+  // we never saw it (only the 5-min idle cron recovers, yielding to the user).
+  // On (re)connect the backend emits meeting_state_resync to THIS socket for
+  // every open meeting where we hold or are queued for the floor. It is
+  // authority-safe (only re-sends DB state, never grants a turn) and carries
+  // lastMessageId so we can ignore a stale signal we already acted on.
+  realtimeSocket.on('meeting_state_resync', (payload: any) => {
+    try {
+      const meetingId = Number(payload?.meetingId)
+      if (!Number.isFinite(meetingId)) return
+      const me = Number(ASSISTANT_ID)
+      const currentRaw = payload?.currentSpeakerId
+      const currentSpeakerId =
+        currentRaw == null || currentRaw === ''
+          ? null
+          : Number.isFinite(Number(currentRaw))
+            ? Number(currentRaw)
+            : null
+      const lastMessageId =
+        payload?.lastMessageId == null ? null : Number(payload.lastMessageId)
+
+      // Refresh local meeting state from the authoritative snapshot.
+      const ctx = meetingContexts.get(meetingId)
+      if (ctx) {
+        ctx.currentSpeakerId = currentSpeakerId
+        if (payload?.speakerPolicy != null) {
+          ctx.speakerPolicy = String(payload.speakerPolicy)
+        }
+      }
+
+      // Idempotency: if we've already observed a message id at or beyond the
+      // resync's lastMessageId, we already acted on this turn, so ignore it.
+      if (
+        ctx != null &&
+        lastMessageId != null &&
+        ctx.lastSeenMessageId >= lastMessageId
+      ) {
+        log(
+          `meeting_state_resync (meeting #${meetingId}) ignored; already at msg ${ctx.lastSeenMessageId} >= ${lastMessageId}`,
+        )
+        return
+      }
+
+      // Only act when WE hold the floor. Being merely queued
+      // (pending_speaker_ids) is not a turn; wait for meeting_turn_changed.
+      if (currentSpeakerId !== me) return
+
+      // Advance the cursor so a duplicate resync for the same turn is a no-op.
+      if (ctx != null && lastMessageId != null) {
+        ctx.lastSeenMessageId = Math.max(ctx.lastSeenMessageId, lastMessageId)
+      }
+
+      log(`meeting_state_resync → it is my turn in meeting #${meetingId}`)
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content:
+            `[Meeting #${meetingId}] (reconnect catch-up) It is your turn. ` +
+            `Reply via the meeting_reply tool with meeting_id=${meetingId}, ` +
+            `or send "PASS" to yield without contributing.`,
+          meta: {
+            event_type: 'meeting_state_resync',
+            meeting_id: String(meetingId),
+            your_turn: 'YES',
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+          },
+        },
+      }).catch(() => {})
+    } catch (err) {
+      log(`meeting_state_resync handler error: ${err}`)
     }
   })
 
