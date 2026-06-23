@@ -1685,7 +1685,20 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         //, the peer's inbound was just responded to, so the 2-min timer
         // should not fire for it.
         const sideThreadChatId = (result as any)?.sideThreadChatId
-        if (sideThreadChatId != null) clearInbound(String(sideThreadChatId))
+        const resultConvId =
+          (result as any)?.conversationId ?? (result as any)?.peerConversationId
+        if (turn_state === 'final') {
+          // The agent just closed the thread. Pin it closed so neither the
+          // peer's prior inbound nor a final inbound that races this can fire
+          // a false-positive overdue. markConversationClosed also clears the
+          // tracker, so the clearInbound below is belt-and-suspenders.
+          markConversationClosed({
+            convId: resultConvId,
+            chatId: sideThreadChatId != null ? String(sideThreadChatId) : undefined,
+          })
+        } else if (sideThreadChatId != null) {
+          clearInbound(String(sideThreadChatId))
+        }
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -1921,9 +1934,63 @@ const meetingIdByChatId = new Map<string, number>()
 // (not us) closes it, otherwise the inbound stays pending and fires a
 // false-positive overdue 2 min after the close.
 const peerConvChats = new Map<string, string>()
+// Reverse map: side-thread chatId → peer_conversation_id, so an inbound or a
+// close that only knows the chatId can find its conversation, and vice versa.
+const peerConvByChat = new Map<string, string>()
+// Side-thread chat ids whose peer conversation is CLOSED (the peer or the agent
+// sent turn_state:'final', or a peer_conversation_closed event fired). A closed
+// thread owes no reply, so the overdue sweep must permanently skip it. This is
+// the race-proof guard: it does not matter whether the close signal arrives
+// before, with, or after the final inbound, recordInbound consults this set and
+// refuses to (re)arm a tracker for a closed chat, and markConversationClosed
+// also clears any tracker that was already armed.
+const closedPeerChats = new Set<string>()
+const CLOSED_PEER_CHATS_MAX = 500
 const REPLY_OVERDUE_MS = 120_000
 
-function recordInbound(chatId: string, messageId: number): void {
+// Mark a peer side-thread as closed and tear down any overdue tracker for it.
+// Accepts whichever identifier the caller has (conversation id and/or chat id);
+// it resolves the other through the peerConvChats / peerConvByChat maps so the
+// guard is set regardless of which signal (final inbound, final send, or the
+// peer_conversation_closed event) arrives first.
+function markConversationClosed(opts: { convId?: string | number | null; chatId?: string | null }): void {
+  let chatId = opts.chatId ? String(opts.chatId) : undefined
+  const convId = opts.convId != null && opts.convId !== '' ? String(opts.convId) : undefined
+  if (!chatId && convId) chatId = peerConvChats.get(convId)
+  if (!chatId) return
+  // Drop any pending overdue for this chat and pin it closed so a late inbound
+  // (or a re-delivery that races the close) cannot re-arm the tracker.
+  pendingInbounds.delete(chatId)
+  if (!closedPeerChats.has(chatId)) {
+    closedPeerChats.add(chatId)
+    // Bound the set so a long-lived plugin doesn't grow it forever.
+    if (closedPeerChats.size > CLOSED_PEER_CHATS_MAX) {
+      const first = closedPeerChats.values().next().value
+      if (first !== undefined) closedPeerChats.delete(first)
+    }
+  }
+  // Drop the forward conv→chat lookup (the conversation is over), but KEEP the
+  // chat→conv association: the reopen check in the inbound handler compares the
+  // incoming conversation id against it, so a re-delivery of the SAME (closed)
+  // conversation stays suppressed, while a genuinely new conversation id lifts
+  // the guard. Pin the resolved conv id onto the chat→conv map so that hint
+  // survives even when the close arrived only with a conversation id.
+  const resolvedConv = convId ?? peerConvByChat.get(chatId)
+  if (resolvedConv) {
+    peerConvChats.delete(resolvedConv)
+    peerConvByChat.set(chatId, resolvedConv)
+  }
+}
+
+// Record the conv↔chat association for a peer side-thread so the close handler
+// can resolve one identifier from the other no matter which arrives first.
+function rememberPeerConvChat(convId: string | undefined, chatId: string | undefined): void {
+  if (!convId || !chatId) return
+  peerConvChats.set(convId, chatId)
+  peerConvByChat.set(chatId, convId)
+}
+
+function recordInbound(chatId: string, messageId: number, turnState?: string): void {
   if (!chatId) return
   // Authorize the chat for outbound dispatch even before the overdue-tracker
   // guards below short-circuit (meeting chats, malformed ids). Receiving an
@@ -1931,6 +1998,17 @@ function recordInbound(chatId: string, messageId: number): void {
   noteMonitoredChat(chatId)
   if (meetingChatIds.has(chatId)) return
   if (!Number.isFinite(messageId)) return
+  // A peer side-thread that is already closed owes no reply. Never arm an
+  // overdue tracker for it (race-proof guard against a close that arrived
+  // before this inbound, or a re-delivery after the close).
+  if (closedPeerChats.has(chatId)) return
+  // A final-turn peer message IS the close: it owes no reply, and tracking it
+  // would fire the false-positive overdue ~2 min later. Mark the thread closed
+  // instead of arming a tracker.
+  if (turnState === 'final') {
+    markConversationClosed({ chatId })
+    return
+  }
   const existing = pendingInbounds.get(chatId)
   if (existing && existing.messageId >= messageId) return
   pendingInbounds.set(chatId, { messageId, ts: Date.now(), reminded: false })
@@ -2757,15 +2835,30 @@ function connectWebsocket(): void {
           },
         },
       }).catch((err) => log(`WS forward error: ${err}`))
-      recordInbound(chatId, messageId)
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
       const convId =
         payload?.peer_conversation_id ?? payload?.peerConversationId
+      const wsTurnState = (payload?.turn_state ?? payload?.turnState) as
+        | string
+        | undefined
       if (convId != null && chatId) {
-        peerConvChats.set(String(convId), chatId)
+        const convIdStr = String(convId)
+        // A new (different) conversation id for a previously-closed side-thread
+        // chat means the thread reopened, lift the closed guard so this fresh
+        // conversation can arm overdue trackers again. A non-final inbound with
+        // no prior association also implies a live thread.
+        const priorConv = peerConvByChat.get(chatId)
+        if (closedPeerChats.has(chatId) && priorConv !== convIdStr) {
+          closedPeerChats.delete(chatId)
+        }
+        rememberPeerConvChat(convIdStr, chatId)
       }
+      // Track AFTER recording the conv↔chat association and turn_state so a
+      // final inbound is recognized as a close (recordInbound short-circuits
+      // it) and the closed-guard is consulted with the latest mapping.
+      recordInbound(chatId, messageId, wsTurnState)
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
@@ -2775,16 +2868,15 @@ function connectWebsocket(): void {
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
     )
-    // Clear any reply-overdue tracker pinned to this side-thread chat, 
-    // the conversation is closed, no reply path remains, and continuing
-    // to track it would fire false-positive overdues 2 min later.
-    const convId = payload?.conversation_id
+    // Clear any reply-overdue tracker pinned to this side-thread chat and pin
+    // the chat closed, the conversation is over, no reply path remains, and
+    // continuing to track it would fire false-positive overdues 2 min later.
+    // markConversationClosed resolves the chatId from the conversation id and
+    // is idempotent, so it is safe whether this fires before or after the
+    // final inbound that recordInbound also marks closed.
+    const convId = payload?.conversation_id ?? payload?.conversationId
     if (convId != null) {
-      const chatId = peerConvChats.get(String(convId))
-      if (chatId) {
-        clearInbound(chatId)
-        peerConvChats.delete(String(convId))
-      }
+      markConversationClosed({ convId })
     }
     mcp.notification({
       method: 'notifications/claude/channel',
