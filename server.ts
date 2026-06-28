@@ -324,18 +324,21 @@ void RESERVED_VALUE_PREFIXES
 
 /**
  * Best-effort extraction of the sender's user id from an inbound message-ish
- * object. The current backend does not stamp a per-sender user id on chat
- * messages, so this almost always resolves to the configured account owner
- * (USER_ID). Written to read a distinct field if/when the backend adds one, so
- * the permission-verdict binding tightens with zero further plumbing.
- *
- * TODO(backend): once chat messages carry a real per-sender user id
- * (e.g. message.senderUserId), this returns it and the verdict binding becomes
- * a true per-user check instead of the current account-owner fallback.
+ * object. The backend now stamps a REAL per-sender user id on every inbound
+ * (WS: payload.sender.userId; REST poll: message.senderUserId), so for a
+ * SHARED assistant this resolves to the actual human who sent the message,
+ * not a fixed account owner. Falls back through the legacy top-level userId
+ * and finally the configured owner (USER_ID) for pre-Block-A backends or when
+ * the field is absent, so older deployments keep working unchanged.
  */
 function senderUserIdOf(message: unknown): string {
   const m = message as Record<string, unknown> | null | undefined
+  // WS payloads carry a nested sender object; the REST poll message carries a
+  // flat senderUserId (its own `sender` field is the role string, not an
+  // object, so reading .userId off it is a harmless undefined).
+  const nestedSender = m?.sender as { userId?: unknown } | null | undefined
   const candidate =
+    (nestedSender?.userId as string | undefined) ??
     (m?.senderUserId as string | undefined) ??
     (m?.sender_user_id as string | undefined) ??
     (m?.userId as string | undefined) ??
@@ -527,15 +530,23 @@ const mcp = new Server(
       '  `url` (presigned S3 URL valid ~1 hour), and `type` (image/video/document/audio).',
       '- You can view images via the URL or fetch documents via WebFetch.',
       '',
-      '## SHARED-ASSISTANT CONTEXT',
+      '## SHARED-ASSISTANT CONTEXT (per-sender identity)',
       '',
-      'This assistant may be shared with other users. Every inbound message includes:',
-      '  - user_id            : the user who sent THIS message (always trust this for isolation)',
-      '  - is_shared_recipient: true if the message is from a share recipient (not the owner)',
-      '  - share_owner_user_id: the original assistant creator\'s id, present on shared messages',
+      'This assistant may be shared with other people, so every inbound now carries',
+      'the identity of the REAL human who sent THAT message, not a fixed account',
+      'owner. The meta of each message includes:',
+      '  - user_id            : id of the user who sent THIS message. Always present',
+      '                         (live and backfilled). Trust it for isolation; do NOT',
+      '                         assume it is the assistant owner.',
+      '  - sender_display_name: that user\'s display name (on live messages).',
+      '  - sender_relationship: "owner" or "shared_recipient" (on live messages).',
+      '  - is_shared_recipient: true when the sender is a share recipient, not the owner.',
+      '  - share_owner_user_id: the original assistant creator\'s id on shared messages.',
       '',
-      'If you store data per-user (memory, files, preferences), key it by `user_id` so',
-      'recipients are isolated from the owner and from each other.',
+      'Segregate per-user context by `user_id`: if you keep memory, files, notes or',
+      'preferences, key them on `user_id` so each human stays isolated from the owner',
+      'and from every other recipient. Address people by `sender_display_name` when',
+      'you have it.',
       '',
       '## Setting Your Status (set_status)',
       '',
@@ -1881,6 +1892,10 @@ interface ChatMessage {
     // on older backends (in which case we fall back to the raw chat_id).
     sessionHandle?: string | null
     session_handle?: string | null
+    // Block A: real per-sender user id the backend stamps on each persisted
+    // message. Null/absent on pre-Block-A backends (senderUserIdOf then falls
+    // back to the configured owner). Lets a shared assistant tell who sent it.
+    senderUserId?: string | null
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
@@ -2654,7 +2669,12 @@ async function pollChat(chatId: string): Promise<void> {
       rememberSessionHandle(chatId, pollSessionHandle)
       // Remember who drove this chat so a permission verdict can be bound to
       // them (see lastInboundUserByChat / PendingPermission.requesterUserId).
-      lastInboundUserByChat.set(chatId, senderUserIdOf(msg.message))
+      // Block A: resolve the REAL sender id the backend now stamps per message
+      // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
+      // Reused for the verdict-binding map AND the agent-delivered meta so a
+      // shared assistant sees which human actually sent this message.
+      const pollSenderUserId = senderUserIdOf(msg.message)
+      lastInboundUserByChat.set(chatId, pollSenderUserId)
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2663,7 +2683,7 @@ async function pollChat(chatId: string): Promise<void> {
             chat_id: chatId,
             message_id: String(msg.message.id),
             user: isPollSystem ? 'System' : 'User',
-            user_id: USER_ID,
+            user_id: pollSenderUserId,
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
             ...(isPollSystem ? { system: true, sender_type: 'system' } : {}),
@@ -2844,7 +2864,14 @@ function connectWebsocket(): void {
             chat_id: chatId,
             message_id: String(messageId),
             user: isWsSystem ? 'System' : 'User',
-            user_id: USER_ID,
+            // Block A: forward the REAL human sender so a shared assistant can
+            // tell who is talking, falling back to the legacy top-level userId
+            // and then the configured owner for pre-Block-A backends.
+            user_id: payload?.sender?.userId ?? payload?.userId ?? USER_ID,
+            sender_display_name: payload?.sender?.displayName,
+            sender_relationship: payload?.sender?.relationship,
+            is_shared_recipient: payload?.isSharedRecipient ?? false,
+            share_owner_user_id: payload?.shareOwnerUserId ?? null,
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
             transport: 'ws',
