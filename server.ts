@@ -2314,6 +2314,26 @@ async function discoverChats(): Promise<void> {
   }
 }
 
+// A scheduler / system wake card (sender='system', message_type='event') is
+// written to the DB in TWO steps against the SAME row id: first an EMPTY row,
+// then an external UPDATE that fills the body. That second write does not go
+// through the inbound emit path, so the body only ever reaches us via the poll.
+// If a poll tick catches the row in its empty write-1 state we must NOT treat
+// it as a real message: forwarding it would deliver an empty banner and arm a
+// premature reply-overdue, and advancing the cursor past its id would mean the
+// later body-fill (same id) is excluded by the `id > lastSeen` filter forever.
+// So we recognise "body has not landed yet" and defer the row: do not forward
+// it and do not let the cursor step over it, so a later poll re-reads it once
+// the body is filled. A normal user message is a single atomic write and never
+// hits this state; an already-filled system card has text and is unaffected.
+function isPendingEmptySystem(m: ChatMessage): boolean {
+  return (
+    m.message.sender === 'system' &&
+    (m.message.text ?? '').trim().length === 0 &&
+    !(m.messageFiles?.length)
+  )
+}
+
 async function pollChat(chatId: string): Promise<void> {
   try {
     const data = (await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`)) as ChatHistoryResponse
@@ -2354,6 +2374,10 @@ async function pollChat(chatId: string): Promise<void> {
         const m = ordered[i]!
         // System messages (sender='system', capability #14) are inbound
         // machine traffic the agent must process, exactly like a user message.
+        // But a wake card whose body has not landed yet (empty write-1 state)
+        // is skipped here, the cursor cap below parks just under it so a later
+        // poll re-reads it once the body fills.
+        if (isPendingEmptySystem(m)) continue
         if (m.message.sender === 'user' || m.message.sender === 'system') {
           collected.push(m)
           if (collected.length >= MAX_FIRST_POLL_FORWARD) break
@@ -2379,11 +2403,23 @@ async function pollChat(chatId: string): Promise<void> {
       newUserMessages = ordered.filter(
         (m) =>
           m.message.id > lastSeen &&
-          (m.message.sender === 'user' || m.message.sender === 'system'),
+          (m.message.sender === 'user' || m.message.sender === 'system') &&
+          // Defer system wake cards still in their empty write-1 state, the
+          // body has not landed so there is nothing to forward yet.
+          !isPendingEmptySystem(m),
       )
     }
 
-    chatLastSeen.set(chatId, maxId)
+    // Advance the cursor, but never step OVER a system wake card whose body has
+    // not landed yet. If any pending-empty system row is present we park the
+    // cursor just below the lowest such id so a later poll re-reads that row
+    // once its body is filled (write-2 reuses the same id, so jumping to maxId
+    // would exclude the fill forever). Never moves the cursor backward.
+    const pendingIds = ordered
+      .filter(isPendingEmptySystem)
+      .map((m) => m.message.id)
+    const cap = pendingIds.length ? Math.min(...pendingIds) - 1 : maxId
+    chatLastSeen.set(chatId, Math.max(lastSeen, Math.min(maxId, cap)))
 
     // If an assistant message has already been written that supersedes our
     // pending unanswered inbound (covers replies sent via non-Claude paths
