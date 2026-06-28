@@ -2980,7 +2980,32 @@ function connectWebsocket(): void {
         .map((p: any) => p?.name)
         .filter(Boolean)
         .join(', ')
-      log(`meeting_invitation accepted (id=${meetingId}, peers=${peerNames})`)
+      // NEWCOMER CATCH-UP: when the backend ships the prior transcript with the
+      // invitation (share_history_with_new_participants ON for a mid-meeting
+      // add), render it INTO the invitation notification so the joining agent
+      // actually starts with the full context the room already shares. Without
+      // this the history[] payload was silently dropped and the newcomer only
+      // ever saw the next single message (KC live finding: "received only ONE
+      // message, not the full history").
+      const rawHistory = Array.isArray(payload?.history) ? payload.history : []
+      let historyBlock = ''
+      if (rawHistory.length > 0) {
+        const lines = rawHistory
+          .map((h: any) => {
+            const name = String(h?.senderName ?? 'Unknown')
+            const text = String(h?.text ?? '')
+            return text ? `${name}: ${text}` : ''
+          })
+          .filter(Boolean)
+        if (lines.length > 0) {
+          historyBlock =
+            `\n\nPrior conversation so far (oldest first), for your context:\n` +
+            lines.join('\n')
+        }
+      }
+      log(
+        `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
+      )
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -2989,7 +3014,8 @@ function connectWebsocket(): void {
             `${payload?.title ? ` "${payload.title}"` : ''}.\n` +
             `Other participants: ${peerNames || '(none yet)'}\n` +
             `Speaker policy: ${payload?.speakerPolicy ?? 'user_mediated'}.\n` +
-            `Wait for messages with your_turn=YES before calling the meeting_reply tool.`,
+            `Wait for messages with your_turn=YES before calling the meeting_reply tool.` +
+            historyBlock,
           meta: {
             event_type: 'meeting_invitation',
             meeting_id: String(meetingId),
