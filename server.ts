@@ -1036,6 +1036,40 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'complete_voice_task',
+      description:
+        'Report the outcome of a VOICE-DISPATCHED background task. When your ' +
+        'user is on a live voice call and dispatches work to you, a ' +
+        '[voice_dispatch] notification arrives with a task_id and a complete ' +
+        'brief. Do the work in this session, then call this tool EXACTLY ONCE ' +
+        'with the task_id and a concise, SPEAKABLE result (1-6 sentences — it ' +
+        'is announced aloud in the call and shown on the in-call Agent Work ' +
+        'Stream card). If you cannot complete the task, set failed=true and ' +
+        'put the reason in result. Maps to ' +
+        'POST /api/v1/integrations/voice-tasks/:taskId/result (X-API-Key, ' +
+        'owner-scoped).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          task_id: {
+            type: 'string',
+            description: 'The task id from the [voice_dispatch] notification.',
+          },
+          result: {
+            type: 'string',
+            description:
+              'The outcome, written to be SPOKEN: lead with the answer, keep ' +
+              'it tight. On failure: the reason it could not be done.',
+          },
+          failed: {
+            type: 'boolean',
+            description: 'Set true when the task could not be completed.',
+          },
+        },
+        required: ['task_id', 'result'],
+      },
+    },
+    {
       name: 'list_peers',
       description:
         "List the user's other assistants (peer agents) on this BGOS account. " +
@@ -1650,6 +1684,37 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
           isError: true,
         }
+      }
+    }
+
+    case 'complete_voice_task': {
+      const taskId = String(rawArgs.task_id ?? '').trim()
+      const resultText = String(rawArgs.result ?? '').trim()
+      const failed = rawArgs.failed === true
+      if (!taskId || !resultText) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'complete_voice_task needs both task_id and result.',
+            },
+          ],
+          isError: true,
+        }
+      }
+      const body = failed
+        ? { ok: false, error: { code: 'DISPATCH_FAILED', message: resultText } }
+        : { ok: true, payload: { text: resultText } }
+      await bgosPost(`integrations/voice-tasks/${encodeURIComponent(taskId)}/result`, body)
+      return {
+        content: [
+          {
+            type: 'text',
+            text: failed
+              ? `Task ${taskId} reported as failed. The user's call/Work Stream shows the reason.`
+              : `Task ${taskId} completed. The result is on the user's Work Stream and will be announced in their call.`,
+          },
+        ],
       }
     }
 
@@ -2800,6 +2865,42 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect_error', (err: Error) => {
     log(`WS connect error: ${err.message}`)
+  })
+
+  // Voice dispatch (BGOS voice revamp): the user, on a live voice call,
+  // dispatched background work to THIS agent. Surface it to the live session
+  // with the task id + brief; the agent reports back via complete_voice_task.
+  realtimeSocket.on('voice_task_dispatch', (payload: any) => {
+    try {
+      const taskId = String(payload?.task_id ?? '')
+      if (!taskId) return
+      const question = String(payload?.question ?? '')
+      const context = payload?.context ? String(payload.context) : ''
+      log(`voice_task_dispatch received (task=${taskId})`)
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content:
+            `[voice_dispatch] Your user is on a live voice call and dispatched ` +
+            `background task #${taskId} to you:\n\n${question}` +
+            (context ? `\n\nExtra context: ${context}` : '') +
+            `\n\nDo this work NOW in this session. When finished, call the ` +
+            `complete_voice_task tool with task_id="${taskId}" and a concise, ` +
+            `SPEAKABLE result (it is announced aloud in their call). If you ` +
+            `cannot do it, call complete_voice_task with failed=true and the reason.`,
+          meta: {
+            event_type: 'voice_task_dispatch',
+            task_id: taskId,
+            chat_id: String(payload?.chat_id ?? ''),
+            user_id: USER_ID,
+            assistant_id: ASSISTANT_ID,
+            transport: 'ws',
+          },
+        },
+      }).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+    } catch (err) {
+      log(`voice_task_dispatch handler error: ${err}`)
+    }
   })
 
   realtimeSocket.on('inbound_message', (payload: any) => {
