@@ -293,6 +293,30 @@ test('consult notifies the live session and resolves on voice_consult_reply', as
   assert.equal(handler.pendingConsultCount, 0)
 })
 
+test('consult meta is all-string valued (harness drops cards with non-string meta)', async () => {
+  // Regression guard mirroring test/ws-inbound-meta.test.ts (plugin PR #19):
+  // the Claude Code harness silently drops notifications/claude/channel
+  // cards whose meta carries any non-string value (null, undefined, number,
+  // boolean). Every consult meta value must be a string — including when the
+  // frame's chatId is null / a number.
+  for (const chatId of [null, 12, '12'] as const) {
+    const { deps, rec } = makeDeps({ timing: { consultTimeoutMs: 2_000 } })
+    const handler = new VoiceRpcHandler(deps)
+    const done = handler.handle(consultFrame({ chatId }))
+    await new Promise((r) => setTimeout(r, 20))
+    const meta = rec.notifications[0]!.meta
+    for (const [key, value] of Object.entries(meta)) {
+      assert.equal(
+        typeof value,
+        'string',
+        `meta.${key} must be a string (got ${typeof value}) for chatId=${String(chatId)}`,
+      )
+    }
+    handler.resolveConsult('rpc-c1', 'ok')
+    await done
+  }
+})
+
 test('consult times out with a descriptive error; a LATE reply is told to use the chat', async () => {
   const { deps, rec } = makeDeps({ timing: { consultTimeoutMs: 30 } })
   const handler = new VoiceRpcHandler(deps)

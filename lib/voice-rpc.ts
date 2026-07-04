@@ -527,16 +527,21 @@ export class VoiceRpcHandler {
           reject(err)
         },
       })
+      // Channel `meta` MUST be all-string valued: the Claude Code harness
+      // silently drops any notifications/claude/channel card whose meta
+      // carries a non-string value (regression: plugin PR #19 — a null in
+      // the WS inbound meta made every live card vanish). Guarded by
+      // test/voice-rpc.test.ts "consult meta is all-string valued".
       this.deps
         .notify(content, {
           event_type: 'voice_consult',
-          consult_id: consultId,
-          call_id: callId,
+          consult_id: String(consultId),
+          call_id: String(callId),
           chat_id:
             frame.chatId != null
               ? String(frame.chatId)
-              : (this.deps.config.chatIdFallback ?? ''),
-          assistant_id: this.deps.config.assistantId,
+              : String(this.deps.config.chatIdFallback ?? ''),
+          assistant_id: String(this.deps.config.assistantId),
           transport: 'ws',
         })
         .catch((err) => {
