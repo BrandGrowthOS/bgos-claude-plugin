@@ -122,7 +122,7 @@ cmd_install() {
   local mcp="$workdir/.mcp.json"
   if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then
     [ -f "$mcp" ] && cp "$mcp" "$mcp.bak" && warn "backed up existing .mcp.json → $mcp.bak"
-    write_mcp_json "$mcp" "$backend" "$API_KEY" "$USER_ID" "$ASSISTANT_ID" "$auto"
+    write_mcp_json "$mcp" "$backend" "$API_KEY" "$USER_ID" "$ASSISTANT_ID" "$auto" "${OPENAI_VOICE_KEY:-}"
     bun -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$mcp" >/dev/null 2>&1 \
       || die "generated .mcp.json is not valid JSON — check your --key/--user/--backend for special characters"
     ok "wrote $mcp"
@@ -171,13 +171,15 @@ cmd_install() {
 # JSON via bun + JSON.stringify: values are passed as env vars (no shell/JSON
 # interpolation), so a key/url with quotes or backslashes can't corrupt or
 # inject into the config.
-write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto
-  BGOS_SERVER="$PLUGIN_DIR/server.ts" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" \
+write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto [$7 openai-key]
+  BGOS_SERVER="$PLUGIN_DIR/server.ts" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" BGOS_OAI="${7:-}" \
   bun -e '
     const e = process.env;
-    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_SERVER],
-      env: { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
-             BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO } } } };
+    const env = { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
+                  BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO };
+    // Optional: enables live voice calls (Talk button) — see README "Voice Calls".
+    if (e.BGOS_OAI) env.BGOS_OPENAI_API_KEY = e.BGOS_OAI;
+    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_SERVER], env } } };
     process.stdout.write(JSON.stringify(cfg, null, 2) + "\n");
   ' > "$1"
 }
@@ -521,6 +523,7 @@ ${B}Commands${Z}
 ${B}install options${Z}
   --assistant <id>     (required) BGOS assistant id
   --key <api-key>      BGOS_API_KEY        --user <user-id>   BGOS_USER_ID
+  --openai-key <key>   BGOS_OPENAI_API_KEY — enables live voice calls (Talk button)
   --backend <url>      default $DEFAULT_BACKEND
   --dir <path>         working dir (default ~/.bgos-agent/<id>-workspace)
   --always-on          install the auto-restart + survive-reboot supervisor
@@ -551,6 +554,7 @@ while [ $# -gt 0 ]; do
     --assistant) need_val "$1" "$#"; ASSISTANT_ID="$2"; shift 2;;
     --key)       need_val "$1" "$#"; API_KEY="$2"; shift 2;;
     --user)      need_val "$1" "$#"; USER_ID="$2"; shift 2;;
+    --openai-key) need_val "$1" "$#"; OPENAI_VOICE_KEY="$2"; shift 2;;
     --backend)   need_val "$1" "$#"; BACKEND="$2"; shift 2;;
     --dir)       need_val "$1" "$#"; WORKDIR="$2"; shift 2;;
     --channel)   need_val "$1" "$#"; CHANNEL="$2"; shift 2;;

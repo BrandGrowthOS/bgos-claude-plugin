@@ -40,6 +40,11 @@ import {
   buildInboundContent,
   buildEventMeta,
 } from './lib/message-text.js'
+import {
+  VoiceRpcHandler,
+  normalizeVoiceRpc,
+  type AgentIdentity,
+} from './lib/voice-rpc.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -49,6 +54,14 @@ const USER_ID = process.env.BGOS_USER_ID || ''
 const ASSISTANT_ID = process.env.BGOS_ASSISTANT_ID || ''
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
+// Native voice (the Talk button in BGOS): mint runs on THIS host, directly
+// against OpenAI. Optional — without a key, chat works normally and voice
+// calls fail with a descriptive "voice not configured" error.
+const VOICE_OPENAI_API_KEY =
+  process.env.BGOS_OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
+const VOICE_MODEL = process.env.BGOS_VOICE_MODEL || 'gpt-realtime-2'
+const VOICE_VOICE = process.env.BGOS_VOICE_VOICE || 'marin'
+const VOICE_PERSONA = process.env.BGOS_VOICE_PERSONA || ''
 
 if (!BACKEND_URL || !API_KEY || !USER_ID || !ASSISTANT_ID) {
   process.stderr.write(
@@ -1070,6 +1083,36 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'voice_consult_reply',
+      description:
+        'Answer a LIVE voice-call consult. When a [voice_consult] ' +
+        'notification arrives (your user asked you a question mid-call), ' +
+        'call this tool FIRST — before any other tool — with the consult_id ' +
+        'from the notification and a short, SPEAKABLE answer (1-3 ' +
+        'sentences; it is spoken aloud on the call). You have roughly 30 ' +
+        'seconds from the notification. If you reply too late the call has ' +
+        'moved on: the tool tells you so — then send the answer as a ' +
+        'normal chat message with the reply tool instead, so nothing is ' +
+        'lost.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          consult_id: {
+            type: 'string',
+            description:
+              'The consult_id from the [voice_consult] notification.',
+          },
+          answer: {
+            type: 'string',
+            description:
+              'The answer, written to be SPOKEN: lead with the answer, ' +
+              '1-3 short sentences, no markdown.',
+          },
+        },
+        required: ['consult_id', 'answer'],
+      },
+    },
+    {
       name: 'list_peers',
       description:
         "List the user's other assistants (peer agents) on this BGOS account. " +
@@ -1715,6 +1758,61 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
               : `Task ${taskId} completed. The result is on the user's Work Stream and will be announced in their call.`,
           },
         ],
+      }
+    }
+
+    case 'voice_consult_reply': {
+      const consultId = String(rawArgs.consult_id ?? '').trim()
+      const answer = String(rawArgs.answer ?? '').trim()
+      if (!consultId || !answer) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'voice_consult_reply needs both consult_id and answer.',
+            },
+          ],
+          isError: true,
+        }
+      }
+      const status = voiceRpc.resolveConsult(consultId, answer)
+      if (status === 'resolved') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Answer delivered to the live call — it is being spoken to your user now.',
+            },
+          ],
+        }
+      }
+      if (status === 'late') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Too late — this consult already timed out and the call moved on ' +
+                '(the user heard that you are still working on it). Send this ' +
+                'answer as a normal chat message with the reply tool so it is ' +
+                'not lost.',
+            },
+          ],
+        }
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text:
+              `No consult with id "${consultId}" is pending on this plugin ` +
+              '(check the consult_id from the most recent [voice_consult] ' +
+              'notification; a plugin restart also clears pending consults). ' +
+              'If you still have an answer the user needs, send it as a chat ' +
+              'reply.',
+          },
+        ],
+        isError: true,
       }
     }
 
@@ -2819,6 +2917,73 @@ const wsForwardedMessageIds = new Set<number>()
 const WS_FORWARD_CACHE_MAX = 500
 let realtimeSocket: IOClientSocket | null = null
 
+// ── Native voice (voice_rpc mint/consult) ────────────────────────────────────
+// The backend delivers voice_rpc frames for calls THIS agent hosts on the
+// assistant:<id> room (the pairingless lane, mirroring voice_task_dispatch).
+// All plumbing lives in lib/voice-rpc.ts; this block only wires the deps.
+
+/** Best-effort assistant identity (name/subtitle) for the voice persona.
+ *  Cached after the first success; a failure just means a generic persona. */
+let voiceIdentityCache: AgentIdentity | null = null
+async function getVoiceIdentity(
+  timeoutMs: number,
+): Promise<AgentIdentity | null> {
+  if (voiceIdentityCache) return voiceIdentityCache
+  try {
+    const timer = new Promise<never>((_, reject) => {
+      const t = setTimeout(
+        () => reject(new Error('identity fetch timed out')),
+        Math.max(1, timeoutMs),
+      )
+      if (typeof t.unref === 'function') t.unref()
+    })
+    const data = (await Promise.race([
+      bgosGet(`assistants/with-chats/${encodeURIComponent(USER_ID)}`),
+      timer,
+    ])) as unknown
+    const list = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { assistants?: unknown[] })?.assistants)
+        ? (data as { assistants: unknown[] }).assistants
+        : []
+    const me = list.find(
+      (a) => Number((a as { id?: unknown })?.id) === Number(ASSISTANT_ID),
+    ) as { name?: unknown; subtitle?: unknown } | undefined
+    if (!me) return null
+    voiceIdentityCache = {
+      name: typeof me.name === 'string' ? me.name : '',
+      subtitle: typeof me.subtitle === 'string' ? me.subtitle : '',
+    }
+    return voiceIdentityCache
+  } catch {
+    return null
+  }
+}
+
+const voiceRpc = new VoiceRpcHandler({
+  config: {
+    openaiApiKey: VOICE_OPENAI_API_KEY,
+    model: VOICE_MODEL,
+    voice: VOICE_VOICE,
+    persona: VOICE_PERSONA,
+    assistantId: ASSISTANT_ID,
+  },
+  postAck: (rpcId) =>
+    bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  notify: (content, meta) =>
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: { content, meta },
+    }),
+  getIdentity: getVoiceIdentity,
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (wsForwardedMessageIds.has(id)) return
   wsForwardedMessageIds.add(id)
@@ -2865,6 +3030,22 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect_error', (err: Error) => {
     log(`WS connect error: ${err.message}`)
+  })
+
+  // Native voice control plane (v0.14.0): mint/consult frames for calls
+  // THIS agent hosts. Frames are validated + op-whitelisted in
+  // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
+  // a result or descriptive error — the G2 silent-drop lesson). Duplicate
+  // re-emits are deduped by rpcId inside the handler.
+  realtimeSocket.on('voice_rpc', (payload: any) => {
+    try {
+      const frame = normalizeVoiceRpc(payload)
+      if (!frame) return
+      log(`voice_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void voiceRpc.handle(frame)
+    } catch (err) {
+      log(`voice_rpc handler error: ${err}`)
+    }
   })
 
   // Voice dispatch (BGOS voice revamp): the user, on a live voice call,

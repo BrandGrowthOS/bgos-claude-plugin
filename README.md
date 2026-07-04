@@ -221,6 +221,19 @@ rules before replying so messages don't get lost.
   plugin is currently connected) and whether you have an open
   conversation with them. Useful before sending if you want to know
   the message will be seen immediately vs queued for reconnect.
+- `complete_voice_task` — report the outcome of a voice-dispatched
+  background task. When a `[voice_dispatch]` notification arrives
+  (your user is on a live voice call and sent you work), do the work
+  in this session, then call this tool EXACTLY ONCE with the
+  `task_id` and a concise SPEAKABLE result (it is announced aloud in
+  their call).
+- `voice_consult_reply` — answer a LIVE voice-call consult. When a
+  `[voice_consult]` notification arrives (your user asked you a
+  question mid-call), call this tool FIRST — before any other tool —
+  with the `consult_id` and a short, speakable answer (1–3
+  sentences). You have ~30 seconds; if the tool says you were too
+  late, send the answer as a normal chat `reply` instead so nothing
+  is lost.
 
 ### How to recognize a peer message
 
@@ -314,6 +327,8 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `send_to_peer` | Send a message to another assistant (peer agent) — supports `turn_state` and `wait_for_reply` |
 | `complete_peer_thread` | Close the active peer conversation with a one-line summary (collapses the SideConversationCard) |
 | `peer_status` | Check whether a peer is online + whether you have an open conversation with them |
+| `complete_voice_task` | Report the outcome of a voice-dispatched background task (v0.13.0+) |
+| `voice_consult_reply` | Answer a live voice-call consult with a short speakable answer (v0.14.0+) |
 | `complete_side_thread` | Legacy: mark a parent message's side-thread complete with a summary (use `complete_peer_thread` for new flows) |
 
 Claude Code retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.
@@ -398,6 +413,22 @@ Text + files + buttons in a single reply:
 }
 ```
 
+## Voice Calls (v0.14.0+)
+
+With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS **Talk button works on Claude Code agents**: the user gets a live WebRTC voice call whose "mouth" is an OpenAI realtime model and whose brain is YOUR live Claude Code session.
+
+**Setup:**
+
+1. Add `"BGOS_OPENAI_API_KEY": "<an OpenAI API key with Realtime access>"` to the `env` block of the agent's `.mcp.json` and restart the agent session.
+2. In the BGOS app, open the agent's settings → Voice → set the provider to **Native (realtime)** and save.
+3. Tap **Talk**. Mint happens on this host (`POST /v1/realtime/client_secrets`), so the ephemeral session secret never leaves it.
+
+**What the agent experiences during a call:**
+
+- **`[voice_consult]` notifications** — the user asked a quick question mid-call. Call `voice_consult_reply` FIRST with the `consult_id` and a short, speakable answer (1–3 sentences). Budget is ~30 seconds; if the session is busy mid-turn the consult usually times out gracefully (the caller hears "still working on it") and a late `voice_consult_reply` is redirected to normal chat.
+- **`[voice_dispatch]` notifications** (v0.13.0) — the user dispatched background work from the call. Do the work, then call `complete_voice_task` exactly once with a speakable result. This is the PREFERRED escalation path for real work — the voice model is instructed to bias toward it because Claude turns can be slow.
+- The recent chat context + your agent's name/subtitle (+ optional `BGOS_VOICE_PERSONA`) are baked into the voice session's instructions at mint, and the full call transcript is posted back into the chat when the call ends.
+
 ## Configuration Reference
 
 | Variable | Required | Description |
@@ -408,6 +439,10 @@ Text + files + buttons in a single reply:
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
+| `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
+| `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2`) |
+| `BGOS_VOICE_VOICE` | No | Realtime voice name (default: `marin`) |
+| `BGOS_VOICE_PERSONA` | No | Extra persona text baked into the voice session instructions |
 
 ### Permission Modes
 
