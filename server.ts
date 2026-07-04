@@ -2968,11 +2968,23 @@ function connectWebsocket(): void {
             // Block A: forward the REAL human sender so a shared assistant can
             // tell who is talking, falling back to the legacy top-level userId
             // and then the configured owner for pre-Block-A backends.
-            user_id: payload?.sender?.userId ?? payload?.userId ?? USER_ID,
-            sender_display_name: payload?.sender?.displayName,
-            sender_relationship: payload?.sender?.relationship,
-            is_shared_recipient: payload?.isSharedRecipient ?? false,
-            share_owner_user_id: payload?.shareOwnerUserId ?? null,
+            // Channel `meta` MUST be all-string valued: the Claude Code harness
+            // silently drops any notifications/claude/channel card whose meta
+            // carries a non-string value. So stringify the boolean, coerce
+            // user_id, and only include the optional identity fields when
+            // present (never emit undefined or null). Regression: #17 shipped a
+            // boolean + null here and every live WS inbound card vanished.
+            user_id: String(payload?.sender?.userId ?? payload?.userId ?? USER_ID),
+            ...(payload?.sender?.displayName
+              ? { sender_display_name: String(payload.sender.displayName) }
+              : {}),
+            ...(payload?.sender?.relationship
+              ? { sender_relationship: String(payload.sender.relationship) }
+              : {}),
+            is_shared_recipient: String(payload?.isSharedRecipient ?? false),
+            ...(payload?.shareOwnerUserId
+              ? { share_owner_user_id: String(payload.shareOwnerUserId) }
+              : {}),
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
             transport: 'ws',
