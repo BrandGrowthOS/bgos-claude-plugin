@@ -429,6 +429,8 @@ With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS
 - **`[voice_dispatch]` notifications** (v0.13.0) — the user dispatched background work from the call. Do the work, then call `complete_voice_task` exactly once with a speakable result. This is the PREFERRED escalation path for real work — the voice model is instructed to bias toward it because Claude turns can be slow.
 - The recent chat context + your agent's name/subtitle (+ optional `BGOS_VOICE_PERSONA`) are baked into the voice session's instructions at mint, and the full call transcript is posted back into the chat when the call ends.
 
+**Per-assistant voice settings (v0.15.0+):** the BGOS app's agent voice menu can set a **voice** (OpenAI GA set: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar), a **speaking speed** (0.25–1.5), and a **voice persona** per assistant. They arrive on the mint frame as `payload.voiceConfig` and OVERRIDE the host env (`BGOS_VOICE_VOICE` / `BGOS_VOICE_PERSONA` are the fallback only). The plugin sanitizes the wire values (junk voice → env fallback, out-of-range speed → clamped) and echoes the applied voice/speed back so the app's in-call gear shows the truth.
+
 ## Configuration Reference
 
 | Variable | Required | Description |

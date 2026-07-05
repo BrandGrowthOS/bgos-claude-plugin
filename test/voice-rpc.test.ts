@@ -15,6 +15,7 @@ import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
   normalizeExpiresAtSeconds,
+  normalizeVoiceConfig,
   buildMintInstructions,
   buildConsultNotification,
   CONSULT_TOOL_NAME,
@@ -174,6 +175,78 @@ test('mint maps the OpenAI client_secrets response to the wire contract', async 
   assert.match(sent.session.instructions, /Atlas/)
   assert.match(sent.session.instructions, /calm pilot/)
   assert.match(sent.session.instructions, /KC: hello/)
+})
+
+test('normalizeVoiceConfig sanitizes the wire (junk voice dropped, speed clamped, instructions capped)', () => {
+  assert.deepEqual(normalizeVoiceConfig(undefined), {})
+  assert.deepEqual(normalizeVoiceConfig('cedar'), {})
+  assert.deepEqual(normalizeVoiceConfig([]), {})
+  assert.deepEqual(normalizeVoiceConfig({}), {})
+  assert.deepEqual(
+    normalizeVoiceConfig({ voice: ' Cedar ', speed: 1.2, instructions: ' hi ' }),
+    { voice: 'cedar', speed: 1.2, instructions: 'hi' },
+  )
+  assert.deepEqual(normalizeVoiceConfig({ voice: 'x; DROP', speed: 99 }), {
+    speed: 1.5,
+  })
+  assert.deepEqual(normalizeVoiceConfig({ speed: '0.01' }), { speed: 0.25 })
+  const long = normalizeVoiceConfig({ instructions: 'x'.repeat(5000) })
+  assert.equal(long.instructions!.length, 2000)
+})
+
+test('mint applies payload.voiceConfig — voice/speed/persona override env, echoed back', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps, rec } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(
+    frame({
+      payload: {
+        recentContext: 'KC: hello',
+        voiceConfig: {
+          voice: 'cedar',
+          speed: 1.25,
+          instructions: 'Dry humor, two sentences max.',
+        },
+      },
+    }),
+  )
+
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  // Applied to the OpenAI session…
+  assert.equal(sent.session.audio.output.voice, 'cedar')
+  assert.equal(sent.session.audio.output.speed, 1.25)
+  // App persona REPLACES the env persona (env is the fallback only).
+  assert.match(sent.session.instructions, /Dry humor/)
+  assert.doesNotMatch(sent.session.instructions, /calm pilot/)
+  // …and echoed in the result so the in-call gear shows the real voice.
+  const payload = rec.results[0]!.body.payload!
+  assert.equal(payload.voice, 'cedar')
+  assert.equal(payload.speed, 1.25)
+})
+
+test('mint without voiceConfig keeps the exact pre-feature request shape (env fallback)', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps, rec } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(frame())
+
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.deepEqual(sent.session.audio.output, { voice: 'marin' })
+  assert.match(sent.session.instructions, /calm pilot/)
+  const payload = rec.results[0]!.body.payload!
+  assert.equal(payload.voice, 'marin')
+  assert.equal('speed' in payload, false)
+})
+
+test('mint with junk voiceConfig degrades to env config, never fails the call', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps, rec } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(
+    frame({
+      payload: { recentContext: '', voiceConfig: { voice: '!!', speed: 'NaNish' } },
+    }),
+  )
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.deepEqual(sent.session.audio.output, { voice: 'marin' })
+  assert.equal(rec.results[0]!.body.ok, true)
 })
 
 test('mint normalizes a milliseconds expires_at to seconds', async () => {
