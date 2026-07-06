@@ -34,7 +34,10 @@ function frame(over: Partial<VoiceRpcFrame> = {}): VoiceRpcFrame {
     assistantId: '901',
     agentRoute: '',
     chatId: '12',
-    payload: { recentContext: 'KC: hello' },
+    // openaiApiKey is the CALLER's own per-user key, ridden onto the frame by
+    // the Home of Agents backend. Default mint frames carry one so the mint
+    // proceeds; keyless-refusal tests override payload to drop it.
+    payload: { recentContext: 'KC: hello', openaiApiKey: 'sk-caller-own-key' },
     ...over,
   }
 }
@@ -201,6 +204,7 @@ test('mint applies payload.voiceConfig — voice/speed/persona override env, ech
     frame({
       payload: {
         recentContext: 'KC: hello',
+        openaiApiKey: 'sk-caller-own-key',
         voiceConfig: {
           voice: 'cedar',
           speed: 1.25,
@@ -241,7 +245,11 @@ test('mint with junk voiceConfig degrades to env config, never fails the call', 
   const { deps, rec } = makeDeps({ fetchImpl })
   await new VoiceRpcHandler(deps).handle(
     frame({
-      payload: { recentContext: '', voiceConfig: { voice: '!!', speed: 'NaNish' } },
+      payload: {
+        recentContext: '',
+        openaiApiKey: 'sk-caller-own-key',
+        voiceConfig: { voice: '!!', speed: 'NaNish' },
+      },
     }),
   )
   const sent = JSON.parse(String(calls[0]!.init.body)) as any
@@ -256,13 +264,39 @@ test('mint normalizes a milliseconds expires_at to seconds', async () => {
   assert.equal(rec.results[0]!.body.payload!.expiresAt, 1_783_200_000)
 })
 
-test('mint without an OpenAI key posts a descriptive VOICE_NOT_CONFIGURED error', async () => {
-  const { deps, rec } = makeDeps({ openaiApiKey: '' })
-  await new VoiceRpcHandler(deps).handle(frame())
-  const { body } = rec.results[0]!
-  assert.equal(body.ok, false)
-  assert.equal(body.error!.code, 'VOICE_NOT_CONFIGURED')
-  assert.match(body.error!.message, /BGOS_OPENAI_API_KEY/)
+test("mint spends the CALLER's OpenAI key from the frame, never the host env owner key", async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  // The host env carries an owner key; the caller rides THEIR own key on the
+  // frame. The mint must spend the caller's key, so no user drains the owner.
+  const { deps, rec } = makeDeps({ openaiApiKey: 'sk-host-owner-key', fetchImpl })
+  await new VoiceRpcHandler(deps).handle(
+    frame({
+      payload: { recentContext: 'KC: hello', openaiApiKey: 'sk-caller-own-key' },
+    }),
+  )
+  const auth = String(
+    (calls[0]!.init.headers as Record<string, string>).Authorization,
+  )
+  assert.equal(auth, 'Bearer sk-caller-own-key')
+  assert.doesNotMatch(auth, /sk-host-owner-key/)
+  assert.equal(rec.results[0]!.body.ok, true)
+})
+
+test('mint refuses a keyless frame even when a host env key is set (no owner-key fallback)', async () => {
+  // The host env key must NEVER back-fill a caller who sent no key: this is
+  // the no-owner-key guarantee (the backend already blocks keyless callers
+  // upstream, so this daemon guard is defense in depth). A whitespace-only
+  // frame key counts as unset (trimmed) and is refused too.
+  for (const payloadKey of [undefined, '   ']) {
+    const { deps, rec } = makeDeps({ openaiApiKey: 'sk-host-owner-key' })
+    const payload: Record<string, unknown> = { recentContext: 'KC: hello' }
+    if (payloadKey !== undefined) payload.openaiApiKey = payloadKey
+    await new VoiceRpcHandler(deps).handle(frame({ payload }))
+    const { body } = rec.results[0]!
+    assert.equal(body.ok, false)
+    assert.equal(body.error!.code, 'VOICE_NOT_CONFIGURED')
+    assert.match(body.error!.message, /Home of Agents/)
+  }
 })
 
 test('mint maps an OpenAI HTTP error to MINT_FAILED with status + body excerpt', async () => {
