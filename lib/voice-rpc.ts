@@ -14,8 +14,9 @@
  *
  * Ops:
  *   mint    → POST https://api.openai.com/v1/realtime/client_secrets
- *             directly (key from BGOS_OPENAI_API_KEY / OPENAI_API_KEY in the
- *             plugin env — the Hermes-broker blueprint, spec §6.2). We own
+ *             directly with the CALLER's own per-user OpenAI key from the mint
+ *             frame (payload.openaiApiKey); there is NO host-env fallback, so
+ *             no user can spend the owner's key. We own
  *             the mint, so the agent persona + recent chat context are baked
  *             into the session `instructions` → contextInjected:true (the
  *             app then skips client-side injection). 8 s inner cap, under
@@ -174,7 +175,12 @@ export const DEFAULT_TIMING: VoiceRpcTiming = {
 }
 
 export interface VoiceRpcConfig {
-  /** OpenAI API key with Realtime access; '' = voice not configured. */
+  /**
+   * Host env OpenAI key (BGOS_OPENAI_API_KEY / OPENAI_API_KEY). The mint no
+   * longer spends this: it uses the CALLER's own per-user key from the mint
+   * frame (payload.openaiApiKey) with no host-env fallback, so no user drains
+   * the owner's key. Retained for wiring/back-compat.
+   */
   openaiApiKey: string
   model: string
   voice: string
@@ -410,12 +416,28 @@ export class VoiceRpcHandler {
   private async mint(frame: VoiceRpcFrame): Promise<Record<string, unknown>> {
     const deadline = Date.now() + this.timing.mintTimeoutMs
     const { config } = this.deps
-    if (!config.openaiApiKey) {
+    // Per-user key (BILLING/SECURITY): the Home of Agents backend rides the
+    // CALLER's own OpenAI key on the mint frame (payload.openaiApiKey) so the
+    // realtime session spends THEIR OpenAI credits, never this agent host's
+    // owner key (BGOS_OPENAI_API_KEY / OPENAI_API_KEY). This plugin is ALWAYS
+    // backend-driven (voice_rpc frames only ever arrive from the Home of
+    // Agents backend over the authed assistant:<id> room), so unlike the
+    // standalone-capable gobot/hermes daemons, there is NO owner-env fallback:
+    // a frame that carries no user key is refused (the backend already blocks
+    // keyless callers before emitting a frame; this is defense in depth). Trim
+    // first so a whitespace-only key counts as unset. The raw key stays
+    // server-side (it arrived over the authed WS room), is sent ONLY to
+    // OpenAI's client_secrets endpoint, and is never logged nor returned to the
+    // app.
+    const userOpenaiApiKey =
+      typeof frame.payload?.openaiApiKey === 'string'
+        ? frame.payload.openaiApiKey.trim()
+        : ''
+    if (!userOpenaiApiKey) {
       throw new VoiceRpcError(
         'VOICE_NOT_CONFIGURED',
-        'voice is not configured on this agent host: set BGOS_OPENAI_API_KEY ' +
-          '(an OpenAI API key with Realtime access) in the plugin .mcp.json ' +
-          'env and restart the agent',
+        'voice is not configured: the caller has not set an OpenAI API key ' +
+          'in their Home of Agents settings',
       )
     }
     const identity = await this.deps
@@ -471,7 +493,7 @@ export class VoiceRpcHandler {
       res = await fetchImpl(CLIENT_SECRETS_URL, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${config.openaiApiKey}`,
+          Authorization: `Bearer ${userOpenaiApiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
