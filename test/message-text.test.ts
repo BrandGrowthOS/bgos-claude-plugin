@@ -268,7 +268,7 @@ test('event: full envelope maps source/title/peek/payload to flat fields', () =>
     event_source: 'dashboard',
     event_title: 'Done - Luz Columna interview',
     event_peek: 'Kc marked this DONE',
-    event_payload: { status: 'done', topThree: true },
+    event_payload: '{"status":"done","topThree":true}',
   })
 })
 
@@ -283,8 +283,33 @@ test('event: empty/whitespace string fields are dropped; payload null/undefined 
   assert.deepEqual(frag, { event_type: 'event', event_source: 'unknown' })
 })
 
-test('event: falsy-but-valid payload (0, false, empty string) is preserved', () => {
-  assert.equal(buildEventMeta('event', { payload: 0 })?.event_payload, 0)
-  assert.equal(buildEventMeta('event', { payload: false })?.event_payload, false)
+test('event: falsy-but-valid payload (0, false, empty string) is preserved AS A STRING', () => {
+  // Non-strings are JSON-serialized; a raw 0/false in meta would make the
+  // harness drop the whole card (the msg-23050/23080 regression).
+  assert.equal(buildEventMeta('event', { payload: 0 })?.event_payload, '0')
+  assert.equal(buildEventMeta('event', { payload: false })?.event_payload, 'false')
   assert.equal(buildEventMeta('event', { payload: '' })?.event_payload, '')
+})
+
+test('event: EVERY meta value is a string, even for a deeply nested payload (harness drop guard)', () => {
+  // Mirrors the real meeting-summary shape that silently vanished for Mark
+  // (msgs 23050/23080): nested objects, arrays, booleans, nulls.
+  const frag = buildEventMeta('event', {
+    source: 'n8n',
+    title: 'Meeting summary',
+    peek: 'Sandwich launch strategy...',
+    payload: {
+      date: '2026-07-07',
+      action_items: [{ due: null, what: 'Upload assets', owner: 'Zara' }],
+      kc_marketing_relevant: true,
+    },
+  })
+  assert.ok(frag)
+  for (const [k, v] of Object.entries(frag!)) {
+    assert.equal(typeof v, 'string', `meta.${k} must be a string, got ${typeof v}`)
+  }
+  // And the payload round-trips for the agent.
+  const parsed = JSON.parse(frag!.event_payload!)
+  assert.equal(parsed.kc_marketing_relevant, true)
+  assert.equal(parsed.action_items[0].owner, 'Zara')
 })

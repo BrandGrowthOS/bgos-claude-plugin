@@ -9,8 +9,11 @@
  * `sender_display_name`/`sender_relationship` that were `undefined` when absent.
  * Result: EVERY live WS inbound card vanished (only the poll backlog on restart
  * and the all-string reply-overdue card ever surfaced), while the poll and
- * overdue paths, which are all-string, kept working. Boolean `system: true`
- * predates #17 and is tolerated, so the trigger is the null/undefined values.
+ * overdue paths, which are all-string, kept working. (An earlier version of
+ * this comment claimed boolean `system: true` was tolerated; live A/B probing
+ * on 2026-07-07 showed system event cards with boolean meta also vanish, so
+ * server.ts now emits `system: 'true'` / `backlog: 'true'` strings and
+ * event_payload as a JSON string. ALL meta values must be strings, period.)
  *
  * The meta is built module-scoped inside connectWebsocket() in server.ts and is
  * not exported, so, per this repo's convention (see reply-overdue.test.ts and
