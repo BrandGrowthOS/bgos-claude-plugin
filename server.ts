@@ -2033,7 +2033,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // through the SAME membership check the reply handler uses (resolves a
       // sessionHandle back to its raw chat id and rejects chats we were never
       // authorized to see). If none was given, default to the current/most-
-      // recent monitored chat — the same fallback the permission-request flow
+      // recent monitored chat, the same fallback the permission-request flow
       // uses (monitoredChatIds[0]). The backend chatId is optional, so an
       // unbound call is still valid when we have no monitored chat yet.
       let resolvedChatId: number | undefined
@@ -2112,7 +2112,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           (typeof parsed?.message === 'string' && parsed.message) ||
           raw.slice(0, 200) ||
           `HTTP ${response.status}`
-        log(`call_owner: failed ${response.status} — ${detail}`)
+        log(`call_owner: failed ${response.status}, ${detail}`)
         return {
           content: [
             { type: 'text', text: `Could not start the call: ${detail}` },

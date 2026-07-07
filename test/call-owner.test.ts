@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 
 import { buildCallOwnerBody, CALL_OWNER_REASON_MAX } from '../lib/call-owner.ts'
 
-test('buildCallOwnerBody: minimal — assistantId only', () => {
+test('buildCallOwnerBody: minimal, assistantId only', () => {
   assert.deepEqual(buildCallOwnerBody({ assistantId: 900 }), { assistantId: 900 })
 })
 
