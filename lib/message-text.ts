@@ -291,13 +291,21 @@ export interface RawEventMeta {
   payload?: unknown
 }
 
-/** The flat meta fragment surfaced to the agent's channel notification. */
+/** The flat meta fragment surfaced to the agent's channel notification.
+ *
+ * EVERY value here MUST be a string: the Claude Code harness silently drops
+ * any notifications/claude/channel card whose meta carries a non-string value
+ * (null, undefined, boolean, number, object). A raw `event_payload` object
+ * killed every meeting-summary / rich-event card (e.g. msgs 23050/23080 to
+ * Mark), the agent saw only the all-string reply-overdue nudge. Same bug
+ * class as the consult-card fix (b735914) and the WS Block-A fix (#17). */
 export interface EventMetaFragment {
   event_type: 'event'
   event_source: string
   event_title?: string
   event_peek?: string
-  event_payload?: unknown
+  /** The event payload as a JSON string (or the raw string if it was one). */
+  event_payload?: string
 }
 
 /**
@@ -329,7 +337,14 @@ export function buildEventMeta(
   const peek = (eventMeta?.peek ?? '').toString().trim()
   if (peek) out.event_peek = peek
   if (eventMeta?.payload !== undefined && eventMeta?.payload !== null) {
-    out.event_payload = eventMeta.payload
+    // Serialize to a STRING: a raw object/boolean/number in meta makes the
+    // harness drop the whole card (see EventMetaFragment doc). Strings pass
+    // through verbatim; everything else becomes compact JSON the agent can
+    // parse back.
+    out.event_payload =
+      typeof eventMeta.payload === 'string'
+        ? eventMeta.payload
+        : JSON.stringify(eventMeta.payload)
   }
   return out
 }

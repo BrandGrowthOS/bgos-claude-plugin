@@ -2779,7 +2779,7 @@ async function pollChat(chatId: string): Promise<void> {
                 ? {}
                 : { current_speaker_id: String(meetingCtx.currentSpeakerId) }),
               transport: 'poll',
-              ...(isBacklog ? { backlog: true } : {}),
+              ...(isBacklog ? { backlog: 'true' } : {}),
             },
           },
         }).catch((err) => {
@@ -2849,11 +2849,11 @@ async function pollChat(chatId: string): Promise<void> {
             user_id: pollSenderUserId,
             assistant_id: ASSISTANT_ID,
             ts: msg.message.sentDate ?? new Date().toISOString(),
-            ...(isPollSystem ? { system: true, sender_type: 'system' } : {}),
+            ...(isPollSystem ? { system: 'true', sender_type: 'system' } : {}),
             ...(typeof pollSessionHandle === 'string' && pollSessionHandle
               ? { session_handle: pollSessionHandle }
               : {}),
-            ...(isBacklog ? { backlog: true } : {}),
+            ...(isBacklog ? { backlog: 'true' } : {}),
             ...(isSlashCommand
               ? {
                   event_type: 'slash_command',
@@ -3169,7 +3169,7 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
             ts: new Date().toISOString(),
             transport: 'ws',
-            ...(isWsSystem ? { system: true, sender_type: 'system' } : {}),
+            ...(isWsSystem ? { system: 'true', sender_type: 'system' } : {}),
             ...(typeof wsSessionHandle === 'string' && wsSessionHandle
               ? { session_handle: wsSessionHandle }
               : {}),
