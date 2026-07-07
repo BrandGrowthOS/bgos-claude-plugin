@@ -45,6 +45,7 @@ import {
   normalizeVoiceRpc,
   type AgentIdentity,
 } from './lib/voice-rpc.js'
+import { buildCallOwnerBody } from './lib/call-owner.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -447,6 +448,19 @@ const mcp = new Server(
       'the full URL before opening, so prefer bare URLs when transparency',
       'matters. URLs inside code spans/fences never linkify, use code when',
       'the user should copy a URL rather than open it.',
+      '',
+      '## Calling the User (call_owner)',
+      '',
+      'Use the `call_owner` tool to ring the owner with a LIVE, in-app voice',
+      'call (not a text message). Reach for it when the user explicitly asks',
+      'the agent to call them ("call me", "give me a ring", "let\'s hop on',
+      'voice") or when a scheduled/proactive call fires. Pass a short `reason`',
+      '(<=200 chars) shown on the ring; `chat_id` is optional and defaults to',
+      'the current/most-recent chat. If voice is not configured on this agent,',
+      'the tool returns a human setup-guidance string (NOT an error), relay that',
+      'guidance to the user verbatim via `reply` so they know exactly how to',
+      'enable voice. Do not use `call_owner` for routine text answers, those go',
+      'through `reply`.',
       '',
       '## Sending Files & Media',
       '',
@@ -1299,6 +1313,37 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['meeting_id'],
       },
     },
+    {
+      name: 'call_owner',
+      description:
+        'Ring the owner with a live, in-app voice call. Use when the user asks ' +
+        'the agent to call them (e.g. "call me", "give me a ring", "let\'s hop ' +
+        'on voice") or when a scheduled call fires. The owner sees an incoming ' +
+        'ring in the BGOS app and can answer to talk to you live. If voice is ' +
+        'not set up on this agent, the tool returns a human setup-guidance ' +
+        'string instead of an error, relay that guidance to the user verbatim ' +
+        'so they know exactly how to enable voice.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          reason: {
+            type: 'string',
+            description:
+              'Short reason shown on the ring so the owner knows why you are ' +
+              'calling (<=200 chars, e.g. "Daily standup" or "Your build ' +
+              'finished"). Optional but recommended.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'Chat to bind the call to. Pass back the chat_id (or ' +
+              'sessionHandle) from the channel event you are answering. Omit to ' +
+              'default to the current/most-recent chat.',
+          },
+        },
+        required: [],
+      },
+    },
   ],
 }))
 
@@ -1977,6 +2022,109 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `meeting_reply failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'call_owner': {
+      const reason = rawArgs.reason as string | undefined
+      const chatIdArg = rawArgs.chat_id as string | undefined
+
+      // Resolve the chat to bind the call to. If the agent named one, run it
+      // through the SAME membership check the reply handler uses (resolves a
+      // sessionHandle back to its raw chat id and rejects chats we were never
+      // authorized to see). If none was given, default to the current/most-
+      // recent monitored chat — the same fallback the permission-request flow
+      // uses (monitoredChatIds[0]). The backend chatId is optional, so an
+      // unbound call is still valid when we have no monitored chat yet.
+      let resolvedChatId: number | undefined
+      if (chatIdArg) {
+        const callAuth = resolveAuthorizedChat(chatIdArg)
+        if (!callAuth.ok) return callAuth.error
+        const n = Number(callAuth.chatId)
+        if (Number.isFinite(n)) resolvedChatId = n
+      } else {
+        const fallback = monitoredChatIds[0]
+        if (fallback) {
+          const n = Number(fallback)
+          if (Number.isFinite(n)) resolvedChatId = n
+        }
+      }
+
+      const body = buildCallOwnerBody({
+        assistantId: Number(ASSISTANT_ID),
+        chatId: resolvedChatId,
+        reason,
+      })
+
+      // We POST directly here (not via bgosPost) because on a setup/availability
+      // failure the backend returns a STRUCTURED JSON body
+      // { code, message, guidance, statusCode, error } and we must relay the
+      // human `guidance` string verbatim so the agent can tell the user exactly
+      // how to enable voice. bgosPost discards the parsed body (it only keeps a
+      // 200-char slice of the raw text inside the thrown Error message), which
+      // would truncate the guidance and bury it behind a "POST 400:" prefix.
+      // Reading the response ourselves is the least-invasive fix: the shared
+      // bgosPost helper (used by dozens of call sites) stays untouched.
+      try {
+        const url = `${API_BASE}/voice/outbound-call`
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+          body: JSON.stringify(body),
+        })
+        const raw = await response.text().catch(() => '')
+        let parsed: any = null
+        try {
+          parsed = raw ? JSON.parse(raw) : null
+        } catch {
+          parsed = null
+        }
+
+        if (response.ok) {
+          const status =
+            typeof parsed?.status === 'string' && parsed.status
+              ? parsed.status
+              : 'ringing'
+          log(
+            `call_owner: outbound call requested for assistant ${ASSISTANT_ID}` +
+              (resolvedChatId != null ? ` chat ${resolvedChatId}` : '') +
+              (parsed?.callId ? ` callId ${parsed.callId}` : ''),
+          )
+          return {
+            content: [{ type: 'text', text: `Calling your owner now (${status}).` }],
+          }
+        }
+
+        // Non-2xx. The graceful no-voice path: relay the human `guidance`
+        // verbatim (NOT as an error) so the agent tells the user how to set up
+        // voice. voice_not_configured | no_voice_agent_id | openai_key_missing |
+        // runtime_offline all arrive this way (HTTP 400/503).
+        if (typeof parsed?.guidance === 'string' && parsed.guidance.trim()) {
+          log(
+            `call_owner: setup/availability response ${response.status} ` +
+              `code=${parsed?.code ?? 'unknown'} (relaying guidance)`,
+          )
+          return { content: [{ type: 'text', text: parsed.guidance }] }
+        }
+
+        // Non-2xx without a guidance body: surface a clear error.
+        const detail =
+          (typeof parsed?.message === 'string' && parsed.message) ||
+          raw.slice(0, 200) ||
+          `HTTP ${response.status}`
+        log(`call_owner: failed ${response.status} — ${detail}`)
+        return {
+          content: [
+            { type: 'text', text: `Could not start the call: ${detail}` },
+          ],
+          isError: true,
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to start the call: ${errMsg}` }],
+          isError: true,
+        }
       }
     }
 
