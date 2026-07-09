@@ -46,6 +46,11 @@ import {
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
+import {
+  buildScheduleCreateBody,
+  buildScheduleListPath,
+  buildScheduleCancelPath,
+} from './lib/schedule.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -211,6 +216,29 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>): Promis
     throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
   }
   return response.json()
+}
+
+async function bgosPeerDelete(path: string): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'X-API-Key': API_KEY,
+      'X-Caller-Assistant-Id': ASSISTANT_ID,
+    },
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
+  }
+  // DELETE may return an empty body; tolerate both.
+  const raw = await response.text().catch(() => '')
+  if (!raw) return { deleted: true }
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return { deleted: true }
+  }
 }
 
 // ── File Upload & Resolution ─────────────────────────────────────────────────
@@ -453,14 +481,60 @@ const mcp = new Server(
       '',
       'Use the `call_owner` tool to ring the owner with a LIVE, in-app voice',
       'call (not a text message). Reach for it when the user explicitly asks',
-      'the agent to call them ("call me", "give me a ring", "let\'s hop on',
-      'voice") or when a scheduled/proactive call fires. Pass a short `reason`',
+      'the agent to call them RIGHT NOW ("call me", "give me a ring", "let\'s',
+      'hop on voice") or when a scheduled call fires and tells you to place',
+      'it. Pass a short `reason`',
       '(<=200 chars) shown on the ring; `chat_id` is optional and defaults to',
       'the current/most-recent chat. If voice is not configured on this agent,',
       'the tool returns a human setup-guidance string (NOT an error), relay that',
       'guidance to the user verbatim via `reply` so they know exactly how to',
       'enable voice. Do not use `call_owner` for routine text answers, those go',
-      'through `reply`.',
+      'through `reply`. `call_owner` is IMMEDIATE only: for a call at a future',
+      'time or on a recurring cadence ("call me at 5pm", "call me every',
+      'morning"), create a scheduled task with the `schedule` tool (kind',
+      '"call") instead, the platform places the call for you when it fires.',
+      '',
+      '## Scheduling (schedule)',
+      '',
+      'Use the `schedule` tool for ALL reminders, follow-ups, wake-ups, and',
+      'recurring jobs. It is the platform\'s native scheduler: it stores the',
+      'task and fires it at the right moment. Two kinds:',
+      '  - kind "wake": at fire time the platform delivers your `topic` back',
+      '    to you as a system message so you act on it then ("remind me',
+      '    tomorrow 9am", "check the build every morning", "follow up on the',
+      '    email in 2 hours").',
+      '  - kind "call": at fire time the platform RINGS the owner with a live',
+      '    in-app voice call about your `topic`. "Call me at 5pm", "call me',
+      '    tomorrow morning", "call me every weekday at 8am" are ALL kind',
+      '    "call". The in-app call is the DEFAULT channel for any timed call,',
+      '    use another channel only when the user explicitly names one.',
+      '',
+      '`topic` is the headline instruction future-you (or the call) acts on,',
+      'make it self-contained (<=500 chars); put a longer brief (steps,',
+      'links, context) in the optional `instruction` field (<=2000 chars).',
+      '`when` accepts:',
+      '  - an ISO datetime string for a one-shot, e.g.',
+      '    "2026-07-10T09:00:00+04:00". Compute the concrete date from the',
+      '    user\'s words in THEIR timezone and ALWAYS include the timezone',
+      '    offset (Z or +04:00); bare dates and offset-less datetimes are',
+      '    rejected.',
+      '  - { everyHours: N } to repeat every N whole hours (add',
+      '    fireAt: "<ISO>" inside it to pin the first fire);',
+      '  - a recurrence object { freq: "daily"|"weekly"|"monthly", atMinute,',
+      '    tz, daysOfWeek?, dayOfMonth?, interval? } where atMinute is minutes',
+      '    after midnight in tz and daysOfWeek uses 0=Sunday .. 6=Saturday.',
+      '    Every weekday 8am Dubai = { freq: "weekly", daysOfWeek:',
+      '    [1,2,3,4,5], atMinute: 480, tz: "Asia/Dubai" }; every Saturday =',
+      '    daysOfWeek: [6]. Weekly needs daysOfWeek, monthly needs',
+      '    dayOfMonth; the schedule starts at its next natural occurrence.',
+      '`chat_id` is optional, omit it to use your main chat with the owner.',
+      '',
+      'Review what is pending with `list_schedules`; cancel with',
+      '`cancel_schedule` (pass the id from `list_schedules`). When the user',
+      'changes a standing reminder, cancel the old task and create the new',
+      'one. The legacy n8n Agent Scheduler is DEPRECATED for reminders and',
+      'timed calls, do not create n8n schedules for these anymore, use',
+      '`schedule`.',
       '',
       '## Sending Files & Media',
       '',
@@ -1344,6 +1418,111 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: 'schedule',
+      description:
+        'Create a task on the platform\'s native scheduler. kind "wake" ' +
+        'delivers your `topic` back to you as a system message at fire time ' +
+        '(reminders, follow-ups, recurring checks). kind "call" RINGS the ' +
+        'owner with a live in-app voice call at fire time, the default for ' +
+        'any timed call request. Examples: "wake me tomorrow 9am" = kind ' +
+        '"wake" with when set to tomorrow 09:00 as a concrete ISO datetime ' +
+        'in the user\'s timezone (shape "2026-07-10T09:00:00+04:00"; always ' +
+        'compute the real date, never copy this sample); "call the owner ' +
+        'every weekday 8am Dubai" = kind "call" with when { freq: "weekly", ' +
+        'daysOfWeek: [1,2,3,4,5], atMinute: 480, tz: "Asia/Dubai" }. For an ' +
+        'immediate call use `call_owner` instead; to change a schedule, ' +
+        'cancel_schedule the old task and create a new one.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['wake', 'call'],
+            description:
+              '"wake" = deliver topic back to you at fire time. "call" = ' +
+              'ring the owner with a live in-app voice call at fire time.',
+          },
+          topic: {
+            type: 'string',
+            description:
+              'The headline instruction to act on at fire time (<=500 chars). ' +
+              'Make it self-contained: at fire time you only see this text ' +
+              '(plus `instruction`), not this conversation.',
+          },
+          instruction: {
+            type: 'string',
+            description:
+              'Optional detailed brief delivered alongside the topic at fire ' +
+              'time (<=2000 chars). Use it for steps, links, or context that ' +
+              'does not fit the topic headline.',
+          },
+          when: {
+            description:
+              'When to fire. ONE of: an ISO datetime string for a one-shot ' +
+              '(e.g. "2026-07-10T09:00:00+04:00", convert the user\'s words ' +
+              'to ISO in THEIR timezone and ALWAYS include the timezone ' +
+              'offset, Z or +04:00; bare dates and offset-less datetimes ' +
+              'are rejected), OR { everyHours: N } to repeat every N whole ' +
+              'hours (1..8760; add fireAt: "<ISO>" inside it to pin the ' +
+              'first fire), OR a recurrence object { freq: ' +
+              '"daily"|"weekly"|"monthly", atMinute (minutes after midnight ' +
+              'in tz, 8am = 480), tz (IANA name like "Asia/Dubai"), ' +
+              'daysOfWeek (weekly, integers 0=Sunday .. 6=Saturday), ' +
+              'dayOfMonth (monthly, 1..31), interval? }; a recurrence ' +
+              'starts at its next natural occurrence.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'Chat to bind the task to. Omit to use your main chat with the ' +
+              'owner (the platform default).',
+          },
+        },
+        required: ['kind', 'topic', 'when'],
+      },
+    },
+    {
+      name: 'list_schedules',
+      description:
+        'List your own scheduled tasks (created with the `schedule` tool): ' +
+        'id, kind, topic, and when each fires next. Use it to answer "what ' +
+        'reminders do I have?" and to find the id to pass to ' +
+        '`cancel_schedule`. Shows active tasks by default; pass status ' +
+        '"done", "cancelled", or "all" for history.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['active', 'done', 'cancelled', 'all'],
+            description:
+              'Filter by task status. Omit for active (the default).',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'cancel_schedule',
+      description:
+        'Cancel one of your own scheduled tasks by id (find the id with ' +
+        '`list_schedules`). Use when the user cancels a reminder or standing ' +
+        'call; to reschedule, cancel the old task and create a new one with ' +
+        '`schedule`.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          schedule_id: {
+            type: 'string',
+            description:
+              'The scheduled task id, as returned by `schedule` or ' +
+              '`list_schedules`.',
+          },
+        },
+        required: ['schedule_id'],
+      },
+    },
   ],
 }))
 
@@ -2123,6 +2302,118 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to start the call: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'schedule': {
+      const chatIdArg = rawArgs.chat_id as string | undefined
+
+      // Same membership rule as call_owner: a chat the agent names must pass
+      // the authorization check. When omitted we send NO chatId at all; the
+      // agent-scoped scheduled-tasks contract has the backend default to the
+      // agent's main chat (unlike call_owner, which falls back client-side).
+      let resolvedChatId: number | undefined
+      if (chatIdArg) {
+        const schedAuth = resolveAuthorizedChat(chatIdArg)
+        if (!schedAuth.ok) return schedAuth.error
+        const n = Number(schedAuth.chatId)
+        if (Number.isFinite(n)) resolvedChatId = n
+      }
+
+      const built = buildScheduleCreateBody({
+        kind: rawArgs.kind,
+        topic: rawArgs.topic,
+        instruction: rawArgs.instruction,
+        when: rawArgs.when,
+        chatId: resolvedChatId,
+      })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        // The peer client carries X-Caller-Assistant-Id alongside X-API-Key;
+        // the agent-scoped endpoints resolve WHICH assistant owns the task
+        // from that header.
+        const result = await bgosPeerPost(
+          'scheduled-tasks/agent',
+          built.body as unknown as Record<string, unknown>,
+        )
+        const mode = built.body.recurrence
+          ? `recurrence freq=${built.body.recurrence.freq}`
+          : built.body.everyHours != null
+            ? `everyHours=${built.body.everyHours}` +
+              (built.body.fireAt ? ` anchored at ${built.body.fireAt}` : '')
+            : `fireAt=${built.body.fireAt}`
+        log(
+          `schedule: created kind=${built.body.kind} ${mode}` +
+            (resolvedChatId != null ? ` chat ${resolvedChatId}` : ''),
+        )
+        return {
+          content: [
+            { type: 'text', text: `Scheduled.\n${JSON.stringify(result, null, 2)}` },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to create the schedule: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'list_schedules': {
+      const builtPath = buildScheduleListPath(rawArgs.status)
+      if (!builtPath.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        const result = await bgosPeerGet(builtPath.path)
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to list schedules: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'cancel_schedule': {
+      const built = buildScheduleCancelPath(rawArgs.schedule_id)
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        // Soft cancel: the backend returns 200 with the task view (status
+        // 'cancelled'), and repeating the call is idempotent.
+        const result = await bgosPeerDelete(built.path)
+        log(`cancel_schedule: cancelled ${built.path}`)
+        return {
+          content: [
+            { type: 'text', text: `Cancelled.\n${JSON.stringify(result, null, 2)}` },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to cancel the schedule: ${errMsg}` }],
           isError: true,
         }
       }
