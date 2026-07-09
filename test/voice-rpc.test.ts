@@ -18,6 +18,7 @@ import {
   normalizeVoiceConfig,
   buildMintInstructions,
   buildConsultNotification,
+  buildVoiceTaskDispatchText,
   CONSULT_TOOL_NAME,
   OFFER_URL,
   type VoiceRpcDeps,
@@ -514,4 +515,57 @@ test('buildConsultNotification omits empty context/style blocks', () => {
   assert.ok(!text.includes('Call context:'))
   assert.ok(!text.includes('Answer style:'))
   assert.match(text, /~30 seconds/)
+})
+
+// ── quick-wins prompt pack (Iris 514) ────────────────────────────────────────
+
+test('mint instructions carry the truthfulness contract', () => {
+  const text = buildMintInstructions({
+    identity: null,
+    persona: '',
+    recentContext: '',
+  })
+  assert.ok(text.includes('Truthfulness contract: NEVER invent'))
+  assert.ok(text.includes('still in progress'))
+})
+
+test('mint instructions carry the intent-only brief rule', () => {
+  const text = buildMintInstructions({
+    identity: null,
+    persona: '',
+    recentContext: '',
+  })
+  assert.ok(text.includes('intent and desired outcome'))
+  assert.ok(text.includes('stale mechanics mislead it'))
+})
+
+test('consult notification carries the continuation brief', () => {
+  const text = buildConsultNotification({
+    consultId: 'c1',
+    question: 'q',
+    context: '',
+    responseStyle: '',
+    budgetSeconds: 30,
+  })
+  assert.ok(text.includes('Reuse those results'))
+  assert.ok(text.includes('re-check only what changed'))
+})
+
+test('voice task dispatch text keeps the contract and adds the continuation brief', () => {
+  const text = buildVoiceTaskDispatchText({
+    taskId: 't1',
+    question: 'q',
+    context: 'ctx',
+  })
+  assert.ok(text.includes('[voice_dispatch]'))
+  assert.ok(text.includes('task #t1'))
+  assert.ok(text.includes('complete_voice_task'))
+  assert.ok(text.includes('Extra context: ctx'))
+  assert.ok(text.includes('Reuse those results'))
+  assert.ok(text.includes('re-check only what changed'))
+})
+
+test('voice task dispatch text omits the context block when empty', () => {
+  const text = buildVoiceTaskDispatchText({ taskId: 't2', question: 'q', context: '' })
+  assert.ok(!text.includes('Extra context:'))
 })
