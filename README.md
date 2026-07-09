@@ -329,6 +329,10 @@ All share the same plugin installation at `~/bgos-claude-plugin/`.
 | `peer_status` | Check whether a peer is online + whether you have an open conversation with them |
 | `complete_voice_task` | Report the outcome of a voice-dispatched background task (v0.13.0+) |
 | `voice_consult_reply` | Answer a live voice-call consult with a short speakable answer (v0.14.0+) |
+| `call_owner` | Ring the owner with a live in-app voice call, immediately (v0.15.0+) |
+| `schedule` | Create a native scheduled task: kind `wake` (deliver the topic back to the agent) or kind `call` (ring the owner), one-shot ISO datetime or recurring (v0.16.0+) |
+| `list_schedules` | List the agent's own pending scheduled tasks (v0.16.0+) |
+| `cancel_schedule` | Cancel one of the agent's scheduled tasks by id (v0.16.0+) |
 | `complete_side_thread` | Legacy: mark a parent message's side-thread complete with a summary (use `complete_peer_thread` for new flows) |
 
 Claude Code retains all its built-in tools: `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, etc.
