@@ -234,6 +234,14 @@ export function normalizeExpiresAtSeconds(value: unknown): number | null {
   return n > 10_000_000_000 ? Math.floor(n / 1000) : Math.floor(n)
 }
 
+/** Continuation brief (Iris 514): consult/dispatch turns land in the agent's
+ *  OWN session, which may already hold earlier voice-run results. Telling the
+ *  brain so makes repeat asks dramatically faster (reuse, don't redo). */
+const CONTINUATION_BRIEF =
+  'This session may contain your earlier runs of similar work from this ' +
+  'call. Reuse those results where they still apply and re-check only ' +
+  'what changed instead of starting over.'
+
 /** Realtime session instructions: persona + the dumb-mouth contract with a
  *  Claude-specific dispatch bias (Claude turns can take 10-60 s+, so consult
  *  is reserved for quick questions; real work goes through agent_dispatch,
@@ -273,6 +281,19 @@ export function buildMintInstructions(args: {
       'out, say the agent is still working on it and will follow up in the ' +
       'chat — never leave silence.\n' +
       '- Speak results naturally; keep technical detail light unless asked.',
+  )
+  parts.push(
+    'Truthfulness contract: NEVER invent, guess, or embellish the results ' +
+      'of the agent\'s work. Only report an outcome you actually received ' +
+      'from a tool result or an announcement on this call. If you do not ' +
+      'have the result yet, say the work is still in progress and check ' +
+      'its status before speaking about it.',
+  )
+  parts.push(
+    "When you consult or dispatch, phrase the brief as the user's intent " +
+      'and desired outcome, in their own words. Never include mechanics ' +
+      'from earlier runs (tool names, file paths, step-by-step how-to); ' +
+      'the agent owns its tools and stale mechanics mislead it.',
   )
   const ctx = args.recentContext.trim()
   if (ctx) {
@@ -329,12 +350,33 @@ export function buildConsultNotification(args: {
     `(consult_id="${args.consultId}"):\n\n${args.question}` +
     (args.context ? `\n\nCall context: ${args.context}` : '') +
     (args.responseStyle ? `\n\nAnswer style: ${args.responseStyle}` : '') +
+    `\n\n${CONTINUATION_BRIEF}` +
     `\n\nYou have ~${args.budgetSeconds} seconds. Call the ` +
     `voice_consult_reply tool FIRST — before any other tool — with ` +
     `consult_id="${args.consultId}" and a short, SPEAKABLE answer (1-3 ` +
     `sentences). Do NOT run other tools unless the question strictly ` +
     `requires it. If you cannot answer fully in time, reply with what you ` +
     `know and say the rest is coming — you can follow up in the chat.`
+  )
+}
+
+/** The [voice_dispatch] channel-notification text for a voice_task_dispatch
+ *  WS event (the pairingless dispatch lane server.ts listens on). Extracted
+ *  from server.ts so the copy is unit-testable. Exported for tests. */
+export function buildVoiceTaskDispatchText(args: {
+  taskId: string
+  question: string
+  context: string
+}): string {
+  return (
+    `[voice_dispatch] Your user is on a live voice call and dispatched ` +
+    `background task #${args.taskId} to you:\n\n${args.question}` +
+    (args.context ? `\n\nExtra context: ${args.context}` : '') +
+    `\n\n${CONTINUATION_BRIEF}` +
+    `\n\nDo this work NOW in this session. When finished, call the ` +
+    `complete_voice_task tool with task_id="${args.taskId}" and a concise, ` +
+    `SPEAKABLE result (it is announced aloud in their call). If you ` +
+    `cannot do it, call complete_voice_task with failed=true and the reason.`
   )
 }
 

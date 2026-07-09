@@ -43,6 +43,7 @@ import {
 import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
+  buildVoiceTaskDispatchText,
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
@@ -3500,14 +3501,7 @@ function connectWebsocket(): void {
       mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content:
-            `[voice_dispatch] Your user is on a live voice call and dispatched ` +
-            `background task #${taskId} to you:\n\n${question}` +
-            (context ? `\n\nExtra context: ${context}` : '') +
-            `\n\nDo this work NOW in this session. When finished, call the ` +
-            `complete_voice_task tool with task_id="${taskId}" and a concise, ` +
-            `SPEAKABLE result (it is announced aloud in their call). If you ` +
-            `cannot do it, call complete_voice_task with failed=true and the reason.`,
+          content: buildVoiceTaskDispatchText({ taskId, question, context }),
           meta: {
             event_type: 'voice_task_dispatch',
             task_id: taskId,
