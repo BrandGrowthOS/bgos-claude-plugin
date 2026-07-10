@@ -121,6 +121,10 @@ export interface MintVoiceConfig {
   voice?: string
   speed?: number
   instructions?: string
+  /** Confirm gate (Iris G5): the backend sets this when the assistant's
+   *  owner enabled ask-before-dispatch; the mint instructions then carry
+   *  the propose-first contract. */
+  requireDispatchConfirm?: true
 }
 
 export const VOICE_SPEED_MIN = 0.25
@@ -151,6 +155,10 @@ export function normalizeVoiceConfig(raw: unknown): MintVoiceConfig {
   }
   if (typeof r.instructions === 'string' && r.instructions.trim()) {
     out.instructions = r.instructions.trim().slice(0, VOICE_INSTRUCTIONS_MAX)
+  }
+  // Coerce defensively (never trust the wire): boolean true or string 'true'.
+  if (r.requireDispatchConfirm === true || r.requireDispatchConfirm === 'true') {
+    out.requireDispatchConfirm = true
   }
   return out
 }
@@ -250,6 +258,8 @@ export function buildMintInstructions(args: {
   identity: AgentIdentity | null
   persona: string
   recentContext: string
+  /** Confirm gate (Iris G5): bake the propose-first contract. */
+  requireDispatchConfirm?: boolean
 }): string {
   const name = args.identity?.name?.trim() || 'the agent'
   const subtitle = args.identity?.subtitle?.trim() ?? ''
@@ -295,6 +305,17 @@ export function buildMintInstructions(args: {
       'from earlier runs (tool names, file paths, step-by-step how-to); ' +
       'the agent owns its tools and stale mechanics mislead it.',
   )
+  if (args.requireDispatchConfirm) {
+    parts.push(
+      'Dispatch confirmation is ON for this agent: agent_dispatch STAGES a ' +
+        'proposal instead of starting work. Read the staged brief back to ' +
+        'the user in one short sentence and ask for their go-ahead. Only ' +
+        'after the user clearly confirms on their next turn, call ' +
+        'confirm_dispatch with the task id from the ack. If they decline, ' +
+        'call confirm_dispatch with approve:false. Never invent a ' +
+        'confirmation the user did not give.',
+    )
+  }
   const ctx = args.recentContext.trim()
   if (ctx) {
     parts.push(
@@ -378,6 +399,47 @@ export function buildVoiceTaskDispatchText(args: {
     `SPEAKABLE result (it is announced aloud in their call). If you ` +
     `cannot do it, call complete_voice_task with failed=true and the reason.`
   )
+}
+
+/**
+ * Parse + gate a voice_task_dispatch WS payload (Iris G5). The backend now
+ * sends confirmed:true on every dispatch it forwards (standing consent or a
+ * user-confirmed proposal); with requireConfirmed on (the
+ * BGOS_REQUIRE_CONFIRMED_DISPATCH belt, default off) anything else is
+ * rejected so a compromised or buggy sender cannot start unconfirmed work.
+ * Coerces defensively per the never-trust-the-wire doctrine (boolean true or
+ * string 'true'). Exported for tests.
+ */
+export function normalizeVoiceTaskDispatch(
+  payload: unknown,
+  opts: { requireConfirmed: boolean },
+):
+  | {
+      ok: true
+      task: { taskId: string; question: string; context: string; chatId: string }
+    }
+  | { ok: false; reason: string } {
+  const p = (payload ?? {}) as Record<string, unknown>
+  const taskId = String(p.task_id ?? '')
+  if (!taskId) return { ok: false, reason: 'missing task_id' }
+  const confirmed = p.confirmed === true || p.confirmed === 'true'
+  if (opts.requireConfirmed && !confirmed) {
+    return {
+      ok: false,
+      reason:
+        `unconfirmed dispatch rejected (task=${taskId}): ` +
+        'BGOS_REQUIRE_CONFIRMED_DISPATCH is on and the payload lacks confirmed:true',
+    }
+  }
+  return {
+    ok: true,
+    task: {
+      taskId,
+      question: String(p.question ?? ''),
+      context: p.context ? String(p.context) : '',
+      chatId: String(p.chat_id ?? ''),
+    },
+  }
 }
 
 export type ConsultReplyStatus = 'resolved' | 'late' | 'unknown'
@@ -499,6 +561,7 @@ export class VoiceRpcHandler {
       identity,
       persona,
       recentContext,
+      requireDispatchConfirm: voiceConfig.requireDispatchConfirm === true,
     })
     const body = {
       expires_after: { anchor: 'created_at', seconds: 600 },

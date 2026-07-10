@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
+  normalizeVoiceTaskDispatch,
   normalizeExpiresAtSeconds,
   normalizeVoiceConfig,
   buildMintInstructions,
@@ -568,4 +569,92 @@ test('voice task dispatch text keeps the contract and adds the continuation brie
 test('voice task dispatch text omits the context block when empty', () => {
   const text = buildVoiceTaskDispatchText({ taskId: 't2', question: 'q', context: '' })
   assert.ok(!text.includes('Extra context:'))
+})
+
+// ── confirm-before-dispatch gate (Iris G5, wave 1) ───────────────────────────
+
+test('normalizeVoiceConfig picks up requireDispatchConfirm (boolean and string)', () => {
+  assert.equal(
+    normalizeVoiceConfig({ requireDispatchConfirm: true }).requireDispatchConfirm,
+    true,
+  )
+  assert.equal(
+    normalizeVoiceConfig({ requireDispatchConfirm: 'true' })
+      .requireDispatchConfirm,
+    true,
+  )
+  assert.ok(!('requireDispatchConfirm' in normalizeVoiceConfig({ voice: 'marin' })))
+  assert.ok(!('requireDispatchConfirm' in normalizeVoiceConfig({ requireDispatchConfirm: false })))
+})
+
+test('mint instructions carry the propose-first contract only when the gate is on', () => {
+  const on = buildMintInstructions({
+    identity: null,
+    persona: '',
+    recentContext: '',
+    requireDispatchConfirm: true,
+  })
+  assert.ok(on.includes('Dispatch confirmation is ON'))
+  assert.ok(on.includes('STAGES a proposal'))
+  assert.ok(on.includes('confirm_dispatch'))
+  const off = buildMintInstructions({
+    identity: null,
+    persona: '',
+    recentContext: '',
+  })
+  assert.ok(!off.includes('Dispatch confirmation is ON'))
+})
+
+test('mint bakes the propose-first contract when voiceConfig requires confirmation', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps } = makeDeps({ fetchImpl })
+  const handler = new VoiceRpcHandler(deps)
+  await handler.handle(
+    frame({
+      payload: {
+        recentContext: '',
+        openaiApiKey: 'sk-caller-own-key',
+        voiceConfig: { requireDispatchConfirm: true },
+      },
+    }),
+  )
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.ok(String(sent.session.instructions).includes('Dispatch confirmation is ON'))
+})
+
+test('normalizeVoiceTaskDispatch: gate off passes unconfirmed through (back-compat)', () => {
+  const out = normalizeVoiceTaskDispatch(
+    { task_id: 't1', question: 'q', context: 'ctx', chat_id: 12 },
+    { requireConfirmed: false },
+  )
+  assert.deepEqual(out, {
+    ok: true,
+    task: { taskId: 't1', question: 'q', context: 'ctx', chatId: '12' },
+  })
+})
+
+test('normalizeVoiceTaskDispatch: gate on rejects an unconfirmed dispatch with a reason', () => {
+  const out = normalizeVoiceTaskDispatch(
+    { task_id: 't1', question: 'q' },
+    { requireConfirmed: true },
+  )
+  assert.equal(out.ok, false)
+  assert.match(String((out as { ok: false; reason: string }).reason), /unconfirmed/i)
+})
+
+test('normalizeVoiceTaskDispatch: gate on accepts confirmed true and "true"', () => {
+  for (const confirmed of [true, 'true']) {
+    const out = normalizeVoiceTaskDispatch(
+      { task_id: 't1', question: 'q', confirmed },
+      { requireConfirmed: true },
+    )
+    assert.equal(out.ok, true, `confirmed=${String(confirmed)}`)
+  }
+})
+
+test('normalizeVoiceTaskDispatch: missing task_id is rejected regardless of gate', () => {
+  for (const requireConfirmed of [false, true]) {
+    const out = normalizeVoiceTaskDispatch({ question: 'q' }, { requireConfirmed })
+    assert.equal(out.ok, false)
+  }
 })
