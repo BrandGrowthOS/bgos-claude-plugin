@@ -72,7 +72,7 @@ const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // calls fail with a descriptive "voice not configured" error.
 const VOICE_OPENAI_API_KEY =
   process.env.BGOS_OPENAI_API_KEY || process.env.OPENAI_API_KEY || ''
-const VOICE_MODEL = process.env.BGOS_VOICE_MODEL || 'gpt-realtime-2'
+const VOICE_MODEL = process.env.BGOS_VOICE_MODEL || 'gpt-realtime-2.1'
 const VOICE_VOICE = process.env.BGOS_VOICE_VOICE || 'marin'
 const VOICE_PERSONA = process.env.BGOS_VOICE_PERSONA || ''
 
