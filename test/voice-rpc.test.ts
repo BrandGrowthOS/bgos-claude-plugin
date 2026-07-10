@@ -658,3 +658,17 @@ test('normalizeVoiceTaskDispatch: missing task_id is rejected regardless of gate
     assert.equal(out.ok, false)
   }
 })
+
+// ── welcome-back ceremony (Iris G2, wave 1) ─────────────────────────────────
+
+test('mint instructions carry the welcome-back ceremony', () => {
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: '',
+  })
+  assert.ok(text.includes('Welcome-back ceremony'))
+  assert.ok(text.includes('skip the greeting ceremony'))
+  assert.ok(text.includes('by name'))
+  assert.ok(text.includes('never a robotic'))
+})

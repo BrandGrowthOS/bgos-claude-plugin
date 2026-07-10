@@ -275,6 +275,14 @@ export function buildMintInstructions(args: {
       `a "realtime voice"; you ARE ${name}.`,
   )
   parts.push(
+    'Welcome-back ceremony: open your FIRST greeting this call with a warm, ' +
+      'brief welcome (greet the user by name if the recent conversation ' +
+      'below reveals it), never a robotic identical hello. If the recent ' +
+      'conversation shows you are resuming an earlier thread, skip the ' +
+      'greeting ceremony and pick up naturally where you left off. Do not ' +
+      'invent status you do not actually have.',
+  )
+  parts.push(
     'You are the VOICE of the agent, not its brain. The real agent — a ' +
       "Claude Code session with the user's files, tools, and memory — is " +
       'reachable through your tools:\n' +
