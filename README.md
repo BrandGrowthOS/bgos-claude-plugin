@@ -449,6 +449,8 @@ With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS
 | `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2`) |
 | `BGOS_VOICE_VOICE` | No | Realtime voice name (default: `marin`) |
 | `BGOS_VOICE_PERSONA` | No | Extra persona text baked into the voice session instructions |
+| `BGOS_USAGE_REPORT` | No | `"off"` disables the per-turn usage self-report (Fleet Pulse). Default: on |
+| `BGOS_USAGE_BILLING_MODE` | No | `"api"` for API-key-billed sessions (reports as api billing). Default: `subscription` (Claude Max: token usage only, never dollars) |
 
 ### Permission Modes
 

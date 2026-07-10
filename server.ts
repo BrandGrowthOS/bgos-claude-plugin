@@ -47,6 +47,7 @@ import {
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
+import { UsageTracker } from './lib/usage-report.js'
 import {
   buildScheduleCreateBody,
   buildScheduleListPath,
@@ -136,6 +137,14 @@ async function bgosGet(path: string): Promise<unknown> {
   }
   return response.json()
 }
+
+// Per-turn usage self-report (BGOS capability #18, Fleet Pulse): reads the
+// session transcript JSONL for real token counts and attaches them to each
+// reply. Cursor-based (never double-counts; un-replied turns roll into the
+// next report). Env: BGOS_USAGE_REPORT=off disables,
+// BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
+// subscription, the Claude Max plan: tokens only, never dollars).
+const usageTracker = new UsageTracker(process.cwd())
 
 async function bgosPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
@@ -698,6 +707,15 @@ const mcp = new Server(
       'The real body follows on the next line. Act on it as a notification; reply',
       'normally if a reply is warranted. In the BGOS app it renders as a quiet',
       'system card, not a user bubble, so the human sees it did not come from them.',
+      '',
+      '## Usage Self-Report (automatic, no action needed)',
+      '',
+      'The plugin automatically attaches your real per-turn token usage (read',
+      'from the session transcript) to each `reply`, feeding the owner\'s Fleet',
+      'Pulse cost/usage view in the BGOS Command Center. You never need to',
+      'mention, estimate, or manage token counts or costs yourself; do not',
+      'fabricate usage numbers if asked what a turn cost: the dashboard has',
+      'the measured truth.',
     ].join('\n'),
   },
 )
@@ -1666,6 +1684,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         // Agents can still force modal via render_mode = 'modal'.
         if (renderMode) body.renderMode = renderMode
         else if (options.length > 0) body.renderMode = 'inline'
+
+        // Capability #18: attach the not-yet-reported transcript usage to
+        // this reply. Best-effort: a null report just posts plain and the
+        // backend keeps its labeled estimate.
+        try {
+          const usageReport = usageTracker.collect()
+          if (usageReport) body.usage = usageReport
+        } catch {
+          /* usage is optional enrichment; never block a reply on it */
+        }
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
