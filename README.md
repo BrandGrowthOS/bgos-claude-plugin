@@ -446,7 +446,7 @@ With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 | `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
-| `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2`) |
+| `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2.1`) |
 | `BGOS_VOICE_VOICE` | No | Realtime voice name (default: `marin`) |
 | `BGOS_VOICE_PERSONA` | No | Extra persona text baked into the voice session instructions |
 | `BGOS_USAGE_REPORT` | No | `"off"` disables the per-turn usage self-report (Fleet Pulse). Default: on |

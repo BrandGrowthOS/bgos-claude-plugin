@@ -60,7 +60,7 @@ function makeDeps(over: {
   const deps: VoiceRpcDeps = {
     config: {
       openaiApiKey: over.openaiApiKey ?? 'sk-test',
-      model: 'gpt-realtime-2',
+      model: 'gpt-realtime-2.1',
       voice: 'marin',
       persona: 'Speak like a calm pilot.',
       assistantId: '901',
@@ -162,7 +162,7 @@ test('mint maps the OpenAI client_secrets response to the wire contract', async 
     transport: 'webrtc',
     clientSecret: 'ek_test_123',
     offerUrl: OFFER_URL,
-    model: 'gpt-realtime-2',
+    model: 'gpt-realtime-2.1',
     voice: 'marin',
     expiresAt: 1_783_200_000, // epoch SECONDS (backend multiplies by 1000)
     contextInjected: true, // context rides the instructions
@@ -171,7 +171,7 @@ test('mint maps the OpenAI client_secrets response to the wire contract', async 
   // The request must bake exactly the consult tool + our instructions.
   const sent = JSON.parse(String(calls[0]!.init.body)) as any
   assert.equal(sent.session.type, 'realtime')
-  assert.equal(sent.session.model, 'gpt-realtime-2')
+  assert.equal(sent.session.model, 'gpt-realtime-2.1')
   assert.equal(sent.session.tools.length, 1)
   assert.equal(sent.session.tools[0].name, CONSULT_TOOL_NAME)
   assert.ok(sent.session.audio.input.transcription, 'transcription required')
