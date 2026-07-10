@@ -79,7 +79,7 @@ export function sumUsageFromJsonl(chunk: string): UsageTotals {
     try {
       entry = JSON.parse(trimmed)
     } catch {
-      continue // partial/corrupt line — normal at a live file's tail
+      continue // partial/corrupt line, normal at a live file's tail
     }
     if (typeof entry !== 'object' || entry === null) continue
     const e = entry as Record<string, unknown>
@@ -147,7 +147,7 @@ export function mungeCwd(cwd: string): string {
  * Stateful transcript reader. One instance per server process; `collect()`
  * is called from the `reply` tool and returns the not-yet-reported usage
  * (advancing the cursor), or null when there is nothing new / reporting is
- * disabled / the transcript is unreachable. All failures are swallowed —
+ * disabled / the transcript is unreachable. All failures are swallowed:
  * a reply must never fail because usage could not be read.
  */
 export class UsageTracker {
@@ -168,7 +168,7 @@ export class UsageTracker {
         }
       }
     } catch {
-      /* project dir missing — collect() will keep returning null */
+      /* project dir missing, collect() will keep returning null */
     }
   }
 
@@ -211,7 +211,7 @@ export class UsageTracker {
             chunk = buf.subarray(0, read).toString('utf8')
             end = from + read
           } else if (size < from) {
-            // File truncated/rotated — restart from 0 next time.
+            // File truncated/rotated, restart from 0 next time.
             this.cursors.set(name, 0)
             continue
           }

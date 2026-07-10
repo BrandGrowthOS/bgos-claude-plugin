@@ -1,5 +1,5 @@
 /**
- * Usage self-report (BGOS capability #18, Fleet Pulse) — transcript JSONL
+ * Usage self-report (BGOS capability #18, Fleet Pulse): transcript JSONL
  * summing + billing-mode rules + the UsageTracker cursor accounting.
  *
  * Run with:  npm test      (node --test, no extra deps)

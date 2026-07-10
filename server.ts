@@ -143,7 +143,7 @@ async function bgosGet(path: string): Promise<unknown> {
 // reply. Cursor-based (never double-counts; un-replied turns roll into the
 // next report). Env: BGOS_USAGE_REPORT=off disables,
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
-// subscription — Claude Max, tokens only, never dollars).
+// subscription, the Claude Max plan: tokens only, never dollars).
 const usageTracker = new UsageTracker(process.cwd())
 
 async function bgosPost(path: string, body: Record<string, unknown>): Promise<unknown> {
@@ -714,7 +714,7 @@ const mcp = new Server(
       'from the session transcript) to each `reply`, feeding the owner\'s Fleet',
       'Pulse cost/usage view in the BGOS Command Center. You never need to',
       'mention, estimate, or manage token counts or costs yourself; do not',
-      'fabricate usage numbers if asked what a turn cost — the dashboard has',
+      'fabricate usage numbers if asked what a turn cost: the dashboard has',
       'the measured truth.',
     ].join('\n'),
   },
@@ -1686,7 +1686,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         else if (options.length > 0) body.renderMode = 'inline'
 
         // Capability #18: attach the not-yet-reported transcript usage to
-        // this reply. Best-effort — a null report just posts plain and the
+        // this reply. Best-effort: a null report just posts plain and the
         // backend keeps its labeled estimate.
         try {
           const usageReport = usageTracker.collect()
