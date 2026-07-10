@@ -53,6 +53,16 @@ import {
   buildScheduleListPath,
   buildScheduleCancelPath,
 } from './lib/schedule.js'
+import {
+  buildMissionCreateBody,
+  buildMissionTickBody,
+  buildMissionCreatePath,
+  buildMissionActivePath,
+  buildMissionTickPath,
+  buildMissionCompletePath,
+  formatMissionSummary,
+  type MissionSnapshot,
+} from './lib/missions.js'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -545,6 +555,38 @@ const mcp = new Server(
       'one. The legacy n8n Agent Scheduler is DEPRECATED for reminders and',
       'timed calls, do not create n8n schedules for these anymore, use',
       '`schedule`.',
+      '',
+      '## Missions (create_mission / tick_mini_goal / complete_mission)',
+      '',
+      'A mission is a durable goal card pinned at the top of the BGOS chat: a',
+      'title plus 4 to 10 BINARY mini-goals, each with a `done_when` line',
+      'stating the observable check that proves it. You create it, you tick',
+      'it, and the user watches progress live (gold progress bar, confetti on',
+      'completion). This is trained behavior, follow it:',
+      '',
+      '1. When a user request is MULTI-STEP (roughly 3 or more distinct steps,',
+      '   or work spanning tools and minutes), FIRST call `create_mission`',
+      '   with 4 to 10 mini-goals. Each needs a short name and a `done_when`',
+      '   check that is observably true or false ("the URL returns 200",',
+      '   "the PR is open"), never vague ("it looks good"). Long-term goals',
+      '   the user states explicitly ("this quarter I want ...") are missions',
+      '   too: decompose and keep ticking across sessions.',
+      '2. Then reply normally and start working; the card is already pinned,',
+      '   so do not narrate the mission in prose.',
+      '3. The MOMENT a mini-goal\'s check is true, call `tick_mini_goal` with',
+      '   its `goal_id` and a short `evidence` line (what proved it). Tick',
+      '   per goal as you go, never in one batch at the end. Ticks are quiet',
+      '   (no user ping), so tick freely.',
+      '4. Ticking the last open goal completes the mission automatically',
+      '   (confetti; the user may get one push). Call `complete_mission` only',
+      '   to end a mission early when the remaining goals became moot.',
+      '',
+      'Rules: ONE active mission per agent, and creating a new one abandons',
+      'the previous active mission, so finish missions before starting the',
+      'next. Do NOT create missions for single-step or conversational asks',
+      '(a question, a one-file edit). Mini-goals are OUTCOMES, not keystrokes:',
+      '"Landing page live", not "open the editor". Never claim progress in',
+      'prose that you have not ticked; the card is the source of truth.',
       '',
       '## Sending Files & Media',
       '',
@@ -1542,6 +1584,106 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['schedule_id'],
       },
     },
+    {
+      name: 'create_mission',
+      description:
+        'Create a durable mission card pinned in the BGOS chat (capability ' +
+        '#19): a title plus 4 to 10 BINARY mini-goals, each with a ' +
+        '`done_when` line stating the observable check that proves it. Call ' +
+        'this FIRST whenever a user request is multi-step (3+ distinct ' +
+        'steps or work spanning tools and minutes), then work normally and ' +
+        'tick goals with `tick_mini_goal` as their checks come true. One ' +
+        'active mission per agent; creating a new one abandons the previous ' +
+        'active mission. Maps to POST /api/v1/assistants/:id/missions ' +
+        '(user-scoped, X-API-Key).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          title: {
+            type: 'string',
+            description:
+              'Mission headline the user sees on the card (<=200 chars), ' +
+              'e.g. "Launch the newsletter".',
+          },
+          mini_goals: {
+            type: 'array',
+            description:
+              '4 to 10 binary mini-goals (hard caps 2..12). Outcomes, not ' +
+              'keystrokes.',
+            items: {
+              type: 'object',
+              properties: {
+                name: {
+                  type: 'string',
+                  description: 'Short goal name (<=120 chars).',
+                },
+                done_when: {
+                  type: 'string',
+                  description:
+                    'Observable completion check (<=200 chars), e.g. "the ' +
+                    'URL returns 200". Must be verifiable, never vague.',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+        },
+        required: ['title', 'mini_goals'],
+      },
+    },
+    {
+      name: 'tick_mini_goal',
+      description:
+        'Mark ONE mission mini-goal done the moment its `done_when` check ' +
+        'is true (capability #19). Pass the goal_id from the create_mission ' +
+        'result and a short `evidence` line (what proved the check). Ticks ' +
+        'are quiet (no user ping) and idempotent; ticking the last open ' +
+        'goal completes the mission automatically. Targets your active ' +
+        'mission unless mission_id is passed. Maps to PATCH ' +
+        '/api/v1/assistants/:id/missions/:missionId/tick.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          goal_id: {
+            type: 'number',
+            description: 'The mini-goal id (1..n) to mark done.',
+          },
+          evidence: {
+            type: 'string',
+            description:
+              'Short proof line for the done_when check (<=200 chars), ' +
+              'e.g. "URL returned 200".',
+          },
+          mission_id: {
+            type: 'number',
+            description:
+              'Optional mission id; omit to target your active mission.',
+          },
+        },
+        required: ['goal_id'],
+      },
+    },
+    {
+      name: 'complete_mission',
+      description:
+        'End a mission early, marking it completed even though open ' +
+        'mini-goals remain (capability #19). Only needed when the remaining ' +
+        'goals became moot: ticking the last open goal already completes ' +
+        'the mission automatically. Targets your active mission unless ' +
+        'mission_id is passed. Maps to PATCH ' +
+        '/api/v1/assistants/:id/missions/:missionId/complete.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mission_id: {
+            type: 'number',
+            description:
+              'Optional mission id; omit to target your active mission.',
+          },
+        },
+        required: [],
+      },
+    },
   ],
 }))
 
@@ -2448,6 +2590,169 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       }
     }
 
+    case 'create_mission': {
+      // Missions (capability #19): durable goal card the agent creates and
+      // ticks. User-scoped route via X-API-Key, same auth as set_status.
+      const built = buildMissionCreateBody({
+        title: rawArgs.title,
+        mini_goals: rawArgs.mini_goals,
+      })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+      const builtPath = buildMissionCreatePath(ASSISTANT_ID)
+      if (!builtPath.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        const result = (await bgosPost(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Mission create returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        log(`create_mission: #${result.mission.id} "${result.mission.title}"`)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Mission created and pinned in the chat. Tick goals with ' +
+                'tick_mini_goal (goal_id below) the moment each check is true.\n' +
+                formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to create the mission: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'tick_mini_goal': {
+      const built = buildMissionTickBody({
+        goal_id: rawArgs.goal_id,
+        evidence: rawArgs.evidence,
+      })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission to tick. Create one with create_mission ' +
+                  'first (multi-step requests get a mission).',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionTickPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        const result = (await bgosPatch(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Mission tick returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        const completed = result.mission.status === 'completed'
+        log(
+          `tick_mini_goal: mission #${missionId} goal ${built.body.goalId}` +
+            (completed ? ' (mission completed)' : ''),
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                (completed
+                  ? 'Goal ticked and the mission is now COMPLETE (last open goal done).\n'
+                  : 'Goal ticked.\n') + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to tick the mini-goal: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'complete_mission': {
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id)
+        if (missionId == null) {
+          return {
+            content: [{ type: 'text', text: 'No active mission to complete.' }],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionCompletePath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        const result = (await bgosPatch(builtPath.path, {})) as {
+          mission?: MissionSnapshot
+        }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Mission complete returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        log(`complete_mission: #${missionId}`)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Mission completed.\n${formatMissionSummary(result.mission)}`,
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to complete the mission: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
@@ -2856,6 +3161,27 @@ function rememberSessionHandle(
  * Returns `{ ok: true, chatId }` where chatId is always the RAW chat id usable
  * for REST paths, plus `sessionHandle` (preferred for POST bodies) when known.
  */
+/**
+ * Resolve the mission id a tick/complete call targets: an explicit
+ * mission_id argument wins; otherwise the assistant's single active mission
+ * (GET assistants/:id/missions/active). Returns null when there is none.
+ */
+async function resolveMissionId(rawMissionId: unknown): Promise<number | null> {
+  if (
+    typeof rawMissionId === 'number' &&
+    Number.isInteger(rawMissionId) &&
+    rawMissionId > 0
+  ) {
+    return rawMissionId
+  }
+  const builtPath = buildMissionActivePath(ASSISTANT_ID)
+  if (!builtPath.ok) return null
+  const result = (await bgosGet(builtPath.path)) as {
+    mission?: MissionSnapshot | null
+  }
+  return result?.mission?.id ?? null
+}
+
 function resolveAuthorizedChat(rawChatId: string):
   | { ok: true; chatId: string; sessionHandle?: string }
   | { ok: false; error: { content: Array<{ type: 'text'; text: string }>; isError: true } } {
