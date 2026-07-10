@@ -53,7 +53,7 @@ import {
   normalizeExportPack,
   normalizeExportPackManifest,
 } from './lib/export-pack.js'
-import { UsageTracker } from './lib/usage-report.js'
+import { UsageTracker, readContextPct } from './lib/usage-report.js'
 import {
   buildScheduleCreateBody,
   buildScheduleListPath,
@@ -194,6 +194,26 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
     throw new Error(`PATCH ${response.status}: ${text.slice(0, 200)}`)
   }
   return response.json()
+}
+
+// Context-window fill self-report (session controls): best-effort PATCH of
+// {contextPct} onto the assistant status, read from the LATEST assistant
+// usage entry in the current session transcript (lib/usage-report.ts). Fired
+// after each successful reply and on the poll heartbeat tick. Deduped on the
+// rounded percent so the heartbeat does not spam identical PATCHes. Never
+// throws, never blocks: the value is approximate telemetry, nothing more.
+let lastContextPctSent: number | null = null
+function reportContextPct(): void {
+  void (async () => {
+    const pct = await readContextPct()
+    if (pct == null) return
+    const rounded = Math.round(pct)
+    if (rounded === lastContextPctSent) return
+    await bgosPatch(`assistants/${ASSISTANT_ID}/status`, { contextPct: rounded })
+    lastContextPctSent = rounded
+  })().catch(() => {
+    /* optional telemetry; swallow everything */
+  })
 }
 
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
@@ -464,7 +484,7 @@ function parsePermissionChoice(text: string, requestId: string): PermissionChoic
 // ── MCP Server ───────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: 'bgos', version: '0.4.0' },
+  { name: 'bgos', version: '0.19.0' },
   {
     capabilities: {
       tools: {},
@@ -770,6 +790,20 @@ const mcp = new Server(
       'mention, estimate, or manage token counts or costs yourself; do not',
       'fabricate usage numbers if asked what a turn cost: the dashboard has',
       'the measured truth.',
+      '',
+      '## Session Controls (context gauge + user Stop)',
+      '',
+      'The plugin reports your context-window fill (`contextPct`) to BGOS',
+      'automatically, read from the session transcript. Do NOT set or estimate',
+      'contextPct yourself; it is not a set_status field for you to manage.',
+      '',
+      'When your user presses Stop for a chat, a channel notification arrives',
+      'whose content starts with `[stop_turn]` and whose meta carries',
+      '`event_type = "stop_turn"` plus the `chat_id`. Honor it IMMEDIATELY:',
+      'stop working on that chat, do not start any new tool calls for it, and',
+      'send ONE short `reply` line to that chat acknowledging where you',
+      'stopped. Keep any partial results you already sent; do not undo work.',
+      'The stop applies ONLY to that chat_id; other chats are unaffected.',
     ].join('\n'),
   },
 )
@@ -1856,6 +1890,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
         if (options.length) parts.push(`${options.length} button(s) (${body.renderMode})`)
         log(`reply sent to chat ${resolvedChatId} (${parts.join(', ')})`)
+        // Session controls: refresh the context-window gauge after each
+        // successful reply (fire-and-forget, never blocks the reply).
+        reportContextPct()
         clearInbound(resolvedChatId)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
@@ -3787,6 +3824,18 @@ const voiceRpc = new VoiceRpcHandler({
       params: { content, meta },
     }),
   getIdentity: getVoiceIdentity,
+  // stop_turn's short plain confirmation rides the normal outbound send
+  // path (POST send-message), same shape as the permission-prompt sender.
+  sendChatMessage: (chatId, text) =>
+    bgosPost('send-message', {
+      chatId: Number(chatId),
+      assistantId: Number(ASSISTANT_ID),
+      text,
+      sender: 'assistant',
+      sentDate: new Date().toISOString(),
+      hasAttachment: false,
+      files: [],
+    }),
   log,
 })
 
@@ -4906,6 +4955,9 @@ async function main(): Promise<void> {
     } catch (err) {
       log(`Poll cycle error: ${err}`)
     }
+    // Session controls: heartbeat refresh of the context-window gauge
+    // (fire-and-forget, deduped on the rounded percent inside).
+    reportContextPct()
     // Force fast cadence whenever:
     //  - WS is unhealthy (poll IS the delivery path)
     //  - There are active meetings (turn changes feel snappy)

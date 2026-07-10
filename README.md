@@ -453,6 +453,13 @@ npx --yes --package github:BrandGrowthOS/bgos-claude-plugin bgos-claim <claimTok
 
 The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` with chmod 600, prints the env key NAMES the agent still needs, and prints the launch command.
 
+## Session Controls (v0.19.0+)
+
+Two additions that let the BGOS app supervise a running session:
+
+- **Stop button (`stop_turn`, cooperative)**: when the user presses Stop for a chat, the backend sends a `stop_turn` RPC over the same WebSocket lane as voice. The plugin cannot kill an in-flight Claude Code turn (there is no process-level cancel hook), so the stop is **cooperative and honest about it**: the plugin pushes a channel notification telling the live agent to stand down on that ONE chat immediately (no new tool calls, one short acknowledgement reply, partial results kept), posts a plain "Run stopped at your request." confirmation into the chat, and reports `{stopped: true, mode: 'cooperative'}`. If the live session is unreachable (or the frame has no chat id) it reports `{stopped: false, supported: false}` instead of pretending. Nothing is killed and other chats are never touched.
+- **Context gauge (`contextPct`)**: the plugin automatically PATCHes the assistant status with the context-window fill percent, computed from the LATEST assistant usage entry in the session transcript (input + cache-read + cache-creation tokens over the model's window; 1M for `[1m]` model ids, 200k otherwise). It refreshes after each reply and on the poll heartbeat. The value is **approximate**: it lags one turn (it reflects the last completed API call) and drops back down after the host compacts the conversation. Agents must never set `contextPct` themselves.
+
 ## Configuration Reference
 
 | Variable | Required | Description |
