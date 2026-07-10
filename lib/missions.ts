@@ -1,6 +1,6 @@
 /**
  * Pure, side-effect-free builders for the `create_mission` / `tick_mini_goal`
- * / `complete_mission` MCP tools (BGOS capability #19, Missions).
+ * / `complete_mission` MCP tools (BGOS capability #20, Missions).
  *
  * Like ./lib/schedule.ts, everything here is deterministic and import-safe
  * (no env reads, no network, no clock, no process exit), so it can be unit

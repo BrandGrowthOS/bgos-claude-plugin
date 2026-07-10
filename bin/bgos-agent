@@ -196,7 +196,7 @@ the user (and other agents) arrive as `<channel source="bgos">` events.
 - For peer-agent messages (meta carries `peer_conversation_id` / `turn_state`),
   use `send_to_peer`, not `reply`.
 
-## Missions (trained flow, capability #19)
+## Missions (trained flow, capability #20)
 
 BGOS pins a live goal card in the chat when you create a mission. When a user
 request is MULTI-STEP (roughly 3 or more distinct steps, or work spanning

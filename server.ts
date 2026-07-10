@@ -1635,7 +1635,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'tick_mini_goal',
       description:
         'Mark ONE mission mini-goal done the moment its `done_when` check ' +
-        'is true (capability #19). Pass the goal_id from the create_mission ' +
+        'is true (capability #20). Pass the goal_id from the create_mission ' +
         'result and a short `evidence` line (what proved the check). Ticks ' +
         'are quiet (no user ping) and idempotent; ticking the last open ' +
         'goal completes the mission automatically. Targets your active ' +
@@ -1667,7 +1667,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'complete_mission',
       description:
         'End a mission early, marking it completed even though open ' +
-        'mini-goals remain (capability #19). Only needed when the remaining ' +
+        'mini-goals remain (capability #20). Only needed when the remaining ' +
         'goals became moot: ticking the last open goal already completes ' +
         'the mission automatically. Targets your active mission unless ' +
         'mission_id is passed. Maps to PATCH ' +
@@ -2591,7 +2591,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'create_mission': {
-      // Missions (capability #19): durable goal card the agent creates and
+      // Missions (capability #20): durable goal card the agent creates and
       // ticks. User-scoped route via X-API-Key, same auth as set_status.
       const built = buildMissionCreateBody({
         title: rawArgs.title,

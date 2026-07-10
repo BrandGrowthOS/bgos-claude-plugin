@@ -1,6 +1,6 @@
 /**
  * Eval suite for the mission tool builders (create_mission / tick_mini_goal /
- * complete_mission, BGOS capability #19).
+ * complete_mission, BGOS capability #20).
  *
  * Wire contract (user-scoped routes, X-API-Key; the plugin's assistants have
  * pairingId = null so the /integrations twins do not apply here):
