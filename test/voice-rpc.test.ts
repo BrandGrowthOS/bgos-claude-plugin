@@ -18,6 +18,9 @@ import {
   normalizeExpiresAtSeconds,
   normalizeVoiceConfig,
   buildMintInstructions,
+  AGGREGATE_INSTRUCTIONS_BUDGET,
+  VOICE_MEMORY_MAX,
+  loadVoiceMemory,
   buildConsultNotification,
   buildVoiceTaskDispatchText,
   buildStopTurnNotification,
@@ -782,4 +785,129 @@ test('mint instructions carry the welcome-back ceremony', () => {
   assert.ok(text.includes('skip the greeting ceremony'))
   assert.ok(text.includes('by name'))
   assert.ok(text.includes('never a robotic'))
+})
+
+// ── owner memory head + aggregate budget (Iris G4, wave 1) ──────────────────
+
+test('mint instructions include the owner memory head when memory is present', () => {
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: '',
+    memory: 'Owner is in Asia/Dubai. Active project: the launch. "the usual" = Thursday 9am.',
+  })
+  assert.ok(text.includes('Owner memory'))
+  assert.ok(text.includes('Asia/Dubai'))
+})
+
+test('no memory head when memory is empty (safe default, byte-identical)', () => {
+  const withEmpty = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: '',
+    memory: '',
+  })
+  const without = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: '',
+  })
+  assert.ok(!withEmpty.includes('Owner memory'))
+  assert.equal(withEmpty, without)
+})
+
+test('aggregate instructions budget caps the total and trims memory FIRST', () => {
+  const bigMemory = 'M'.repeat(8000)
+  const bigContext = 'C'.repeat(13000)
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: bigContext,
+    memory: bigMemory,
+  })
+  // Total instructions stay within the aggregate budget.
+  assert.ok(
+    text.length <= AGGREGATE_INSTRUCTIONS_BUDGET,
+    `instructions ${text.length} exceed budget ${AGGREGATE_INSTRUCTIONS_BUDGET}`,
+  )
+  // Memory is sacrificed before the recent conversation: the context survives
+  // heavily, the memory is trimmed to little/none.
+  const memoryChars = (text.match(/M/g) || []).length
+  const contextChars = (text.match(/C/g) || []).length
+  assert.ok(contextChars > memoryChars, 'context must outlast memory under pressure')
+})
+
+test('a context that alone exceeds the budget drops memory entirely and trims context', () => {
+  const hugeContext = 'C'.repeat(20000)
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: hugeContext,
+    memory: 'M'.repeat(4000),
+  })
+  assert.ok(text.length <= AGGREGATE_INSTRUCTIONS_BUDGET)
+  assert.ok(!text.includes('Owner memory'), 'memory must be dropped when context alone fills the budget')
+})
+
+test('loadVoiceMemory concatenates the agent home memory files, capped', () => {
+  const files: Record<string, string> = {
+    '/agent/USER.md': 'Owner is Kc, tz Asia/Dubai.',
+    '/agent/MEMORY.md': 'Active project: the launch.',
+  }
+  const mem = loadVoiceMemory({
+    cwd: '/agent',
+    env: {},
+    readFile: (p) => files[p] ?? null,
+  })
+  assert.ok(mem.includes('Asia/Dubai'))
+  assert.ok(mem.includes('the launch'))
+})
+
+test('loadVoiceMemory returns empty when no memory files exist (safe default)', () => {
+  const mem = loadVoiceMemory({ cwd: '/empty', env: {}, readFile: () => null })
+  assert.equal(mem, '')
+})
+
+test('loadVoiceMemory honors BGOS_VOICE_MEMORY=off', () => {
+  const mem = loadVoiceMemory({
+    cwd: '/agent',
+    env: { BGOS_VOICE_MEMORY: 'off' },
+    readFile: () => 'secret',
+  })
+  assert.equal(mem, '')
+})
+
+test('loadVoiceMemory honors an explicit BGOS_VOICE_MEMORY_FILE and caps at VOICE_MEMORY_MAX', () => {
+  const mem = loadVoiceMemory({
+    cwd: '/agent',
+    env: { BGOS_VOICE_MEMORY_FILE: '/custom/brief.md' },
+    readFile: (p) => (p === '/custom/brief.md' ? 'X'.repeat(20000) : null),
+  })
+  assert.equal(mem.length, VOICE_MEMORY_MAX)
+})
+
+test('G4 safe default: a memory-less agent keeps its full pre-feature context (no aggregate trim)', () => {
+  const bigContext = 'C'.repeat(18000)
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: bigContext,
+    memory: '',
+  })
+  // No memory => no aggregate trim => the full 18k context survives (well past
+  // the 14k budget), byte-identical to the pre-feature 20k-slice behavior.
+  assert.ok((text.match(/C/g) || []).length >= 18000)
+})
+
+test('G4 context trim keeps the MOST RECENT turns (tail), not the oldest', () => {
+  // OLDEST...NEWEST: a marker at the very end must survive a budget trim.
+  const context = 'OLDEST' + 'x'.repeat(14000) + 'NEWEST'
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: context,
+    memory: 'M'.repeat(2000),
+  })
+  assert.ok(text.includes('NEWEST'), 'the most recent turn must survive the trim')
+  assert.ok(!text.includes('OLDEST'), 'the oldest turn is dropped first')
 })
