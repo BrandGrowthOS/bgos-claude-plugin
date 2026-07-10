@@ -241,6 +241,107 @@ export class UsageTracker {
   }
 }
 
+// ── Context-window fill (session controls, capability: contextPct) ──────────
+// The LATEST assistant entry's usage block is a live snapshot of how full the
+// context window is: input_tokens + cache_read_input_tokens +
+// cache_creation_input_tokens is what the last API turn actually carried in.
+// This is deliberately separate from the cumulative UsageTracker above (a
+// running SUM says nothing about window fill). Approximate by nature: it lags
+// one turn and resets after host compaction.
+
+/** Context-window size for a Claude Code model id: 1M when the id carries
+ *  the '[1m]' long-context marker, else the standard 200k. */
+export function windowForModel(model: string): number {
+  return model.includes('[1m]') ? 1_000_000 : 200_000
+}
+
+/**
+ * Scan a transcript JSONL chunk from the END and return the context fill
+ * percent (0..100) of the most recent assistant entry that has a usage
+ * block, or null when no such entry exists. Malformed lines are skipped.
+ */
+export function latestContextPctFromJsonl(chunk: string): number | null {
+  const lines = chunk.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i]!.trim()
+    if (!trimmed) continue
+    let entry: unknown
+    try {
+      entry = JSON.parse(trimmed)
+    } catch {
+      continue // partial/corrupt line, normal at a live file's tail
+    }
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    if (e.type !== 'assistant') continue
+    const message = e.message
+    if (typeof message !== 'object' || message === null) continue
+    const m = message as Record<string, unknown>
+    const usage = m.usage
+    if (typeof usage !== 'object' || usage === null) continue
+    const u = usage as Record<string, unknown>
+    const count = (v: unknown): number =>
+      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
+    const used =
+      count(u.input_tokens) +
+      count(u.cache_read_input_tokens) +
+      count(u.cache_creation_input_tokens)
+    const model = typeof m.model === 'string' ? m.model : ''
+    const window = windowForModel(model)
+    // used * 100 first: keeps integer-divisible cases exact in floats.
+    return Math.min(100, Math.max(0, (used * 100) / window))
+  }
+  return null
+}
+
+/** How much of a live transcript's tail to inspect for the latest usage
+ *  block. 256 KB spans far more than one turn's JSONL lines while keeping
+ *  the heartbeat read cheap on multi-MB transcripts. */
+const CONTEXT_PCT_TAIL_BYTES = 256 * 1024
+
+/**
+ * Best-effort context-window fill (0..100) of the CURRENT session: the most
+ * recently modified transcript in this workspace's Claude project dir, read
+ * from its tail. Returns null when anything is unknown (no project dir, no
+ * transcript, no usage entry in the tail, unparseable). Never throws.
+ */
+export async function readContextPct(
+  cwd: string = process.cwd(),
+  claudeHome: string = join(homedir(), '.claude'),
+): Promise<number | null> {
+  try {
+    const projectDir = join(claudeHome, 'projects', mungeCwd(cwd))
+    let newest: string | null = null
+    let newestMtime = -1
+    for (const name of readdirSync(projectDir)) {
+      if (!name.endsWith('.jsonl')) continue
+      try {
+        const mtime = statSync(join(projectDir, name)).mtimeMs
+        if (mtime > newestMtime) {
+          newestMtime = mtime
+          newest = name
+        }
+      } catch {
+        /* file vanished between readdir and stat */
+      }
+    }
+    if (!newest) return null
+    const filePath = join(projectDir, newest)
+    const fd = openSync(filePath, 'r')
+    try {
+      const size = fstatSync(fd).size
+      const from = Math.max(0, size - CONTEXT_PCT_TAIL_BYTES)
+      const buf = Buffer.alloc(size - from)
+      const read = readSync(fd, buf, 0, buf.length, from)
+      return latestContextPctFromJsonl(buf.subarray(0, read).toString('utf8'))
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Test hook: read a whole transcript file (no cursor) and report it. */
 export function reportFromTranscriptFile(
   filePath: string,

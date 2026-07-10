@@ -37,6 +37,14 @@
  *             v0.13.0). Answered with a descriptive error, never silence —
  *             the G2 silent-drop lesson: every wire shape gets an explicit
  *             outcome.
+ *   stop_turn → the user pressed Stop for ONE chat (session controls).
+ *             Cooperative cancel: deliver a channel notification telling
+ *             the live agent to stop working on that chatId now, post a
+ *             short plain confirmation into the chat, then result
+ *             {stopped:true, mode:'cooperative'}. When the frame carries
+ *             no chatId or the live session is unreachable, result
+ *             {stopped:false, supported:false}. Never kills the daemon,
+ *             never touches other chats.
  *
  * Deadline discipline (ported from openclaw-channel-bgos/voice-rpc-handler):
  * the daemon's inner cap must stay UNDER the backend's, because the backend
@@ -44,7 +52,7 @@
  * arrives in time always beats a better answer that arrives late.
  */
 
-export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch'
+export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn'
 
 export interface VoiceRpcFrame {
   rpcId: string
@@ -75,7 +83,12 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
   const r = raw as Record<string, unknown>
   const rpcId = typeof r.rpcId === 'string' ? r.rpcId : ''
   const op =
-    r.op === 'mint' || r.op === 'consult' || r.op === 'dispatch' ? r.op : null
+    r.op === 'mint' ||
+    r.op === 'consult' ||
+    r.op === 'dispatch' ||
+    r.op === 'stop_turn'
+      ? r.op
+      : null
   if (!rpcId || !op) return null
   return {
     rpcId,
@@ -208,6 +221,10 @@ export interface VoiceRpcDeps {
   notify(content: string, meta: Record<string, unknown>): Promise<unknown>
   /** Best-effort agent identity for the voice persona (caller caches). */
   getIdentity(timeoutMs: number): Promise<AgentIdentity | null>
+  /** Plain outbound chat message via the normal send path (POST
+   *  send-message). Used by stop_turn for its short confirmation line.
+   *  Optional and best-effort: a failure never fails the op. */
+  sendChatMessage?(chatId: string, text: string): Promise<unknown>
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -442,6 +459,23 @@ export function normalizeVoiceTaskDispatch(
   }
 }
 
+/** Confirmation line posted to the chat after a delivered stop request. */
+export const STOP_TURN_CONFIRMATION = 'Run stopped at your request.'
+
+/** The [stop_turn] channel-notification text (session controls). Honest
+ *  cooperative semantics: this plugin cannot kill an in-flight model turn,
+ *  so it tells the live agent, in plain words, to stand down on that ONE
+ *  chat immediately. Exported for tests. */
+export function buildStopTurnNotification(args: { chatId: string }): string {
+  return (
+    `[stop_turn] Your user pressed STOP for chat ${args.chatId}. ` +
+    `Stop working on that chat NOW: do not start any new tool calls for ` +
+    `it and abandon its remaining steps. Send ONE short reply line to ` +
+    `that chat acknowledging where you stopped. Keep any partial results ` +
+    `you already sent. Work for other chats is unaffected.`
+  )
+}
+
 export type ConsultReplyStatus = 'resolved' | 'late' | 'unknown'
 
 interface PendingConsult {
@@ -489,6 +523,8 @@ export class VoiceRpcHandler {
         payload = await this.mint(frame)
       } else if (frame.op === 'consult') {
         payload = await this.consult(frame)
+      } else if (frame.op === 'stop_turn') {
+        payload = await this.stopTurn(frame)
       } else {
         // The backend delivers dispatches to pairingless agents as
         // voice_task_dispatch events, not voice_rpc frames — answer
@@ -651,6 +687,66 @@ export class VoiceRpcHandler {
       // must NOT inject recentContext again client-side.
       contextInjected: true,
     }
+  }
+
+  // ── stop_turn (session controls, cooperative) ─────────────────────────────
+
+  /**
+   * The user pressed Stop for ONE chat. This daemon has no process-level
+   * handle on an in-flight Claude Code turn, so the cancel is COOPERATIVE:
+   * push a channel notification that tells the live agent to stand down on
+   * that chatId immediately (no new tool calls, one short acknowledgement,
+   * keep partial results). Scope is strictly the frame's chatId; nothing is
+   * killed and no other chat is touched. Outcomes (wire contract):
+   *   {stopped:true, mode:'cooperative'}  the stop request reached the
+   *                                       live session
+   *   {stopped:false, supported:false}    no chatId on the frame, or the
+   *                                       live session is unreachable
+   */
+  private async stopTurn(
+    frame: VoiceRpcFrame,
+  ): Promise<Record<string, unknown>> {
+    const chatId = frame.chatId != null ? String(frame.chatId) : ''
+    if (!chatId) {
+      this.deps.log(
+        `stop_turn without a chatId cannot be scoped, answering unsupported ` +
+          `(rpc=${frame.rpcId})`,
+      )
+      return { stopped: false, supported: false }
+    }
+    try {
+      // Channel meta MUST be all-string valued (the harness silently drops
+      // cards with non-string meta; see the consult path above).
+      await this.deps.notify(buildStopTurnNotification({ chatId }), {
+        event_type: 'stop_turn',
+        chat_id: chatId,
+        assistant_id: String(this.deps.config.assistantId),
+        requested_by: 'user',
+        transport: 'ws',
+      })
+    } catch (err) {
+      // The live session is unreachable, so a cooperative stop can never
+      // land. Be honest: this daemon cannot cancel right now.
+      this.deps.log(
+        `stop_turn delivery failed (rpc=${frame.rpcId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+      return { stopped: false, supported: false }
+    }
+    // Short plain confirmation into the chat via the normal outbound send
+    // path. Best-effort: the stop already reached the agent, so a failed
+    // confirmation must not flip the result.
+    try {
+      await this.deps.sendChatMessage?.(chatId, STOP_TURN_CONFIRMATION)
+    } catch (err) {
+      this.deps.log(
+        `stop_turn confirmation send failed (chat=${chatId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
+    return { stopped: true, mode: 'cooperative' }
   }
 
   // ── consult ───────────────────────────────────────────────────────────────

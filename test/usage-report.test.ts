@@ -7,15 +7,18 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, appendFileSync, mkdirSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
   buildUsageReport,
+  latestContextPctFromJsonl,
   mungeCwd,
+  readContextPct,
   sumUsageFromJsonl,
   UsageTracker,
+  windowForModel,
 } from '../lib/usage-report.ts'
 
 const assistantLine = (over: {
@@ -156,4 +159,97 @@ test('UsageTracker reports only appended-after-startup usage, exactly once', () 
 test('UsageTracker survives a missing project dir', () => {
   const tracker = new UsageTracker('/nowhere/at/all', join(tmpdir(), 'bgos-usage-none'))
   assert.equal(tracker.collect({}), null)
+})
+
+// ── contextPct (session controls: latest-entry window fill) ──────────────────
+
+test('windowForModel: 1M for [1m] model ids, 200k otherwise', () => {
+  assert.equal(windowForModel('claude-sonnet-5[1m]'), 1_000_000)
+  assert.equal(windowForModel('claude-opus-4-8'), 200_000)
+  assert.equal(windowForModel(''), 200_000)
+})
+
+test('latestContextPctFromJsonl: the LAST usage-bearing assistant entry wins', () => {
+  const chunk =
+    assistantLine({
+      id: 'old',
+      usage: { input_tokens: 180_000, cache_read_input_tokens: 0 },
+    }) +
+    JSON.stringify({ type: 'user', message: { role: 'user' } }) + '\n' +
+    assistantLine({
+      id: 'new',
+      usage: {
+        input_tokens: 10_000,
+        output_tokens: 999_999, // output does NOT count toward window fill
+        cache_read_input_tokens: 20_000,
+        cache_creation_input_tokens: 10_000,
+      },
+    })
+  // (10k + 20k + 10k) / 200k = 20, NOT the older entry's 90.
+  assert.equal(latestContextPctFromJsonl(chunk), 20)
+})
+
+test('latestContextPctFromJsonl: [1m] model id widens the window', () => {
+  const chunk = assistantLine({
+    model: 'claude-sonnet-5[1m]',
+    usage: { input_tokens: 100_000, cache_read_input_tokens: 400_000 },
+  })
+  assert.equal(latestContextPctFromJsonl(chunk), 50)
+})
+
+test('latestContextPctFromJsonl clamps to 100 and skips trailing junk', () => {
+  const chunk =
+    assistantLine({ usage: { input_tokens: 999_999_999 } }) +
+    'not json at all\n' +
+    '{"type":"assistant","message":{"usage":' // truncated tail
+  assert.equal(latestContextPctFromJsonl(chunk), 100)
+})
+
+test('latestContextPctFromJsonl returns null when no usage entry exists', () => {
+  assert.equal(latestContextPctFromJsonl(''), null)
+  assert.equal(
+    latestContextPctFromJsonl(
+      JSON.stringify({ type: 'user', message: { role: 'user' } }) + '\n',
+    ),
+    null,
+  )
+  assert.equal(
+    latestContextPctFromJsonl(
+      JSON.stringify({ type: 'assistant', message: { id: 'x' } }) + '\n',
+    ),
+    null,
+  )
+})
+
+test('readContextPct reads the NEWEST transcript in the project dir', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'bgos-ctx-'))
+  const cwd = '/tmp/agent-workspace'
+  const projectDir = join(home, 'projects', mungeCwd(cwd))
+  mkdirSync(projectDir, { recursive: true })
+  const older = join(projectDir, 'session-old.jsonl')
+  const newer = join(projectDir, 'session-new.jsonl')
+  writeFileSync(older, assistantLine({ usage: { input_tokens: 180_000 } }))
+  writeFileSync(newer, assistantLine({ usage: { input_tokens: 50_000 } }))
+  // Force distinct mtimes regardless of filesystem timestamp granularity.
+  const now = Date.now() / 1000
+  utimesSync(older, now - 60, now - 60)
+  utimesSync(newer, now, now)
+  assert.equal(await readContextPct(cwd, home), 25)
+})
+
+test('readContextPct returns null on missing dir / no transcripts / no usage', async () => {
+  assert.equal(
+    await readContextPct('/nowhere/at/all', join(tmpdir(), 'bgos-ctx-none')),
+    null,
+  )
+  const home = mkdtempSync(join(tmpdir(), 'bgos-ctx-empty-'))
+  const cwd = '/tmp/agent-workspace'
+  const projectDir = join(home, 'projects', mungeCwd(cwd))
+  mkdirSync(projectDir, { recursive: true })
+  assert.equal(await readContextPct(cwd, home), null, 'no transcripts')
+  writeFileSync(
+    join(projectDir, 'session-1.jsonl'),
+    JSON.stringify({ type: 'user', message: { role: 'user' } }) + '\n',
+  )
+  assert.equal(await readContextPct(cwd, home), null, 'no usage entries')
 })

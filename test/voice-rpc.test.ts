@@ -20,8 +20,10 @@ import {
   buildMintInstructions,
   buildConsultNotification,
   buildVoiceTaskDispatchText,
+  buildStopTurnNotification,
   CONSULT_TOOL_NAME,
   OFFER_URL,
+  STOP_TURN_CONFIRMATION,
   type VoiceRpcDeps,
   type VoiceRpcFrame,
   type VoiceRpcResultBody,
@@ -48,6 +50,7 @@ interface Recorded {
   acks: string[]
   results: Array<{ rpcId: string; body: VoiceRpcResultBody }>
   notifications: Array<{ content: string; meta: Record<string, unknown> }>
+  sends: Array<{ chatId: string; text: string }>
 }
 
 function makeDeps(over: {
@@ -55,9 +58,10 @@ function makeDeps(over: {
   fetchImpl?: typeof fetch
   timing?: VoiceRpcDeps['timing']
   notifyFails?: boolean
+  sendFails?: boolean
   identity?: { name: string; subtitle: string } | null
 }): { deps: VoiceRpcDeps; rec: Recorded } {
-  const rec: Recorded = { acks: [], results: [], notifications: [] }
+  const rec: Recorded = { acks: [], results: [], notifications: [], sends: [] }
   const deps: VoiceRpcDeps = {
     config: {
       openaiApiKey: over.openaiApiKey ?? 'sk-test',
@@ -75,6 +79,10 @@ function makeDeps(over: {
     notify: async (content, meta) => {
       if (over.notifyFails) throw new Error('mcp transport closed')
       rec.notifications.push({ content, meta })
+    },
+    sendChatMessage: async (chatId, text) => {
+      if (over.sendFails) throw new Error('send-message route down')
+      rec.sends.push({ chatId, text })
     },
     getIdentity: async () =>
       over.identity === undefined
@@ -105,7 +113,7 @@ function okMintFetch(body: Record<string, unknown> = {}): {
 // ── normalizeVoiceRpc (wire-shape validator pass-through) ────────────────────
 
 test('normalizeVoiceRpc passes through every supported op', () => {
-  for (const op of ['mint', 'consult', 'dispatch'] as const) {
+  for (const op of ['mint', 'consult', 'dispatch', 'stop_turn'] as const) {
     const out = normalizeVoiceRpc({
       rpcId: 'r1',
       op,
@@ -462,6 +470,109 @@ test('consult with a missing question posts BAD_CONSULT', async () => {
   )
   assert.equal(rec.results[0]!.body.ok, false)
   assert.equal(rec.results[0]!.body.error!.code, 'BAD_CONSULT')
+})
+
+// ── stop_turn (session controls, cooperative) ────────────────────────────────
+
+const stopFrame = (over: Partial<VoiceRpcFrame> = {}) =>
+  frame({
+    op: 'stop_turn',
+    rpcId: 'rpc-s1',
+    chatId: '42',
+    payload: { requestedBy: 'user' },
+    ...over,
+  })
+
+test('stop_turn notifies the live session, confirms in-chat, and results cooperative', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+
+  assert.deepEqual(rec.acks, ['rpc-s1'])
+  // The channel notification tells the agent to stand down on THAT chat.
+  assert.equal(rec.notifications.length, 1)
+  const note = rec.notifications[0]!
+  assert.match(note.content, /\[stop_turn\]/)
+  assert.match(note.content, /chat 42/)
+  assert.match(note.content, /do not start any new tool calls/)
+  assert.match(note.content, /Keep any partial results/)
+  assert.equal(note.meta.event_type, 'stop_turn')
+  assert.equal(note.meta.chat_id, '42')
+  // The plain confirmation rides the normal outbound send path.
+  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_TURN_CONFIRMATION }])
+  // Wire contract: {stopped:true} on success, cooperative mode declared.
+  assert.deepEqual(rec.results, [
+    {
+      rpcId: 'rpc-s1',
+      body: { ok: true, payload: { stopped: true, mode: 'cooperative' } },
+    },
+  ])
+})
+
+test('stop_turn accepts a numeric chatId (backend sends the string form; be liberal)', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame({ chatId: 42 }))
+  assert.equal(rec.notifications[0]!.meta.chat_id, '42')
+  assert.deepEqual(rec.results[0]!.body.payload, {
+    stopped: true,
+    mode: 'cooperative',
+  })
+})
+
+test('stop_turn meta is all-string valued (harness drops cards with non-string meta)', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame({ chatId: 42 }))
+  for (const [key, value] of Object.entries(rec.notifications[0]!.meta)) {
+    assert.equal(typeof value, 'string', `meta.${key} must be a string`)
+  }
+})
+
+test('stop_turn without a chatId cannot be scoped: honest {stopped:false, supported:false}', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame({ chatId: null }))
+  assert.equal(rec.notifications.length, 0, 'nothing to notify without a scope')
+  assert.equal(rec.sends.length, 0)
+  assert.deepEqual(rec.results[0]!.body, {
+    ok: true,
+    payload: { stopped: false, supported: false },
+  })
+})
+
+test('stop_turn reports unsupported when the live session is unreachable', async () => {
+  const { deps, rec } = makeDeps({ notifyFails: true })
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.equal(rec.sends.length, 0, 'no confirmation when the stop never landed')
+  assert.deepEqual(rec.results[0]!.body, {
+    ok: true,
+    payload: { stopped: false, supported: false },
+  })
+})
+
+test('a failed confirmation send does not flip a delivered stop', async () => {
+  const { deps, rec } = makeDeps({ sendFails: true })
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.equal(rec.notifications.length, 1, 'the stop itself was delivered')
+  assert.deepEqual(rec.results[0]!.body.payload, {
+    stopped: true,
+    mode: 'cooperative',
+  })
+})
+
+test('stop_turn works without a sendChatMessage dep (confirmation is optional)', async () => {
+  const { deps, rec } = makeDeps({})
+  delete deps.sendChatMessage
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.deepEqual(rec.results[0]!.body.payload, {
+    stopped: true,
+    mode: 'cooperative',
+  })
+})
+
+test('buildStopTurnNotification names the chat and the stand-down rules', () => {
+  const text = buildStopTurnNotification({ chatId: '7' })
+  assert.match(text, /^\[stop_turn\]/)
+  assert.match(text, /chat 7/)
+  assert.match(text, /ONE short reply line/)
+  assert.match(text, /other chats is unaffected/)
 })
 
 // ── dedupe + unsupported ops ─────────────────────────────────────────────────
