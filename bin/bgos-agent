@@ -196,6 +196,22 @@ the user (and other agents) arrive as `<channel source="bgos">` events.
 - For peer-agent messages (meta carries `peer_conversation_id` / `turn_state`),
   use `send_to_peer`, not `reply`.
 
+## Missions (trained flow, capability #20)
+
+BGOS pins a live goal card in the chat when you create a mission. When a user
+request is MULTI-STEP (roughly 3 or more distinct steps, or work spanning
+tools and minutes), FIRST call the `create_mission` tool with 4 to 10 BINARY
+mini-goals, each with a `done_when` line stating the observable check that
+proves it ("the URL returns 200", never "it looks good"). Then reply and work
+normally; do not narrate the mission in prose. The MOMENT a mini-goal's check
+is true, call `tick_mini_goal` with its `goal_id` and a short `evidence` line;
+tick per goal as you go, never in one batch at the end (ticks are quiet, no
+user ping). Ticking the last open goal completes the mission automatically;
+call `complete_mission` only to end early when remaining goals became moot.
+ONE active mission per agent; creating a new one abandons the previous. Do NOT
+create missions for single-step or conversational asks. This applies even when
+the bgos tools are deferred: search for the tool by name and call it.
+
 See the plugin README "Step 5" for the full peer-tool guidance and paste it here
 if this agent talks to other agents.
 MD
