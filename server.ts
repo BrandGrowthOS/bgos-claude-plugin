@@ -43,6 +43,7 @@ import {
 import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
+  normalizeVoiceTaskDispatch,
   buildVoiceTaskDispatchText,
   type AgentIdentity,
 } from './lib/voice-rpc.js'
@@ -77,6 +78,12 @@ const USER_ID = process.env.BGOS_USER_ID || ''
 const ASSISTANT_ID = process.env.BGOS_ASSISTANT_ID || ''
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
+// Confirm gate belt (Iris G5): when on, voice_task_dispatch events lacking
+// confirmed:true are rejected instead of surfaced to the agent. Default OFF
+// so an unset var preserves current accept-all behavior (the backend-side
+// gate is the primary enforcement; this is defense-in-depth).
+const REQUIRE_CONFIRMED_DISPATCH =
+  process.env.BGOS_REQUIRE_CONFIRMED_DISPATCH === 'true'
 // Native voice (the Talk button in BGOS): mint runs on THIS host, directly
 // against OpenAI. Optional — without a key, chat works normally and voice
 // calls fail with a descriptive "voice not configured" error.
@@ -3950,10 +3957,16 @@ function connectWebsocket(): void {
   // with the task id + brief; the agent reports back via complete_voice_task.
   realtimeSocket.on('voice_task_dispatch', (payload: any) => {
     try {
-      const taskId = String(payload?.task_id ?? '')
-      if (!taskId) return
-      const question = String(payload?.question ?? '')
-      const context = payload?.context ? String(payload.context) : ''
+      const parsed = normalizeVoiceTaskDispatch(payload, {
+        requireConfirmed: REQUIRE_CONFIRMED_DISPATCH,
+      })
+      if (!parsed.ok) {
+        // Observable, never silent (the G2 lesson): the backend's own task
+        // timeout surfaces the failure to the app; we log the reason here.
+        log(`voice_task_dispatch dropped: ${parsed.reason}`)
+        return
+      }
+      const { taskId, question, context, chatId } = parsed.task
       log(`voice_task_dispatch received (task=${taskId})`)
       mcp.notification({
         method: 'notifications/claude/channel',
@@ -3962,7 +3975,7 @@ function connectWebsocket(): void {
           meta: {
             event_type: 'voice_task_dispatch',
             task_id: taskId,
-            chat_id: String(payload?.chat_id ?? ''),
+            chat_id: chatId,
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
             transport: 'ws',
@@ -4856,6 +4869,7 @@ async function main(): Promise<void> {
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
+  log(`Require confirmed dispatch: ${REQUIRE_CONFIRMED_DISPATCH}`)
   log(`Log file: ${LOG_FILE}`)
 
   // Step 1: Connect MCP transport FIRST

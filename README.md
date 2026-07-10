@@ -469,6 +469,7 @@ The installer downloads the pack, verifies EVERY file's sha256 against the manif
 | `BGOS_VOICE_PERSONA` | No | Extra persona text baked into the voice session instructions |
 | `BGOS_USAGE_REPORT` | No | `"off"` disables the per-turn usage self-report (Fleet Pulse). Default: on |
 | `BGOS_USAGE_BILLING_MODE` | No | `"api"` for API-key-billed sessions (reports as api billing). Default: `subscription` (Claude Max: token usage only, never dollars) |
+| `BGOS_REQUIRE_CONFIRMED_DISPATCH` | No | `"true"` to reject voice dispatches lacking `confirmed:true` (the Iris G5 confirm-gate belt; the backend already withholds unconfirmed proposals, this adds daemon-side defense in depth). Default: off |
 
 ### Permission Modes
 
