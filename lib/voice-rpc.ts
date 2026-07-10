@@ -104,6 +104,8 @@ export const CLIENT_SECRETS_URL =
  *  (agent_dispatch / get_task_status / check_agent_status / roundtable_*):
  *  the app's tool router relays every OTHER name to the consult endpoint. */
 export const CONSULT_TOOL_NAME = 'claude_agent_consult'
+export const NO_AUTOSPEAK_GUARD =
+  "Do not speak until the user speaks first. Prior messages are context only, do not respond to them; wait for the user's first utterance."
 
 export interface AgentIdentity {
   name: string
@@ -259,6 +261,7 @@ export function buildMintInstructions(args: {
       (subtitle ? ` ${subtitle}.` : ''),
   )
   if (args.persona.trim()) parts.push(args.persona.trim())
+  parts.push(NO_AUTOSPEAK_GUARD)
   parts.push(
     'Personality: warm, capable, concise. Answer in one to three short ' +
       'sentences unless asked for more. Never mention being an AI model or ' +
@@ -298,7 +301,8 @@ export function buildMintInstructions(args: {
   const ctx = args.recentContext.trim()
   if (ctx) {
     parts.push(
-      'Recent conversation with your user (for continuity):\n' +
+      'BACKGROUND ONLY. Recent conversation with your user for continuity. ' +
+        'Do not answer or continue this transcript:\n' +
         ctx.slice(0, 20_000),
     )
   }

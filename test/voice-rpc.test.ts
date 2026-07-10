@@ -20,6 +20,7 @@ import {
   buildConsultNotification,
   buildVoiceTaskDispatchText,
   CONSULT_TOOL_NAME,
+  NO_AUTOSPEAK_GUARD,
   OFFER_URL,
   type VoiceRpcDeps,
   type VoiceRpcFrame,
@@ -176,9 +177,16 @@ test('mint maps the OpenAI client_secrets response to the wire contract', async 
   assert.equal(sent.session.tools[0].name, CONSULT_TOOL_NAME)
   assert.ok(sent.session.audio.input.transcription, 'transcription required')
   assert.equal(sent.session.audio.input.turn_detection.type, 'server_vad')
+  assert.equal('response' in sent, false)
+  assert.equal('conversation' in sent, false)
+  assert.equal('items' in sent.session, false)
+  assert.ok(sent.session.instructions.includes(NO_AUTOSPEAK_GUARD))
   assert.match(sent.session.instructions, /Atlas/)
   assert.match(sent.session.instructions, /calm pilot/)
-  assert.match(sent.session.instructions, /KC: hello/)
+  assert.match(
+    sent.session.instructions,
+    /BACKGROUND ONLY[\s\S]*KC: hello/,
+  )
 })
 
 test('normalizeVoiceConfig sanitizes the wire (junk voice dropped, speed clamped, instructions capped)', () => {
@@ -502,6 +510,19 @@ test('buildMintInstructions works without identity/persona/context', () => {
   assert.match(text, /agent_dispatch/)
   assert.match(text, new RegExp(CONSULT_TOOL_NAME))
   assert.ok(!text.includes('Recent conversation'))
+})
+
+test('mint instructions require the user to speak first', () => {
+  const text = buildMintInstructions({
+    identity: null,
+    persona: '',
+    recentContext: 'KC: Pick up where we left off.',
+  })
+  assert.ok(text.includes(NO_AUTOSPEAK_GUARD))
+  assert.match(
+    text,
+    /BACKGROUND ONLY[\s\S]*KC: Pick up where we left off\./,
+  )
 })
 
 test('buildConsultNotification omits empty context/style blocks', () => {
