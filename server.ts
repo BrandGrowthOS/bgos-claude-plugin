@@ -11,7 +11,7 @@
  *   5. Permission requests are relayed to BGOS chat (or auto-approved)
  */
 
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -47,6 +47,11 @@ import {
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
+import {
+  ExportPackHandler,
+  normalizeExportPack,
+  normalizeExportPackManifest,
+} from './lib/export-pack.js'
 import { UsageTracker } from './lib/usage-report.js'
 import {
   buildScheduleCreateBody,
@@ -3452,6 +3457,72 @@ const voiceRpc = new VoiceRpcHandler({
   log,
 })
 
+// ── Agent Packs (export_pack / export_pack_manifest) ─────────────────────────
+// Type 3 "Full handoff": the backend asks THIS host to package the agent's
+// body (CLAUDE.md, rules, skills, opted-in memory) into a deterministic zip
+// and upload it to a presigned URL. All logic lives in lib/export-pack.ts
+// (allowlist, secret scan gate, manifest, zip, size gate); this block only
+// wires the filesystem, REST, and fetch deps. The workspace root is
+// process.cwd(), the same folder Claude Code itself runs the agent from.
+
+/** List candidate files for packs: only the trees export_pack may ever
+ *  package (workspace root CLAUDE.md, .claude/rules, .claude/skills,
+ *  memory, .claude/memory). Symlinked directories are never walked; file
+ *  symlinks are listed and gated by the lib's realpath escape check. */
+async function listWorkspaceFilesForPack(): Promise<
+  Array<{ path: string; bytes: number }>
+> {
+  const root = process.cwd()
+  const out: Array<{ path: string; bytes: number }> = []
+  const addFile = async (rel: string): Promise<void> => {
+    try {
+      const s = await stat(pathJoin(root, rel))
+      if (s.isFile()) out.push({ path: rel, bytes: s.size })
+    } catch {}
+  }
+  const walk = async (relDir: string, depth: number): Promise<void> => {
+    if (depth > 6) return
+    let entries
+    try {
+      entries = await readdir(pathJoin(root, relDir), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const rel = `${relDir}/${entry.name}`
+      if (entry.isDirectory()) {
+        await walk(rel, depth + 1)
+      } else {
+        // Files and file symlinks; a symlink to a directory stats as a
+        // non-file below and is skipped, so cycles cannot form.
+        await addFile(rel)
+      }
+    }
+  }
+  await addFile('CLAUDE.md')
+  await walk('.claude/rules', 0)
+  await walk('.claude/skills', 0)
+  await walk('memory', 0)
+  await walk('.claude/memory', 0)
+  return out
+}
+
+const exportPack = new ExportPackHandler({
+  config: { workspaceRoot: process.cwd(), assistantId: ASSISTANT_ID },
+  postAck: (rpcId) =>
+    bgosPost(`integrations/export-pack/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/export-pack/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  listWorkspaceFiles: listWorkspaceFilesForPack,
+  readFile: (relPath) => readFile(pathJoin(process.cwd(), relPath)),
+  realpath: (relPath) =>
+    realpath(relPath ? pathJoin(process.cwd(), relPath) : process.cwd()),
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (wsForwardedMessageIds.has(id)) return
   wsForwardedMessageIds.add(id)
@@ -3513,6 +3584,38 @@ function connectWebsocket(): void {
       void voiceRpc.handle(frame)
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
+    }
+  })
+
+  // Agent Packs (Type 3 "Full handoff"): the backend asks this host to
+  // package the agent workspace into a pack zip and upload it. Frames are
+  // validated in normalizeExportPack (frames without an rpcId drop; anything
+  // with an rpcId ALWAYS gets a result or descriptive error, the voice_rpc
+  // G2 lesson). Duplicate re-emits are deduped by rpcId inside the handler.
+  realtimeSocket.on('export_pack', (payload: any) => {
+    try {
+      const frame = normalizeExportPack(payload)
+      if (!frame) return
+      log(
+        `export_pack received (rpc=${frame.rpcId}, handoff=${frame.handoffId}, ` +
+          `tier=${frame.tier})`,
+      )
+      void exportPack.handleExport(frame)
+    } catch (err) {
+      log(`export_pack handler error: ${err}`)
+    }
+  })
+
+  // Dry run for the handoff wizard's per-file memory opt-in: list candidate
+  // files (kind body | memory) without building or uploading anything.
+  realtimeSocket.on('export_pack_manifest', (payload: any) => {
+    try {
+      const frame = normalizeExportPackManifest(payload)
+      if (!frame) return
+      log(`export_pack_manifest received (rpc=${frame.rpcId})`)
+      void exportPack.handleManifest(frame)
+    } catch (err) {
+      log(`export_pack_manifest handler error: ${err}`)
     }
   })
 

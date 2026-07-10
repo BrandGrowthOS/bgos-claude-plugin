@@ -8,6 +8,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
+    "allowJs": true,
     "types": ["node"]
   },
   "include": ["server.ts", "lib/**/*.ts", "test/**/*.ts"]

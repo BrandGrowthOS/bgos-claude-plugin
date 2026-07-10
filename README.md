@@ -435,6 +435,24 @@ With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS
 
 **Per-assistant voice settings (v0.15.0+):** the BGOS app's agent voice menu can set a **voice** (OpenAI GA set: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar), a **speaking speed** (0.25–1.5), and a **voice persona** per assistant. They arrive on the mint frame as `payload.voiceConfig` and OVERRIDE the host env (`BGOS_VOICE_VOICE` / `BGOS_VOICE_PERSONA` are the fallback only). The plugin sanitizes the wire values (junk voice → env fallback, out-of-range speed → clamped) and echoes the applied voice/speed back so the app's in-call gear shows the truth.
 
+## Agent Packs: Full handoff (v0.18.0+)
+
+When the owner starts a **Full handoff** from the Home of Agents app, the backend sends this plugin an `export_pack` RPC over the same WebSocket lane as voice. The plugin then, entirely on the agent's host:
+
+1. **Collects the agent body** from the workspace: `CLAUDE.md`, `.claude/rules/*.md`, `.claude/skills/*/SKILL.md`, plus ONLY the memory files the owner opted in (they must live under `memory/` or `.claude/memory/`). It never packs `.mcp.json`, `.claude/settings*`, `*.log`, chat history, other dotfiles, or anything resolving outside the workspace (`..`, absolute paths, and symlink escapes are rejected via a realpath check).
+2. **Runs the secret scan** (rules_version 1: AWS, Anthropic, OpenAI, GitHub, Slack, Stripe, Google keys, private key blocks, JWTs, connection-string passwords, bearer tokens, generic assignments). ANY finding blocks packaging entirely and reports the file + line with a masked excerpt; nothing is uploaded.
+3. **Builds a deterministic zip** (STORED entries, `manifest.json` first) with a per-file sha256 inventory, enforces the size limit BEFORE uploading, PUTs the zip to the presigned URL, and always reports the outcome (manifest + pack sha256, or a descriptive error) back to the backend.
+
+A second RPC, `export_pack_manifest`, is the dry run: it lists candidate files (kind `body` or `memory`, with byte sizes) so the app can offer per-file memory opt-in. Nothing is built or uploaded.
+
+The recipient installs their own independent copy with one command (shown on the claim page after they claim the handoff in the app):
+
+```bash
+npx --yes --package github:BrandGrowthOS/bgos-claude-plugin bgos-claim <claimToken>
+```
+
+The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` with chmod 600, prints the env key NAMES the agent still needs, and prints the launch command.
+
 ## Configuration Reference
 
 | Variable | Required | Description |
