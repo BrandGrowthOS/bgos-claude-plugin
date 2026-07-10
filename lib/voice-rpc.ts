@@ -150,10 +150,32 @@ const VOICE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
 
 /** ONE shared total-instructions budget (Iris G4): persona + recent context +
  *  the owner memory head must fit in ~14k chars. When over, memory is trimmed
- *  FIRST (then recent context); the fixed voice contract is never trimmed. */
+ *  FIRST (then recent context); the fixed voice contract is never trimmed. The
+ *  aggregate trim only applies when a memory head is actually present, so an
+ *  agent with NO memory files mints byte-identically to the pre-feature path. */
 export const AGGREGATE_INSTRUCTIONS_BUDGET = 14_000
 /** Per-source cap on the owner memory head before the aggregate trim. */
 export const VOICE_MEMORY_MAX = 8_000
+
+/** Keep the first `n` UTF-16 units, dropping a trailing lone high surrogate so
+ *  the cut never leaves a broken astral character. */
+function sliceHead(s: string, n: number): string {
+  if (s.length <= n) return s
+  let out = s.slice(0, n)
+  const last = out.charCodeAt(out.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1)
+  return out
+}
+
+/** Keep the LAST `n` UTF-16 units (the most recent text), dropping a leading
+ *  lone low surrogate so the cut never leaves a broken astral character. */
+function sliceTail(s: string, n: number): string {
+  if (s.length <= n) return s
+  let out = s.slice(s.length - n)
+  const first = out.charCodeAt(0)
+  if (first >= 0xdc00 && first <= 0xdfff) out = out.slice(1)
+  return out
+}
 
 /** The agent-home memory files read into the voice memory head, in order,
  *  relative to the plugin cwd (the agent's project dir). Best-effort. */
@@ -404,36 +426,40 @@ export function buildMintInstructions(args: {
         'confirmation the user did not give.',
     )
   }
-  // Fixed voice contract assembled above; the owner memory head + recent
-  // conversation share the remaining aggregate budget (G4), memory trimmed
-  // first so the live conversation always wins under pressure.
   const core = parts.join('\n\n')
   const memLabel = 'Owner memory (profile, active projects, shorthand):\n'
   const ctxLabel = 'Recent conversation with your user (for continuity):\n'
-  let memory = (args.memory ?? '').trim().slice(0, VOICE_MEMORY_MAX)
-  let context = args.recentContext.trim().slice(0, 20_000)
   const SEP = '\n\n'
+  let memory = sliceHead((args.memory ?? '').trim(), VOICE_MEMORY_MAX)
+  // recentContext is built most-recent-LAST, so keep its TAIL when trimming.
+  let context = sliceTail(args.recentContext.trim(), 20_000)
 
-  // Room left for the two variable blocks after the fixed contract.
-  const coreCost = core.length
-  // Preserve recent context first; trim memory into whatever remains.
-  const ctxBlockCost = context ? SEP.length + ctxLabel.length + context.length : 0
-  if (coreCost + ctxBlockCost > AGGREGATE_INSTRUCTIONS_BUDGET) {
-    // Context alone overflows: drop memory entirely, trim context to fit.
-    memory = ''
-    if (context) {
-      const room =
-        AGGREGATE_INSTRUCTIONS_BUDGET - coreCost - SEP.length - ctxLabel.length
-      context = room > 0 ? context.slice(0, room) : ''
+  // Safe default: with NO memory head, leave recent context at its pre-feature
+  // 20k slice and skip the aggregate trim entirely, so a memory-less agent
+  // mints byte-identically to before this feature.
+  if (memory) {
+    // Owner memory present: the shared ~14k aggregate now applies. Preserve
+    // the most recent conversation; trim memory FIRST, then context (tail).
+    const coreCost = core.length
+    const ctxBlockCost = context
+      ? SEP.length + ctxLabel.length + context.length
+      : 0
+    if (coreCost + ctxBlockCost > AGGREGATE_INSTRUCTIONS_BUDGET) {
+      memory = ''
+      if (context) {
+        const room =
+          AGGREGATE_INSTRUCTIONS_BUDGET - coreCost - SEP.length - ctxLabel.length
+        context = room > 0 ? sliceTail(context, room) : ''
+      }
+    } else {
+      const memRoom =
+        AGGREGATE_INSTRUCTIONS_BUDGET -
+        coreCost -
+        ctxBlockCost -
+        SEP.length -
+        memLabel.length
+      memory = memRoom > 0 ? sliceHead(memory, memRoom) : ''
     }
-  } else if (memory) {
-    const memRoom =
-      AGGREGATE_INSTRUCTIONS_BUDGET -
-      coreCost -
-      ctxBlockCost -
-      SEP.length -
-      memLabel.length
-    memory = memRoom > 0 ? memory.slice(0, memRoom) : ''
   }
 
   const out = [core]

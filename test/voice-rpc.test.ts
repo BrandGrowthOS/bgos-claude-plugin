@@ -885,3 +885,29 @@ test('loadVoiceMemory honors an explicit BGOS_VOICE_MEMORY_FILE and caps at VOIC
   })
   assert.equal(mem.length, VOICE_MEMORY_MAX)
 })
+
+test('G4 safe default: a memory-less agent keeps its full pre-feature context (no aggregate trim)', () => {
+  const bigContext = 'C'.repeat(18000)
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: bigContext,
+    memory: '',
+  })
+  // No memory => no aggregate trim => the full 18k context survives (well past
+  // the 14k budget), byte-identical to the pre-feature 20k-slice behavior.
+  assert.ok((text.match(/C/g) || []).length >= 18000)
+})
+
+test('G4 context trim keeps the MOST RECENT turns (tail), not the oldest', () => {
+  // OLDEST...NEWEST: a marker at the very end must survive a budget trim.
+  const context = 'OLDEST' + 'x'.repeat(14000) + 'NEWEST'
+  const text = buildMintInstructions({
+    identity: { name: 'Jeff', subtitle: '' },
+    persona: '',
+    recentContext: context,
+    memory: 'M'.repeat(2000),
+  })
+  assert.ok(text.includes('NEWEST'), 'the most recent turn must survive the trim')
+  assert.ok(!text.includes('OLDEST'), 'the oldest turn is dropped first')
+})
