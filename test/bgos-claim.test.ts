@@ -43,6 +43,8 @@ import {
   SETTINGS_LOCAL_JSON,
   PROVIDED_ENV_KEYS,
   DEFAULT_API_BASE,
+  PACK_ZIP_MAX_BYTES,
+  packZipTooLarge,
 } from '../bin/bgos-claim.mjs'
 import { buildStoredZip } from '../lib/pack-zip.ts'
 
@@ -471,4 +473,16 @@ test('scaffoldWorkspace never writes a pack entry outside the scaffold dir (zip-
   } finally {
     await rm(parent, { recursive: true, force: true })
   }
+})
+
+test('packZipTooLarge caps the backend-supplied pack download', () => {
+  // Under the cap (declared or actual) is fine.
+  assert.equal(packZipTooLarge(1024), false)
+  assert.equal(packZipTooLarge(PACK_ZIP_MAX_BYTES), false)
+  // Over the cap is rejected (a hostile backend streaming a giant zip).
+  assert.equal(packZipTooLarge(PACK_ZIP_MAX_BYTES + 1), true)
+  // Absent / unparseable Content-Length (NaN) is NOT flagged here; the
+  // actual-bytes re-check is the backstop.
+  assert.equal(packZipTooLarge(Number.NaN), false)
+  assert.equal(packZipTooLarge(-1), false)
 })

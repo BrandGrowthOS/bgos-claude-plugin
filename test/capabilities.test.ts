@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import {
   pickCapabilities,
   BGOS_CAPABILITIES_FALLBACK,
+  MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
 
 const SERVED_TEXT =
@@ -33,6 +34,18 @@ test('falls back to the bundled copy on null (fetch failed)', () => {
   assert.equal(r.source, 'fallback')
   assert.equal(r.version, 'bundled')
   assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+})
+
+test('falls back when the served canon exceeds the size cap (DoS/injection guard)', () => {
+  const oversized =
+    '# BGOS Channel Agent Capabilities\n' + 'x'.repeat(MAX_CAPABILITIES_BYTES + 1)
+  const r = pickCapabilities({ text: oversized, version: 'evil' })
+  assert.equal(r.source, 'fallback')
+  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  // A canon right at the cap with valid markers is still accepted.
+  const marker = '# BGOS Channel Agent Capabilities\n'
+  const atCap = marker + 'y'.repeat(MAX_CAPABILITIES_BYTES - marker.length)
+  assert.equal(pickCapabilities({ text: atCap, version: '1' }).source, 'backend')
 })
 
 test('falls back when the response is missing the markers', () => {

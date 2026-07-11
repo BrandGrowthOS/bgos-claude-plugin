@@ -39,6 +39,15 @@ export interface ServedCapabilities {
 }
 
 /**
+ * Upper bound on an accepted served canon. The real canon is a few KB; this is
+ * ~50x headroom. SECURITY: the served text is exposed to the agent as the
+ * `bgos_capabilities` guide, so a compromised or MITM'd backend returning a
+ * multi-MB body would be both a memory-DoS and an unbounded prompt-injection
+ * surface. Over the cap we use the bundled fallback.
+ */
+export const MAX_CAPABILITIES_BYTES = 256 * 1024;
+
+/**
  * The stable dash-free marker the served canon begins with. Both the served
  * canon and the bundled fallback contain both substrings.
  */
@@ -56,7 +65,10 @@ export function pickCapabilities(data: unknown): ServedCapabilities {
     typeof (data as { text?: unknown }).text === 'string'
   ) {
     const text = (data as { text: string }).text;
-    if (CAPABILITIES_MARKERS.every((m) => text.includes(m))) {
+    if (
+      text.length <= MAX_CAPABILITIES_BYTES &&
+      CAPABILITIES_MARKERS.every((m) => text.includes(m))
+    ) {
       const rawVersion = (data as { version?: unknown }).version;
       return {
         text,
