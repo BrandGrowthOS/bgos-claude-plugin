@@ -34,10 +34,10 @@
  */
 
 import { mkdir, writeFile, chmod } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join, dirname } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -366,10 +366,22 @@ export async function main(argv = process.argv.slice(2)) {
   return 0
 }
 
-const isDirectRun =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-if (isDirectRun) {
+/**
+ * True when this file is the process entry point. Compares REAL paths on both
+ * sides so a symlinked bin (npm/npx puts a shim in node_modules/.bin, and paths
+ * under /tmp resolve through /private/tmp on macOS) still runs main(); a plain
+ * href compare would fail those and silently do nothing.
+ */
+export function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (typeof argv1 !== 'string') return false
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1)
+  } catch {
+    return moduleUrl === pathToFileURL(argv1).href
+  }
+}
+
+if (isRunAsMain()) {
   main()
     .then((code) => {
       process.exitCode = code

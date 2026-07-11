@@ -14,11 +14,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, stat, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, stat, rm, writeFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import {
+  isRunAsMain,
   DEFAULT_API_BASE,
   CLAUDE_INTEGRATION,
   CLAUDE_AGENT_ROUTE,
@@ -145,6 +147,30 @@ test('buildCredentials is the exact durable shape server.ts reads', () => {
 
 test('credentialsPath is ~/.bgos-agent/credentials.json', () => {
   assert.equal(credentialsPath('/home/kc'), '/home/kc/.bgos-agent/credentials.json')
+})
+
+test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-main-'))
+  try {
+    const real = join(dir, 'real.mjs')
+    const link = join(dir, 'shim.mjs')
+    await writeFile(real, '// entry\n')
+    await symlink(real, link)
+    const moduleUrl = pathToFileURL(real).href
+    // Invoked via the symlink shim: argv[1] is the link, module url is the real
+    // path. A plain href compare would return false and main() would never run.
+    assert.equal(isRunAsMain(link, moduleUrl), true)
+    // Invoked directly: also true.
+    assert.equal(isRunAsMain(real, moduleUrl), true)
+    // A different file is not the entry point.
+    const other = join(dir, 'other.mjs')
+    await writeFile(other, '// other\n')
+    assert.equal(isRunAsMain(other, moduleUrl), false)
+    // Non-string argv[1] (imported, not executed).
+    assert.equal(isRunAsMain(undefined, moduleUrl), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('writeCredentialsFile pins mode 600 and round-trips the JSON', async () => {
