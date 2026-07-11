@@ -325,6 +325,20 @@ export function verifyManifestFiles(manifest, entries) {
  * null for manifest.json, unknown layouts, and any path that is absolute or
  * carries "..", empty, or backslash segments.
  */
+/** Cap on the pack zip we will buffer in memory. Packs are a handful of small
+ *  text files (rules/skills/memory); 25 MB is generous headroom. SECURITY: the
+ *  download URL is backend-supplied and the sha256 integrity gate only runs
+ *  after the full read, so a hostile backend could otherwise stream an
+ *  unbounded body. */
+export const PACK_ZIP_MAX_BYTES = 25 * 1024 * 1024
+
+/** True when a byte length (declared or actual) exceeds the pack cap. A NaN /
+ *  negative / non-finite input (absent or unparseable Content-Length) is NOT
+ *  treated as too-large here, so the actual-bytes re-check remains the backstop. */
+export function packZipTooLarge(byteLen) {
+  return Number.isFinite(byteLen) && byteLen > PACK_ZIP_MAX_BYTES
+}
+
 export function packEntryToWorkspacePath(packPath) {
   if (typeof packPath !== 'string' || !packPath) return null
   if (packPath === 'manifest.json') return null
@@ -619,7 +633,23 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`[bgos-claim] pack download failed: HTTP ${zipRes.status}`)
     return 1
   }
+  // SECURITY: pack.downloadUrl is backend-supplied and the sha256 gate only
+  // runs AFTER the full read, so bound the download first. Reject an oversized
+  // declared length up front, then re-check the actual bytes for a lying or
+  // absent Content-Length.
+  if (packZipTooLarge(Number(zipRes.headers.get('content-length') ?? ''))) {
+    console.error(
+      `[bgos-claim] ABORT: pack zip declares more than the ${PACK_ZIP_MAX_BYTES} byte cap. Nothing was installed.`,
+    )
+    return 1
+  }
   const zip = new Uint8Array(await zipRes.arrayBuffer())
+  if (packZipTooLarge(zip.byteLength)) {
+    console.error(
+      `[bgos-claim] ABORT: pack zip is ${zip.byteLength} bytes (> ${PACK_ZIP_MAX_BYTES} cap). Nothing was installed.`,
+    )
+    return 1
+  }
 
   // Integrity gate: nothing is written to disk unless EVERY hash checks out.
   if (typeof pack.packSha256 === 'string' && pack.packSha256) {

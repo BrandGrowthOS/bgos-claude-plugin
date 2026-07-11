@@ -199,11 +199,35 @@ const usageTracker = new UsageTracker(process.cwd())
 // so the plugin never hard-fails when the endpoint is unreachable.
 let cachedCapabilities: ServedCapabilities | null = null
 
+// SECURITY: the canon is injected into the agent's context, so cap the fetch.
+// The real canon is a few KB; reject a body that declares more than this so a
+// compromised or MITM'd backend cannot stream a giant response (memory DoS).
+// pickCapabilities separately caps the accepted `text` length as defense in
+// depth. 1 MB is generous headroom over the ~256 KB text cap.
+const CAPABILITIES_FETCH_MAX_BYTES = 1024 * 1024
+
+async function bgosGetCapped(path: string, maxBytes: number): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, { headers: { ...authHeaders(AUTH) } })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+  }
+  const declared = Number(response.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`capability response too large: ${declared} bytes`)
+  }
+  return response.json()
+}
+
 async function loadServedCapabilities(): Promise<ServedCapabilities> {
   if (cachedCapabilities) return cachedCapabilities
   let data: unknown = null
   try {
-    data = await bgosGet('integrations/capabilities?channel=claude')
+    data = await bgosGetCapped(
+      'integrations/capabilities?channel=claude',
+      CAPABILITIES_FETCH_MAX_BYTES,
+    )
   } catch (err) {
     log(`Capability canon fetch failed (${err instanceof Error ? err.message : String(err)}); using bundled fallback`)
   }
