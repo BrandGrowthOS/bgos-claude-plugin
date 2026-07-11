@@ -16,9 +16,11 @@
  *      -> app-first (BGOS- code) returns { pairing_token, pairing_id, user_id }
  *   2. POST <apiBase>/integrations/pairings/<id>/agent-catalog  (X-BGOS-Pairing)
  *      { agents:[{ agent_route:"claude", name:"Claude Code" }] }  // fires pair_ready
- *   3. poll GET <apiBase>/integrations/me until the app binds an assistant,
+ *   3. POST <apiBase>/integrations/pairings/<id>/assistants  (X-BGOS-Pairing)
+ *      binds the single Claude agent (self bind; one agent, nothing to pick)
+ *   4. poll GET <apiBase>/integrations/me until the bound assistant appears,
  *      then read its assistant_id
- *   4. write ~/.bgos-agent/credentials.json (dir 0700, file 0600) with
+ *   5. write ~/.bgos-agent/credentials.json (dir 0700, file 0600) with
  *      { backendUrl, pairingToken, pairingId, userId, assistantId, pairedAt }
  *
  * server.ts reads that file, sends X-BGOS-Pairing, and the session is live.
@@ -292,20 +294,39 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const { pairingToken, pairingId, userId } = classified
 
-  // Push the catalog so the app can bind the agent (fires pair_ready). Best
-  // effort: the exchange already carried the catalog, this is the explicit
-  // nudge the daemon adapters also send.
+  const pairId = encodeURIComponent(String(pairingId))
+
+  // Push the catalog so the app's Add-agent screen advances (fires pair_ready).
+  // Best effort: the exchange already carried the catalog.
   try {
     await postJson(
-      `${apiBase}/integrations/pairings/${encodeURIComponent(String(pairingId))}/agent-catalog`,
+      `${apiBase}/integrations/pairings/${pairId}/agent-catalog`,
       buildCatalogBody(),
       { 'X-BGOS-Pairing': pairingToken },
     )
   } catch {
-    // non-fatal: the exchange catalog is enough for the app to bind.
+    // non-fatal: the exchange catalog is enough to bind below.
   }
 
-  console.log('[bgos-pair] paired. Waiting for your agent to be added in the app...')
+  // Bind the single Claude agent ourselves. A Claude Code session is one agent,
+  // so there is nothing for the user to pick: the pairing token is the account
+  // owner, so it can create the bound assistant directly (the bind route is
+  // owner scoped and accepts a pairing token). This makes pairing self
+  // sufficient on every host, with or without the app watching, and there is
+  // exactly one binder so no duplicate assistants.
+  try {
+    await postJson(
+      `${apiBase}/integrations/pairings/${pairId}/assistants`,
+      buildCatalogBody(),
+      { 'X-BGOS-Pairing': pairingToken },
+    )
+  } catch (err) {
+    // If binding fails (for example the app already bound), fall through to the
+    // poll below, which finds whatever assistant ended up bound.
+    console.error(`[bgos-pair] note: could not bind the agent automatically (${err?.message ?? err}); checking the app...`)
+  }
+
+  console.log('[bgos-pair] paired. Adding your agent...')
   let assistantId = null
   const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {

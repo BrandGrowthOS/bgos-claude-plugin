@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# bgos-agent — installer + always-on supervisor for a BGOS Claude Code agent.
+# bgos-agent, installer + always-on supervisor for a BGOS Claude Code agent.
 #
 # One command to set up (and optionally keep alive forever) a Claude Code agent
 # that talks to the BGOS app via the bgos channel plugin. It packages the recipe
@@ -8,8 +8,8 @@
 #
 #   • ensure the plugin is cloned + `bun install`ed
 #   • write the agent's .mcp.json (BGOS creds) + a CLAUDE.md stub
-#   • (with --always-on) install a per-agent service — launchd on macOS,
-#     systemd --user on Linux — that launches the agent, auto-accepts the two
+#   • (with --always-on) install a per-agent service, launchd on macOS,
+#     systemd --user on Linux, that launches the agent, auto-accepts the two
 #     --dangerously-* prompts, and restarts it on crash / quit / logout / reboot,
 #     with crash-loop detection so a wedged agent is visible, not silently churning.
 #
@@ -18,6 +18,7 @@
 # (bun, claude, git, expect).
 #
 # Usage:
+#   bgos-agent pair <CODE> [--backend <url>]   (recommended: no raw API key)
 #   bgos-agent install --assistant <id> [--key <k> --user <u>] [--always-on] [opts]
 #   bgos-agent status   [--assistant <id>]
 #   bgos-agent start | stop | restart | logs | uninstall --assistant <id>
@@ -95,14 +96,14 @@ cmd_install() {
   valid_bool "$auto"       || die "--auto-approve must be 'true' or 'false'"
 
   info "Preflight"
-  command -v git    >/dev/null 2>&1 || die "git not found — install it first"
-  command -v bun    >/dev/null 2>&1 || die "bun not found — install from https://bun.sh"
-  command -v claude >/dev/null 2>&1 || die "claude not found — install Claude Code (claude.ai/code)"
-  command -v expect >/dev/null 2>&1 || die "expect not found — macOS ships it; on Linux: apt install expect"
+  command -v git    >/dev/null 2>&1 || die "git not found, install it first"
+  command -v bun    >/dev/null 2>&1 || die "bun not found, install from https://bun.sh"
+  command -v claude >/dev/null 2>&1 || die "claude not found, install Claude Code (claude.ai/code)"
+  command -v expect >/dev/null 2>&1 || die "expect not found, macOS ships it; on Linux: apt install expect"
   if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     warn "ANTHROPIC_API_KEY is set in your shell. The plugin needs a Claude *subscription*"
     warn "login (Pro/Max/Team), not API-key auth, or inbound messages are silently dropped."
-    warn "The service runs with a clean env so it won't inherit this — but 'claude /status'"
+    warn "The service runs with a clean env so it won't inherit this, but 'claude /status'"
     warn "must show 'Claude subscription'."
   fi
   ok "git, bun, claude, expect present"
@@ -124,7 +125,7 @@ cmd_install() {
     [ -f "$mcp" ] && cp "$mcp" "$mcp.bak" && warn "backed up existing .mcp.json → $mcp.bak"
     write_mcp_json "$mcp" "$backend" "$API_KEY" "$USER_ID" "$ASSISTANT_ID" "$auto" "${OPENAI_VOICE_KEY:-}"
     bun -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$mcp" >/dev/null 2>&1 \
-      || die "generated .mcp.json is not valid JSON — check your --key/--user/--backend for special characters"
+      || die "generated .mcp.json is not valid JSON, check your --key/--user/--backend for special characters"
     ok "wrote $mcp"
   elif [ ! -f "$mcp" ]; then
     die "no .mcp.json in $workdir and no creds given. Pass --key <api-key> --user <user-id> (or --dir <existing-project>)."
@@ -133,7 +134,7 @@ cmd_install() {
   fi
   if [ ! -f "$workdir/CLAUDE.md" ]; then
     write_claude_md_stub "$workdir/CLAUDE.md"
-    ok "wrote $workdir/CLAUDE.md (stub — see plugin README Step 5 for full peer rules)"
+    ok "wrote $workdir/CLAUDE.md (stub, see plugin README Step 5 for full peer rules)"
   fi
 
   if [ "${ALWAYS_ON:-}" != "1" ]; then
@@ -177,7 +178,7 @@ write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto [$7 openai-
     const e = process.env;
     const env = { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
                   BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO };
-    // Optional: enables live voice calls (Talk button) — see README "Voice Calls".
+    // Optional: enables live voice calls (Talk button), see README "Voice Calls".
     if (e.BGOS_OAI) env.BGOS_OPENAI_API_KEY = e.BGOS_OAI;
     const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_SERVER], env } } };
     process.stdout.write(JSON.stringify(cfg, null, 2) + "\n");
@@ -191,7 +192,7 @@ write_claude_md_stub() { # $1 path
 You are connected to the BGOS chat app via the `bgos` MCP plugin. Messages from
 the user (and other agents) arrive as `<channel source="bgos">` events.
 
-- Always answer the user through the `reply` tool — plain terminal output never
+- Always answer the user through the `reply` tool, plain terminal output never
   reaches their chat.
 - For peer-agent messages (meta carries `peer_conversation_id` / `turn_state`),
   use `send_to_peer`, not `reply`.
@@ -252,7 +253,7 @@ EXP
 # run.sh: portable service entry point. Logs to agent.log, detects a crash-loop
 # (claude failing to start) and backs off + surfaces it, then runs the agent.
 # The OS service (launchd KeepAlive / systemd Restart=always) relaunches this on
-# exit — that is the always-on restart; run.sh just adds visibility + backoff.
+# exit, that is the always-on restart; run.sh just adds visibility + backoff.
 write_run_sh() { # $1 outpath $2 statedir $3 expectfile $4 expect_bin
   cat > "$1" <<SH
 #!/usr/bin/env bash
@@ -271,7 +272,7 @@ others_in_workdir() {
   local pid cwd
   # Match the basename so both a bare-name launch (comm=claude) and an absolute-
   # path launch (comm=/path/claude, used by this supervisor) are caught. NOTE: a
-  # node-hosted claude (comm=node) isn't detected — native + path installs are.
+  # node-hosted claude (comm=node) isn't detected, native + path installs are.
   for pid in \$(ps -axww -o pid=,comm= | awk '{n=\$2; sub(/.*\//,"",n); if(n=="claude") print \$1}'); do
     if [ "\$(uname -s)" = "Darwin" ]; then
       cwd="\$(lsof -a -d cwd -p "\$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
@@ -294,7 +295,7 @@ if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
 echo "\$fails" > "\$sd/failcount"
 if [ "\$fails" -ge 3 ]; then
   echo "[\$(ts)] WEDGED: agent exited after \${dur}s, \$fails times in a row."
-  echo "[\$(ts)]   Likely auth — run 'claude /status' (must say 'Claude subscription') — or a bad .mcp.json."
+  echo "[\$(ts)]   Likely auth, run 'claude /status' (must say 'Claude subscription'), or a bad .mcp.json."
   sleep 60
 fi
 SH
@@ -324,7 +325,7 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path
   x_wd="$(xml_escape "$workdir")"; x_sd="$(xml_escape "$statedir")"
   x_path="$(xml_escape "$path")";  x_home="$(xml_escape "$HOME")"
   # USER/LOGNAME so a headless Claude can find its Keychain login (keyed by
-  # username) — without them it falls to a "Not logged in" wall and never serves.
+  # username), without them it falls to a "Not logged in" wall and never serves.
   x_user="$(xml_escape "$(id -un)")"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$plist" <<PLIST
@@ -372,7 +373,7 @@ install_systemd() { # $1 id $2 workdir $3 statedir $4 path
   # StartLimitIntervalSec=0 → never give up restarting (matches launchd KeepAlive);
   # crash-loop visibility comes from run.sh, not from systemd marking it failed.
   # Logs go to $statedir/agent.log (run.sh redirects); journal captures the rest
-  # (append: is avoided — it needs systemd v240+, breaking Ubuntu 18.04).
+  # (append: is avoided, it needs systemd v240+, breaking Ubuntu 18.04).
   cat > "$unitfile" <<UNIT
 [Unit]
 Description=BGOS Claude Code agent $id
@@ -402,7 +403,7 @@ UNIT
 
 say_launch_hint() { # $1 workdir $2 channel
   echo
-  ok "Config ready (no supervisor — foreground mode)."
+  ok "Config ready (no supervisor, foreground mode)."
   printf '  Run it with:\n    cd %s\n    claude --dangerously-skip-permissions --dangerously-load-development-channels %s\n' "$1" "$2"
   printf '  Re-run with %s--always-on%s to keep it running + survive reboot.\n' "$B" "$Z"
 }
@@ -429,7 +430,7 @@ cmd_status() {
         # Columns: PID  LAST-EXIT  LABEL. Warn when not running + last exit nonzero.
         launchctl list 2>/dev/null | awk -v l="$label" '$3==l {
           print "  pid="$1"  last-exit="$2;
-          if ($1=="-" && $2!="0") print "  ! not running and last exit was nonzero — check logs"
+          if ($1=="-" && $2!="0") print "  ! not running and last exit was nonzero, check logs"
         }'
       else warn "$label is not loaded (install with: bgos-agent install --assistant $ASSISTANT_ID --always-on)"; fi
       ;;
@@ -453,7 +454,7 @@ cmd_start() {
   case "$OS" in
     Darwin)
       local plist; plist="$(plist_for "$ASSISTANT_ID")"
-      [ -f "$plist" ] || die "not installed — run: bgos-agent install --assistant $ASSISTANT_ID --always-on"
+      [ -f "$plist" ] || die "not installed, run: bgos-agent install --assistant $ASSISTANT_ID --always-on"
       launchd_reload "$plist" "$(label_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(label_for "$ASSISTANT_ID")";;
     Linux)  ensure_user_bus; systemctl --user start "$(unit_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(unit_for "$ASSISTANT_ID")";;
   esac
@@ -481,7 +482,7 @@ cmd_uninstall() {
   require_id
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
   # Remove the manifest + state FIRST, so the agent reads as uninstalled even if
-  # the stop/bootout below kills this very process — which happens when the
+  # the stop/bootout below kills this very process, which happens when the
   # toggle is flipped off from INSIDE the supervised session (the teardown is a
   # descendant of the job). Workspace + .mcp.json are a sibling dir, never touched.
   case "$OS" in
@@ -491,7 +492,7 @@ cmd_uninstall() {
   [ -d "$statedir" ] && rm -rf "$statedir"
   ok "removed supervisor manifest + state for agent $ASSISTANT_ID"
   # Now stop the running job by label/unit (works even though the file is gone).
-  # This may terminate this process tree — fine, the cleanup above already ran.
+  # This may terminate this process tree, fine, the cleanup above already ran.
   case "$OS" in
     Darwin)
       launchctl bootout "gui/$(id -u)/$(label_for "$ASSISTANT_ID")" >/dev/null 2>&1 || true ;;
@@ -524,9 +525,10 @@ cmd_link() {
 
 usage() {
   cat <<USAGE
-${B}bgos-agent${Z} v$VERSION — set up + keep alive a BGOS Claude Code agent.
+${B}bgos-agent${Z} v$VERSION, set up + keep alive a BGOS Claude Code agent.
 
 ${B}Commands${Z}
+  pair      <CODE> [--backend <url>]  pair with a one time code from the HOAI app (recommended)
   install   --assistant <id> [opts]   set up the agent (and supervisor with --always-on)
   status    [--assistant <id>]        show service state (+ recent log); no id = list all
   start | stop | restart  --assistant <id>
@@ -539,7 +541,7 @@ ${B}Commands${Z}
 ${B}install options${Z}
   --assistant <id>     (required) BGOS assistant id
   --key <api-key>      BGOS_API_KEY        --user <user-id>   BGOS_USER_ID
-  --openai-key <key>   BGOS_OPENAI_API_KEY — enables live voice calls (Talk button)
+  --openai-key <key>   BGOS_OPENAI_API_KEY, enables live voice calls (Talk button)
   --backend <url>      default $DEFAULT_BACKEND
   --dir <path>         working dir (default ~/.bgos-agent/<id>-workspace)
   --always-on          install the auto-restart + survive-reboot supervisor
@@ -549,10 +551,22 @@ ${B}install options${Z}
   --no-clone           assume the plugin is already at \$BGOS_PLUGIN_DIR
 
 ${B}examples${Z}
+  bgos-agent pair BGOS-7F3A-2K
   bgos-agent install --assistant 42 --key sk_... --user user_abc --always-on
   bgos-agent status --assistant 42
   bgos-agent uninstall --assistant 42
 USAGE
+}
+
+# =============================================================================
+# pair, exchange a one time code for a pairing token (no raw API key). Hands
+# off to the node installer bin/bgos-pair.mjs, which writes the pairing token to
+# ~/.bgos-agent/credentials.json (0600); server.ts reads it and sends
+# X-BGOS-Pairing. This is the recommended auth path; --key/--user is legacy.
+# =============================================================================
+cmd_pair() {
+  command -v node >/dev/null 2>&1 || die "node not found, install Node 18+ to pair"
+  exec node "$BIN_DIR/bgos-pair.mjs" "$@"
 }
 
 # =============================================================================
@@ -561,7 +575,14 @@ USAGE
 [ $# -ge 1 ] || { usage; exit 1; }
 SUB="$1"; shift || true
 
-# need_val <flag> <remaining-arg-count>  — guards "shift 2" from aborting under
+# `pair` takes a positional CODE (and optional --backend); hand the whole tail to
+# bgos-pair, which does its own arg parsing. Done before the flag loop below,
+# which only understands install-style --flags.
+if [ "$SUB" = "pair" ]; then
+  cmd_pair "$@"
+fi
+
+# need_val <flag> <remaining-arg-count>, guards "shift 2" from aborting under
 # set -e when a value-taking flag is the final token.
 need_val() { [ "$2" -ge 2 ] || die "$1 requires a value"; }
 

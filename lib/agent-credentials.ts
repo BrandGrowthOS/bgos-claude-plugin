@@ -71,10 +71,11 @@ export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null })
     base = {
       mode: 'pairing',
       source: 'pairing-file',
-      // env can override backendUrl for dev; else use the paired backend.
-      backendUrl: str(env.BGOS_BACKEND_URL || creds.backendUrl),
-      userId: str(env.BGOS_USER_ID || creds.userId),
-      assistantId: str(env.BGOS_ASSISTANT_ID || (creds.assistantId ?? '')),
+      // The paired values are authoritative; env is only a fallback (so an
+      // empty or unsubstituted userConfig var can never override the file).
+      backendUrl: str(creds.backendUrl || env.BGOS_BACKEND_URL),
+      userId: str(creds.userId || env.BGOS_USER_ID),
+      assistantId: str((creds.assistantId ?? '') || env.BGOS_ASSISTANT_ID),
       pairingToken: str(creds.pairingToken),
       apiKey: '',
     }

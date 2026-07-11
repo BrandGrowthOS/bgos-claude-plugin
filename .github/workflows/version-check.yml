@@ -1,0 +1,35 @@
+name: plugin-version-check
+
+# Pins .claude-plugin/plugin.json version to package.json version so a marketplace
+# publish can never ship a stale manifest again (REPORT bug 3). Also runs a light
+# manifest sanity check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  version-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: package.json vs plugin.json version parity
+        run: |
+          pkg=$(jq -r .version package.json)
+          man=$(jq -r .version .claude-plugin/plugin.json)
+          echo "package.json = $pkg"
+          echo "plugin.json  = $man"
+          if [ "$pkg" != "$man" ]; then
+            echo "::error file=.claude-plugin/plugin.json::version mismatch: package.json=$pkg plugin.json=$man. Bump both together."
+            exit 1
+          fi
+          echo "versions match ($pkg)"
+
+      - name: plugin.json is valid JSON and names the channel server
+        run: |
+          jq -e '.name and .version and (.channels | length > 0) and (.channels[0].server as $s | .mcpServers[$s])' \
+            .claude-plugin/plugin.json > /dev/null \
+            || { echo "::error file=.claude-plugin/plugin.json::channels[0].server must match an mcpServers key"; exit 1; }
+          echo "manifest ok: channels[0].server resolves to an mcpServers entry"

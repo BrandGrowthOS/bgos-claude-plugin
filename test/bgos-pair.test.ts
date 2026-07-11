@@ -111,7 +111,7 @@ test('classifyExchangeResponse: RFC 8628 200-status bodies map to poll states', 
 test('classifyExchangeResponse: error status yields error with a message', () => {
   const r = classifyExchangeResponse(400, { message: 'Invalid code' })
   assert.equal(r.kind, 'error')
-  assert.match(r.message, /Invalid code/)
+  assert.match(String(r.message), /Invalid code/)
 })
 
 test('pickAssistantId prefers the claude route, else the first, null when empty', () => {
