@@ -1565,6 +1565,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'does not fit the topic headline.',
           },
           when: {
+            type: ['string', 'object'],
             description:
               'When to fire. ONE of: an ISO datetime string for a one-shot ' +
               '(e.g. "2026-07-10T09:00:00+04:00", convert the user\'s words ' +

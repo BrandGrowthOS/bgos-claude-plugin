@@ -413,3 +413,30 @@ test('cancel: rejects empty, missing, and non-finite ids', () => {
     assert.equal(result.ok, false, `expected rejection for ${JSON.stringify(bad)}`)
   }
 })
+
+// ── regression: a recurrence/everyHours OBJECT serialized to a JSON string by
+// the MCP client is recovered, not run through the one-shot ISO validator
+// (David 873 repro, 2026-07-11: object forms rejected as "not a valid ISO").
+test('when: a stringified recurrence object is recovered to recurrence', () => {
+  const body = okBody(
+    base({ when: JSON.stringify({ freq: 'daily', atMinute: 480, tz: 'Asia/Dubai' }) }),
+  )
+  assert.equal((body as any).fireAt, undefined)
+  assert.deepEqual((body as any).recurrence, { freq: 'daily', atMinute: 480, tz: 'Asia/Dubai' })
+})
+
+test('when: a stringified { everyHours } object is recovered to everyHours', () => {
+  const body = okBody(base({ when: JSON.stringify({ everyHours: 24 }) }))
+  assert.equal((body as any).everyHours, 24)
+  assert.equal((body as any).recurrence, undefined)
+})
+
+test('when: a real ISO string is still treated as a one-shot (not object-parsed)', () => {
+  const body = okBody(base({ when: WAKE_AT }))
+  assert.equal((body as any).fireAt, WAKE_AT)
+})
+
+test('when: a non-JSON braceless string still errors as a bad ISO datetime', () => {
+  const err = errOf(base({ when: 'tomorrow 9am' }))
+  assert.match(err, /ISO/)
+})

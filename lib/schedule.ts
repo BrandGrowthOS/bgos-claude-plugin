@@ -190,7 +190,24 @@ const BAD_ISO_ERROR = (label: string, value: unknown) =>
  * exact wire shape.
  */
 export function buildScheduleCreateBody(input: ScheduleCreateInput): ScheduleBuildResult {
-  const { kind, topic, instruction, when, chatId } = input
+  const { kind, topic, instruction, chatId } = input
+  // Recover a recurrence / everyHours OBJECT that some MCP clients serialize
+  // to a JSON string before it reaches this tool (the input schema was
+  // type-less, so the object round-tripped as text and only ever hit the
+  // one-shot ISO validator). A string that parses to a plain object is the
+  // object form, not a one-shot datetime.
+  let when = input.when
+  if (typeof when === 'string') {
+    const t = when.trim()
+    if (t.startsWith('{') && t.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(t)
+        if (isPlainObject(parsed)) when = parsed
+      } catch {
+        // not JSON, validate as an ISO datetime string below
+      }
+    }
+  }
 
   if (typeof kind !== 'string' || !(SCHEDULE_KINDS as readonly string[]).includes(kind)) {
     return {
