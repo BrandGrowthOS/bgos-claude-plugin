@@ -49,6 +49,10 @@ import {
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
+  pickCapabilities,
+  type ServedCapabilities,
+} from './lib/capabilities.js'
+import {
   ExportPackHandler,
   normalizeExportPack,
   normalizeExportPackManifest,
@@ -188,6 +192,28 @@ async function bgosGet(path: string): Promise<unknown> {
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
 // subscription, the Claude Max plan: tokens only, never dollars).
 const usageTracker = new UsageTracker(process.cwd())
+
+// ── Capability bootstrap (served canon) ──────────────────────────────────────
+// Fetched once at connect and cached; exposed to the agent via the
+// `bgos_capabilities` tool. Falls back to the bundled copy on any fetch error,
+// so the plugin never hard-fails when the endpoint is unreachable.
+let cachedCapabilities: ServedCapabilities | null = null
+
+async function loadServedCapabilities(): Promise<ServedCapabilities> {
+  if (cachedCapabilities) return cachedCapabilities
+  let data: unknown = null
+  try {
+    data = await bgosGet('integrations/capabilities?channel=claude')
+  } catch (err) {
+    log(`Capability canon fetch failed (${err instanceof Error ? err.message : String(err)}); using bundled fallback`)
+  }
+  cachedCapabilities = pickCapabilities(data)
+  log(
+    `Capability canon ready: v${cachedCapabilities.version} ` +
+      `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
+  )
+  return cachedCapabilities
+}
 
 async function bgosPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
@@ -517,6 +543,10 @@ const mcp = new Server(
     instructions: [
       'Messages from the BGOS chat app arrive as <channel source="bgos"> events.',
       'Each message includes chat_id and message_id attributes.',
+      '',
+      'At the START of a session, call the `bgos_capabilities` tool to load the',
+      'authoritative, always-current HOAI capability guide. It is fetched live',
+      'from the backend at connect and supersedes the capability summary below.',
       '',
       'When you receive a message, process it using your full capabilities, ',
       'you can use Bash, Read, Write, Edit, Grep, Glob, WebSearch, and all',
@@ -1027,6 +1057,21 @@ async function waitForVerdict(
 
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
+    {
+      name: 'bgos_capabilities',
+      description:
+        'Load the authoritative, always-current HOAI (BGOS) agent capability ' +
+        'guide. It is fetched live from the backend at connect and tells you ' +
+        'exactly what you can do through this channel: message formatting, ' +
+        'inline buttons, files, ask_user_input, approvals, peers, voice, status, ' +
+        'and more. Call this once at the start of a session (and any time you are ' +
+        'unsure what HOAI supports); the returned guide supersedes any older ' +
+        'summary in these instructions. Falls back to a bundled copy offline.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
     {
       name: 'reply',
       description:
@@ -1758,6 +1803,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const rawArgs = req.params.arguments as Record<string, unknown>
 
   switch (req.params.name) {
+    case 'bgos_capabilities': {
+      const caps = await loadServedCapabilities()
+      return { content: [{ type: 'text', text: caps.text }] }
+    }
+
     case 'reply': {
       const chat_id = rawArgs.chat_id as string | undefined
       const text = (rawArgs.text as string | undefined) ?? ''
@@ -4944,6 +4994,12 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
   log('MCP server connected over stdio')
+
+  // Step 1.5: Warm the served capability canon (capability bootstrap) so the
+  // `bgos_capabilities` tool returns instantly and the fetch (or the bundled
+  // fallback) is logged at startup. Non-fatal: loadServedCapabilities never
+  // throws (it falls back to the bundled copy on any error).
+  await loadServedCapabilities()
 
   // Step 2: Discover and baseline chats
   await discoverChats()
