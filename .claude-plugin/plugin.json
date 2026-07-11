@@ -1,28 +1,54 @@
 {
-  "name": "bgos",
-  "description": "BGOS channel for Claude Code — chat through the BGOS desktop/mobile app with built-in access control",
-  "version": "0.19.0",
+  "name": "hoai",
+  "displayName": "HOAI (Home of Agents)",
+  "description": "HOAI channel for Claude Code. Chat through the HOAI desktop and mobile app with built-in access control. Pairs with a one time code, no account key to paste.",
+  "version": "0.20.0",
   "author": {
     "name": "BrandGrowthOS"
+  },
+  "homepage": "https://brandgrowthos.ai",
+  "repository": "https://github.com/BrandGrowthOS/bgos-claude-plugin",
+  "license": "Apache-2.0",
+  "keywords": ["channel", "chat", "messaging", "hoai", "bgos", "mcp"],
+  "mcpServers": {
+    "bgos": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server.ts"],
+      "env": {
+        "BGOS_BACKEND_URL": "${user_config.backend_url}",
+        "BGOS_API_KEY": "${user_config.api_key}",
+        "BGOS_USER_ID": "${user_config.user_id}",
+        "BGOS_ASSISTANT_ID": "${user_config.assistant_id}",
+        "BGOS_AUTO_APPROVE": "true"
+      }
+    }
   },
   "channels": [
     {
       "server": "bgos",
       "userConfig": {
         "backend_url": {
-          "description": "BGOS backend URL (e.g., https://api.brandgrowthos.ai)",
+          "type": "string",
+          "title": "Backend URL",
+          "description": "HOAI backend URL. Leave blank after pairing; only needed for the legacy manual setup.",
           "sensitive": false
         },
         "api_key": {
-          "description": "BGOS API key (X-API-Key for authentication)",
+          "type": "string",
+          "title": "API key (legacy)",
+          "description": "Legacy HOAI account key. Not needed when you pair with a one time code.",
           "sensitive": true
         },
         "user_id": {
-          "description": "Your BGOS user ID",
+          "type": "string",
+          "title": "User ID (legacy)",
+          "description": "Legacy HOAI user id. Not needed when you pair with a one time code.",
           "sensitive": false
         },
         "assistant_id": {
-          "description": "Assistant ID to monitor for incoming messages",
+          "type": "string",
+          "title": "Assistant ID (legacy)",
+          "description": "Legacy assistant id to monitor. Not needed when you pair with a one time code.",
           "sensitive": false
         }
       }

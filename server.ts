@@ -69,13 +69,36 @@ import {
   formatMissionSummary,
   type MissionSnapshot,
 } from './lib/missions.js'
+import {
+  resolveAuth,
+  authHeaders,
+  wsAuthOptions,
+  missingCredsMessage,
+  loadCredentialsFile,
+  type ResolvedAuth,
+} from './lib/agent-credentials.js'
+import { homedir } from 'node:os'
+import { join as joinPath } from 'node:path'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-const BACKEND_URL = process.env.BGOS_BACKEND_URL || ''
-const API_KEY = process.env.BGOS_API_KEY || ''
-const USER_ID = process.env.BGOS_USER_ID || ''
-const ASSISTANT_ID = process.env.BGOS_ASSISTANT_ID || ''
+// Auth resolves to one of two modes (see lib/agent-credentials.ts):
+//   pairing  -> X-BGOS-Pairing, from ~/.bgos-agent/credentials.json (bgos-pair)
+//              or BGOS_PAIRING_TOKEN env.
+//   apikey   -> X-API-Key, from BGOS_API_KEY env (LEGACY, kept for Echo and
+//              existing installs through the deprecation window).
+// Every outbound call uses authHeaders(AUTH); the WS uses wsAuthOptions(AUTH).
+const CREDENTIALS_PATH = joinPath(homedir(), '.bgos-agent', 'credentials.json')
+const AUTH: ResolvedAuth = resolveAuth({
+  env: process.env,
+  creds: loadCredentialsFile(CREDENTIALS_PATH),
+})
+const BACKEND_URL = AUTH.backendUrl
+// API_KEY stays defined for the legacy path and log lines; it is '' in pairing
+// mode, where authHeaders(AUTH) sends X-BGOS-Pairing instead.
+const API_KEY = AUTH.apiKey
+const USER_ID = AUTH.userId
+const ASSISTANT_ID = AUTH.assistantId
 const POLL_INTERVAL_MS = Number(process.env.BGOS_POLL_INTERVAL_MS) || 2000
 const AUTO_APPROVE = process.env.BGOS_AUTO_APPROVE === 'true'
 // Confirm gate belt (Iris G5): when on, voice_task_dispatch events lacking
@@ -93,10 +116,8 @@ const VOICE_MODEL = process.env.BGOS_VOICE_MODEL || 'gpt-realtime-2.1'
 const VOICE_VOICE = process.env.BGOS_VOICE_VOICE || 'marin'
 const VOICE_PERSONA = process.env.BGOS_VOICE_PERSONA || ''
 
-if (!BACKEND_URL || !API_KEY || !USER_ID || !ASSISTANT_ID) {
-  process.stderr.write(
-    '[bgos] Missing required config. Set BGOS_BACKEND_URL, BGOS_API_KEY, BGOS_USER_ID, BGOS_ASSISTANT_ID.\n',
-  )
+if (!AUTH.complete) {
+  process.stderr.write(`[bgos] ${missingCredsMessage(AUTH)}\n`)
   process.exit(1)
 }
 
@@ -151,7 +172,7 @@ void DOC_MIMES
 async function bgosGet(path: string): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const response = await fetch(url, {
-    headers: { 'X-API-Key': API_KEY },
+    headers: { ...authHeaders(AUTH) },
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
@@ -172,7 +193,7 @@ async function bgosPost(path: string, body: Record<string, unknown>): Promise<un
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -186,7 +207,7 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const response = await fetch(url, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -220,7 +241,7 @@ async function bgosPut(path: string, body: Record<string, unknown>): Promise<unk
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const response = await fetch(url, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -241,7 +262,7 @@ async function bgosPeerGet(path: string): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const response = await fetch(url, {
     headers: {
-      'X-API-Key': API_KEY,
+      ...authHeaders(AUTH),
       'X-Caller-Assistant-Id': ASSISTANT_ID,
     },
   })
@@ -258,7 +279,7 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>): Promis
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-API-Key': API_KEY,
+      ...authHeaders(AUTH),
       'X-Caller-Assistant-Id': ASSISTANT_ID,
     },
     body: JSON.stringify(body),
@@ -275,7 +296,7 @@ async function bgosPeerDelete(path: string): Promise<unknown> {
   const response = await fetch(url, {
     method: 'DELETE',
     headers: {
-      'X-API-Key': API_KEY,
+      ...authHeaders(AUTH),
       'X-Caller-Assistant-Id': ASSISTANT_ID,
     },
   })
@@ -2468,7 +2489,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const url = `${API_BASE}/voice/outbound-call`
         const response = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': API_KEY },
+          headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
           body: JSON.stringify(body),
         })
         const raw = await response.text().catch(() => '')
@@ -3925,13 +3946,11 @@ function connectWebsocket(): void {
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 30000,
-    // Use Socket.IO `auth` so the API key never enters the URL or any
-    // intermediate proxy access log. Backend reads from
-    // client.handshake.auth and falls back to query for compatibility.
-    auth: {
-      apiKey: API_KEY,
-      assistantId: ASSISTANT_ID,
-    },
+    // Auth rides in the handshake, never in the URL path or a proxy log:
+    // pairing mode sends the token in the query (the backend gateway reads
+    // pairing tokens only from client.handshake.query.pairingToken), and the
+    // legacy path sends apiKey + assistantId in client.handshake.auth.
+    ...wsAuthOptions(AUTH),
   })
 
   realtimeSocket.on('connect', () => {
