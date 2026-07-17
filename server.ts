@@ -95,10 +95,18 @@ import {
   advanceCursor,
   fastScopeChatIds,
   planPollCycle,
+  selectFirstPollBacklogIds,
+  sentDateToMs,
   HEALTHY_MULTIPLIER,
   WS_DOWN_MULTIPLIER,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
+  FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
+import {
+  CursorStore,
+  resolveCursorFilePath,
+  CURSOR_FLUSH_INTERVAL_MS,
+} from './lib/cursor-store.js'
 import { homedir } from 'node:os'
 import { join as joinPath } from 'node:path'
 
@@ -1182,7 +1190,7 @@ async function waitForVerdict(
         if (!choice) continue
 
         // Update last seen so we don't re-process this message
-        chatLastSeen.set(chatId, Math.max(chatLastSeen.get(chatId) ?? 0, msg.message.id))
+        advanceChatCursor(chatId, msg.message.id)
 
         return choice
       }
@@ -3106,7 +3114,49 @@ interface ChatHistoryResponse {
   messages: ChatMessage[]
 }
 
-const chatLastSeen = new Map<string, number>()
+// ── Poll cursor persistence (restart-replay fix, Dutify aijvk1h8LM) ──────────
+// chatLastSeen used to be a plain in-memory Map, so every daemon restart
+// reset it and the first poll replayed dormant chats' trailing unanswered
+// messages as [backlog] (one observed restart delivered ~40 June-era
+// messages). The map is now loaded from a per-assistant on-disk store at
+// boot and flushed back on a coalescing timer + at exit (see
+// lib/cursor-store.ts). All writes go through advanceChatCursor below so
+// every advance marks the store dirty.
+const DAEMON_START_MS = Date.now()
+const cursorStore = new CursorStore(
+  resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() }),
+)
+const cursorBoot = cursorStore.load()
+const chatLastSeen = cursorBoot.cursors
+
+// First-run gate: no cursor file at all (genuine first install, or an
+// unreadable store) means EVERY chat looks new, and dormant history must not
+// be delivered. Only messages sent within FIRST_RUN_RECENT_WINDOW_MS before
+// daemon start qualify for first-poll backlog then. With a cursor file
+// present this is null and a cursor-less chat (genuinely new to us) keeps
+// the old ungated first-poll behavior.
+const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
+  ? null
+  : DAEMON_START_MS - FIRST_RUN_RECENT_WINDOW_MS
+
+// Chats fully processed by pollChat at least once since THIS process started.
+// A chat's first successful poll after boot is the one that may carry
+// messages that arrived while the daemon was down; those keep the [backlog]
+// framing even though the persisted cursor routes them through the delta
+// branch.
+const chatsPolledSinceBoot = new Set<string>()
+
+/**
+ * The single write path for chatLastSeen: monotonic (never rewinds) and
+ * marks the persistent store dirty so the flush timer picks the advance up.
+ */
+function advanceChatCursor(chatId: string, id: number): void {
+  if (!Number.isFinite(id)) return
+  const seen = chatLastSeen.get(chatId) ?? 0
+  if (id <= seen) return
+  chatLastSeen.set(chatId, id)
+  cursorStore.markDirty()
+}
 
 // ── Reply-overdue tracking ──────────────────────────────────────────────────
 // Per-chat: most recent unanswered inbound user/peer message. If the agent
@@ -3580,11 +3630,17 @@ async function pollChat(chatId: string): Promise<void> {
   // unanswered inline buttons also stays FULL: a click UPDATES an existing
   // row (answeredAt flips) without inserting a new one, so a delta window
   // would never show the transition the button/permission paths watch for.
+  // A chat's first poll after boot forces a FULL fetch even when a persisted
+  // cursor exists: the unanswered-inline-button baseline is in-memory and
+  // lost on restart, and a delta window cannot contain the older assistant
+  // rows that still have open buttons (see buildChatPollRequest).
+  const isBootPoll = !chatsPolledSinceBoot.has(chatId)
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
     lastSeen: chatLastSeen.get(chatId) ?? 0,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
+    forceFull: isBootPoll,
   })
   try {
     const raw = await bgosGet(req.path, { cacheKey: req.cacheKey })
@@ -3606,48 +3662,58 @@ async function pollChat(chatId: string): Promise<void> {
     let newUserMessages: ChatMessage[]
     let isBacklog = false
     if (lastSeen === 0) {
-      // First poll, we have no persisted cursor, so we need to forward
-      // user messages that haven't been answered yet WITHOUT over-forwarding
-      // historic ones.
+      // First poll for a chat with no cursor: forward user messages that
+      // haven't been answered yet WITHOUT over-forwarding historic ones.
       //
-      // The old heuristic (forward user messages newer than the LATEST
-      // assistant message) silently dropped messages when the latest
-      // assistant message was a PROACTIVE send (cron check-in, external
-      // trigger) rather than a reply, prior user messages looked "already
-      // answered" when they weren't.
+      // The walk-back heuristic lives in selectFirstPollBacklogIds
+      // (lib/poll-core.ts, extracted verbatim so it is testable): collect
+      // trailing user/system messages, stopping only at a real
+      // user->assistant REPLY (an assistant message whose immediately
+      // preceding message is a user message). Proactive assistant messages
+      // (cron check-in, external trigger) do NOT terminate the scan. Capped
+      // to the last 10 to avoid dumping half the chat on first boot.
+      // System messages (capability #14) are inbound machine traffic the
+      // agent must process exactly like a user message, but a wake card
+      // whose body has not landed yet (empty write-1 state) is skipped, the
+      // cursor cap below parks just under it so a later poll re-reads it
+      // once the body fills.
       //
-      // New rule: walk backward and collect trailing user messages, only
-      // stopping at a real user→assistant REPLY (an assistant message
-      // whose immediately preceding message is a user message). Proactive
-      // assistant messages (preceded by another assistant or by nothing)
-      // do NOT terminate the scan. Capped to the last 10 to avoid dumping
-      // half the chat on first boot.
-      const collected: ChatMessage[] = []
+      // FIRST_POLL_RECENT_CUTOFF_MS is non-null only when NO cursor file
+      // existed at boot (genuine first install): dormant history must not be
+      // delivered then, so only messages sent within the recent window
+      // qualify. The cursor advance below still initializes the chat to its
+      // tip either way.
       const MAX_FIRST_POLL_FORWARD = 10
-      for (let i = ordered.length - 1; i >= 0; i--) {
-        const m = ordered[i]!
-        // System messages (sender='system', capability #14) are inbound
-        // machine traffic the agent must process, exactly like a user message.
-        // But a wake card whose body has not landed yet (empty write-1 state)
-        // is skipped here, the cursor cap below parks just under it so a later
-        // poll re-reads it once the body fills.
-        if (isPendingEmptySystem(m)) continue
-        if (m.message.sender === 'user' || m.message.sender === 'system') {
-          collected.push(m)
-          if (collected.length >= MAX_FIRST_POLL_FORWARD) break
-          continue
-        }
-        if (m.message.sender === 'assistant') {
-          const prev = i > 0 ? ordered[i - 1]! : null
-          if (prev && prev.message.sender === 'user') {
-            // Real reply, everything older was handled. Stop here.
-            break
-          }
-          // Proactive assistant message, skip, keep scanning backward.
-          continue
+      const firstPollRows = ordered.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        pendingEmptySystem: isPendingEmptySystem(m),
+        sentDateMs: sentDateToMs(m.message.sentDate),
+      }))
+      const backlogIds = new Set(
+        selectFirstPollBacklogIds({
+          rows: firstPollRows,
+          maxForward: MAX_FIRST_POLL_FORWARD,
+          recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS,
+        }),
+      )
+      // Observability for the gate: a dormant message withheld on first
+      // install is invisible by design, so count what the ungated selection
+      // WOULD have delivered and log the difference.
+      if (FIRST_POLL_RECENT_CUTOFF_MS !== null) {
+        const ungated = selectFirstPollBacklogIds({
+          rows: firstPollRows,
+          maxForward: MAX_FIRST_POLL_FORWARD,
+          recentCutoffMs: null,
+        })
+        const withheld = ungated.length - backlogIds.size
+        if (withheld > 0) {
+          log(
+            `First-run gate: withheld ${withheld} dormant message(s) in chat ${chatId}`,
+          )
         }
       }
-      newUserMessages = collected.reverse()
+      newUserMessages = ordered.filter((m) => backlogIds.has(m.message.id))
       // Mark these as a backlog so the notification framing makes it
       // explicit to Claude that these came in WHILE OFFLINE. Without
       // this, Claude can't tell a fresh user message apart from a
@@ -3662,25 +3728,21 @@ async function pollChat(chatId: string): Promise<void> {
           // body has not landed so there is nothing to forward yet.
           !isPendingEmptySystem(m),
       )
+      // With a persisted cursor, messages that arrived while the daemon was
+      // down surface HERE (the delta branch) on the chat's first poll after
+      // boot. Keep the [backlog] framing for those: framed iff this is the
+      // boot poll AND something in the window was sent before the daemon
+      // started. Live delta traffic later in the run stays unframed, and a
+      // chat first polled mid-run (discovered via WS) carries only post-boot
+      // messages, so it stays unframed too. Keep the predicate in lockstep
+      // with test/first-poll-gate.test.ts (deltaIsBacklog mirror).
+      isBacklog =
+        isBootPoll &&
+        newUserMessages.some((m) => {
+          const t = sentDateToMs(m.message.sentDate)
+          return t !== null && t < DAEMON_START_MS
+        })
     }
-
-    // Advance the cursor, but never step OVER a system wake card whose body has
-    // not landed yet. If any pending-empty system row is present we park the
-    // cursor just below the lowest such id so a later poll re-reads that row
-    // once its body is filled (write-2 reuses the same id, so jumping to maxId
-    // would exclude the fill forever). Never moves the cursor backward.
-    // Delta-cursor-aware (P1b): the next poll's afterId equals this parked
-    // cursor, so the deferred row stays INSIDE every subsequent delta window
-    // until the body lands, and the body-fill changes the response bytes so
-    // the ETag layer cannot 304 past it. The scheduler wake-card body-fill
-    // therefore still reaches the plugin via poll.
-    const pendingIds = ordered
-      .filter(isPendingEmptySystem)
-      .map((m) => m.message.id)
-    chatLastSeen.set(
-      chatId,
-      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
-    )
 
     // If an assistant message has already been written that supersedes our
     // pending unanswered inbound (covers replies sent via non-Claude paths
@@ -3958,6 +4020,49 @@ async function pollChat(chatId: string): Promise<void> {
       // creates false positives on plugin restart.
       if (!isBacklog) recordInbound(chatId, msg.message.id)
     }
+
+    // Advance the cursor only now, AFTER the batch above was handed to the
+    // notification transport: the cursor is persisted, so advancing before
+    // dispatch would make a crash mid-delivery skip the batch forever
+    // (pre-persistence, a restart replayed it). An exception above lands in
+    // the catch with the cursor untouched, so the next poll redelivers.
+    //
+    // Never step OVER a system wake card whose body has not landed yet. If
+    // any pending-empty system row is present we park the cursor just below
+    // the lowest such id so a later poll re-reads that row once its body is
+    // filled (write-2 reuses the same id, so jumping to maxId would exclude
+    // the fill forever). Never moves the cursor backward. Delta-cursor-aware
+    // (P1b): the next poll's afterId equals this parked cursor, so the
+    // deferred row stays INSIDE every subsequent delta window until the body
+    // lands, and the body-fill changes the response bytes so the ETag layer
+    // cannot 304 past it. The scheduler wake-card body-fill therefore still
+    // reaches the plugin via poll.
+    //
+    // First-run gate exception: on a gated first poll, a pending-empty row
+    // AFFIRMATIVELY older than the recent window is an abandoned write-1
+    // whose body-fill never came. Parking under it would hold the cursor
+    // below the chat's dormant tail and route that tail through the ungated
+    // delta branch one poll later, defeating the gate. Abandoned rows do not
+    // park; rows of unknown age still do (could be a live scheduler race).
+    // Keep in lockstep with test/first-poll-gate.test.ts (parkedPendingIds).
+    const gatedFirstPoll = lastSeen === 0 && FIRST_POLL_RECENT_CUTOFF_MS !== null
+    const pendingIds = ordered
+      .filter(isPendingEmptySystem)
+      .filter((m) => {
+        if (!gatedFirstPoll) return true
+        const t = sentDateToMs(m.message.sentDate)
+        return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
+      })
+      .map((m) => m.message.id)
+    advanceChatCursor(
+      chatId,
+      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
+    )
+
+    // Only now (everything processed without throwing) does this chat's boot
+    // poll count as done; an error path retries as a boot poll so offline
+    // backlog framing is not lost to a transient failure.
+    chatsPolledSinceBoot.add(chatId)
   } catch {
     // Silent, network blips. Drop the ETag validator for this chat: it may
     // have been recorded before the failure, and the cursor did NOT advance,
@@ -4288,10 +4393,23 @@ function connectWebsocket(): void {
       // Also bump chatLastSeen so the subsequent poll cycle won't re-emit
       // this same message. Number(chatId) → string, matching the keying
       // pollChat uses.
+      //
+      // But NEVER jump a persisted cursor over a chat whose boot poll has
+      // not completed: messages that arrived while the daemon was down sit
+      // between the persisted cursor and this id, and advancing past them
+      // here would skip them forever (persistence removed the old accidental
+      // recovery where a restart replayed the tail). A cursor-less chat
+      // keeps the bump, which is what stops the first-poll heuristic from
+      // re-delivering this very message. Worst case of deferring the bump:
+      // the boot poll redelivers this one message with backlog framing, a
+      // duplicate, never a loss. Keep in lockstep with
+      // test/first-poll-gate.test.ts (wsCursorSafe mirror).
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
-        const seen = chatLastSeen.get(chatId) ?? 0
-        if (messageId > seen) chatLastSeen.set(chatId, messageId)
+        const wsCursorSafe =
+          chatsPolledSinceBoot.has(chatId) ||
+          (chatLastSeen.get(chatId) ?? 0) === 0
+        if (wsCursorSafe) advanceChatCursor(chatId, messageId)
         noteMonitoredChat(chatId)
       }
       // Capture any opaque session handle the backend minted for this inbound
@@ -5166,6 +5284,13 @@ async function main(): Promise<void> {
   log(`Require confirmed dispatch: ${REQUIRE_CONFIRMED_DISPATCH}`)
   log(`Log file: ${LOG_FILE}`)
 
+  log(
+    `Chat cursor store: ${cursorStore.filePath} ` +
+      (cursorBoot.fileExisted
+        ? `(loaded ${chatLastSeen.size} cursor(s))`
+        : '(first run, no cursor file; recent-window backlog gate active)'),
+  )
+
   // Step 1: Connect MCP transport FIRST
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
@@ -5181,6 +5306,29 @@ async function main(): Promise<void> {
   await discoverChats()
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
   await pollAllChats()
+
+  // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
+  // fix). The store was loaded synchronously at module init, before any
+  // poll; persistence deliberately starts only AFTER the boot sweep above
+  // completes. On a genuine first install, a partial sweep flushed to disk
+  // would make the NEXT boot see a cursor file and disarm the first-run
+  // gate for every chat the interrupted sweep never reached; until the
+  // sweep finishes, a kill leaves no file (or the previous one) and the
+  // next boot starts over with the gate intact. Writes coalesce behind the
+  // dirty flag: one flush per interval however many cursors advanced.
+  // Losing the last few seconds on a hard crash is fine (the poll filter
+  // dedups a short replay); the signal/exit hooks cover normal shutdowns.
+  cursorStore.flushIfDirty()
+  setInterval(() => cursorStore.flushIfDirty(), CURSOR_FLUSH_INTERVAL_MS).unref()
+  process.on('exit', () => {
+    cursorStore.flushIfDirty()
+  })
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+      cursorStore.flushIfDirty()
+      process.exit(signal === 'SIGINT' ? 130 : 143)
+    })
+  }
 
   // Step 3: Open the WS subscription. Failure here is non-fatal, polling
   // keeps the plugin functional even if the WS path is unavailable.
