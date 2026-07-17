@@ -108,6 +108,7 @@ import {
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
 import { homedir } from 'node:os'
+import { startVersionHeartbeat } from './lib/version-heartbeat'
 import { join as joinPath } from 'node:path'
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -5420,6 +5421,17 @@ async function main(): Promise<void> {
   // appended bytes) and deduped per rest episode inside reportResting.
   setInterval(reportResting, 30_000).unref()
   log('Honest Limits resting self-report enabled (30s transcript sweep)')
+
+  // Step 9: version heartbeat. Pairing-mode daemons report their plugin
+  // version (POST integrations/heartbeat) at boot and every 6h so the app's
+  // plugin-update prompt can see when this install is behind the floor.
+  // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
+  startVersionHeartbeat({
+    authMode: AUTH.mode,
+    rootDir: import.meta.dir,
+    post: bgosPost,
+    log,
+  })
 }
 
 main().catch((err) => {
