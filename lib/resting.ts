@@ -37,9 +37,31 @@ import { mungeCwd } from './usage-report.ts'
 /** Conservative rest horizon when the cap message carries no reset time. */
 export const RESTING_FALLBACK_MS = 30 * 60_000
 
+/**
+ * Records older than this never signal. This is the guard that makes replayed
+ * history safe: a resumed/forked session writes a NEW .jsonl replaying the
+ * parent's transcript with ORIGINAL timestamps, and a plugin restart re-reads
+ * a startup tail; without the gate, yesterday's cap line would mark a healthy
+ * agent resting. Generous vs the 30s sweep so slow scans never drop a real cap.
+ */
+export const RESTING_STALE_MS = 10 * 60_000
+
+/**
+ * How far back into the NEWEST transcript the watcher looks on startup, so a
+ * cap that landed just before a plugin restart (crash between the cap append
+ * and the first successful PATCH) is still reported. Bounded cost; the
+ * freshness gate keeps the re-read safe.
+ */
+export const RESTING_STARTUP_TAIL_BYTES = 64 * 1024
+
 export type RestingSignal =
-  /** A usage/session cap line; resetAt is the parsed UTC ISO or null. */
-  | { type: 'limit'; resetAt: string | null; at: number }
+  /**
+   * A usage/session cap line; resetAt is the parsed UTC ISO or null.
+   * afterActivity means real activity appeared EARLIER in the same scan
+   * window (resume-then-recap inside one sweep): the emitted-state dedup
+   * must reset exactly as if the activity had been seen on its own tick.
+   */
+  | { type: 'limit'; resetAt: string | null; at: number; afterActivity: boolean }
   /** A real (non-synthetic, non-sidechain) assistant turn; the session lives. */
   | { type: 'activity'; at: number }
 
@@ -63,8 +85,15 @@ export function isUsageCapText(text: string): boolean {
   if (!text) return false
   if (/not your usage limit/i.test(text)) return false
   if (/^\s*API Error/i.test(text)) return false
+  // Rate-limit / auto-retry wording is transient throttling, not an account
+  // cap, even when it arrives off the "API Error" prefix.
+  if (/\brate.?limit/i.test(text)) return false
+  if (/\bretrying\b/i.test(text)) return false
   if (/(?:hit|reached) your .{0,60}limit/i.test(text)) return true
   if (/out of usage credits/i.test(text)) return true
+  // Plausible rewordings: "Usage limit reached", "session limit has been
+  // reached". Kept narrow (a named limit kind + reached/reset context).
+  if (/\b(?:usage|session|weekly|monthly) limit\b.{0,40}\b(?:reached|resets?)\b/i.test(text)) return true
   return false
 }
 
@@ -84,7 +113,7 @@ const MONTHS: Record<string, number> = {
 // The trailing parenthesized IANA zone is optional; when absent the machine
 // timezone is used.
 const RESET_RE =
-  /reset(?:s)?(?:\s+at)?\s+(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i
+  /\breset(?:s)?(?:\s+at)?\s+(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i
 
 function isValidZone(zone: string): boolean {
   try {
@@ -145,11 +174,17 @@ function wallDateAt(utcMs: number, timeZone: string): { year: number; month: num
 
 /**
  * Parse the reset time out of a cap message into a UTC ISO string, or null
- * when the text carries none (credits-out) or the values are nonsense.
+ * when the text carries none (credits-out), the values are nonsense, or a
+ * date form lands outside the plausible cap window (caps reset within hours
+ * to a week; "Jul 10" read on Jul 23 is a stale replay, not next July).
  * A zone named in the message wins; otherwise `timeZone` (default: machine).
- * Time-only forms resolve to the NEXT occurrence after `nowMs`; date forms
- * resolve within the current year and roll to the next year when far past
- * (12h grace so a reset earlier today does not jump a year).
+ * `nowMs` is the REFERENCE instant the text is read against: callers pass
+ * the record's own timestamp, so a line written just before its reset never
+ * rolls 24h forward, and year selection near Jan 1 resolves backward
+ * correctly. Time-only forms resolve to the next occurrence after the
+ * reference; date forms must land within [reference - 12h, reference + 8d],
+ * picking whichever of last/this/next year fits (explicit years are trusted
+ * as written).
  */
 export function parseResetText(
   text: string,
@@ -182,12 +217,24 @@ export function parseResetText(
     const month = MONTHS[monthWord.slice(0, 3).toLowerCase()]
     const day = Number(dayStr)
     if (!month || day < 1 || day > 31) return null
-    const year = yearStr ? Number(yearStr) : wallDateAt(nowMs, zone).year
-    let candidate = wallTimeToUtcMs(year, month, day, hour, minute, zone)
-    if (!yearStr && candidate < nowMs - 12 * 3_600_000) {
-      candidate = wallTimeToUtcMs(year + 1, month, day, hour, minute, zone)
+    if (yearStr) {
+      const candidate = wallTimeToUtcMs(Number(yearStr), month, day, hour, minute, zone)
+      return new Date(candidate).toISOString()
     }
-    return new Date(candidate).toISOString()
+    // No explicit year: the only plausible cap window is a few hours past
+    // (a reset that just elapsed) to ~a week ahead (a weekly cap). Try the
+    // adjacent years and take the one that fits; the windows are ~a year
+    // apart so at most one can. Nothing fits = stale replay, refuse.
+    const windowStart = nowMs - 12 * 3_600_000
+    const windowEnd = nowMs + 8 * 24 * 3_600_000
+    const thisYear = wallDateAt(nowMs, zone).year
+    for (const year of [thisYear - 1, thisYear, thisYear + 1]) {
+      const candidate = wallTimeToUtcMs(year, month, day, hour, minute, zone)
+      if (candidate >= windowStart && candidate <= windowEnd) {
+        return new Date(candidate).toISOString()
+      }
+    }
+    return null
   }
 
   const today = wallDateAt(nowMs, zone)
@@ -224,6 +271,17 @@ function textOf(message: Record<string, unknown>): string {
  * account-wide; sidechain ACTIVITY does not, a parallel subagent still
  * streaming must not clear a capped main loop. Malformed lines are skipped,
  * normal at a live file's tail.
+ *
+ * Safety gates, all against the RECORD's own timestamp:
+ *  - records older than RESTING_STALE_MS (or with no timestamp) never
+ *    signal, so replayed history (resume-forked session files, the startup
+ *    tail re-read) cannot mark a healthy agent resting;
+ *  - reset times parse relative to the record time, so a retry line written
+ *    just before its stated reset never rolls 24h forward at scan time;
+ *  - a cap whose stated reset has already elapsed by scan time is ignored
+ *    entirely (the rest is over; a still-capped session appends fresh lines).
+ * A limit signal notes whether fresh activity appeared earlier in the chunk
+ * (`afterActivity`), the one-sweep resume-then-recap case.
  */
 export function extractRestingSignal(
   chunk: string,
@@ -231,6 +289,7 @@ export function extractRestingSignal(
   timeZone: string = machineZone(),
 ): RestingSignal | null {
   let signal: RestingSignal | null = null
+  let sawActivity = false
   for (const line of chunk.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
@@ -247,14 +306,18 @@ export function extractRestingSignal(
     if (typeof message !== 'object' || message === null) continue
     const m = message as Record<string, unknown>
     const at = typeof e.timestamp === 'string' ? Date.parse(e.timestamp) || 0 : 0
+    if (at === 0 || at < nowMs - RESTING_STALE_MS) continue
     if (e.isApiErrorMessage === true) {
       if (e.error !== 'rate_limit') continue
       const text = textOf(m)
       if (!isUsageCapText(text)) continue
-      signal = { type: 'limit', resetAt: parseResetText(text, nowMs, timeZone), at }
+      const resetAt = parseResetText(text, at, timeZone)
+      if (resetAt !== null && Date.parse(resetAt) <= nowMs) continue
+      signal = { type: 'limit', resetAt, at, afterActivity: sawActivity }
     } else {
       if (e.isSidechain === true) continue
       if (m.model === '<synthetic>') continue
+      sawActivity = true
       signal = { type: 'activity', at }
     }
   }
@@ -285,6 +348,9 @@ export function updateObserved(
   if (episode && Date.parse(episode.resetAt) <= nowMs) episode = null
   if (!signal) return episode
   if (signal.type === 'activity') return null
+  // Activity happened before this cap within one sweep window: process it
+  // as activity-then-cap, i.e. the old episode is over and this is a fresh one.
+  if (signal.afterActivity) episode = null
   if (signal.resetAt && Date.parse(signal.resetAt) > nowMs) {
     if (!episode || episode.resetAt !== signal.resetAt) {
       return { resetAt: signal.resetAt, synthetic: false }
@@ -329,7 +395,9 @@ export function resolveRestingTick(
   resetAtToEmit: string | null
 } {
   const observed = updateObserved(state.observed, signal, nowMs, fallbackMs)
-  const emitted = signal?.type === 'activity' ? null : state.emitted
+  const activityHappened =
+    signal?.type === 'activity' || (signal?.type === 'limit' && signal.afterActivity)
+  const emitted = activityHappened ? null : state.emitted
   const resetAtToEmit = shouldEmit(observed, emitted, nowMs) ? observed!.resetAt : null
   return { observed, emitted, resetAtToEmit }
 }
@@ -359,13 +427,25 @@ export class RestingWatcher {
     this.projectDir = join(claudeHome, 'projects', mungeCwd(cwd))
     this.timeZone = timeZone
     try {
+      let newest: { name: string; mtimeMs: number } | null = null
       for (const name of readdirSync(this.projectDir)) {
         if (!name.endsWith('.jsonl')) continue
         try {
-          this.startupSizes.set(name, statSync(join(this.projectDir, name)).size)
+          const st = statSync(join(this.projectDir, name))
+          this.startupSizes.set(name, st.size)
+          if (!newest || st.mtimeMs > newest.mtimeMs) newest = { name, mtimeMs: st.mtimeMs }
         } catch {
           /* file vanished between readdir and stat */
         }
+      }
+      // Restart resilience: re-read a bounded tail of the newest transcript
+      // so a cap that landed just before a plugin restart is still reported.
+      // Safe because only records fresher than RESTING_STALE_MS ever signal
+      // (unlike UsageTracker, where a re-read would double-count tokens;
+      // here the PATCH is idempotent on the backend).
+      if (newest) {
+        const size = this.startupSizes.get(newest.name) ?? 0
+        this.startupSizes.set(newest.name, Math.max(0, size - RESTING_STARTUP_TAIL_BYTES))
       }
     } catch {
       /* project dir missing, scan() will keep returning null */
@@ -380,6 +460,7 @@ export class RestingWatcher {
       return null
     }
     let best: RestingSignal | null = null
+    let lastActivityAt = -1
     for (const name of names) {
       const filePath = join(this.projectDir, name)
       const from = this.cursors.get(name) ?? this.startupSizes.get(name) ?? 0
@@ -411,7 +492,16 @@ export class RestingWatcher {
       const complete = chunk.slice(0, lastNewline + 1)
       this.cursors.set(name, from + Buffer.byteLength(complete, 'utf8'))
       const signal = extractRestingSignal(complete, nowMs, this.timeZone)
-      if (signal && (!best || signal.at >= best.at)) best = signal
+      if (!signal) continue
+      if (signal.type === 'activity' || signal.afterActivity) {
+        lastActivityAt = Math.max(lastActivityAt, signal.at)
+      }
+      if (!best || signal.at >= best.at) best = signal
+    }
+    // Cross-file resume-then-recap: activity in one session file counts as
+    // "before" a cap in another when it is not newer than the cap itself.
+    if (best && best.type === 'limit' && !best.afterActivity && lastActivityAt >= 0) {
+      best = { ...best, afterActivity: true }
     }
     return best
   }

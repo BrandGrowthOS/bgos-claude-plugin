@@ -18,6 +18,8 @@ import { join } from 'node:path'
 
 import {
   RESTING_FALLBACK_MS,
+  RESTING_STALE_MS,
+  RESTING_STARTUP_TAIL_BYTES,
   RestingWatcher,
   extractRestingSignal,
   isUsageCapText,
@@ -101,6 +103,24 @@ test('isUsageCapText accepts every real cap variant', () => {
 test('isUsageCapText rejects transient and non-cap errors', () => {
   for (const text of [TRANSIENT_429, REJECTED_429, OVERLOADED_529, NOT_LOGGED_IN, '', 'hello']) {
     assert.equal(isUsageCapText(text), false, `should reject: ${text}`)
+  }
+})
+
+test('isUsageCapText rejects rate-limit/retrying phrasings even off the API Error prefix', () => {
+  for (const text of [
+    "Server busy: you've hit your rate limit, retrying automatically",
+    'You have been rate limited, retrying in 30s',
+  ]) {
+    assert.equal(isUsageCapText(text), false, `should reject: ${text}`)
+  }
+})
+
+test('isUsageCapText accepts plausible cap rewordings', () => {
+  for (const text of [
+    'Usage limit reached · resets 5pm (Asia/Dubai)',
+    'Your session limit has been reached · resets 5pm (Asia/Dubai)',
+  ]) {
+    assert.equal(isUsageCapText(text), true, `should accept: ${text}`)
   }
 })
 
@@ -207,6 +227,30 @@ test('returns null for out-of-range clock values', () => {
   )
 })
 
+test('does not misparse "presets 5pm" (word boundary on reset)', () => {
+  assert.equal(
+    parseResetText("You've hit your limit · presets 5pm (Asia/Dubai)", NOW),
+    null,
+  )
+})
+
+test('a date form far outside the plausible cap window returns null', () => {
+  // A weekly cap resets at most ~7 days out; "Jul 10" read on Jul 23 is a
+  // stale replay, not a rest that ends next July.
+  const staleNow = Date.UTC(2026, 6, 23, 10, 0, 0)
+  assert.equal(parseResetText(WEEKLY_CAP, staleNow), null)
+})
+
+test('a date form just past new year resolves BACK to the prior year, not 12 months out', () => {
+  // "resets Dec 31 at 10pm" read on Jan 1 00:30Z is yesterday's reset (an
+  // instant a few hours in the past), never next December.
+  const jan1 = Date.UTC(2027, 0, 1, 0, 30, 0)
+  assert.equal(
+    parseResetText("You've hit your weekly limit · resets Dec 31 at 10pm (Asia/Dubai)", jan1),
+    '2026-12-31T18:00:00.000Z',
+  )
+})
+
 // ── extractRestingSignal ─────────────────────────────────────────────────────
 
 test('a cap line yields a limit signal with the parsed resetAt', () => {
@@ -263,12 +307,63 @@ test('malformed and irrelevant lines are skipped', () => {
   assert.ok(signal && signal.type === 'limit')
 })
 
+test('stale records are ignored (resume-forked session replay must not emit)', () => {
+  // A resumed/forked session writes a NEW .jsonl replaying the parent's
+  // history with ORIGINAL timestamps; yesterday's cap line must not mark a
+  // healthy agent resting. The freshness gate covers caps AND activity.
+  const staleTs = new Date(NOW - RESTING_STALE_MS - 60_000).toISOString()
+  const chunk =
+    capLine(SESSION_CAP, { timestamp: staleTs }) + '\n' +
+    activityLine({ timestamp: staleTs }) + '\n'
+  assert.equal(extractRestingSignal(chunk, NOW), null)
+})
+
+test('a record with no timestamp is ignored (cannot prove freshness)', () => {
+  assert.equal(extractRestingSignal(capLine(SESSION_CAP, { timestamp: undefined }) + '\n', NOW), null)
+})
+
+test('a cap whose stated reset already elapsed is ignored (no 24h rollover race)', () => {
+  // Retry line appended just before the reset instant, scanned just after:
+  // "resets 1:59pm" written at 13:58 Dubai, scanned at 14:00 Dubai. Parsing
+  // relative to scan time would roll it 24h forward; relative to the record
+  // time it is an instant in the past, so the rest is simply over.
+  const line = capLine("You've hit your session limit · resets 1:59pm (Asia/Dubai)", {
+    timestamp: new Date(NOW - 120_000).toISOString(),
+  })
+  assert.equal(extractRestingSignal(line + '\n', NOW), null)
+})
+
+test('reset times parse relative to the RECORD time, not scan time', () => {
+  // Line written at 13:58 Dubai saying "resets 2:10pm": still ahead at scan
+  // time 14:00, and it must resolve to TODAY 2:10pm Dubai (10:10Z).
+  const line = capLine("You've hit your session limit · resets 2:10pm (Asia/Dubai)", {
+    timestamp: new Date(NOW - 120_000).toISOString(),
+  })
+  const signal = extractRestingSignal(line + '\n', NOW)
+  assert.ok(signal && signal.type === 'limit')
+  assert.equal(signal.resetAt, '2026-07-17T10:10:00.000Z')
+})
+
+test('a cap after in-chunk activity carries afterActivity (resume-then-recap in ONE sweep)', () => {
+  const chunk = activityLine() + '\n' + capLine(SESSION_CAP) + '\n'
+  const signal = extractRestingSignal(chunk, NOW)
+  assert.ok(signal && signal.type === 'limit')
+  assert.equal(signal.afterActivity, true)
+})
+
+test('a cap with no preceding activity has afterActivity false', () => {
+  const signal = extractRestingSignal(capLine(SESSION_CAP) + '\n', NOW)
+  assert.ok(signal && signal.type === 'limit')
+  assert.equal(signal.afterActivity, false)
+})
+
 // ── updateObserved / shouldEmit (emit decision) ─────────────────────────────
 
-const limitSignal = (resetAt: string | null): RestingSignal => ({
+const limitSignal = (resetAt: string | null, afterActivity = false): RestingSignal => ({
   type: 'limit',
   resetAt,
   at: NOW,
+  afterActivity,
 })
 const activitySignal: RestingSignal = { type: 'activity', at: NOW }
 
@@ -312,7 +407,7 @@ test('a synthetic signal within the horizon keeps the existing synthetic episode
 test('still capped past the horizon opens a fresh synthetic episode (re-emit)', () => {
   const prev: RestingEpisode = { resetAt: iso(NOW + RESTING_FALLBACK_MS), synthetic: true }
   const later = NOW + RESTING_FALLBACK_MS + 1
-  const ep = updateObserved(prev, { type: 'limit', resetAt: null, at: later }, later)
+  const ep = updateObserved(prev, { type: 'limit', resetAt: null, at: later, afterActivity: false }, later)
   assert.deepEqual(ep, { resetAt: iso(later + RESTING_FALLBACK_MS), synthetic: true })
 })
 
@@ -372,14 +467,35 @@ function runTick(h: TickHarness, signal: RestingSignal | null, now: number, patc
 
 test('full cycle: emit once, hold, re-emit after the horizon passes', () => {
   const h: TickHarness = { observed: null, emitted: null, patches: [] }
-  runTick(h, { type: 'limit', resetAt: null, at: NOW }, NOW)
-  runTick(h, { type: 'limit', resetAt: null, at: NOW + 30_000 }, NOW + 30_000)
+  runTick(h, limitSignal(null), NOW)
+  runTick(h, { type: 'limit', resetAt: null, at: NOW + 30_000, afterActivity: false }, NOW + 30_000)
   runTick(h, null, NOW + 60_000)
   assert.equal(h.patches.length, 1, 'one PATCH per episode')
   const later = NOW + RESTING_FALLBACK_MS + 60_000
-  runTick(h, { type: 'limit', resetAt: null, at: later }, later)
+  runTick(h, { type: 'limit', resetAt: null, at: later, afterActivity: false }, later)
   assert.equal(h.patches.length, 2, 'still capped past the horizon PATCHes again')
   assert.equal(h.patches[1], iso(later + RESTING_FALLBACK_MS))
+})
+
+test('resume-then-recap inside ONE sweep chunk still re-emits (afterActivity)', () => {
+  // Same backend-cleared-on-activity scenario as the two-tick test below,
+  // but the activity and the re-cap land in the SAME 30s window; the
+  // afterActivity flag must reset the emitted bookkeeping.
+  const resetAt = iso(NOW + 8 * 3_600_000)
+  const h: TickHarness = { observed: null, emitted: null, patches: [] }
+  runTick(h, { type: 'limit', resetAt, at: NOW, afterActivity: false }, NOW)
+  assert.deepEqual(h.patches, [resetAt])
+  runTick(h, { type: 'limit', resetAt, at: NOW + 30_000, afterActivity: true }, NOW + 30_000)
+  assert.deepEqual(h.patches, [resetAt, resetAt], 'one-chunk resume+recap re-emits')
+})
+
+test('an afterActivity credits-out cap replaces the stale episode, not dedups against it', () => {
+  const oldReset = iso(NOW + 8 * 3_600_000)
+  const h: TickHarness = { observed: null, emitted: null, patches: [] }
+  runTick(h, { type: 'limit', resetAt: oldReset, at: NOW, afterActivity: false }, NOW)
+  const t = NOW + 60_000
+  runTick(h, { type: 'limit', resetAt: null, at: t, afterActivity: true }, t)
+  assert.deepEqual(h.patches, [oldReset, iso(t + RESTING_FALLBACK_MS)])
 })
 
 test('a re-cap after a resume re-emits even with the SAME reset time', () => {
@@ -389,18 +505,18 @@ test('a re-cap after a resume re-emits even with the SAME reset time', () => {
   // swallow it, or the chat shows a silently dead agent again.
   const resetAt = iso(NOW + 8 * 3_600_000)
   const h: TickHarness = { observed: null, emitted: null, patches: [] }
-  runTick(h, { type: 'limit', resetAt, at: NOW }, NOW)
+  runTick(h, { type: 'limit', resetAt, at: NOW, afterActivity: false }, NOW)
   assert.deepEqual(h.patches, [resetAt])
   runTick(h, { type: 'activity', at: NOW + 60_000 }, NOW + 60_000)
   assert.equal(h.observed, null, 'activity closes the episode')
-  runTick(h, { type: 'limit', resetAt, at: NOW + 120_000 }, NOW + 120_000)
+  runTick(h, { type: 'limit', resetAt, at: NOW + 120_000, afterActivity: false }, NOW + 120_000)
   assert.deepEqual(h.patches, [resetAt, resetAt], 'same reset time re-emits after a resume')
 })
 
 test('a failed PATCH retries on the next sweep', () => {
   const resetAt = iso(NOW + 3_600_000)
   const h: TickHarness = { observed: null, emitted: null, patches: [] }
-  runTick(h, { type: 'limit', resetAt, at: NOW }, NOW, false)
+  runTick(h, { type: 'limit', resetAt, at: NOW, afterActivity: false }, NOW, false)
   assert.equal(h.patches.length, 0, 'PATCH failed, nothing recorded')
   runTick(h, null, NOW + 30_000)
   assert.deepEqual(h.patches, [resetAt], 'quiet next sweep still delivers the missed emit')
@@ -416,16 +532,46 @@ function makeProject(): { cwd: string; claudeHome: string; dir: string } {
   return { cwd, claudeHome, dir }
 }
 
-test('watcher ignores history present at startup, sees appended caps', () => {
+test('watcher sees appended caps and never re-reads consumed bytes', () => {
   const { cwd, claudeHome, dir } = makeProject()
-  writeFileSync(join(dir, 'session.jsonl'), capLine(SESSION_CAP) + '\n')
+  const staleTs = new Date(NOW - RESTING_STALE_MS - 60_000).toISOString()
+  writeFileSync(join(dir, 'session.jsonl'), capLine(SESSION_CAP, { timestamp: staleTs }) + '\n')
   const watcher = new RestingWatcher(cwd, claudeHome, 'Asia/Dubai')
-  assert.equal(watcher.scan(NOW), null, 'startup history not re-reported')
+  assert.equal(watcher.scan(NOW), null, 'stale startup history never signals')
   appendFileSync(join(dir, 'session.jsonl'), capLine(SESSION_CAP) + '\n')
   const signal = watcher.scan(NOW)
   assert.ok(signal && signal.type === 'limit')
   assert.equal(signal.resetAt, '2026-07-17T15:40:00.000Z')
   assert.equal(watcher.scan(NOW), null, 'no new bytes, no signal')
+})
+
+test('watcher catches a FRESH cap that landed just before a plugin restart', () => {
+  // Cap appended, plugin restarted before the first sweep emitted: the new
+  // instance seeds the newest file's cursor a tail-window back, and the
+  // freshness gate keeps that replay safe (only fresh records signal).
+  const { cwd, claudeHome, dir } = makeProject()
+  writeFileSync(join(dir, 'session.jsonl'), activityLine({ timestamp: new Date(NOW - RESTING_STALE_MS - 60_000).toISOString() }) + '\n' + capLine(SESSION_CAP) + '\n')
+  const watcher = new RestingWatcher(cwd, claudeHome, 'Asia/Dubai')
+  const signal = watcher.scan(NOW)
+  assert.ok(signal && signal.type === 'limit', 'pre-startup fresh cap detected')
+  assert.equal(signal.resetAt, '2026-07-17T15:40:00.000Z')
+})
+
+test('watcher startup tail is bounded', () => {
+  // Only the last RESTING_STARTUP_TAIL_BYTES of the newest file are re-read;
+  // a fresh cap buried deeper than the tail window stays invisible (bounded
+  // startup cost) while one inside the window is found.
+  const { cwd, claudeHome, dir } = makeProject()
+  const filler = activityLine({
+    timestamp: new Date(NOW - RESTING_STALE_MS - 60_000).toISOString(),
+  })
+  const fillerCount = Math.ceil(RESTING_STARTUP_TAIL_BYTES / (filler.length + 1)) + 4
+  writeFileSync(
+    join(dir, 'session.jsonl'),
+    capLine(SESSION_CAP) + '\n' + Array.from({ length: fillerCount }, () => filler).join('\n') + '\n',
+  )
+  const watcher = new RestingWatcher(cwd, claudeHome, 'Asia/Dubai')
+  assert.equal(watcher.scan(NOW), null, 'cap outside the tail window is not scanned')
 })
 
 test('watcher reads a file created after startup from byte 0', () => {
@@ -451,6 +597,19 @@ test('watcher leaves a partial tail line for the next scan', () => {
 test('watcher survives a missing project dir', () => {
   const watcher = new RestingWatcher('/tmp/nonexistent-workspace', mkdtempSync(join(tmpdir(), 'resting-none-')))
   assert.equal(watcher.scan(NOW), null)
+})
+
+test('watcher restarts from byte 0 after a truncation', () => {
+  const { cwd, claudeHome, dir } = makeProject()
+  const watcher = new RestingWatcher(cwd, claudeHome, 'Asia/Dubai')
+  const path = join(dir, 't.jsonl')
+  writeFileSync(path, activityLine() + '\n' + activityLine() + '\n')
+  assert.ok(watcher.scan(NOW), 'appended activity seen')
+  writeFileSync(path, '') // rotated/truncated
+  assert.equal(watcher.scan(NOW), null, 'truncation itself yields nothing')
+  writeFileSync(path, capLine(SESSION_CAP) + '\n')
+  const signal = watcher.scan(NOW)
+  assert.ok(signal && signal.type === 'limit', 'post-truncation content read from byte 0')
 })
 
 test('watcher picks the newest signal across files', () => {

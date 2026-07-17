@@ -307,7 +307,13 @@ function reportContextPct(): void {
 const restingWatcher = new RestingWatcher(process.cwd())
 let observedResting: RestingEpisode | null = null
 let emittedResting: RestingEpisode | null = null
+// Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
+// ticks pile up duplicate PATCHes for the same episode, or complete out of
+// order and leave the backend on a stale resetAt.
+let restingSweepInFlight = false
 function reportResting(): void {
+  if (restingSweepInFlight) return
+  restingSweepInFlight = true
   void (async () => {
     const now = Date.now()
     let signal: RestingSignal | null = null
@@ -325,12 +331,20 @@ function reportResting(): void {
     emittedResting = tick.emitted
     if (tick.resetAtToEmit === null) return
     const resetAt = tick.resetAtToEmit
+    // Commit the LOCAL episode this PATCH actually carried, not a re-read of
+    // the shared variable (same pattern as reportContextPct committing its
+    // local `rounded`).
+    const sent = tick.observed
     await bgosPatch(`assistants/${ASSISTANT_ID}/status`, { status: 'resting', resetAt })
-    emittedResting = observedResting
+    emittedResting = sent
     log(`Resting self-report sent (resetAt=${resetAt})`)
-  })().catch(() => {
-    /* best-effort honesty signal; a failed PATCH retries next sweep */
-  })
+  })()
+    .catch(() => {
+      /* best-effort honesty signal; a failed PATCH retries next sweep */
+    })
+    .finally(() => {
+      restingSweepInFlight = false
+    })
 }
 
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
