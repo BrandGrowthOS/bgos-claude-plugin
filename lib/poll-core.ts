@@ -104,6 +104,13 @@ export interface ChatPollRequest {
  *    button_clicked channel event and the inline permission Allow/Deny
  *    resolution depend on observing it. These chats are rare and transient
  *    (the set empties as soon as the buttons are answered or superseded).
+ *  - forceFull (a chat's first poll after boot, now that cursors persist
+ *    across restarts): FULL fetch. The unanswered-inline-button baseline is
+ *    in-memory and lost on restart, and a delta window cannot contain the
+ *    OLDER assistant rows that still have open buttons, so without one full
+ *    boot fetch a click on a pre-restart button would never be detected.
+ *    Costs exactly what the pre-persistence restart poll cost (that one was
+ *    a full fetch too, via lastSeen 0).
  *  - Everything else: delta fetch with afterId=<last seen id>. Idle chats
  *    then cost an empty window that the ETag layer turns into a 304.
  *
@@ -117,11 +124,12 @@ export function buildChatPollRequest(opts: {
   userId: string
   lastSeen: number
   unansweredButtonCount: number
+  forceFull?: boolean
 }): ChatPollRequest {
-  const { chatId, userId, lastSeen, unansweredButtonCount } = opts
+  const { chatId, userId, lastSeen, unansweredButtonCount, forceFull } = opts
   const base = `chats/${chatId}/messages?userId=${userId}`
   const cacheKey = `poll:${chatId}`
-  if (lastSeen <= 0 || unansweredButtonCount > 0) {
+  if (lastSeen <= 0 || unansweredButtonCount > 0 || forceFull) {
     return { path: base, cacheKey, mode: 'full' }
   }
   return { path: `${base}&afterId=${lastSeen}`, cacheKey, mode: 'delta' }

@@ -3630,11 +3630,17 @@ async function pollChat(chatId: string): Promise<void> {
   // unanswered inline buttons also stays FULL: a click UPDATES an existing
   // row (answeredAt flips) without inserting a new one, so a delta window
   // would never show the transition the button/permission paths watch for.
+  // A chat's first poll after boot forces a FULL fetch even when a persisted
+  // cursor exists: the unanswered-inline-button baseline is in-memory and
+  // lost on restart, and a delta window cannot contain the older assistant
+  // rows that still have open buttons (see buildChatPollRequest).
+  const isBootPoll = !chatsPolledSinceBoot.has(chatId)
   const req = buildChatPollRequest({
     chatId,
     userId: USER_ID,
     lastSeen: chatLastSeen.get(chatId) ?? 0,
     unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
+    forceFull: isBootPoll,
   })
   try {
     const raw = await bgosGet(req.path, { cacheKey: req.cacheKey })
@@ -3652,8 +3658,6 @@ async function pollChat(chatId: string): Promise<void> {
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
     )
-
-    const isBootPoll = !chatsPolledSinceBoot.has(chatId)
 
     let newUserMessages: ChatMessage[]
     let isBacklog = false

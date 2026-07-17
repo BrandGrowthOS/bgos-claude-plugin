@@ -29,6 +29,7 @@ import {
   selectFirstPollBacklogIds,
   sentDateToMs,
   advanceCursor,
+  buildChatPollRequest,
   FIRST_RUN_RECENT_WINDOW_MS,
   type FirstPollRow,
 } from '../lib/poll-core.js'
@@ -200,6 +201,35 @@ test('steady-state delta traffic is never backlog, even if dates look old', () =
   assert.equal(deltaIsBacklog(false, [DAEMON_START_MS - 5_000]), false)
 })
 
+// ── Boot-poll full fetch (inline-button baseline rebuild) ────────────────────
+// The unanswered-button set is in-memory and lost on restart; a delta window
+// cannot contain the older assistant rows that still have open buttons, so
+// the first poll after boot must be a FULL fetch even with a restored cursor.
+
+test('boot poll forces a full fetch despite a restored cursor', () => {
+  const req = buildChatPollRequest({
+    chatId: '101',
+    userId: 'u1',
+    lastSeen: 4200,
+    unansweredButtonCount: 0,
+    forceFull: true,
+  })
+  assert.equal(req.mode, 'full')
+  assert.ok(!req.path.includes('afterId'))
+})
+
+test('non-boot polls keep the delta path', () => {
+  const req = buildChatPollRequest({
+    chatId: '101',
+    userId: 'u1',
+    lastSeen: 4200,
+    unansweredButtonCount: 0,
+    forceFull: false,
+  })
+  assert.equal(req.mode, 'delta')
+  assert.ok(req.path.includes('afterId=4200'))
+})
+
 // ── Wiring pins: server.ts must actually use the fix ─────────────────────────
 // server.ts cannot be imported in tests (it exits without credentials at
 // module load), so pin the load-bearing call sites textually, per this repo's
@@ -227,6 +257,10 @@ test('server.ts advances cursors through the persisting helper', () => {
 test('server.ts selects first-poll backlog through selectFirstPollBacklogIds', () => {
   assert.ok(serverSource.includes('selectFirstPollBacklogIds('))
   assert.ok(serverSource.includes('FIRST_RUN_RECENT_WINDOW_MS'))
+})
+
+test('server.ts forces a full fetch on each chat boot poll', () => {
+  assert.ok(serverSource.includes('forceFull: isBootPoll'))
 })
 
 test('server.ts flushes the store on a coalescing timer and at exit', () => {
