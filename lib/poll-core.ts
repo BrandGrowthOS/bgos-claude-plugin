@@ -149,6 +149,85 @@ export function advanceCursor(opts: {
   return Math.max(lastSeen, Math.min(maxId, cap))
 }
 
+// ── First-poll backlog selection + first-run gate (restart-replay fix) ───────
+
+/**
+ * On a genuine first install there is no cursor file at all, so EVERY chat
+ * looks new. Dormant history must not be delivered then: only messages sent
+ * within this window before daemon start qualify for the first-poll backlog.
+ */
+export const FIRST_RUN_RECENT_WINDOW_MS = 10 * 60_000
+
+/** Parse a message sentDate into epoch ms; null when absent or unparseable. */
+export function sentDateToMs(sentDate: string | null | undefined): number | null {
+  if (!sentDate) return null
+  const t = Date.parse(sentDate)
+  return Number.isFinite(t) ? t : null
+}
+
+/** The projection of a chat message that first-poll selection needs. */
+export interface FirstPollRow {
+  id: number
+  sender: string | null
+  /** True for a system wake card still in its empty write-1 state. */
+  pendingEmptySystem: boolean
+  sentDateMs: number | null
+}
+
+/**
+ * Decide which messages the FIRST poll for a chat (no cursor yet) forwards
+ * as [backlog]. Extracted verbatim from pollChat so it is testable and so
+ * the first-run gate has one home.
+ *
+ * The walk-back heuristic (unchanged from the inline original): scan from
+ * the newest row backward, collecting user/system messages, and stop only
+ * at a real user->assistant REPLY (an assistant row whose immediately
+ * preceding row is a user row). Proactive assistant rows (preceded by
+ * another assistant row, or by nothing) do not terminate the scan, and
+ * pending-empty system rows are skipped (the cursor parks under them so a
+ * later poll re-reads them once the body fills). Capped to the newest
+ * `maxForward` rows so a busy chat cannot dump half its history.
+ *
+ * The gate: with `recentCutoffMs` set (genuine first run, no cursor file),
+ * only collected rows sent at or after the cutoff qualify. Rows with an
+ * unknown sent date do not qualify, unknown age must not read as recent.
+ * With `recentCutoffMs` null (a cursor file existed, this chat is genuinely
+ * new to us) the collection is returned ungated, the old behavior.
+ *
+ * Rows must be ordered oldest -> newest by id; returned ids keep that order.
+ */
+export function selectFirstPollBacklogIds(opts: {
+  rows: FirstPollRow[]
+  maxForward: number
+  recentCutoffMs: number | null
+}): number[] {
+  const { rows, maxForward, recentCutoffMs } = opts
+  const collected: FirstPollRow[] = []
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!
+    if (m.pendingEmptySystem) continue
+    if (m.sender === 'user' || m.sender === 'system') {
+      collected.push(m)
+      if (collected.length >= maxForward) break
+      continue
+    }
+    if (m.sender === 'assistant') {
+      const prev = i > 0 ? rows[i - 1]! : null
+      if (prev && prev.sender === 'user') {
+        // Real reply, everything older was handled. Stop here.
+        break
+      }
+      // Proactive assistant message, keep scanning backward.
+    }
+  }
+  collected.reverse()
+  const qualified =
+    recentCutoffMs === null
+      ? collected
+      : collected.filter((m) => m.sentDateMs !== null && m.sentDateMs >= recentCutoffMs)
+  return qualified.map((m) => m.id)
+}
+
 // ── Cadence planning (P6d/P6e) ───────────────────────────────────────────────
 
 /** WS healthy: full sweeps are a 60s heartbeat safety net (base 2s x30). */
