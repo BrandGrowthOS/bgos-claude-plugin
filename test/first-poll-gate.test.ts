@@ -32,7 +32,7 @@ import {
   buildChatPollRequest,
   FIRST_RUN_RECENT_WINDOW_MS,
   type FirstPollRow,
-} from '../lib/poll-core.js'
+} from '../lib/poll-core.ts'
 
 const DAEMON_START_MS = 1_800_000_000_000
 const CUTOFF = DAEMON_START_MS - FIRST_RUN_RECENT_WINDOW_MS
@@ -98,9 +98,92 @@ test('first run: the recent window is 10 minutes', () => {
 })
 
 test('first run: the cursor still initializes to the chat tip', () => {
-  // The gate filters delivery only; cursor advance is advanceCursor's job
-  // and jumps to maxId exactly as on any other successful first poll.
-  assert.equal(advanceCursor({ lastSeen: 0, maxId: 900, pendingEmptyIds: [] }), 900)
+  // Compose the real pieces the way pollChat does on a gated first poll:
+  // an ancient tail delivers nothing, yet the cursor jumps to the tip so
+  // the tail can never leak through a later delta poll.
+  const rows = [
+    row(101, 'user', { sentMs: ANCIENT }),
+    row(102, 'user', { sentMs: ANCIENT }),
+  ]
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF }),
+    [],
+  )
+  assert.equal(
+    advanceCursor({ lastSeen: 0, maxId: 102, pendingEmptyIds: [] }),
+    102,
+    'nothing delivered, but the cursor initializes to the tip',
+  )
+})
+
+// ── Abandoned pending-empty rows must not park a gated first-poll cursor ─────
+// Mirror of the pendingIds filter in server.ts pollChat (keep in lockstep):
+// on a gated first poll, a pending-empty system row affirmatively older than
+// the cutoff is an abandoned write-1 (its body-fill never came) and does not
+// park the cursor; unknown age still parks (could be a live scheduler race).
+
+function parkedPendingIds(
+  rows: FirstPollRow[],
+  gatedFirstPoll: boolean,
+  cutoffMs: number,
+): number[] {
+  return rows
+    .filter((r) => r.pendingEmptySystem)
+    .filter((r) => {
+      if (!gatedFirstPoll) return true
+      return r.sentDateMs === null || r.sentDateMs >= cutoffMs
+    })
+    .map((r) => r.id)
+}
+
+test('first run: an abandoned pending-empty row does not hold the cursor below a dormant tail', () => {
+  const rows = [
+    row(100, 'system', { pendingEmpty: true, sentMs: ANCIENT }),
+    ...Array.from({ length: 30 }, (_, i) => row(101 + i, 'user', { sentMs: ANCIENT })),
+  ]
+  assert.deepEqual(
+    selectFirstPollBacklogIds({ rows, maxForward: 10, recentCutoffMs: CUTOFF }),
+    [],
+    'the gate withholds the dormant tail',
+  )
+  const pending = parkedPendingIds(rows, true, CUTOFF)
+  assert.deepEqual(pending, [], 'a May-era write-1 row is abandoned, not parked under')
+  assert.equal(
+    advanceCursor({ lastSeen: 0, maxId: 130, pendingEmptyIds: pending }),
+    130,
+    'the cursor reaches the tip, so the tail cannot leak through the delta branch',
+  )
+})
+
+test('a recent or unknown-age pending-empty row still parks the gated cursor', () => {
+  assert.deepEqual(
+    parkedPendingIds([row(200, 'system', { pendingEmpty: true, sentMs: RECENT })], true, CUTOFF),
+    [200],
+  )
+  assert.deepEqual(
+    parkedPendingIds([row(201, 'system', { pendingEmpty: true, sentMs: null })], true, CUTOFF),
+    [201],
+  )
+  assert.deepEqual(
+    parkedPendingIds([row(202, 'system', { pendingEmpty: true, sentMs: ANCIENT })], false, CUTOFF),
+    [202],
+    'ungated polls always park, the live deferral is untouched',
+  )
+})
+
+// ── WS cursor bump guard (mirror of the inbound_message handler rule) ────────
+// A persisted cursor must not jump over a chat whose boot poll has not
+// finished: offline messages between the cursor and the WS id would be
+// skipped forever. Keep in lockstep with server.ts (wsCursorSafe).
+
+function wsCursorSafeMirror(bootPolled: boolean, lastSeen: number): boolean {
+  return bootPolled || lastSeen === 0
+}
+
+test('WS bump is deferred for a persisted-cursor chat until its boot poll completes', () => {
+  assert.equal(wsCursorSafeMirror(false, 150), false, 'gap 151..199 still undelivered')
+  assert.equal(wsCursorSafeMirror(true, 150), true)
+  assert.equal(wsCursorSafeMirror(false, 0), true, 'cursor-less chat keeps the bump (dup guard)')
 })
 
 // ── Ungated behavior (cursor file existed, chat genuinely new) ───────────────
@@ -256,11 +339,40 @@ test('server.ts advances cursors through the persisting helper', () => {
 
 test('server.ts selects first-poll backlog through selectFirstPollBacklogIds', () => {
   assert.ok(serverSource.includes('selectFirstPollBacklogIds('))
-  assert.ok(serverSource.includes('FIRST_RUN_RECENT_WINDOW_MS'))
+  assert.ok(
+    serverSource.includes('recentCutoffMs: FIRST_POLL_RECENT_CUTOFF_MS'),
+    'the gate cutoff must be wired into the selection call site',
+  )
 })
 
 test('server.ts forces a full fetch on each chat boot poll', () => {
   assert.ok(serverSource.includes('forceFull: isBootPoll'))
+})
+
+test('server.ts frames boot-poll delta backlog with the lockstep predicate', () => {
+  assert.ok(serverSource.includes('isBootPoll &&'))
+  assert.ok(serverSource.includes('t < DAEMON_START_MS'))
+})
+
+test('server.ts guards the WS cursor bump behind boot-poll completion', () => {
+  assert.ok(serverSource.includes('wsCursorSafe'))
+  assert.ok(serverSource.includes('chatsPolledSinceBoot.has(chatId)'))
+})
+
+test('server.ts excludes abandoned pending-empty rows from gated first-poll parking', () => {
+  assert.ok(serverSource.includes('gatedFirstPoll'))
+})
+
+test('server.ts starts cursor persistence only after the boot sweep', () => {
+  // A partial first sweep flushed to disk would disarm the first-run gate on
+  // the next boot, so the flush timer and exit hooks must come AFTER the
+  // boot pollAllChats() in main().
+  const sweepIdx = serverSource.indexOf('await pollAllChats()')
+  const flushIdx = serverSource.indexOf(
+    'setInterval(() => cursorStore.flushIfDirty(), CURSOR_FLUSH_INTERVAL_MS)',
+  )
+  assert.ok(sweepIdx !== -1 && flushIdx !== -1)
+  assert.ok(flushIdx > sweepIdx, 'flush hooks must start after the first full sweep')
 })
 
 test('server.ts flushes the store on a coalescing timer and at exit', () => {

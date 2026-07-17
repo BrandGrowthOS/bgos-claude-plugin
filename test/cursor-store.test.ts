@@ -46,8 +46,8 @@ import {
   saveCursorFile,
   resolveCursorFilePath,
   CURSOR_FILE_NAME,
-} from '../lib/cursor-store.js'
-import { buildChatPollRequest } from '../lib/poll-core.js'
+} from '../lib/cursor-store.ts'
+import { buildChatPollRequest } from '../lib/poll-core.ts'
 
 function freshDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
