@@ -8,11 +8,11 @@
  *   POST  assistants/:assistantId/missions                      create
  *   GET   assistants/:assistantId/missions/active               { mission | null }
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
- *   PATCH assistants/:assistantId/missions/:missionId/complete
+ *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
  *
  * Create body: { title, miniGoals: [{ name, doneWhen }] }, 2..12 goals
  * (trained flow targets 4 to 10), title <= 200, name <= 120, doneWhen <= 200,
- * evidence <= 200. Responses embed the full mission snapshot with
+ * evidence <= 200, summary <= 500. Responses embed the full mission snapshot with
  * server-assigned goal ids 1..n.
  */
 
@@ -26,8 +26,10 @@ import {
   MISSION_GOAL_NAME_MAX,
   MISSION_DONE_WHEN_MAX,
   MISSION_EVIDENCE_MAX,
+  MISSION_SUMMARY_MAX,
   buildMissionCreateBody,
   buildMissionTickBody,
+  buildMissionCompleteBody,
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
@@ -172,6 +174,30 @@ test('tick: rejects a missing or non-positive-integer goal_id', () => {
 test('tick: rejects over-long evidence', () => {
   const r = buildMissionTickBody({ goal_id: 1, evidence: 'x'.repeat(MISSION_EVIDENCE_MAX + 1) })
   assert.equal(r.ok, false)
+})
+
+// ── buildMissionCompleteBody ────────────────────────────────────────────────
+
+test('complete: includes a summary when given', () => {
+  assert.deepEqual(buildMissionCompleteBody({ summary: '23 drafts waiting for your review' }), {
+    summary: '23 drafts waiting for your review',
+  })
+})
+
+test('complete: trims the summary', () => {
+  assert.deepEqual(buildMissionCompleteBody({ summary: '  The migration is ready.  ' }), {
+    summary: 'The migration is ready.',
+  })
+})
+
+test('complete: truncates the summary at 500 chars', () => {
+  const body = buildMissionCompleteBody({ summary: 'x'.repeat(MISSION_SUMMARY_MAX + 1) })
+  assert.equal(body.summary, 'x'.repeat(MISSION_SUMMARY_MAX))
+})
+
+test('complete: preserves the existing empty body when summary is absent or whitespace', () => {
+  assert.deepEqual(buildMissionCompleteBody(), {})
+  assert.deepEqual(buildMissionCompleteBody({ summary: '   ' }), {})
 })
 
 // ── path builders ───────────────────────────────────────────────────────────

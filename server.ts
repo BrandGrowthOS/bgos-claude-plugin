@@ -100,6 +100,7 @@ import {
 import {
   buildMissionCreateBody,
   buildMissionTickBody,
+  buildMissionCompleteBody,
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
@@ -2198,6 +2199,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object' as const,
         properties: {
+          summary: {
+            type: 'string',
+            description:
+              'Optional honest completion summary (at most 500 chars). Write ' +
+              'one or two plain sentences: what changed, and what is waiting ' +
+              'for the user\'s eyes, for example "23 drafts waiting for your review".',
+          },
           mission_id: {
             type: 'number',
             description:
@@ -3538,7 +3546,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
-        const result = (await bgosPatch(builtPath.path, {})) as {
+        const body = buildMissionCompleteBody({ summary: rawArgs.summary })
+        const result = (await bgosPatch(builtPath.path, { ...body })) as {
           mission?: MissionSnapshot
         }
         if (!result?.mission) {

@@ -14,9 +14,10 @@
  *   POST  assistants/:assistantId/missions                      create
  *   GET   assistants/:assistantId/missions/active               { mission | null }
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
- *   PATCH assistants/:assistantId/missions/:missionId/complete
+ *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
  *
- * Create body: { title, miniGoals: [{ name, doneWhen }] }. The backend
+ * Create body: { title, miniGoals: [{ name, doneWhen }] }.
+ * Complete body: { summary? }, where summary is at most 500 chars. The backend
  * accepts 2..12 goals (the trained flow targets 4 to 10), assigns goal ids
  * 1..n, enforces ONE active mission per assistant (creating a new one
  * abandons the previous active mission), auto-completes on the last tick,
@@ -35,6 +36,7 @@ export const MISSION_TITLE_MAX = 200
 export const MISSION_GOAL_NAME_MAX = 120
 export const MISSION_DONE_WHEN_MAX = 200
 export const MISSION_EVIDENCE_MAX = 200
+export const MISSION_SUMMARY_MAX = 500
 
 /** What the trained flow should aim for (the hard caps are 2..12). */
 export const MISSION_TARGET_RANGE = '4 to 10'
@@ -52,6 +54,10 @@ export interface MissionCreateBody {
 export interface MissionTickBody {
   goalId: number
   evidence?: string
+}
+
+export interface MissionCompleteBody {
+  summary?: string
 }
 
 /** The mission snapshot shape the backend returns (subset the tools read). */
@@ -185,6 +191,18 @@ export function buildMissionTickBody(input: {
     if (trimmed) body.evidence = trimmed
   }
   return { ok: true, body }
+}
+
+/** Build the PATCH .../complete body from snake_case tool args. */
+export function buildMissionCompleteBody(
+  { summary }: { summary?: unknown } = {},
+): MissionCompleteBody {
+  const body: MissionCompleteBody = {}
+  if (typeof summary === 'string') {
+    const trimmed = summary.trim().slice(0, MISSION_SUMMARY_MAX)
+    if (trimmed) body.summary = trimmed
+  }
+  return body
 }
 
 const isPositiveIntLike = (v: unknown): boolean => {
