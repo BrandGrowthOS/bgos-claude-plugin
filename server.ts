@@ -87,6 +87,18 @@ import {
   loadCredentialsFile,
   type ResolvedAuth,
 } from './lib/agent-credentials.js'
+import {
+  NOT_MODIFIED,
+  isNotModified,
+  EtagCache,
+  buildChatPollRequest,
+  advanceCursor,
+  fastScopeChatIds,
+  planPollCycle,
+  HEALTHY_MULTIPLIER,
+  WS_DOWN_MULTIPLIER,
+  RECONCILE_ALWAYS_ON_INTERVAL_MS,
+} from './lib/poll-core.js'
 import { homedir } from 'node:os'
 import { join as joinPath } from 'node:path'
 
@@ -179,16 +191,61 @@ void DOC_MIMES
 
 // ── BGOS REST Client ─────────────────────────────────────────────────────────
 
-async function bgosGet(path: string): Promise<unknown> {
+// Conditional GETs (SERVERPERF P1c, modeled on the Hermes client's
+// _conditional_get): remember the ETag of every 200 per cache key, send
+// If-None-Match on the next request, and surface a 304 as the NOT_MODIFIED
+// sentinel so the caller can skip work entirely. Express's default weak ETag
+// on the backend makes this work today; an older backend that never sends an
+// ETag simply keeps answering 200 + full body, exactly as before.
+// EVERY bgosGet caller must handle the sentinel: poll loops skip the
+// iteration, value-returning callers use bgosGetCachedOn304 below.
+const bgosEtagCache = new EtagCache()
+
+async function bgosGet(
+  path: string,
+  opts?: { cacheKey?: string },
+): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const cacheKey = opts?.cacheKey ?? path
+  const prevEtag = bgosEtagCache.ifNoneMatch(cacheKey)
   const response = await fetch(url, {
-    headers: { ...authHeaders(AUTH) },
+    headers: {
+      ...authHeaders(AUTH),
+      ...(prevEtag ? { 'If-None-Match': prevEtag } : {}),
+    },
   })
+  if (response.status === 304) return NOT_MODIFIED
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
   }
+  bgosEtagCache.record(cacheKey, response.headers.get('etag'))
   return response.json()
+}
+
+// For callers that need a VALUE on every call (mission lookup, meetings list,
+// assistant identity/flags): keep the last 200 body alongside the validator
+// and answer a 304 from it. Only a handful of singleton paths use this, so
+// the body cache stays tiny; the high-volume chat polls handle the sentinel
+// directly and never cache bodies.
+const bgosBodyCacheByPath = new Map<string, unknown>()
+
+async function bgosGetCachedOn304(path: string): Promise<unknown> {
+  const data = await bgosGet(path)
+  if (!isNotModified(data)) {
+    bgosBodyCacheByPath.set(path, data)
+    return data
+  }
+  if (bgosBodyCacheByPath.has(path)) return bgosBodyCacheByPath.get(path)
+  // Defensive: a 304 with no stored body (the validator outlived the body
+  // cache). Drop the stale validator and refetch unconditionally.
+  bgosEtagCache.invalidate(path)
+  const fresh = await bgosGet(path)
+  if (isNotModified(fresh)) {
+    throw new Error(`GET ${path}: 304 without a cached body`)
+  }
+  bgosBodyCacheByPath.set(path, fresh)
+  return fresh
 }
 
 // Per-turn usage self-report (BGOS capability #18, Fleet Pulse): reads the
@@ -1088,9 +1145,10 @@ async function waitForVerdict(
     await new Promise((r) => setTimeout(r, 1500))
 
     try {
-      const data = (await bgosGet(
-        `chats/${chatId}/messages?userId=${USER_ID}`,
-      )) as ChatHistoryResponse
+      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`)
+      // 304: nothing changed since the last look, so no verdict landed either.
+      if (isNotModified(raw)) continue
+      const data = raw as ChatHistoryResponse
       if (!data.messages?.length) continue
 
       // Look for new user messages that match one of the verdict formats.
@@ -2236,9 +2294,12 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         while (Date.now() < deadline && answers.size < targetIds.size) {
           await new Promise((r) => setTimeout(r, 1500))
           try {
-            const data = (await bgosGet(
+            const rawAsk = await bgosGet(
               `chats/${askChatId}/messages?userId=${USER_ID}`,
-            )) as {
+            )
+            // 304: no message changed, so no answeredAt flipped either.
+            if (isNotModified(rawAsk)) continue
+            const data = rawAsk as {
               messages: Array<{
                 message: {
                   id: number
@@ -3380,7 +3441,7 @@ async function resolveMissionId(rawMissionId: unknown): Promise<number | null> {
   }
   const builtPath = buildMissionActivePath(ASSISTANT_ID)
   if (!builtPath.ok) return null
-  const result = (await bgosGet(builtPath.path)) as {
+  const result = (await bgosGetCachedOn304(builtPath.path)) as {
     mission?: MissionSnapshot | null
   }
   return result?.mission?.id ?? null
@@ -3469,7 +3530,7 @@ async function discoverChats(): Promise<void> {
     )
     const openMeetingChatSet = new Set<string>()
     if (meetingChatSet.size > 0) {
-      const meetings = (await bgosGet('meetings')) as any[]
+      const meetings = (await bgosGetCachedOn304('meetings')) as any[]
       for (const meeting of meetings ?? []) {
         if (meeting?.status !== 'open') continue
         const chatId = String(meeting?.chatId ?? meeting?.chat_id ?? '')
@@ -3511,8 +3572,25 @@ function isPendingEmptySystem(m: ChatMessage): boolean {
 }
 
 async function pollChat(chatId: string): Promise<void> {
+  // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
+  // every poll passes afterId=<last seen id> so an idle chat costs an empty
+  // window (usually a 304) instead of the full newest-50 envelope with its
+  // joins and S3 presigns. The first poll stays a FULL fetch (the backlog
+  // heuristic below needs the whole window), and a chat with tracked
+  // unanswered inline buttons also stays FULL: a click UPDATES an existing
+  // row (answeredAt flips) without inserting a new one, so a delta window
+  // would never show the transition the button/permission paths watch for.
+  const req = buildChatPollRequest({
+    chatId,
+    userId: USER_ID,
+    lastSeen: chatLastSeen.get(chatId) ?? 0,
+    unansweredButtonCount: chatUnansweredButtons.get(chatId)?.size ?? 0,
+  })
   try {
-    const data = (await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`)) as ChatHistoryResponse
+    const raw = await bgosGet(req.path, { cacheKey: req.cacheKey })
+    // 304: byte-identical to a response we already fully processed.
+    if (isNotModified(raw)) return
+    const data = raw as ChatHistoryResponse
     if (!data.messages?.length) return
 
     const lastSeen = chatLastSeen.get(chatId) ?? 0
@@ -3591,11 +3669,18 @@ async function pollChat(chatId: string): Promise<void> {
     // cursor just below the lowest such id so a later poll re-reads that row
     // once its body is filled (write-2 reuses the same id, so jumping to maxId
     // would exclude the fill forever). Never moves the cursor backward.
+    // Delta-cursor-aware (P1b): the next poll's afterId equals this parked
+    // cursor, so the deferred row stays INSIDE every subsequent delta window
+    // until the body lands, and the body-fill changes the response bytes so
+    // the ETag layer cannot 304 past it. The scheduler wake-card body-fill
+    // therefore still reaches the plugin via poll.
     const pendingIds = ordered
       .filter(isPendingEmptySystem)
       .map((m) => m.message.id)
-    const cap = pendingIds.length ? Math.min(...pendingIds) - 1 : maxId
-    chatLastSeen.set(chatId, Math.max(lastSeen, Math.min(maxId, cap)))
+    chatLastSeen.set(
+      chatId,
+      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
+    )
 
     // If an assistant message has already been written that supersedes our
     // pending unanswered inbound (covers replies sent via non-Claude paths
@@ -3874,7 +3959,11 @@ async function pollChat(chatId: string): Promise<void> {
       if (!isBacklog) recordInbound(chatId, msg.message.id)
     }
   } catch {
-    // Silent, network blips
+    // Silent, network blips. Drop the ETag validator for this chat: it may
+    // have been recorded before the failure, and the cursor did NOT advance,
+    // so a later 304 must not skip rows we never processed. Redelivery beats
+    // loss; the cursor filter dedups anything already forwarded.
+    bgosEtagCache.invalidate(req.cacheKey)
   }
 }
 
@@ -3936,7 +4025,7 @@ async function getVoiceIdentity(
       if (typeof t.unref === 'function') t.unref()
     })
     const data = (await Promise.race([
-      bgosGet(`assistants/with-chats/${encodeURIComponent(USER_ID)}`),
+      bgosGetCachedOn304(`assistants/with-chats/${encodeURIComponent(USER_ID)}`),
       timer,
     ])) as unknown
     const list = Array.isArray(data)
@@ -5030,7 +5119,10 @@ async function reconcileAlwaysOn(): Promise<void> {
   if (reconcileBusy) return
   reconcileBusy = true
   try {
-    const a = (await bgosGet(`assistants/${ASSISTANT_ID}`)) as {
+    // Cached-on-304 so a 304 still yields the flags: the reconcile must keep
+    // comparing desired-vs-installed even when the assistant row is unchanged
+    // (a failed install attempt gets retried on the next cycle).
+    const a = (await bgosGetCachedOn304(`assistants/${ASSISTANT_ID}`)) as {
       code?: string | null
       alwaysOn?: boolean
     }
@@ -5098,35 +5190,57 @@ async function main(): Promise<void> {
     log(`WS connect failed: ${err}; falling back to polling only`)
   }
 
-  // Step 4: Start adaptive polling loop. When WS is healthy we throttle to
-  // 30× the configured interval (default 2s → 60s heartbeat). When the WS
-  // is down we revert to the configured cadence so the plugin still
-  // delivers messages without a working WS.
-  const HEALTHY_MULTIPLIER = 30
+  // Step 4: Start adaptive polling loop (SERVERPERF P6d: scoped fast mode).
+  // One scheduler tick every POLL_INTERVAL_MS (2s); each tick either runs a
+  // FULL cycle (chat discovery + every monitored chat), a FAST cycle (ONLY
+  // the chats that need 2s reactivity: open-meeting chats and chats with a
+  // pending permission awaiting a user click), or nothing.
+  //  - WS healthy: full cycle every base x30 (60s), the heartbeat safety net.
+  //  - WS down: poll IS the delivery path, full cycle every base x5 (10s).
+  //    NOT 2s: fast-sweeping the whole 600+ chat list at 2s was the polling
+  //    storm this replaces, and a sequential sweep that size cannot finish
+  //    in 2s anyway. 10s bounds worst-case delivery latency during a WS
+  //    outage at a fifth of the old request volume; see lib/poll-core.ts.
+  //  - A meeting or pending permission fast-polls THAT chat at 2s, never the
+  //    whole list.
   log(
     `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
-      `WS-healthy=${POLL_INTERVAL_MS * HEALTHY_MULTIPLIER}ms`,
+      `WS-healthy full cycle=${POLL_INTERVAL_MS * HEALTHY_MULTIPLIER}ms, ` +
+      `WS-down full cycle=${POLL_INTERVAL_MS * WS_DOWN_MULTIPLIER}ms, ` +
+      `fast mode scoped to meeting/permission chats`,
   )
+  let lastFullCycleAt = 0
   const tick = async (): Promise<void> => {
     try {
-      await discoverChats()
-      await pollAllChats()
+      const plan = planPollCycle({
+        now: Date.now(),
+        lastFullCycleAt,
+        wsHealthy: isWsHealthy(),
+        baseIntervalMs: POLL_INTERVAL_MS,
+        fastChatIds: fastScopeChatIds({
+          meetingChatIds,
+          pendingPermissionChatIds: [...pendingPermissions.values()].map(
+            (p) => p.chatId,
+          ),
+        }),
+      })
+      if (plan.kind === 'full') {
+        lastFullCycleAt = Date.now()
+        await discoverChats()
+        await pollAllChats()
+        // Session controls: heartbeat refresh of the context-window gauge,
+        // once per full cycle (fire-and-forget, deduped on the rounded
+        // percent inside).
+        reportContextPct()
+      } else if (plan.kind === 'fast') {
+        for (const fastChatId of plan.chatIds) {
+          await pollChat(fastChatId)
+        }
+      }
     } catch (err) {
       log(`Poll cycle error: ${err}`)
     }
-    // Session controls: heartbeat refresh of the context-window gauge
-    // (fire-and-forget, deduped on the rounded percent inside).
-    reportContextPct()
-    // Force fast cadence whenever:
-    //  - WS is unhealthy (poll IS the delivery path)
-    //  - There are active meetings (turn changes feel snappy)
-    //  - There's a pending permission awaiting a user click (so the inline
-    //    Allow/Deny button click gets picked up within ~2s instead of ~60s)
-    const interval =
-      isWsHealthy() && meetingChatIds.size === 0 && pendingPermissions.size === 0
-        ? POLL_INTERVAL_MS * HEALTHY_MULTIPLIER
-        : POLL_INTERVAL_MS
-    setTimeout(tick, interval)
+    setTimeout(tick, POLL_INTERVAL_MS)
   }
   setTimeout(tick, POLL_INTERVAL_MS)
 
@@ -5145,10 +5259,12 @@ async function main(): Promise<void> {
 
   // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or
   // removes the bgos-agent supervisor to match the assistant's alwaysOn flag.
-  // Checked on boot + every 2 min, snappy enough that flipping the toggle feels
-  // near-immediate, cheap enough to ignore.
+  // Checked on boot + every 15 min (SERVERPERF P6e; was 2 min): the flag almost
+  // never changes, the boot check covers restarts, and the recurring fetch is
+  // usually a 304 now. A toggle flip may take up to 15 min to reconcile on a
+  // running daemon; the supervisor swap only matters at session end anyway.
   void reconcileAlwaysOn()
-  setInterval(() => void reconcileAlwaysOn(), 2 * 60_000).unref()
+  setInterval(() => void reconcileAlwaysOn(), RECONCILE_ALWAYS_ON_INTERVAL_MS).unref()
 
   // Step 8: Honest Limits sweep. Every 30s, tail the session transcript for a
   // usage/session-cap record and self-declare { status: 'resting', resetAt }
