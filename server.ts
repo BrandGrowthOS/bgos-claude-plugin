@@ -59,6 +59,12 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker, readContextPct } from './lib/usage-report.js'
 import {
+  RestingWatcher,
+  resolveRestingTick,
+  type RestingEpisode,
+  type RestingSignal,
+} from './lib/resting.js'
+import {
   buildScheduleCreateBody,
   buildScheduleListPath,
   buildScheduleCancelPath,
@@ -285,6 +291,60 @@ function reportContextPct(): void {
   })().catch(() => {
     /* optional telemetry; swallow everything */
   })
+}
+
+// Honest Limits self-report (agent side of backend PR #745): when the Claude
+// session hits a usage/session cap the model goes silent, so the plugin
+// detects the cap in the session transcript (lib/resting.ts) and PATCHes
+// { status: 'resting', resetAt } onto the assistant status, the same
+// user-scoped endpoint set_status and contextPct already use. The backend
+// clears resting at resetAt or on real activity; nothing is un-set from here.
+// Deduped per rest episode: one PATCH per cap, re-PATCH only when the reset
+// time changes or a fresh cap appears after the last horizon passed (that
+// covers credits-out, which carries no reset time and gets a conservative
+// now+30min horizon). `emittedResting` advances only on a successful PATCH,
+// so a failed send retries on the next sweep.
+const restingWatcher = new RestingWatcher(process.cwd())
+let observedResting: RestingEpisode | null = null
+let emittedResting: RestingEpisode | null = null
+// Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
+// ticks pile up duplicate PATCHes for the same episode, or complete out of
+// order and leave the backend on a stale resetAt.
+let restingSweepInFlight = false
+function reportResting(): void {
+  if (restingSweepInFlight) return
+  restingSweepInFlight = true
+  void (async () => {
+    const now = Date.now()
+    let signal: RestingSignal | null = null
+    try {
+      signal = restingWatcher.scan(now)
+    } catch {
+      signal = null
+    }
+    const tick = resolveRestingTick(
+      { observed: observedResting, emitted: emittedResting },
+      signal,
+      now,
+    )
+    observedResting = tick.observed
+    emittedResting = tick.emitted
+    if (tick.resetAtToEmit === null) return
+    const resetAt = tick.resetAtToEmit
+    // Commit the LOCAL episode this PATCH actually carried, not a re-read of
+    // the shared variable (same pattern as reportContextPct committing its
+    // local `rounded`).
+    const sent = tick.observed
+    await bgosPatch(`assistants/${ASSISTANT_ID}/status`, { status: 'resting', resetAt })
+    emittedResting = sent
+    log(`Resting self-report sent (resetAt=${resetAt})`)
+  })()
+    .catch(() => {
+      /* best-effort honesty signal; a failed PATCH retries next sweep */
+    })
+    .finally(() => {
+      restingSweepInFlight = false
+    })
 }
 
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
@@ -5089,6 +5149,13 @@ async function main(): Promise<void> {
   // near-immediate, cheap enough to ignore.
   void reconcileAlwaysOn()
   setInterval(() => void reconcileAlwaysOn(), 2 * 60_000).unref()
+
+  // Step 8: Honest Limits sweep. Every 30s, tail the session transcript for a
+  // usage/session-cap record and self-declare { status: 'resting', resetAt }
+  // so the owner's chat never shows a silently dead agent. Cheap (reads only
+  // appended bytes) and deduped per rest episode inside reportResting.
+  setInterval(reportResting, 30_000).unref()
+  log('Honest Limits resting self-report enabled (30s transcript sweep)')
 }
 
 main().catch((err) => {
