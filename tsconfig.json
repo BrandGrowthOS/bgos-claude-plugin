@@ -9,7 +9,7 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "allowJs": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
   "include": ["server.ts", "lib/**/*.ts", "test/**/*.ts"]
 }

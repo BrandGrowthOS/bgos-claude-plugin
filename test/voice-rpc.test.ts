@@ -316,7 +316,7 @@ test('mint maps an OpenAI HTTP error to MINT_FAILED with status + body excerpt',
   const fetchImpl = (async () =>
     new Response('{"error":{"message":"invalid_api_key"}}', {
       status: 401,
-    })) as typeof fetch
+    })) as unknown as typeof fetch
   const { deps, rec } = makeDeps({ fetchImpl })
   await new VoiceRpcHandler(deps).handle(frame())
   const { body } = rec.results[0]!
@@ -330,7 +330,7 @@ test('mint rejects a response with no secret value', async () => {
   const fetchImpl = (async () =>
     new Response(JSON.stringify({ expires_at: 123 }), {
       status: 200,
-    })) as typeof fetch
+    })) as unknown as typeof fetch
   const { deps, rec } = makeDeps({ fetchImpl })
   await new VoiceRpcHandler(deps).handle(frame())
   assert.equal(rec.results[0]!.body.ok, false)
