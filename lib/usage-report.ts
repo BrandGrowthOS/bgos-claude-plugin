@@ -255,6 +255,15 @@ export function windowForModel(model: string): number {
   return model.includes('[1m]') ? 1_000_000 : 200_000
 }
 
+/** Beyond any plausible overflow of the standard 200k window. A single API
+ *  turn can slightly exceed 200k right before auto-compaction (observed
+ *  ~205k), but a turn that carried MORE input than this must have run in a
+ *  1M-context session even when the model id lacks the '[1m]' marker
+ *  (observed in the wild: 1M Fable sessions log model 'claude-fable-5'
+ *  with no marker, so used/200k computed 219 percent and the gauge sat
+ *  pinned at a false 100). */
+export const STANDARD_WINDOW_OVERFLOW_LIMIT = 220_000
+
 /**
  * Scan a transcript JSONL chunk from the END and return the context fill
  * percent (0..100) of the most recent assistant entry that has a usage
@@ -287,7 +296,14 @@ export function latestContextPctFromJsonl(chunk: string): number | null {
       count(u.cache_read_input_tokens) +
       count(u.cache_creation_input_tokens)
     const model = typeof m.model === 'string' ? m.model : ''
-    const window = windowForModel(model)
+    let window = windowForModel(model)
+    // Window inference: when the marker-based guess says 200k but the turn
+    // provably carried more input than a 200k window can hold, this was a
+    // 1M-context session whose model id lacks the '[1m]' marker. Without
+    // this, such sessions report a permanently pinned (and false) 100.
+    if (window === 200_000 && used > STANDARD_WINDOW_OVERFLOW_LIMIT) {
+      window = 1_000_000
+    }
     // used * 100 first: keeps integer-divisible cases exact in floats.
     return Math.min(100, Math.max(0, (used * 100) / window))
   }

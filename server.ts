@@ -59,6 +59,10 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker, readContextPct } from './lib/usage-report.js'
 import {
+  BUILTIN_COMMANDS,
+  type SlashCommandEntry,
+} from './lib/slash-catalog.js'
+import {
   RestingWatcher,
   resolveRestingTick,
   type RestingEpisode,
@@ -900,7 +904,7 @@ const mcp = new Server(
       'Users can pick slash commands from the BGOS app\'s composer. When they',
       'type `/`, the app shows an autocomplete picker populated from the catalog',
       'this plugin syncs on boot (built-in commands like `/help`, `/clear`,',
-      '`/compact`, `/cost`, plus your user/project/plugin commands).',
+      '`/cost`, plus your user/project/plugin commands).',
       '',
       'A slash-command turn arrives as a normal `<channel source="bgos">` event',
       'with `meta.event_type = "slash_command"`, `meta.command_name = "<name>"`,',
@@ -4981,34 +4985,11 @@ function connectWebsocket(): void {
 // when the user types `/`. The backend endpoint is documented in
 // hermes-channel-bgos/docs/bgos-agent-capabilities.md §7.
 
-interface SlashCommandEntry {
-  command: string
-  description: string
-  scope: 'all'
-}
-
-// Built-in Claude Code commands. Curated against the CLI as of 2026-05.
-// Missing entries are not catastrophic, users can still type them
-// manually. Add new ones here when CC ships them.
-const BUILTIN_COMMANDS: SlashCommandEntry[] = [
-  { command: '/help',          description: 'Show usage and supported tools',          scope: 'all' },
-  { command: '/clear',         description: 'Reset the conversation context',          scope: 'all' },
-  { command: '/compact',       description: 'Compact prior turns to free context',     scope: 'all' },
-  { command: '/cost',          description: 'Show token usage and cost for this session', scope: 'all' },
-  { command: '/model',         description: 'Switch the active Claude model',          scope: 'all' },
-  { command: '/agents',        description: 'List and configure subagents',            scope: 'all' },
-  { command: '/permissions',   description: 'Review and manage tool permissions',      scope: 'all' },
-  { command: '/hooks',         description: 'Manage shell hooks for events',           scope: 'all' },
-  { command: '/mcp',           description: 'Manage MCP server connections',           scope: 'all' },
-  { command: '/memory',        description: 'View or edit project memory',             scope: 'all' },
-  { command: '/init',          description: 'Initialize CLAUDE.md for this project',   scope: 'all' },
-  { command: '/doctor',        description: 'Diagnose configuration issues',           scope: 'all' },
-  { command: '/status',        description: 'Show session status',                     scope: 'all' },
-  { command: '/release-notes', description: 'Show release notes for Claude Code',      scope: 'all' },
-  { command: '/bug',           description: 'Open a bug report',                       scope: 'all' },
-  { command: '/login',         description: 'Sign in to Claude',                       scope: 'all' },
-  { command: '/logout',        description: 'Sign out',                                scope: 'all' },
-]
+// Built-in Claude Code commands now live in lib/slash-catalog.ts (pure +
+// unit-tested). `/compact` is deliberately absent: a BGOS slash command
+// reaches the model as a channel event, not CLI input, so host-only
+// commands the model cannot invoke must not be advertised as working
+// (the BGOS context pill gates its Compact button on that entry).
 
 async function readMdCommand(
   filePath: string,

@@ -197,6 +197,30 @@ test('latestContextPctFromJsonl: [1m] model id widens the window', () => {
   assert.equal(latestContextPctFromJsonl(chunk), 50)
 })
 
+test('latestContextPctFromJsonl: infers a 1M window when the turn provably overflows 200k (unmarked 1M session)', () => {
+  // Observed in the wild: a 1M-context session whose transcript logs the
+  // model as plain 'claude-fable-5' (no '[1m]' marker) with a 438k-token
+  // turn. Marker-only detection computed 219 percent, clamped to a false,
+  // permanently pinned 100.
+  const chunk = assistantLine({
+    model: 'claude-fable-5',
+    usage: { input_tokens: 2, cache_read_input_tokens: 436_561, cache_creation_input_tokens: 1_816 },
+  })
+  // (2 + 436561 + 1816) / 1M = 43.8379
+  assert.equal(latestContextPctFromJsonl(chunk), 43.8379)
+})
+
+test('latestContextPctFromJsonl: a small legit overflow of 200k still reads as 100, no 1M inference', () => {
+  // Right before auto-compaction a 200k session can slightly exceed the
+  // window (observed ~205k). That must NOT flip the inference to 1M (which
+  // would suddenly report ~20 percent); it clamps to 100 as before.
+  const chunk = assistantLine({
+    model: 'claude-fable-5',
+    usage: { input_tokens: 205_000 },
+  })
+  assert.equal(latestContextPctFromJsonl(chunk), 100)
+})
+
 test('latestContextPctFromJsonl clamps to 100 and skips trailing junk', () => {
   const chunk =
     assistantLine({ usage: { input_tokens: 999_999_999 } }) +
