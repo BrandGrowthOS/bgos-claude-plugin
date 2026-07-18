@@ -476,7 +476,7 @@ Two additions that let the BGOS app supervise a running session:
 | `BGOS_USER_ID` | Yes | Your BGOS user ID |
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
-| `BGOS_AUTO_UPDATE` | No | Exact value `"on"` opts in to same-major self-updates. Exact value `"off"` is the hard kill switch. Default: off |
+| `BGOS_AUTO_UPDATE` | No | Same-major self-updates are ON by default (unset or empty counts as on). Exact value `"off"` is the hard kill switch; any other value also disables. |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 | `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
 | `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2.1`) |
