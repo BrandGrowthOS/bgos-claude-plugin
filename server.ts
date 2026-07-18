@@ -136,7 +136,12 @@ import {
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
 import { homedir } from 'node:os'
-import { startVersionHeartbeat } from './lib/version-heartbeat'
+import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
+import {
+  initializeSelfUpdater,
+  resolveAutoUpdateStatePath,
+  type SelfUpdater,
+} from './lib/self-update'
 import { join as joinPath } from 'node:path'
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -201,12 +206,34 @@ const DEFAULT_LOG_PATH = pathJoin(
 )
 const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
 
+let selfUpdater: SelfUpdater | null = null
+let updateDrainMode = false
+let activeMessageOperations = 0
+
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
   process.stderr.write(line)
   try {
     appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
   } catch {}
+}
+
+function setUpdateDrainMode(enabled: boolean): void {
+  updateDrainMode = enabled
+  if (enabled) {
+    realtimeSocket?.disconnect()
+  } else {
+    realtimeSocket?.connect()
+  }
+}
+
+async function trackMessageOperation<T>(operation: () => Promise<T>): Promise<T> {
+  activeMessageOperations += 1
+  try {
+    return await operation()
+  } finally {
+    activeMessageOperations -= 1
+  }
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
@@ -2446,7 +2473,8 @@ async function handleShowComponent(opts: {
   }
 }
 
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+mcp.setRequestHandler(CallToolRequestSchema, (req) =>
+  trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
 
   switch (req.params.name) {
@@ -3682,7 +3710,8 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
-})
+  }),
+)
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
 
@@ -4275,6 +4304,8 @@ function isPendingEmptySystem(m: ChatMessage): boolean {
 }
 
 async function pollChat(chatId: string): Promise<void> {
+  if (updateDrainMode) return
+  await trackMessageOperation(async () => {
   // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
   // every poll passes afterId=<last seen id> so an idle chat costs an empty
   // window (usually a 304) instead of the full newest-50 envelope with its
@@ -4741,6 +4772,7 @@ async function pollChat(chatId: string): Promise<void> {
     // loss; the cursor filter dedups anything already forwarded.
     bgosEtagCache.invalidate(req.cacheKey)
   }
+  })
 }
 
 async function pollAllChats(): Promise<void> {
@@ -4977,6 +5009,7 @@ function connectWebsocket(): void {
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
   realtimeSocket.on('voice_rpc', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeVoiceRpc(payload)
       if (!frame) return
@@ -4993,6 +5026,7 @@ function connectWebsocket(): void {
   // with an rpcId ALWAYS gets a result or descriptive error, the voice_rpc
   // G2 lesson). Duplicate re-emits are deduped by rpcId inside the handler.
   realtimeSocket.on('export_pack', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeExportPack(payload)
       if (!frame) return
@@ -5009,6 +5043,7 @@ function connectWebsocket(): void {
   // Dry run for the handoff wizard's per-file memory opt-in: list candidate
   // files (kind body | memory) without building or uploading anything.
   realtimeSocket.on('export_pack_manifest', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeExportPackManifest(payload)
       if (!frame) return
@@ -5023,6 +5058,7 @@ function connectWebsocket(): void {
   // dispatched background work to THIS agent. Surface it to the live session
   // with the task id + brief; the agent reports back via complete_voice_task.
   realtimeSocket.on('voice_task_dispatch', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const parsed = normalizeVoiceTaskDispatch(payload, {
         requireConfirmed: REQUIRE_CONFIRMED_DISPATCH,
@@ -5055,6 +5091,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('inbound_message', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
@@ -5350,6 +5387,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('meeting_message', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
       if (!Number.isFinite(meetingId)) return
@@ -5947,6 +5985,21 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  selfUpdater = await initializeSelfUpdater({
+    rootDir: import.meta.dir,
+    stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
+    env: process.env,
+    runningVersion: readOwnVersion(import.meta.dir),
+    log,
+    drainSnapshot: () => ({
+      activeOperations: activeMessageOperations,
+      pendingMessages: pendingInbounds.size,
+      pendingPermissions: pendingPermissions.size,
+    }),
+    setDrainMode: setUpdateDrainMode,
+    exit: (code) => process.exit(code),
+  })
+
   log('Starting BGOS channel plugin...')
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
@@ -5995,6 +6048,7 @@ async function main(): Promise<void> {
   })
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
+      selfUpdater?.markGracefulStop()
       cursorStore.flushIfDirty()
       process.exit(signal === 'SIGINT' ? 130 : 143)
     })
@@ -6101,6 +6155,11 @@ async function main(): Promise<void> {
     post: bgosPost,
     log,
   })
+
+  // Step 10: opt-in checkout updates. The updater checked rollback state at
+  // the start of main; the remote check starts only after message transport,
+  // cursors, polling, and shutdown hooks are ready.
+  selfUpdater?.start()
 }
 
 main().catch((err) => {

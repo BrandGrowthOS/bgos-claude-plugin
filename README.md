@@ -469,6 +469,7 @@ Two additions that let the BGOS app supervise a running session:
 | `BGOS_USER_ID` | Yes | Your BGOS user ID |
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
+| `BGOS_AUTO_UPDATE` | No | Exact value `"on"` opts in to same-major self-updates. Exact value `"off"` is the hard kill switch. Default: off |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 | `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
 | `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2.1`) |
@@ -498,6 +499,26 @@ When the user picks a command and sends, the plugin delivers it to Claude Code a
 The catalog refresh is best-effort: if `PUT /integrations/assistants/:id/commands` is unreachable, the plugin keeps working and re-tries on the next 5-minute tick.
 
 ## Updating the Plugin
+
+Automatic updates are off by default. To opt in, add
+`"BGOS_AUTO_UPDATE": "on"` to the plugin `env` object in `.mcp.json` and
+restart the agent. The plugin checks at boot, then after each 24 hour interval
+plus a random zero to six hour jitter. It updates only to a newer version in
+the same major release line.
+
+The updater fetches `origin/main` and uses a fast-forward-only checkout update.
+It skips any checkout with local changes. On a machine with several daemons
+using the same clone, a shared lock lets one daemon update while the others
+exit cleanly for their supervisors to restart them. An update waits for current
+message work to drain, then exits with status 0 after it is installed.
+
+Set `BGOS_AUTO_UPDATE=off` to stop all checks and pulls. If a new revision
+crashes within 60 seconds of boot twice, the plugin checks out the recorded
+previous commit without reset or force and disables automatic updates. To
+clear that safety latch, boot once with the flag set to `off`, then set it back
+to `on` and restart again.
+
+Manual updates remain supported:
 
 ```bash
 cd ~/bgos-claude-plugin
