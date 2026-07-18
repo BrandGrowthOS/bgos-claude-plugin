@@ -480,6 +480,52 @@ describe('durable state and shared lock', () => {
     expect(commands).toBe(1)
     expect(loadSharedUpdateSafety(safetyPath)).toEqual(EMPTY_SHARED_UPDATE_SAFETY)
   })
+
+  test('already-running updater honors a shared latch written by another daemon', async () => {
+    const rootDir = tempDir('self-update-live-shared-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const logs: string[] = []
+    const runner: CommandRunner = async (file, args) => {
+      calls.push({ file, args: [...args] })
+      if (args.join(' ') === 'rev-parse HEAD') {
+        return { stdout: `${COMMIT_A}\n`, stderr: '' }
+      }
+      throw new Error(`shared latch should prevent command: ${file} ${args.join(' ')}`)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath: join(tempDir('self-update-live-shared-state-'), 'auto-update.json'),
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => exits.push(code),
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    expect(updater).not.toBeNull()
+    expect(
+      saveSharedUpdateSafety(join(gitDir, 'bgos-auto-update-disabled.json'), {
+        schemaVersion: 1,
+        disabled: true,
+        resetArmed: false,
+      }),
+    ).toBe(true)
+    await updater!.checkNow()
+    expect(calls).toEqual([{ file: 'git', args: ['rev-parse', 'HEAD'] }])
+    expect(calls.some((call) => call.args[0] === 'fetch')).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
+    expect(exits).toEqual([])
+    expect(logs.some((line) => line.includes('shared checkout is rollback-disabled'))).toBe(true)
+  })
 })
 
 describe('checkout safety decisions', () => {

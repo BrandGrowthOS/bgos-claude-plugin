@@ -707,6 +707,11 @@ export class SelfUpdater {
     if (this.checkRunning || this.exiting) return
     this.checkRunning = true
     try {
+      const sharedSafety = loadSharedUpdateSafety(this.safetyPath)
+      if (sharedSafety.disabled) {
+        this.opts.log('Auto-update check skipped because this shared checkout is rollback-disabled.')
+        return
+      }
       if (this.state.validationPending) {
         this.opts.log('Auto-update check deferred while the new code is validating.')
         return
