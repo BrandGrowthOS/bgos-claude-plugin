@@ -40,6 +40,10 @@ import { join, dirname, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import {
+  installStableWrapper,
+  stableWrapperPath,
+} from './bgos-daemon-wrapper.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -357,9 +361,10 @@ export function packEntryToWorkspacePath(packPath) {
   return null
 }
 
-/** The exact .mcp.json config server.ts requires (see its env validation). */
+/** The exact .mcp.json config the stable daemon wrapper requires. */
 export function buildMcpJson({
-  pluginServerPath,
+  pluginWrapperPath,
+  pluginDir,
   backendUrl,
   apiKey,
   userId,
@@ -369,7 +374,7 @@ export function buildMcpJson({
     mcpServers: {
       bgos: {
         command: 'bun',
-        args: [pluginServerPath],
+        args: [pluginWrapperPath, '--plugin-dir', pluginDir],
         env: {
           BGOS_BACKEND_URL: String(backendUrl),
           BGOS_API_KEY: String(apiKey),
@@ -500,18 +505,19 @@ async function hasCommand(cmd) {
  * Ensure a durable plugin checkout the agent's .mcp.json can point at
  * (~/bgos-agents/.plugin/bgos-claude-plugin, the bgos-build-agent shared
  * clone pattern). BGOS_PLUGIN_DIR overrides; BGOS_PLUGIN_REPO overrides the
- * clone source. Returns the absolute path to server.ts.
+ * clone source. Returns the absolute server.ts path for API compatibility.
  */
 export async function ensurePluginCheckout(agentsRoot, env = process.env, log = console.error) {
   const overrideDir = env.BGOS_PLUGIN_DIR
   if (overrideDir) {
-    const overrideServer = join(overrideDir, 'server.ts')
+    const resolvedOverrideDir = resolve(overrideDir)
+    const overrideServer = join(resolvedOverrideDir, 'server.ts')
     if (!existsSync(overrideServer)) {
-      throw new Error(`BGOS_PLUGIN_DIR has no server.ts: ${overrideDir}`)
+      throw new Error(`BGOS_PLUGIN_DIR has no server.ts: ${resolvedOverrideDir}`)
     }
     return overrideServer
   }
-  const pluginDir = join(agentsRoot, '.plugin', 'bgos-claude-plugin')
+  const pluginDir = resolve(agentsRoot, '.plugin', 'bgos-claude-plugin')
   const serverPath = join(pluginDir, 'server.ts')
   const repo = env.BGOS_PLUGIN_REPO || PLUGIN_REPO
   if (!(await hasCommand('git'))) {
@@ -551,6 +557,14 @@ export async function ensurePluginCheckout(agentsRoot, env = process.env, log = 
     throw new Error(`plugin checkout has no server.ts: ${pluginDir}`)
   }
   return serverPath
+}
+
+/** Install the MCP entry outside the mutable checkout with an atomic rename. */
+export function installPluginWrapper(pluginDir, home = homedir()) {
+  return installStableWrapper(
+    join(pluginDir, 'bin', 'bgos-daemon-wrapper.mjs'),
+    stableWrapperPath(home),
+  )
 }
 
 /** Write the scaffold folder from verified pack entries. Pure layout logic
@@ -728,6 +742,8 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log('[bgos-claim] preparing the channel plugin checkout...')
   const pluginServerPath = await ensurePluginCheckout(agentsRoot)
+  const pluginDir = dirname(pluginServerPath)
+  const pluginWrapperPath = installPluginWrapper(pluginDir)
 
   const written = await scaffoldWorkspace(dir, entries)
   console.log(`[bgos-claim] scaffolded ${dir} (${written} pack files)`)
@@ -751,7 +767,8 @@ export async function main(argv = process.argv.slice(2)) {
 
   const backendUrl = pack.apiBase || args.apiBase
   const mcpConfig = buildMcpJson({
-    pluginServerPath,
+    pluginWrapperPath,
+    pluginDir,
     backendUrl,
     apiKey,
     userId: pack.recipientUserId ?? '',

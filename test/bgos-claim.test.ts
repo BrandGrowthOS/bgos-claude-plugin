@@ -15,7 +15,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, stat, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -37,6 +37,7 @@ import {
   shellQuote,
   buildLaunchCommand,
   writeMcpJsonFile,
+  installPluginWrapper,
   scaffoldWorkspace,
   MCP_JSON_MODE,
   GITIGNORE_BODY,
@@ -225,9 +226,10 @@ test('packEntryToWorkspacePath rejects zip-slip shapes', () => {
 
 // ── .mcp.json: the REAL env keys + 600 mode ──────────────────────────────────
 
-test('buildMcpJson emits the exact server.ts env keys (not the broken template names)', () => {
+test('buildMcpJson launches the stable wrapper with exact server env keys', () => {
   const config = buildMcpJson({
-    pluginServerPath: '/home/kc/bgos-agents/.plugin/bgos-claude-plugin/server.ts',
+    pluginWrapperPath: '/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
+    pluginDir: '/home/kc/bgos-agents/.plugin/bgos-claude-plugin',
     backendUrl: 'https://api.brandgrowthos.ai/api/v1',
     apiKey: 'bgos_key_abc',
     userId: 'user_42',
@@ -237,7 +239,11 @@ test('buildMcpJson emits the exact server.ts env keys (not the broken template n
     mcpServers: {
       bgos: {
         command: 'bun',
-        args: ['/home/kc/bgos-agents/.plugin/bgos-claude-plugin/server.ts'],
+        args: [
+          '/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
+          '--plugin-dir',
+          '/home/kc/bgos-agents/.plugin/bgos-claude-plugin',
+        ],
         env: {
           BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1',
           BGOS_API_KEY: 'bgos_key_abc',
@@ -259,7 +265,8 @@ test('MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk', async () => {
   try {
     const path = join(dir, '.mcp.json')
     const config = buildMcpJson({
-      pluginServerPath: '/p/server.ts',
+      pluginWrapperPath: '/home/u/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
+      pluginDir: '/p',
       backendUrl: 'https://b',
       apiKey: 'k',
       userId: 'u',
@@ -272,6 +279,24 @@ test('MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('claim installer copies the daemon wrapper outside the plugin checkout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'bgos-claim-wrapper-'))
+  const pluginDir = join(root, 'plugin')
+  const home = join(root, 'home')
+  await mkdir(join(pluginDir, 'bin'), { recursive: true })
+  await writeFile(
+    join(pluginDir, 'bin', 'bgos-daemon-wrapper.mjs'),
+    '#!/usr/bin/env node\n',
+  )
+  const installed = installPluginWrapper(pluginDir, home)
+  assert.equal(
+    installed,
+    join(home, '.bgos-agent', 'runtime', 'bgos-daemon-wrapper.mjs'),
+  )
+  assert.equal(installed.startsWith(pluginDir), false)
+  assert.equal(await readFile(installed, 'utf8'), '#!/usr/bin/env node\n')
 })
 
 // ── required_env + launch command ────────────────────────────────────────────

@@ -43,6 +43,7 @@ BIN_DIR="$(dirname "$SELF")"
 PLUGIN_DIR="${BGOS_PLUGIN_DIR:-$(cd "$BIN_DIR/.." >/dev/null 2>&1 && pwd)}"
 PLUGIN_REPO="https://github.com/BrandGrowthOS/bgos-claude-plugin.git"
 STATE_ROOT="$HOME/.bgos-agent"
+WRAPPER_PATH="$STATE_ROOT/runtime/bgos-daemon-wrapper.mjs"
 OS="$(uname -s)"
 
 # --- pretty output -----------------------------------------------------------
@@ -114,8 +115,10 @@ cmd_install() {
     info "Cloning plugin → $PLUGIN_DIR"
     git clone --depth 1 "$PLUGIN_REPO" "$PLUGIN_DIR"
   fi
+  PLUGIN_DIR="$(cd -P "$PLUGIN_DIR" >/dev/null 2>&1 && pwd)"
   info "Installing plugin deps (bun install)"
   ( cd "$PLUGIN_DIR" && bun install --no-summary >/dev/null 2>&1 ) || warn "bun install reported an issue (continuing)"
+  install_daemon_wrapper
   ok "plugin ready at $PLUGIN_DIR"
 
   # --- workspace + .mcp.json ------------------------------------------------
@@ -169,18 +172,25 @@ cmd_install() {
 }
 
 # --- file generators ---------------------------------------------------------
+install_daemon_wrapper() {
+  local source="$PLUGIN_DIR/bin/bgos-daemon-wrapper.mjs"
+  [ -f "$source" ] || die "daemon wrapper not found at $source"
+  bun "$source" --install "$WRAPPER_PATH" >/dev/null \
+    || die "could not install the stable daemon wrapper at $WRAPPER_PATH"
+}
+
 # JSON via bun + JSON.stringify: values are passed as env vars (no shell/JSON
 # interpolation), so a key/url with quotes or backslashes can't corrupt or
 # inject into the config.
 write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto [$7 openai-key]
-  BGOS_SERVER="$PLUGIN_DIR/server.ts" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" BGOS_OAI="${7:-}" \
+  BGOS_WRAPPER="$WRAPPER_PATH" BGOS_PLUGIN="$PLUGIN_DIR" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" BGOS_OAI="${7:-}" \
   bun -e '
     const e = process.env;
     const env = { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
                   BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO };
     // Optional: enables live voice calls (Talk button), see README "Voice Calls".
     if (e.BGOS_OAI) env.BGOS_OPENAI_API_KEY = e.BGOS_OAI;
-    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_SERVER], env } } };
+    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_WRAPPER, "--plugin-dir", e.BGOS_PLUGIN], env } } };
     process.stdout.write(JSON.stringify(cfg, null, 2) + "\n");
   ' > "$1"
 }

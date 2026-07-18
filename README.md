@@ -120,9 +120,12 @@ cd ~
 git clone https://github.com/BrandGrowthOS/bgos-claude-plugin.git
 cd bgos-claude-plugin
 bun install
+bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-This creates `~/bgos-claude-plugin/`. You only do this once.
+This creates `~/bgos-claude-plugin/` and atomically installs a stable daemon
+wrapper outside that mutable checkout. Run the wrapper install command again
+after a manual plugin update.
 
 ### Step 2: Create `.mcp.json` in your project
 
@@ -133,7 +136,11 @@ In your **project's root directory**, create a `.mcp.json` file with your BGOS c
   "mcpServers": {
     "bgos": {
       "command": "bun",
-      "args": ["/absolute/path/to/bgos-claude-plugin/server.ts"],
+      "args": [
+        "/absolute/home/path/.bgos-agent/runtime/bgos-daemon-wrapper.mjs",
+        "--plugin-dir",
+        "/absolute/path/to/bgos-claude-plugin"
+      ],
       "env": {
         "BGOS_BACKEND_URL": "https://api.brandgrowthos.ai/api/v1",
         "BGOS_API_KEY": "your-api-key-here",
@@ -146,10 +153,10 @@ In your **project's root directory**, create a `.mcp.json` file with your BGOS c
 }
 ```
 
-**Replace the path** with the absolute path to `server.ts` on your machine:
-- **Linux**: `"/home/username/bgos-claude-plugin/server.ts"`
-- **Mac**: `"/Users/username/bgos-claude-plugin/server.ts"`
-- **Windows**: `"C:/Users/username/bgos-claude-plugin/server.ts"`
+Replace both example paths with the absolute wrapper and checkout paths on
+your machine. Linux and macOS wrappers normally live at
+`~/.bgos-agent/runtime/bgos-daemon-wrapper.mjs`. On Windows, use these steps
+inside WSL and use the corresponding Linux paths.
 
 > **Important:** Add `.mcp.json` to your project's `.gitignore` — it contains your API key.
 
@@ -469,6 +476,7 @@ Two additions that let the BGOS app supervise a running session:
 | `BGOS_USER_ID` | Yes | Your BGOS user ID |
 | `BGOS_ASSISTANT_ID` | Yes | Numeric ID of the assistant to respond through |
 | `BGOS_AUTO_APPROVE` | No | `"true"` to auto-approve all tool permissions (default: interactive) |
+| `BGOS_AUTO_UPDATE` | No | Exact value `"on"` opts in to same-major self-updates. Exact value `"off"` is the hard kill switch. Default: off |
 | `BGOS_POLL_INTERVAL_MS` | No | Polling interval in ms (default: `2000`) |
 | `BGOS_OPENAI_API_KEY` | No | OpenAI API key with Realtime access — enables live voice calls (the Talk button). Falls back to `OPENAI_API_KEY`. Without it, chat works normally and voice calls fail with a descriptive "voice not configured" error |
 | `BGOS_VOICE_MODEL` | No | OpenAI realtime model for voice calls (default: `gpt-realtime-2.1`) |
@@ -499,19 +507,43 @@ The catalog refresh is best-effort: if `PUT /integrations/assistants/:id/command
 
 ## Updating the Plugin
 
+Automatic updates are off by default. To opt in, add
+`"BGOS_AUTO_UPDATE": "on"` to the plugin `env` object in `.mcp.json` and
+restart the agent. The plugin checks at boot, then after each 24 hour interval
+plus a random zero to six hour jitter. It updates only to a newer version in
+the same major release line.
+
+The updater fetches `origin/main` and uses a fast-forward-only checkout update.
+It skips any checkout with local changes. On a machine with several daemons
+using the same clone, a shared lock lets one daemon update while the others
+exit cleanly for their supervisors to restart them. An update waits for current
+message work to drain, then exits with status 0 after it is installed.
+The stable wrapper records boot safety before the mutable server is imported,
+passes MCP stdin and stdout through unchanged, and refreshes its installed copy
+atomically after a successful update.
+
+Set `BGOS_AUTO_UPDATE=off` to stop all checks and pulls. If a new revision
+crashes within 60 seconds of boot twice, the plugin checks out the recorded
+previous commit without reset or force and disables automatic updates. To
+clear that safety latch, boot once with the flag set to `off`, then set it back
+to `on` and restart again.
+
+Manual updates remain supported:
+
 ```bash
 cd ~/bgos-claude-plugin
 git pull origin main
 bun install
+bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-Then relaunch Claude Code. No changes needed to your project's `.mcp.json`.
+Then relaunch Claude Code. The wrapper path in `.mcp.json` stays unchanged.
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| Plugin doesn't appear in `/mcp` | Check `.mcp.json` has the correct absolute path to `server.ts` |
+| Plugin doesn't appear in `/mcp` | Check `.mcp.json` has the correct absolute wrapper and plugin directory paths |
 | "Not connected" when using reply tool | Make sure you're using `bun` (not `npx tsx`) as the command in `.mcp.json` |
 | No messages from BGOS arriving | Check `BGOS_ASSISTANT_ID` matches the assistant you're chatting with |
 | MCP connects then disconnects | Ensure you installed with `bun install` (not `npm install`). Verify bun version: `bun --version` |

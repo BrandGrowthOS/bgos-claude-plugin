@@ -136,7 +136,13 @@ import {
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
 import { homedir } from 'node:os'
-import { startVersionHeartbeat } from './lib/version-heartbeat'
+import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
+import {
+  initializeSelfUpdater,
+  MessageActivityTracker,
+  resolveAutoUpdateStatePath,
+  type SelfUpdater,
+} from './lib/self-update'
 import { join as joinPath } from 'node:path'
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -201,12 +207,29 @@ const DEFAULT_LOG_PATH = pathJoin(
 )
 const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
 
+let selfUpdater: SelfUpdater | null = null
+let updateDrainMode = false
+const messageActivity = new MessageActivityTracker()
+
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
   process.stderr.write(line)
   try {
     appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
   } catch {}
+}
+
+function setUpdateDrainMode(enabled: boolean): void {
+  updateDrainMode = enabled
+  if (enabled) {
+    realtimeSocket?.disconnect()
+  } else {
+    realtimeSocket?.connect()
+  }
+}
+
+async function trackMessageOperation<T>(operation: () => Promise<T>): Promise<T> {
+  return messageActivity.track(operation)
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
@@ -1254,7 +1277,9 @@ const PermissionRequestSchema = z.object({
   }),
 })
 
-mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
+mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
+  if (updateDrainMode) return Promise.resolve()
+  return trackMessageOperation(async () => {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
@@ -1262,7 +1287,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   if (AUTO_APPROVE) {
     // Auto-approve mode: immediately allow all tool usage
     log(`Auto-approving: ${tool_name} [${request_id}]`)
-    mcp.notification({
+    await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'allow' },
     }).catch((err) => {
@@ -1277,7 +1302,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   const chatId = monitoredChatIds[0]
   if (!chatId) {
     log(`No monitored chat found, auto-denying ${tool_name} [${request_id}]`)
-    mcp.notification({
+    await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'deny' },
     }).catch(() => {})
@@ -1345,7 +1370,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
 
     log(`Verdict for ${tool_name} [${request_id}]: ${choice} -> ${behavior}`)
     pendingPermissions.delete(request_id)
-    mcp.notification({
+    await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },
     }).catch((err) => {
@@ -1355,11 +1380,12 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     pendingPermissions.delete(request_id)
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
-    mcp.notification({
+    await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'deny' },
     }).catch(() => {})
   }
+  })
 })
 
 /**
@@ -2446,7 +2472,19 @@ async function handleShowComponent(opts: {
   }
 }
 
-mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+mcp.setRequestHandler(CallToolRequestSchema, (req) => {
+  if (updateDrainMode) {
+    return Promise.resolve({
+      content: [
+        {
+          type: 'text' as const,
+          text: 'The BGOS channel is restarting for an update. Retry this tool shortly.',
+        },
+      ],
+      isError: true,
+    })
+  }
+  return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
 
   switch (req.params.name) {
@@ -3682,6 +3720,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     default:
       throw new Error(`Unknown tool: ${req.params.name}`)
   }
+  })
 })
 
 // ── Chat Polling ─────────────────────────────────────────────────────────────
@@ -4045,6 +4084,7 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
 }
 
 function checkReplyOverdue(): void {
+  if (updateDrainMode) return
   const now = Date.now()
   for (const [chatId, p] of pendingInbounds.entries()) {
     if (p.reminded) continue
@@ -4052,7 +4092,7 @@ function checkReplyOverdue(): void {
     p.reminded = true
     const ageSec = Math.round((now - p.ts) / 1000)
     log(`reply-overdue fired for chat ${chatId} message ${p.messageId} (${ageSec}s)`)
-    mcp.notification({
+    void trackMessageOperation(() => mcp.notification({
       method: 'notifications/claude/channel',
       params: {
         content:
@@ -4068,7 +4108,7 @@ function checkReplyOverdue(): void {
           ts: new Date(now).toISOString(),
         },
       },
-    }).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+    })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
   }
 }
 /**
@@ -4275,6 +4315,8 @@ function isPendingEmptySystem(m: ChatMessage): boolean {
 }
 
 async function pollChat(chatId: string): Promise<void> {
+  if (updateDrainMode) return
+  await trackMessageOperation(async () => {
   // Delta polling (SERVERPERF P1a): after the first full fetch for a chat,
   // every poll passes afterId=<last seen id> so an idle chat costs an empty
   // window (usually a 304) instead of the full newest-50 envelope with its
@@ -4503,7 +4545,7 @@ async function pollChat(chatId: string): Promise<void> {
         const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
         contentLines.push(`Original question: ${quoted}`)
       }
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: contentLines.join('\n'),
@@ -4520,7 +4562,7 @@ async function pollChat(chatId: string): Promise<void> {
             ts: mm.answeredAt,
           },
         },
-      }).catch((err) => {
+      })).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
       })
     }
@@ -4553,7 +4595,7 @@ async function pollChat(chatId: string): Promise<void> {
           `${isBacklog ? 'Backlog' : 'New'} meeting message in chat ${chatId}: ` +
             `meeting=${meetingId} your_turn=${yourTurn ? 'YES' : 'NO'}`,
         )
-        mcp.notification({
+        void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
           params: {
             content:
@@ -4580,7 +4622,7 @@ async function pollChat(chatId: string): Promise<void> {
               ...(isBacklog ? { backlog: 'true' } : {}),
             },
           },
-        }).catch((err) => {
+        })).catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
         continue
@@ -4629,7 +4671,9 @@ async function pollChat(chatId: string): Promise<void> {
           log(`remote compact: ignoring stale backlog request (chat ${chatId})`)
         } else if (!alreadyHandledCompact(String(msg.message.id))) {
           log(`remote compact requested via poll (chat ${chatId})`)
-          void handleRemoteCompact(chatId)
+          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+            log(`Remote compact failed: ${err}`)
+          })
         }
         continue
       }
@@ -4654,7 +4698,7 @@ async function pollChat(chatId: string): Promise<void> {
       // shared assistant sees which human actually sent this message.
       const pollSenderUserId = senderUserIdOf(msg.message)
       lastInboundUserByChat.set(chatId, pollSenderUserId)
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
@@ -4680,7 +4724,7 @@ async function pollChat(chatId: string): Promise<void> {
             ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
           },
         },
-      }).catch((err) => {
+      })).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
       // Skip overdue tracking for backlog messages: they were forwarded
@@ -4741,6 +4785,7 @@ async function pollChat(chatId: string): Promise<void> {
     // loss; the cursor filter dedups anything already forwarded.
     bgosEtagCache.invalidate(req.cacheKey)
   }
+  })
 }
 
 async function pollAllChats(): Promise<void> {
@@ -4977,11 +5022,14 @@ function connectWebsocket(): void {
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
   realtimeSocket.on('voice_rpc', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeVoiceRpc(payload)
       if (!frame) return
       log(`voice_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
-      void voiceRpc.handle(frame)
+      void trackMessageOperation(() => voiceRpc.handle(frame)).catch((err) => {
+        log(`voice_rpc handler error: ${err}`)
+      })
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
     }
@@ -4993,6 +5041,7 @@ function connectWebsocket(): void {
   // with an rpcId ALWAYS gets a result or descriptive error, the voice_rpc
   // G2 lesson). Duplicate re-emits are deduped by rpcId inside the handler.
   realtimeSocket.on('export_pack', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeExportPack(payload)
       if (!frame) return
@@ -5000,7 +5049,9 @@ function connectWebsocket(): void {
         `export_pack received (rpc=${frame.rpcId}, handoff=${frame.handoffId}, ` +
           `tier=${frame.tier})`,
       )
-      void exportPack.handleExport(frame)
+      void trackMessageOperation(() => exportPack.handleExport(frame)).catch((err) => {
+        log(`export_pack handler error: ${err}`)
+      })
     } catch (err) {
       log(`export_pack handler error: ${err}`)
     }
@@ -5009,11 +5060,14 @@ function connectWebsocket(): void {
   // Dry run for the handoff wizard's per-file memory opt-in: list candidate
   // files (kind body | memory) without building or uploading anything.
   realtimeSocket.on('export_pack_manifest', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const frame = normalizeExportPackManifest(payload)
       if (!frame) return
       log(`export_pack_manifest received (rpc=${frame.rpcId})`)
-      void exportPack.handleManifest(frame)
+      void trackMessageOperation(() => exportPack.handleManifest(frame)).catch((err) => {
+        log(`export_pack_manifest handler error: ${err}`)
+      })
     } catch (err) {
       log(`export_pack_manifest handler error: ${err}`)
     }
@@ -5023,6 +5077,7 @@ function connectWebsocket(): void {
   // dispatched background work to THIS agent. Surface it to the live session
   // with the task id + brief; the agent reports back via complete_voice_task.
   realtimeSocket.on('voice_task_dispatch', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const parsed = normalizeVoiceTaskDispatch(payload, {
         requireConfirmed: REQUIRE_CONFIRMED_DISPATCH,
@@ -5035,7 +5090,7 @@ function connectWebsocket(): void {
       }
       const { taskId, question, context, chatId } = parsed.task
       log(`voice_task_dispatch received (task=${taskId})`)
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content: buildVoiceTaskDispatchText({ taskId, question, context }),
@@ -5048,13 +5103,14 @@ function connectWebsocket(): void {
             transport: 'ws',
           },
         },
-      }).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+      })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
   })
 
   realtimeSocket.on('inbound_message', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
@@ -5114,7 +5170,9 @@ function connectWebsocket(): void {
       ) {
         if (chatId && !alreadyHandledCompact(String(messageId))) {
           log(`remote compact requested via ws (chat ${chatId})`)
-          void handleRemoteCompact(chatId)
+          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+            log(`Remote compact failed: ${err}`)
+          })
         }
         return
       }
@@ -5135,7 +5193,7 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
@@ -5188,7 +5246,7 @@ function connectWebsocket(): void {
             ...(payload?.turnState && { turn_state: payload.turnState }),
           },
         },
-      }).catch((err) => log(`WS forward error: ${err}`))
+      })).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
@@ -5219,6 +5277,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('peer_conversation_closed', (payload: any) => {
+    if (updateDrainMode) return
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
     )
@@ -5232,7 +5291,7 @@ function connectWebsocket(): void {
     if (convId != null) {
       markConversationClosed({ convId })
     }
-    mcp.notification({
+    void trackMessageOperation(() => mcp.notification({
       method: 'notifications/claude/channel',
       params: {
         content:
@@ -5249,10 +5308,11 @@ function connectWebsocket(): void {
           transport: 'ws',
         },
       },
-    }).catch(() => {})
+    })).catch(() => {})
   })
 
   realtimeSocket.on('peer_turn_yielded', (payload: any) => {
+    if (updateDrainMode) return
     log(
       `peer_turn_yielded conv=${payload?.conversation_id} → ${payload?.turn_holder_id}`,
     )
@@ -5266,6 +5326,7 @@ function connectWebsocket(): void {
   // enforces the turn protocol with HTTP 409 if it tries otherwise.
 
   realtimeSocket.on('meeting_invitation', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
       const invitedFor = Number(payload?.invitedAssistantId)
@@ -5324,7 +5385,7 @@ function connectWebsocket(): void {
       log(
         `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
       )
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content:
@@ -5343,13 +5404,14 @@ function connectWebsocket(): void {
             transport: 'ws',
           },
         },
-      }).catch(() => {})
+      })).catch(() => {})
     } catch (err) {
       log(`meeting_invitation handler error: ${err}`)
     }
   })
 
   realtimeSocket.on('meeting_message', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
       if (!Number.isFinite(meetingId)) return
@@ -5435,7 +5497,7 @@ function connectWebsocket(): void {
       // are kept as additions on top.
       const messageIdStr =
         payload?.messageId != null ? String(payload.messageId) : ''
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content:
@@ -5466,13 +5528,14 @@ function connectWebsocket(): void {
             transport: 'ws',
           },
         },
-      }).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
+      })).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
     }
   })
 
   realtimeSocket.on('meeting_turn_changed', (payload: any) => {
+    if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
     const me = Number(ASSISTANT_ID)
@@ -5491,7 +5554,7 @@ function connectWebsocket(): void {
     }
     if (becameMyTurn) {
       log(`meeting_turn_changed → my turn in meeting #${meetingId}`)
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content:
@@ -5506,7 +5569,7 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
           },
         },
-      }).catch(() => {})
+      })).catch(() => {})
     }
   })
 
@@ -5518,6 +5581,7 @@ function connectWebsocket(): void {
   // authority-safe (only re-sends DB state, never grants a turn) and carries
   // lastMessageId so we can ignore a stale signal we already acted on.
   realtimeSocket.on('meeting_state_resync', (payload: any) => {
+    if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
       if (!Number.isFinite(meetingId)) return
@@ -5564,7 +5628,7 @@ function connectWebsocket(): void {
       }
 
       log(`meeting_state_resync → it is my turn in meeting #${meetingId}`)
-      mcp.notification({
+      void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content:
@@ -5579,18 +5643,19 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
           },
         },
-      }).catch(() => {})
+      })).catch(() => {})
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
   })
 
   realtimeSocket.on('meeting_closed', (payload: any) => {
+    if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
     forgetMeetingContext(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
-    mcp.notification({
+    void trackMessageOperation(() => mcp.notification({
       method: 'notifications/claude/channel',
       params: {
         content:
@@ -5604,10 +5669,11 @@ function connectWebsocket(): void {
           assistant_id: ASSISTANT_ID,
         },
       },
-    }).catch(() => {})
+    })).catch(() => {})
   })
 
   realtimeSocket.on('meeting_participant_left', (payload: any) => {
+    if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
     const leaverId = Number(payload?.assistantId)
@@ -5627,6 +5693,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('meeting_participant_added', (payload: any) => {
+    if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
     const ctx = meetingContexts.get(meetingId)
@@ -5643,6 +5710,7 @@ function connectWebsocket(): void {
   })
 
   realtimeSocket.on('meeting_policy_changed', (payload: any) => {
+    if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
     const ctx = meetingContexts.get(meetingId)
@@ -5947,6 +6015,21 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  selfUpdater = await initializeSelfUpdater({
+    rootDir: import.meta.dir,
+    stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
+    env: process.env,
+    runningVersion: readOwnVersion(import.meta.dir),
+    log,
+    drainSnapshot: () => ({
+      activeOperations: messageActivity.activeOperations,
+      pendingMessages: pendingInbounds.size,
+      pendingPermissions: pendingPermissions.size,
+    }),
+    setDrainMode: setUpdateDrainMode,
+    exit: (code) => process.exit(code),
+  })
+
   log('Starting BGOS channel plugin...')
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
@@ -5995,6 +6078,7 @@ async function main(): Promise<void> {
   })
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
+      selfUpdater?.markGracefulStop()
       cursorStore.flushIfDirty()
       process.exit(signal === 'SIGINT' ? 130 : 143)
     })
@@ -6101,6 +6185,11 @@ async function main(): Promise<void> {
     post: bgosPost,
     log,
   })
+
+  // Step 10: opt-in checkout updates. The updater checked rollback state at
+  // the start of main; the remote check starts only after message transport,
+  // cursors, polling, and shutdown hooks are ready.
+  selfUpdater?.start()
 }
 
 main().catch((err) => {
