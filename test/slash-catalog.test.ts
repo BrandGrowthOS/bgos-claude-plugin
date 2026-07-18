@@ -15,7 +15,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { BUILTIN_COMMANDS } from '../lib/slash-catalog.ts'
+import {
+  BUILTIN_COMMANDS,
+  REMOTE_COMPACT_COMMAND,
+  catalogForCapabilities,
+} from '../lib/slash-catalog.ts'
 
 test('builtin catalog does NOT advertise /compact (host-only, dead over the channel)', () => {
   assert.ok(
@@ -35,4 +39,22 @@ test('builtin catalog keeps its well-formed core entries', () => {
     assert.ok(c.description.length > 0)
     assert.equal(c.scope, 'all')
   }
+})
+
+test('catalogForCapabilities: /compact advertised ONLY with the injection capability', () => {
+  const off = catalogForCapabilities({ remoteCompact: false })
+  assert.ok(
+    !off.some((c) => c.command === '/compact'),
+    'capability OFF must never advertise /compact (dead Compact button)',
+  )
+  assert.deepEqual(off, BUILTIN_COMMANDS)
+
+  const on = catalogForCapabilities({ remoteCompact: true })
+  assert.ok(
+    on.some((c) => c.command === '/compact'),
+    'capability ON advertises /compact so the BGOS Compact button appears',
+  )
+  assert.deepEqual(on, [...BUILTIN_COMMANDS, REMOTE_COMPACT_COMMAND])
+  // The base list itself must stay compact-free regardless.
+  assert.ok(!BUILTIN_COMMANDS.some((c) => c.command === '/compact'))
 })
