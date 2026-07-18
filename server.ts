@@ -70,10 +70,18 @@ import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
   buildHealthLogUndoPath,
-  buildHealthTrackerCardMessage,
   summarizeHealthLogList,
   summarizeHealthLogResult,
 } from './lib/health-log.js'
+import {
+  BUNDLED_RENDERABLES_FALLBACK,
+  buildComponentEventMessage,
+  deriveComponentTitle,
+  findRenderable,
+  listRenderableKinds,
+  normalizeComponentPayloadArg,
+  validateComponentPayload,
+} from './lib/renderables.js'
 import {
   catalogForCapabilities,
   type SlashCommandEntry,
@@ -2293,8 +2301,150 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['chat_id'],
       },
     },
+    {
+      name: 'show_component',
+      description:
+        'Summon ANY registered native visualization as a real component ' +
+        'card in the chat (the generic successor to show_health_tracker). ' +
+        'Discovery: the live catalog of kinds and their payload schemas is ' +
+        'fetched for you from GET /api/v1/renderables on every call, so an ' +
+        'unknown kind answers with the list of known kinds; you can also ' +
+        'browse that endpoint yourself (see bgos_capabilities). Payloads ' +
+        'are validated against the kind\'s schema before sending and the ' +
+        'specific field error comes back to you. Send at most ONE card per ' +
+        'occasion and pair it with a short normal reply carrying the ' +
+        'substance. Each kind\'s minAppVersion is advisory: the owner\'s ' +
+        'app may not render a new kind yet, in which case (and on any ' +
+        'unknown kind or invalid payload) the app degrades gracefully to a ' +
+        'quiet collapsible event card, never an error.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          kind: {
+            type: 'string',
+            description:
+              'The component kind from the renderables catalog, e.g. ' +
+              '"health_tracker_card".',
+          },
+          payload: {
+            type: 'object',
+            description:
+              'Component fields per the kind\'s payloadSchema (omit for a ' +
+              'kind with no required fields). Do not include "kind"; the ' +
+              'tool sets it. Unknown extra fields are ignored by the app.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat to render the card in. Pass back the chat_id (or ' +
+              'session_handle) from the channel event you are answering.',
+          },
+        },
+        required: ['kind', 'chat_id'],
+      },
+    },
   ],
 }))
+
+// ── show_component (generic renderable-component dispatch) ───────────────────
+// Shared by the generic show_component tool and its thin alias
+// show_health_tracker (V1 contract preserved: args note/chat_id). Flow:
+// authorize the chat, fetch the live renderables manifest (with the bundled
+// fallback catalog when the backend predates GET /api/v1/renderables),
+// validate the payload against the kind's schema, then POST the event
+// message the app renders as the native component.
+async function handleShowComponent(opts: {
+  kind: string
+  payload: Record<string, unknown>
+  chatIdArg: string
+  toolName: string
+  successText?: string
+}): Promise<{
+  content: Array<{ type: 'text'; text: string }>
+  isError?: true
+}> {
+  const auth = resolveAuthorizedChat(opts.chatIdArg)
+  if (!auth.ok) return auth.error
+
+  let manifest: unknown
+  let manifestSource = 'live'
+  try {
+    manifest = await bgosGetCachedOn304('renderables')
+  } catch (err) {
+    manifest = BUNDLED_RENDERABLES_FALLBACK
+    manifestSource = 'bundled fallback'
+    log(
+      `${opts.toolName}: renderables manifest fetch failed, using bundled ` +
+        `fallback: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  const entry = findRenderable(manifest, opts.kind)
+  if (!entry) {
+    const kinds = listRenderableKinds(manifest)
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            `Error: unknown component kind "${opts.kind}". Known kinds ` +
+            `(${manifestSource} manifest): ` +
+            `${kinds.length ? kinds.join(', ') : 'none'}.`,
+        },
+      ],
+      isError: true,
+    }
+  }
+
+  const validated = validateComponentPayload(entry.payloadSchema, opts.payload)
+  if (!validated.ok) {
+    return {
+      content: [{ type: 'text', text: `Error: ${validated.error}` }],
+      isError: true,
+    }
+  }
+
+  const built = buildComponentEventMessage({
+    kind: opts.kind,
+    payload: opts.payload,
+    chatId: Number(auth.chatId),
+    assistantId: ASSISTANT_ID,
+    description: entry.description,
+  })
+  if (!built.ok) {
+    return {
+      content: [{ type: 'text', text: `Error: ${built.error}` }],
+      isError: true,
+    }
+  }
+
+  try {
+    await bgosPost('messages', built.body as unknown as Record<string, unknown>)
+    log(`${opts.toolName}: kind ${opts.kind} chat ${auth.chatId}`)
+    const title = deriveComponentTitle(opts.kind, entry.description)
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            opts.successText ??
+            `Component sent: the native "${title}" (${opts.kind}) card now ` +
+              'renders in the chat (an app older than its minAppVersion ' +
+              'shows a quiet event card instead). Pair it with a short ' +
+              'normal reply carrying the substance; one card per occasion.',
+        },
+      ],
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    return {
+      content: [
+        { type: 'text', text: `Failed to send the component card: ${errMsg}` },
+      ],
+      isError: true,
+    }
+  }
+}
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
   const rawArgs = req.params.arguments as Record<string, unknown>
@@ -3479,40 +3629,54 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     case 'show_health_tracker': {
+      // Thin alias over the generic show_component path (kind
+      // health_tracker_card). V1 contract preserved exactly: args
+      // note/chat_id, trimmed note, 300-char cap, same success text; the
+      // alias-parity test in test/renderables.test.ts guards that both
+      // tools produce identical wire bodies for the same note.
       const chatIdArg = rawArgs.chat_id as string | undefined
       if (!chatIdArg) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
-      const auth = resolveAuthorizedChat(chatIdArg)
-      if (!auth.ok) return auth.error
-      const built = buildHealthTrackerCardMessage(rawArgs, {
-        chatId: Number(auth.chatId),
-        assistantId: ASSISTANT_ID,
+      let note: string | undefined
+      if (rawArgs.note != null && rawArgs.note !== '') {
+        if (typeof rawArgs.note !== 'string') {
+          return { content: [{ type: 'text', text: 'Error: note must be a string' }], isError: true }
+        }
+        const trimmed = rawArgs.note.trim()
+        if (trimmed) note = trimmed
+      }
+      return handleShowComponent({
+        kind: 'health_tracker_card',
+        payload: note !== undefined ? { note } : {},
+        chatIdArg,
+        toolName: 'show_health_tracker',
+        successText:
+          'Tracker card sent; it renders as the native visualization ' +
+          'in the chat. Follow up with the concrete numbers in a ' +
+          'normal reply if the owner asked a question.',
       })
-      if (!built.ok) {
-        return { content: [{ type: 'text', text: `Error: ${built.error}` }], isError: true }
+    }
+
+    case 'show_component': {
+      const kindArg = rawArgs.kind
+      if (typeof kindArg !== 'string' || !kindArg.trim()) {
+        return { content: [{ type: 'text', text: 'Error: kind is required' }], isError: true }
       }
-      try {
-        await bgosPost('messages', built.body as unknown as Record<string, unknown>)
-        log(`show_health_tracker: chat ${auth.chatId}`)
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                'Tracker card sent; it renders as the native visualization ' +
-                'in the chat. Follow up with the concrete numbers in a ' +
-                'normal reply if the owner asked a question.',
-            },
-          ],
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err)
-        return {
-          content: [{ type: 'text', text: `Failed to send the tracker card: ${errMsg}` }],
-          isError: true,
-        }
+      const chatIdArg = rawArgs.chat_id as string | undefined
+      if (!chatIdArg) {
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
+      const normalized = normalizeComponentPayloadArg(rawArgs.payload)
+      if (!normalized.ok) {
+        return { content: [{ type: 'text', text: `Error: ${normalized.error}` }], isError: true }
+      }
+      return handleShowComponent({
+        kind: kindArg.trim(),
+        payload: normalized.payload,
+        chatIdArg,
+        toolName: 'show_component',
+      })
     }
 
     default:
