@@ -3,6 +3,7 @@ import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
   buildHealthLogUndoPath,
+  buildHealthTrackerCardMessage,
   summarizeHealthLogList,
   summarizeHealthLogResult,
 } from '../lib/health-log'
@@ -165,5 +166,48 @@ describe('summarizeHealthLogList', () => {
     }
     expect(summarizeHealthLogList([])).toContain('No health events')
     expect(summarizeHealthLogList(null)).toContain('No health events')
+  })
+})
+
+describe('buildHealthTrackerCardMessage', () => {
+  const deps = { chatId: 1048, assistantId: '900' }
+
+  test('builds the event message with the renderable payload', () => {
+    const r = buildHealthTrackerCardMessage({}, deps)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.body).toEqual({
+      chatId: 1048,
+      assistantId: 900,
+      sender: 'assistant',
+      text: 'Health tracker',
+      messageType: 'event',
+      eventMeta: {
+        source: 'agent',
+        title: 'Health tracker',
+        payload: { kind: 'health_tracker_card' },
+      },
+    })
+  })
+
+  test('carries the note into payload, peek, and text fallback', () => {
+    const r = buildHealthTrackerCardMessage({ note: ' 5 day streak ' }, deps)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.body.eventMeta.payload.note).toBe('5 day streak')
+    expect(r.body.eventMeta.peek).toBe('5 day streak')
+    expect(r.body.text).toBe('Health tracker: 5 day streak')
+  })
+
+  test('rejects oversized notes and bad ids', () => {
+    expect(
+      buildHealthTrackerCardMessage({ note: 'x'.repeat(301) }, deps).ok,
+    ).toBe(false)
+    expect(
+      buildHealthTrackerCardMessage({}, { chatId: 0, assistantId: '900' }).ok,
+    ).toBe(false)
+    expect(
+      buildHealthTrackerCardMessage({}, { chatId: 5, assistantId: 'nope' }).ok,
+    ).toBe(false)
   })
 })

@@ -70,6 +70,7 @@ import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
   buildHealthLogUndoPath,
+  buildHealthTrackerCardMessage,
   summarizeHealthLogList,
   summarizeHealthLogResult,
 } from './lib/health-log.js'
@@ -2263,6 +2264,35 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['event_id'],
       },
     },
+    {
+      name: 'show_health_tracker',
+      description:
+        "Render the owner's REAL native health tracker card in the chat " +
+        '(the visual card, not text; tapping it opens the full dashboard ' +
+        'with heatmap and momentum ring). Use when the owner asks to SEE ' +
+        'their health data ("show me my macros", "how is my week") or when ' +
+        'a visual would land better than numbers, e.g. right after logging ' +
+        'a streak-worthy event. Send at most one card per occasion; pair it ' +
+        'with a short text reply carrying the actual numbers.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat to render the card in. Pass back the chat_id (or ' +
+              'session_handle) from the channel event you are answering.',
+          },
+          note: {
+            type: 'string',
+            description:
+              'Optional one-line caption shown on the card (<=300 chars), ' +
+              'e.g. "Protein target hit 5 days straight".',
+          },
+        },
+        required: ['chat_id'],
+      },
+    },
   ],
 }))
 
@@ -3443,6 +3473,43 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
           content: [
             { type: 'text', text: `Failed to undo the health event: ${errMsg}` },
           ],
+          isError: true,
+        }
+      }
+    }
+
+    case 'show_health_tracker': {
+      const chatIdArg = rawArgs.chat_id as string | undefined
+      if (!chatIdArg) {
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
+      }
+      const auth = resolveAuthorizedChat(chatIdArg)
+      if (!auth.ok) return auth.error
+      const built = buildHealthTrackerCardMessage(rawArgs, {
+        chatId: Number(auth.chatId),
+        assistantId: ASSISTANT_ID,
+      })
+      if (!built.ok) {
+        return { content: [{ type: 'text', text: `Error: ${built.error}` }], isError: true }
+      }
+      try {
+        await bgosPost('messages', built.body as unknown as Record<string, unknown>)
+        log(`show_health_tracker: chat ${auth.chatId}`)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Tracker card sent; it renders as the native visualization ' +
+                'in the chat. Follow up with the concrete numbers in a ' +
+                'normal reply if the owner asked a question.',
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to send the tracker card: ${errMsg}` }],
           isError: true,
         }
       }
