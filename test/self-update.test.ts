@@ -86,19 +86,19 @@ function gitRunner(opts: {
     if (key === 'rev-parse refs/remotes/origin/main') {
       return { stdout: `${COMMIT_B}\n`, stderr: '' }
     }
-    if (key === 'show refs/remotes/origin/main:package.json') {
+    if (key === `show ${COMMIT_B}:package.json`) {
       return {
         stdout: JSON.stringify({ version: opts.latestVersion ?? '0.27.0' }),
         stderr: '',
       }
     }
-    if (key === 'merge-base HEAD refs/remotes/origin/main') {
+    if (key === `merge-base HEAD ${COMMIT_B}`) {
       return { stdout: `${COMMIT_A}\n`, stderr: '' }
     }
     if (key.startsWith('diff --name-only ')) {
       return { stdout: opts.dependencyChanges ?? '', stderr: '' }
     }
-    if (key === 'merge --ff-only --no-edit refs/remotes/origin/main') {
+    if (key === `merge --ff-only --no-edit ${COMMIT_B}`) {
       return { stdout: 'Updating checkout\n', stderr: '' }
     }
     if (key.startsWith('cat-file -e ')) return { stdout: '', stderr: '' }
@@ -293,6 +293,51 @@ describe('schedule and drain decisions', () => {
     ).toBe('ready')
   })
 
+  test('live message entry points close admission and track admitted async work', () => {
+    const source = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+    const handlerBody = (event: string): string => {
+      const start = source.indexOf(`realtimeSocket.on('${event}'`)
+      expect(start).toBeGreaterThan(-1)
+      const next = source.indexOf('realtimeSocket.on(', start + 1)
+      return source.slice(start, next === -1 ? source.length : next)
+    }
+    for (const event of [
+      'voice_task_dispatch',
+      'inbound_message',
+      'peer_conversation_closed',
+      'meeting_invitation',
+      'meeting_message',
+      'meeting_turn_changed',
+      'meeting_state_resync',
+      'meeting_closed',
+      'meeting_participant_left',
+      'meeting_participant_added',
+      'meeting_policy_changed',
+    ]) {
+      expect(handlerBody(event)).toContain('if (updateDrainMode) return')
+    }
+    for (const event of [
+      'voice_task_dispatch',
+      'inbound_message',
+      'peer_conversation_closed',
+      'meeting_invitation',
+      'meeting_message',
+      'meeting_turn_changed',
+      'meeting_state_resync',
+      'meeting_closed',
+    ]) {
+      expect(handlerBody(event)).toContain('trackMessageOperation(() => mcp.notification')
+    }
+    expect(source).not.toContain('void handleRemoteCompact(')
+    expect(source).toContain('if (updateDrainMode) {\n    return Promise.resolve({')
+    expect(source).toContain(
+      'if (updateDrainMode) return Promise.resolve()\n  return trackMessageOperation',
+    )
+    expect(source).toContain(
+      'function checkReplyOverdue(): void {\n  if (updateDrainMode) return',
+    )
+  })
+
   test('the validation health window is exactly 60 seconds', () => {
     expect(UPDATE_HEALTHY_AFTER_MS).toBe(60_000)
   })
@@ -374,6 +419,47 @@ describe('rollback state machine', () => {
     expect(restarted.validationBootStartedAt).toBe(200)
   })
 
+  test('a graceful stop breaks an earlier crash streak', () => {
+    const first = transitionRollbackState(installedState(), {
+      kind: 'boot',
+      currentCommit: COMMIT_B,
+      now: 100,
+    }).state
+    const afterCrash = transitionRollbackState(first, {
+      kind: 'boot',
+      currentCommit: COMMIT_B,
+      now: 200,
+    }).state
+    expect(afterCrash.crashCount).toBe(1)
+    const stopped = transitionRollbackState(afterCrash, {
+      kind: 'graceful-stop',
+      currentCommit: COMMIT_B,
+    }).state
+    const restarted = transitionRollbackState(stopped, {
+      kind: 'boot',
+      currentCommit: COMMIT_B,
+      now: 300,
+    })
+    expect(restarted.action).toBe('none')
+    expect(restarted.state.crashCount).toBe(0)
+  })
+
+  test('a boot observed after 60 seconds is healthy, not an early crash', () => {
+    const first = transitionRollbackState(installedState(), {
+      kind: 'boot',
+      currentCommit: COMMIT_B,
+      now: 100,
+    }).state
+    const later = transitionRollbackState(first, {
+      kind: 'boot',
+      currentCommit: COMMIT_B,
+      now: 100 + UPDATE_HEALTHY_AFTER_MS,
+    })
+    expect(later.action).toBe('none')
+    expect(later.state.validationPending).toBe(false)
+    expect(later.state.crashCount).toBe(0)
+  })
+
   test('successful rollback latches updates disabled', () => {
     const pending = {
       ...installedState(),
@@ -413,15 +499,46 @@ describe('durable state and shared lock', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).targetCommit).toBe(COMMIT_B)
   })
 
-  test('missing, corrupt, and unreadable state fail closed to an empty state', () => {
+  test('missing state is fresh while corrupt and unreadable state fail closed', () => {
     const dir = tempDir('self-update-corrupt-')
     const missing = join(dir, 'missing.json')
     expect(loadAutoUpdateState(missing)).toEqual(EMPTY_AUTO_UPDATE_STATE)
     const corrupt = join(dir, 'corrupt.json')
     writeFileSync(corrupt, '{bad json')
-    expect(loadAutoUpdateState(corrupt)).toEqual(EMPTY_AUTO_UPDATE_STATE)
+    expect(loadAutoUpdateState(corrupt).disabled).toBe(true)
     chmodSync(corrupt, 0o000)
-    expect(loadAutoUpdateState(corrupt).schemaVersion).toBe(1)
+    expect(loadAutoUpdateState(corrupt).disabled).toBe(true)
+  })
+
+  test('structured but impossible rollback states fail closed', () => {
+    const dir = tempDir('self-update-invalid-state-')
+    const cases: AutoUpdateState[] = [
+      {
+        ...installedState(),
+        validationPending: false,
+        crashCount: 2,
+      },
+      {
+        ...installedState(),
+        rollbackPending: true,
+        crashCount: 1,
+      },
+      {
+        ...installedState(),
+        validationPending: false,
+        rollbackPending: false,
+        crashCount: 0,
+        validationBootStartedAt: null,
+      },
+    ]
+    for (const [index, state] of cases.entries()) {
+      const path = join(dir, `invalid-${index}.json`)
+      writeFileSync(path, JSON.stringify(state))
+      expect(loadAutoUpdateState(path)).toEqual({
+        ...EMPTY_AUTO_UPDATE_STATE,
+        disabled: true,
+      })
+    }
   })
 
   test('only one daemon acquires the shared checkout lock', () => {
@@ -590,7 +707,7 @@ describe('real git check in dry-run mode', () => {
     })
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['show', 'refs/remotes/origin/main:package.json'],
+      args: ['show', `${COMMIT_B}:package.json`],
     })
     expect(calls.every((call) => call.file === 'git')).toBe(true)
     expect(calls.some((call) => call.args.includes('merge'))).toBe(false)
@@ -659,7 +776,7 @@ describe('real git check in dry-run mode', () => {
     expect(exits).toEqual([0])
     expect(calls).toContainEqual({
       file: 'git',
-      args: ['merge', '--ff-only', '--no-edit', 'refs/remotes/origin/main'],
+      args: ['merge', '--ff-only', '--no-edit', COMMIT_B],
     })
     expect(calls).toContainEqual({
       file: 'bun',
@@ -683,6 +800,19 @@ describe('real git check in dry-run mode', () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const exits: number[] = []
     let waits = 0
+    let revParseCalls = 0
+    const baseRunner = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (args.join(' ') === 'rev-parse HEAD') {
+        calls.push({ file, args: [...args] })
+        revParseCalls += 1
+        return {
+          stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`,
+          stderr: '',
+        }
+      }
+      return baseRunner(file, args, opts)
+    }
     const updater = await initializeSelfUpdater({
       rootDir,
       stateFilePath,
@@ -696,7 +826,7 @@ describe('real git check in dry-run mode', () => {
       }),
       setDrainMode: () => {},
       exit: (code) => exits.push(code),
-      runner: gitRunner({ calls }),
+      runner,
       delay: async () => {
         waits += 1
         if (sharedLock.kind === 'acquired') sharedLock.release()
@@ -709,6 +839,152 @@ describe('real git check in dry-run mode', () => {
     expect(exits).toEqual([0])
     expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
     expect(calls.some((call) => call.file === 'bun')).toBe(false)
+  })
+
+  test('lock loser continues when the holder did not install the target', async () => {
+    const rootDir = tempDir('self-update-lock-failed-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-lock-failed-state-'), 'auto-update.json')
+    const sharedLock = tryAcquireUpdateLock(
+      join(rootDir, '.git', 'bgos-auto-update.lock'),
+      1_000,
+    )
+    expect(sharedLock.kind).toBe('acquired')
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => exits.push(code),
+      runner: gitRunner(),
+      delay: async () => {
+        if (sharedLock.kind === 'acquired') sharedLock.release()
+      },
+      schedule: () => setTimeout(() => {}, 60_000),
+      now: () => 1_001,
+    })
+    await updater!.checkNow()
+    expect(exits).toEqual([])
+    expect(drainModes).toEqual([true, false])
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(false)
+  })
+
+  test('rollback lock loser waits, acquires the lock, and finishes safely', async () => {
+    const rootDir = tempDir('self-update-rollback-lock-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const stateFilePath = join(tempDir('self-update-rollback-lock-state-'), 'auto-update.json')
+    saveAutoUpdateState(stateFilePath, {
+      ...installedState(),
+      crashCount: 2,
+      rollbackPending: true,
+    })
+    const sharedLock = tryAcquireUpdateLock(join(gitDir, 'bgos-auto-update.lock'), 1_000)
+    expect(sharedLock.kind).toBe('acquired')
+    let waits = 0
+    const exits: number[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const runner: CommandRunner = async (file, args) => {
+      calls.push({ file, args: [...args] })
+      const key = args.join(' ')
+      if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_B}\n`, stderr: '' }
+      if (key === 'status --porcelain --untracked-files=normal') {
+        return { stdout: '', stderr: '' }
+      }
+      if (key === `cat-file -e ${COMMIT_A}^{commit}`) return { stdout: '', stderr: '' }
+      if (key === `diff --name-only ${COMMIT_A} ${COMMIT_B} -- bun.lock package.json`) {
+        return { stdout: '', stderr: '' }
+      }
+      if (key === `checkout --detach ${COMMIT_A}`) return { stdout: '', stderr: '' }
+      throw new Error(`unexpected command: ${file} ${key}`)
+    }
+    await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.27.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => {
+        expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
+        exits.push(code)
+      },
+      runner,
+      delay: async () => {
+        waits += 1
+        if (sharedLock.kind === 'acquired') sharedLock.release()
+      },
+      now: () => 1_001,
+    })
+    expect(waits).toBe(1)
+    expect(exits).toEqual([0])
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_A],
+    })
+    expect(loadAutoUpdateState(stateFilePath).disabled).toBe(true)
+  })
+
+  test('rollback does not mutate the checkout when the shared safety latch cannot persist', async () => {
+    const rootDir = tempDir('self-update-rollback-latch-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const safetyPath = join(gitDir, 'bgos-auto-update-disabled.json')
+    const stateFilePath = join(tempDir('self-update-rollback-latch-state-'), 'auto-update.json')
+    saveAutoUpdateState(stateFilePath, {
+      ...installedState(),
+      crashCount: 2,
+      rollbackPending: true,
+    })
+    const exits: number[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const runner: CommandRunner = async (file, args) => {
+      calls.push({ file, args: [...args] })
+      const key = args.join(' ')
+      if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_B}\n`, stderr: '' }
+      if (key === 'status --porcelain --untracked-files=normal') {
+        return { stdout: '', stderr: '' }
+      }
+      if (key === `cat-file -e ${COMMIT_A}^{commit}`) return { stdout: '', stderr: '' }
+      if (key === `diff --name-only ${COMMIT_A} ${COMMIT_B} -- bun.lock package.json`) {
+        mkdirSync(safetyPath)
+        return { stdout: 'package.json\n', stderr: '' }
+      }
+      throw new Error(`checkout mutation must not run: ${file} ${key}`)
+    }
+    await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.27.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => exits.push(code),
+      runner,
+    })
+    expect(exits).toEqual([])
+    expect(calls.some((call) => call.args[0] === 'checkout')).toBe(false)
+    expect(loadAutoUpdateState(stateFilePath).rollbackPending).toBe(true)
+    expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
   })
 
   test('rollback uses detached checkout, latches shared safety, and exits zero', async () => {
@@ -731,7 +1007,13 @@ describe('real git check in dry-run mode', () => {
         return { stdout: '', stderr: '' }
       }
       if (key === `cat-file -e ${COMMIT_A}^{commit}`) return { stdout: '', stderr: '' }
+      if (key === `diff --name-only ${COMMIT_A} ${COMMIT_B} -- bun.lock package.json`) {
+        return { stdout: 'bun.lock\n', stderr: '' }
+      }
       if (key === `checkout --detach ${COMMIT_A}`) return { stdout: '', stderr: '' }
+      if (file === 'bun' && key === 'install --frozen-lockfile') {
+        return { stdout: '', stderr: '' }
+      }
       throw new Error(`unexpected command: ${file} ${key}`)
     }
     await initializeSelfUpdater({
@@ -756,12 +1038,127 @@ describe('real git check in dry-run mode', () => {
       file: 'git',
       args: ['checkout', '--detach', COMMIT_A],
     })
+    expect(calls).toContainEqual({
+      file: 'bun',
+      args: ['install', '--frozen-lockfile'],
+    })
     expect(calls.some((call) => call.args.includes('reset'))).toBe(false)
     expect(exits).toEqual([0])
     expect(loadAutoUpdateState(stateFilePath).disabled).toBe(true)
     expect(
       loadSharedUpdateSafety(join(gitDir, 'bgos-auto-update-disabled.json')).disabled,
     ).toBe(true)
+  })
+
+  test('rollback dependency failure restores the target and stays pending', async () => {
+    const rootDir = tempDir('self-update-rollback-deps-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const stateFilePath = join(tempDir('self-update-rollback-deps-state-'), 'auto-update.json')
+    saveAutoUpdateState(stateFilePath, {
+      ...installedState(),
+      crashCount: 2,
+      rollbackPending: true,
+    })
+    const exits: number[] = []
+    const logs: string[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    let bunCalls = 0
+    const runner: CommandRunner = async (file, args) => {
+      calls.push({ file, args: [...args] })
+      const key = args.join(' ')
+      if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_B}\n`, stderr: '' }
+      if (key === 'status --porcelain --untracked-files=normal') {
+        return { stdout: '', stderr: '' }
+      }
+      if (key === `cat-file -e ${COMMIT_A}^{commit}`) return { stdout: '', stderr: '' }
+      if (key === `diff --name-only ${COMMIT_A} ${COMMIT_B} -- bun.lock package.json`) {
+        return { stdout: 'package.json\n', stderr: '' }
+      }
+      if (key === `checkout --detach ${COMMIT_A}`) return { stdout: '', stderr: '' }
+      if (key === `checkout --detach ${COMMIT_B}`) return { stdout: '', stderr: '' }
+      if (file === 'bun') {
+        bunCalls += 1
+        if (bunCalls === 1) throw new Error('dependency restore failed')
+        return { stdout: '', stderr: '' }
+      }
+      throw new Error(`unexpected command: ${file} ${key}`)
+    }
+    await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.27.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => exits.push(code),
+      runner,
+    })
+    expect(exits).toEqual([])
+    expect(loadAutoUpdateState(stateFilePath).rollbackPending).toBe(true)
+    expect(loadSharedUpdateSafety(join(gitDir, 'bgos-auto-update-disabled.json')).disabled).toBe(
+      false,
+    )
+    expect(calls.filter((call) => call.file === 'bun')).toHaveLength(2)
+    expect(calls).toContainEqual({ file: 'git', args: ['checkout', '--detach', COMMIT_B] })
+    expect(logs.some((line) => line.includes('target checkout was restored'))).toBe(true)
+    expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
+  })
+
+  test('rollback recovery failure latches shared auto-update safety', async () => {
+    const rootDir = tempDir('self-update-rollback-recovery-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const stateFilePath = join(tempDir('self-update-rollback-recovery-state-'), 'auto-update.json')
+    saveAutoUpdateState(stateFilePath, {
+      ...installedState(),
+      crashCount: 2,
+      rollbackPending: true,
+    })
+    const exits: number[] = []
+    const runner: CommandRunner = async (file, args) => {
+      const key = args.join(' ')
+      if (key === 'rev-parse HEAD') return { stdout: `${COMMIT_B}\n`, stderr: '' }
+      if (key === 'status --porcelain --untracked-files=normal') {
+        return { stdout: '', stderr: '' }
+      }
+      if (key === `cat-file -e ${COMMIT_A}^{commit}`) return { stdout: '', stderr: '' }
+      if (key === `diff --name-only ${COMMIT_A} ${COMMIT_B} -- bun.lock package.json`) {
+        return { stdout: 'package.json\n', stderr: '' }
+      }
+      if (key === `checkout --detach ${COMMIT_A}`) return { stdout: '', stderr: '' }
+      if (key === `checkout --detach ${COMMIT_B}`) {
+        throw new Error('target checkout restore failed')
+      }
+      if (file === 'bun') throw new Error('dependency restore failed')
+      throw new Error(`unexpected command: ${file} ${key}`)
+    }
+    await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.27.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => exits.push(code),
+      runner,
+    })
+    expect(exits).toEqual([])
+    expect(loadAutoUpdateState(stateFilePath).rollbackPending).toBe(true)
+    expect(loadSharedUpdateSafety(join(gitDir, 'bgos-auto-update-disabled.json')).disabled).toBe(
+      true,
+    )
+    expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
   })
 
   test('a failed remote check is contained and the daemon continues', async () => {
@@ -799,14 +1196,21 @@ describe('real git check in dry-run mode', () => {
     expect(logs.some((line) => line.includes('daemon will continue'))).toBe(true)
   })
 
-  test('post-merge dependency failure restores checkout before clearing validation', async () => {
+  test('post-merge dependency failure restores previous checkout and dependencies', async () => {
     const rootDir = tempDir('self-update-restore-ok-root-')
     mkdirSync(join(rootDir, '.git'))
     const stateFilePath = join(tempDir('self-update-restore-ok-state-'), 'auto-update.json')
     const calls: Array<{ file: string; args: readonly string[] }> = []
+    const drainModes: boolean[] = []
+    let bunCalls = 0
     const baseRunner = gitRunner({ calls, dependencyChanges: 'bun.lock\n' })
     const runner: CommandRunner = async (file, args, opts) => {
-      if (file === 'bun') throw new Error('dependency install failed')
+      if (file === 'bun') {
+        calls.push({ file, args: [...args] })
+        bunCalls += 1
+        if (bunCalls === 1) throw new Error('target dependency install failed')
+        return { stdout: '', stderr: '' }
+      }
       return baseRunner(file, args, opts)
     }
     const updater = await initializeSelfUpdater({
@@ -820,7 +1224,7 @@ describe('real git check in dry-run mode', () => {
         pendingMessages: 0,
         pendingPermissions: 0,
       }),
-      setDrainMode: () => {},
+      setDrainMode: (enabled) => drainModes.push(enabled),
       exit: () => {
         throw new Error('failed update must not exit')
       },
@@ -832,6 +1236,8 @@ describe('real git check in dry-run mode', () => {
       file: 'git',
       args: ['checkout', '--detach', COMMIT_A],
     })
+    expect(calls.filter((call) => call.file === 'bun')).toHaveLength(2)
+    expect(drainModes).toEqual([true, false])
     const state = loadAutoUpdateState(stateFilePath)
     expect(state.validationPending).toBe(false)
     expect(state.previousCommit).toBeNull()
@@ -839,18 +1245,60 @@ describe('real git check in dry-run mode', () => {
     expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
   })
 
-  test('failed checkout restoration preserves installed state for rollback validation', async () => {
-    const rootDir = tempDir('self-update-restore-fail-root-')
+  test('dependency inspection failure does not arm validation before checkout mutation', async () => {
+    const rootDir = tempDir('self-update-diff-failure-root-')
     mkdirSync(join(rootDir, '.git'))
-    const stateFilePath = join(tempDir('self-update-restore-fail-state-'), 'auto-update.json')
+    const stateFilePath = join(tempDir('self-update-diff-failure-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const drainModes: boolean[] = []
+    const baseRunner = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'git' && args[0] === 'diff') {
+        throw new Error('dependency inspection failed')
+      }
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: () => {
+        throw new Error('failed inspection must not exit')
+      },
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    await expect(updater!.checkNow()).resolves.toBeUndefined()
+    expect(drainModes).toEqual([true, false])
+    expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
+    expect(loadAutoUpdateState(stateFilePath)).toEqual(EMPTY_AUTO_UPDATE_STATE)
+    expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
+  })
+
+  test('failed previous recovery restores exact target and exits for validation', async () => {
+    const rootDir = tempDir('self-update-target-recovery-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-target-recovery-state-'), 'auto-update.json')
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const logs: string[] = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    let bunCalls = 0
     const baseRunner = gitRunner({ calls, dependencyChanges: 'bun.lock\n' })
     const runner: CommandRunner = async (file, args, opts) => {
-      if (file === 'bun') throw new Error('dependency install failed')
-      if (args[0] === 'checkout') {
+      if (file === 'bun') {
         calls.push({ file, args: [...args] })
-        throw new Error('checkout restore failed')
+        bunCalls += 1
+        if (bunCalls <= 2) throw new Error('dependency install failed')
+        return { stdout: '', stderr: '' }
       }
       return baseRunner(file, args, opts)
     }
@@ -865,10 +1313,8 @@ describe('real git check in dry-run mode', () => {
         pendingMessages: 0,
         pendingPermissions: 0,
       }),
-      setDrainMode: () => {},
-      exit: () => {
-        throw new Error('failed update must not exit')
-      },
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => exits.push(code),
       runner,
       schedule: () => setTimeout(() => {}, 60_000),
     })
@@ -877,11 +1323,73 @@ describe('real git check in dry-run mode', () => {
       file: 'git',
       args: ['checkout', '--detach', COMMIT_A],
     })
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_B],
+    })
+    expect(calls.filter((call) => call.file === 'bun')).toHaveLength(3)
+    expect(exits).toEqual([0])
+    expect(drainModes).toEqual([true])
     const state = loadAutoUpdateState(stateFilePath)
     expect(state.validationPending).toBe(true)
     expect(state.previousCommit).toBe(COMMIT_A)
     expect(state.targetCommit).toBe(COMMIT_B)
-    expect(logs.some((line) => line.includes('Rollback validation remains armed'))).toBe(true)
+    expect(logs.some((line) => line.includes('target checkout and dependencies'))).toBe(true)
     expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
+  })
+
+  test('double dependency recovery failure disables checks and keeps intake drained', async () => {
+    const rootDir = tempDir('self-update-double-recovery-root-')
+    const gitDir = join(rootDir, '.git')
+    mkdirSync(gitDir)
+    const stateFilePath = join(tempDir('self-update-double-recovery-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const logs: string[] = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    const baseRunner = gitRunner({ calls, dependencyChanges: 'bun.lock\n' })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'bun') {
+        calls.push({ file, args: [...args] })
+        throw new Error('dependency recovery failed')
+      }
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => exits.push(code),
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    await expect(updater!.checkNow()).resolves.toBeUndefined()
+    const callCount = calls.length
+    await expect(updater!.checkNow()).resolves.toBeUndefined()
+    expect(calls).toHaveLength(callCount)
+    expect(exits).toEqual([])
+    expect(drainModes).toEqual([true])
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_A],
+    })
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_B],
+    })
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+    expect(loadSharedUpdateSafety(join(gitDir, 'bgos-auto-update-disabled.json')).disabled).toBe(
+      true,
+    )
+    expect(logs.some((line) => line.includes('Message intake remains drained'))).toBe(true)
+    expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
   })
 })

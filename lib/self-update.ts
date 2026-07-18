@@ -149,6 +149,10 @@ function freshState(): AutoUpdateState {
   return { ...EMPTY_AUTO_UPDATE_STATE }
 }
 
+function failClosedState(): AutoUpdateState {
+  return { ...EMPTY_AUTO_UPDATE_STATE, disabled: true }
+}
+
 function validOptionalSha(value: unknown): string | null {
   return typeof value === 'string' && SHA_RE.test(value) ? value : null
 }
@@ -159,37 +163,109 @@ function validOptionalVersion(value: unknown): string | null {
 
 export function normalizeAutoUpdateState(value: unknown): AutoUpdateState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return freshState()
+    return failClosedState()
   }
   const raw = value as Record<string, unknown>
-  if (raw.schemaVersion !== 1) return freshState()
+  const validRequired =
+    raw.schemaVersion === 1 &&
+    typeof raw.disabled === 'boolean' &&
+    typeof raw.resetArmed === 'boolean' &&
+    typeof raw.crashCount === 'number' &&
+    Number.isInteger(raw.crashCount) &&
+    raw.crashCount >= 0 &&
+    typeof raw.validationPending === 'boolean' &&
+    typeof raw.rollbackPending === 'boolean'
+  const validOptionalShaFields = [
+    raw.previousCommit,
+    raw.targetCommit,
+    raw.lastRollbackFromCommit,
+  ].every((entry) => entry === null || validOptionalSha(entry) !== null)
+  const validOptionalVersionFields = [
+    raw.previousVersion,
+    raw.targetVersion,
+    raw.lastRollbackFromVersion,
+  ].every((entry) => entry === null || validOptionalVersion(entry) !== null)
+  const validBootTime =
+    raw.validationBootStartedAt === null ||
+    (typeof raw.validationBootStartedAt === 'number' &&
+      Number.isFinite(raw.validationBootStartedAt) &&
+      raw.validationBootStartedAt >= 0)
+  if (
+    !validRequired ||
+    !validOptionalShaFields ||
+    !validOptionalVersionFields ||
+    !validBootTime
+  ) {
+    return failClosedState()
+  }
   const previousCommit = validOptionalSha(raw.previousCommit)
   const targetCommit = validOptionalSha(raw.targetCommit)
+  const previousVersion = validOptionalVersion(raw.previousVersion)
+  const targetVersion = validOptionalVersion(raw.targetVersion)
   const crashCount =
     typeof raw.crashCount === 'number' &&
     Number.isInteger(raw.crashCount) &&
     raw.crashCount >= 0
       ? Math.min(2, raw.crashCount)
       : 0
+  const transitionTracked =
+    raw.validationPending === true ||
+    raw.rollbackPending === true ||
+    crashCount > 0 ||
+    raw.validationBootStartedAt !== null
+  const completeTransition =
+    previousCommit !== null &&
+    targetCommit !== null &&
+    previousVersion !== null &&
+    targetVersion !== null
+  const hasAnyTransitionVersion =
+    previousCommit !== null ||
+    targetCommit !== null ||
+    previousVersion !== null ||
+    targetVersion !== null
+  const validationPending = raw.validationPending === true
+  const rollbackPending = raw.rollbackPending === true
+  const validationBootStartedAt =
+    typeof raw.validationBootStartedAt === 'number' &&
+    Number.isFinite(raw.validationBootStartedAt) &&
+    raw.validationBootStartedAt >= 0
+      ? raw.validationBootStartedAt
+      : null
+  const validActiveTransition =
+    validationPending &&
+    raw.disabled === false &&
+    completeTransition &&
+    previousCommit !== targetCommit &&
+    decideVersionUpdate(previousVersion, targetVersion).kind === 'update' &&
+    (rollbackPending
+      ? crashCount === 2 && validationBootStartedAt === null
+      : crashCount <= 1 && (crashCount === 0 || validationBootStartedAt !== null))
+  const validInactiveTransition =
+    !validationPending &&
+    !rollbackPending &&
+    !hasAnyTransitionVersion &&
+    crashCount === 0 &&
+    validationBootStartedAt === null
+  if (
+    (transitionTracked && !validActiveTransition) ||
+    (!transitionTracked && !validInactiveTransition) ||
+    (raw.resetArmed === true && raw.disabled !== true) ||
+    (raw.disabled === true && validationPending)
+  ) {
+    return failClosedState()
+  }
   return {
     schemaVersion: 1,
     disabled: raw.disabled === true,
     resetArmed: raw.resetArmed === true,
     previousCommit,
-    previousVersion: validOptionalVersion(raw.previousVersion),
+    previousVersion,
     targetCommit,
-    targetVersion: validOptionalVersion(raw.targetVersion),
+    targetVersion,
     crashCount,
-    validationPending:
-      raw.validationPending === true && previousCommit !== null && targetCommit !== null,
-    validationBootStartedAt:
-      typeof raw.validationBootStartedAt === 'number' &&
-      Number.isFinite(raw.validationBootStartedAt) &&
-      raw.validationBootStartedAt >= 0
-        ? raw.validationBootStartedAt
-        : null,
-    rollbackPending:
-      raw.rollbackPending === true && previousCommit !== null && targetCommit !== null,
+    validationPending,
+    validationBootStartedAt,
+    rollbackPending,
     lastRollbackFromCommit: validOptionalSha(raw.lastRollbackFromCommit),
     lastRollbackFromVersion: validOptionalVersion(raw.lastRollbackFromVersion),
   }
@@ -200,10 +276,11 @@ export function resolveAutoUpdateStatePath(daemonStateFile: string): string {
 }
 
 export function loadAutoUpdateState(filePath: string): AutoUpdateState {
+  if (!existsSync(filePath)) return freshState()
   try {
     return normalizeAutoUpdateState(JSON.parse(readFileSync(filePath, 'utf8')))
   } catch {
-    return freshState()
+    return failClosedState()
   }
 }
 
@@ -242,6 +319,9 @@ export function loadSharedUpdateSafety(filePath: string): SharedUpdateSafety {
   try {
     const raw = JSON.parse(readFileSync(filePath, 'utf8')) as Record<string, unknown>
     if (raw.schemaVersion !== 1) throw new Error('unsupported safety state')
+    if (typeof raw.disabled !== 'boolean' || typeof raw.resetArmed !== 'boolean') {
+      throw new Error('malformed safety state')
+    }
     return {
       schemaVersion: 1,
       disabled: raw.disabled === true,
@@ -371,6 +451,7 @@ export function transitionRollbackState(
   if (event.kind === 'graceful-stop') {
     if (state.targetCommit === event.currentCommit) {
       state.validationBootStartedAt = null
+      state.crashCount = 0
     }
     return { state, action: 'none' }
   }
@@ -388,7 +469,16 @@ export function transitionRollbackState(
     }
     return { state, action: 'none' }
   }
-  if (state.validationBootStartedAt !== null) state.crashCount += 1
+  if (state.validationBootStartedAt !== null) {
+    const elapsed = event.now - state.validationBootStartedAt
+    if (elapsed >= UPDATE_HEALTHY_AFTER_MS) {
+      return transitionRollbackState(state, {
+        kind: 'healthy',
+        currentCommit: event.currentCommit,
+      })
+    }
+    state.crashCount += 1
+  }
   if (state.crashCount >= 2) {
     state.crashCount = 2
     state.validationBootStartedAt = null
@@ -473,10 +563,11 @@ async function git(
 async function canFastForward(
   runner: CommandRunner,
   rootDir: string,
+  targetCommit: string,
 ): Promise<boolean> {
   try {
     const head = await git(runner, rootDir, ['rev-parse', 'HEAD'])
-    const base = await git(runner, rootDir, ['merge-base', 'HEAD', REMOTE_REF])
+    const base = await git(runner, rootDir, ['merge-base', 'HEAD', targetCommit])
     return SHA_RE.test(head) && base === head
   } catch {
     return false
@@ -516,14 +607,14 @@ export async function inspectGitUpdate(opts: {
   ])
   if (status.length > 0) return { kind: 'dirty-tree' }
   await git(runner, opts.rootDir, ['fetch', '--quiet', 'origin', 'main'])
-  const [currentCommit, targetCommit, rawPackage] = await Promise.all([
+  const [currentCommit, targetCommit] = await Promise.all([
     git(runner, opts.rootDir, ['rev-parse', 'HEAD']),
     git(runner, opts.rootDir, ['rev-parse', REMOTE_REF]),
-    git(runner, opts.rootDir, ['show', `${REMOTE_REF}:package.json`]),
   ])
   if (!SHA_RE.test(currentCommit) || !SHA_RE.test(targetCommit)) {
     throw new Error('git returned an invalid commit id')
   }
+  const rawPackage = await git(runner, opts.rootDir, ['show', `${targetCommit}:package.json`])
   const latestVersion = packageVersion(rawPackage)
   return {
     kind: 'checked',
@@ -531,7 +622,7 @@ export async function inspectGitUpdate(opts: {
     targetCommit,
     latestVersion,
     versionDecision: decideVersionUpdate(opts.runningVersion, latestVersion),
-    canFastForward: await canFastForward(runner, opts.rootDir),
+    canFastForward: await canFastForward(runner, opts.rootDir, targetCommit),
   }
 }
 
@@ -672,8 +763,11 @@ export class SelfUpdater {
         kind: 'healthy',
         currentCommit: this.runningCommit,
       })
+      if (!saveAutoUpdateState(this.opts.stateFilePath, transition.state)) {
+        this.opts.log('Auto-update could not record healthy validation; rollback state stays armed.')
+        return
+      }
       this.state = transition.state
-      saveAutoUpdateState(this.opts.stateFilePath, this.state)
       this.opts.log('Auto-update validation passed after 60 seconds.')
       if (this.started) void this.checkNow()
     }, UPDATE_HEALTHY_AFTER_MS)
@@ -767,10 +861,10 @@ export class SelfUpdater {
       targetCommit,
       targetVersion,
     })
-    this.state = transition.state
-    if (!saveAutoUpdateState(this.opts.stateFilePath, this.state)) {
+    if (!saveAutoUpdateState(this.opts.stateFilePath, transition.state)) {
       throw new Error('could not record rollback state')
     }
+    this.state = transition.state
   }
 
   private async applyUpdate(
@@ -779,18 +873,33 @@ export class SelfUpdater {
     await this.waitForDrain()
     const lock = tryAcquireUpdateLock(this.lockPath, this.now())
     if (lock.kind === 'held') {
-      this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
       this.opts.log('Auto-update is being applied by another daemon. Waiting to restart safely.')
+      let completedLock: Extract<UpdateLockResult, { kind: 'acquired' }> | null = null
       while (true) {
         await this.delay(UPDATE_DRAIN_POLL_MS)
         const completed = tryAcquireUpdateLock(this.lockPath, this.now())
         if (completed.kind === 'held') continue
-        completed.release()
+        completedLock = completed
         break
       }
-      this.opts.log('The shared checkout update lock is clear. Restarting this daemon.')
-      this.exiting = true
-      this.opts.exit(0)
+      try {
+        const installedCommit = await git(this.runner, this.opts.rootDir, ['rev-parse', 'HEAD'])
+        if (installedCommit !== inspection.targetCommit) {
+          this.opts.log(
+            'The shared checkout update did not install the inspected target. This daemon will continue.',
+          )
+          this.opts.setDrainMode(false)
+          return
+        }
+        this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
+        this.opts.log('The shared checkout update is complete. Restarting this daemon.')
+        this.exiting = true
+        completedLock.release()
+        completedLock = null
+        this.opts.exit(0)
+      } finally {
+        completedLock?.release()
+      }
       return
     }
     try {
@@ -805,7 +914,11 @@ export class SelfUpdater {
         lockHeld: false,
         currentCommit,
         targetCommit: inspection.targetCommit,
-        canFastForward: await canFastForward(this.runner, this.opts.rootDir),
+        canFastForward: await canFastForward(
+          this.runner,
+          this.opts.rootDir,
+          inspection.targetCommit,
+        ),
       })
       if (action.kind === 'skip') {
         this.opts.log(
@@ -817,24 +930,27 @@ export class SelfUpdater {
         return
       }
       const stateBeforeUpdate = this.state
+      const dependencyChanges =
+        action.kind === 'pull'
+          ? await git(this.runner, this.opts.rootDir, [
+              'diff',
+              '--name-only',
+              currentCommit,
+              inspection.targetCommit,
+              '--',
+              'bun.lock',
+              'package.json',
+            ])
+          : ''
       this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
       const pendingInstalledState = this.state
       if (action.kind === 'pull') {
-        const dependencyChanges = await git(this.runner, this.opts.rootDir, [
-          'diff',
-          '--name-only',
-          currentCommit,
-          inspection.targetCommit,
-          '--',
-          'bun.lock',
-          'package.json',
-        ])
         let mergeCompleted = false
         try {
           await git(
             this.runner,
             this.opts.rootDir,
-            ['merge', '--ff-only', '--no-edit', REMOTE_REF],
+            ['merge', '--ff-only', '--no-edit', inspection.targetCommit],
             120_000,
           )
           mergeCompleted = true
@@ -846,6 +962,7 @@ export class SelfUpdater {
           }
         } catch (error) {
           if (mergeCompleted) {
+            let previousRecoveryError: unknown = null
             try {
               await git(
                 this.runner,
@@ -853,20 +970,85 @@ export class SelfUpdater {
                 ['checkout', '--detach', currentCommit],
                 120_000,
               )
+              if (dependencyChanges.length > 0) {
+                await this.runner('bun', ['install', '--frozen-lockfile'], {
+                  cwd: this.opts.rootDir,
+                  timeoutMs: 120_000,
+                })
+              }
+              if (!saveAutoUpdateState(this.opts.stateFilePath, stateBeforeUpdate)) {
+                throw new Error('could not record restored previous update state')
+              }
               this.state = stateBeforeUpdate
-              saveAutoUpdateState(this.opts.stateFilePath, this.state)
-              this.opts.log('Auto-update failed after the pull. The previous checkout was restored.')
-            } catch (restoreError) {
-              this.state = pendingInstalledState
-              saveAutoUpdateState(this.opts.stateFilePath, this.state)
               this.opts.log(
-                `Auto-update could not restore the previous checkout. ` +
-                  `Rollback validation remains armed: ${errorText(restoreError)}`,
+                'Auto-update failed after the pull. The previous checkout and dependencies were restored.',
               )
+            } catch (restoreError) {
+              previousRecoveryError = restoreError
+            }
+            if (previousRecoveryError === null) throw error
+
+            try {
+              await git(
+                this.runner,
+                this.opts.rootDir,
+                ['checkout', '--detach', inspection.targetCommit],
+                120_000,
+              )
+              if (dependencyChanges.length > 0) {
+                await this.runner('bun', ['install', '--frozen-lockfile'], {
+                  cwd: this.opts.rootDir,
+                  timeoutMs: 120_000,
+                })
+              }
+              if (!saveAutoUpdateState(this.opts.stateFilePath, pendingInstalledState)) {
+                throw new Error('could not preserve target validation state')
+              }
+              this.state = pendingInstalledState
+              this.opts.log(
+                'Auto-update could not restore the previous revision. The target checkout and dependencies were restored for supervised validation.',
+              )
+              this.exiting = true
+              lock.release()
+              this.opts.exit(0)
+              return
+            } catch (targetRecoveryError) {
+              this.state = pendingInstalledState
+              const safetySaved = saveSharedUpdateSafety(this.safetyPath, {
+                schemaVersion: 1,
+                disabled: true,
+                resetArmed: false,
+              })
+              this.exiting = true
+              this.opts.log(
+                `Auto-update could not restore a coherent previous or target installation. ` +
+                  `Message intake remains drained and future checks are stopped. ` +
+                  `Previous recovery: ${errorText(previousRecoveryError)}. ` +
+                  `Target recovery: ${errorText(targetRecoveryError)}.`,
+              )
+              this.opts.log(
+                safetySaved
+                  ? 'Auto-update is disabled for this shared checkout until the flag is reset.'
+                  : 'Auto-update could not persist the shared safety latch. This daemon remains drained.',
+              )
+              return
             }
           } else {
+            if (!saveAutoUpdateState(this.opts.stateFilePath, stateBeforeUpdate)) {
+              this.exiting = true
+              const safetySaved = saveSharedUpdateSafety(this.safetyPath, {
+                schemaVersion: 1,
+                disabled: true,
+                resetArmed: false,
+              })
+              this.opts.log(
+                safetySaved
+                  ? 'Auto-update failed before the pull and could not restore its state. Future checks are disabled and message intake remains drained.'
+                  : 'Auto-update failed before the pull and could not restore its state or shared safety latch. This daemon remains drained.',
+              )
+              return
+            }
             this.state = stateBeforeUpdate
-            saveAutoUpdateState(this.opts.stateFilePath, this.state)
           }
           throw error
         }
@@ -887,13 +1069,15 @@ export class SelfUpdater {
 
   async attemptRollback(): Promise<void> {
     if (!this.state.rollbackPending || !this.state.previousCommit) return
-    const lock = tryAcquireUpdateLock(this.lockPath, this.now())
-    if (lock.kind === 'held') {
-      this.opts.log('Auto-update rollback is being handled by another daemon. Restarting.')
-      this.exiting = true
-      this.opts.exit(0)
-      return
+    let lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
+    if (lockResult.kind === 'held') {
+      this.opts.log('Auto-update rollback is being handled by another daemon. Waiting safely.')
+      while (lockResult.kind === 'held') {
+        await this.delay(UPDATE_DRAIN_POLL_MS)
+        lockResult = tryAcquireUpdateLock(this.lockPath, this.now())
+      }
     }
+    const lock = lockResult
     try {
       const status = await git(this.runner, this.opts.rootDir, [
         'status',
@@ -909,16 +1093,17 @@ export class SelfUpdater {
         '-e',
         `${this.state.previousCommit}^{commit}`,
       ])
-      await git(
-        this.runner,
-        this.opts.rootDir,
-        ['checkout', '--detach', this.state.previousCommit],
-        120_000,
-      )
-      const transition = transitionRollbackState(this.state, {
-        kind: 'rollback-succeeded',
-      })
-      this.state = transition.state
+      const dependencyChanges = this.state.targetCommit
+        ? await git(this.runner, this.opts.rootDir, [
+            'diff',
+            '--name-only',
+            this.state.previousCommit,
+            this.state.targetCommit,
+            '--',
+            'bun.lock',
+            'package.json',
+          ])
+        : ''
       if (
         !saveSharedUpdateSafety(this.safetyPath, {
           schemaVersion: 1,
@@ -926,8 +1111,55 @@ export class SelfUpdater {
           resetArmed: false,
         })
       ) {
-        throw new Error('could not record the shared rollback safety latch')
+        throw new Error('could not arm the shared rollback safety latch before checkout')
       }
+      try {
+        await git(
+          this.runner,
+          this.opts.rootDir,
+          ['checkout', '--detach', this.state.previousCommit],
+          120_000,
+        )
+        if (dependencyChanges.length > 0) {
+          await this.runner('bun', ['install', '--frozen-lockfile'], {
+            cwd: this.opts.rootDir,
+            timeoutMs: 120_000,
+          })
+        }
+      } catch (rollbackError) {
+        try {
+          await git(
+            this.runner,
+            this.opts.rootDir,
+            ['checkout', '--detach', this.state.targetCommit!],
+            120_000,
+          )
+          if (dependencyChanges.length > 0) {
+            await this.runner('bun', ['install', '--frozen-lockfile'], {
+              cwd: this.opts.rootDir,
+              timeoutMs: 120_000,
+            })
+          }
+          this.opts.log(
+            'Auto-update rollback dependency restore failed. The target checkout was restored.',
+          )
+        } catch (restoreError) {
+          throw new Error(
+            `rollback failed and the target checkout could not be restored: ${errorText(restoreError)}`,
+          )
+        }
+        if (!saveSharedUpdateSafety(this.safetyPath, EMPTY_SHARED_UPDATE_SAFETY)) {
+          throw new Error(
+            `rollback failed after the target checkout was restored, ` +
+              `but the shared safety latch could not be cleared: ${errorText(rollbackError)}`,
+          )
+        }
+        throw rollbackError
+      }
+      const transition = transitionRollbackState(this.state, {
+        kind: 'rollback-succeeded',
+      })
+      this.state = transition.state
       if (!saveAutoUpdateState(this.opts.stateFilePath, this.state)) {
         throw new Error('could not record completed rollback')
       }
@@ -1009,7 +1241,10 @@ export async function initializeSelfUpdater(
       now: (opts.now ?? Date.now)(),
     })
     state = boot.state
-    saveAutoUpdateState(opts.stateFilePath, state)
+    if (!saveAutoUpdateState(opts.stateFilePath, state)) {
+      opts.log('Auto-update could not record boot safety state; updates stay inactive.')
+      return null
+    }
     const updater = new SelfUpdater(opts, state, runningCommit)
     if (boot.action === 'rollback') {
       await updater.attemptRollback()
