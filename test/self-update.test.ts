@@ -107,16 +107,18 @@ function gitRunner(opts: {
   }
 }
 
-describe('exact opt-in flag', () => {
-  test('only the exact value on enables updates', () => {
+describe('default-on flag (KC 2026-07-18)', () => {
+  test('unset and empty default to enabled; explicit non-on values disable', () => {
     expect(isAutoUpdateEnabled('on')).toBe(true)
-    for (const value of [undefined, '', 'off', 'ON', 'true', '1']) {
+    expect(isAutoUpdateEnabled(undefined)).toBe(true)
+    expect(isAutoUpdateEnabled('')).toBe(true)
+    for (const value of ['off', 'ON', 'true', '1', 'onn']) {
       expect(isAutoUpdateEnabled(value)).toBe(false)
     }
   })
 
-  test('flag off and default perform no git, timer, exit, or log work', async () => {
-    for (const flag of [undefined, 'off']) {
+  test('flag off performs no git, timer, exit, or log work', async () => {
+    for (const flag of ['off']) {
       let commands = 0
       let timers = 0
       let exits = 0

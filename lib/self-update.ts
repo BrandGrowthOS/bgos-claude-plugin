@@ -68,6 +68,10 @@ export function decideVersionUpdate(
 }
 
 export function isAutoUpdateEnabled(value: string | undefined): boolean {
+  // Default ON (KC 2026-07-18): an unset or empty flag enables auto-update.
+  // Any other explicit value that is not exactly 'on' disables it, so 'off'
+  // stays the hard kill switch and typos fail closed to disabled.
+  if (value === undefined || value === '') return true
   return value === 'on'
 }
 
