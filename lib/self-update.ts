@@ -96,6 +96,23 @@ export function decideDrain(snapshot: DrainSnapshot): 'ready' | 'wait' {
     : 'wait'
 }
 
+export class MessageActivityTracker {
+  private activeCount = 0
+
+  get activeOperations(): number {
+    return this.activeCount
+  }
+
+  async track<T>(operation: () => Promise<T>): Promise<T> {
+    this.activeCount += 1
+    try {
+      return await operation()
+    } finally {
+      this.activeCount -= 1
+    }
+  }
+}
+
 export interface AutoUpdateState {
   schemaVersion: 1
   disabled: boolean
@@ -796,6 +813,7 @@ export class SelfUpdater {
       }
       const stateBeforeUpdate = this.state
       this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
+      const pendingInstalledState = this.state
       if (action.kind === 'pull') {
         const dependencyChanges = await git(this.runner, this.opts.rootDir, [
           'diff',
@@ -822,8 +840,6 @@ export class SelfUpdater {
             })
           }
         } catch (error) {
-          this.state = stateBeforeUpdate
-          saveAutoUpdateState(this.opts.stateFilePath, this.state)
           if (mergeCompleted) {
             try {
               await git(
@@ -832,12 +848,20 @@ export class SelfUpdater {
                 ['checkout', '--detach', currentCommit],
                 120_000,
               )
+              this.state = stateBeforeUpdate
+              saveAutoUpdateState(this.opts.stateFilePath, this.state)
               this.opts.log('Auto-update failed after the pull. The previous checkout was restored.')
             } catch (restoreError) {
+              this.state = pendingInstalledState
+              saveAutoUpdateState(this.opts.stateFilePath, this.state)
               this.opts.log(
-                `Auto-update could not restore the previous checkout: ${errorText(restoreError)}`,
+                `Auto-update could not restore the previous checkout. ` +
+                  `Rollback validation remains armed: ${errorText(restoreError)}`,
               )
             }
+          } else {
+            this.state = stateBeforeUpdate
+            saveAutoUpdateState(this.opts.stateFilePath, this.state)
           }
           throw error
         }
@@ -849,6 +873,7 @@ export class SelfUpdater {
       }
       this.opts.log('Auto-update complete. Exiting so the supervisor can restart the daemon.')
       this.exiting = true
+      lock.release()
       this.opts.exit(0)
     } finally {
       lock.release()
@@ -908,6 +933,7 @@ export class SelfUpdater {
         'Auto-update is disabled. Boot once with BGOS_AUTO_UPDATE=off, then set it to on again.',
       )
       this.exiting = true
+      lock.release()
       this.opts.exit(0)
     } catch (error) {
       this.opts.log(`Auto-update rollback failed and the daemon will continue: ${errorText(error)}`)

@@ -139,6 +139,7 @@ import { homedir } from 'node:os'
 import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
 import {
   initializeSelfUpdater,
+  MessageActivityTracker,
   resolveAutoUpdateStatePath,
   type SelfUpdater,
 } from './lib/self-update'
@@ -208,7 +209,7 @@ const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
 
 let selfUpdater: SelfUpdater | null = null
 let updateDrainMode = false
-let activeMessageOperations = 0
+const messageActivity = new MessageActivityTracker()
 
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
@@ -228,12 +229,7 @@ function setUpdateDrainMode(enabled: boolean): void {
 }
 
 async function trackMessageOperation<T>(operation: () => Promise<T>): Promise<T> {
-  activeMessageOperations += 1
-  try {
-    return await operation()
-  } finally {
-    activeMessageOperations -= 1
-  }
+  return messageActivity.track(operation)
 }
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
@@ -5014,7 +5010,9 @@ function connectWebsocket(): void {
       const frame = normalizeVoiceRpc(payload)
       if (!frame) return
       log(`voice_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
-      void voiceRpc.handle(frame)
+      void trackMessageOperation(() => voiceRpc.handle(frame)).catch((err) => {
+        log(`voice_rpc handler error: ${err}`)
+      })
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
     }
@@ -5034,7 +5032,9 @@ function connectWebsocket(): void {
         `export_pack received (rpc=${frame.rpcId}, handoff=${frame.handoffId}, ` +
           `tier=${frame.tier})`,
       )
-      void exportPack.handleExport(frame)
+      void trackMessageOperation(() => exportPack.handleExport(frame)).catch((err) => {
+        log(`export_pack handler error: ${err}`)
+      })
     } catch (err) {
       log(`export_pack handler error: ${err}`)
     }
@@ -5048,7 +5048,9 @@ function connectWebsocket(): void {
       const frame = normalizeExportPackManifest(payload)
       if (!frame) return
       log(`export_pack_manifest received (rpc=${frame.rpcId})`)
-      void exportPack.handleManifest(frame)
+      void trackMessageOperation(() => exportPack.handleManifest(frame)).catch((err) => {
+        log(`export_pack_manifest handler error: ${err}`)
+      })
     } catch (err) {
       log(`export_pack_manifest handler error: ${err}`)
     }
@@ -5992,7 +5994,7 @@ async function main(): Promise<void> {
     runningVersion: readOwnVersion(import.meta.dir),
     log,
     drainSnapshot: () => ({
-      activeOperations: activeMessageOperations,
+      activeOperations: messageActivity.activeOperations,
       pendingMessages: pendingInbounds.size,
       pendingPermissions: pendingPermissions.size,
     }),

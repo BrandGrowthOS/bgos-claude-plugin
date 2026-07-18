@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,6 +14,7 @@ import { join } from 'node:path'
 import {
   EMPTY_AUTO_UPDATE_STATE,
   EMPTY_SHARED_UPDATE_SAFETY,
+  MessageActivityTracker,
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_HEALTHY_AFTER_MS,
   UPDATE_JITTER_MAX_MS,
@@ -262,6 +264,33 @@ describe('schedule and drain decisions', () => {
     expect(
       decideDrain({ activeOperations: 0, pendingMessages: 0, pendingPermissions: 1 }),
     ).toBe('wait')
+  })
+
+  test('tracked async WS work keeps drain blocked until it settles', async () => {
+    const tracker = new MessageActivityTracker()
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const tracked = tracker.track(() => pending)
+    expect(tracker.activeOperations).toBe(1)
+    expect(
+      decideDrain({
+        activeOperations: tracker.activeOperations,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+    ).toBe('wait')
+    finish()
+    await tracked
+    expect(tracker.activeOperations).toBe(0)
+    expect(
+      decideDrain({
+        activeOperations: tracker.activeOperations,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+    ).toBe('ready')
   })
 
   test('the validation health window is exactly 60 seconds', () => {
@@ -551,9 +580,10 @@ describe('real git check in dry-run mode', () => {
     expect(calls.some((call) => call.file === 'bun')).toBe(false)
   })
 
-  test('live apply uses merge ff-only with argv and exits zero after drain', async () => {
+  test('live apply releases its lock before exit after a drained ff-only merge', async () => {
     const rootDir = tempDir('self-update-apply-root-')
     mkdirSync(join(rootDir, '.git'))
+    const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
     const stateFilePath = join(tempDir('self-update-apply-state-'), 'auto-update.json')
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const exits: number[] = []
@@ -570,7 +600,10 @@ describe('real git check in dry-run mode', () => {
         pendingPermissions: 0,
       }),
       setDrainMode: (enabled) => drainModes.push(enabled),
-      exit: (code) => exits.push(code),
+      exit: (code) => {
+        expect(existsSync(lockPath)).toBe(false)
+        exits.push(code)
+      },
       runner: gitRunner({ calls, dependencyChanges: 'bun.lock\n' }),
       schedule: () => setTimeout(() => {}, 60_000),
     })
@@ -667,7 +700,10 @@ describe('real git check in dry-run mode', () => {
         pendingPermissions: 0,
       }),
       setDrainMode: () => {},
-      exit: (code) => exits.push(code),
+      exit: (code) => {
+        expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
+        exits.push(code)
+      },
       runner,
     })
     expect(calls).toContainEqual({
@@ -715,5 +751,91 @@ describe('real git check in dry-run mode', () => {
     await expect(updater!.checkNow()).resolves.toBeUndefined()
     expect(exits).toEqual([])
     expect(logs.some((line) => line.includes('daemon will continue'))).toBe(true)
+  })
+
+  test('post-merge dependency failure restores checkout before clearing validation', async () => {
+    const rootDir = tempDir('self-update-restore-ok-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-restore-ok-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const baseRunner = gitRunner({ calls, dependencyChanges: 'bun.lock\n' })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'bun') throw new Error('dependency install failed')
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: () => {
+        throw new Error('failed update must not exit')
+      },
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    await expect(updater!.checkNow()).resolves.toBeUndefined()
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_A],
+    })
+    const state = loadAutoUpdateState(stateFilePath)
+    expect(state.validationPending).toBe(false)
+    expect(state.previousCommit).toBeNull()
+    expect(state.targetCommit).toBeNull()
+    expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
+  })
+
+  test('failed checkout restoration preserves installed state for rollback validation', async () => {
+    const rootDir = tempDir('self-update-restore-fail-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-restore-fail-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const logs: string[] = []
+    const baseRunner = gitRunner({ calls, dependencyChanges: 'bun.lock\n' })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'bun') throw new Error('dependency install failed')
+      if (args[0] === 'checkout') {
+        calls.push({ file, args: [...args] })
+        throw new Error('checkout restore failed')
+      }
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: () => {
+        throw new Error('failed update must not exit')
+      },
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    await expect(updater!.checkNow()).resolves.toBeUndefined()
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['checkout', '--detach', COMMIT_A],
+    })
+    const state = loadAutoUpdateState(stateFilePath)
+    expect(state.validationPending).toBe(true)
+    expect(state.previousCommit).toBe(COMMIT_A)
+    expect(state.targetCommit).toBe(COMMIT_B)
+    expect(logs.some((line) => line.includes('Rollback validation remains armed'))).toBe(true)
+    expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
   })
 })
