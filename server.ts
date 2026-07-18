@@ -57,7 +57,15 @@ import {
   normalizeExportPack,
   normalizeExportPackManifest,
 } from './lib/export-pack.js'
-import { UsageTracker, readContextPct } from './lib/usage-report.js'
+import { UsageTracker } from './lib/usage-report.js'
+import { SessionTranscriptBinder } from './lib/session-binding.js'
+import {
+  resolveTmuxTarget,
+  buildProbeArgs,
+  buildInjectionSteps,
+  type TmuxTarget,
+} from './lib/compact-inject.js'
+import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
 import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
@@ -66,7 +74,7 @@ import {
   summarizeHealthLogResult,
 } from './lib/health-log.js'
 import {
-  BUILTIN_COMMANDS,
+  catalogForCapabilities,
   type SlashCommandEntry,
 } from './lib/slash-catalog.js'
 import {
@@ -363,16 +371,29 @@ async function bgosDelete(path: string): Promise<unknown> {
   return response.json()
 }
 
+// Positive self-session transcript binding (lib/session-binding.ts): the
+// contextPct gauge must read THIS session's transcript, not whatever file in
+// the shared project dir was touched most recently (newest-mtime could
+// belong to a different session sharing the cwd, freezing the gauge).
+// Binding evidence: reply markers written into the transcript by the CLI
+// (positive proof, recorded in the reply handler) > CLAUDE_CODE_SESSION_ID
+// (fresh launches only; --continue discards it) > sticky previous binding >
+// newest-mtime at boot (logged last resort).
+const sessionBinder = new SessionTranscriptBinder(process.cwd(), {
+  envSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
+  log,
+})
+
 // Context-window fill self-report (session controls): best-effort PATCH of
 // {contextPct} onto the assistant status, read from the LATEST assistant
-// usage entry in the current session transcript (lib/usage-report.ts). Fired
+// usage entry in THIS session's transcript (positively bound above). Fired
 // after each successful reply and on the poll heartbeat tick. Deduped on the
 // rounded percent so the heartbeat does not spam identical PATCHes. Never
 // throws, never blocks: the value is approximate telemetry, nothing more.
 let lastContextPctSent: number | null = null
 function reportContextPct(): void {
   void (async () => {
-    const pct = await readContextPct()
+    const pct = sessionBinder.readContextPct()
     if (pct == null) return
     const rounded = Math.round(pct)
     if (rounded === lastContextPctSent) return
@@ -435,6 +456,182 @@ function reportResting(): void {
     .finally(() => {
       restingSweepInFlight = false
     })
+}
+
+// ── Remote /compact (supervisor tmux injection) ──────────────────────────────
+// A /compact tap in the BGOS app arrives as a slash_command channel event.
+// The model cannot run host CLI commands from a channel event (the 0.22.1
+// lesson), but when the CLI runs inside a tmux pane the DAEMON can type the
+// fixed literal '/compact' into the composer via tmux send-keys
+// (lib/compact-inject.ts; capability detected once at boot). The event is
+// swallowed (never forwarded to the model), the user gets a direct daemon
+// reply, and completion is confirmed asynchronously by watching the bound
+// transcript for the compact_boundary entry (lib/compact-confirm.ts).
+const compactTarget: TmuxTarget | null = resolveTmuxTarget(process.env)
+if (compactTarget) {
+  log(
+    `remote compact capability ON (tmux target ${compactTarget.target} ` +
+      `via ${compactTarget.source})`,
+  )
+} else {
+  log('remote compact capability OFF (no tmux control of the CLI detected)')
+}
+let compactInFlight = false
+const COMPACT_CONFIRM_TIMEOUT_MS = 4 * 60_000
+const COMPACT_CONFIRM_POLL_MS = 5_000
+// Injection timestamps get 5s of slack when compared against transcript
+// entry timestamps (same host, but file-write vs Date.now ordering is not
+// guaranteed to the millisecond).
+const COMPACT_TS_SLACK_MS = 5_000
+
+const sleepMs = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms))
+
+function fmtPct(pct: number | null): string {
+  return pct == null ? 'unknown' : `${Math.round(pct)}%`
+}
+
+/** Direct daemon text to a chat (no model involvement, no reply tool). */
+async function sendDaemonText(chatId: string, text: string): Promise<void> {
+  await bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+  })
+}
+
+async function tmuxTargetAlive(t: TmuxTarget): Promise<boolean> {
+  try {
+    const argv = buildProbeArgs(t)
+    await execFileAsync(argv[0]!, argv.slice(1), { timeout: 5_000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// WS and poll can both deliver the same slash_command message; injecting
+// twice would compact twice. Dedupe on message id (bounded).
+const handledCompactMsgIds = new Set<string>()
+function alreadyHandledCompact(messageId: string): boolean {
+  if (handledCompactMsgIds.has(messageId)) return true
+  handledCompactMsgIds.add(messageId)
+  if (handledCompactMsgIds.size > 200) {
+    const first = handledCompactMsgIds.values().next().value
+    if (first !== undefined) handledCompactMsgIds.delete(first)
+  }
+  return false
+}
+
+async function handleRemoteCompact(chatId: string): Promise<void> {
+  if (!compactTarget) {
+    const pct = sessionBinder.readContextPct()
+    await sendDaemonText(
+      chatId,
+      'This install cannot compact remotely: the agent terminal is not ' +
+        'reachable (no `BGOS_TMUX_SESSION` from the supervisor and the CLI ' +
+        'is not inside a tmux pane). Please run `/compact` directly in the ' +
+        'agent terminal.' +
+        (pct != null ? ` Current context: ${fmtPct(pct)}.` : ''),
+    ).catch((err) => log(`remote compact: reply failed: ${err}`))
+    return
+  }
+  if (compactInFlight) {
+    await sendDaemonText(
+      chatId,
+      'A compaction is already in progress, hold on.',
+    ).catch((err) => log(`remote compact: reply failed: ${err}`))
+    return
+  }
+  // Claim the in-flight slot BEFORE the first await below so two rapid taps
+  // cannot both reach injection. Released here on every early/error exit;
+  // once the confirmation watcher is launched, IT owns the release.
+  compactInFlight = true
+  let watcherOwnsFlag = false
+  try {
+    if (!(await tmuxTargetAlive(compactTarget))) {
+      await sendDaemonText(
+        chatId,
+        `I could not reach the agent terminal (tmux target ` +
+          `\`${compactTarget.target}\` is gone). Please run \`/compact\` ` +
+          'directly in the agent terminal.',
+      )
+      return
+    }
+    const beforePct = sessionBinder.readContextPct()
+    const injectedAt = Date.now()
+    for (const step of buildInjectionSteps(compactTarget, 'compact')) {
+      if (step.delayMsBefore > 0) await sleepMs(step.delayMsBefore)
+      await execFileAsync(step.argv[0]!, step.argv.slice(1), { timeout: 5_000 })
+    }
+    log(
+      `remote compact: injected /compact into tmux target ${compactTarget.target} ` +
+        `(${compactTarget.source}), context before: ${fmtPct(beforePct)}`,
+    )
+    // Start the confirmation watcher BEFORE the chat notify: once the
+    // keystrokes are in, confirmation must run (and own compactInFlight)
+    // even if this notify fails.
+    watcherOwnsFlag = true
+    void confirmCompaction(chatId, beforePct, injectedAt - COMPACT_TS_SLACK_MS)
+    await sendDaemonText(
+      chatId,
+      `Compaction started (context at ${fmtPct(beforePct)}). ` +
+        'I will confirm here when it completes.',
+    ).catch((err) => log(`remote compact: start notify failed: ${err}`))
+  } catch (err) {
+    log(`remote compact failed: ${err}`)
+    await sendDaemonText(
+      chatId,
+      'Compaction injection failed on this host. Please run `/compact` ' +
+        'directly in the agent terminal.',
+    ).catch(() => {})
+  } finally {
+    if (!watcherOwnsFlag) compactInFlight = false
+  }
+}
+
+async function confirmCompaction(
+  chatId: string,
+  beforePct: number | null,
+  sinceMs: number,
+): Promise<void> {
+  try {
+    const deadline = Date.now() + COMPACT_CONFIRM_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      await sleepMs(COMPACT_CONFIRM_POLL_MS)
+      const chunk = sessionBinder.readBoundTail()
+      if (chunk === null) continue
+      const outcome = evaluateCompactionOutcome(chunk, sinceMs)
+      if (outcome.state === 'compacted') {
+        // Refresh the gauge (the pill) and tell the user in-chat.
+        reportContextPct()
+        await sendDaemonText(
+          chatId,
+          outcome.afterPct != null
+            ? `Compaction complete: context ${fmtPct(beforePct)} -> ` +
+                `${fmtPct(outcome.afterPct)}.`
+            : `Compaction complete (was ${fmtPct(beforePct)}). The context ` +
+                'gauge refreshes on the next turn.',
+        )
+        log('remote compact: confirmed via compact_boundary')
+        return
+      }
+    }
+    await sendDaemonText(
+      chatId,
+      'I sent `/compact` to the agent terminal but could not confirm it ' +
+        'completed within 4 minutes. Please check the terminal.',
+    )
+    log('remote compact: no compact_boundary observed before timeout')
+  } catch (err) {
+    log(`remote compact confirmation error: ${err}`)
+  } finally {
+    compactInFlight = false
+  }
 }
 
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
@@ -931,6 +1128,9 @@ const mcp = new Server(
       'and `meta.command_args = "<rest of message>"`. The `content` field is the',
       'literal text the user sent (e.g. `/help`). Treat the command exactly as you',
       'would in the CLI, invoke its behavior, then `reply` with the result.',
+      'Exception: `/compact` never reaches you. When this install supports it,',
+      'the plugin itself injects real host compaction and confirms in-chat; you',
+      'do not need to (and cannot) act on it.',
       '',
       '## Receiving Attachments',
       '',
@@ -2223,6 +2423,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 
         const result = await bgosPost('send-message', body)
         const msgId = (result as any)?.message?.id
+        // Session binding: the CLI writes this tool call's result ("Sent
+        // (message_id: N)...") verbatim into THIS session's transcript, so
+        // the minted id is positive proof of which transcript is ours.
+        if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
         const parts: string[] = []
         if (msgId) parts.push(`message_id: ${msgId}`)
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
@@ -4180,6 +4384,24 @@ async function pollChat(chatId: string): Promise<void> {
       // Push channel notification to Claude Code (fire-and-forget)
       // Keep meta simple, file URLs are embedded in the content text
       const isSlashCommand = msg.message.messageType === 'slash_command'
+      // Remote /compact: handled by the DAEMON, never forwarded to the model
+      // (the model cannot run host CLI commands from a channel event). The
+      // message-id dedupe covers WS + poll double delivery.
+      if (
+        isSlashCommand &&
+        (msg.message.commandName ?? '').toLowerCase() === 'compact'
+      ) {
+        if (isBacklog) {
+          // A /compact tapped while the daemon was down targets a session
+          // that no longer exists in that state; compacting NOW on a stale
+          // request would be surprising. Swallow it.
+          log(`remote compact: ignoring stale backlog request (chat ${chatId})`)
+        } else if (!alreadyHandledCompact(String(msg.message.id))) {
+          log(`remote compact requested via poll (chat ${chatId})`)
+          void handleRemoteCompact(chatId)
+        }
+        continue
+      }
       // Machine-delivered event enrichment (capability #12): tag inbound
       // dashboard dispatches / watcher pushes / sweeps / transcripts / n8n
       // notifications so the agent can tell them apart from the human typing.
@@ -4651,6 +4873,20 @@ function connectWebsocket(): void {
 
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
       const isWsSlashCommand = wsMessageType === 'slash_command'
+      // Remote /compact: daemon-handled, never forwarded to the model (same
+      // interception as the poll path; message-id dedupe covers dual
+      // delivery when the boot poll redelivers this message).
+      if (
+        isWsSlashCommand &&
+        String(payload?.commandName ?? payload?.command_name ?? '')
+          .toLowerCase() === 'compact'
+      ) {
+        if (chatId && !alreadyHandledCompact(String(messageId))) {
+          log(`remote compact requested via ws (chat ${chatId})`)
+          void handleRemoteCompact(chatId)
+        }
+        return
+      }
       // System-message provenance (capability #14). The backend sets
       // senderType='system' when a non-human, non-agent automation (a
       // scheduler / cron / n8n "System" send) authored this inbound, and ALSO
@@ -5199,10 +5435,11 @@ function connectWebsocket(): void {
 // hermes-channel-bgos/docs/bgos-agent-capabilities.md §7.
 
 // Built-in Claude Code commands now live in lib/slash-catalog.ts (pure +
-// unit-tested). `/compact` is deliberately absent: a BGOS slash command
-// reaches the model as a channel event, not CLI input, so host-only
-// commands the model cannot invoke must not be advertised as working
-// (the BGOS context pill gates its Compact button on that entry).
+// unit-tested). `/compact` is advertised CONDITIONALLY: only when the boot
+// capability detection found tmux control of the CLI's pane (compactTarget),
+// because only then can the daemon actually inject host compaction. Without
+// the capability the entry stays absent so the BGOS context pill (which
+// gates its Compact button on this entry) never shows a dead button.
 
 async function readMdCommand(
   filePath: string,
@@ -5318,17 +5555,24 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
     walkPluginCommands(pathJoin(home, '.claude', 'plugins', 'cache'), 'cache'),
   ])
 
+  // Built-ins for THIS daemon: /compact appears only when the boot-time
+  // injection capability was detected (see the invariant in
+  // lib/slash-catalog.ts).
+  const builtinCatalog = catalogForCapabilities({
+    remoteCompact: compactTarget !== null,
+  })
+
   // Priority (lower → higher): built-in < marketplace < cache < user < project.
   const byName = new Map<string, SlashCommandEntry>()
-  for (const c of BUILTIN_COMMANDS) byName.set(c.command, c)
+  for (const c of builtinCatalog) byName.set(c.command, c)
   for (const c of marketplace) byName.set(c.command, c)
   for (const c of cache) byName.set(c.command, c)
   for (const c of user) byName.set(c.command, c)
   for (const c of project) byName.set(c.command, c)
 
   // Built-ins first (in their curated order), then plugin/user/project alphabetical.
-  const builtinSet = new Set(BUILTIN_COMMANDS.map((c) => c.command))
-  const builtins = BUILTIN_COMMANDS.filter((c) => byName.has(c.command))
+  const builtinSet = new Set(builtinCatalog.map((c) => c.command))
+  const builtins = builtinCatalog.filter((c) => byName.has(c.command))
   const rest = [...byName.values()]
     .filter((c) => !builtinSet.has(c.command))
     .sort((a, b) => a.command.localeCompare(b.command))

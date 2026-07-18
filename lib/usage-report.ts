@@ -265,6 +265,41 @@ export function windowForModel(model: string): number {
 export const STANDARD_WINDOW_OVERFLOW_LIMIT = 220_000
 
 /**
+ * Context fill percent (0..100) of a single parsed transcript entry, or null
+ * when the entry is not an assistant entry with a usage block. Shared by the
+ * tail scanner below and by the compaction-confirmation watcher
+ * (lib/compact-confirm.ts), so both compute the pct identically.
+ */
+export function contextPctOfAssistantEntry(entry: unknown): number | null {
+  if (typeof entry !== 'object' || entry === null) return null
+  const e = entry as Record<string, unknown>
+  if (e.type !== 'assistant') return null
+  const message = e.message
+  if (typeof message !== 'object' || message === null) return null
+  const m = message as Record<string, unknown>
+  const usage = m.usage
+  if (typeof usage !== 'object' || usage === null) return null
+  const u = usage as Record<string, unknown>
+  const count = (v: unknown): number =>
+    typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
+  const used =
+    count(u.input_tokens) +
+    count(u.cache_read_input_tokens) +
+    count(u.cache_creation_input_tokens)
+  const model = typeof m.model === 'string' ? m.model : ''
+  let window = windowForModel(model)
+  // Window inference: when the marker-based guess says 200k but the turn
+  // provably carried more input than a 200k window can hold, this was a
+  // 1M-context session whose model id lacks the '[1m]' marker. Without
+  // this, such sessions report a permanently pinned (and false) 100.
+  if (window === 200_000 && used > STANDARD_WINDOW_OVERFLOW_LIMIT) {
+    window = 1_000_000
+  }
+  // used * 100 first: keeps integer-divisible cases exact in floats.
+  return Math.min(100, Math.max(0, (used * 100) / window))
+}
+
+/**
  * Scan a transcript JSONL chunk from the END and return the context fill
  * percent (0..100) of the most recent assistant entry that has a usage
  * block, or null when no such entry exists. Malformed lines are skipped.
@@ -280,32 +315,8 @@ export function latestContextPctFromJsonl(chunk: string): number | null {
     } catch {
       continue // partial/corrupt line, normal at a live file's tail
     }
-    if (typeof entry !== 'object' || entry === null) continue
-    const e = entry as Record<string, unknown>
-    if (e.type !== 'assistant') continue
-    const message = e.message
-    if (typeof message !== 'object' || message === null) continue
-    const m = message as Record<string, unknown>
-    const usage = m.usage
-    if (typeof usage !== 'object' || usage === null) continue
-    const u = usage as Record<string, unknown>
-    const count = (v: unknown): number =>
-      typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0
-    const used =
-      count(u.input_tokens) +
-      count(u.cache_read_input_tokens) +
-      count(u.cache_creation_input_tokens)
-    const model = typeof m.model === 'string' ? m.model : ''
-    let window = windowForModel(model)
-    // Window inference: when the marker-based guess says 200k but the turn
-    // provably carried more input than a 200k window can hold, this was a
-    // 1M-context session whose model id lacks the '[1m]' marker. Without
-    // this, such sessions report a permanently pinned (and false) 100.
-    if (window === 200_000 && used > STANDARD_WINDOW_OVERFLOW_LIMIT) {
-      window = 1_000_000
-    }
-    // used * 100 first: keeps integer-divisible cases exact in floats.
-    return Math.min(100, Math.max(0, (used * 100) / window))
+    const pct = contextPctOfAssistantEntry(entry)
+    if (pct !== null) return pct
   }
   return null
 }
@@ -316,10 +327,16 @@ export function latestContextPctFromJsonl(chunk: string): number | null {
 const CONTEXT_PCT_TAIL_BYTES = 256 * 1024
 
 /**
- * Best-effort context-window fill (0..100) of the CURRENT session: the most
- * recently modified transcript in this workspace's Claude project dir, read
- * from its tail. Returns null when anything is unknown (no project dir, no
- * transcript, no usage entry in the tail, unparseable). Never throws.
+ * LEGACY newest-mtime heuristic, kept only as a test surface and as the
+ * documented last-resort fallback. The live daemon now binds positively to
+ * ITS OWN session transcript via lib/session-binding.ts
+ * (SessionTranscriptBinder): newest-mtime can belong to a DIFFERENT session
+ * sharing the same cwd, which produced frozen or wrong contextPct gauges.
+ *
+ * Best-effort context-window fill (0..100): the most recently modified
+ * transcript in this workspace's Claude project dir, read from its tail.
+ * Returns null when anything is unknown (no project dir, no transcript, no
+ * usage entry in the tail, unparseable). Never throws.
  */
 export async function readContextPct(
   cwd: string = process.cwd(),
