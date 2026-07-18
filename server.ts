@@ -59,6 +59,13 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker, readContextPct } from './lib/usage-report.js'
 import {
+  buildHealthLogEventBody,
+  buildHealthLogListPath,
+  buildHealthLogUndoPath,
+  summarizeHealthLogList,
+  summarizeHealthLogResult,
+} from './lib/health-log.js'
+import {
   BUILTIN_COMMANDS,
   type SlashCommandEntry,
 } from './lib/slash-catalog.js'
@@ -339,6 +346,19 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     throw new Error(`PATCH ${response.status}: ${text.slice(0, 200)}`)
+  }
+  return response.json()
+}
+
+async function bgosDelete(path: string): Promise<unknown> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { ...authHeaders(AUTH) },
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
   }
   return response.json()
 }
@@ -1951,6 +1971,97 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: 'log_health_event',
+      description:
+        'Log a health event (meal, supplement, habit, water, ...) to the ' +
+        "owner's native health tracker; it appears in the app's health " +
+        'dashboard. Auth and idempotency are handled for you. Contract: ' +
+        'tell the user "logged" ONLY when this tool answers Logged. If it ' +
+        'answers that the item was already logged today, ask the user first ' +
+        'and only on a clear yes call again with allow_duplicate: true. If ' +
+        'it fails with a network error, retry with the SAME idempotency_key ' +
+        'it echoed (that makes the retry double-log-proof).',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          event_type: {
+            type: 'string',
+            description:
+              'Lowercase category, e.g. "meal", "supplement", "habit", ' +
+              '"water" (<=64 chars).',
+          },
+          item_name: {
+            type: 'string',
+            description: 'What was logged, e.g. "Grilled chicken salad" (<=200 chars).',
+          },
+          quantity: {
+            type: 'number',
+            description: 'Optional amount, pairs with unit (e.g. 350 + "g").',
+          },
+          unit: { type: 'string', description: 'Optional unit (<=32 chars).' },
+          notes: { type: 'string', description: 'Optional notes (<=2000 chars).' },
+          logged_at: {
+            type: 'string',
+            description:
+              'Optional ISO 8601 original event time (backfilling past ' +
+              'meals is fine); defaults to now.',
+          },
+          timezone: {
+            type: 'string',
+            description: 'Optional IANA zone for the day boundary; defaults to Asia/Dubai.',
+          },
+          allow_duplicate: {
+            type: 'boolean',
+            description:
+              'Pass true ONLY after the user confirmed logging the same ' +
+              'item again on the same day.',
+          },
+          idempotency_key: {
+            type: 'string',
+            description:
+              'ONLY for retrying a failed attempt: the UUID echoed by that ' +
+              'attempt. Omit for every new log.',
+          },
+        },
+        required: ['event_type', 'item_name'],
+      },
+    },
+    {
+      name: 'list_health_events',
+      description:
+        "List the owner's logged health events for one local day (default " +
+        'today). Use to review before logging or to answer "what did I eat ' +
+        'today". Maps to GET /api/v1/health-log/events.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          day: { type: 'string', description: 'Local day YYYY-MM-DD; omit for today.' },
+          timezone: {
+            type: 'string',
+            description: 'Optional IANA zone for the day boundary; defaults to Asia/Dubai.',
+          },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'undo_health_event',
+      description:
+        'Undo a mistakenly logged health event by the event id returned ' +
+        'from log_health_event (owner-scoped). Maps to DELETE ' +
+        '/api/v1/health-log/events/:id.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          event_id: {
+            type: 'string',
+            description: 'The event id from the log_health_event response.',
+          },
+        },
+        required: ['event_id'],
+      },
+    },
   ],
 }))
 
@@ -3026,6 +3137,107 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to complete the mission: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'log_health_event': {
+      const built = buildHealthLogEventBody(rawArgs, {
+        assistantId: ASSISTANT_ID,
+        uuid: () => crypto.randomUUID(),
+      })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+      try {
+        const resp = (await bgosPost(
+          'health-log/events',
+          built.body as unknown as Record<string, unknown>,
+        )) as Record<string, unknown>
+        log(
+          `log_health_event: ${built.body.eventType} "${built.body.itemName}" ` +
+            `success=${String(resp?.success)}`,
+        )
+        return {
+          content: [
+            { type: 'text', text: summarizeHealthLogResult(resp, built.body) },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Failed to log the health event (${errMsg}). Do NOT tell the ` +
+                `user it is logged. To retry this same intent safely, call ` +
+                `log_health_event again with idempotency_key: ` +
+                `${built.body.idempotencyKey}.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+
+    case 'list_health_events': {
+      const builtPath = buildHealthLogListPath(rawArgs)
+      if (!builtPath.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+          isError: true,
+        }
+      }
+      try {
+        const resp = await bgosGetCachedOn304(builtPath.path)
+        return {
+          content: [{ type: 'text', text: summarizeHealthLogList(resp) }],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [
+            { type: 'text', text: `Failed to list health events: ${errMsg}` },
+          ],
+          isError: true,
+        }
+      }
+    }
+
+    case 'undo_health_event': {
+      const builtPath = buildHealthLogUndoPath(rawArgs.event_id)
+      if (!builtPath.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+          isError: true,
+        }
+      }
+      try {
+        const resp = (await bgosDelete(builtPath.path)) as Record<string, unknown>
+        const undone = resp?.success === true
+        log(`undo_health_event: ${String(rawArgs.event_id)} success=${String(undone)}`)
+        return {
+          content: [
+            {
+              type: 'text',
+              text: undone
+                ? 'Event undone (deleted).'
+                : 'The backend did not confirm the undo; the event may not exist or may not be yours.',
+            },
+          ],
+          isError: undone ? undefined : true,
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [
+            { type: 'text', text: `Failed to undo the health event: ${errMsg}` },
+          ],
           isError: true,
         }
       }
