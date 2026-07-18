@@ -242,3 +242,83 @@ export function summarizeHealthLogList(resp: unknown): string {
   const more = rows.length > 100 ? `\n(and ${rows.length - 100} more)` : ''
   return `${rows.length} event(s):\n${lines.join('\n')}${more}`
 }
+
+// ── Health tracker card (agent-summoned native visualization) ────────────────
+//
+// The app renders a message with messageType 'event' and
+// eventMeta.payload.kind 'health_tracker_card' as the REAL native tracker
+// card in the chat stream (frontend HealthTrackerAgentEventCard; tap-through
+// opens the full dashboard with heatmap + momentum ring). This builder is
+// the first producer of that payload; the renderer shipped with the health
+// dashboard and waited for it.
+
+const TRACKER_NOTE_MAX = 300
+
+export interface HealthTrackerCardMessage {
+  chatId: number
+  assistantId: number
+  sender: 'assistant'
+  text: string
+  messageType: 'event'
+  eventMeta: {
+    source: string
+    title: string
+    peek?: string
+    payload: { kind: 'health_tracker_card'; note?: string }
+  }
+}
+
+export function buildHealthTrackerCardMessage(
+  args: Record<string, unknown>,
+  deps: { chatId: number; assistantId: string },
+):
+  | { ok: true; body: HealthTrackerCardMessage }
+  | { ok: false; error: string } {
+  let note: string | undefined
+  if (args.note != null && args.note !== '') {
+    if (typeof args.note !== 'string') {
+      return { ok: false, error: 'note must be a string' }
+    }
+    const trimmed = args.note.trim()
+    if (trimmed.length > TRACKER_NOTE_MAX) {
+      return {
+        ok: false,
+        error: `note must be at most ${TRACKER_NOTE_MAX} characters`,
+      }
+    }
+    if (trimmed) note = trimmed
+  }
+
+  const assistantIdNum = Number(deps.assistantId)
+  if (!Number.isInteger(assistantIdNum) || assistantIdNum <= 0) {
+    return { ok: false, error: 'daemon assistant id is not numeric' }
+  }
+  if (!Number.isInteger(deps.chatId) || deps.chatId <= 0) {
+    return { ok: false, error: 'chat id did not resolve to a number' }
+  }
+
+  const payload: { kind: 'health_tracker_card'; note?: string } = {
+    kind: 'health_tracker_card',
+  }
+  if (note) payload.note = note
+
+  const eventMeta: HealthTrackerCardMessage['eventMeta'] = {
+    source: 'agent',
+    title: 'Health tracker',
+    payload,
+  }
+  if (note) eventMeta.peek = note
+
+  return {
+    ok: true,
+    body: {
+      chatId: deps.chatId,
+      assistantId: assistantIdNum,
+      sender: 'assistant',
+      // Canonical text fallback for surfaces that do not render the card.
+      text: note ? `Health tracker: ${note}` : 'Health tracker',
+      messageType: 'event',
+      eventMeta,
+    },
+  }
+}
