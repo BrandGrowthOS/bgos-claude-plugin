@@ -322,3 +322,48 @@ export function buildHealthTrackerCardMessage(
     },
   }
 }
+
+/**
+ * Parse the show_health_tracker tool arguments into the component payload
+ * for kind health_tracker_card. Note handling matches the V1 contract
+ * (trimmed, empty dropped); macros and supplements are passed through as
+ * loose arrays of objects because the LIVE renderables catalog schema is
+ * the authority on their item shape. Deep validation (required item fields,
+ * types, bounds, exact-path errors like "macros[0].target is required")
+ * happens downstream in validateComponentPayload against that schema, the
+ * same path show_component uses.
+ */
+export function buildShowHealthTrackerPayload(
+  args: Record<string, unknown>,
+):
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; error: string } {
+  const payload: Record<string, unknown> = {}
+
+  if (args.note != null && args.note !== '') {
+    if (typeof args.note !== 'string') {
+      return { ok: false, error: 'note must be a string' }
+    }
+    const trimmed = args.note.trim()
+    if (trimmed) payload.note = trimmed
+  }
+
+  for (const field of ['macros', 'supplements'] as const) {
+    const value = args[field]
+    if (value === undefined || value === null) continue
+    if (!Array.isArray(value)) {
+      return {
+        ok: false,
+        error:
+          `${field} must be an array of entry objects (see the ` +
+          'health_tracker_card schema in GET /api/v1/renderables)',
+      }
+    }
+    // An empty array carries nothing to draw: treat it as absent so the
+    // simple card renders and the success text stays honest.
+    if (value.length === 0) continue
+    payload[field] = value
+  }
+
+  return { ok: true, payload }
+}
