@@ -18,6 +18,11 @@
 
 // ── File-type helpers ────────────────────────────────────────────────────────
 
+// Outbound (agent to user) extension-to-MIME map. Mirrors the backend send
+// path allowlist (BGOS backend src/common/file-validation.utils.ts, widened by
+// backend PR #783 to archives, markdown, and common text formats). Discipline:
+// every value is a CONCRETE type/subtype the backend allowlists, never a
+// wildcard; archives are opaque blobs (the plugin never extracts them).
 export const MIME_MAP: Record<string, string> = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
@@ -34,10 +39,26 @@ export const MIME_MAP: Record<string, string> = {
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.ppt': 'application/vnd.ms-powerpoint',
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.json': 'application/json', '.zip': 'application/zip',
+  '.json': 'application/json',
   '.yaml': 'application/yaml', '.yml': 'application/yaml',
+  // Markdown
+  '.md': 'text/markdown', '.markdown': 'text/markdown',
+  // Archives (opaque blobs; stored and forwarded, never extracted)
+  '.zip': 'application/zip', '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed', '.tar': 'application/x-tar',
+  '.gz': 'application/gzip', '.tgz': 'application/gzip',
+  // Structured / rich-text documents
+  '.xml': 'application/xml', '.rtf': 'application/rtf',
+  '.epub': 'application/epub+zip',
+  // Plain-text code/config (inert text to BGOS)
+  '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python',
+  '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css',
+  '.toml': 'application/toml', '.log': 'text/plain',
 }
 
+// Full mirror of the backend's ALLOWED_MIMES.document list (all accepted
+// spellings), so an agent that passes an explicit mime_type in any
+// backend-accepted spelling is not rejected plugin-side.
 export const DOC_MIMES = new Set([
   'application/pdf', 'text/plain', 'text/csv', 'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -45,9 +66,49 @@ export const DOC_MIMES = new Set([
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-powerpoint',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/json', 'application/zip',
-  'application/yaml', 'text/yaml', 'application/x-yaml',
+  'application/json',
+  'application/zip', 'application/x-zip-compressed',
+  'application/vnd.rar', 'application/x-rar-compressed', 'application/x-rar',
+  'application/x-7z-compressed', 'application/x-tar',
+  'application/gzip', 'application/x-gzip',
+  'text/yaml', 'application/x-yaml', 'application/yaml', 'text/x-yaml',
+  'text/markdown', 'text/x-markdown',
+  'application/xml', 'text/xml',
+  'application/rtf', 'text/rtf',
+  'application/epub+zip',
+  'text/javascript', 'application/javascript',
+  'text/typescript', 'application/typescript',
+  'text/x-python', 'text/x-python-script',
+  'text/html', 'text/css',
+  'application/toml', 'text/toml',
 ])
+
+/** Short human-readable summary of what an agent may attach outbound. */
+export const ALLOWED_FILE_SUMMARY =
+  'images (jpg, png, gif, webp, svg, bmp, tiff), ' +
+  'video (mp4, webm, mov, avi, mkv, ogg, mpeg, 3gp), ' +
+  'audio (mp3, wav, m4a, aac, flac), ' +
+  'documents (pdf, txt, md, csv, doc, docx, xls, xlsx, ppt, pptx, rtf, epub, ' +
+  'json, xml, yaml, toml, html, css, js, ts, py, log), ' +
+  'and archives (zip, rar, 7z, tar, gz, tgz)'
+
+/**
+ * Honest rejection copy for an outbound attachment the plugin cannot send:
+ * names the offending extension (or the bare file name when it has none), the
+ * reported MIME when one was given, and the allowed set briefly.
+ */
+export function unsupportedFileMessage(
+  fileName: string,
+  mime?: string | null,
+): string {
+  const ext = extLower(fileName)
+  const what = ext ? `"${ext}"` : `"${fileName}"`
+  const mimePart = mime ? ` (reported type "${mime}")` : ''
+  return (
+    `File type ${what} is not supported${mimePart}. ` +
+    `Allowed: ${ALLOWED_FILE_SUMMARY}.`
+  )
+}
 
 /** Lowercased file extension including the leading dot, or '' when none. */
 export function extLower(filePath: string): string {
@@ -59,6 +120,22 @@ export function extLower(filePath: string): string {
 
 export function guessMimeType(filePath: string): string | null {
   return MIME_MAP[extLower(filePath)] ?? null
+}
+
+/**
+ * Resolve the MIME for an outbound attachment: an explicit mime_type wins,
+ * then the on-disk path's extension, then the display file_name's extension.
+ * The file_name fallback matters for download-style temp paths (a real
+ * "/tmp/download.tmp" carrying file_name "notes.md"): without it the plugin
+ * would reject a supported type, and worse, name the SUPPORTED extension in
+ * the rejection message.
+ */
+export function guessOutboundMime(
+  filePath: string,
+  fileName: string,
+  explicitMime?: string | null,
+): string | null {
+  return explicitMime ?? guessMimeType(filePath) ?? guessMimeType(fileName)
 }
 
 export function getFileCategory(mime: string): string | null {
