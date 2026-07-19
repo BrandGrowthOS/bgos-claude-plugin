@@ -4,6 +4,7 @@ import {
   buildHealthLogListPath,
   buildHealthLogUndoPath,
   buildHealthTrackerCardMessage,
+  buildShowHealthTrackerPayload,
   summarizeHealthLogList,
   summarizeHealthLogResult,
 } from '../lib/health-log'
@@ -209,5 +210,49 @@ describe('buildHealthTrackerCardMessage', () => {
     expect(
       buildHealthTrackerCardMessage({}, { chatId: 5, assistantId: 'nope' }).ok,
     ).toBe(false)
+  })
+})
+
+describe('buildShowHealthTrackerPayload', () => {
+  test('note only keeps the legacy simple-card shape (trimmed note)', () => {
+    const r = buildShowHealthTrackerPayload({ note: '  On pace  ' })
+    expect(r).toEqual({ ok: true, payload: { note: 'On pace' } })
+  })
+
+  test('no args means an empty payload (legacy simple card)', () => {
+    expect(buildShowHealthTrackerPayload({})).toEqual({ ok: true, payload: {} })
+    expect(
+      buildShowHealthTrackerPayload({ note: '', macros: null, supplements: null }),
+    ).toEqual({ ok: true, payload: {} })
+  })
+
+  test('macros and supplements arrays pass through beside the note', () => {
+    const macros = [{ key: 'protein', value: 132, target: 160 }]
+    const supplements = [{ name: 'Vitamin D', taken: true }]
+    const r = buildShowHealthTrackerPayload({ note: 'hi', macros, supplements })
+    expect(r).toEqual({
+      ok: true,
+      payload: { note: 'hi', macros, supplements },
+    })
+  })
+
+  test('a whitespace-only note is dropped but macros survive', () => {
+    const macros = [{ key: 'water', value: 1.5, target: 3 }]
+    const r = buildShowHealthTrackerPayload({ note: '   ', macros })
+    expect(r).toEqual({ ok: true, payload: { macros } })
+  })
+
+  test('non-array macros or supplements are rejected with the field name', () => {
+    const bad = buildShowHealthTrackerPayload({ macros: 'protein 132g' })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) expect(bad.error).toContain('macros must be an array')
+    const badSupp = buildShowHealthTrackerPayload({ supplements: { name: 'D' } })
+    expect(badSupp.ok).toBe(false)
+    if (!badSupp.ok) expect(badSupp.error).toContain('supplements must be an array')
+  })
+
+  test('a non-string note is rejected', () => {
+    const r = buildShowHealthTrackerPayload({ note: 42 })
+    expect(r).toEqual({ ok: false, error: 'note must be a string' })
   })
 })

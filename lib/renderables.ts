@@ -10,13 +10,16 @@
 // Validation mirrors the app's additive-only semantics
 // (frontend/expo-app/src/renderables/decideRender.ts):
 //  - unknown EXTRA payload fields are ignored (forward compatibility),
-//  - declared fields are type/maxLength checked when present,
+//  - declared fields are type/constraint checked when present,
 //  - required fields (other than the injected `kind` discriminator) must be
 //    present,
-//  - the string field type is fully checked today; a declared type this
-//    plugin version does not know passes UNCHECKED (the app degrades any
-//    invalid payload to the quiet event card, so a permissive preflight can
-//    never break a client; a strict one could reject valid future payloads).
+//  - string, number, boolean, array, and object field types are checked
+//    (including array items and nested object properties, so a bad entry
+//    surfaces the exact path, e.g. "macros[0].target is required"); a
+//    declared type this plugin version does not know passes UNCHECKED (the
+//    app degrades any invalid payload to the quiet event card, so a
+//    permissive preflight can never break a client; a strict one could
+//    reject valid future payloads).
 //
 // No em dashes or en dashes anywhere in this file.
 
@@ -60,6 +63,50 @@ export const BUNDLED_RENDERABLES_FALLBACK: {
         properties: {
           kind: { type: 'string', const: 'health_tracker_card' },
           note: { type: 'string', maxLength: 300 },
+          headline: { type: 'string', maxLength: 80 },
+          macros: {
+            type: 'array',
+            maxItems: 12,
+            items: {
+              type: 'object',
+              required: ['key', 'value', 'target'],
+              properties: {
+                key: { type: 'string', maxLength: 32 },
+                label: { type: 'string', maxLength: 40 },
+                value: { type: 'number', minimum: 0 },
+                target: { type: 'number', exclusiveMinimum: 0 },
+                targetHigh: { type: 'number' },
+                unit: { type: 'string', maxLength: 16 },
+                cap: { type: 'boolean' },
+              },
+            },
+            description:
+              'The numbers the Budget board draws. The AGENT supplies them ' +
+              '(the card is a summoned, ephemeral visualization; it fetches ' +
+              'nothing). Invalid items are skipped; a payload with no valid ' +
+              'macros or supplements renders the classic simple tracker ' +
+              'card.',
+          },
+          supplements: {
+            type: 'array',
+            maxItems: 12,
+            items: {
+              type: 'object',
+              required: ['name', 'taken'],
+              properties: {
+                name: { type: 'string', maxLength: 60 },
+                taken: { type: 'boolean' },
+                time: { type: 'string', maxLength: 24 },
+                note: { type: 'string', maxLength: 80 },
+              },
+            },
+            description:
+              'Rendered as a next-up queue: the first pending item is ' +
+              'elevated with a Mark-taken button, the rest as taken/pending ' +
+              'rows.',
+          },
+          streak: { type: 'number' },
+          streakLabel: { type: 'string', maxLength: 40 },
         },
       },
       minAppVersion: '4.0.0',
@@ -67,7 +114,10 @@ export const BUNDLED_RENDERABLES_FALLBACK: {
       description:
         'The native health tracker card inline in chat (tap-through opens ' +
         'the full dashboard). Optional note renders as a short agent message ' +
-        'on the card.',
+        'on the card. When the payload also carries structured macros or ' +
+        'supplements, apps newer than 4.11.0 render the rich Budget board ' +
+        'instead; older apps and payloads without the rich fields render ' +
+        'the simple tracker card unchanged.',
     },
   ],
 }
@@ -118,8 +168,10 @@ type FieldCheck = (
 ) => string | null
 
 // One checker per declared field type; add entries here as the manifest
-// grows richer types (number, boolean, arrays of strings, ...). A type with
-// no entry passes unchecked (see the header note on permissive preflight).
+// grows richer types. A type with no entry passes unchecked (see the header
+// note on permissive preflight). Array and object checkers recurse through
+// checkFieldValue so a bad nested field surfaces its exact path, e.g.
+// "macros[0].target is required".
 const FIELD_CHECKS: Record<string, FieldCheck> = {
   string: (name, spec, value) => {
     if (typeof value !== 'string') return `${name} must be a string`
@@ -131,6 +183,68 @@ const FIELD_CHECKS: Record<string, FieldCheck> = {
     }
     return null
   },
+  number: (name, spec, value) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return `${name} must be a number`
+    }
+    if (typeof spec.minimum === 'number' && value < spec.minimum) {
+      return `${name} must be at least ${spec.minimum}`
+    }
+    if (
+      typeof spec.exclusiveMinimum === 'number' &&
+      value <= spec.exclusiveMinimum
+    ) {
+      return `${name} must be greater than ${spec.exclusiveMinimum}`
+    }
+    return null
+  },
+  boolean: (name, _spec, value) => {
+    if (typeof value !== 'boolean') return `${name} must be a boolean`
+    return null
+  },
+  array: (name, spec, value) => {
+    if (!Array.isArray(value)) return `${name} must be an array`
+    if (typeof spec.maxItems === 'number' && value.length > spec.maxItems) {
+      return `${name} must have at most ${spec.maxItems} items`
+    }
+    const items = isRecord(spec.items) ? spec.items : undefined
+    if (!items) return null
+    for (let i = 0; i < value.length; i++) {
+      const error = checkFieldValue(`${name}[${i}]`, items, value[i])
+      if (error) return error
+    }
+    return null
+  },
+  object: (name, spec, value) => {
+    if (!isRecord(value)) return `${name} must be an object`
+    const required = Array.isArray(spec.required)
+      ? spec.required.filter((f): f is string => typeof f === 'string')
+      : []
+    for (const field of required) {
+      if (value[field] === undefined) return `${name}.${field} is required`
+    }
+    const properties = isRecord(spec.properties) ? spec.properties : {}
+    for (const [field, fieldSpec] of Object.entries(properties)) {
+      const fieldValue = value[field]
+      if (fieldValue === undefined || !isRecord(fieldSpec)) continue
+      const error = checkFieldValue(`${name}.${field}`, fieldSpec, fieldValue)
+      if (error) return error
+    }
+    // Unknown extra fields inside items are ignored (additive-only).
+    return null
+  },
+}
+
+/** Check one value against one field spec; unknown types pass unchecked. */
+function checkFieldValue(
+  name: string,
+  spec: Record<string, unknown>,
+  value: unknown,
+): string | null {
+  if (typeof spec.type !== 'string') return null
+  const check = FIELD_CHECKS[spec.type]
+  if (!check) return null
+  return check(name, spec, value)
 }
 
 /**
@@ -178,10 +292,8 @@ export function validateComponentPayload(
       continue
     }
     const spec = isRecord(properties[name]) ? properties[name] : undefined
-    if (!spec || typeof spec.type !== 'string') continue
-    const check = FIELD_CHECKS[spec.type]
-    if (!check) continue
-    const error = check(name, spec, value)
+    if (!spec) continue
+    const error = checkFieldValue(name, spec, value)
     if (error) return { ok: false, error }
   }
   // Unknown extra fields in payload are intentionally ignored (additive-only

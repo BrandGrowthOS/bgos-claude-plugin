@@ -40,8 +40,9 @@ const MANIFEST = {
           kind: { type: 'string', const: 'calendar_peek' },
           day: { type: 'string', maxLength: 10 },
           headline: { type: 'string', maxLength: 120 },
-          // A field type this plugin version does not know how to check yet.
-          slots: { type: 'array' },
+          // A field type this plugin version does not know how to check yet
+          // (string, number, boolean, array, and object are all checked now).
+          slots: { type: 'integer' },
         },
       },
       minAppVersion: '4.1.0',
@@ -169,7 +170,7 @@ describe('validateComponentPayload', () => {
     expect(
       validateComponentPayload(calendarSchema, {
         day: '2026-07-18',
-        slots: 'not-actually-an-array',
+        slots: 'not-actually-an-integer',
       }),
     ).toEqual({ ok: true })
   })
@@ -184,6 +185,221 @@ describe('validateComponentPayload', () => {
         { anything: 1 },
       ),
     ).toEqual({ ok: true })
+  })
+})
+
+// The rich Budget-board schema the backend serves for health_tracker_card
+// since app 4.11.0: structured macros and supplements arrays. Mirrors
+// backend/src/renderables/renderables-manifest.ts (the live manifest is
+// authoritative at runtime; this fixture only drives the validator tests).
+const RICH_HEALTH_SCHEMA: RenderableWireSchema = {
+  type: 'object',
+  required: ['kind'],
+  properties: {
+    kind: { type: 'string', const: 'health_tracker_card' },
+    note: { type: 'string', maxLength: 300 },
+    headline: { type: 'string', maxLength: 80 },
+    macros: {
+      type: 'array',
+      maxItems: 12,
+      items: {
+        type: 'object',
+        required: ['key', 'value', 'target'],
+        properties: {
+          key: { type: 'string', maxLength: 32 },
+          label: { type: 'string', maxLength: 40 },
+          value: { type: 'number', minimum: 0 },
+          target: { type: 'number', exclusiveMinimum: 0 },
+          targetHigh: { type: 'number' },
+          unit: { type: 'string', maxLength: 16 },
+          cap: { type: 'boolean' },
+        },
+      },
+    },
+    supplements: {
+      type: 'array',
+      maxItems: 12,
+      items: {
+        type: 'object',
+        required: ['name', 'taken'],
+        properties: {
+          name: { type: 'string', maxLength: 60 },
+          taken: { type: 'boolean' },
+          time: { type: 'string', maxLength: 24 },
+          note: { type: 'string', maxLength: 80 },
+        },
+      },
+    },
+    streak: { type: 'number' },
+    streakLabel: { type: 'string', maxLength: 40 },
+  },
+}
+
+const VALID_MACROS = [
+  { key: 'calories', value: 1670, target: 3000, unit: 'kcal' },
+  { key: 'protein', value: 132, target: 160, targetHigh: 240, unit: 'g' },
+  { key: 'sodium', value: 1800, target: 2300, unit: 'mg', cap: true },
+]
+
+const VALID_SUPPLEMENTS = [
+  { name: 'Vitamin D', taken: true, time: '9:12 AM' },
+  { name: 'Magnesium', taken: false, time: 'this evening' },
+]
+
+describe('validateComponentPayload with the rich Budget-board schema', () => {
+  test('valid macros and supplements pass', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        note: 'On pace',
+        macros: VALID_MACROS,
+        supplements: VALID_SUPPLEMENTS,
+        streak: 5,
+      }),
+    ).toEqual({ ok: true })
+  })
+
+  test('a legacy note-only payload still passes unchanged', () => {
+    expect(validateComponentPayload(RICH_HEALTH_SCHEMA, { note: 'hi' })).toEqual(
+      { ok: true },
+    )
+    expect(validateComponentPayload(RICH_HEALTH_SCHEMA, {})).toEqual({
+      ok: true,
+    })
+  })
+
+  test('a non-array macros names the field', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, { macros: 'protein 132g' }),
+    ).toEqual({ ok: false, error: 'macros must be an array' })
+  })
+
+  test('a missing required item field names the exact entry and field', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [{ key: 'protein', value: 132 }],
+      }),
+    ).toEqual({ ok: false, error: 'macros[0].target is required' })
+  })
+
+  test('an item field type mismatch names the exact entry and field', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [
+          { key: 'calories', value: 1670, target: 3000 },
+          { key: 'protein', value: '132', target: 160 },
+        ],
+      }),
+    ).toEqual({ ok: false, error: 'macros[1].value must be a number' })
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        supplements: [{ name: 'Vitamin D', taken: 'yes' }],
+      }),
+    ).toEqual({ ok: false, error: 'supplements[0].taken must be a boolean' })
+  })
+
+  test('a non-object item names the entry', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, { macros: ['protein'] }),
+    ).toEqual({ ok: false, error: 'macros[0] must be an object' })
+  })
+
+  test('number bounds are enforced with the specific limit', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [{ key: 'protein', value: -1, target: 160 }],
+      }),
+    ).toEqual({ ok: false, error: 'macros[0].value must be at least 0' })
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [{ key: 'protein', value: 132, target: 0 }],
+      }),
+    ).toEqual({
+      ok: false,
+      error: 'macros[0].target must be greater than 0',
+    })
+  })
+
+  test('maxItems is enforced with the specific limit', () => {
+    const tooMany = Array.from({ length: 13 }, (_, i) => ({
+      key: `m${i}`,
+      value: 1,
+      target: 2,
+    }))
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, { macros: tooMany }),
+    ).toEqual({ ok: false, error: 'macros must have at most 12 items' })
+  })
+
+  test('string constraints inside items are enforced', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [{ key: 'x'.repeat(33), value: 1, target: 2 }],
+      }),
+    ).toEqual({
+      ok: false,
+      error: 'macros[0].key must be at most 32 characters',
+    })
+  })
+
+  test('unknown extra fields inside items are ignored (additive-only)', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, {
+        macros: [{ key: 'protein', value: 132, target: 160, future: { x: 1 } }],
+      }),
+    ).toEqual({ ok: true })
+  })
+
+  test('top-level number fields are checked', () => {
+    expect(
+      validateComponentPayload(RICH_HEALTH_SCHEMA, { streak: 'five' }),
+    ).toEqual({ ok: false, error: 'streak must be a number' })
+  })
+})
+
+describe('rich payload passthrough (buildComponentEventMessage)', () => {
+  test('macros and supplements ride the eventMeta payload untouched', () => {
+    const r = buildComponentEventMessage({
+      kind: 'health_tracker_card',
+      chatId: 1048,
+      assistantId: '873',
+      payload: {
+        note: 'On pace',
+        macros: VALID_MACROS,
+        supplements: VALID_SUPPLEMENTS,
+      },
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.body.eventMeta.payload).toEqual({
+      kind: 'health_tracker_card',
+      note: 'On pace',
+      macros: VALID_MACROS,
+      supplements: VALID_SUPPLEMENTS,
+    })
+    // The note still drives peek and the text fallback.
+    expect(r.body.eventMeta.peek).toBe('On pace')
+    expect(r.body.text).toBe('Health tracker: On pace')
+  })
+})
+
+describe('bundled fallback carries the rich Budget-board schema', () => {
+  test('macros and supplements are declared with item schemas', () => {
+    const entry = findRenderable(
+      BUNDLED_RENDERABLES_FALLBACK,
+      'health_tracker_card',
+    )
+    const props = (entry?.payloadSchema as {
+      properties: Record<string, Record<string, unknown>>
+    }).properties
+    expect(props.macros.type).toBe('array')
+    expect(props.supplements.type).toBe('array')
+    const macroItems = props.macros.items as {
+      required: string[]
+      properties: Record<string, unknown>
+    }
+    expect(macroItems.required).toEqual(['key', 'value', 'target'])
+    const suppItems = props.supplements.items as { required: string[] }
+    expect(suppItems.required).toEqual(['name', 'taken'])
   })
 })
 

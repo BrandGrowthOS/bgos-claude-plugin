@@ -70,6 +70,7 @@ import {
   buildHealthLogEventBody,
   buildHealthLogListPath,
   buildHealthLogUndoPath,
+  buildShowHealthTrackerPayload,
   summarizeHealthLogList,
   summarizeHealthLogResult,
 } from './lib/health-log.js'
@@ -2315,8 +2316,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'with heatmap and momentum ring). Use when the owner asks to SEE ' +
         'their health data ("show me my macros", "how is my week") or when ' +
         'a visual would land better than numbers, e.g. right after logging ' +
-        'a streak-worthy event. Send at most one card per occasion; pair it ' +
-        'with a short text reply carrying the actual numbers.',
+        'a streak-worthy event. When the owner asks to see macros or ' +
+        'supplements, put the actual numbers in the macros/supplements ' +
+        'arguments: that is what makes the rich Budget board render ' +
+        '(kcal-left hero, target band bars, supplement queue). Without ' +
+        'them the classic simple card renders and shows no numbers. Send ' +
+        'at most one card per occasion; pair it with a short text ' +
+        'one-liner. The advice to carry numbers in text applies only to ' +
+        'that pairing one-liner, never as a substitute for putting the ' +
+        'numbers in the payload.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -2331,6 +2339,37 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Optional one-line caption shown on the card (<=300 chars), ' +
               'e.g. "Protein target hit 5 days straight".',
+          },
+          macros: {
+            type: 'array',
+            items: { type: 'object' },
+            description:
+              'Optional macro entries that upgrade the card to the rich ' +
+              'Budget board. Each entry commonly carries: key (lowercase ' +
+              'id, e.g. "calories", "protein", "carbs", "fat", "fiber", ' +
+              '"water"; a calories entry feeds the kcal-left hero), label, ' +
+              'value (amount consumed so far, number), target (number; ' +
+              'the window LOW bound when targetHigh is present, the cap ' +
+              'amount when cap is true), optional targetHigh (window high ' +
+              'bound, strictly above target), optional unit (e.g. "g", ' +
+              '"kcal"), optional cap (true = stay-under cap like sodium). ' +
+              'The LIVE catalog schema for kind health_tracker_card at ' +
+              'GET /api/v1/renderables is authoritative over this ' +
+              'summary; invalid entries are rejected before sending with ' +
+              'the exact field named, e.g. "macros[0].target is required".',
+          },
+          supplements: {
+            type: 'array',
+            items: { type: 'object' },
+            description:
+              'Optional supplement entries rendered as a next-up queue on ' +
+              'the rich Budget board. Each entry commonly carries: name, ' +
+              'taken (boolean), optional time (free text like "9:12 AM" ' +
+              'or "this evening"), optional note (e.g. "Best with ' +
+              'dinner"). The LIVE catalog schema for kind ' +
+              'health_tracker_card at GET /api/v1/renderables is ' +
+              'authoritative over this summary; invalid entries are ' +
+              'rejected before sending with the exact field named.',
           },
         },
         required: ['chat_id'],
@@ -3685,31 +3724,37 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
 
     case 'show_health_tracker': {
       // Thin alias over the generic show_component path (kind
-      // health_tracker_card). V1 contract preserved exactly: args
-      // note/chat_id, trimmed note, 300-char cap, same success text; the
-      // alias-parity test in test/renderables.test.ts guards that both
-      // tools produce identical wire bodies for the same note.
+      // health_tracker_card). V1 contract preserved exactly for note-only
+      // calls: args note/chat_id, trimmed note, 300-char cap, same success
+      // text; the alias-parity test in test/renderables.test.ts guards
+      // that both tools produce identical wire bodies for the same note.
+      // Optional macros/supplements arrays ride the SAME validated payload
+      // path (live schema from GET /api/v1/renderables) and upgrade the
+      // card to the rich Budget board on apps newer than 4.11.0.
       const chatIdArg = rawArgs.chat_id as string | undefined
       if (!chatIdArg) {
         return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
       }
-      let note: string | undefined
-      if (rawArgs.note != null && rawArgs.note !== '') {
-        if (typeof rawArgs.note !== 'string') {
-          return { content: [{ type: 'text', text: 'Error: note must be a string' }], isError: true }
-        }
-        const trimmed = rawArgs.note.trim()
-        if (trimmed) note = trimmed
+      const parsed = buildShowHealthTrackerPayload(rawArgs)
+      if (!parsed.ok) {
+        return { content: [{ type: 'text', text: `Error: ${parsed.error}` }], isError: true }
       }
+      const rich =
+        parsed.payload.macros !== undefined ||
+        parsed.payload.supplements !== undefined
       return handleShowComponent({
         kind: 'health_tracker_card',
-        payload: note !== undefined ? { note } : {},
+        payload: parsed.payload,
         chatIdArg,
         toolName: 'show_health_tracker',
-        successText:
-          'Tracker card sent; it renders as the native visualization ' +
-          'in the chat. Follow up with the concrete numbers in a ' +
-          'normal reply if the owner asked a question.',
+        successText: rich
+          ? 'Tracker card sent with structured macros/supplements; apps ' +
+            'newer than 4.11.0 render it as the rich Budget board (older ' +
+            'apps show the simple card). Pair it with a short one-liner, ' +
+            'not a repeat of every number.'
+          : 'Tracker card sent; it renders as the native visualization ' +
+            'in the chat. Follow up with the concrete numbers in a ' +
+            'normal reply if the owner asked a question.',
       })
     }
 
