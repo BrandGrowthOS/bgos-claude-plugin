@@ -359,6 +359,9 @@ export function buildShowHealthTrackerPayload(
           'health_tracker_card schema in GET /api/v1/renderables)',
       }
     }
+    // An empty array carries nothing to draw: treat it as absent so the
+    // simple card renders and the success text stays honest.
+    if (value.length === 0) continue
     payload[field] = value
   }
 

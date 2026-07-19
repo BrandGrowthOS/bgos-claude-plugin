@@ -236,6 +236,12 @@ describe('buildShowHealthTrackerPayload', () => {
     })
   })
 
+  test('empty arrays are treated as absent (legacy simple card)', () => {
+    expect(
+      buildShowHealthTrackerPayload({ note: 'hi', macros: [], supplements: [] }),
+    ).toEqual({ ok: true, payload: { note: 'hi' } })
+  })
+
   test('a whitespace-only note is dropped but macros survive', () => {
     const macros = [{ key: 'water', value: 1.5, target: 3 }]
     const r = buildShowHealthTrackerPayload({ note: '   ', macros })

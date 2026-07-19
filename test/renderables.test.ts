@@ -188,52 +188,16 @@ describe('validateComponentPayload', () => {
   })
 })
 
-// The rich Budget-board schema the backend serves for health_tracker_card
-// since app 4.11.0: structured macros and supplements arrays. Mirrors
-// backend/src/renderables/renderables-manifest.ts (the live manifest is
-// authoritative at runtime; this fixture only drives the validator tests).
-const RICH_HEALTH_SCHEMA: RenderableWireSchema = {
-  type: 'object',
-  required: ['kind'],
-  properties: {
-    kind: { type: 'string', const: 'health_tracker_card' },
-    note: { type: 'string', maxLength: 300 },
-    headline: { type: 'string', maxLength: 80 },
-    macros: {
-      type: 'array',
-      maxItems: 12,
-      items: {
-        type: 'object',
-        required: ['key', 'value', 'target'],
-        properties: {
-          key: { type: 'string', maxLength: 32 },
-          label: { type: 'string', maxLength: 40 },
-          value: { type: 'number', minimum: 0 },
-          target: { type: 'number', exclusiveMinimum: 0 },
-          targetHigh: { type: 'number' },
-          unit: { type: 'string', maxLength: 16 },
-          cap: { type: 'boolean' },
-        },
-      },
-    },
-    supplements: {
-      type: 'array',
-      maxItems: 12,
-      items: {
-        type: 'object',
-        required: ['name', 'taken'],
-        properties: {
-          name: { type: 'string', maxLength: 60 },
-          taken: { type: 'boolean' },
-          time: { type: 'string', maxLength: 24 },
-          note: { type: 'string', maxLength: 80 },
-        },
-      },
-    },
-    streak: { type: 'number' },
-    streakLabel: { type: 'string', maxLength: 40 },
-  },
-}
+// The rich Budget-board schema for health_tracker_card (app 4.11.0+):
+// structured macros and supplements arrays. Derived from the SHIPPED
+// bundled fallback so the validator tests exercise exactly the schema this
+// plugin carries offline; the live manifest at GET /api/v1/renderables is
+// authoritative at runtime and mirrors the same backend source
+// (backend/src/renderables/renderables-manifest.ts).
+const RICH_HEALTH_SCHEMA = findRenderable(
+  BUNDLED_RENDERABLES_FALLBACK,
+  'health_tracker_card',
+)?.payloadSchema as RenderableWireSchema
 
 const VALID_MACROS = [
   { key: 'calories', value: 1670, target: 3000, unit: 'kcal' },
