@@ -29,6 +29,7 @@ import {
   MIME_MAP,
   DOC_MIMES,
   guessMimeType,
+  guessOutboundMime,
   getFileCategory,
   unsupportedFileMessage,
   AGENT_VALUE_PREFIX,
@@ -795,7 +796,7 @@ async function resolveFile(fileSpec: {
   if (fileSpec.path) {
     const filePath = fileSpec.path
     const fileName = fileSpec.file_name ?? basename(filePath)
-    const mime = fileSpec.mime_type ?? guessMimeType(filePath)
+    const mime = guessOutboundMime(filePath, fileName, fileSpec.mime_type)
     if (!mime) throw new Error(unsupportedFileMessage(fileName))
     const category = getFileCategory(mime)
     if (!category) throw new Error(unsupportedFileMessage(fileName, mime))

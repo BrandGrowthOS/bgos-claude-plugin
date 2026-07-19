@@ -122,6 +122,22 @@ export function guessMimeType(filePath: string): string | null {
   return MIME_MAP[extLower(filePath)] ?? null
 }
 
+/**
+ * Resolve the MIME for an outbound attachment: an explicit mime_type wins,
+ * then the on-disk path's extension, then the display file_name's extension.
+ * The file_name fallback matters for download-style temp paths (a real
+ * "/tmp/download.tmp" carrying file_name "notes.md"): without it the plugin
+ * would reject a supported type, and worse, name the SUPPORTED extension in
+ * the rejection message.
+ */
+export function guessOutboundMime(
+  filePath: string,
+  fileName: string,
+  explicitMime?: string | null,
+): string | null {
+  return explicitMime ?? guessMimeType(filePath) ?? guessMimeType(fileName)
+}
+
 export function getFileCategory(mime: string): string | null {
   const m = mime.trim().toLowerCase()
   if (m.startsWith('image/')) return 'image'

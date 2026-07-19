@@ -23,6 +23,7 @@ import {
   MIME_MAP,
   DOC_MIMES,
   guessMimeType,
+  guessOutboundMime,
   getFileCategory,
   unsupportedFileMessage,
   escapeAgentButtonValue,
@@ -283,6 +284,19 @@ test('mime: DOC_MIMES mirrors the full backend document allowlist', () => {
     assert.ok(DOC_MIMES.has(mime), `DOC_MIMES is missing ${mime}`)
     assert.equal(getFileCategory(mime), 'document', `category of ${mime}`)
   }
+  // Bidirectional: the plugin must not accept a document MIME the backend
+  // would 400 on.
+  assert.equal(DOC_MIMES.size, backendDocumentMimes.length,
+    'DOC_MIMES has entries beyond the backend allowlist')
+})
+
+test('mime: guessOutboundMime prefers explicit, then path, then file_name', () => {
+  assert.equal(guessOutboundMime('/tmp/a.md', 'a.md', 'text/x-markdown'), 'text/x-markdown')
+  assert.equal(guessOutboundMime('/tmp/notes.md', 'notes.md'), 'text/markdown')
+  // Download-style temp path with a meaningful display name: the file_name
+  // extension must rescue the guess instead of producing a wrong rejection.
+  assert.equal(guessOutboundMime('/tmp/download.tmp', 'notes.md'), 'text/markdown')
+  assert.equal(guessOutboundMime('/tmp/blob.bin', 'blob.bin'), null)
 })
 
 test('mime: still-disallowed types stay rejected', () => {
