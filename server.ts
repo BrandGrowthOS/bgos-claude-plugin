@@ -30,6 +30,7 @@ import {
   DOC_MIMES,
   guessMimeType,
   getFileCategory,
+  unsupportedFileMessage,
   AGENT_VALUE_PREFIX,
   RESERVED_VALUE_SENTINELS,
   RESERVED_VALUE_PREFIXES,
@@ -795,9 +796,9 @@ async function resolveFile(fileSpec: {
     const filePath = fileSpec.path
     const fileName = fileSpec.file_name ?? basename(filePath)
     const mime = fileSpec.mime_type ?? guessMimeType(filePath)
-    if (!mime) throw new Error(`Cannot determine MIME type for "${filePath}"`)
+    if (!mime) throw new Error(unsupportedFileMessage(fileName))
     const category = getFileCategory(mime)
-    if (!category) throw new Error(`Unsupported file type: ${mime}`)
+    if (!category) throw new Error(unsupportedFileMessage(fileName, mime))
     const fileStat = await stat(filePath)
     const limit = SIZE_LIMITS[category]
     if (fileStat.size > limit) throw new Error(`File exceeds ${Math.round(limit / 1024 / 1024)}MB limit`)

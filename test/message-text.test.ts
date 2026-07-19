@@ -20,8 +20,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  MIME_MAP,
+  DOC_MIMES,
   guessMimeType,
   getFileCategory,
+  unsupportedFileMessage,
   escapeAgentButtonValue,
   unescapeAgentButtonValue,
   collidesWithReserved,
@@ -211,6 +214,120 @@ test('mime: getFileCategory buckets by prefix and doc set', () => {
   assert.equal(getFileCategory('application/pdf'), 'document')
   assert.equal(getFileCategory('application/yaml'), 'document')
   assert.equal(getFileCategory('text/x-unsupported'), null)
+})
+
+// Backend PR #783 widened the inbound allowlist (backend
+// file-validation.utils.ts) to archives, markdown, and common text formats.
+// The plugin's outbound path must accept the same set so an agent can SEND
+// every type the backend accepts. Each entry maps a NAMED extension to the
+// exact concrete MIME the backend allowlists.
+test('mime: post-783 outbound extensions map to backend-accepted concrete types', () => {
+  const expected: Record<string, string> = {
+    // Markdown
+    'notes.md': 'text/markdown',
+    'notes.markdown': 'text/markdown',
+    // Archives (opaque blobs, never extracted)
+    'bundle.rar': 'application/vnd.rar',
+    'bundle.7z': 'application/x-7z-compressed',
+    'bundle.tar': 'application/x-tar',
+    'bundle.gz': 'application/gzip',
+    'bundle.tgz': 'application/gzip',
+    // Structured / rich-text documents
+    'data.xml': 'application/xml',
+    'doc.rtf': 'application/rtf',
+    'book.epub': 'application/epub+zip',
+    // Plain-text code/config
+    'app.js': 'text/javascript',
+    'app.ts': 'text/typescript',
+    'app.py': 'text/x-python',
+    'page.html': 'text/html',
+    'page.htm': 'text/html',
+    'style.css': 'text/css',
+    'conf.toml': 'application/toml',
+    'run.log': 'text/plain',
+  }
+  for (const [name, mime] of Object.entries(expected)) {
+    assert.equal(guessMimeType(name), mime, `guessMimeType(${name})`)
+    assert.equal(getFileCategory(mime), 'document', `category of ${mime}`)
+  }
+})
+
+test('mime: DOC_MIMES mirrors the full backend document allowlist', () => {
+  // Snapshot of ALLOWED_MIMES.document from BGOS backend
+  // src/common/file-validation.utils.ts as of PR #783. If the backend widens
+  // again, add here AND in lib/message-text.ts.
+  const backendDocumentMimes = [
+    'application/pdf', 'text/plain', 'text/csv', 'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/json',
+    'application/zip', 'application/x-zip-compressed',
+    'application/vnd.rar', 'application/x-rar-compressed', 'application/x-rar',
+    'application/x-7z-compressed', 'application/x-tar',
+    'application/gzip', 'application/x-gzip',
+    'text/yaml', 'application/x-yaml', 'application/yaml', 'text/x-yaml',
+    'text/markdown', 'text/x-markdown',
+    'application/xml', 'text/xml',
+    'application/rtf', 'text/rtf',
+    'application/epub+zip',
+    'text/javascript', 'application/javascript',
+    'text/typescript', 'application/typescript',
+    'text/x-python', 'text/x-python-script',
+    'text/html', 'text/css',
+    'application/toml', 'text/toml',
+  ]
+  for (const mime of backendDocumentMimes) {
+    assert.ok(DOC_MIMES.has(mime), `DOC_MIMES is missing ${mime}`)
+    assert.equal(getFileCategory(mime), 'document', `category of ${mime}`)
+  }
+})
+
+test('mime: still-disallowed types stay rejected', () => {
+  assert.equal(guessMimeType('setup.exe'), null)
+  assert.equal(guessMimeType('lib.dll'), null)
+  assert.equal(guessMimeType('image.dmg'), null)
+  assert.equal(getFileCategory('application/x-msdownload'), null)
+  assert.equal(getFileCategory('application/octet-stream'), null)
+})
+
+// Regression guard: outbound MIME tables must stay concrete. A wildcard entry
+// (for example 'application/*') would silently widen the outbound allowlist
+// past what the backend accepts.
+test('mime: every MIME_MAP and DOC_MIMES entry is a concrete type/subtype string', () => {
+  const concrete = /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/
+  for (const [ext, mime] of Object.entries(MIME_MAP)) {
+    assert.equal(typeof mime, 'string', `MIME_MAP[${ext}]`)
+    assert.ok(!mime.includes('*'), `MIME_MAP[${ext}] contains a wildcard: ${mime}`)
+    assert.match(mime, concrete, `MIME_MAP[${ext}] is not a concrete MIME: ${mime}`)
+    assert.match(ext, /^\.[a-z0-9]+$/, `MIME_MAP key is not a plain extension: ${ext}`)
+  }
+  for (const mime of DOC_MIMES) {
+    assert.ok(!mime.includes('*'), `DOC_MIMES contains a wildcard: ${mime}`)
+    assert.match(mime, concrete, `DOC_MIMES entry is not a concrete MIME: ${mime}`)
+  }
+})
+
+// Every extension in MIME_MAP must resolve to a category, otherwise resolveFile
+// guesses a MIME it then rejects (a confusing "unsupported" for a mapped type).
+test('mime: every MIME_MAP entry resolves to a file category', () => {
+  for (const [ext, mime] of Object.entries(MIME_MAP)) {
+    assert.notEqual(getFileCategory(mime), null, `${ext} maps to uncategorised ${mime}`)
+  }
+})
+
+test('mime: unsupportedFileMessage names the extension and the allowed set', () => {
+  const msg = unsupportedFileMessage('setup.exe', 'application/x-msdownload')
+  assert.ok(msg.includes('.exe'), 'names the extension')
+  assert.ok(msg.includes('application/x-msdownload'), 'names the mime')
+  assert.ok(/pdf/i.test(msg), 'mentions documents')
+  assert.ok(/zip/i.test(msg), 'mentions archives')
+  assert.ok(/\bmd\b/i.test(msg), 'mentions markdown')
+  const noExt = unsupportedFileMessage('Makefile', null)
+  assert.ok(noExt.includes('Makefile'), 'falls back to the file name when no extension')
+  assert.ok(/pdf/i.test(noExt), 'still lists the allowed set')
 })
 
 // ── 6. Button-value namespace isolation round-trip ───────────────────────────
