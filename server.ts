@@ -2201,6 +2201,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           summary: {
             type: 'string',
+            maxLength: 500,
             description:
               'Optional honest completion summary (at most 500 chars). Write ' +
               'one or two plain sentences: what changed, and what is waiting ' +
@@ -3531,6 +3532,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     }
 
     case 'complete_mission': {
+      const built = buildMissionCompleteBody({ summary: rawArgs.summary })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
       try {
         const missionId = await resolveMissionId(rawArgs.mission_id)
         if (missionId == null) {
@@ -3546,8 +3555,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
-        const body = buildMissionCompleteBody({ summary: rawArgs.summary })
-        const result = (await bgosPatch(builtPath.path, { ...body })) as {
+        const result = (await bgosPatch(builtPath.path, { ...built.body })) as {
           mission?: MissionSnapshot
         }
         if (!result?.mission) {

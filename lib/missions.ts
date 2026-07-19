@@ -196,13 +196,18 @@ export function buildMissionTickBody(input: {
 /** Build the PATCH .../complete body from snake_case tool args. */
 export function buildMissionCompleteBody(
   { summary }: { summary?: unknown } = {},
-): MissionCompleteBody {
+): MissionBuildResult<MissionCompleteBody> {
   const body: MissionCompleteBody = {}
+  if (summary != null && typeof summary !== 'string') {
+    return { ok: false, error: 'summary must be a string' }
+  }
   if (typeof summary === 'string') {
-    const trimmed = summary.trim().slice(0, MISSION_SUMMARY_MAX)
+    let trimmed = summary.trim().slice(0, MISSION_SUMMARY_MAX)
+    const last = trimmed.charCodeAt(trimmed.length - 1)
+    if (last >= 0xd800 && last <= 0xdbff) trimmed = trimmed.slice(0, -1)
     if (trimmed) body.summary = trimmed
   }
-  return body
+  return { ok: true, body }
 }
 
 const isPositiveIntLike = (v: unknown): boolean => {

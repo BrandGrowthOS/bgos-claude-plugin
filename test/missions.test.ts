@@ -179,25 +179,52 @@ test('tick: rejects over-long evidence', () => {
 // ── buildMissionCompleteBody ────────────────────────────────────────────────
 
 test('complete: includes a summary when given', () => {
-  assert.deepEqual(buildMissionCompleteBody({ summary: '23 drafts waiting for your review' }), {
+  const result = buildMissionCompleteBody({ summary: '23 drafts waiting for your review' })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.deepEqual(result.body, {
     summary: '23 drafts waiting for your review',
   })
 })
 
 test('complete: trims the summary', () => {
-  assert.deepEqual(buildMissionCompleteBody({ summary: '  The migration is ready.  ' }), {
+  const result = buildMissionCompleteBody({ summary: '  The migration is ready.  ' })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.deepEqual(result.body, {
     summary: 'The migration is ready.',
   })
 })
 
 test('complete: truncates the summary at 500 chars', () => {
-  const body = buildMissionCompleteBody({ summary: 'x'.repeat(MISSION_SUMMARY_MAX + 1) })
-  assert.equal(body.summary, 'x'.repeat(MISSION_SUMMARY_MAX))
+  const result = buildMissionCompleteBody({ summary: 'x'.repeat(MISSION_SUMMARY_MAX + 1) })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.body.summary, 'x'.repeat(MISSION_SUMMARY_MAX))
 })
 
-test('complete: preserves the existing empty body when summary is absent or whitespace', () => {
-  assert.deepEqual(buildMissionCompleteBody(), {})
-  assert.deepEqual(buildMissionCompleteBody({ summary: '   ' }), {})
+test('complete: drops a lone high surrogate at the 500 unit boundary', () => {
+  const prefix = 'x'.repeat(MISSION_SUMMARY_MAX - 1)
+  const result = buildMissionCompleteBody({ summary: `${prefix}😀` })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.body.summary, prefix)
+})
+
+test('complete: rejects a non-string summary', () => {
+  for (const summary of [42, false, {}, []]) {
+    assert.deepEqual(buildMissionCompleteBody({ summary }), {
+      ok: false,
+      error: 'summary must be a string',
+    })
+  }
+})
+
+test('complete: preserves an empty body when summary is absent, null, or whitespace', () => {
+  assert.deepEqual(buildMissionCompleteBody(), { ok: true, body: {} })
+  assert.deepEqual(buildMissionCompleteBody({ summary: undefined }), { ok: true, body: {} })
+  assert.deepEqual(buildMissionCompleteBody({ summary: null }), { ok: true, body: {} })
+  assert.deepEqual(buildMissionCompleteBody({ summary: '   ' }), { ok: true, body: {} })
 })
 
 // ── path builders ───────────────────────────────────────────────────────────
