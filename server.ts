@@ -148,6 +148,17 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
+import {
+  buildAgentInboundContent,
+  buildInboundActorMeta,
+  isAgentMessageForTarget,
+  isHumanPermissionVerdictMessage,
+  isUndeliverableAgentMessage,
+  planPollAgentDelivery,
+  resolveAgentOrigin,
+  stringMeta,
+  type AgentOriginLike,
+} from './lib/a2a-inbound.js'
 import { homedir } from 'node:os'
 import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
 import {
@@ -1284,6 +1295,16 @@ const mcp = new Server(
   },
 )
 
+function notifyChannel(
+  content: string,
+  meta: Record<string, unknown>,
+): ReturnType<typeof mcp.notification> {
+  return mcp.notification({
+    method: 'notifications/claude/channel',
+    params: { content, meta: stringMeta(meta) },
+  })
+}
+
 // ── Permission Request Handler ───────────────────────────────────────────────
 
 const PermissionRequestSchema = z.object({
@@ -1441,7 +1462,7 @@ async function waitForVerdict(
       // Look for new user messages that match one of the verdict formats.
       for (const msg of data.messages) {
         if (msg.message.id <= baselineId) continue
-        if (msg.message.sender !== 'user') continue
+        if (!isHumanPermissionVerdictMessage(msg.message)) continue
 
         // User binding: only accept the verdict from the user who triggered
         // the request. We extract a per-sender user id from the message when
@@ -3110,7 +3131,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         | 'final'
         | undefined
 
-      if (!target_assistant_id || !parent_message_id || !text) {
+      if (!target_assistant_id || !parent_message_id || text.trim().length === 0) {
         return {
           content: [{ type: 'text', text: 'Error: target_assistant_id, parent_message_id and text are required.' }],
           isError: true,
@@ -3876,6 +3897,23 @@ interface ChatMessage {
     // message. Null/absent on pre-Block-A backends (senderUserIdOf then falls
     // back to the configured owner). Lets a shared assistant tell who sent it.
     senderUserId?: string | null
+    senderType?: 'user' | 'system' | 'agent' | string | null
+    sender_type?: 'user' | 'system' | 'agent' | string | null
+    senderAssistantId?: number | string | null
+    sender_assistant_id?: number | string | null
+    agentOrigin?: AgentOriginLike | null
+    agent_origin?: AgentOriginLike | null
+    peerConversationId?: number | string | null
+    peer_conversation_id?: number | string | null
+    turnState?: 'expecting_reply' | 'more_coming' | 'final' | string | null
+    turn_state?: 'expecting_reply' | 'more_coming' | 'final' | string | null
+    fromAgent?: {
+      peerId?: number | null
+      name?: string | null
+      color?: string | null
+      avatarUrl?: string | null
+      type?: string | null
+    } | null
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
@@ -4171,23 +4209,21 @@ function checkReplyOverdue(): void {
     p.reminded = true
     const ageSec = Math.round((now - p.ts) / 1000)
     log(`reply-overdue fired for chat ${chatId} message ${p.messageId} (${ageSec}s)`)
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content:
-          `[reply-overdue] Message in chat_id=${chatId} (message_id=${p.messageId}) ` +
+    void trackMessageOperation(() =>
+      notifyChannel(
+        `[reply-overdue] Message in chat_id=${chatId} (message_id=${p.messageId}) ` +
           `arrived ${ageSec}s ago and no reply has been sent yet. ` +
           `If you intended to respond, call the \`reply\` tool now. ` +
           `If you intended to stay silent, ignore this notification.`,
-        meta: {
+        {
           event_type: 'reply_overdue',
           chat_id: chatId,
           message_id: String(p.messageId),
           age_seconds: String(ageSec),
           ts: new Date(now).toISOString(),
         },
-      },
-    })).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
+      ),
+    ).catch((err) => log(`Failed to deliver reply-overdue: ${err}`))
   }
 }
 /**
@@ -4393,6 +4429,20 @@ function isPendingEmptySystem(m: ChatMessage): boolean {
   )
 }
 
+/** A persisted meeting turn also carries senderAssistantId, but it is not an
+ * A2A peer row. Add explicit meeting context before provenance resolution so
+ * bare legacy assistant ids stay on the meeting path while strong A2A origin
+ * fields continue to win. */
+function pollMessageForAgentProvenance(
+  message: ChatMessage['message'],
+  chatId: string,
+): ChatMessage['message'] & { meetingContext?: { meetingId: number } } {
+  const meetingId = meetingIdByChatId.get(chatId)
+  return meetingId == null
+    ? message
+    : { ...message, meetingContext: { meetingId } }
+}
+
 async function pollChat(chatId: string): Promise<void> {
   if (updateDrainMode) return
   await trackMessageOperation(async () => {
@@ -4458,12 +4508,33 @@ async function pollChat(chatId: string): Promise<void> {
       // qualify. The cursor advance below still initializes the chat to its
       // tip either way.
       const MAX_FIRST_POLL_FORWARD = 10
-      const firstPollRows = ordered.map((m) => ({
-        id: m.message.id,
-        sender: m.message.sender,
-        pendingEmptySystem: isPendingEmptySystem(m),
-        sentDateMs: sentDateToMs(m.message.sentDate),
-      }))
+      const firstPollRows = ordered.map((m) => {
+        const provenanceMessage = pollMessageForAgentProvenance(
+          m.message,
+          chatId,
+        )
+        const hasAgentOrigin = resolveAgentOrigin(provenanceMessage) !== null
+        const isInboundAgent = isAgentMessageForTarget(
+          provenanceMessage,
+          ASSISTANT_ID,
+        )
+        return {
+          id: m.message.id,
+          sender: isInboundAgent
+            ? 'user'
+            : hasAgentOrigin
+              ? 'assistant'
+              : m.message.sender,
+          pendingEmptySystem:
+            isPendingEmptySystem(m) ||
+            isUndeliverableAgentMessage(
+              provenanceMessage,
+              m.messageFiles ?? [],
+              ASSISTANT_ID,
+            ),
+          sentDateMs: sentDateToMs(m.message.sentDate),
+        }
+      })
       const backlogIds = new Set(
         selectFirstPollBacklogIds({
           rows: firstPollRows,
@@ -4495,12 +4566,26 @@ async function pollChat(chatId: string): Promise<void> {
       isBacklog = newUserMessages.length > 0
     } else {
       newUserMessages = ordered.filter(
-        (m) =>
-          m.message.id > lastSeen &&
-          (m.message.sender === 'user' || m.message.sender === 'system') &&
-          // Defer system wake cards still in their empty write-1 state, the
-          // body has not landed so there is nothing to forward yet.
-          !isPendingEmptySystem(m),
+        (m) => {
+          const provenanceMessage = pollMessageForAgentProvenance(
+            m.message,
+            chatId,
+          )
+          const hasAgentOrigin = resolveAgentOrigin(provenanceMessage) !== null
+          const isInboundAgent = isAgentMessageForTarget(
+            provenanceMessage,
+            ASSISTANT_ID,
+          )
+          return (
+            m.message.id > lastSeen &&
+            (isInboundAgent ||
+              (!hasAgentOrigin &&
+                (m.message.sender === 'user' || m.message.sender === 'system'))) &&
+            // Defer system wake cards still in their empty write-1 state, the
+            // body has not landed so there is nothing to forward yet.
+            !isPendingEmptySystem(m)
+          )
+        },
       )
       // With a persisted cursor, messages that arrived while the daemon was
       // down surface HERE (the delta branch) on the chat's first poll after
@@ -4571,7 +4656,7 @@ async function pollChat(chatId: string): Promise<void> {
       // the pending verdict instead. The three allow scopes currently collapse
       // to Claude's binary allow behavior in choiceToBehavior().
       const permMatch = PERMISSION_CALLBACK_RE.exec(callbackData)
-      if (permMatch) {
+      if (permMatch && resolveAgentOrigin(mm) === null) {
         const [, choice, requestId] = permMatch
         const pending = pendingPermissions.get(requestId)
         if (pending) {
@@ -4624,24 +4709,20 @@ async function pollChat(chatId: string): Promise<void> {
         const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
         contentLines.push(`Original question: ${quoted}`)
       }
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: contentLines.join('\n'),
-          meta: {
-            chat_id: chatId,
-            message_id: String(mm.id),
-            event_type: 'button_clicked',
-            callback_data: agentCallbackData,
-            button_text: buttonText,
-            ...(customText ? { custom_text: customText } : {}),
-            user: 'User',
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
-            ts: mm.answeredAt,
-          },
-        },
-      })).catch((err) => {
+      void trackMessageOperation(() =>
+        notifyChannel(contentLines.join('\n'), {
+          chat_id: chatId,
+          message_id: String(mm.id),
+          event_type: 'button_clicked',
+          callback_data: agentCallbackData,
+          button_text: buttonText,
+          ...(customText ? { custom_text: customText } : {}),
+          user: 'User',
+          user_id: USER_ID,
+          assistant_id: ASSISTANT_ID,
+          ts: mm.answeredAt,
+        }),
+      ).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
       })
     }
@@ -4649,21 +4730,42 @@ async function pollChat(chatId: string): Promise<void> {
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
-      const isSlashCommand = isSlashCommandPayload(msg.message)
+      const provenanceMessage = pollMessageForAgentProvenance(
+        msg.message,
+        chatId,
+      )
+      const pollAgentOrigin = resolveAgentOrigin(provenanceMessage)
+      if (
+        isUndeliverableAgentMessage(
+          provenanceMessage,
+          msg.messageFiles ?? [],
+          ASSISTANT_ID,
+        )
+      ) {
+        log(`Deferring undeliverable agent message ${msg.message.id} in chat ${chatId}`)
+        continue
+      }
+      if (pollAgentOrigin && forwardedMessageIds.has(msg.message.id)) continue
+      const isSlashCommand =
+        pollAgentOrigin === null && isSlashCommandPayload(msg.message)
       // WS may arrive during the boot poll window where its cursor advance is
       // intentionally deferred. Text can tolerate that safety replay, but an
       // action cannot. Claim every slash id before routing so either arrival
       // order executes the command exactly once.
-      if (shouldSkipForwardedSlashCommand(
-        msg.message,
-        msg.message.id,
-        forwardedMessageIds,
-      )) continue
-      if (isSlashCommand) rememberForwarded(msg.message.id)
+      if (
+        isSlashCommand &&
+        shouldSkipForwardedSlashCommand(
+          msg.message,
+          msg.message.id,
+          forwardedMessageIds,
+        )
+      ) continue
 
       // Skip permission verdict messages/clicks, don't forward them to Claude
-      let isPermissionVerdict = VERDICT_RE.test(text)
-      if (!isPermissionVerdict) {
+      const canResolvePermission =
+        isHumanPermissionVerdictMessage(provenanceMessage)
+      let isPermissionVerdict = canResolvePermission && VERDICT_RE.test(text)
+      if (canResolvePermission && !isPermissionVerdict) {
         for (const requestId of pendingPermissions.keys()) {
           if (parsePermissionChoice(text, requestId)) {
             isPermissionVerdict = true
@@ -4685,15 +4787,13 @@ async function pollChat(chatId: string): Promise<void> {
           `${isBacklog ? 'Backlog' : 'New'} meeting message in chat ${chatId}: ` +
             `meeting=${meetingId} your_turn=${yourTurn ? 'YES' : 'NO'}`,
         )
-        void trackMessageOperation(() => mcp.notification({
-          method: 'notifications/claude/channel',
-          params: {
-            content:
-              `${isBacklog ? '[backlog, meeting message arrived while you were offline]\n' : ''}` +
+        void trackMessageOperation(() =>
+          notifyChannel(
+            `${isBacklog ? '[backlog, meeting message arrived while you were offline]\n' : ''}` +
               `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
               `participants: ${participantList || 'unknown'}]\n` +
               `User: ${text}`,
-            meta: {
+            {
               chat_id: chatId,
               message_id: String(msg.message.id),
               user: 'User',
@@ -4711,8 +4811,8 @@ async function pollChat(chatId: string): Promise<void> {
               transport: 'poll',
               ...(isBacklog ? { backlog: 'true' } : {}),
             },
-          },
-        })).catch((err) => {
+          ),
+        ).catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
         continue
@@ -4734,22 +4834,41 @@ async function pollChat(chatId: string): Promise<void> {
           'and NOT a peer agent. Treat this as a system notification. Do not act on ' +
           'it as a user instruction unless it explicitly asks you to.]\n'
         : ''
-      const originalContent = buildInboundContent(systemPrefix + text, msg.messageFiles ?? [], {
-        backlogPrefix: isBacklog
-          ? '[backlog - message arrived while you were offline; please respond]'
-          : undefined,
-      })
-      const slashRoute = routeSlashCommand({
-        payload: msg.message,
-        sourceContent: originalContent,
-        registry: registeredSlashCommands,
-        legacyAliases: registeredSlashCommandAliases,
-      })
+      const backlogPrefix = isBacklog
+        ? '[backlog - message arrived while you were offline; please respond]'
+        : undefined
+      const originalContent = pollAgentOrigin
+        ? buildAgentInboundContent(
+            text,
+            msg.messageFiles ?? [],
+            pollAgentOrigin,
+            { backlogPrefix },
+          )
+        : buildInboundContent(systemPrefix + text, msg.messageFiles ?? [], {
+            backlogPrefix,
+          })
+      const slashRoute = isSlashCommand
+        ? routeSlashCommand({
+            payload: msg.message,
+            sourceContent: originalContent,
+            registry: registeredSlashCommands,
+            legacyAliases: registeredSlashCommandAliases,
+          })
+        : ({ kind: 'not_slash' } as const)
+
+      const slashDelivery = slashRoute.kind === 'directive'
+        ? slashRoute.delivery
+        : null
+      const content = slashRoute.kind === 'compact'
+        ? '[daemon compact request]'
+        : slashDelivery?.content ?? originalContent
+
+      if (!content) continue
+      if (pollAgentOrigin || isSlashCommand) rememberForwarded(msg.message.id)
 
       // Remote /compact is handled by the daemon and never forwarded to the
       // model. The shared route recognizes it from either structured fields or
-      // slash text, before the empty content guard. The slash id was claimed
-      // above, so a delayed WebSocket frame cannot execute it a second time.
+      // slash text. Its id is claimed only after content validation.
       if (slashRoute.kind === 'compact') {
         if (isBacklog) {
           // A /compact tapped while the daemon was down targets a session
@@ -4764,13 +4883,6 @@ async function pollChat(chatId: string): Promise<void> {
         }
         continue
       }
-
-      const slashDelivery = slashRoute.kind === 'directive'
-        ? slashRoute.delivery
-        : null
-      const content = slashDelivery?.content ?? originalContent
-
-      if (!content) continue
 
       log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
@@ -4788,36 +4900,37 @@ async function pollChat(chatId: string): Promise<void> {
       const pollSessionHandle =
         msg.message.sessionHandle ?? msg.message.session_handle ?? undefined
       rememberSessionHandle(chatId, pollSessionHandle)
-      // Remember who drove this chat so a permission verdict can be bound to
-      // them (see lastInboundUserByChat / PendingPermission.requesterUserId).
-      // Block A: resolve the REAL sender id the backend now stamps per message
-      // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
-      // Reused for the verdict-binding map AND the agent-delivered meta so a
-      // shared assistant sees which human actually sent this message.
-      const pollSenderUserId = senderUserIdOf(msg.message)
-      lastInboundUserByChat.set(chatId, pollSenderUserId)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content,
-          meta: {
-            chat_id: String(chatId),
-            message_id: String(msg.message.id),
-            user: isPollSystem ? 'System' : 'User',
-            user_id: String(pollSenderUserId),
-            assistant_id: String(ASSISTANT_ID),
-            ts: String(msg.message.sentDate ?? new Date().toISOString()),
-            ...(isPollSystem ? { system: 'true', sender_type: 'system' } : {}),
-            ...(typeof pollSessionHandle === 'string' && pollSessionHandle
-              ? { session_handle: String(pollSessionHandle) }
-              : {}),
-            ...(isBacklog ? { backlog: 'true' } : {}),
-            transport: 'poll',
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
-          },
+      // Remember the human who drove this chat so a permission verdict can be
+      // bound to them. Agent traffic must never overwrite this map with the
+      // account owner's id.
+      const pollSenderUserId = pollAgentOrigin ? null : senderUserIdOf(msg.message)
+      if (pollSenderUserId !== null) {
+        lastInboundUserByChat.set(chatId, pollSenderUserId)
+      }
+      void trackMessageOperation(() => notifyChannel(
+        content,
+        {
+          chat_id: String(chatId),
+          message_id: String(msg.message.id),
+          ...buildInboundActorMeta(
+            {
+              ...msg.message,
+              senderType: isPollSystem ? 'system' : msg.message.senderType,
+            },
+            USER_ID,
+          ),
+          assistant_id: String(ASSISTANT_ID),
+          ts: String(msg.message.sentDate ?? new Date().toISOString()),
+          ...(typeof pollSessionHandle === 'string' && pollSessionHandle
+            ? { session_handle: String(pollSessionHandle) }
+            : {}),
+          ...(isBacklog ? { backlog: 'true' } : {}),
+          transport: 'poll',
+          ...(slashDelivery ? slashDelivery.meta : {}),
+          ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
+          turn_state: msg.message.turnState ?? msg.message.turn_state,
         },
-      })).catch((err) => {
+      )).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
       // Skip overdue tracking for backlog messages: they were forwarded
@@ -4862,9 +4975,22 @@ async function pollChat(chatId: string): Promise<void> {
         return t === null || t >= FIRST_POLL_RECENT_CUTOFF_MS
       })
       .map((m) => m.message.id)
+    const { undeliverableAgentIds } = planPollAgentDelivery({
+      rows: ordered.map((row) => ({
+        ...row,
+        message: pollMessageForAgentProvenance(row.message, chatId),
+      })),
+      lastSeen,
+      maxId,
+      currentAssistantId: ASSISTANT_ID,
+    })
     advanceChatCursor(
       chatId,
-      advanceCursor({ lastSeen, maxId, pendingEmptyIds: pendingIds }),
+      advanceCursor({
+        lastSeen,
+        maxId,
+        pendingEmptyIds: [...pendingIds, ...undeliverableAgentIds],
+      }),
     )
 
     // Only now (everything processed without throwing) does this chat's boot
@@ -4977,10 +5103,7 @@ const voiceRpc = new VoiceRpcHandler({
       body as unknown as Record<string, unknown>,
     ),
   notify: (content, meta) =>
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: { content, meta },
-    }),
+    notifyChannel(content, meta),
   getIdentity: getVoiceIdentity,
   // stop_turn's short plain confirmation rides the normal outbound send
   // path (POST send-message), same shape as the permission-prompt sender.
@@ -5183,20 +5306,16 @@ function connectWebsocket(): void {
       }
       const { taskId, question, context, chatId } = parsed.task
       log(`voice_task_dispatch received (task=${taskId})`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content: buildVoiceTaskDispatchText({ taskId, question, context }),
-          meta: {
-            event_type: 'voice_task_dispatch',
-            task_id: taskId,
-            chat_id: chatId,
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
-            transport: 'ws',
-          },
-        },
-      })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
+      void trackMessageOperation(() =>
+        notifyChannel(buildVoiceTaskDispatchText({ taskId, question, context }), {
+          event_type: 'voice_task_dispatch',
+          task_id: taskId,
+          chat_id: chatId,
+          user_id: USER_ID,
+          assistant_id: ASSISTANT_ID,
+          transport: 'ws',
+        }),
+      ).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
@@ -5208,37 +5327,7 @@ function connectWebsocket(): void {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
       if (forwardedMessageIds.has(messageId)) return
-      rememberForwarded(messageId)
-
-      // Also bump chatLastSeen so the subsequent poll cycle won't re-emit
-      // this same message. Number(chatId) → string, matching the keying
-      // pollChat uses.
-      //
-      // But NEVER jump a persisted cursor over a chat whose boot poll has
-      // not completed: messages that arrived while the daemon was down sit
-      // between the persisted cursor and this id, and advancing past them
-      // here would skip them forever (persistence removed the old accidental
-      // recovery where a restart replayed the tail). A cursor-less chat
-      // keeps the bump, which is what stops the first-poll heuristic from
-      // re-delivering this very message. Worst case of deferring the bump:
-      // the boot poll redelivers this one ordinary text message with backlog
-      // framing, a duplicate, never a loss. Slash actions use the forwarded id
-      // guard in pollChat and never execute twice. Keep in lockstep with
-      // test/first-poll-gate.test.ts (wsCursorSafe mirror).
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
-      if (chatId) {
-        const wsCursorSafe =
-          chatsPolledSinceBoot.has(chatId) ||
-          (chatLastSeen.get(chatId) ?? 0) === 0
-        if (wsCursorSafe) advanceChatCursor(chatId, messageId)
-        noteMonitoredChat(chatId)
-      }
-      // Capture any opaque session handle the backend minted for this inbound
-      // so we can prefer round-tripping it (over the raw chat_id) on the reply.
-      const wsSessionHandle = payload?.sessionHandle ?? payload?.session_handle
-      rememberSessionHandle(chatId, wsSessionHandle)
-      // Remember who drove this chat (for permission-verdict user binding).
-      if (chatId) lastInboundUserByChat.set(chatId, senderUserIdOf(payload))
 
       // Mirror pollChat's content-building: text PLUS attachment lines, with
       // the user's text forwarded VERBATIM. Backend ships files as
@@ -5250,16 +5339,56 @@ function connectWebsocket(): void {
       const text = (payload?.text as string | undefined) ?? ''
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
-      const isWsSlashCommand = isSlashCommandPayload(payload ?? {})
-      const originalContent = buildInboundContent(text, wsFiles)
-      const slashRoute = routeSlashCommand({
-        payload: payload ?? {},
-        sourceContent: originalContent,
-        registry: registeredSlashCommands,
-        legacyAliases: registeredSlashCommandAliases,
-      })
+      const resolvedWsAgentOrigin = resolveAgentOrigin(payload)
+      const wsAgentOrigin =
+        resolvedWsAgentOrigin && isAgentMessageForTarget(payload, ASSISTANT_ID)
+          ? resolvedWsAgentOrigin
+          : null
+      if (resolvedWsAgentOrigin && !wsAgentOrigin) return
+      const isWsSlashCommand =
+        wsAgentOrigin === null && isSlashCommandPayload(payload ?? {})
+      const originalContent = wsAgentOrigin
+        ? buildAgentInboundContent(text, wsFiles, wsAgentOrigin, {
+            backendPrefixed: true,
+          })
+        : buildInboundContent(text, wsFiles)
+      const slashRoute = isWsSlashCommand
+        ? routeSlashCommand({
+            payload: payload ?? {},
+            sourceContent: originalContent,
+            registry: registeredSlashCommands,
+            legacyAliases: registeredSlashCommandAliases,
+          })
+        : ({ kind: 'not_slash' } as const)
+      const slashDelivery = slashRoute.kind === 'directive'
+        ? slashRoute.delivery
+        : null
+      const content = slashRoute.kind === 'compact'
+        ? '[daemon compact request]'
+        : slashDelivery?.content ?? originalContent
+      if (!content) return
+
+      // Receipt state changes only after the payload is proven deliverable.
+      // A blank peer row must remain available to a later WS retry or poll.
+      rememberForwarded(messageId)
+
+      // Also bump chatLastSeen so the subsequent poll cycle won't re-emit
+      // this same message. Number(chatId) becomes a string, matching pollChat.
+      // A boot poll that has not completed keeps its existing safety guard.
+      if (chatId) {
+        const wsCursorSafe =
+          chatsPolledSinceBoot.has(chatId) ||
+          (chatLastSeen.get(chatId) ?? 0) === 0
+        if (wsCursorSafe) advanceChatCursor(chatId, messageId)
+        noteMonitoredChat(chatId)
+      }
+      const wsSessionHandle = payload?.sessionHandle ?? payload?.session_handle
+      rememberSessionHandle(chatId, wsSessionHandle)
+      if (chatId && !wsAgentOrigin) {
+        lastInboundUserByChat.set(chatId, senderUserIdOf(payload))
+      }
+
       // Remote /compact is daemon handled and never forwarded to the model.
-      // This check precedes the empty content guard, matching the poll path.
       // Message id dedupe covers dual delivery when the boot poll redelivers
       // this message.
       if (slashRoute.kind === 'compact') {
@@ -5271,19 +5400,12 @@ function connectWebsocket(): void {
         }
         return
       }
-      const slashDelivery = slashRoute.kind === 'directive'
-        ? slashRoute.delivery
-        : null
-      const content = slashDelivery?.content ?? originalContent
-      if (!content) return
 
       // System-message provenance (capability #14). The backend sets
       // senderType='system' when a non-human, non-agent automation (a
       // scheduler / cron / n8n "System" send) authored this inbound, and ALSO
       // prepends a guaranteed in-content origin marker to `text`. Surface a
       // structured meta flag so the agent never mistakes it for the user.
-      const isWsSystem =
-        String(payload?.senderType ?? payload?.sender_type ?? '') === 'system'
       // Machine-delivered event enrichment (capability #12), same as the poll
       // path. Backend ships the envelope as `eventMeta` (camelCase) on the
       // inbound_message payload; accept event_meta defensively too.
@@ -5294,63 +5416,51 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content,
-          meta: {
-            chat_id: String(chatId),
-            message_id: String(messageId),
-            user: isWsSystem ? 'System' : 'User',
-            // Block A: forward the REAL human sender so a shared assistant can
-            // tell who is talking, falling back to the legacy top-level userId
-            // and then the configured owner for pre-Block-A backends.
-            // Channel `meta` MUST be all-string valued: the Claude Code harness
-            // silently drops any notifications/claude/channel card whose meta
-            // carries a non-string value. So stringify the boolean, coerce
-            // user_id, and only include the optional identity fields when
-            // present (never emit undefined or null). Regression: #17 shipped a
-            // boolean + null here and every live WS inbound card vanished.
-            user_id: String(payload?.sender?.userId ?? payload?.userId ?? USER_ID),
-            ...(payload?.sender?.displayName
-              ? { sender_display_name: String(payload.sender.displayName) }
-              : {}),
-            ...(payload?.sender?.relationship
-              ? { sender_relationship: String(payload.sender.relationship) }
-              : {}),
-            is_shared_recipient: String(payload?.isSharedRecipient ?? false),
-            ...(payload?.shareOwnerUserId
-              ? { share_owner_user_id: String(payload.shareOwnerUserId) }
-              : {}),
-            assistant_id: String(ASSISTANT_ID),
-            ts: new Date().toISOString(),
-            transport: 'ws',
-            ...(isWsSystem ? { system: 'true', sender_type: 'system' } : {}),
-            ...(typeof wsSessionHandle === 'string' && wsSessionHandle
-              ? { session_handle: String(wsSessionHandle) }
-              : {}),
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
-            ...(payload?.peer_conversation_id != null
-              ? { peer_conversation_id: String(payload.peer_conversation_id) }
-              : {}),
-            ...(payload?.peerConversationId != null
-              ? { peer_conversation_id: String(payload.peerConversationId) }
-              : {}),
-            ...(payload?.turn_state != null
-              ? { turn_state: String(payload.turn_state) }
-              : {}),
-            ...(payload?.turnState != null
-              ? { turn_state: String(payload.turnState) }
-              : {}),
-          },
+      void trackMessageOperation(() => notifyChannel(
+        content,
+        {
+          chat_id: String(chatId),
+          message_id: String(messageId),
+          ...buildInboundActorMeta(payload, USER_ID),
+          // Human cards retain shared-recipient context. Agent cards omit
+          // every owner/human sender field and use structured agent origin.
+          // notifyChannel stringifies every retained value and omits absent
+          // optionals before the card reaches Claude.
+          ...(!wsAgentOrigin
+            ? {
+                is_shared_recipient: payload?.isSharedRecipient ?? false,
+                share_owner_user_id: payload?.shareOwnerUserId,
+              }
+            : {}),
+          assistant_id: String(ASSISTANT_ID),
+          ts: new Date().toISOString(),
+          transport: 'ws',
+          ...(typeof wsSessionHandle === 'string' && wsSessionHandle
+            ? { session_handle: String(wsSessionHandle) }
+            : {}),
+          ...(slashDelivery ? slashDelivery.meta : {}),
+          ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
+          ...(payload?.peer_conversation_id != null
+            ? { peer_conversation_id: String(payload.peer_conversation_id) }
+            : {}),
+          ...(payload?.peerConversationId != null
+            ? { peer_conversation_id: String(payload.peerConversationId) }
+            : {}),
+          ...(payload?.turn_state != null
+            ? { turn_state: String(payload.turn_state) }
+            : {}),
+          ...(payload?.turnState != null
+            ? { turn_state: String(payload.turnState) }
+            : {}),
         },
-      })).catch((err) => log(`WS forward error: ${err}`))
+      )).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
       const convId =
-        payload?.peer_conversation_id ?? payload?.peerConversationId
+        payload?.peer_conversation_id ??
+        payload?.peerConversationId ??
+        wsAgentOrigin?.peerConversationId
       const wsTurnState = (payload?.turn_state ?? payload?.turnState) as
         | string
         | undefined
@@ -5390,15 +5500,13 @@ function connectWebsocket(): void {
     if (convId != null) {
       markConversationClosed({ convId })
     }
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content:
-          `[peer_conversation_closed] reason=${payload?.reason ?? 'unknown'}\n` +
+    void trackMessageOperation(() =>
+      notifyChannel(
+        `[peer_conversation_closed] reason=${payload?.reason ?? 'unknown'}\n` +
           `(conversation_id=${payload?.conversation_id ?? '?'}, ` +
           `closed_by=${payload?.closed_by_id ?? '?'})\n` +
           `Send to this peer again to start a new conversation.`,
-        meta: {
+        {
           event_type: 'peer_conversation_closed',
           conversation_id: String(payload?.conversation_id ?? ''),
           reason: payload?.reason ?? 'unknown',
@@ -5406,8 +5514,8 @@ function connectWebsocket(): void {
           assistant_id: ASSISTANT_ID,
           transport: 'ws',
         },
-      },
-    })).catch(() => {})
+      ),
+    ).catch(() => {})
   })
 
   realtimeSocket.on('peer_turn_yielded', (payload: any) => {
@@ -5484,17 +5592,15 @@ function connectWebsocket(): void {
       log(
         `meeting_invitation accepted (id=${meetingId}, peers=${peerNames}, history=${rawHistory.length})`,
       )
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content:
-            `[meeting_invitation] You have been added to meeting #${meetingId}` +
+      void trackMessageOperation(() =>
+        notifyChannel(
+          `[meeting_invitation] You have been added to meeting #${meetingId}` +
             `${payload?.title ? ` "${payload.title}"` : ''}.\n` +
             `Other participants: ${peerNames || '(none yet)'}\n` +
             `Speaker policy: ${payload?.speakerPolicy ?? 'user_mediated'}.\n` +
             `Wait for messages with your_turn=YES before calling the meeting_reply tool.` +
             historyBlock,
-          meta: {
+          {
             event_type: 'meeting_invitation',
             meeting_id: String(meetingId),
             chat_id: String(payload?.chatId ?? ''),
@@ -5502,8 +5608,8 @@ function connectWebsocket(): void {
             assistant_id: ASSISTANT_ID,
             transport: 'ws',
           },
-        },
-      })).catch(() => {})
+        ),
+      ).catch(() => {})
     } catch (err) {
       log(`meeting_invitation handler error: ${err}`)
     }
@@ -5596,14 +5702,12 @@ function connectWebsocket(): void {
       // are kept as additions on top.
       const messageIdStr =
         payload?.messageId != null ? String(payload.messageId) : ''
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content:
-            `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
+      void trackMessageOperation(() =>
+        notifyChannel(
+          `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
             `participants: ${participantList || 'unknown'}]\n` +
             `${senderName}: ${text}`,
-          meta: {
+          {
             // Canonical channel-envelope fields (rendered as XML attrs).
             chat_id: chatId,
             message_id: messageIdStr,
@@ -5626,8 +5730,8 @@ function connectWebsocket(): void {
               : { current_speaker_id: String(payload.currentSpeakerId) }),
             transport: 'ws',
           },
-        },
-      })).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
+        ),
+      ).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
     }
@@ -5653,22 +5757,20 @@ function connectWebsocket(): void {
     }
     if (becameMyTurn) {
       log(`meeting_turn_changed → my turn in meeting #${meetingId}`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content:
-            `[Meeting #${meetingId}] It is now your turn. Reply via the ` +
+      void trackMessageOperation(() =>
+        notifyChannel(
+          `[Meeting #${meetingId}] It is now your turn. Reply via the ` +
             `meeting_reply tool with meeting_id=${meetingId}, or send "PASS" ` +
             `to yield without contributing.`,
-          meta: {
+          {
             event_type: 'meeting_turn_changed',
             meeting_id: String(meetingId),
             your_turn: 'YES',
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        },
-      })).catch(() => {})
+        ),
+      ).catch(() => {})
     }
   })
 
@@ -5727,22 +5829,20 @@ function connectWebsocket(): void {
       }
 
       log(`meeting_state_resync → it is my turn in meeting #${meetingId}`)
-      void trackMessageOperation(() => mcp.notification({
-        method: 'notifications/claude/channel',
-        params: {
-          content:
-            `[Meeting #${meetingId}] (reconnect catch-up) It is your turn. ` +
+      void trackMessageOperation(() =>
+        notifyChannel(
+          `[Meeting #${meetingId}] (reconnect catch-up) It is your turn. ` +
             `Reply via the meeting_reply tool with meeting_id=${meetingId}, ` +
             `or send "PASS" to yield without contributing.`,
-          meta: {
+          {
             event_type: 'meeting_state_resync',
             meeting_id: String(meetingId),
             your_turn: 'YES',
             user_id: USER_ID,
             assistant_id: ASSISTANT_ID,
           },
-        },
-      })).catch(() => {})
+        ),
+      ).catch(() => {})
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
@@ -5754,21 +5854,19 @@ function connectWebsocket(): void {
     if (!Number.isFinite(meetingId)) return
     forgetMeetingContext(meetingId)
     log(`meeting_closed id=${meetingId} reason=${payload?.reason}`)
-    void trackMessageOperation(() => mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content:
-          `[Meeting #${meetingId}] Meeting closed (reason: ${payload?.reason ?? 'unknown'}).` +
+    void trackMessageOperation(() =>
+      notifyChannel(
+        `[Meeting #${meetingId}] Meeting closed (reason: ${payload?.reason ?? 'unknown'}).` +
           ` Stop sending meeting_reply for this meeting.`,
-        meta: {
+        {
           event_type: 'meeting_closed',
           meeting_id: String(meetingId),
           reason: payload?.reason ?? 'unknown',
           user_id: USER_ID,
           assistant_id: ASSISTANT_ID,
         },
-      },
-    })).catch(() => {})
+      ),
+    ).catch(() => {})
   })
 
   realtimeSocket.on('meeting_participant_left', (payload: any) => {

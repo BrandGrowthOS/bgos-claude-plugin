@@ -14,6 +14,7 @@ import {
   routeSlashCommand,
   shouldSkipForwardedSlashCommand,
 } from '../lib/slash-catalog.ts'
+import { resolveAgentOrigin } from '../lib/a2a-inbound.ts'
 
 const prepared = prepareSlashCommands(BUILTIN_COMMANDS)
 
@@ -166,7 +167,7 @@ test('both live handlers call the tested route and send its content and metadata
   }
 })
 
-test('compact remains daemon handled before notification and empty content guards', () => {
+test('compact remains daemon handled after the shared deliverability gate', () => {
   const cases = [
     { transport: 'poll', source: pollInbound, emptyGuard: 'if (!content) continue' },
     { transport: 'ws', source: wsInbound, emptyGuard: 'if (!content) return' },
@@ -177,16 +178,18 @@ test('compact remains daemon handled before notification and empty content guard
     const daemonIndex = source.indexOf('handleRemoteCompact(')
     const deliveryIndex = source.indexOf("slashRoute.kind === 'directive'")
     const emptyIndex = source.indexOf(emptyGuard)
+    const actionContentIndex = source.indexOf("'[daemon compact request]'")
     assert.ok(compactIndex >= 0, `${transport} compact check missing`)
+    assert.ok(actionContentIndex > deliveryIndex, `${transport} compact must be a deliverable action`)
+    assert.ok(emptyIndex > actionContentIndex, `${transport} action must pass the empty guard`)
     assert.ok(daemonIndex > compactIndex, `${transport} compact must call the daemon handler`)
-    assert.ok(deliveryIndex > daemonIndex, `${transport} compact must bypass model directives`)
-    assert.ok(emptyIndex > deliveryIndex, `${transport} structured slash must survive empty text`)
+    assert.ok(daemonIndex > emptyIndex, `${transport} compact must run only after validation`)
   }
 })
 
 test('poll slash routing bypasses meeting text handling and marks delivery for WS dedupe', () => {
   const classificationIndex = pollInbound.indexOf(
-    'const isSlashCommand = isSlashCommandPayload(msg.message)',
+    'const isSlashCommand =',
   )
   const meetingIndex = pollInbound.indexOf(
     'if (meetingId != null && meetingCtx && !isSlashCommand)',
@@ -196,10 +199,41 @@ test('poll slash routing bypasses meeting text handling and marks delivery for W
   const routeIndex = pollInbound.indexOf('routeSlashCommand({')
   assert.ok(classificationIndex >= 0)
   assert.ok(skipIndex > classificationIndex)
-  assert.ok(rememberIndex > skipIndex)
   assert.ok(meetingIndex > classificationIndex)
-  assert.ok(routeIndex > rememberIndex)
+  assert.ok(routeIndex > meetingIndex)
+  assert.ok(rememberIndex > routeIndex)
   assert.match(wsInbound, /if \(forwardedMessageIds\.has\(messageId\)\) return/)
+})
+
+test('agent provenance cannot enter user slash dispatch or reserved compact handling', () => {
+  assert.ok(
+    resolveAgentOrigin({
+      sender: 'user',
+      sender_assistant_id: 12,
+      sender_name: 'Research Agent',
+      messageType: 'slash_command',
+      commandName: 'compact',
+    }),
+    'bare persisted sender_assistant_id must activate the non-user gate',
+  )
+  assert.match(
+    pollInbound,
+    /pollAgentOrigin === null && isSlashCommandPayload\(msg\.message\)/,
+  )
+  assert.match(
+    wsInbound,
+    /wsAgentOrigin === null && isSlashCommandPayload\(payload \?\? \{\}\)/,
+  )
+  for (const [transport, source] of [
+    ['poll', pollInbound],
+    ['ws', wsInbound],
+  ] as const) {
+    assert.match(
+      source,
+      /const slashRoute = is(?:Ws)?SlashCommand\s+\? routeSlashCommand\(\{/,
+      `${transport} must call slash routing only after the non-agent gate`,
+    )
+  }
 })
 
 function buildPollSlashMeta(input: {

@@ -328,7 +328,8 @@ describe('schedule and drain decisions', () => {
       'meeting_state_resync',
       'meeting_closed',
     ]) {
-      expect(handlerBody(event)).toContain('trackMessageOperation(() => mcp.notification')
+      expect(handlerBody(event)).toContain('trackMessageOperation(() =>')
+      expect(handlerBody(event)).toContain('notifyChannel(')
     }
     expect(source).not.toContain('void handleRemoteCompact(')
     expect(source).toContain('if (updateDrainMode) {\n    return Promise.resolve({')

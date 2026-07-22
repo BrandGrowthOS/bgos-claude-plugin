@@ -181,6 +181,27 @@ test('inbound: WS file with no ref is skipped', () => {
   assert.equal(content, '')
 })
 
+test('inbound: WS file with a whitespace-only ref is skipped', () => {
+  const content = buildInboundContent(' \n ', [
+    { filename: 'empty.pdf', mime: 'application/pdf', url: '  \t ' },
+  ])
+  assert.equal(content, '')
+})
+
+test('inbound: poll file with no ref is skipped', () => {
+  const content = buildInboundContent('', [
+    { isDocument: true, fileName: 'empty.pdf', fileData: '' },
+  ])
+  assert.equal(content, '')
+})
+
+test('inbound: poll file with a whitespace-only ref is skipped', () => {
+  const content = buildInboundContent('\t', [
+    { isDocument: true, fileName: 'empty.pdf', fileData: '  \n ' },
+  ])
+  assert.equal(content, '')
+})
+
 test('inbound: backlog prefix is prepended when supplied', () => {
   const content = buildInboundContent('hey', [], {
     backlogPrefix: '[backlog - message arrived while you were offline; please respond]',
@@ -194,6 +215,24 @@ test('inbound: backlog prefix is prepended when supplied', () => {
 test('inbound: empty text and no files yields empty content', () => {
   assert.equal(buildInboundContent('   '), '')
   assert.equal(buildInboundContent(''), '')
+})
+
+test('inbound: backlog framing cannot turn blank content into a delivery', () => {
+  assert.equal(
+    buildInboundContent(' \n\t ', [], {
+      backlogPrefix: '[backlog - message arrived while you were offline; please respond]',
+    }),
+    '',
+  )
+})
+
+test('inbound: a valid attachment makes a blank body deliverable', () => {
+  assert.equal(
+    buildInboundContent(' \n ', [
+      { isImage: true, fileName: 'proof.png', fileData: 'https://cdn/proof.png' },
+    ]),
+    '[Attached image: proof.png - https://cdn/proof.png]',
+  )
 })
 
 // ── 5. File-attachment mime handling ─────────────────────────────────────────

@@ -43,6 +43,11 @@ import {
   WS_DOWN_MULTIPLIER,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
 } from '../lib/poll-core.ts'
+import {
+  buildInboundActorMeta,
+  isAgentMessageForTarget,
+  planPollAgentDelivery,
+} from '../lib/a2a-inbound.ts'
 
 // ── P1c: NOT_MODIFIED sentinel ───────────────────────────────────────────────
 
@@ -187,6 +192,217 @@ test('cursor never moves backward', () => {
     150,
   )
   assert.equal(advanceCursor({ lastSeen: 150, maxId: 120, pendingEmptyIds: [] }), 150)
+})
+
+test('blank agent row is not delivered and does not advance the cursor', () => {
+  const result = planPollAgentDelivery({
+    rows: [
+      {
+        message: {
+          id: 101,
+          text: ' \n\t ',
+          sender: 'user',
+          senderAssistantId: 12,
+          agentOrigin: {
+            sourceAssistantId: 12,
+            sourceName: 'Research Agent',
+            targetAssistantId: 9,
+            peerConversationId: 77,
+            messageId: 101,
+          },
+        },
+      },
+    ],
+    lastSeen: 100,
+    maxId: 101,
+    currentAssistantId: 9,
+  })
+
+  assert.deepEqual(result.deliverableAgentIds, [])
+  assert.deepEqual(result.undeliverableAgentIds, [101])
+  assert.equal(result.nextCursor, 100)
+})
+
+test('a later valid body at the deferred agent id remains deliverable', () => {
+  const result = planPollAgentDelivery({
+    rows: [
+      {
+        message: {
+          id: 101,
+          text: 'The completed analysis',
+          sender: 'user',
+          sender_assistant_id: 12,
+          agent_origin: {
+            source_assistant_id: 12,
+            source_name: 'Research Agent',
+            target_assistant_id: 9,
+            peer_conversation_id: 77,
+            message_id: 101,
+          },
+        },
+      },
+    ],
+    lastSeen: 100,
+    maxId: 101,
+    currentAssistantId: 9,
+  })
+
+  assert.deepEqual(result.deliverableAgentIds, [101])
+  assert.deepEqual(result.undeliverableAgentIds, [])
+  assert.equal(result.nextCursor, 101)
+})
+
+test('a valid agent row after a blank row is still selected for delivery', () => {
+  const origin = {
+    sourceAssistantId: 12,
+    sourceName: 'Research Agent',
+    targetAssistantId: 9,
+    peerConversationId: 77,
+  }
+  const result = planPollAgentDelivery({
+    rows: [
+      {
+        message: {
+          id: 101,
+          text: ' ',
+          sender: 'assistant',
+          agentOrigin: { ...origin, messageId: 101 },
+        },
+      },
+      {
+        message: {
+          id: 102,
+          text: 'This reply is valid.',
+          sender: 'assistant',
+          agentOrigin: { ...origin, messageId: 102 },
+        },
+      },
+    ],
+    lastSeen: 100,
+    maxId: 102,
+    currentAssistantId: 9,
+  })
+
+  assert.deepEqual(result.undeliverableAgentIds, [101])
+  assert.deepEqual(result.deliverableAgentIds, [102])
+  assert.equal(result.nextCursor, 100)
+})
+
+test('file-only agent row is deliverable and can advance the cursor', () => {
+  const result = planPollAgentDelivery({
+    rows: [
+      {
+        message: {
+          id: 102,
+          text: '',
+          sender: 'user',
+          senderAssistantId: 12,
+          peerConversationId: 77,
+        },
+        messageFiles: [
+          {
+            isDocument: true,
+            fileName: 'report.pdf',
+            fileData: 'https://cdn/report.pdf',
+          },
+        ],
+      },
+    ],
+    lastSeen: 101,
+    maxId: 102,
+    currentAssistantId: 9,
+  })
+
+  assert.deepEqual(result.deliverableAgentIds, [102])
+  assert.deepEqual(result.undeliverableAgentIds, [])
+  assert.equal(result.nextCursor, 102)
+})
+
+test('whitespace-only poll file ref cannot deliver or advance an agent row', () => {
+  const result = planPollAgentDelivery({
+    rows: [
+      {
+        message: {
+          id: 103,
+          text: ' ',
+          sender: 'user',
+          sender_assistant_id: 12,
+          sender_name: 'Research Agent',
+        },
+        messageFiles: [
+          {
+            isDocument: true,
+            fileName: 'empty.pdf',
+            fileData: '  \n ',
+          },
+        ],
+      },
+    ],
+    lastSeen: 102,
+    maxId: 103,
+    currentAssistantId: 9,
+  })
+
+  assert.deepEqual(result.deliverableAgentIds, [])
+  assert.deepEqual(result.undeliverableAgentIds, [103])
+  assert.equal(result.nextCursor, 102)
+})
+
+test('assistant-sender poll row addressed to this assistant renders as Agent', () => {
+  const message = {
+    id: 103,
+    sender: 'assistant',
+    text: 'Reply from the peer',
+    senderAssistantId: 12,
+    agentOrigin: {
+      sourceAssistantId: 12,
+      sourceName: 'Research Agent',
+      targetAssistantId: 9,
+      peerConversationId: 77,
+      messageId: 103,
+    },
+  }
+
+  assert.equal(isAgentMessageForTarget(message, 9), true)
+  assert.deepEqual(buildInboundActorMeta(message, 'owner'), {
+    user: 'Research Agent',
+    sender_type: 'agent',
+    sender_name: 'Research Agent',
+    sender_assistant_id: '12',
+    source_assistant_id: '12',
+    target_assistant_id: '9',
+    peer_conversation_id: '77',
+    agent_origin_message_id: '103',
+  })
+})
+
+test('canonical agent row for a different target is skipped and cannot park cursor', () => {
+  const row = {
+    message: {
+      id: 104,
+      sender: 'assistant',
+      text: '',
+      senderAssistantId: 9,
+      agentOrigin: {
+        sourceAssistantId: 9,
+        sourceName: 'This Agent',
+        targetAssistantId: 12,
+        peerConversationId: 77,
+        messageId: 104,
+      },
+    },
+  }
+
+  assert.equal(isAgentMessageForTarget(row.message, 9), false)
+  const result = planPollAgentDelivery({
+    rows: [row],
+    lastSeen: 103,
+    maxId: 104,
+    currentAssistantId: 9,
+  })
+  assert.deepEqual(result.deliverableAgentIds, [])
+  assert.deepEqual(result.undeliverableAgentIds, [])
+  assert.equal(result.nextCursor, 104)
 })
 
 // ── P1a+P1b harness: pollChat loop against an afterId+ETag fake backend ──────
@@ -551,6 +767,22 @@ test('server.ts polls chats through buildChatPollRequest (afterId delta path)', 
 
 test('server.ts advances the poll cursor through advanceCursor', () => {
   assert.ok(serverSource.includes('advanceCursor('))
+})
+
+test('server.ts defers blank agent rows before advancing the poll cursor', () => {
+  const start = serverSource.indexOf('async function pollChat(')
+  const end = serverSource.indexOf('async function pollAllChats(', start)
+  const pollSource = serverSource.slice(start, end)
+  const validationIndex = pollSource.indexOf('isUndeliverableAgentMessage(')
+  const contentIndex = pollSource.indexOf('const content =')
+  const dedupWriteIndex = pollSource.indexOf('rememberForwarded(msg.message.id)')
+  const cursorIndex = pollSource.lastIndexOf('advanceChatCursor(')
+
+  assert.ok(validationIndex >= 0, 'poll must identify blank agent rows')
+  assert.ok(contentIndex > validationIndex, 'poll must build content after validation')
+  assert.ok(dedupWriteIndex > contentIndex, 'poll dedup must happen after content validation')
+  assert.ok(cursorIndex > validationIndex, 'agent validation must precede cursor advance')
+  assert.ok(pollSource.includes('undeliverableAgentIds'))
 })
 
 test('server.ts handles the NOT_MODIFIED sentinel at bgosGet call sites', () => {

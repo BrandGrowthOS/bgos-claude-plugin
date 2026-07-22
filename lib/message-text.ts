@@ -314,6 +314,7 @@ export interface InboundFileLike {
   isImage?: boolean | null
   isVideo?: boolean | null
   isAudio?: boolean | null
+  isDocument?: boolean | null
   fileName?: string | null
   fileData?: string | null
   filename?: string | null
@@ -335,7 +336,6 @@ export function buildInboundContent(
   opts: { backlogPrefix?: string } = {},
 ): string {
   const parts: string[] = []
-  if (opts.backlogPrefix) parts.push(opts.backlogPrefix)
   if (text.trim()) parts.push(text)
   for (const f of files) {
     let type: string
@@ -345,16 +345,18 @@ export function buildInboundContent(
       // WS payload shape: { filename, mime, url?, dataUri? }
       type = getFileCategory(String(f.mime ?? '')) ?? 'document'
       name = String(f.filename ?? 'file')
-      ref = String(f.url ?? f.dataUri ?? '')
+      ref = String(f.url ?? f.dataUri ?? '').trim()
       if (!ref) continue
     } else {
       // Poll payload shape: { isImage/isVideo/isAudio, fileName, fileData }
       type = f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document'
       name = String(f.fileName ?? 'file')
-      ref = String(f.fileData ?? '')
+      ref = String(f.fileData ?? '').trim()
+      if (!ref) continue
     }
     parts.push(`[Attached ${type}: ${name} - ${ref}]`)
   }
+  if (parts.length > 0 && opts.backlogPrefix) parts.unshift(opts.backlogPrefix)
   return parts.join('\n')
 }
 
