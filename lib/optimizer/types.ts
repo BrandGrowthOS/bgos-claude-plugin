@@ -150,7 +150,7 @@ export interface FindingsReport {
   analyzedAt: string
   readOnly: true
   agent: {
-    kind: 'claude-code'
+    kind: 'claude-code' | 'hermes'
     root: string
   }
   categories: {
