@@ -86,7 +86,16 @@ import {
   validateComponentPayload,
 } from './lib/renderables.js'
 import {
+  LatestSerialRunner,
   catalogForCapabilities,
+  isSlashCommandPayload,
+  mergeSlashCommandCatalog,
+  parseSlashCommandMarkdown,
+  prepareSlashCommands,
+  routeSlashCommand,
+  shouldSkipForwardedSlashCommand,
+  slashCommandSyncPath,
+  type PreparedSlashCommands,
   type SlashCommandEntry,
 } from './lib/slash-catalog.js'
 import {
@@ -504,6 +513,11 @@ function reportResting(): void {
 // reply, and completion is confirmed asynchronously by watching the bound
 // transcript for the compact_boundary entry (lib/compact-confirm.ts).
 const compactTarget: TmuxTarget | null = resolveTmuxTarget(process.env)
+const bootSlashCommands = prepareSlashCommands(
+  catalogForCapabilities({ remoteCompact: compactTarget !== null }),
+)
+let registeredSlashCommands = bootSlashCommands.registry
+let registeredSlashCommandAliases = bootSlashCommands.legacyAliases
 if (compactTarget) {
   log(
     `remote compact capability ON (tmux target ${compactTarget.target} ` +
@@ -1159,11 +1173,12 @@ const mcp = new Server(
       'this plugin syncs on boot (built-in commands like `/help`, `/clear`,',
       '`/cost`, plus your user/project/plugin commands).',
       '',
-      'A slash-command turn arrives as a normal `<channel source="bgos">` event',
-      'with `meta.event_type = "slash_command"`, `meta.command_name = "<name>"`,',
-      'and `meta.command_args = "<rest of message>"`. The `content` field is the',
-      'literal text the user sent (e.g. `/help`). Treat the command exactly as you',
-      'would in the CLI, invoke its behavior, then `reply` with the result.',
+      'A slash-command turn arrives as a `<channel source="bgos">` event with',
+      '`meta.event_type = "slash_command"`, the selected command and arguments,',
+      'and an explicit execution directive resolved from the registered catalog.',
+      'Follow that directive now, carry out the command behavior, then `reply`',
+      'with the result. Do not merely echo the slash text or ask the user to run it',
+      'in the terminal.',
       'Exception: `/compact` never reaches you. When this install supports it,',
       'the plugin itself injects real host compaction and confirms in-chat; you',
       'do not need to (and cannot) act on it.',
@@ -4634,6 +4649,17 @@ async function pollChat(chatId: string): Promise<void> {
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
+      const isSlashCommand = isSlashCommandPayload(msg.message)
+      // WS may arrive during the boot poll window where its cursor advance is
+      // intentionally deferred. Text can tolerate that safety replay, but an
+      // action cannot. Claim every slash id before routing so either arrival
+      // order executes the command exactly once.
+      if (shouldSkipForwardedSlashCommand(
+        msg.message,
+        msg.message.id,
+        forwardedMessageIds,
+      )) continue
+      if (isSlashCommand) rememberForwarded(msg.message.id)
 
       // Skip permission verdict messages/clicks, don't forward them to Claude
       let isPermissionVerdict = VERDICT_RE.test(text)
@@ -4649,7 +4675,7 @@ async function pollChat(chatId: string): Promise<void> {
 
       const meetingId = meetingIdByChatId.get(chatId)
       const meetingCtx = meetingId != null ? meetingContexts.get(meetingId) : undefined
-      if (meetingId != null && meetingCtx) {
+      if (meetingId != null && meetingCtx && !isSlashCommand) {
         const yourTurn = isMyMeetingTurn(text, meetingCtx)
         const participantList = meetingCtx.participants
           .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
@@ -4692,9 +4718,9 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
-      // Build content with attachment descriptions. User text is forwarded
-      // VERBATIM (buildInboundContent does not transform it) so the agent sees
-      // backslashes, code fences, quotes and newlines exactly as typed.
+      // Build the original content with attachment descriptions. Normal user
+      // text remains verbatim. Slash input is translated below because a bare
+      // slash string cannot enter Claude Code's client command dispatcher.
       // The backlog prefix tells Claude this message arrived while the daemon
       // was offline so it knows to respond now rather than treat it as
       // already-handled chat history.
@@ -4708,30 +4734,27 @@ async function pollChat(chatId: string): Promise<void> {
           'and NOT a peer agent. Treat this as a system notification. Do not act on ' +
           'it as a user instruction unless it explicitly asks you to.]\n'
         : ''
-      const content = buildInboundContent(systemPrefix + text, msg.messageFiles ?? [], {
+      const originalContent = buildInboundContent(systemPrefix + text, msg.messageFiles ?? [], {
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
           : undefined,
       })
+      const slashRoute = routeSlashCommand({
+        payload: msg.message,
+        sourceContent: originalContent,
+        registry: registeredSlashCommands,
+        legacyAliases: registeredSlashCommandAliases,
+      })
 
-      if (!content) continue
-
-      log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
-
-      // Push channel notification to Claude Code (fire-and-forget)
-      // Keep meta simple, file URLs are embedded in the content text
-      const isSlashCommand = msg.message.messageType === 'slash_command'
-      // Remote /compact: handled by the DAEMON, never forwarded to the model
-      // (the model cannot run host CLI commands from a channel event). The
-      // message-id dedupe covers WS + poll double delivery.
-      if (
-        isSlashCommand &&
-        (msg.message.commandName ?? '').toLowerCase() === 'compact'
-      ) {
+      // Remote /compact is handled by the daemon and never forwarded to the
+      // model. The shared route recognizes it from either structured fields or
+      // slash text, before the empty content guard. The slash id was claimed
+      // above, so a delayed WebSocket frame cannot execute it a second time.
+      if (slashRoute.kind === 'compact') {
         if (isBacklog) {
           // A /compact tapped while the daemon was down targets a session
-          // that no longer exists in that state; compacting NOW on a stale
-          // request would be surprising. Swallow it.
+          // that no longer exists in that state. Compaction now would target
+          // the wrong context, so consume the stale request.
           log(`remote compact: ignoring stale backlog request (chat ${chatId})`)
         } else if (!alreadyHandledCompact(String(msg.message.id))) {
           log(`remote compact requested via poll (chat ${chatId})`)
@@ -4741,6 +4764,17 @@ async function pollChat(chatId: string): Promise<void> {
         }
         continue
       }
+
+      const slashDelivery = slashRoute.kind === 'directive'
+        ? slashRoute.delivery
+        : null
+      const content = slashDelivery?.content ?? originalContent
+
+      if (!content) continue
+
+      log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
+
+      // Push the normal content or translated command directive to Claude Code.
       // Machine-delivered event enrichment (capability #12): tag inbound
       // dashboard dispatches / watcher pushes / sweeps / transcripts / n8n
       // notifications so the agent can tell them apart from the human typing.
@@ -4767,24 +4801,19 @@ async function pollChat(chatId: string): Promise<void> {
         params: {
           content,
           meta: {
-            chat_id: chatId,
+            chat_id: String(chatId),
             message_id: String(msg.message.id),
             user: isPollSystem ? 'System' : 'User',
-            user_id: pollSenderUserId,
-            assistant_id: ASSISTANT_ID,
-            ts: msg.message.sentDate ?? new Date().toISOString(),
+            user_id: String(pollSenderUserId),
+            assistant_id: String(ASSISTANT_ID),
+            ts: String(msg.message.sentDate ?? new Date().toISOString()),
             ...(isPollSystem ? { system: 'true', sender_type: 'system' } : {}),
             ...(typeof pollSessionHandle === 'string' && pollSessionHandle
-              ? { session_handle: pollSessionHandle }
+              ? { session_handle: String(pollSessionHandle) }
               : {}),
             ...(isBacklog ? { backlog: 'true' } : {}),
-            ...(isSlashCommand
-              ? {
-                  event_type: 'slash_command',
-                  command_name: msg.message.commandName ?? '',
-                  command_args: msg.message.commandArgs ?? '',
-                }
-              : {}),
+            transport: 'poll',
+            ...(slashDelivery ? slashDelivery.meta : {}),
             ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
           },
         },
@@ -4875,8 +4904,8 @@ async function pollAllChats(): Promise<void> {
 // a subsequent poll won't re-emit them. Meeting WS events intentionally do
 // not update `chatLastSeen`; pollChat gets one chance to replay the turn in
 // case the channel renderer drops the specialized meeting notification.
-// For the WS path itself we maintain a small Set of processed message ids
-// to suppress repeated socket events.
+// A bounded Set suppresses repeated socket events. Poll also records slash
+// deliveries so a delayed WS frame cannot execute the command a second time.
 
 import { io as socketIoClient, type Socket as IOClientSocket } from 'socket.io-client'
 
@@ -4885,8 +4914,8 @@ const WS_URL = (() => {
   return base
 })()
 
-const wsForwardedMessageIds = new Set<number>()
-const WS_FORWARD_CACHE_MAX = 500
+const forwardedMessageIds = new Set<number>()
+const FORWARD_CACHE_MAX = 500
 let realtimeSocket: IOClientSocket | null = null
 
 // ── Native voice (voice_rpc mint/consult) ────────────────────────────────────
@@ -5035,12 +5064,12 @@ const exportPack = new ExportPackHandler({
 })
 
 function rememberForwarded(id: number): void {
-  if (wsForwardedMessageIds.has(id)) return
-  wsForwardedMessageIds.add(id)
+  if (forwardedMessageIds.has(id)) return
+  forwardedMessageIds.add(id)
   // Bound the set so a long-running plugin doesn't grow forever.
-  if (wsForwardedMessageIds.size > WS_FORWARD_CACHE_MAX) {
-    const first = wsForwardedMessageIds.values().next().value
-    if (first !== undefined) wsForwardedMessageIds.delete(first)
+  if (forwardedMessageIds.size > FORWARD_CACHE_MAX) {
+    const first = forwardedMessageIds.values().next().value
+    if (first !== undefined) forwardedMessageIds.delete(first)
   }
 }
 
@@ -5178,7 +5207,7 @@ function connectWebsocket(): void {
     try {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
-      if (wsForwardedMessageIds.has(messageId)) return
+      if (forwardedMessageIds.has(messageId)) return
       rememberForwarded(messageId)
 
       // Also bump chatLastSeen so the subsequent poll cycle won't re-emit
@@ -5192,8 +5221,9 @@ function connectWebsocket(): void {
       // recovery where a restart replayed the tail). A cursor-less chat
       // keeps the bump, which is what stops the first-poll heuristic from
       // re-delivering this very message. Worst case of deferring the bump:
-      // the boot poll redelivers this one message with backlog framing, a
-      // duplicate, never a loss. Keep in lockstep with
+      // the boot poll redelivers this one ordinary text message with backlog
+      // framing, a duplicate, never a loss. Slash actions use the forwarded id
+      // guard in pollChat and never execute twice. Keep in lockstep with
       // test/first-poll-gate.test.ts (wsCursorSafe mirror).
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
@@ -5219,19 +5249,20 @@ function connectWebsocket(): void {
       // poll fallback never re-emits and agents get text-only copies of media.
       const text = (payload?.text as string | undefined) ?? ''
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
-      const content = buildInboundContent(text, wsFiles)
-      if (!content) return
-
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
-      const isWsSlashCommand = wsMessageType === 'slash_command'
-      // Remote /compact: daemon-handled, never forwarded to the model (same
-      // interception as the poll path; message-id dedupe covers dual
-      // delivery when the boot poll redelivers this message).
-      if (
-        isWsSlashCommand &&
-        String(payload?.commandName ?? payload?.command_name ?? '')
-          .toLowerCase() === 'compact'
-      ) {
+      const isWsSlashCommand = isSlashCommandPayload(payload ?? {})
+      const originalContent = buildInboundContent(text, wsFiles)
+      const slashRoute = routeSlashCommand({
+        payload: payload ?? {},
+        sourceContent: originalContent,
+        registry: registeredSlashCommands,
+        legacyAliases: registeredSlashCommandAliases,
+      })
+      // Remote /compact is daemon handled and never forwarded to the model.
+      // This check precedes the empty content guard, matching the poll path.
+      // Message id dedupe covers dual delivery when the boot poll redelivers
+      // this message.
+      if (slashRoute.kind === 'compact') {
         if (chatId && !alreadyHandledCompact(String(messageId))) {
           log(`remote compact requested via ws (chat ${chatId})`)
           void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
@@ -5240,6 +5271,12 @@ function connectWebsocket(): void {
         }
         return
       }
+      const slashDelivery = slashRoute.kind === 'directive'
+        ? slashRoute.delivery
+        : null
+      const content = slashDelivery?.content ?? originalContent
+      if (!content) return
+
       // System-message provenance (capability #14). The backend sets
       // senderType='system' when a non-human, non-agent automation (a
       // scheduler / cron / n8n "System" send) authored this inbound, and ALSO
@@ -5262,7 +5299,7 @@ function connectWebsocket(): void {
         params: {
           content,
           meta: {
-            chat_id: chatId,
+            chat_id: String(chatId),
             message_id: String(messageId),
             user: isWsSystem ? 'System' : 'User',
             // Block A: forward the REAL human sender so a shared assistant can
@@ -5285,29 +5322,27 @@ function connectWebsocket(): void {
             ...(payload?.shareOwnerUserId
               ? { share_owner_user_id: String(payload.shareOwnerUserId) }
               : {}),
-            assistant_id: ASSISTANT_ID,
+            assistant_id: String(ASSISTANT_ID),
             ts: new Date().toISOString(),
             transport: 'ws',
             ...(isWsSystem ? { system: 'true', sender_type: 'system' } : {}),
             ...(typeof wsSessionHandle === 'string' && wsSessionHandle
-              ? { session_handle: wsSessionHandle }
+              ? { session_handle: String(wsSessionHandle) }
               : {}),
-            ...(isWsSlashCommand
-              ? {
-                  event_type: 'slash_command',
-                  command_name: String(payload?.commandName ?? payload?.command_name ?? ''),
-                  command_args: String(payload?.commandArgs ?? payload?.command_args ?? ''),
-                }
-              : {}),
+            ...(slashDelivery ? slashDelivery.meta : {}),
             ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
-            ...(payload?.peer_conversation_id !== undefined && {
-              peer_conversation_id: String(payload.peer_conversation_id),
-            }),
-            ...(payload?.peerConversationId !== undefined && {
-              peer_conversation_id: String(payload.peerConversationId),
-            }),
-            ...(payload?.turn_state && { turn_state: payload.turn_state }),
-            ...(payload?.turnState && { turn_state: payload.turnState }),
+            ...(payload?.peer_conversation_id != null
+              ? { peer_conversation_id: String(payload.peer_conversation_id) }
+              : {}),
+            ...(payload?.peerConversationId != null
+              ? { peer_conversation_id: String(payload.peerConversationId) }
+              : {}),
+            ...(payload?.turn_state != null
+              ? { turn_state: String(payload.turn_state) }
+              : {}),
+            ...(payload?.turnState != null
+              ? { turn_state: String(payload.turnState) }
+              : {}),
           },
         },
       })).catch((err) => log(`WS forward error: ${err}`))
@@ -5512,7 +5547,7 @@ function connectWebsocket(): void {
         if (ctx && messageId > ctx.lastSeenMessageId) {
           ctx.lastSeenMessageId = messageId
         }
-        if (wsForwardedMessageIds.has(messageId)) return
+        if (forwardedMessageIds.has(messageId)) return
         rememberForwarded(messageId)
         // Do NOT advance chatLastSeen for meeting WS events. Claude Code's
         // channel renderer can drop meeting notifications even after this
@@ -5807,28 +5842,23 @@ function connectWebsocket(): void {
 async function readMdCommand(
   filePath: string,
   namePrefix = '',
+  pluginRoot?: string,
 ): Promise<SlashCommandEntry | null> {
   try {
-    const raw = await readFile(filePath, 'utf8')
     const base = basename(filePath, '.md')
     // Filter dotfiles AND leading-underscore files. The `_conventions.md` /
     // `_internal.md` convention is used by Claude Code itself (e.g. the
     // vercel plugin) for shared docs that should not appear in the picker.
     if (!base || base.startsWith('.') || base.startsWith('_')) return null
     const command = `/${namePrefix}${base}`
-    let description = ''
-    const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n/)
-    if (fmMatch) {
-      const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m)
-      if (descMatch) description = descMatch[1].trim()
-    }
-    if (!description) {
-      const body = fmMatch ? raw.slice(fmMatch[0].length) : raw
-      const first = body.split('\n').map((l) => l.trim()).find((l) => l.length > 0)
-      description = (first ?? '').slice(0, 200)
-    }
-    return { command, description: description || command, scope: 'all' }
-  } catch {
+    return parseSlashCommandMarkdown({
+      raw: await readFile(filePath, 'utf8'),
+      command,
+      sourcePath: filePath,
+      pluginRoot,
+    })
+  } catch (err) {
+    log(`slash-command discovery: skipped ${filePath}: ${err}`)
     return null
   }
 }
@@ -5836,6 +5866,7 @@ async function readMdCommand(
 async function walkCommandsDir(
   dir: string,
   namePrefix = '',
+  pluginRoot?: string,
 ): Promise<SlashCommandEntry[]> {
   try {
     const { readdir } = await import('node:fs/promises')
@@ -5843,7 +5874,7 @@ async function walkCommandsDir(
     const out: SlashCommandEntry[] = []
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith('.md')) continue
-      const cmd = await readMdCommand(pathJoin(dir, e.name), namePrefix)
+      const cmd = await readMdCommand(pathJoin(dir, e.name), namePrefix, pluginRoot)
       if (cmd) out.push(cmd)
     }
     return out
@@ -5877,8 +5908,9 @@ async function walkPluginCommands(
           const level2 = await readdir(pluginsDir, { withFileTypes: true })
           for (const b of level2) {
             if (!b.isDirectory()) continue
-            const cmdDir = pathJoin(pluginsDir, b.name, 'commands')
-            const cmds = await walkCommandsDir(cmdDir, `${b.name}:`)
+            const pluginRoot = pathJoin(pluginsDir, b.name)
+            const cmdDir = pathJoin(pluginRoot, 'commands')
+            const cmds = await walkCommandsDir(cmdDir, `${b.name}:`, pluginRoot)
             out.push(...cmds)
           }
         } catch {}
@@ -5894,8 +5926,9 @@ async function walkPluginCommands(
               const level3 = await readdir(pluginDir, { withFileTypes: true })
               for (const c of level3) {
                 if (!c.isDirectory()) continue
-                const cmdDir = pathJoin(pluginDir, c.name, 'commands')
-                const cmds = await walkCommandsDir(cmdDir, `${b.name}:`)
+                const pluginRoot = pathJoin(pluginDir, c.name)
+                const cmdDir = pathJoin(pluginRoot, 'commands')
+                const cmds = await walkCommandsDir(cmdDir, `${b.name}:`, pluginRoot)
                 out.push(...cmds)
               }
             } catch {}
@@ -5925,93 +5958,61 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
     remoteCompact: compactTarget !== null,
   })
 
-  // Priority (lower → higher): built-in < marketplace < cache < user < project.
-  const byName = new Map<string, SlashCommandEntry>()
-  for (const c of builtinCatalog) byName.set(c.command, c)
-  for (const c of marketplace) byName.set(c.command, c)
-  for (const c of cache) byName.set(c.command, c)
-  for (const c of user) byName.set(c.command, c)
-  for (const c of project) byName.set(c.command, c)
-
-  // Built-ins first (in their curated order), then plugin/user/project alphabetical.
-  const builtinSet = new Set(builtinCatalog.map((c) => c.command))
-  const builtins = builtinCatalog.filter((c) => byName.has(c.command))
-  const rest = [...byName.values()]
-    .filter((c) => !builtinSet.has(c.command))
-    .sort((a, b) => a.command.localeCompare(b.command))
-  return [...builtins, ...rest]
-}
-
-// Normalize a discovered command name to the backend's wire format. The
-// CommandDto regex is /^[a-z0-9_]{1,32}$/, no leading slash, no `:`,
-// no `-`, no uppercase. The frontend re-derives the user-facing label
-// from this stored name (prepending `/`), so the round-trip is
-// `/help` → store `help` → display `/help`. Plugin-namespaced commands
-// like `/feature-dev:feature-dev` get sanitized to `feature_dev_feature_dev`
-// for storage; until the backend regex permits `:` and `-` the
-// frontend will show that sanitized form. Tracked separately.
-function normalizeCommandName(raw: string): string | null {
-  // Strip leading slash if present.
-  let s = raw.startsWith('/') ? raw.slice(1) : raw
-  s = s.toLowerCase()
-  // Replace any non-conforming character with `_`. Coalesce runs to a
-  // single `_` so `feature-dev:feature-dev` → `feature_dev_feature_dev`,
-  // not `feature_dev__feature_dev`.
-  s = s.replace(/[^a-z0-9_]+/g, '_')
-  // Trim leading/trailing underscores.
-  s = s.replace(/^_+|_+$/g, '')
-  if (!s) return null
-  return s.slice(0, 32)
+  // Priority from lower to higher is builtin, marketplace, cache, user, then
+  // project. The pure merge keeps builtin ordering while retaining the winning
+  // higher priority entry and always reserves compact for the daemon.
+  return mergeSlashCommandCatalog(
+    builtinCatalog,
+    [marketplace, cache, user, project],
+  )
 }
 
 let lastSyncedCommandsHash = ''
-async function syncSlashCommands(): Promise<void> {
-  try {
-    const commands = await discoverSlashCommands()
-    // Sanitize for the backend DTO: command name regex + description
-    // length cap + array size cap. Drop entries that can't be coerced.
-    const seen = new Set<string>()
-    const sanitized: SlashCommandEntry[] = []
-    let dropped = 0
-    for (const c of commands) {
-      const name = normalizeCommandName(c.command)
-      if (!name) {
-        dropped++
-        continue
-      }
-      if (seen.has(name)) {
-        dropped++
-        continue
-      }
-      seen.add(name)
-      const description = (c.description || name).slice(0, 100)
-      sanitized.push({ command: name, description, scope: 'all' })
-      if (sanitized.length >= 50) break // backend ArrayMaxSize(50)
-    }
 
-    const hash = sanitized.map((c) => `${c.command}|${c.description}`).join('\n')
-    if (hash === lastSyncedCommandsHash) {
-      log(`slash-command sync: unchanged (${sanitized.length} entries)`)
-      return
+async function refreshSlashCommandRegistry(): Promise<PreparedSlashCommands> {
+  const commands = await discoverSlashCommands()
+  const prepared = prepareSlashCommands(commands)
+  // Refresh this map even when the public name and description hash is
+  // unchanged. A local Markdown command body may have changed in place.
+  registeredSlashCommands = prepared.registry
+  registeredSlashCommandAliases = prepared.legacyAliases
+  return prepared
+}
+
+const slashCommandSyncRunner = new LatestSerialRunner<PreparedSlashCommands | null>(
+  async (prepared) => {
+    const plan = prepared ?? await refreshSlashCommandRegistry()
+    try {
+      const hash = plan.wireCommands
+        .map((c) => `${c.command}|${c.description}`)
+        .join('\n')
+      if (hash === lastSyncedCommandsHash) {
+        log(`slash-command sync: unchanged (${plan.wireCommands.length} entries)`)
+        return
+      }
+      // Pairing mode uses the pairing scoped contract. Legacy API key mode
+      // uses the user scoped equivalent. Both accept the same SyncCommandsDto.
+      await bgosPut(slashCommandSyncPath(AUTH.mode, ASSISTANT_ID), {
+        commands: plan.wireCommands,
+      })
+      lastSyncedCommandsHash = hash
+      log(
+        `slash-command sync: pushed ${plan.wireCommands.length} commands` +
+          (plan.dropped > 0
+            ? ` (${plan.dropped} dropped, invalid name or dupe)`
+            : ''),
+      )
+    } catch (err) {
+      log(`slash-command sync failed: ${err}`)
     }
-    // NOTE: use the user-scoped PUT (Clerk-or-API-key auth with userId
-    // ownership check), NOT `integrations/assistants/.../commands` which
-    // requires a pairing token. The Claude Code plugin authenticates with
-    // X-API-Key, not a pairing token, and a user-created assistant has
-    // pairingId=null, so the pairing-scoped path would 401 regardless.
-    // Both endpoints write the same assistant_commands table via the
-    // same SyncCommandsDto.
-    await bgosPut(`assistants/${ASSISTANT_ID}/commands`, {
-      commands: sanitized,
-    })
-    lastSyncedCommandsHash = hash
-    log(
-      `slash-command sync: pushed ${sanitized.length} commands` +
-        (dropped > 0 ? ` (${dropped} dropped, invalid name or dupe)` : ''),
-    )
-  } catch (err) {
-    log(`slash-command sync failed: ${err}`)
-  }
+  },
+)
+
+function syncSlashCommands(prepared?: PreparedSlashCommands): Promise<void> {
+  // A null request means discover the newest local catalog when this turn of
+  // the serial runner begins. Concurrent calls coalesce to the newest request
+  // and always receive a trailing run after the active PUT settles.
+  return slashCommandSyncRunner.run(prepared ?? null)
 }
 
 // ── Always-on reconcile ───────────────────────────────────────────────────────
@@ -6119,6 +6120,12 @@ async function main(): Promise<void> {
   // throws (it falls back to the bundled copy on any error).
   await loadServedCapabilities()
 
+  // Step 1.75: build the local slash registry before any boot backlog can be
+  // delivered. Publishing is intentionally background work, so an unavailable
+  // backend cannot block the poll and WebSocket delivery paths.
+  const initialSlashCommands = await refreshSlashCommandRegistry()
+  void syncSlashCommands(initialSlashCommands)
+
   // Step 2: Discover and baseline chats
   await discoverChats()
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
@@ -6217,10 +6224,9 @@ async function main(): Promise<void> {
   setInterval(checkReplyOverdue, 30_000)
   log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
 
-  // Step 6: Push the Claude Code slash-command catalog to BGOS so the
-  // frontend slash picker can autocomplete. Sync once on boot, then refresh
-  // every 5 minutes to catch newly-installed plugins / added .md files.
-  void syncSlashCommands()
+  // Step 6: Refresh and publish every 5 minutes to catch newly installed
+  // plugins and added or edited command files. Initial discovery and publish
+  // were started before the boot poll above.
   setInterval(() => void syncSlashCommands(), 5 * 60_000).unref()
 
   // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or

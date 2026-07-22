@@ -29,8 +29,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
+import {
+  BUILTIN_COMMANDS,
+  prepareSlashCommands,
+  routeSlashCommand,
+} from '../lib/slash-catalog.ts'
+
 const USER_ID = 'user_owner'
 const ASSISTANT_ID = 'agent_1'
+const slashCommands = prepareSlashCommands(BUILTIN_COMMANDS)
 
 // ── Mirror of server.ts WS inbound_message meta construction (the FIXED form) ──
 function buildWsInboundMeta(payload: any): Record<string, unknown> {
@@ -39,6 +46,15 @@ function buildWsInboundMeta(payload: any): Record<string, unknown> {
   const isWsSystem =
     String(payload?.senderType ?? payload?.sender_type ?? '') === 'system'
   const wsSessionHandle = payload?.sessionHandle ?? payload?.session_handle
+  const slashRoute = routeSlashCommand({
+    payload: payload ?? {},
+    sourceContent: String(payload?.text ?? ''),
+    registry: slashCommands.registry,
+    legacyAliases: slashCommands.legacyAliases,
+  })
+  const slashDelivery = slashRoute.kind === 'directive'
+    ? slashRoute.delivery
+    : null
 
   return {
     chat_id: chatId,
@@ -59,7 +75,20 @@ function buildWsInboundMeta(payload: any): Record<string, unknown> {
     ts: '2026-01-01T00:00:00.000Z',
     transport: 'ws',
     ...(typeof wsSessionHandle === 'string' && wsSessionHandle
-      ? { session_handle: wsSessionHandle }
+      ? { session_handle: String(wsSessionHandle) }
+      : {}),
+    ...(slashDelivery ? slashDelivery.meta : {}),
+    ...(payload?.peer_conversation_id != null
+      ? { peer_conversation_id: String(payload.peer_conversation_id) }
+      : {}),
+    ...(payload?.peerConversationId != null
+      ? { peer_conversation_id: String(payload.peerConversationId) }
+      : {}),
+    ...(payload?.turn_state != null
+      ? { turn_state: String(payload.turn_state) }
+      : {}),
+    ...(payload?.turnState != null
+      ? { turn_state: String(payload.turnState) }
       : {}),
   }
 }
@@ -119,4 +148,25 @@ test('WS inbound meta never carries null or undefined values', () => {
       assert.equal(typeof v, 'string')
     }
   }
+})
+
+test('WS native slash card keeps every meta value string and omits absent optionals', () => {
+  const meta = buildWsInboundMeta({
+    chatId: 1048,
+    messageId: 44,
+    text: '/cost project alpha',
+    messageType: 'slash_command',
+    commandName: 'cost',
+    commandArgs: 'project alpha',
+    peerConversationId: null,
+    turnState: 7,
+  })
+
+  assertAllStrings(meta)
+  assert.equal(meta.event_type, 'slash_command')
+  assert.equal(meta.command_name, 'cost')
+  assert.equal(meta.command_args, 'project alpha')
+  assert.equal(meta.slash_dispatch, 'actionable_directive')
+  assert.equal(meta.turn_state, '7')
+  assert.equal('peer_conversation_id' in meta, false)
 })
