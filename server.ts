@@ -122,6 +122,8 @@ import {
 } from './lib/missions.js'
 import {
   resolveAuth,
+  resolveCredentialsPath,
+  formatAuthResolution,
   authHeaders,
   wsAuthOptions,
   missingCredsMessage,
@@ -161,12 +163,16 @@ import { join as joinPath } from 'node:path'
 // ── Configuration ────────────────────────────────────────────────────────────
 
 // Auth resolves to one of two modes (see lib/agent-credentials.ts):
-//   pairing  -> X-BGOS-Pairing, from ~/.bgos-agent/credentials.json (bgos-pair)
-//              or BGOS_PAIRING_TOKEN env.
+//   pairing  -> X-BGOS-Pairing, from BGOS_CREDENTIALS_PATH, the default
+//              ~/.bgos-agent/credentials.json, or BGOS_PAIRING_TOKEN env.
 //   apikey   -> X-API-Key, from BGOS_API_KEY env (LEGACY, kept for Echo and
 //              existing installs through the deprecation window).
+// A pairing file cannot override a different explicit BGOS_ASSISTANT_ID.
 // Every outbound call uses authHeaders(AUTH); the WS uses wsAuthOptions(AUTH).
-const CREDENTIALS_PATH = joinPath(homedir(), '.bgos-agent', 'credentials.json')
+const CREDENTIALS_PATH = resolveCredentialsPath({
+  env: process.env,
+  defaultPath: joinPath(homedir(), '.bgos-agent', 'credentials.json'),
+})
 const AUTH: ResolvedAuth = resolveAuth({
   env: process.env,
   creds: loadCredentialsFile(CREDENTIALS_PATH),
@@ -195,6 +201,7 @@ const VOICE_VOICE = process.env.BGOS_VOICE_VOICE || 'marin'
 const VOICE_PERSONA = process.env.BGOS_VOICE_PERSONA || ''
 
 if (!AUTH.complete) {
+  process.stderr.write(`[bgos] ${formatAuthResolution(AUTH, CREDENTIALS_PATH)}\n`)
   process.stderr.write(`[bgos] ${missingCredsMessage(AUTH)}\n`)
   process.exit(1)
 }
@@ -6096,6 +6103,7 @@ async function main(): Promise<void> {
   })
 
   log('Starting BGOS channel plugin...')
+  log(formatAuthResolution(AUTH, CREDENTIALS_PATH))
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)

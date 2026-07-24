@@ -3,7 +3,9 @@
  *
  * Two modes, resolved in a fixed precedence:
  *   1. pairing (env)   BGOS_PAIRING_TOKEN set  -> X-BGOS-Pairing header
- *   2. pairing (file)  ~/.bgos-agent/credentials.json (written by bgos-pair)
+ *   2. pairing (file)  BGOS_CREDENTIALS_PATH or ~/.bgos-agent/credentials.json,
+ *                      if no assistant is configured or its assistant matches
+ *                      the explicit BGOS_ASSISTANT_ID
  *   3. apikey  (env)   BGOS_API_KEY set        -> X-API-Key header (LEGACY)
  *
  * The legacy api-key path is byte identical to the original behavior, so
@@ -47,6 +49,11 @@ function str(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
+/** Select an agent-specific credentials file when the environment provides one. */
+export function resolveCredentialsPath(opts: { env?: Env; defaultPath: string }): string {
+  return str(opts.env?.BGOS_CREDENTIALS_PATH) || opts.defaultPath
+}
+
 /**
  * Resolve the effective auth from the process env and an optional parsed
  * credentials file. File IO is done by loadCredentialsFile so this stays pure.
@@ -54,6 +61,11 @@ function str(value: unknown): string {
 export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null }): ResolvedAuth {
   const env: Env = opts.env ?? {}
   const creds = opts.creds ?? null
+  const envAssistantId = str(env.BGOS_ASSISTANT_ID)
+  const hasConfiguredAssistantId =
+    Boolean(envAssistantId) && envAssistantId !== '${user_config.assistant_id}'
+  const pairingFileMatchesAssistant =
+    !hasConfiguredAssistantId || str(creds?.assistantId) === envAssistantId
 
   let base: Omit<ResolvedAuth, 'complete' | 'missing'>
 
@@ -67,12 +79,12 @@ export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null })
       pairingToken: str(env.BGOS_PAIRING_TOKEN),
       apiKey: '',
     }
-  } else if (creds && creds.pairingToken) {
+  } else if (creds && creds.pairingToken && pairingFileMatchesAssistant) {
     base = {
       mode: 'pairing',
       source: 'pairing-file',
-      // The paired values are authoritative; env is only a fallback (so an
-      // empty or unsubstituted userConfig var can never override the file).
+      // Once the identity boundary matches, paired values stay authoritative.
+      // Env remains a fallback for empty or unsubstituted userConfig values.
       backendUrl: str(creds.backendUrl || env.BGOS_BACKEND_URL),
       userId: str(creds.userId || env.BGOS_USER_ID),
       assistantId: str((creds.assistantId ?? '') || env.BGOS_ASSISTANT_ID),
@@ -109,6 +121,22 @@ export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null })
   if (base.mode === 'apikey' && !base.apiKey) missing.push('apiKey')
 
   return { ...base, complete: missing.length === 0, missing }
+}
+
+/** A secret-free description of the selected credential source and identity. */
+export function formatAuthResolution(
+  auth: ResolvedAuth,
+  credentialsPath: string,
+): string {
+  const source =
+    auth.source === 'pairing-file'
+      ? `pairing-file at ${credentialsPath}`
+      : auth.source === 'pairing-env'
+        ? 'env-pairing'
+        : auth.source === 'apikey-env'
+          ? 'env-apikey'
+          : 'none'
+  return `Credential source: ${source}; assistantId: ${auth.assistantId || '<missing>'}`
 }
 
 /** The HTTP auth header for the resolved mode. */
