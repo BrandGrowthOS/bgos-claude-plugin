@@ -253,6 +253,66 @@ test('mint without voiceConfig keeps the exact pre-feature request shape (env fa
   assert.equal('speed' in payload, false)
 })
 
+test('normalizeVoiceConfig keeps an allowlisted model', () => {
+  assert.equal(
+    normalizeVoiceConfig({ model: 'gpt-realtime-2.1' }).model,
+    'gpt-realtime-2.1',
+  )
+  assert.equal(
+    normalizeVoiceConfig({ model: 'gpt-realtime-2.1-mini' }).model,
+    'gpt-realtime-2.1-mini',
+  )
+  assert.equal(
+    normalizeVoiceConfig({ model: '  GPT-Realtime-2.1  ' }).model,
+    'gpt-realtime-2.1',
+  )
+})
+
+test('normalizeVoiceConfig drops a model outside the allowlist', () => {
+  // The app stores the owner's pick permissively so a newer model id survives
+  // a save; the closed allowlist is enforced here, at the only place that
+  // spends money.
+  assert.ok(!('model' in normalizeVoiceConfig({ model: 'gpt-realtime-4' })))
+  assert.ok(!('model' in normalizeVoiceConfig({ model: 'gpt-4o' })))
+  assert.ok(!('model' in normalizeVoiceConfig({ model: 7 })))
+  assert.ok(!('model' in normalizeVoiceConfig({ voice: 'marin' })))
+})
+
+test('mint applies an allowlisted voiceConfig.model over the host default', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps, rec } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(
+    frame({
+      payload: {
+        recentContext: '',
+        openaiApiKey: 'sk-caller-own-key',
+        voiceConfig: { model: 'gpt-realtime-2.1-mini' },
+      },
+    }),
+  )
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.equal(sent.session.model, 'gpt-realtime-2.1-mini')
+  // Echoed so the app knows which model actually ran the call.
+  assert.equal(rec.results[0]!.body.payload!.model, 'gpt-realtime-2.1-mini')
+})
+
+test('mint keeps the host default when the pinned model is unknown here', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps, rec } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(
+    frame({
+      payload: {
+        recentContext: '',
+        openaiApiKey: 'sk-caller-own-key',
+        voiceConfig: { model: 'gpt-realtime-9-unreleased' },
+      },
+    }),
+  )
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.equal(sent.session.model, 'gpt-realtime-2.1')
+  assert.equal(rec.results[0]!.body.ok, true)
+})
+
 test('mint with junk voiceConfig degrades to env config, never fails the call', async () => {
   const { fetchImpl, calls } = okMintFetch()
   const { deps, rec } = makeDeps({ fetchImpl })

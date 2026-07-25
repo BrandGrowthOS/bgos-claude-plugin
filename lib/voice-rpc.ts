@@ -137,6 +137,8 @@ export interface MintVoiceConfig {
   voice?: string
   speed?: number
   instructions?: string
+  /** The agent owner's realtime model pin, only when this daemon knows it. */
+  model?: string
   /** Confirm gate (Iris G5): the backend sets this when the assistant's
    *  owner enabled ask-before-dispatch; the mint instructions then carry
    *  the propose-first contract. */
@@ -147,6 +149,17 @@ export const VOICE_SPEED_MIN = 0.25
 export const VOICE_SPEED_MAX = 1.5
 export const VOICE_INSTRUCTIONS_MAX = 2000
 const VOICE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
+
+/** Realtime models this daemon is willing to mint. The APP stores the owner's
+ *  pick permissively (a model id newer than the deployed backend must survive
+ *  a save), so the closed allowlist lives HERE, at the only place that spends
+ *  money: an unrecognised id keeps the host default rather than billing
+ *  against a model nobody quoted a price for. Adding one is a one-line change
+ *  plus a price check. */
+export const REALTIME_MODELS = [
+  'gpt-realtime-2.1',
+  'gpt-realtime-2.1-mini',
+] as const
 
 /** ONE shared total-instructions budget (Iris G4): persona + recent context +
  *  the owner memory head must fit in ~14k chars. When over, memory is trimmed
@@ -249,6 +262,12 @@ export function normalizeVoiceConfig(raw: unknown): MintVoiceConfig {
   }
   if (typeof r.instructions === 'string' && r.instructions.trim()) {
     out.instructions = r.instructions.trim().slice(0, VOICE_INSTRUCTIONS_MAX)
+  }
+  if (typeof r.model === 'string') {
+    const model = r.model.trim().toLowerCase()
+    if ((REALTIME_MODELS as readonly string[]).includes(model)) {
+      out.model = model
+    }
   }
   // Coerce defensively (never trust the wire): boolean true or string 'true'.
   if (r.requireDispatchConfirm === true || r.requireDispatchConfirm === 'true') {
@@ -718,6 +737,10 @@ export class VoiceRpcHandler {
     const voiceConfig = normalizeVoiceConfig(frame.payload?.voiceConfig)
     const voice = voiceConfig.voice ?? config.voice
     const persona = voiceConfig.instructions ?? config.persona
+    // The owner's model pin wins over BGOS_VOICE_MODEL. normalizeVoiceConfig
+    // already dropped anything off REALTIME_MODELS, so an unknown pin lands on
+    // the host default instead of failing the call.
+    const model = voiceConfig.model ?? config.model
     const instructions = buildMintInstructions({
       identity,
       persona,
@@ -731,7 +754,7 @@ export class VoiceRpcHandler {
       expires_after: { anchor: 'created_at', seconds: 600 },
       session: {
         type: 'realtime',
-        model: config.model,
+        model,
         instructions,
         tools: [buildConsultToolDefinition()],
         audio: {
@@ -803,7 +826,8 @@ export class VoiceRpcHandler {
       transport: 'webrtc',
       clientSecret,
       offerUrl: OFFER_URL,
-      model: config.model,
+      // Echo what was APPLIED, so the app knows which model ran the call.
+      model,
       // Echo what was APPLIED (app settings win over env) — the app's
       // in-call gear shows this as the active voice.
       voice,
