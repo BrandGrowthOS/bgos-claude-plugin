@@ -24,6 +24,42 @@ export function readOwnVersion(rootDir: string): string | null {
   }
 }
 
+/**
+ * The environment this daemon is running in, as IT sees it.
+ *
+ * `cwd` is the load-bearing one. Claude Code reads an agent's CLAUDE.md and its
+ * memory from its working directory, so an agent pointed at the wrong folder
+ * keeps answering while silently missing its persona and its history. Six
+ * agents ran that way for weeks and nothing in the app could show it, because
+ * the daemon never reported where it actually was. The backend has accepted
+ * this field all along (HeartbeatEnvDto.cwd) and deliberately refuses to infer
+ * a default, so until the daemon says it, the owner sees "not reported" rather
+ * than a comforting guess.
+ *
+ * Pure and total: it reads process state and cannot throw, so the telemetry
+ * rule above still holds.
+ */
+export function heartbeatEnv(proc: {
+  cwd: () => string;
+  platform: string;
+}): { cwd?: string; platform?: string } {
+  const env: { cwd?: string; platform?: string } = {}
+  try {
+    const cwd = proc.cwd()
+    // The backend caps cwd at 512 chars. Send nothing rather than a truncated
+    // path, because half a path shown as fact is worse than an honest blank.
+    if (typeof cwd === 'string' && cwd.length > 0 && cwd.length <= 512) {
+      env.cwd = cwd
+    }
+  } catch {
+    // A process without a readable cwd still reports its platform.
+  }
+  if (typeof proc.platform === 'string' && proc.platform.length > 0) {
+    env.platform = proc.platform
+  }
+  return env
+}
+
 /** Pure decision: should this process send version heartbeats at all? */
 export function shouldSendVersionHeartbeat(authMode: string, version: string | null): boolean {
   return authMode === 'pairing' && version !== null
@@ -45,7 +81,10 @@ export function startVersionHeartbeat(deps: {
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
   const send = async () => {
     try {
-      await deps.post('integrations/heartbeat', { daemonVersion: version })
+      await deps.post('integrations/heartbeat', {
+        daemonVersion: version,
+        env: heartbeatEnv(process),
+      })
     } catch {
       // Telemetry only: never let a heartbeat failure surface.
     }
