@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  heartbeatEnv,
   readOwnVersion,
   shouldSendVersionHeartbeat,
   startVersionHeartbeat,
@@ -54,9 +55,13 @@ describe('startVersionHeartbeat', () => {
     })
     expect(timer).not.toBeNull()
     await Bun.sleep(0)
-    expect(calls).toEqual([
-      { path: 'integrations/heartbeat', body: { daemonVersion: '0.22.0' } },
-    ])
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.path).toBe('integrations/heartbeat')
+    expect(calls[0]!.body.daemonVersion).toBe('0.22.0')
+    // The body now also carries the daemon's own environment so the owner can
+    // see WHERE the agent is running. Asserted by shape, not by deep equality,
+    // so adding a future env field does not break this contract test.
+    expect(calls[0]!.body.env).toBeDefined()
     expect(VERSION_HEARTBEAT_INTERVAL_MS).toBe(6 * 60 * 60 * 1000)
     clearInterval(timer!)
   })
@@ -81,5 +86,61 @@ describe('startVersionHeartbeat', () => {
     })
     await Bun.sleep(0)
     clearInterval(timer!)
+  })
+})
+
+describe('heartbeatEnv', () => {
+  test('reports the working directory the daemon is actually in', () => {
+    const env = heartbeatEnv({ cwd: () => '/Users/kc/agents/athena', platform: 'darwin' })
+    expect(env.cwd).toBe('/Users/kc/agents/athena')
+    expect(env.platform).toBe('darwin')
+  })
+
+  test('omits cwd rather than sending a truncated path', () => {
+    // The backend caps cwd at 512. Half a path shown as fact is worse than an
+    // honest blank, so an over-long path is dropped, not cut.
+    const long = '/' + 'a'.repeat(512)
+    const env = heartbeatEnv({ cwd: () => long, platform: 'linux' })
+    expect(env.cwd).toBeUndefined()
+    expect(env.platform).toBe('linux')
+  })
+
+  test('still reports platform when cwd cannot be read', () => {
+    const env = heartbeatEnv({
+      cwd: () => {
+        throw new Error('no cwd')
+      },
+      platform: 'linux',
+    })
+    expect(env.cwd).toBeUndefined()
+    expect(env.platform).toBe('linux')
+  })
+
+  test('never throws, whatever the process looks like', () => {
+    expect(() =>
+      heartbeatEnv({
+        cwd: () => {
+          throw new Error('boom')
+        },
+        platform: '',
+      }),
+    ).not.toThrow()
+  })
+
+  test('sends cwd in the heartbeat body', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: import.meta.dir + '/..',
+      post: async (_p, body) => {
+        bodies.push(body)
+        return null
+      },
+      log: () => {},
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(bodies.length).toBeGreaterThan(0)
+    const env = bodies[0]!.env as { cwd?: string }
+    expect(typeof env.cwd).toBe('string')
   })
 })
