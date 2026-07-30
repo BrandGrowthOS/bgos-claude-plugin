@@ -42,11 +42,15 @@ const markerLine = (messageId: number): string =>
     },
   })
 
+// Model pinned to a 200k family: these tests assert WHICH transcript the
+// binder reads, so the percentages below are just a legible way to tell the
+// fixtures apart. A 1M-context model id here would make every expected value
+// a function of the window table instead.
 const assistantLine = (usedTokens: number): string =>
   JSON.stringify({
     type: 'assistant',
     message: {
-      model: 'claude-fable-5',
+      model: 'claude-haiku-4-5',
       id: 'msg_fixture',
       role: 'assistant',
       usage: {

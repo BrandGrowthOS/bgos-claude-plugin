@@ -249,10 +249,58 @@ export class UsageTracker {
 // running SUM says nothing about window fill). Approximate by nature: it lags
 // one turn and resets after host compaction.
 
-/** Context-window size for a Claude Code model id: 1M when the id carries
- *  the '[1m]' long-context marker, else the standard 200k. */
+/**
+ * Model families whose context window is 1M tokens. Matched as a PREFIX of the
+ * transcript's model id, so dated and suffixed variants of the same family
+ * resolve correctly.
+ *
+ * This table exists because the '[1m]' marker is not a usable signal: none of
+ * the model ids Claude Code actually writes into a transcript carries it.
+ * Measured on the live fleet 2026-07-30 - every running session logged a bare
+ * id ('claude-opus-5', 'claude-opus-4-8', 'claude-fable-5'), all of which are
+ * 1M-context models, and all of which the marker-only rule scored against a
+ * 200k denominator. That inflated every reading below the overflow back-stop
+ * by 5x (assistant 929: 114,485 tokens used reported as 57 percent when the
+ * true fill was 11.4), and the gauge fires at 80, so the "context nearly full"
+ * prompt reached the user at roughly a sixth of the real window.
+ *
+ * Keep this list conservative: an id that is NOT listed falls through to the
+ * 200k default plus the overflow inference below, which is the previous
+ * behaviour. Widening a genuinely-200k model would be the worse error - the
+ * gauge would then never warn at all.
+ *
+ * REVISIT ON EVERY MODEL LAUNCH. Because these are matched as prefixes, a
+ * future NARROWER-context variant published under a listed family prefix
+ * (say a 200k 'claude-opus-5-mini') would be silently widened to 1M, which
+ * is the failure direction that costs the user a warning. Prefix matching is
+ * still right for the id shapes that actually occur - dated suffixes
+ * ('claude-haiku-4-5-20251001'), '-fast', and '[1m]' variants all resolve
+ * correctly - but the tradeoff is deliberate, not incidental.
+ */
+const MILLION_TOKEN_MODEL_PREFIXES = [
+  'claude-opus-5',
+  'claude-opus-4-6',
+  'claude-opus-4-7',
+  'claude-opus-4-8',
+  'claude-sonnet-5',
+  'claude-sonnet-4-6',
+  'claude-fable-5',
+  'claude-mythos-5',
+  // Predecessor of claude-mythos-5, same 1M window.
+  'claude-mythos-preview',
+] as const
+
+/** Context-window size for a Claude Code model id: 1M when the id carries the
+ *  '[1m]' long-context marker or names a known 1M-context family, else the
+ *  standard 200k. */
 export function windowForModel(model: string): number {
-  return model.includes('[1m]') ? 1_000_000 : 200_000
+  const id = model.toLowerCase()
+  // Normalised before the marker check so a '[1M]' variant is not missed.
+  if (id.includes('[1m]')) return 1_000_000
+  for (const prefix of MILLION_TOKEN_MODEL_PREFIXES) {
+    if (id.startsWith(prefix)) return 1_000_000
+  }
+  return 200_000
 }
 
 /** Beyond any plausible overflow of the standard 200k window. A single API

@@ -27,13 +27,16 @@ const boundaryLine = (ts: string): string =>
     uuid: 'aaf7cfe5-e526-45fd-a7db-1f867009e3fa',
   })
 
+// Model pinned to a 200k family: these tests assert that the after-pct comes
+// from the first post-boundary turn, so the denominator is incidental and is
+// held fixed here rather than tracking the window table.
 const assistantLine = (usedTokens: number, id: string): string =>
   JSON.stringify({
     parentUuid: 'd947bb1e-c736-4152-8ff8-a3362f932166',
     isSidechain: false,
     type: 'assistant',
     message: {
-      model: 'claude-fable-5',
+      model: 'claude-haiku-4-5',
       id,
       type: 'message',
       role: 'assistant',
