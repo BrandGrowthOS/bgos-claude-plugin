@@ -140,9 +140,9 @@ import {
   planPollCycle,
   selectFirstPollBacklogIds,
   sentDateToMs,
-  HEALTHY_MULTIPLIER,
-  WS_DOWN_MULTIPLIER,
+  globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
+  selectClickTransitions,
   FIRST_RUN_RECENT_WINDOW_MS,
 } from './lib/poll-core.js'
 import {
@@ -4550,23 +4550,26 @@ async function pollChat(chatId: string): Promise<void> {
     // flooded Claude Code's context on every restart and could cause the
     // agent to silently stop responding).
     const prevUnanswered = chatUnansweredButtons.get(chatId) ?? new Set<number>()
-    const nextUnanswered = new Set<number>()
     const isFirstPoll = lastSeen === 0 && !chatUnansweredButtons.has(chatId)
+    // The transition decision (which taps are announced, what the unanswered
+    // set becomes) is the pure `selectClickTransitions` in lib/poll-core.ts:
+    // it is the single-announce contract and is unit-tested there. This loop
+    // only renders the announcements it returns.
+    const { announce, nextUnanswered } = selectClickTransitions({
+      rows: data.messages.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        messageType: m.message.messageType,
+        hasOptions: (m.messageOptions ?? []).length > 0,
+        answered: !!m.message.answeredAt,
+      })),
+      prevUnanswered,
+      isFirstPoll,
+    })
+    const announced = new Set(announce)
     for (const m of data.messages) {
       const mm = m.message
-      if (mm.sender !== 'assistant') continue
-      if (mm.messageType === 'ask_user_input') continue
-      const options = m.messageOptions ?? []
-      if (options.length === 0) continue
-
-      if (!mm.answeredAt) {
-        nextUnanswered.add(mm.id)
-        continue
-      }
-      // Answered. Only emit when we previously saw this exact message id
-      // in the unanswered set, i.e. a real live transition.
-      if (isFirstPoll) continue
-      if (!prevUnanswered.has(mm.id)) continue
+      if (!announced.has(mm.id)) continue
 
       const payload = mm.answerPayload ?? {}
       const callbackData = payload.callbackData ?? payload.callback_data ?? ''
@@ -5101,8 +5104,11 @@ function connectWebsocket(): void {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
     // Catch-up after a WS reconnect: server-side WS pushes that fired
     // while we were disconnected don't replay, so trigger an immediate
-    // poll cycle to pull in anything we missed. Without this we'd have
-    // to wait up to 60s (the WS-healthy poll interval) before noticing.
+    // poll cycle to pull in anything we missed. Without this we'd have to
+    // wait up to HEALTHY_FULL_SWEEP_INTERVAL_MS (5 min) before noticing.
+    // This is what lets the healthy sweep be cheap: reconnect recovery does
+    // NOT ride the sweep cadence, so lengthening the sweep never lengthens
+    // post-outage catch-up. Pinned by test/poll-core.test.ts.
     pollAllChats().catch((err) => {
       log(`Post-reconnect catch-up poll failed: ${err}`)
     })
@@ -6176,18 +6182,21 @@ async function main(): Promise<void> {
   // FULL cycle (chat discovery + every monitored chat), a FAST cycle (ONLY
   // the chats that need 2s reactivity: open-meeting chats and chats with a
   // pending permission awaiting a user click), or nothing.
-  //  - WS healthy: full cycle every base x30 (60s), the heartbeat safety net.
-  //  - WS down: poll IS the delivery path, full cycle every base x5 (10s).
-  //    NOT 2s: fast-sweeping the whole 600+ chat list at 2s was the polling
-  //    storm this replaces, and a sequential sweep that size cannot finish
-  //    in 2s anyway. 10s bounds worst-case delivery latency during a WS
-  //    outage at a fifth of the old request volume; see lib/poll-core.ts.
+  //  - WS healthy: full cycle every HEALTHY_FULL_SWEEP_INTERVAL_MS (5 min,
+  //    raised from 60s in the 2026-07-26 egress audit). Delivery rides the WS;
+  //    this sweep is only the recovery guarantee, and a reconnect does not
+  //    wait for it (the `connect` handler fires an immediate catch-up poll).
+  //  - WS down: poll IS the delivery path, full cycle every
+  //    WS_DOWN_FULL_SWEEP_INTERVAL_MS (10s). NOT 2s: fast-sweeping the whole
+  //    600+ chat list at 2s was the polling storm this replaces, and a
+  //    sequential sweep that size cannot finish in 2s anyway. 10s bounds
+  //    worst-case delivery latency during a WS outage; see lib/poll-core.ts.
   //  - A meeting or pending permission fast-polls THAT chat at 2s, never the
   //    whole list.
   log(
     `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
-      `WS-healthy full cycle=${POLL_INTERVAL_MS * HEALTHY_MULTIPLIER}ms, ` +
-      `WS-down full cycle=${POLL_INTERVAL_MS * WS_DOWN_MULTIPLIER}ms, ` +
+      `WS-healthy full cycle=${globalIntervalMs(POLL_INTERVAL_MS, true)}ms, ` +
+      `WS-down full cycle=${globalIntervalMs(POLL_INTERVAL_MS, false)}ms, ` +
       `fast mode scoped to meeting/permission chats`,
   )
   let lastFullCycleAt = 0

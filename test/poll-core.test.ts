@@ -39,9 +39,10 @@ import {
   fastScopeChatIds,
   planPollCycle,
   globalIntervalMs,
-  HEALTHY_MULTIPLIER,
-  WS_DOWN_MULTIPLIER,
+  HEALTHY_FULL_SWEEP_INTERVAL_MS,
+  WS_DOWN_FULL_SWEEP_INTERVAL_MS,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
+  selectClickTransitions,
 } from '../lib/poll-core.ts'
 
 // ── P1c: NOT_MODIFIED sentinel ───────────────────────────────────────────────
@@ -425,7 +426,7 @@ test('fast scope is empty when nothing needs 2s reactivity', () => {
   )
 })
 
-test('WS healthy + nothing fast: the cycle idles between 60s full sweeps', () => {
+test('WS healthy + nothing fast: the cycle idles between full sweeps', () => {
   const base = 2000
   const plan = planPollCycle({
     now: 10_000,
@@ -437,18 +438,49 @@ test('WS healthy + nothing fast: the cycle idles between 60s full sweeps', () =>
   assert.deepEqual(plan, { kind: 'idle' })
 })
 
-test('a full sweep runs when the global interval elapses (60s WS-healthy)', () => {
+test('the WS-healthy full sweep is 5 minutes (egress audit; was 60s)', () => {
+  // The sweep is the RECOVERY guarantee, not the delivery path, so it is
+  // priced in wall-clock time. At 60s it was the single largest traffic
+  // source on the platform. Lowering this number again costs ~5x the
+  // requests; deleting it removes the only backstop for a silent room drop.
   const base = 2000
-  assert.equal(globalIntervalMs(base, true), base * HEALTHY_MULTIPLIER)
-  assert.equal(base * HEALTHY_MULTIPLIER, 60_000, 'WS-healthy cadence stays 60s')
-  const plan = planPollCycle({
-    now: 61_000,
-    lastFullCycleAt: 0o0 + 1_000,
-    wsHealthy: true,
-    baseIntervalMs: base,
-    fastChatIds: [],
-  })
-  assert.deepEqual(plan, { kind: 'full' })
+  assert.equal(HEALTHY_FULL_SWEEP_INTERVAL_MS, 5 * 60_000)
+  assert.equal(globalIntervalMs(base, true), 5 * 60_000)
+
+  // 60s after the last sweep: NOT due any more (it was, before this change).
+  assert.deepEqual(
+    planPollCycle({
+      now: 61_000,
+      lastFullCycleAt: 1_000,
+      wsHealthy: true,
+      baseIntervalMs: base,
+      fastChatIds: [],
+    }),
+    { kind: 'idle' },
+  )
+
+  // 5 min after the last sweep: due.
+  assert.deepEqual(
+    planPollCycle({
+      now: 1_000 + 5 * 60_000,
+      lastFullCycleAt: 1_000,
+      wsHealthy: true,
+      baseIntervalMs: base,
+      fastChatIds: [],
+    }),
+    { kind: 'full' },
+  )
+})
+
+test('the sweep cadence is absolute, not a multiple of the base tick', () => {
+  // It used to be `base * multiplier`, so an operator who tuned
+  // BGOS_POLL_INTERVAL_MS silently retuned the recovery guarantee with it.
+  assert.equal(globalIntervalMs(500, true), 5 * 60_000)
+  assert.equal(globalIntervalMs(2000, true), 5 * 60_000)
+  assert.equal(globalIntervalMs(5000, false), WS_DOWN_FULL_SWEEP_INTERVAL_MS)
+  // A base tick coarser than the target cannot make a sweep due more often
+  // than the scheduler ticks.
+  assert.equal(globalIntervalMs(30_000, false), 30_000)
 })
 
 test('an open meeting fast-polls THAT chat, not the whole list', () => {
@@ -479,7 +511,7 @@ test('WS down: full sweeps at 10s (base x5), NEVER the whole list at 2s', () => 
   // base x5 = 10s bounds worst-case delivery latency during a WS outage at
   // one fifth of the old request volume; scoped fast chats below still get 2s.
   const base = 2000
-  assert.equal(WS_DOWN_MULTIPLIER, 5)
+  assert.equal(WS_DOWN_FULL_SWEEP_INTERVAL_MS, 10_000)
   assert.equal(globalIntervalMs(base, false), 10_000)
 
   // 4s after the last sweep: NOT due yet (would have been due under the old
@@ -525,6 +557,96 @@ test('boot state (lastFullCycleAt=0) always runs a full sweep first', () => {
   assert.deepEqual(plan, { kind: 'full' })
 })
 
+// ── Single-announce contract: a button tap reaches the agent exactly once ────
+
+const clickRow = (
+  over: Partial<Parameters<typeof selectClickTransitions>[0]['rows'][number]> = {},
+) => ({
+  id: 1,
+  sender: 'assistant',
+  messageType: 'text',
+  hasOptions: true,
+  answered: false,
+  ...over,
+})
+
+test('a tap is announced on the null -> answered transition', () => {
+  const prev = new Set([1])
+  const r = selectClickTransitions({
+    rows: [clickRow({ id: 1, answered: true })],
+    prevUnanswered: prev,
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [1])
+  assert.deepEqual([...r.nextUnanswered], [])
+})
+
+test('polling the same answered message again NEVER re-announces it', () => {
+  // The duplicate-click guard. Announcing drops the id from the unanswered
+  // set, so every later poll of that row finds no prior entry and is silent.
+  // Simulated across four consecutive polls of one chat.
+  let unanswered = new Set<number>()
+  const announced: number[] = []
+  const poll = (answered: boolean, isFirstPoll = false) => {
+    const r = selectClickTransitions({
+      rows: [clickRow({ id: 9, answered })],
+      prevUnanswered: unanswered,
+      isFirstPoll,
+    })
+    announced.push(...r.announce)
+    unanswered = r.nextUnanswered
+  }
+  poll(false, true) // first poll: baseline only
+  poll(false) // still unanswered
+  poll(true) // the tap
+  poll(true) // same row, polled again
+  poll(true) // and again
+  assert.deepEqual(announced, [9], 'exactly one announcement for one tap')
+})
+
+test('a first poll baselines but never replays a historic click', () => {
+  const r = selectClickTransitions({
+    rows: [clickRow({ id: 3, answered: true }), clickRow({ id: 4, answered: false })],
+    prevUnanswered: new Set(),
+    isFirstPoll: true,
+  })
+  assert.deepEqual(r.announce, [], 'no restart replay')
+  assert.deepEqual([...r.nextUnanswered], [4])
+})
+
+test('an answered row we never saw unanswered is not announced', () => {
+  // Guards the restart case where the cursor file survived but the in-memory
+  // set did not: the tap already happened, do not re-tell the agent.
+  const r = selectClickTransitions({
+    rows: [clickRow({ id: 5, answered: true })],
+    prevUnanswered: new Set(),
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [])
+})
+
+test('ask_user_input rows are excluded (that tool owns its own polling)', () => {
+  const r = selectClickTransitions({
+    rows: [clickRow({ id: 6, messageType: 'ask_user_input', answered: true })],
+    prevUnanswered: new Set([6]),
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [], 'no second delivery of a modal answer')
+  assert.deepEqual([...r.nextUnanswered], [])
+})
+
+test('user rows and option-less rows are ignored', () => {
+  const r = selectClickTransitions({
+    rows: [
+      clickRow({ id: 7, sender: 'user', answered: true }),
+      clickRow({ id: 8, hasOptions: false, answered: true }),
+    ],
+    prevUnanswered: new Set([7, 8]),
+    isFirstPoll: false,
+  })
+  assert.deepEqual(r.announce, [])
+})
+
 // ── P6e: reconcileAlwaysOn cadence ───────────────────────────────────────────
 
 test('reconcileAlwaysOn cadence is 15 minutes (was 2)', () => {
@@ -564,6 +686,39 @@ test('server.ts handles the NOT_MODIFIED sentinel at bgosGet call sites', () => 
 test('server.ts schedules polls through planPollCycle and fastScopeChatIds', () => {
   assert.ok(serverSource.includes('planPollCycle('))
   assert.ok(serverSource.includes('fastScopeChatIds('))
+})
+
+test('server.ts detects clicks through selectClickTransitions', () => {
+  assert.ok(
+    serverSource.includes('selectClickTransitions({'),
+    'the click detector must be the tested pure function, not a re-inlined loop',
+  )
+})
+
+test('server.ts registers NO inbound_click WS listener (single click path)', () => {
+  // THE duplicate-click guard, and the reason the backend keeps its
+  // `if (pairingId !== null)` gate around emitInboundClick. This daemon learns
+  // about taps from the answeredAt transition above. Adding a WS listener
+  // without retiring that detector makes every tap arrive twice; if you add
+  // one, delete the poll detector in the SAME change and update this test.
+  assert.ok(
+    !/realtimeSocket\.on\(\s*['"]inbound_click['"]/.test(serverSource),
+    'a second click delivery path was added; see backend message.service.click-delivery.spec.ts',
+  )
+})
+
+test('a WS reconnect catches up immediately, not on the next sweep', () => {
+  // This is what makes a 5 minute healthy sweep safe: post-outage recovery
+  // does not ride the sweep cadence.
+  const connectHandler = serverSource.slice(
+    serverSource.indexOf("realtimeSocket.on('connect'"),
+  )
+  assert.ok(connectHandler.startsWith("realtimeSocket.on('connect'"))
+  const body = connectHandler.slice(0, connectHandler.indexOf("realtimeSocket.on('disconnect'"))
+  assert.ok(
+    body.includes('pollAllChats()'),
+    'the connect handler must fire an immediate catch-up poll',
+  )
 })
 
 test('server.ts reconciles always-on every RECONCILE_ALWAYS_ON_INTERVAL_MS', () => {
