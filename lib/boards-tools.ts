@@ -24,7 +24,7 @@
 //     identifiers, so the board segment is percent-encoded; row and field keys
 //     are shape-checked against a safe-token pattern.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import { guessOutboundMime } from './message-text.js'
@@ -127,6 +127,14 @@ const ROLES = ['read', 'write', 'admin'] as const
 const MAX_LIMIT = 200
 const INLINE_ATTACH_BYTES = 1024 * 1024
 const MAX_ATTACH_BYTES = 25 * 1024 * 1024
+/**
+ * How much of a backend error body survives into the thrown Error. The shared
+ * plugin transports cut at 200 chars, which truncates the ambiguous-board
+ * error (it lists name (id) pairs) into invalid JSON before the passthrough
+ * ever sees it. Boards gets its own transports with this ceiling instead.
+ */
+export const BOARDS_ERROR_BODY_MAX_CHARS = 2048
+export const BOARDS_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 /** Board ids, short row keys and field keys: never anything that can leave the path. */
 const SAFE_TOKEN = /^[A-Za-z0-9_-]{1,64}$/
 const SHORT_OR_UUID = /^[A-Za-z0-9-]{8,64}$/
@@ -785,6 +793,30 @@ function boardPath(deps: BoardsToolDeps, board: string, suffix = ''): string {
   return `${boardsBase(deps.assistantId)}/${encodeURIComponent(board)}${suffix}`
 }
 
+/**
+ * Board ids and NAMES are both legal here, so the segment is percent-encoded
+ * rather than pattern-matched. Encoding is not enough on its own: "." and ".."
+ * survive it untouched and URL normalization then collapses the segment, so a
+ * board named ".." would address the collection above it. Refuse those, and
+ * any board carrying a slash, before the value ever reaches a path.
+ */
+function readBoard(
+  tool: string,
+  args: Record<string, unknown>,
+): Fail | { ok: true; value: string } {
+  const raw = readString(tool, args, 'board', true)
+  if (!raw.ok) return raw
+  const value = raw.value as string
+  if (value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
+    return fail(
+      `${tool} "board" must be a board id or its exact name, not a path. ` +
+        '"." and ".." and anything containing a slash are refused. Call ' +
+        'boards_list to see the boards you can reach.',
+    )
+  }
+  return { ok: true, value }
+}
+
 function readRowKey(
   tool: string,
   args: Record<string, unknown>,
@@ -1004,12 +1036,16 @@ export function renderBoardsResponse(
   data: unknown,
   format: 'markdown' | 'json',
 ): string {
-  if (format === 'json') return JSON.stringify(data, null, 2)
+  if (format === 'json') return JSON.stringify(data ?? {}, null, 2)
   if (typeof data === 'string') return data
   if (data && typeof data === 'object') {
     const md = (data as Record<string, unknown>).markdown
     if (typeof md === 'string') return md
+    // A write that answered 204, or any success with nothing to render. The
+    // call landed; a bare "{}" would read like a failure to the model.
+    if (!Array.isArray(data) && Object.keys(data).length === 0) return 'Done.'
   }
+  if (data === null || data === undefined) return 'Done.'
   return JSON.stringify(data, null, 2)
 }
 
@@ -1037,6 +1073,93 @@ export function extractBackendErrorBody(err: unknown): string {
   return raw
 }
 
+// ── Transports ───────────────────────────────────────────────────────────────
+
+type BoardsFetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: string },
+) => Promise<{
+  ok: boolean
+  status: number
+  headers: { get(name: string): string | null }
+  text(): Promise<string>
+}>
+
+export interface BoardsTransportOptions {
+  /** e.g. https://host/api/v1 */
+  apiBase: string
+  /** Fresh auth headers per call (pairing or api key). */
+  headers: () => Record<string, string>
+  fetchImpl?: BoardsFetch
+  maxBytes?: number
+}
+
+/**
+ * Boards gets its OWN transports rather than reusing the shared plugin ones,
+ * for two reasons that both bite the model directly:
+ *
+ *  1. The shared helpers cut an error body at 200 chars. The denial bodies are
+ *     the contract and the ambiguous-board error carries name (id) pairs, so a
+ *     cut body reaches the model as invalid JSON. Here the body survives to
+ *     BOARDS_ERROR_BODY_MAX_CHARS.
+ *  2. The shared helpers call response.json() unconditionally, which throws on
+ *     an empty body. A 204 on a write that already succeeded would be reported
+ *     to the model as a failure, and the model would retry a write that landed.
+ *     Here an empty or non-JSON success body is simply {}.
+ *
+ * The shared helpers are left exactly as they are for every other tool.
+ */
+export function createBoardsTransports(
+  opts: BoardsTransportOptions,
+): Required<Pick<BoardsToolDeps, 'bgosGet' | 'bgosPost' | 'bgosPatch' | 'bgosDelete'>> {
+  const doFetch = opts.fetchImpl ?? (globalThis.fetch as unknown as BoardsFetch)
+  const maxBytes = opts.maxBytes ?? BOARDS_RESPONSE_MAX_BYTES
+  const base = opts.apiBase.replace(/\/$/, '')
+
+  const call = async (
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const headers: Record<string, string> = { ...opts.headers() }
+    if (body !== undefined) headers['Content-Type'] = 'application/json'
+    const response = await doFetch(`${base}/${path.replace(/^\//, '')}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(
+        `${method} ${response.status}: ${text.slice(0, BOARDS_ERROR_BODY_MAX_CHARS)}`,
+      )
+    }
+    const declared = Number(response.headers.get('content-length') ?? '')
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new Error(
+        `${method} ${path}: the board answer is too large (${declared} bytes). ` +
+          'Narrow it with a filter or a smaller limit.',
+      )
+    }
+    const text = await response.text().catch(() => '')
+    if (!text.trim()) return {}
+    try {
+      return JSON.parse(text) as unknown
+    } catch {
+      // A success the backend did not send as JSON. The write landed; say so
+      // rather than turning it into a failure the model would retry.
+      return {}
+    }
+  }
+
+  return {
+    bgosGet: (path) => call('GET', path),
+    bgosPost: (path, body) => call('POST', path, body ?? {}),
+    bgosPatch: (path, body) => call('PATCH', path, body ?? {}),
+    bgosDelete: (path) => call('DELETE', path),
+  }
+}
+
 function ok(text: string): BoardsToolResult {
   return { content: [{ type: 'text', text }] }
 }
@@ -1046,6 +1169,14 @@ function errorResult(text: string): BoardsToolResult {
 }
 
 // ── Attachment bytes ─────────────────────────────────────────────────────────
+
+function tooBig(tool: string, bytes: number): Fail {
+  return fail(
+    `${tool} file is ${Math.round(bytes / 1024 / 1024)} MB, over the ` +
+      `${MAX_ATTACH_BYTES / 1024 / 1024} MB limit. Attach a smaller file or ` +
+      'a link to it.',
+  )
+}
 
 async function resolveAttachmentBytes(
   tool: string,
@@ -1082,6 +1213,22 @@ async function resolveAttachmentBytes(
   let name: string
 
   if (filePath.value) {
+    // stat BEFORE read: reading first would pull a multi-gigabyte path into
+    // the daemon's memory just to find out it is over the cap.
+    let onDisk: number
+    try {
+      const info = await stat(filePath.value)
+      if (!info.isFile()) {
+        return fail(`${tool} "${filePath.value}" is not a file.`)
+      }
+      onDisk = info.size
+    } catch (err) {
+      return fail(
+        `${tool} could not read "${filePath.value}": ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    if (onDisk > MAX_ATTACH_BYTES) return tooBig(tool, onDisk)
     try {
       const buf = await readFile(filePath.value)
       bytes = new Uint8Array(buf)
@@ -1098,6 +1245,9 @@ async function resolveAttachmentBytes(
       return fail(`${tool} needs "name" when you send "content_base64".`)
     }
     base64 = contentB64.value as string
+    // 4 base64 chars carry 3 bytes: size the decode before doing it.
+    const estimated = Math.floor((base64.length * 3) / 4)
+    if (estimated > MAX_ATTACH_BYTES) return tooBig(tool, estimated)
     const buf = Buffer.from(base64, 'base64')
     if (!buf.length) {
       return fail(`${tool} "content_base64" did not decode to any bytes.`)
@@ -1106,13 +1256,7 @@ async function resolveAttachmentBytes(
     name = explicitName.value
   }
 
-  if (bytes.length > MAX_ATTACH_BYTES) {
-    return fail(
-      `${tool} file is ${Math.round(bytes.length / 1024 / 1024)} MB, over the ` +
-        `${MAX_ATTACH_BYTES / 1024 / 1024} MB limit. Attach a smaller file or ` +
-        'a link to it.',
-    )
-  }
+  if (bytes.length > MAX_ATTACH_BYTES) return tooBig(tool, bytes.length)
 
   const mime =
     explicitMime.value ||
@@ -1225,9 +1369,9 @@ async function buildCall(
     return { ok: true, data: await deps.bgosPost(base, body) }
   }
 
-  const board = readString(name, args, 'board', true)
+  const board = readBoard(name, args)
   if (!board.ok) return board
-  const boardSeg = board.value as string
+  const boardSeg = board.value
 
   switch (name) {
     case 'boards_describe': {
@@ -1472,6 +1616,22 @@ async function attach(
     return fail(
       `${name} did not get an upload url back for "${file.name}". ` +
         'Retry, or attach a file under 1 MB.',
+    )
+  }
+  // The file bytes are about to leave this machine to whatever host that url
+  // names. Only over TLS, and only over a scheme that is actually an upload:
+  // a plaintext or file: url would leak the owner's data or read local disk.
+  let parsedUpload: URL
+  try {
+    parsedUpload = new URL(uploadUrl)
+  } catch {
+    return fail(`${name} got an upload url it cannot parse. Nothing was sent.`)
+  }
+  if (parsedUpload.protocol !== 'https:') {
+    return fail(
+      `${name} refused to upload "${file.name}": the upload url is ` +
+        `${parsedUpload.protocol}//, and file bytes only travel over https. ` +
+        'Nothing was sent.',
     )
   }
   const put = deps.putBytes ?? defaultPutBytes

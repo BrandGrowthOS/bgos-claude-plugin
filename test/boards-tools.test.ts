@@ -17,7 +17,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm, truncate, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
@@ -25,8 +25,10 @@ import { fileURLToPath } from 'node:url'
 
 import {
   BOARDS_TOOL_DECLS,
+  BOARDS_ERROR_BODY_MAX_CHARS,
   handleBoardsTool,
   compileFilter,
+  createBoardsTransports,
   renderBoardsResponse,
   extractBackendErrorBody,
   type BoardsToolDeps,
@@ -391,13 +393,25 @@ test('a board NAME is percent-encoded into the path, never spliced raw', async (
   const f = fakeDeps()
   await handleBoardsTool(
     'boards_describe',
-    { board: 'Decisions Pending Kc/../admin' },
+    { board: 'Decisions Pending Kc' },
     f.deps,
   )
   const path = f.calls[0]!.path
   assert.ok(path.includes('Decisions%20Pending%20Kc'), path)
-  assert.ok(!path.includes('/../'), path)
-  assert.ok(path.includes('%2F'), path)
+  assert.ok(!path.includes(' '), path)
+})
+
+test('a board argument that is a path segment trick is refused outright', async () => {
+  // "." and ".." survive percent-encoding and are collapsed by URL
+  // normalization, so encoding alone is not enough: refuse them, and refuse
+  // any board carrying a slash.
+  for (const bad of ['.', '..', 'decisions/../admin', 'a/b', '/decisions']) {
+    const f = fakeDeps()
+    const r = await handleBoardsTool('boards_describe', { board: bad }, f.deps)
+    assert.equal(r.isError, true, `accepted board ${JSON.stringify(bad)}`)
+    assert.equal(f.calls.length, 0, `called out with ${JSON.stringify(bad)}`)
+    assert.ok(textOf(r).includes('board'), textOf(r))
+  }
 })
 
 // ── Paths and wire shapes ────────────────────────────────────────────────────
@@ -809,6 +823,162 @@ test('a transport failure is reported, not disguised as a denial', async () => {
   assert.ok(!t.includes('permission_denied'), t)
 })
 
+// ── Boards transports (their own, so error bodies survive) ───────────────────
+
+interface FakeResponse {
+  ok: boolean
+  status: number
+  headers: { get(name: string): string | null }
+  text(): Promise<string>
+}
+
+function fakeFetch(
+  reply: (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
+    status?: number
+    body?: string
+    contentLength?: string | null
+  },
+) {
+  const seen: Array<{
+    url: string
+    method: string
+    headers: Record<string, string>
+    body?: string
+  }> = []
+  const impl = async (
+    url: string,
+    init: { method: string; headers: Record<string, string>; body?: string },
+  ): Promise<FakeResponse> => {
+    seen.push({ url, method: init.method, headers: init.headers, body: init.body })
+    const r = reply(url, init)
+    const status = r.status ?? 200
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: (n) => (n.toLowerCase() === 'content-length' ? r.contentLength ?? null : null) },
+      text: async () => r.body ?? '',
+    }
+  }
+  return { seen, impl }
+}
+
+function transports(
+  reply: Parameters<typeof fakeFetch>[0],
+  opts?: { maxBytes?: number },
+) {
+  const f = fakeFetch(reply)
+  const t = createBoardsTransports({
+    apiBase: 'https://api.example/api/v1',
+    headers: () => ({ 'X-BGOS-Pairing': 'tok' }),
+    fetchImpl: f.impl as never,
+    maxBytes: opts?.maxBytes,
+  })
+  return { seen: f.seen, ...t }
+}
+
+test('the boards transports send the auth header to the resolved url', async () => {
+  const t = transports(() => ({ body: '{"markdown":"ok"}' }))
+  await t.bgosPost('integrations/assistants/42/boards', { name: 'Ops' })
+  assert.equal(t.seen[0]!.url, 'https://api.example/api/v1/integrations/assistants/42/boards')
+  assert.equal(t.seen[0]!.method, 'POST')
+  assert.equal(t.seen[0]!.headers['X-BGOS-Pairing'], 'tok')
+  assert.equal(t.seen[0]!.headers['Content-Type'], 'application/json')
+  assert.equal(t.seen[0]!.body, '{"name":"Ops"}')
+})
+
+test('a long error body survives to the model instead of being cut at 200', async () => {
+  // The ambiguity error lists name (id) pairs, which runs past 200 chars.
+  const pairs = Array.from(
+    { length: 5 },
+    (_, i) => `Decisions Pending Kc ${i} (0c27e4b0-8b22-4a52-b433-32efd1a60ce${i})`,
+  ).join(', ')
+  const body = JSON.stringify({
+    error: 'ambiguous_board',
+    message: `More than one board matches that name. Ask for one of: ${pairs}.`,
+  })
+  assert.ok(body.length > 200, 'fixture must exceed the old 200-char cut')
+
+  const t = transports(() => ({ status: 409, body }))
+  let thrown: unknown
+  await t.bgosGet('integrations/assistants/42/boards/x/describe').catch((e) => {
+    thrown = e
+  })
+  assert.ok(thrown instanceof Error)
+  assert.equal(extractBackendErrorBody(thrown), body)
+
+  // And through the tool, verbatim.
+  const r = await handleBoardsTool(
+    'boards_describe',
+    { board: 'Decisions Pending Kc' },
+    { assistantId: '42', bgosGet: t.bgosGet, bgosPost: t.bgosPost, bgosPatch: t.bgosPatch },
+  )
+  assert.equal(r.isError, true)
+  assert.equal(textOf(r), body)
+})
+
+test('an error body past the boards ceiling is cut at the ceiling, not before', async () => {
+  const body = `{"error":"huge","message":"${'x'.repeat(4000)}"}`
+  const t = transports(() => ({ status: 500, body }))
+  let thrown: unknown
+  await t.bgosGet('boards').catch((e) => {
+    thrown = e
+  })
+  const message = (thrown as Error).message
+  assert.equal(
+    message.length,
+    `GET 500: `.length + BOARDS_ERROR_BODY_MAX_CHARS,
+    message.slice(0, 60),
+  )
+  assert.ok(BOARDS_ERROR_BODY_MAX_CHARS >= 2048)
+})
+
+test('an empty success body is a success, not a parse failure', async () => {
+  const t = transports(() => ({ status: 204, body: '' }))
+  assert.deepEqual(await t.bgosPatch('boards/x/rows/y', { cells: {} }), {})
+})
+
+test('a non-JSON success body is tolerated instead of crashing the tool', async () => {
+  const t = transports(() => ({ status: 200, body: 'OK' }))
+  assert.deepEqual(await t.bgosPost('boards/x/rows', { cells: {} }), {})
+})
+
+test('an empty success body renders as a plain success line', async () => {
+  const t = transports(() => ({ status: 204, body: '' }))
+  const r = await handleBoardsTool(
+    'boards_update',
+    { board: 'decisions', row_key: '3f9a2b7c', cells: { Status: 'Answered' } },
+    { assistantId: '42', bgosGet: t.bgosGet, bgosPost: t.bgosPost, bgosPatch: t.bgosPatch },
+  )
+  assert.notEqual(r.isError, true, textOf(r))
+  assert.equal(textOf(r), 'Done.')
+})
+
+test('renderBoardsResponse turns an empty body into a success line, not "{}"', () => {
+  assert.equal(renderBoardsResponse({}, 'markdown'), 'Done.')
+  assert.equal(renderBoardsResponse(undefined, 'markdown'), 'Done.')
+  // json stays honest about what came back
+  assert.equal(renderBoardsResponse({}, 'json'), '{}')
+})
+
+test('a response over the size ceiling is refused', async () => {
+  const t = transports(() => ({ body: '{"a":1}', contentLength: String(9 * 1024 * 1024) }), {
+    maxBytes: 4 * 1024 * 1024,
+  })
+  let thrown: unknown
+  await t.bgosGet('boards').catch((e) => {
+    thrown = e
+  })
+  assert.ok(thrown instanceof Error)
+  assert.ok((thrown as Error).message.toLowerCase().includes('too large'))
+})
+
+test('the DELETE transport exists for delete_field', async () => {
+  const t = transports(() => ({ status: 204, body: '' }))
+  assert.equal(typeof t.bgosDelete, 'function')
+  assert.deepEqual(await t.bgosDelete!('boards/x/fields/y'), {})
+  assert.equal(t.seen[0]!.method, 'DELETE')
+})
+
 // ── Attachments ──────────────────────────────────────────────────────────────
 
 async function withTempFile(
@@ -961,6 +1131,98 @@ test('a missing file is reported with the path, not a stack trace', async () => 
   )
   assert.equal(r.isError, true)
   assert.ok(textOf(r).includes('/no/such/file.md'), textOf(r))
+  assert.equal(f.calls.length, 0)
+})
+
+test('the inline attach path is complete in ONE post, never a /complete call', async () => {
+  await withTempFile('note.txt', 'small enough to ride inline', async (path) => {
+    const f = fakeDeps({
+      post: async () => ({ attachmentId: 'att-1', ok: true }),
+    })
+    const r = await handleBoardsTool(
+      'boards_attach',
+      { board: 'decisions', row_key: '3f9a2b7c', file_path: path },
+      f.deps,
+    )
+    assert.notEqual(r.isError, true, textOf(r))
+    assert.equal(f.calls.length, 1)
+    assert.ok(
+      !f.calls.some((c) => c.path.includes('/complete')),
+      'inline attach must not call /complete',
+    )
+  })
+})
+
+test('an upload url that is not https is refused before any bytes leave', async () => {
+  const big = Buffer.alloc(1024 * 1024 + 10, 3)
+  await withTempFile('big.bin', big, async (path) => {
+    for (const url of [
+      'http://s3.example/put',
+      'file:///etc/passwd',
+      'ftp://s3.example/put',
+    ]) {
+      const f = fakeDeps({
+        post: async (p) =>
+          p.endsWith('/attachments')
+            ? { attachmentId: 'att-9', uploadUrl: url }
+            : { markdown: 'attached' },
+      })
+      const r = await handleBoardsTool(
+        'boards_attach',
+        { board: 'decisions', row_key: '3f9a2b7c', file_path: path },
+        f.deps,
+      )
+      assert.equal(r.isError, true, `accepted ${url}`)
+      assert.ok(textOf(r).includes('https'), textOf(r))
+      assert.ok(
+        !f.calls.some((c) => c.method === 'PUT'),
+        `bytes left over ${url}`,
+      )
+    }
+  })
+})
+
+test('an oversized file is refused from its size on disk, never read in', async () => {
+  // Sparse file, then chmod 000: stat() still reports the size, read() would
+  // fail with EACCES. If the cap were checked after readFile the error would
+  // be the permission error, not the size one.
+  const dir = await mkdtemp(join(tmpdir(), 'boards-huge-'))
+  const path = join(dir, 'huge.bin')
+  try {
+    await writeFile(path, '')
+    await truncate(path, 26 * 1024 * 1024)
+    await chmod(path, 0o000)
+    const f = fakeDeps()
+    const r = await handleBoardsTool(
+      'boards_attach',
+      { board: 'decisions', row_key: '3f9a2b7c', file_path: path },
+      f.deps,
+    )
+    assert.equal(r.isError, true)
+    const t = textOf(r)
+    assert.ok(t.includes('25 MB'), t)
+    assert.ok(!t.toUpperCase().includes('EACCES'), `read before stat: ${t}`)
+    assert.equal(f.calls.length, 0)
+  } finally {
+    await chmod(path, 0o600).catch(() => {})
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('an oversized content_base64 is refused before it is decoded', async () => {
+  const f = fakeDeps()
+  const r = await handleBoardsTool(
+    'boards_attach',
+    {
+      board: 'decisions',
+      row_key: '3f9a2b7c',
+      name: 'huge.bin',
+      content_base64: 'A'.repeat(40 * 1024 * 1024),
+    },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  assert.ok(textOf(r).includes('25 MB'), textOf(r))
   assert.equal(f.calls.length, 0)
 })
 

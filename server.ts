@@ -78,6 +78,7 @@ import {
 } from './lib/health-log.js'
 import {
   BOARDS_TOOL_DECLS,
+  createBoardsTransports,
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import {
@@ -357,6 +358,18 @@ const CAPABILITIES_FETCH_MAX_BYTES = 1024 * 1024
 // backend paginates with a cursor. Cap the body so a runaway board answer
 // cannot balloon the daemon's memory or the agent's context.
 const BOARDS_FETCH_MAX_BYTES = 4 * 1024 * 1024
+
+// Boards deliberately does NOT reuse bgosGet/bgosPost/bgosPatch/bgosDelete:
+// those cut an error body at 200 chars (which truncates the ambiguous-board
+// denial into invalid JSON before the verbatim passthrough sees it) and call
+// response.json() unconditionally (which turns a 204 on a landed write into a
+// tool failure the model would retry). The shared helpers stay exactly as they
+// are for every other tool; boards gets its own, in lib/boards-tools.ts.
+const boardsTransports = createBoardsTransports({
+  apiBase: API_BASE,
+  headers: () => authHeaders(AUTH),
+  maxBytes: BOARDS_FETCH_MAX_BYTES,
+})
 
 async function bgosGetCapped(path: string, maxBytes: number): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
@@ -2575,20 +2588,15 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
 
   // ── Agent Boards ───────────────────────────────────────────────────────
   // One grouped route for the whole boards_* family: validation, path
-  // building and the verbatim backend-error passthrough all live in
-  // lib/boards-tools.ts, which is unit-tested against the wire contract.
-  //
-  // The GET transport is bgosGetCapped, NOT bgosGet: boards paths carry
-  // cursors, row keys and since-stamps, so the ETag/body caches keyed by
-  // path would grow without bound, and a 304 would hand the model the
-  // NOT_MODIFIED sentinel instead of a board. bgosGetCapped is a plain
-  // authenticated GET with a size ceiling.
+  // building, the verbatim backend-error passthrough and the boards-only
+  // transports all live in lib/boards-tools.ts, unit-tested against the wire
+  // contract. Boards also never rides bgosGet's ETag cache: its paths carry
+  // cursors, row keys and since-stamps, so the per-path caches would grow
+  // without bound and a 304 would hand the model the NOT_MODIFIED sentinel
+  // instead of a board.
   if (req.params.name.startsWith('boards_')) {
     return handleBoardsTool(req.params.name, rawArgs, {
-      bgosGet: (path: string) => bgosGetCapped(path, BOARDS_FETCH_MAX_BYTES),
-      bgosPost,
-      bgosPatch,
-      bgosDelete,
+      ...boardsTransports,
       assistantId: ASSISTANT_ID,
     })
   }
