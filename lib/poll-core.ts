@@ -236,32 +236,133 @@ export function selectFirstPollBacklogIds(opts: {
   return qualified.map((m) => m.id)
 }
 
+// ── Button-click transition detection (single-announce contract) ─────────────
+
+/** The projection of a polled message that click detection needs. */
+export interface ClickRow {
+  id: number
+  sender: string | null
+  messageType?: string | null
+  /** True when the row still carries option buttons. */
+  hasOptions: boolean
+  /** True once `answered_at` is set on the row. */
+  answered: boolean
+}
+
+/**
+ * Decide which button clicks THIS poll should announce to the agent, and what
+ * the chat's unanswered-button set becomes.
+ *
+ * THE SINGLE-ANNOUNCE CONTRACT. This poll is the ONLY path by which a Claude
+ * Code agent learns about a button tap: the daemon registers no `inbound_click`
+ * WS listener, and the backend correspondingly withholds that push from
+ * unpaired assistants (backend `message.service.ts`, `if (pairingId !== null)`,
+ * pinned by `message.service.click-delivery.spec.ts`). A tap must therefore be
+ * announced exactly once here, no matter how many times the message is polled
+ * afterwards, and anyone adding a WS listener must retire this detector in the
+ * same change or the agent hears every tap twice.
+ *
+ * The rule (extracted verbatim from pollChat, behaviour unchanged): announce a
+ * message only on a real live transition, i.e. we saw THIS id unanswered on a
+ * previous poll and it is answered now. That is what makes it once-only:
+ * announcing removes the id from the set (it is answered, so it does not go
+ * into `nextUnanswered`), so a later poll of the same answered row finds no
+ * prior unanswered entry and stays silent.
+ *
+ * On the FIRST poll for a chat we only baseline the unanswered set and never
+ * announce. Historic clicks from before the daemon started are not replayed
+ * (they once were, which flooded Claude Code's context on every restart).
+ *
+ * `ask_user_input` rows are excluded: that tool owns its own polling, so
+ * announcing here would be a second delivery of the same answer.
+ */
+export function selectClickTransitions(opts: {
+  rows: ClickRow[]
+  prevUnanswered: ReadonlySet<number>
+  isFirstPoll: boolean
+}): { announce: number[]; nextUnanswered: Set<number> } {
+  const announce: number[] = []
+  const nextUnanswered = new Set<number>()
+  for (const row of opts.rows) {
+    if (row.sender !== 'assistant') continue
+    if (row.messageType === 'ask_user_input') continue
+    if (!row.hasOptions) continue
+    if (!row.answered) {
+      nextUnanswered.add(row.id)
+      continue
+    }
+    if (opts.isFirstPoll) continue
+    if (!opts.prevUnanswered.has(row.id)) continue
+    announce.push(row.id)
+  }
+  return { announce, nextUnanswered }
+}
+
 // ── Cadence planning (P6d/P6e) ───────────────────────────────────────────────
 
-/** WS healthy: full sweeps are a 60s heartbeat safety net (base 2s x30). */
-export const HEALTHY_MULTIPLIER = 30
+/**
+ * WS healthy: the full sweep is NOT the delivery path, it is the recovery
+ * guarantee that makes the push model safe. Live traffic arrives on the
+ * `inbound_message` WS event; this sweep exists to heal the cases push cannot
+ * (an event emitted while we were mid-reconnect, a room we were silently
+ * dropped from, a body that changed without an event).
+ *
+ * 5 minutes, raised from 60s (egress audit 2026-07-26). At 60s the sweep was
+ * the single largest source of traffic on the whole platform: agent daemons
+ * were ~98% of egress and ~975 chat-history requests/min came from this one
+ * timer. Five minutes keeps the recovery guarantee while costing a fifth of
+ * the requests.
+ *
+ * The cost is bounded and is NOT delivery latency in the normal case:
+ *   - push delivery is unchanged;
+ *   - a WS RECONNECT does not wait for this interval, `connect` fires an
+ *     immediate `pollAllChats()` catch-up (server.ts), so an outage is healed
+ *     on reconnect, not on the next sweep;
+ *   - while the WS is down the cadence is WS_DOWN_FULL_SWEEP_INTERVAL_MS, not
+ *     this;
+ *   - chats that need real reactivity (open meetings, pending permissions)
+ *     are fast-scoped at the base tick between sweeps.
+ * What DOES get slower is the one case where the socket reports `connected`
+ * but is not actually receiving (a silent room drop): worst-case detection
+ * moves from 60s to 5 min. That is the deliberate trade.
+ */
+export const HEALTHY_FULL_SWEEP_INTERVAL_MS = 5 * 60_000
 
 /**
  * WS down: the poll IS the delivery path, so the global cadence tightens,
- * but NOT to 2s: 2s sweeps of the whole 600+ chat list were the P6 storm
- * (and a sequential sweep of that size cannot finish in 2s anyway, so
- * per-chat latency was sweep-duration-bound, not interval-bound). base x5 =
- * 10s bounds worst-case delivery latency during a WS outage at one fifth of
- * the old request volume. Chats that genuinely need 2s reactivity (open
- * meetings, pending permissions) are fast-scoped individually below.
+ * but NOT to the 2s base: 2s sweeps of the whole 600+ chat list were the P6
+ * storm (and a sequential sweep of that size cannot finish in 2s anyway, so
+ * per-chat latency was sweep-duration-bound, not interval-bound). 10s bounds
+ * worst-case delivery latency during a WS outage at a fraction of the old
+ * request volume. Chats that genuinely need 2s reactivity (open meetings,
+ * pending permissions) are fast-scoped individually below.
  */
-export const WS_DOWN_MULTIPLIER = 5
+export const WS_DOWN_FULL_SWEEP_INTERVAL_MS = 10_000
 
 /** Reconcile the always-on toggle every 15 min (P6e; was 2 min). The flag
  *  almost never changes and the boot-time check covers restarts; with the
  *  ETag layer the recurring fetch is usually a 304 as well. */
 export const RECONCILE_ALWAYS_ON_INTERVAL_MS = 15 * 60_000
 
+/**
+ * The full-sweep cadence, as an ABSOLUTE interval.
+ *
+ * This used to be a multiple of the scheduler's base tick
+ * (`base * HEALTHY_MULTIPLIER`), which made the recovery cadence an accident
+ * of BGOS_POLL_INTERVAL_MS: an operator who tuned the tick silently retuned
+ * the safety net with it. The sweep is a wall-clock guarantee, so it is
+ * expressed in wall-clock time. `Math.max` keeps it coherent for an operator
+ * who sets a base tick coarser than the target: a sweep can never be due more
+ * often than the scheduler ticks.
+ */
 export function globalIntervalMs(
   baseIntervalMs: number,
   wsHealthy: boolean,
 ): number {
-  return baseIntervalMs * (wsHealthy ? HEALTHY_MULTIPLIER : WS_DOWN_MULTIPLIER)
+  const target = wsHealthy
+    ? HEALTHY_FULL_SWEEP_INTERVAL_MS
+    : WS_DOWN_FULL_SWEEP_INTERVAL_MS
+  return Math.max(baseIntervalMs, target)
 }
 
 /**
