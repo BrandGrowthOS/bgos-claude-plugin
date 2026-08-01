@@ -573,8 +573,8 @@ export const BOARDS_TOOL_DECLS = [
         since: {
           type: 'string',
           description:
-            'The cursor from the previous boards_changes answer, or an ISO ' +
-            'timestamp. Omit for everything you can currently see.',
+            'The cursor from the previous boards_changes answer. Omit for ' +
+            'everything you can currently see. Timestamps are not accepted.',
         },
         response_format: RESPONSE_FORMAT_ARG,
       },
