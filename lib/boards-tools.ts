@@ -125,6 +125,12 @@ const SCHEMA_OPS = [
 const ROLES = ['read', 'write', 'admin'] as const
 
 const MAX_LIMIT = 200
+/**
+ * Search caps lower than query. The backend refuses above this, and the engine
+ * cannot produce more anyway: each ranking leg is capped before fusion, so a
+ * larger number would promise hits that do not exist.
+ */
+const MAX_SEARCH_LIMIT = 100
 const INLINE_ATTACH_BYTES = 1024 * 1024
 const MAX_ATTACH_BYTES = 25 * 1024 * 1024
 /**
@@ -552,7 +558,7 @@ export const BOARDS_TOOL_DECLS = [
         },
         limit: {
           type: 'number',
-          description: `How many hits you want, 1 to ${MAX_LIMIT}.`,
+          description: `How many hits you want, 1 to ${MAX_SEARCH_LIMIT}.`,
         },
         response_format: RESPONSE_FORMAT_ARG,
       },
@@ -1447,7 +1453,7 @@ async function buildCall(
     case 'boards_search': {
       const query = readString(name, args, 'query', true)
       if (!query.ok) return query
-      const limit = readInt(name, args, 'limit', 1, MAX_LIMIT, false)
+      const limit = readInt(name, args, 'limit', 1, MAX_SEARCH_LIMIT, false)
       if (!limit.ok) return limit
       const body: Record<string, unknown> = { query: query.value }
       if (limit.value !== undefined) body.limit = limit.value
