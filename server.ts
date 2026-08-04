@@ -1889,7 +1889,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           wait_for_reply: { type: 'boolean', description: 'Block until peer replies. Default false.' },
           timeout_seconds: {
             type: 'number',
-            description: 'How long to wait when wait_for_reply=true. 1, 600s. Default 60s.',
+            description:
+              'How long to wait when wait_for_reply=true. 1 to 50 seconds, default 45 ' +
+              '(the server rejects longer holds; its edge closes idle connections at 60s). ' +
+              'For longer waits send without blocking and act on the reply when it arrives.',
           },
           turn_state: {
             type: 'string',
@@ -3161,7 +3164,15 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       const text = (rawArgs.text as string | undefined) ?? ''
       const parent_message_id = rawArgs.parent_message_id as number | undefined
       const wait_for_reply = rawArgs.wait_for_reply === true
-      const timeout_seconds = rawArgs.timeout_seconds as number | undefined
+      // The backend caps waitForReply holds at 50s (its edge kills idle
+      // connections at 60s; peer.dto.ts documents the cap). A larger value
+      // here would 400 the whole send, so clamp instead of forwarding the
+      // caller's optimism. Ava (871) hit exactly this on 2026-08-04: the tool
+      // description advertised 600 and the server rejected it.
+      const PEER_WAIT_CAP_SECONDS = 50
+      const rawTimeout = rawArgs.timeout_seconds as number | undefined
+      const timeout_seconds =
+        rawTimeout === undefined ? undefined : Math.min(rawTimeout, PEER_WAIT_CAP_SECONDS)
       const turn_state = rawArgs.turn_state as
         | 'expecting_reply'
         | 'more_coming'
