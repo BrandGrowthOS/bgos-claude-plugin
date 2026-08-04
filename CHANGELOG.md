@@ -2,6 +2,47 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.32.0 (4 August 2026)
+
+Multi-agent pairing: N agents under one OS user can now each hold their own
+pairing. Driven by a live incident on a 7-agent host where pairing intended
+for one assistant silently rebound another.
+
+- **bgos-pair never guesses the assistant.** `--assistant-id <id>` (or
+  `BGOS_ASSISTANT_ID`) pins the intended assistant; if the pairing resolves to
+  a different one, nothing is written and both ids are named. With no request
+  and several bound agents, the candidates are listed and an explicit choice
+  is required.
+- **Per-assistant credentials files.** New pairings write
+  `~/.bgos-agent/credentials-<assistantId>.json` (or `BGOS_CREDENTIALS_PATH`),
+  so pairing agent B no longer overwrites agent A's slot. Read order is strict
+  and total: `BGOS_CREDENTIALS_PATH`, else an existing
+  `credentials-<BGOS_ASSISTANT_ID>.json`, else the legacy `credentials.json`
+  (the existing single-file fleet keeps working unchanged).
+- **A rejected pairing file is loud.** When a credentials file is ignored
+  because its assistantId does not match the configured `BGOS_ASSISTANT_ID`,
+  startup logs a WARN naming both ids and the file path instead of silently
+  falling back to api-key auth (the silent fallback made "boards 401" look
+  like the channel being down).
+- **Post-write verification.** bgos-pair re-resolves the file it just wrote
+  and exits nonzero unless it actually resolves to the intended assistant. It
+  also probes the real, unpinned environment: when only an env pin would make
+  the daemon find the file, the success output says REQUIRED, with the exact
+  variable to set.
+- **Single-agent hosts keep working with an empty env.** After the
+  per-assistant write, the legacy `credentials.json` is co-written when it is
+  absent, junk, or already this same assistant, never when it holds another
+  agent's pairing. A daemon with no `BGOS_ASSISTANT_ID` configured (the
+  packaged plugin default) finds its pairing exactly as it did on 0.31.0.
+- **The unbound write cannot clobber a live pairing.** When no assistant is
+  bound yet, writing the legacy slot is refused if that file holds a live
+  pairing for a bound assistant, naming that assistant.
+- **Whitespace parity.** `BGOS_CREDENTIALS_PATH` and `BGOS_ASSISTANT_ID` are
+  trimmed identically on the write side and the read side (a padded id that
+  previously rejected a matching pairing file now matches it).
+- **Honest restart instructions** for both topologies: the packaged
+  `plugin:hoai@hoai` channel and a checkout-based `server:bgos` host.
+
 ## 0.31.0 — 27 July 2026
 
 The first release since 0.21.1. Twenty-two commits, and the reason it is being

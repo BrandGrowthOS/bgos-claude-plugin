@@ -129,6 +129,7 @@ import {
   resolveAuth,
   resolveCredentialsPath,
   formatAuthResolution,
+  formatPairingRejection,
   authHeaders,
   wsAuthOptions,
   missingCredsMessage,
@@ -205,8 +206,16 @@ const VOICE_MODEL = process.env.BGOS_VOICE_MODEL || 'gpt-realtime-2.1'
 const VOICE_VOICE = process.env.BGOS_VOICE_VOICE || 'marin'
 const VOICE_PERSONA = process.env.BGOS_VOICE_PERSONA || ''
 
+// A pairing file rejected on assistant mismatch must be LOUD: without this
+// warn the daemon silently degrades to api-key auth (chat works, boards 401
+// "Pairing scope required") and the symptom reads as the channel being down.
+const PAIRING_REJECTION_WARN = formatPairingRejection(AUTH, CREDENTIALS_PATH)
+
 if (!AUTH.complete) {
   process.stderr.write(`[bgos] ${formatAuthResolution(AUTH, CREDENTIALS_PATH)}\n`)
+  if (PAIRING_REJECTION_WARN) {
+    process.stderr.write(`[bgos] WARN ${PAIRING_REJECTION_WARN}\n`)
+  }
   process.stderr.write(`[bgos] ${missingCredsMessage(AUTH)}\n`)
   process.exit(1)
 }
@@ -6152,6 +6161,7 @@ async function main(): Promise<void> {
 
   log('Starting BGOS channel plugin...')
   log(formatAuthResolution(AUTH, CREDENTIALS_PATH))
+  if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
