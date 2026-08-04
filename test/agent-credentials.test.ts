@@ -12,15 +12,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   resolveAuth,
   resolveCredentialsPath,
   formatAuthResolution,
+  formatPairingRejection,
+  loadCredentialsFile,
   authHeaders,
   wsAuthOptions,
   missingCredsMessage,
 } from '../lib/agent-credentials.ts'
+import {
+  resolveReadCredentialsPath,
+  writeCredentialsFile,
+  buildCredentials,
+} from '../bin/bgos-pair.mjs'
 
 const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
@@ -245,8 +255,222 @@ test('credentials path keeps the existing default when no override is set', () =
     resolveCredentialsPath({
       env: {},
       defaultPath: '/home/kc/.bgos-agent/credentials.json',
+      exists: () => true,
     }),
     '/home/kc/.bgos-agent/credentials.json',
+  )
+})
+
+// ── Defect 2 (read side): per-assistant file, strict total precedence ───────
+
+test('per-assistant credentials file is preferred when it exists for the configured id', () => {
+  assert.equal(
+    resolveCredentialsPath({
+      env: { BGOS_ASSISTANT_ID: '871' },
+      defaultPath: '/home/kc/.bgos-agent/credentials.json',
+      exists: (p) => p === '/home/kc/.bgos-agent/credentials-871.json',
+    }),
+    '/home/kc/.bgos-agent/credentials-871.json',
+  )
+})
+
+test('legacy single credentials file still resolves when no per-assistant file exists (fleet backward compat)', () => {
+  // Mirrors kc-server TODAY: Guru (872) authenticates off the legacy
+  // ~/.bgos-agent/credentials.json with no BGOS_CREDENTIALS_PATH and no
+  // per-assistant file; this machine's assistant 900 is the identical shape.
+  // If this fallback regresses, those agents silently drop to api-key.
+  const path = resolveCredentialsPath({
+    env: { BGOS_ASSISTANT_ID: '872' },
+    defaultPath: '/home/kc/.bgos-agent/credentials.json',
+    exists: () => false,
+  })
+  assert.equal(path, '/home/kc/.bgos-agent/credentials.json')
+  const auth = resolveAuth({
+    env: { BGOS_ASSISTANT_ID: '872' },
+    creds: {
+      backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+      pairingToken: 'pair_secret',
+      pairingId: 42,
+      userId: 'user_abc',
+      assistantId: 872,
+      pairedAt: '2026-07-11T00:00:00.000Z',
+    },
+  })
+  assert.equal(auth.mode, 'pairing')
+  assert.equal(auth.source, 'pairing-file')
+  assert.equal(auth.assistantId, '872')
+  assert.equal(auth.complete, true)
+})
+
+test('legacy file with no configured assistant id keeps resolving (single-agent hosts)', () => {
+  assert.equal(
+    resolveCredentialsPath({
+      env: {},
+      defaultPath: '/home/kc/.bgos-agent/credentials.json',
+      exists: () => true,
+    }),
+    '/home/kc/.bgos-agent/credentials.json',
+  )
+})
+
+test('BGOS_CREDENTIALS_PATH wins outright over an existing per-assistant file', () => {
+  assert.equal(
+    resolveCredentialsPath({
+      env: { BGOS_CREDENTIALS_PATH: '/agents/871/credentials.json', BGOS_ASSISTANT_ID: '871' },
+      defaultPath: '/home/kc/.bgos-agent/credentials.json',
+      exists: () => true,
+    }),
+    '/agents/871/credentials.json',
+  )
+})
+
+test('unsubstituted assistant id placeholder never selects a per-assistant path', () => {
+  assert.equal(
+    resolveCredentialsPath({
+      env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' },
+      defaultPath: '/home/kc/.bgos-agent/credentials.json',
+      exists: () => true,
+    }),
+    '/home/kc/.bgos-agent/credentials.json',
+  )
+})
+
+test('read order in lib and the bgos-pair mirror never drift apart', () => {
+  const home = '/home/kc'
+  const defaultPath = '/home/kc/.bgos-agent/credentials.json'
+  const cases = [
+    { env: { BGOS_CREDENTIALS_PATH: '/x/c.json', BGOS_ASSISTANT_ID: '871' }, exists: () => true },
+    { env: { BGOS_ASSISTANT_ID: '871' }, exists: (p: string) => p.endsWith('credentials-871.json') },
+    { env: { BGOS_ASSISTANT_ID: '871' }, exists: () => false },
+    { env: {}, exists: () => true },
+    { env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' }, exists: () => true },
+  ]
+  for (const c of cases) {
+    assert.equal(
+      resolveCredentialsPath({ env: c.env, defaultPath, exists: c.exists }),
+      resolveReadCredentialsPath({ env: c.env, home, exists: c.exists }),
+      `mirror drift for env ${JSON.stringify(c.env)}`,
+    )
+  }
+})
+
+test('when both the per-assistant and legacy files exist, exactly one (per-assistant) is used', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-creds-both-'))
+  try {
+    const legacyPath = join(dir, '.bgos-agent', 'credentials.json')
+    const perAssistantPath = join(dir, '.bgos-agent', 'credentials-871.json')
+    await writeCredentialsFile(
+      legacyPath,
+      buildCredentials({
+        backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+        pairingToken: 'legacy_token_stale',
+        pairingId: 1,
+        userId: 'user_abc',
+        assistantId: 871,
+        nowIso: '2026-07-01T00:00:00.000Z',
+      }),
+    )
+    await writeCredentialsFile(
+      perAssistantPath,
+      buildCredentials({
+        backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+        pairingToken: 'per_assistant_token_fresh',
+        pairingId: 2,
+        userId: 'user_abc',
+        assistantId: 871,
+        nowIso: '2026-08-04T00:00:00.000Z',
+      }),
+    )
+    const env = { BGOS_ASSISTANT_ID: '871' }
+    const resolvedPath = resolveCredentialsPath({ env, defaultPath: legacyPath })
+    assert.equal(resolvedPath, perAssistantPath)
+    const auth = resolveAuth({ env, creds: loadCredentialsFile(resolvedPath) })
+    assert.equal(auth.mode, 'pairing')
+    assert.equal(auth.pairingToken, 'per_assistant_token_fresh')
+    // The startup log names WHICH file resolved, so ambiguity is visible.
+    assert.equal(
+      formatAuthResolution(auth, resolvedPath),
+      `Credential source: pairing-file at ${perAssistantPath}; assistantId: 871`,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── Defect 3: a rejected pairing file must be loud, not silent ──────────────
+
+test('a mismatch-rejected pairing file surfaces rejection info with both ids', () => {
+  const auth = resolveAuth({
+    env: {
+      BGOS_BACKEND_URL: 'https://env.example/api/v1',
+      BGOS_API_KEY: 'env_key',
+      BGOS_USER_ID: 'user_env',
+      BGOS_ASSISTANT_ID: '871',
+    },
+    creds: {
+      backendUrl: 'https://file.example/api/v1',
+      pairingToken: 'pair_secret',
+      userId: 'user_file',
+      assistantId: 872,
+    },
+  })
+  assert.equal(auth.source, 'apikey-env')
+  assert.deepEqual(auth.pairingFileRejection, {
+    fileAssistantId: '872',
+    configuredAssistantId: '871',
+  })
+  const warn = formatPairingRejection(auth, '/home/kc/.bgos-agent/credentials.json')
+  assert.ok(warn, 'rejection warn must be non-null')
+  assert.match(String(warn), /\/home\/kc\/\.bgos-agent\/credentials\.json/)
+  assert.match(String(warn), /IGNORED/)
+  assert.match(String(warn), /872/)
+  assert.match(String(warn), /871/)
+  assert.match(String(warn), /falling back to api key/)
+})
+
+test('a mismatch-rejected pairing file with no api key says there is no fallback', () => {
+  const auth = resolveAuth({
+    env: { BGOS_ASSISTANT_ID: '871', BGOS_BACKEND_URL: 'https://env.example/api/v1' },
+    creds: { pairingToken: 'pair_secret', userId: 'user_file', assistantId: 872, backendUrl: 'x' },
+  })
+  assert.equal(auth.source, 'none')
+  assert.ok(auth.pairingFileRejection)
+  const warn = String(formatPairingRejection(auth, '/p/credentials.json'))
+  assert.match(warn, /no fallback api key/i)
+})
+
+test('no rejection info when the file matches, is absent, or env pairing wins', () => {
+  const matching = resolveAuth({
+    env: { BGOS_ASSISTANT_ID: '871' },
+    creds: { pairingToken: 't', userId: 'u', assistantId: 871, backendUrl: 'b' },
+  })
+  assert.equal(matching.pairingFileRejection, null)
+  assert.equal(formatPairingRejection(matching, '/p'), null)
+
+  const absent = resolveAuth({ env: { BGOS_API_KEY: 'k' }, creds: null })
+  assert.equal(absent.pairingFileRejection, null)
+
+  const envWins = resolveAuth({
+    env: { BGOS_PAIRING_TOKEN: 'env_tok', BGOS_ASSISTANT_ID: '871' },
+    creds: { pairingToken: 't', userId: 'u', assistantId: 872, backendUrl: 'b' },
+  })
+  assert.equal(envWins.pairingFileRejection, null)
+})
+
+test('server startup threads the pairing rejection warn into the log', () => {
+  assert.equal(/formatPairingRejection\(AUTH, CREDENTIALS_PATH\)/.test(serverSource), true)
+  // Reaches both the incomplete-creds stderr path and the normal startup log.
+  assert.equal(
+    serverSource.includes(
+      'process.stderr.write(`[bgos] WARN ${PAIRING_REJECTION_WARN}\\n`)',
+    ),
+    true,
+    'failed-startup stderr path must carry the warn',
+  )
+  assert.equal(
+    serverSource.includes('if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)'),
+    true,
+    'normal startup log must carry the warn',
   )
 })
 

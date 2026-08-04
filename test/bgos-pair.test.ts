@@ -32,9 +32,14 @@ import {
   buildExchangeBody,
   buildCatalogBody,
   classifyExchangeResponse,
-  pickAssistantId,
+  selectAssistantBinding,
+  resolveRequestedAssistantId,
   buildCredentials,
   credentialsPath,
+  credentialsWritePath,
+  resolveReadCredentialsPath,
+  verifyWrittenCredentials,
+  restartInstructions,
   writeCredentialsFile,
 } from '../bin/bgos-pair.mjs'
 
@@ -116,14 +121,78 @@ test('classifyExchangeResponse: error status yields error with a message', () =>
   assert.match(String(r.message), /Invalid code/)
 })
 
-test('pickAssistantId prefers the claude route, else the first, null when empty', () => {
+// ── Defect 1: never guess the assistant on a many-agent account ─────────────
+
+test('parsePairArgs reads --assistant-id', () => {
+  const a = parsePairArgs(['BGOS-7F3A-2K', '--assistant-id', '871'])
+  assert.equal(a.errors.length, 0)
+  assert.equal(a.args.assistantId, '871')
+
+  const b = parsePairArgs(['BGOS-7F3A-2K', '--assistant-id'])
+  assert.ok(b.errors.length > 0, '--assistant-id without a value is an error')
+})
+
+test('resolveRequestedAssistantId: flag beats env, placeholder env is ignored', () => {
   assert.equal(
-    pickAssistantId({ assistants: [{ assistant_id: 1, agent_route: 'other' }, { assistant_id: 2, agent_route: 'claude' }] }),
-    2,
+    resolveRequestedAssistantId({ argAssistantId: '871', env: { BGOS_ASSISTANT_ID: '872' } }),
+    '871',
   )
-  assert.equal(pickAssistantId({ assistants: [{ assistant_id: 7, agent_route: 'solo' }] }), 7)
-  assert.equal(pickAssistantId({ assistants: [] }), null)
-  assert.equal(pickAssistantId({}), null)
+  assert.equal(
+    resolveRequestedAssistantId({ argAssistantId: '', env: { BGOS_ASSISTANT_ID: '872' } }),
+    '872',
+  )
+  assert.equal(
+    resolveRequestedAssistantId({
+      argAssistantId: '',
+      env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' },
+    }),
+    '',
+  )
+  assert.equal(resolveRequestedAssistantId({}), '')
+})
+
+test('selectAssistantBinding: a single bound assistant resolves without a request', () => {
+  const r = selectAssistantBinding({ assistants: [{ assistant_id: 7, agent_route: 'claude' }] })
+  assert.equal(r.kind, 'ok')
+  assert.equal(r.assistantId, 7)
+})
+
+test('selectAssistantBinding: a requested id that is bound resolves to exactly that id', () => {
+  const r = selectAssistantBinding(
+    { assistants: [{ assistant_id: 871, agent_route: 'claude' }, { assistant_id: 872, agent_route: 'claude' }] },
+    '871',
+  )
+  assert.equal(r.kind, 'ok')
+  assert.equal(r.assistantId, 871)
+})
+
+test('selectAssistantBinding: a requested id that is NOT bound is a mismatch naming both sides', () => {
+  const r = selectAssistantBinding(
+    { assistants: [{ assistant_id: 872, agent_route: 'claude' }] },
+    '871',
+  )
+  assert.equal(r.kind, 'mismatch')
+  assert.equal(r.requestedId, '871')
+  assert.deepEqual(r.boundIds, ['872'])
+})
+
+test('selectAssistantBinding: multiple candidates with no request never guess; they are listed', () => {
+  const r = selectAssistantBinding({
+    assistants: [
+      { assistant_id: 871, agent_route: 'claude', name: 'Ava' },
+      { assistant_id: 872, agent_route: 'claude', name: 'Guru' },
+    ],
+  })
+  assert.equal(r.kind, 'ambiguous')
+  assert.deepEqual(
+    r.candidates.map((c: { assistant_id: number | string }) => String(c.assistant_id)),
+    ['871', '872'],
+  )
+})
+
+test('selectAssistantBinding: empty list is none', () => {
+  assert.equal(selectAssistantBinding({ assistants: [] }).kind, 'none')
+  assert.equal(selectAssistantBinding({}).kind, 'none')
 })
 
 test('buildCredentials is the exact durable shape server.ts reads', () => {
@@ -147,6 +216,160 @@ test('buildCredentials is the exact durable shape server.ts reads', () => {
 
 test('credentialsPath is ~/.bgos-agent/credentials.json', () => {
   assert.equal(credentialsPath('/home/kc'), '/home/kc/.bgos-agent/credentials.json')
+})
+
+// ── Defect 2: one credentials slot per assistant, not per OS user ───────────
+
+test('credentialsWritePath defaults to a per-assistant file', () => {
+  assert.equal(
+    credentialsWritePath({ home: '/home/kc', assistantId: 871, env: {} }),
+    '/home/kc/.bgos-agent/credentials-871.json',
+  )
+})
+
+test('credentialsWritePath honours BGOS_CREDENTIALS_PATH outright', () => {
+  assert.equal(
+    credentialsWritePath({
+      home: '/home/kc',
+      assistantId: 871,
+      env: { BGOS_CREDENTIALS_PATH: '/agents/ava/credentials.json' },
+    }),
+    '/agents/ava/credentials.json',
+  )
+})
+
+test('credentialsWritePath falls back to the legacy file when no assistant is bound yet', () => {
+  assert.equal(
+    credentialsWritePath({ home: '/home/kc', assistantId: null, env: {} }),
+    '/home/kc/.bgos-agent/credentials.json',
+  )
+})
+
+test('resolveReadCredentialsPath mirrors the read order: override, per-assistant, legacy', () => {
+  const home = '/home/kc'
+  // BGOS_CREDENTIALS_PATH wins outright, even when a per-assistant file exists.
+  assert.equal(
+    resolveReadCredentialsPath({
+      env: { BGOS_CREDENTIALS_PATH: '/x/c.json', BGOS_ASSISTANT_ID: '871' },
+      home,
+      exists: () => true,
+    }),
+    '/x/c.json',
+  )
+  // Per-assistant file wins when present for the configured id.
+  assert.equal(
+    resolveReadCredentialsPath({
+      env: { BGOS_ASSISTANT_ID: '871' },
+      home,
+      exists: (p) => p === '/home/kc/.bgos-agent/credentials-871.json',
+    }),
+    '/home/kc/.bgos-agent/credentials-871.json',
+  )
+  // Absent per-assistant file falls back to the legacy single file.
+  assert.equal(
+    resolveReadCredentialsPath({
+      env: { BGOS_ASSISTANT_ID: '871' },
+      home,
+      exists: () => false,
+    }),
+    '/home/kc/.bgos-agent/credentials.json',
+  )
+  // No configured assistant id reads the legacy single file.
+  assert.equal(
+    resolveReadCredentialsPath({ env: {}, home, exists: () => true }),
+    '/home/kc/.bgos-agent/credentials.json',
+  )
+})
+
+// ── Post-write verification: pairing may not exit 0 on a file that will not
+//    resolve to the intended assistant (the wrong-assistant write of 2026-08-04
+//    passed as success precisely because nothing validated the written file). ─
+
+test('verifyWrittenCredentials passes when the written file resolves to the intended id', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-verify-'))
+  try {
+    const path = join(dir, '.bgos-agent', 'credentials-871.json')
+    await writeCredentialsFile(
+      path,
+      buildCredentials({
+        backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+        pairingToken: 'pair_secret',
+        pairingId: 42,
+        userId: 'user_abc',
+        assistantId: 871,
+        nowIso: '2026-08-04T00:00:00.000Z',
+      }),
+    )
+    const r = verifyWrittenCredentials({ path, expectedAssistantId: '871', home: dir, env: {} })
+    assert.equal(r.ok, true, r.reason)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('verifyWrittenCredentials fails loudly on the old wrong-id write, naming both ids', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-verify-'))
+  try {
+    // Simulate the historical failure: intended 871 (Ava), file carries 872 (Guru).
+    const path = join(dir, '.bgos-agent', 'credentials-871.json')
+    await writeCredentialsFile(
+      path,
+      buildCredentials({
+        backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+        pairingToken: 'pair_secret',
+        pairingId: 42,
+        userId: 'user_abc',
+        assistantId: 872,
+        nowIso: '2026-08-04T00:00:00.000Z',
+      }),
+    )
+    const r = verifyWrittenCredentials({ path, expectedAssistantId: '871', home: dir, env: {} })
+    assert.equal(r.ok, false)
+    assert.match(String(r.reason), /871/)
+    assert.match(String(r.reason), /872/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('verifyWrittenCredentials fails when the written path is not the one reads resolve', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-verify-'))
+  try {
+    const path = join(dir, '.bgos-agent', 'credentials-871.json')
+    await writeCredentialsFile(
+      path,
+      buildCredentials({
+        backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+        pairingToken: 'pair_secret',
+        pairingId: 42,
+        userId: 'user_abc',
+        assistantId: 871,
+        nowIso: '2026-08-04T00:00:00.000Z',
+      }),
+    )
+    // A conflicting BGOS_CREDENTIALS_PATH means the daemon would read elsewhere.
+    const r = verifyWrittenCredentials({
+      path,
+      expectedAssistantId: '871',
+      home: dir,
+      env: { BGOS_CREDENTIALS_PATH: '/somewhere/else.json' },
+    })
+    assert.equal(r.ok, false)
+    assert.match(String(r.reason), /somewhere\/else\.json/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── Defect 4: the restart instruction must be honest for both topologies ────
+
+test('restartInstructions names both channel forms and when each applies', () => {
+  const text = restartInstructions().join('\n')
+  assert.match(text, /restart your agent process the way it normally starts/i)
+  assert.match(text, /plugin:hoai@hoai/)
+  assert.match(text, /server:bgos/)
+  assert.match(text, /packaged/i)
+  assert.match(text, /checkout|multi-agent/i)
 })
 
 test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)', async () => {
