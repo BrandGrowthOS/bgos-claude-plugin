@@ -39,6 +39,9 @@ import {
   credentialsWritePath,
   resolveReadCredentialsPath,
   verifyWrittenCredentials,
+  shouldCoWriteLegacy,
+  legacyWriteBlocked,
+  writeAndVerifyCredentials,
   restartInstructions,
   writeCredentialsFile,
 } from '../bin/bgos-pair.mjs'
@@ -358,6 +361,124 @@ test('verifyWrittenCredentials fails when the written path is not the one reads 
     assert.match(String(r.reason), /somewhere\/else\.json/)
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── Review fix 1: a fresh single-agent host (packaged plugin, no
+//    BGOS_ASSISTANT_ID configured) must still come up after pairing. The
+//    daemon with an empty env reads the legacy credentials.json, so pairing
+//    co-writes it when that cannot clobber another agent. ──────────────────
+
+function mkCreds(assistantId: number | string | null, token = 'pair_secret') {
+  return buildCredentials({
+    backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+    pairingToken: token,
+    pairingId: 42,
+    userId: 'user_abc',
+    assistantId,
+    nowIso: '2026-08-04T00:00:00.000Z',
+  })
+}
+
+test('shouldCoWriteLegacy: absent or same-agent legacy is refreshed, another agent is never touched', () => {
+  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: 901 }), true)
+  assert.equal(
+    shouldCoWriteLegacy({ legacyCreds: mkCreds(901, 'old_token'), assistantId: 901 }),
+    true,
+  )
+  assert.equal(shouldCoWriteLegacy({ legacyCreds: mkCreds(872), assistantId: 871 }), false)
+  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: null }), false)
+})
+
+test('legacyWriteBlocked: a live pairing for a bound assistant blocks the unbound legacy write', () => {
+  assert.equal(legacyWriteBlocked(mkCreds(872)), true)
+  assert.equal(legacyWriteBlocked(mkCreds(null)), false)
+  assert.equal(legacyWriteBlocked(null), false)
+  assert.equal(legacyWriteBlocked({ assistantId: 872 }), false, 'no token, nothing to protect')
+})
+
+test('fresh single-agent pairing resolves for a daemon with an EMPTY env (0.31.0 flow preserved)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-fresh-'))
+  try {
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(901), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.path, join(home, '.bgos-agent', 'credentials-901.json'))
+    assert.equal(r.legacyCoWritePath, join(home, '.bgos-agent', 'credentials.json'))
+    assert.equal(r.needsEnvPin, false)
+    // The reviewer's end-to-end check: resolve exactly as the daemon would,
+    // with no BGOS_ASSISTANT_ID and no BGOS_CREDENTIALS_PATH, and find the token.
+    const daemonPath = resolveReadCredentialsPath({ env: {}, home })
+    const daemonCreds = JSON.parse(await readFile(daemonPath, 'utf8'))
+    assert.equal(daemonCreds.pairingToken, 'pair_secret')
+    assert.equal(daemonCreds.assistantId, 901)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('pairing a second agent NEVER touches the first agent\'s legacy slot (kc-server shape)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-second-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    await writeCredentialsFile(legacyPath, mkCreds(872, 'guru_token'))
+    const before = await readFile(legacyPath, 'utf8')
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(871, 'ava_token'), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.path, join(home, '.bgos-agent', 'credentials-871.json'))
+    assert.equal(r.legacyCoWritePath, null)
+    assert.equal(await readFile(legacyPath, 'utf8'), before, 'legacy slot must be byte identical')
+    // Without an env pin the daemon would read the OTHER agent's file, so the
+    // operator must be told to set BGOS_ASSISTANT_ID.
+    assert.equal(r.needsEnvPin, true)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('same-agent re-pair refreshes the legacy slot too', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-repair-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    await writeCredentialsFile(legacyPath, mkCreds(901, 'old_token'))
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(901, 'new_token'), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.legacyCoWritePath, legacyPath)
+    const legacy = JSON.parse(await readFile(legacyPath, 'utf8'))
+    assert.equal(legacy.pairingToken, 'new_token')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+// ── Review fix 2: the unbound (assistantId null) legacy write may not clobber
+//    a live pairing, the exact overwrite class this branch exists to kill. ──
+
+test('unbound pairing refuses to overwrite a live legacy pairing, naming the bound assistant', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-clobber-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    await writeCredentialsFile(legacyPath, mkCreds(872, 'guru_token'))
+    const before = await readFile(legacyPath, 'utf8')
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(null, 'new_token'), env: {}, home })
+    assert.equal(r.ok, false)
+    assert.match(String(r.reason), /872/)
+    assert.equal(await readFile(legacyPath, 'utf8'), before, 'live pairing must survive')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('unbound pairing may overwrite an unbound placeholder legacy file', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-placeholder-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    await writeCredentialsFile(legacyPath, mkCreds(null, 'old_token'))
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(null, 'new_token'), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    const legacy = JSON.parse(await readFile(legacyPath, 'utf8'))
+    assert.equal(legacy.pairingToken, 'new_token')
+  } finally {
+    await rm(home, { recursive: true, force: true })
   }
 })
 

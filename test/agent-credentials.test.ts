@@ -344,6 +344,10 @@ test('read order in lib and the bgos-pair mirror never drift apart', () => {
     { env: { BGOS_ASSISTANT_ID: '871' }, exists: () => false },
     { env: {}, exists: () => true },
     { env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' }, exists: () => true },
+    // Whitespace padding must not make the write path and the read path diverge.
+    { env: { BGOS_CREDENTIALS_PATH: '  /x/c.json  ', BGOS_ASSISTANT_ID: '871' }, exists: () => true },
+    { env: { BGOS_CREDENTIALS_PATH: '   ' }, exists: () => true },
+    { env: { BGOS_ASSISTANT_ID: ' 871 ' }, exists: (p: string) => p.endsWith('credentials-871.json') },
   ]
   for (const c of cases) {
     assert.equal(

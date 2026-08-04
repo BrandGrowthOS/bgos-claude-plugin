@@ -94,7 +94,9 @@ export function resolveCredentialsPath(opts: {
   exists?: (path: string) => boolean
 }): string {
   const env: Env = opts.env ?? {}
-  const override = str(env.BGOS_CREDENTIALS_PATH)
+  // Trimmed, matching the bgos-pair write side: a padded path must not make
+  // the daemon read a different file than pairing wrote.
+  const override = str(env.BGOS_CREDENTIALS_PATH).trim()
   if (override) return override
   const assistantId = configuredAssistantId(env)
   if (assistantId) {

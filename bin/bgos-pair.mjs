@@ -331,7 +331,133 @@ export function verifyWrittenCredentials({
         `not the intended ${expected}`,
     }
   }
-  return { ok: true }
+  // Second probe with the REAL, uninjected env: would a daemon started with
+  // exactly this environment (no BGOS_ASSISTANT_ID pin) still find this
+  // pairing? If not, the operator MUST pin the env, and main() says so
+  // unconditionally instead of the pairing quietly relying on an env var
+  // nobody set.
+  const realEnvPath = resolveReadCredentialsPath({ env, home, exists })
+  let needsEnvPin = !samePath(realEnvPath, path)
+  if (needsEnvPin) {
+    try {
+      const other = JSON.parse(read(realEnvPath, 'utf8'))
+      if (
+        other &&
+        other.pairingToken === creds.pairingToken &&
+        String(other.assistantId ?? '') === String(creds.assistantId ?? '')
+      ) {
+        needsEnvPin = false
+      }
+    } catch {
+      // unreadable or absent: the pin stays required.
+    }
+  }
+  return { ok: true, needsEnvPin, realEnvPath }
+}
+
+/** Path equality tolerant of symlinks and spelling differences. */
+function samePath(a, b) {
+  if (a === b) return true
+  try {
+    return realpathSync(a) === realpathSync(b)
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort JSON read; null when absent or unparsable. */
+function loadJsonSafe(path, read = readFileSync) {
+  try {
+    const parsed = JSON.parse(read(path, 'utf8'))
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * May the legacy single-slot file be co-written for this pairing? Yes when it
+ * is absent, junk, or already this same assistant (a refresh); NEVER when it
+ * holds another agent's pairing, which is the overwrite bug this exists to
+ * prevent. The co-write is what keeps a daemon with an EMPTY env (packaged
+ * plugin, no BGOS_ASSISTANT_ID configured) finding its pairing, as 0.31.0 did.
+ * @param {{ legacyCreds?: { pairingToken?: string, assistantId?: string | number | null } | null, assistantId?: string | number | null }} opts
+ */
+export function shouldCoWriteLegacy({ legacyCreds, assistantId } = {}) {
+  const id = String(assistantId ?? '').trim()
+  if (!id) return false
+  if (!legacyCreds || !legacyCreds.pairingToken) return true
+  return String(legacyCreds.assistantId ?? '') === id
+}
+
+/**
+ * True when an UNBOUND (assistantId null) pairing write would clobber a live
+ * pairing that belongs to a bound assistant. Refusing is mandatory: this is
+ * exactly how one agent's pairing silently transferred to another.
+ * @param {{ pairingToken?: string, assistantId?: string | number | null } | null | undefined} existingCreds
+ */
+export function legacyWriteBlocked(existingCreds) {
+  return Boolean(
+    existingCreds &&
+      existingCreds.pairingToken &&
+      String(existingCreds.assistantId ?? '').trim() !== '',
+  )
+}
+
+/**
+ * The whole write step: pick the path, guard the legacy slot, write, co-write
+ * the legacy file when safe, and verify the result resolves for the intended
+ * assistant. Composed here (not inline in main) so tests can drive the real
+ * flow against a temp HOME.
+ * @param {{ creds: { pairingToken: string, assistantId?: string | number | null },
+ *           env?: Record<string, string | undefined>, home?: string }} opts
+ */
+export async function writeAndVerifyCredentials({ creds, env = {}, home = homedir() }) {
+  const assistantId = creds.assistantId
+  const boundId = String(assistantId ?? '').trim()
+  const path = credentialsWritePath({ home, assistantId, env })
+
+  if (!boundId) {
+    const existing = loadJsonSafe(path)
+    if (legacyWriteBlocked(existing)) {
+      return {
+        ok: false,
+        path,
+        legacyCoWritePath: null,
+        reason:
+          `refusing to overwrite ${path}: it holds a live pairing for ` +
+          `assistant ${existing.assistantId}. Rerun with --assistant-id <id> ` +
+          `or set BGOS_CREDENTIALS_PATH to a fresh file.`,
+      }
+    }
+  }
+
+  await writeCredentialsFile(path, creds)
+
+  let legacyCoWritePath = null
+  const override = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
+  if (boundId && !override) {
+    const legacy = credentialsPath(home)
+    if (!samePath(legacy, path) && shouldCoWriteLegacy({ legacyCreds: loadJsonSafe(legacy), assistantId })) {
+      await writeCredentialsFile(legacy, creds)
+      legacyCoWritePath = legacy
+    }
+  }
+
+  const verified = verifyWrittenCredentials({
+    path,
+    expectedAssistantId: boundId,
+    home,
+    env,
+  })
+  if (!verified.ok) return { ok: false, path, legacyCoWritePath, reason: verified.reason }
+  return {
+    ok: true,
+    path,
+    legacyCoWritePath,
+    needsEnvPin: verified.needsEnvPin,
+    realEnvPath: verified.realEnvPath,
+  }
 }
 
 /**
@@ -500,6 +626,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log('[bgos-pair] paired. Adding your agent...')
   let binding = { kind: 'none' }
+  let okPolls = 0
   const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
     let me
@@ -509,6 +636,7 @@ export async function main(argv = process.argv.slice(2)) {
       me = { ok: false }
     }
     if (me.ok) {
+      okPolls++
       binding = selectAssistantBinding(me.body, requestedId)
       if (binding.kind === 'ok' || binding.kind === 'ambiguous') break
       // 'mismatch' keeps polling: the requested binding may still propagate.
@@ -533,10 +661,17 @@ export async function main(argv = process.argv.slice(2)) {
     return 1
   }
   if (binding.kind === 'none' && requestedId) {
-    console.error(
-      `[bgos-pair] REFUSING to write credentials: assistant ${requestedId} was requested but did not appear bound within 60s.`,
-    )
-    console.error('[bgos-pair] nothing was written. Finish "Add agent" in the HOAI app, then rerun.')
+    if (okPolls === 0) {
+      console.error(
+        `[bgos-pair] could not confirm assistant ${requestedId}: every status poll failed (backend unreachable).`,
+      )
+      console.error('[bgos-pair] nothing was written. Check this computer\'s connection and rerun.')
+    } else {
+      console.error(
+        `[bgos-pair] REFUSING to write credentials: assistant ${requestedId} was requested but did not appear bound within 60s.`,
+      )
+      console.error('[bgos-pair] nothing was written. Finish "Add agent" in the HOAI app, then rerun.')
+    }
     return 1
   }
 
@@ -549,35 +684,33 @@ export async function main(argv = process.argv.slice(2)) {
     assistantId,
     nowIso: new Date().toISOString(),
   })
-  const path = credentialsWritePath({ assistantId, env: process.env })
-  await writeCredentialsFile(path, creds)
-
-  // Post-write verification: prove the file we wrote is the file the daemon
-  // will read for this assistant, and that it carries this assistant. Never
-  // report success on an unverified write.
-  const verified = verifyWrittenCredentials({
-    path,
-    expectedAssistantId: assistantId == null ? '' : String(assistantId),
-    env: process.env,
-  })
-  if (!verified.ok) {
-    console.error(`[bgos-pair] wrote ${path}, but verification FAILED: ${verified.reason}`)
-    console.error('[bgos-pair] this pairing is NOT confirmed working. Fix the above and pair again.')
+  // Write per-assistant, co-write the legacy slot when that cannot clobber
+  // another agent, then verify the result actually resolves for the intended
+  // assistant. Never report success on an unverified or refused write.
+  const result = await writeAndVerifyCredentials({ creds, env: process.env })
+  if (!result.ok) {
+    console.error(`[bgos-pair] pairing NOT saved: ${result.reason}`)
     return 1
   }
 
-  console.log(`[bgos-pair] wrote ${path} (chmod 600)`)
+  console.log(`[bgos-pair] wrote ${result.path} (chmod 600)`)
+  if (result.legacyCoWritePath) {
+    console.log(`[bgos-pair] also refreshed ${result.legacyCoWritePath} (same agent, single-agent hosts read it)`)
+  }
   if (assistantId == null) {
     console.log('[bgos-pair] paired, but no agent is bound yet. Finish "Add agent" in the HOAI app,')
     console.log('[bgos-pair] then start Claude Code with the HOAI channel and it will pick up the binding.')
   } else {
     console.log(`[bgos-pair] verified: this file resolves to assistant ${assistantId}.`)
+    if (result.needsEnvPin) {
+      console.log(
+        `[bgos-pair] REQUIRED: set BGOS_ASSISTANT_ID=${assistantId} ` +
+          `(or BGOS_CREDENTIALS_PATH=${result.path}) in this agent's environment. ` +
+          `Without it the daemon reads ${result.realEnvPath}, which belongs to a different pairing.`,
+      )
+    }
     console.log('[bgos-pair] done. To go live,')
     for (const line of restartInstructions()) console.log(`[bgos-pair] ${line}`)
-    console.log(
-      `[bgos-pair] on a multi-agent host, set BGOS_ASSISTANT_ID=${assistantId} ` +
-        `(or BGOS_CREDENTIALS_PATH=${path}) in this agent's environment so it reads this file.`,
-    )
   }
   return 0
 }
