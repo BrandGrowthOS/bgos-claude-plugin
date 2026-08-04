@@ -2,6 +2,33 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.32.0 (4 August 2026)
+
+Multi-agent pairing: N agents under one OS user can now each hold their own
+pairing. Driven by a live incident on a 7-agent host where pairing intended
+for one assistant silently rebound another.
+
+- **bgos-pair never guesses the assistant.** `--assistant-id <id>` (or
+  `BGOS_ASSISTANT_ID`) pins the intended assistant; if the pairing resolves to
+  a different one, nothing is written and both ids are named. With no request
+  and several bound agents, the candidates are listed and an explicit choice
+  is required.
+- **Per-assistant credentials files.** New pairings write
+  `~/.bgos-agent/credentials-<assistantId>.json` (or `BGOS_CREDENTIALS_PATH`),
+  so pairing agent B no longer overwrites agent A's slot. Read order is strict
+  and total: `BGOS_CREDENTIALS_PATH`, else an existing
+  `credentials-<BGOS_ASSISTANT_ID>.json`, else the legacy `credentials.json`
+  (the existing single-file fleet keeps working unchanged).
+- **A rejected pairing file is loud.** When a credentials file is ignored
+  because its assistantId does not match the configured `BGOS_ASSISTANT_ID`,
+  startup logs a WARN naming both ids and the file path instead of silently
+  falling back to api-key auth (the silent fallback made "boards 401" look
+  like the channel being down).
+- **Post-write verification.** bgos-pair re-resolves the file it just wrote
+  and exits nonzero unless it actually resolves to the intended assistant.
+- **Honest restart instructions** for both topologies: the packaged
+  `plugin:hoai@hoai` channel and a checkout-based `server:bgos` host.
+
 ## 0.31.0 — 27 July 2026
 
 The first release since 0.21.1. Twenty-two commits, and the reason it is being
