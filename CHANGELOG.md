@@ -25,7 +25,21 @@ for one assistant silently rebound another.
   falling back to api-key auth (the silent fallback made "boards 401" look
   like the channel being down).
 - **Post-write verification.** bgos-pair re-resolves the file it just wrote
-  and exits nonzero unless it actually resolves to the intended assistant.
+  and exits nonzero unless it actually resolves to the intended assistant. It
+  also probes the real, unpinned environment: when only an env pin would make
+  the daemon find the file, the success output says REQUIRED, with the exact
+  variable to set.
+- **Single-agent hosts keep working with an empty env.** After the
+  per-assistant write, the legacy `credentials.json` is co-written when it is
+  absent, junk, or already this same assistant, never when it holds another
+  agent's pairing. A daemon with no `BGOS_ASSISTANT_ID` configured (the
+  packaged plugin default) finds its pairing exactly as it did on 0.31.0.
+- **The unbound write cannot clobber a live pairing.** When no assistant is
+  bound yet, writing the legacy slot is refused if that file holds a live
+  pairing for a bound assistant, naming that assistant.
+- **Whitespace parity.** `BGOS_CREDENTIALS_PATH` and `BGOS_ASSISTANT_ID` are
+  trimmed identically on the write side and the read side (a padded id that
+  previously rejected a matching pairing file now matches it).
 - **Honest restart instructions** for both topologies: the packaged
   `plugin:hoai@hoai` channel and a checkout-based `server:bgos` host.
 
