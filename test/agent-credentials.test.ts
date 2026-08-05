@@ -479,8 +479,16 @@ test('server startup threads the pairing rejection warn into the log', () => {
 })
 
 test('server loads credentials from the resolved per-agent path', () => {
+  // The default path literal stays pinned (0.33.0 extracted it to a named
+  // const so the auth divergence recheck re-resolves the SAME default).
   assert.equal(
-    /const CREDENTIALS_PATH = resolveCredentialsPath\(\{\s*env: process\.env,\s*defaultPath: joinPath\(homedir\(\), '\.bgos-agent', 'credentials\.json'\),\s*\}\)/.test(
+    /const DEFAULT_CREDENTIALS_FILE = joinPath\(homedir\(\), '\.bgos-agent', 'credentials\.json'\)/.test(
+      serverSource,
+    ),
+    true,
+  )
+  assert.equal(
+    /const CREDENTIALS_PATH = resolveCredentialsPath\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*\}\)/.test(
       serverSource,
     ),
     true,

@@ -2,6 +2,29 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.33.0 (5 August 2026)
+
+Two observability items; no behavior change to auth or to what remote
+compact does.
+
+- **Auth divergence recheck (visibility only).** Auth is resolved once at
+  boot, and the boot log line then masquerades as current truth even after
+  the credentials file is rewritten underneath the process. The daemon now
+  re-runs the same pure resolution every 10 minutes (env-tunable via
+  `BGOS_AUTH_RECHECK_INTERVAL_MS`; `0`/`off` disables) plus immediately on a
+  credentials-file watch event, and when the OUTCOME (mode, source,
+  assistantId, token identity via a sha256-first-8 fingerprint) differs from
+  boot it logs ONE structured WARN per distinct divergence, including the
+  age of the underlying file change, and a recovery line if it reverts. The
+  running process keeps its boot auth; no token is ever logged.
+- **Remote compact detection survives startup races.** When the boot env
+  does not resolve a tmux target, detection now retries for a bounded
+  window (3 attempts over 30s) before concluding OFF, and after an OFF
+  conclusion a throttled periodic recheck (every 60s, bounded budget) may
+  make a one-time late upgrade to ON, logging that detection succeeded
+  after the startup window and re-advertising `/compact`. The healthy boot
+  path and its ON log line are byte-identical to 0.32.x.
+
 ## 0.32.0 (4 August 2026)
 
 Multi-agent pairing: N agents under one OS user can now each hold their own

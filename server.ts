@@ -156,6 +156,18 @@ import {
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
+import {
+  authSnapshot,
+  resolveAuthRecheckIntervalMs,
+  AuthRecheckMonitor,
+} from './lib/auth-recheck.js'
+import {
+  detectCompactCapability,
+  formatCompactDetection,
+  formatLateCompactUpgrade,
+  LateCompactUpgrader,
+  LATE_UPGRADE_PROBE_INTERVAL_MS,
+} from './lib/compact-capability.js'
 import { homedir } from 'node:os'
 import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
 import {
@@ -175,9 +187,10 @@ import { join as joinPath } from 'node:path'
 //              existing installs through the deprecation window).
 // A pairing file cannot override a different explicit BGOS_ASSISTANT_ID.
 // Every outbound call uses authHeaders(AUTH); the WS uses wsAuthOptions(AUTH).
+const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials.json')
 const CREDENTIALS_PATH = resolveCredentialsPath({
   env: process.env,
-  defaultPath: joinPath(homedir(), '.bgos-agent', 'credentials.json'),
+  defaultPath: DEFAULT_CREDENTIALS_FILE,
 })
 const AUTH: ResolvedAuth = resolveAuth({
   env: process.env,
@@ -227,7 +240,7 @@ function getApiBaseUrl(): string {
 
 const API_BASE = getApiBaseUrl()
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, statSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join as pathJoin } from 'node:path'
 
@@ -251,6 +264,86 @@ function log(msg: string): void {
   try {
     appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
   } catch {}
+}
+
+// ── Auth divergence recheck (visibility only) ────────────────────────────────
+// AUTH above is resolved ONCE and frozen for the process lifetime; without
+// this, the boot log line masquerades as current truth even after the
+// credentials file is rewritten underneath the process (the kc-server
+// incident: an agent printed a pairing-file resolution from a boot that
+// preceded TWO rewrites of that file). Every BGOS_AUTH_RECHECK_INTERVAL_MS
+// (default 10 min; '0'/'off' disables), plus immediately on an fs.watch
+// event on the boot credentials path, the same pure resolution is re-run
+// and the OUTCOME compared to boot (lib/auth-recheck.ts). A divergence logs
+// ONE WARN per distinct state, with the age of the file change; a revert
+// logs recovery. NO behavior change: the running auth stays whatever boot
+// resolved, and no token is ever logged (fingerprints only).
+const authRecheckMonitor = new AuthRecheckMonitor(authSnapshot(AUTH, CREDENTIALS_PATH))
+
+function credentialsMtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+function runAuthRecheck(): void {
+  try {
+    const currentPath = resolveCredentialsPath({
+      env: process.env,
+      defaultPath: DEFAULT_CREDENTIALS_FILE,
+    })
+    const currentAuth = resolveAuth({
+      env: process.env,
+      creds: loadCredentialsFile(currentPath),
+    })
+    // Age of the divergence: mtime of the file the CURRENT resolution reads,
+    // falling back to the boot file when the current source is env-based.
+    const mtimeMs =
+      credentialsMtimeMs(currentPath) ?? credentialsMtimeMs(CREDENTIALS_PATH)
+    const line = authRecheckMonitor.evaluate(
+      authSnapshot(currentAuth, currentPath),
+      mtimeMs,
+      Date.now(),
+    )
+    if (line) log(line)
+  } catch (err) {
+    // Visibility-only feature: a recheck failure must never hurt the daemon.
+    log(`auth recheck skipped: ${err}`)
+  }
+}
+
+let authWatchDebounce: ReturnType<typeof setTimeout> | null = null
+
+function startAuthRecheck(): void {
+  const intervalMs = resolveAuthRecheckIntervalMs(process.env)
+  if (intervalMs <= 0) {
+    log('auth recheck disabled (BGOS_AUTH_RECHECK_INTERVAL_MS)')
+    return
+  }
+  setInterval(runAuthRecheck, intervalMs).unref()
+  // Cheap immediate signal on file change; guarded so watcher failures
+  // (missing file, platform quirks, watcher error events) never crash
+  // anything - the interval above remains the backstop.
+  let watching = false
+  try {
+    const watcher = watch(CREDENTIALS_PATH, { persistent: false }, () => {
+      if (authWatchDebounce) clearTimeout(authWatchDebounce)
+      authWatchDebounce = setTimeout(runAuthRecheck, 500)
+      authWatchDebounce.unref?.()
+    })
+    watcher.on('error', () => {
+      /* watcher death is fine; the periodic recheck continues */
+    })
+    watching = true
+  } catch {
+    /* no watch on this platform/path; periodic recheck only */
+  }
+  log(
+    `auth recheck enabled (every ${Math.round(intervalMs / 1000)}s` +
+      (watching ? ' + credentials-file watch)' : ', no file watch)'),
+  )
 }
 
 function setUpdateDrainMode(enabled: boolean): void {
@@ -546,23 +639,67 @@ function reportResting(): void {
 // The model cannot run host CLI commands from a channel event (the 0.22.1
 // lesson), but when the CLI runs inside a tmux pane the DAEMON can type the
 // fixed literal '/compact' into the composer via tmux send-keys
-// (lib/compact-inject.ts; capability detected once at boot). The event is
+// (lib/compact-inject.ts). The event is
 // swallowed (never forwarded to the model), the user gets a direct daemon
 // reply, and completion is confirmed asynchronously by watching the bound
 // transcript for the compact_boundary entry (lib/compact-confirm.ts).
-const compactTarget: TmuxTarget | null = resolveTmuxTarget(process.env)
+//
+// Detection is no longer a single boot-time check (peer-871-3: a normal
+// relaunch on kc-server concluded OFF where the identical setup previously
+// printed ON, a startup race against tmux becoming queryable). When the env
+// does not resolve a target at boot, lib/compact-capability.ts retries for a
+// bounded window (3 attempts over 30s) before concluding OFF, and after an
+// OFF conclusion a throttled periodic recheck may make a ONE-TIME late
+// upgrade to ON. What the capability does is unchanged.
+let compactTarget: TmuxTarget | null = resolveTmuxTarget(process.env)
 const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({ remoteCompact: compactTarget !== null }),
 )
 let registeredSlashCommands = bootSlashCommands.registry
 let registeredSlashCommandAliases = bootSlashCommands.legacyAliases
 if (compactTarget) {
+  // The healthy path stays byte-identical to the pre-0.33.0 behavior: env
+  // resolved a target, capability ON immediately, same log line.
   log(
     `remote compact capability ON (tmux target ${compactTarget.target} ` +
       `via ${compactTarget.source})`,
   )
 } else {
-  log('remote compact capability OFF (no tmux control of the CLI detected)')
+  void settleCompactCapability()
+}
+
+async function settleCompactCapability(): Promise<void> {
+  const deps = {
+    resolveTarget: () => resolveTmuxTarget(process.env),
+    probe: (t: TmuxTarget) => tmuxTargetAlive(t),
+    // Inline (not sleepMs): this runs at module eval, before the later
+    // `const sleepMs` initializer would be reachable (TDZ).
+    sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  }
+  const outcome = await detectCompactCapability(deps)
+  log(formatCompactDetection(outcome))
+  if (outcome.state === 'on') {
+    compactTarget = outcome.target
+    // Advertise /compact now that the daemon can actually inject it.
+    void syncSlashCommands()
+    return
+  }
+  // Concluded OFF: arm the one-time late upgrade at a periodic touchpoint.
+  const upgrader = new LateCompactUpgrader(deps)
+  const timer = setInterval(() => {
+    void (async () => {
+      const target = await upgrader.check(Date.now())
+      if (target) {
+        compactTarget = target
+        log(formatLateCompactUpgrade(target))
+        void syncSlashCommands()
+      }
+      if (upgrader.finished) clearInterval(timer)
+    })().catch(() => {
+      /* late upgrade is best-effort; never let it surface a rejection */
+    })
+  }, LATE_UPGRADE_PROBE_INTERVAL_MS)
+  timer.unref()
 }
 let compactInFlight = false
 const COMPACT_CONFIRM_TIMEOUT_MS = 4 * 60_000
@@ -6335,6 +6472,13 @@ async function main(): Promise<void> {
     post: bgosPost,
     log,
   })
+
+  // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
+  // re-resolution (default 10 min + credentials-file watch) WARNs once per
+  // distinct divergence when the credential resolution changes underneath
+  // the process, so the boot log line can no longer masquerade as current
+  // truth. Visibility only; running auth is never changed.
+  startAuthRecheck()
 
   // Step 10: opt-in checkout updates. The updater checked rollback state at
   // the start of main; the remote check starts only after message transport,
