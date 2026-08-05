@@ -127,15 +127,34 @@ export function claudeCatalogEntry() {
   return { agent_route: CLAUDE_AGENT_ROUTE, name: CLAUDE_AGENT_NAME }
 }
 
-/** POST /integrations/pair-exchange body. */
-export function buildExchangeBody({ code, deviceLabel, version }) {
-  return {
+/**
+ * POST /integrations/pair-exchange body.
+ *
+ * `intendedAssistantId` is the identity the operator pinned (--assistant-id /
+ * BGOS_ASSISTANT_ID, via resolveRequestedAssistantId). When it is a positive
+ * integer id the body carries `intended_assistant_id` (number, snake_case:
+ * part of the cross-repo exchange contract, pinned identically in the
+ * backend's PairExchangeDto). The backend's mint-time overlap guard then
+ * scopes its overlap unit to the pairing serving THAT assistant, instead of
+ * the agent catalog, whose entry is identical across every Claude daemon and
+ * therefore made every multi-agent account look like a conflict (the
+ * 2026-08-04 fleet-wide pairing freeze). Omitted when nothing was pinned:
+ * older backends whitelist-strip unknown fields, so sending nothing keeps the
+ * legacy single-agent flow byte-identical.
+ */
+export function buildExchangeBody({ code, deviceLabel, version, intendedAssistantId }) {
+  const body = {
     code,
     deviceLabel,
     integration: CLAUDE_INTEGRATION,
     agentCatalog: [claudeCatalogEntry()],
     daemonVersion: version ?? PLUGIN_VERSION,
   }
+  const pinned = Number(String(intendedAssistantId ?? '').trim())
+  if (Number.isInteger(pinned) && pinned > 0 && /^\d+$/.test(String(intendedAssistantId).trim())) {
+    body.intended_assistant_id = pinned
+  }
+  return body
 }
 
 /** POST /integrations/pairings/:id/agent-catalog body (fires pair_ready). */
@@ -559,12 +578,25 @@ export async function main(argv = process.argv.slice(2)) {
   const apiBase = args.apiBase
   const deviceLabel = `${hostname()} (Claude Code)`
 
+  // Resolved BEFORE the exchange: the pinned identity travels IN the exchange
+  // body (intended_assistant_id) so the backend's overlap guard judges the
+  // pairing against the agent this machine actually serves, not against every
+  // Claude pairing on the account.
+  const requestedId = resolveRequestedAssistantId({
+    argAssistantId: args.assistantId,
+    env: process.env,
+  })
+  if (requestedId) {
+    console.log(`[bgos-pair] pairing as assistant ${requestedId} (explicitly requested)`)
+  }
+
   console.log('[bgos-pair] pairing this computer with your HOAI account...')
   let exchange
   try {
     exchange = await postJson(`${apiBase}/integrations/pair-exchange`, buildExchangeBody({
       code: args.code,
       deviceLabel,
+      intendedAssistantId: requestedId,
     }))
   } catch (err) {
     console.error(`[bgos-pair] could not reach the backend: ${err?.message ?? err}`)
@@ -614,14 +646,6 @@ export async function main(argv = process.argv.slice(2)) {
     // If binding fails (for example the app already bound), fall through to the
     // poll below, which finds whatever assistant ended up bound.
     console.error(`[bgos-pair] note: could not bind the agent automatically (${err?.message ?? err}); checking the app...`)
-  }
-
-  const requestedId = resolveRequestedAssistantId({
-    argAssistantId: args.assistantId,
-    env: process.env,
-  })
-  if (requestedId) {
-    console.log(`[bgos-pair] pairing as assistant ${requestedId} (explicitly requested)`)
   }
 
   console.log('[bgos-pair] paired. Adding your agent...')

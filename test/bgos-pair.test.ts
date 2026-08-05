@@ -93,6 +93,52 @@ test('buildExchangeBody carries the claude-code integration and a one entry cata
   assert.deepEqual(body.agentCatalog, [{ agent_route: CLAUDE_AGENT_ROUTE, name: CLAUDE_AGENT_NAME }])
 })
 
+// Exchange contract (identical on the backend, PairExchangeDto): the body
+// carries intended_assistant_id whenever --assistant-id / BGOS_ASSISTANT_ID
+// pinned an identity, so the backend's mint-time overlap guard can scope its
+// overlap unit to the pairing serving THAT assistant instead of the catalog
+// (whose entry is identical across every Claude daemon and froze multi-agent
+// accounts on 2026-08-04).
+test('buildExchangeBody carries intended_assistant_id when an identity is pinned', () => {
+  const body = buildExchangeBody({
+    code: 'BGOS-7F3A-2K',
+    deviceLabel: 'kc-server (Claude Code)',
+    version: '0.33.1',
+    intendedAssistantId: '871',
+  })
+  assert.equal(body.intended_assistant_id, 871)
+  assert.equal(typeof body.intended_assistant_id, 'number')
+})
+
+test('buildExchangeBody omits intended_assistant_id when nothing was pinned', () => {
+  const unpinned = buildExchangeBody({
+    code: 'BGOS-7F3A-2K',
+    deviceLabel: 'kc-server (Claude Code)',
+    version: '0.33.1',
+  })
+  assert.equal('intended_assistant_id' in unpinned, false)
+
+  const empty = buildExchangeBody({
+    code: 'BGOS-7F3A-2K',
+    deviceLabel: 'kc-server (Claude Code)',
+    version: '0.33.1',
+    intendedAssistantId: '',
+  })
+  assert.equal('intended_assistant_id' in empty, false)
+})
+
+test('buildExchangeBody omits intended_assistant_id when the pin is not a positive integer id', () => {
+  for (const junk of ['abc', '-3', '0', '12.5', '${user_config.assistant_id}']) {
+    const body = buildExchangeBody({
+      code: 'BGOS-7F3A-2K',
+      deviceLabel: 'kc-server (Claude Code)',
+      version: '0.33.1',
+      intendedAssistantId: junk,
+    })
+    assert.equal('intended_assistant_id' in body, false, `junk pin ${JSON.stringify(junk)} must not be sent`)
+  }
+})
+
 test('buildCatalogBody is the single claude agent, matching the exchange catalog', () => {
   assert.deepEqual(buildCatalogBody(), {
     agents: [{ agent_route: CLAUDE_AGENT_ROUTE, name: CLAUDE_AGENT_NAME }],
