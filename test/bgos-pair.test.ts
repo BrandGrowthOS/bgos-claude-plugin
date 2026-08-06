@@ -39,6 +39,7 @@ import {
   credentialsWritePath,
   resolveReadCredentialsPath,
   verifyWrittenCredentials,
+  pairExitCode,
   shouldCoWriteLegacy,
   legacyWriteBlocked,
   writeAndVerifyCredentials,
@@ -658,5 +659,49 @@ test('shouldCoWriteLegacy: a multi-agent host never gets the legacy file back', 
       otherAssistantIds: [],
     }),
     false,
+  )
+})
+
+/**
+ * "REQUIRED: set BGOS_ASSISTANT_ID" was prose in a stream of output, and the
+ * command still exited 0. So a pairing that CANNOT work reported success, and
+ * the operator found out at the next restart when the daemon resolved a
+ * different agent's file. Ava (871) named it on 2026-08-05: the note carries
+ * the whole correctness burden and nothing enforces it.
+ *
+ * 2026-08-06 supplied the evidence. On a twelve-agent host, two agents had
+ * valid pairing rows and no usable local credentials; both looked healthy
+ * until one restarted. A pairing whose runtime resolution points elsewhere is
+ * not a success, and exit 0 is a claim that it was.
+ *
+ * Single-agent hosts keep the old behaviour: there is no other file to
+ * resolve, so the warning is enough and refusing would be theatre.
+ */
+test('pairExitCode: a multi-agent host refuses to call an unpinned pairing a success', () => {
+  // The failure this exists to stop: other agents live here, and the daemon
+  // would read one of their files instead of the one just written.
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 11 }),
+    1,
+  )
+})
+
+test('pairExitCode: a single-agent host is unchanged', () => {
+  // Nothing else to resolve to, so the warning stands on its own and exit 0
+  // remains honest.
+  assert.equal(pairExitCode({ needsEnvPin: true, otherAgentCount: 0 }), 0)
+})
+
+test('pairExitCode: a correctly pinned pairing succeeds anywhere', () => {
+  assert.equal(pairExitCode({ needsEnvPin: false, otherAgentCount: 11 }), 0)
+  assert.equal(pairExitCode({ needsEnvPin: false, otherAgentCount: 0 }), 0)
+})
+
+test('pairExitCode: an explicit override lets an operator proceed knowingly', () => {
+  // The refusal must be escapable, or a legitimate flow that sets the env
+  // afterwards has no way through. Knowing beats blocked.
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 11, allowUnpinned: true }),
+    0,
   )
 })
