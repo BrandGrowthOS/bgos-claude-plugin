@@ -528,6 +528,51 @@ previous commit without reset or force and disables automatic updates. To
 clear that safety latch, boot once with the flag set to `off`, then set it back
 to `on` and restart again.
 
+### Stopping updates on a running fleet
+
+Written down because on 2026-08-06 an operator with twelve live agents needed
+to stop auto-update in a hurry, could not confirm the kill switch's file
+format from source fast enough to trust it, and improvised a different brake.
+A brake nobody can confirm the shape of is a brake nobody reaches for under
+pressure. There are three levers; pick by what you actually need.
+
+**1. `BGOS_AUTO_UPDATE=off` (per daemon, needs a restart to apply).** The
+documented kill switch. It stops every check and pull for that daemon. It only
+takes effect when the daemon next starts, so it cannot stop an update on a
+process that is already running: use it when you are restarting anyway.
+
+**2. The safety file (per checkout, takes effect on the next check, no
+restart).** Path `<checkout>/.git/bgos-auto-update-disabled.json`, exact
+contents:
+
+```json
+{ "schemaVersion": 1, "disabled": true, "resetArmed": false }
+```
+
+Every daemon sharing that checkout reads it at its next check and stays put.
+This is the right instrument for "hold this whole machine where it is": it
+stops updates WITHOUT disabling rollback. To re-enable, boot once with
+`BGOS_AUTO_UPDATE=off`, then set it back to `on` and restart. The plugin
+writes this same file itself when it disables updates after a failed
+revision, so the format above is the one it already round-trips.
+
+**3. The dirty-tree brake (per checkout, immediate, emergency use).** Any
+non-empty `git status --porcelain --untracked-files=normal` in the checkout
+aborts the update before it fetches, so a single untracked file stops every
+daemon on that machine at its next check with nothing to install or restart.
+It is the fastest brake and the bluntest.
+
+**The cost you must know before using lever 3: the same dirty-tree check also
+guards automatic ROLLBACK.** While the tree is dirty a bad revision cannot be
+rolled back automatically, so if you pull with the marker still present and
+the new version misbehaves, you are recovering twelve agents by hand. Delete
+the marker AS PART OF the pull, never after it. If you are holding a machine
+for more than a moment, prefer lever 2, which does not have this cost.
+
+If you leave a marker file behind, make it say what it is: what it stops, that
+deleting it re-arms every daemon on the machine, and the removal sequence.
+Whoever finds it will not have your context.
+
 Manual updates remain supported:
 
 ```bash
