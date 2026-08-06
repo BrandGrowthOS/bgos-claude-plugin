@@ -75,6 +75,56 @@ export function isAutoUpdateEnabled(value: string | undefined): boolean {
   return value === 'on'
 }
 
+/**
+ * Does this host actually have something that will restart the daemon?
+ *
+ * KC-SERVER OUTAGE, 2026-08-06. After installing an update the daemon used
+ * to log "Exiting so the supervisor can restart the daemon" and exit, with
+ * no check that a supervisor existed. On a host where nothing restarts it,
+ * that is not a restart, it is a death: five of seven agents on one machine
+ * went silent overnight, one at a time as each reached its update. Their
+ * claude processes stayed alive and their sessions looked online, so the
+ * only symptom was that nobody answered.
+ *
+ * So exiting is now OPT IN. A host that really is supervised sets
+ * BGOS_EXIT_AFTER_UPDATE and keeps the old cycle-on-update behavior.
+ * Everywhere else the daemon keeps serving on the code it already has,
+ * which is worse than a restart and enormously better than being gone.
+ *
+ * Fails closed on typos: anything not explicitly truthy means do not exit.
+ */
+export function shouldExitAfterUpdate(env: Record<string, string | undefined>): boolean {
+  const value = (env.BGOS_EXIT_AFTER_UPDATE ?? '').trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'on' || value === 'yes'
+}
+
+/**
+ * The line that keeps a not-exiting daemon honest.
+ *
+ * Not exiting trades death for staleness: the update is on disk while the
+ * process keeps running the old code, potentially for days (sessions here
+ * run that long). Ava (871) made the point when reviewing this fix, and it
+ * is the same distinction that cost us most of the previous week: AN
+ * INSTALLED VERSION IS NOT A RUNNING VERSION. So the pending restart is
+ * announced on every boot beside the auto-update banner, not once at
+ * install time where it scrolls past whoever was not watching.
+ *
+ * Returns null when there is nothing pending, so the caller logs nothing.
+ */
+export function describePendingRestart(params: {
+  runningVersion: string | null | undefined
+  installedVersion: string | null | undefined
+}): string | null {
+  const running = params.runningVersion?.trim()
+  const installed = params.installedVersion?.trim()
+  if (!running || !installed) return null
+  if (running === installed) return null
+  return (
+    `Pending update: running ${running}, installed ${installed}, ` +
+    'takes effect when this session restarts.'
+  )
+}
+
 export function updateJitterMs(randomValue: number): number {
   const bounded = Number.isFinite(randomValue)
     ? Math.min(1, Math.max(0, randomValue))
@@ -1062,10 +1112,23 @@ export class SelfUpdater {
       } else {
         this.opts.log('Auto-update was already installed by another daemon.')
       }
-      this.opts.log('Auto-update complete. Exiting so the supervisor can restart the daemon.')
-      this.exiting = true
+      // A DAEMON NEVER EXITS UNLESS SOMETHING WILL RESTART IT (kc-server,
+      // 2026-08-06). Exiting is opt in; see shouldExitAfterUpdate.
+      if (shouldExitAfterUpdate(this.opts.env)) {
+        this.opts.log('Auto-update complete. Exiting so the supervisor can restart the daemon.')
+        this.exiting = true
+        lock.release()
+        this.opts.exit(0)
+        return
+      }
+      this.opts.log(
+        `Auto-update complete. This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +
+          'the update takes effect when this session restarts.',
+      )
+      // Un-drain, or the daemon stays up and mute, which is the same outage
+      // wearing a healthier-looking process list.
+      this.opts.setDrainMode(false)
       lock.release()
-      this.opts.exit(0)
     } finally {
       lock.release()
     }
@@ -1249,6 +1312,15 @@ export async function initializeSelfUpdater(
       opts.log('Auto-update could not record boot safety state; updates stay inactive.')
       return null
     }
+    // Announce a pending restart on EVERY boot, not only at install time.
+    // A daemon that keeps serving after an update is stale until someone
+    // restarts it, and a line logged once at 3 AM is not a signal anyone
+    // sees. An installed version is not a running version.
+    const pending = describePendingRestart({
+      runningVersion: opts.runningVersion,
+      installedVersion: state.targetVersion,
+    })
+    if (pending) opts.log(pending)
     const updater = new SelfUpdater(opts, state, runningCommit)
     if (boot.action === 'rollback') {
       await updater.attemptRollback()
