@@ -93,7 +93,13 @@ export function extractPairCode(raw) {
 }
 
 export function parsePairArgs(argv) {
-  const args = { code: '', apiBase: DEFAULT_API_BASE, assistantId: '', help: false }
+  const args = {
+    code: '',
+    apiBase: DEFAULT_API_BASE,
+    assistantId: '',
+    help: false,
+    allowUnpinned: false,
+  }
   const errors = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -103,6 +109,11 @@ export function parsePairArgs(argv) {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
       else args.apiBase = normalizeApiBase(value)
+    } else if (arg === '--allow-unpinned') {
+      // Escape hatch for a flow that sets BGOS_ASSISTANT_ID afterwards. It
+      // suppresses the refusal, never the warning: the operator still gets
+      // told exactly what the daemon would read.
+      args.allowUnpinned = true
     } else if (arg === '--assistant-id') {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
@@ -395,6 +406,30 @@ export function verifyWrittenCredentials({
   return { ok: true, needsEnvPin, realEnvPath }
 }
 
+/**
+ * Did this pairing actually leave the daemon able to find it?
+ *
+ * "REQUIRED: set BGOS_ASSISTANT_ID" used to be prose in a stream of output
+ * while the command still exited 0, so a pairing that CANNOT work reported
+ * success and the operator discovered it at the next restart, when the daemon
+ * resolved a different agent's file (Ava, 871, 2026-08-05).
+ *
+ * On a host where other agents already have credentials files, an unpinned
+ * pairing is not a warning, it is a wrong answer waiting for a restart: the
+ * daemon will read one of THEIR files. Exit non-zero so a human or a script
+ * cannot mistake it for done.
+ *
+ * A single-agent host keeps exit 0: there is no other file to resolve to, so
+ * refusing would be theatre. And the refusal is escapable with
+ * --allow-unpinned, for a flow that sets the environment afterwards; knowing
+ * beats blocked.
+ */
+export function pairExitCode({ needsEnvPin, otherAgentCount, allowUnpinned } = {}) {
+  if (!needsEnvPin) return 0
+  if (allowUnpinned) return 0
+  return Number(otherAgentCount ?? 0) > 0 ? 1 : 0
+}
+
 /** Path equality tolerant of symlinks and spelling differences. */
 function samePath(a, b) {
   if (a === b) return true
@@ -547,6 +582,10 @@ export function restartInstructions() {
 export const USAGE = `bgos-pair: pair this Claude Code session to HOAI with a one time code
 
 Usage:
+  # A machine running several agents (the usual case on a fleet host):
+  node ~/bgos-claude-plugin/bin/bgos-pair.mjs BGOS-XXXX-XX --assistant-id <id>
+
+  # A machine running exactly one agent, with no local checkout:
   npx --yes --package github:BrandGrowthOS/bgos-claude-plugin bgos-pair BGOS-XXXX-XX
 
 Options:
@@ -555,6 +594,10 @@ Options:
                          accounts with several bound agents (BGOS_ASSISTANT_ID
                          env is honoured as the fallback). If the pairing would
                          resolve to a different assistant, nothing is written.
+  --allow-unpinned       proceed even when the daemon would resolve a different
+                         agent's credentials file. Without this, that case exits
+                         non-zero on a host serving other agents, because the
+                         pairing cannot work until the environment is pinned.
   -h, --help             show this help
 
 Get a code in the HOAI app: Add agent, then Claude Code. The code links this
@@ -627,6 +670,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   const apiBase = args.apiBase
+  const allowUnpinned = args.allowUnpinned
   const deviceLabel = `${hostname()} (Claude Code)`
 
   // Resolved BEFORE the exchange: the pinned identity travels IN the exchange
@@ -796,6 +840,26 @@ export async function main(argv = process.argv.slice(2)) {
     }
     console.log('[bgos-pair] done. To go live,')
     for (const line of restartInstructions()) console.log(`[bgos-pair] ${line}`)
+
+    // The pairing is only a success if the daemon can actually find it. On a
+    // host serving other agents, an unpinned pairing resolves to one of THEIR
+    // files at the next restart, so saying "done" and exiting 0 would be a
+    // false claim rather than a warning.
+    const otherAgentCount = otherPerAssistantIds(home, assistantId).length
+    const code = pairExitCode({
+      needsEnvPin: result.needsEnvPin,
+      otherAgentCount,
+      allowUnpinned,
+    })
+    if (code !== 0) {
+      console.error(
+        `[bgos-pair] NOT DONE: this host serves ${otherAgentCount} other agent(s) and this ` +
+          `pairing is not pinned, so the daemon would read ${result.realEnvPath} instead of the ` +
+          `file just written. Set the environment variable above and rerun, or pass ` +
+          `--allow-unpinned if you are setting it yourself afterwards.`,
+      )
+    }
+    return code
   }
   return 0
 }
