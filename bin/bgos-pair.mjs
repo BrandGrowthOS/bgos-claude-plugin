@@ -39,7 +39,7 @@
  */
 
 import { mkdir, writeFile, chmod } from 'node:fs/promises'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join, dirname } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -270,6 +270,27 @@ export function perAssistantCredentialsPath(home, assistantId) {
 }
 
 /**
+ * Which OTHER agents already have a per-assistant credentials file here.
+ *
+ * This is how the host answers "am I a multi-agent machine" without asking an
+ * operator to remember a flag. Returns [] when the directory is missing or
+ * unreadable, so an unknown host is treated as single-agent and behaviour is
+ * unchanged.
+ */
+export function otherPerAssistantIds(home, assistantId) {
+  const id = String(assistantId ?? '').trim()
+  let entries = []
+  try {
+    entries = readdirSync(join(home, '.bgos-agent'))
+  } catch {
+    return []
+  }
+  return entries
+    .map((name) => /^credentials-(\d+)\.json$/.exec(name)?.[1])
+    .filter((found) => found && found !== id)
+}
+
+/**
  * Where a NEW pairing is written. Per-assistant by default so N agents under
  * one OS user never overwrite each other's slot; BGOS_CREDENTIALS_PATH wins
  * outright when set; the legacy single file only when no assistant is bound
@@ -400,11 +421,28 @@ function loadJsonSafe(path, read = readFileSync) {
  * holds another agent's pairing, which is the overwrite bug this exists to
  * prevent. The co-write is what keeps a daemon with an EMPTY env (packaged
  * plugin, no BGOS_ASSISTANT_ID configured) finding its pairing, as 0.31.0 did.
- * @param {{ legacyCreds?: { pairingToken?: string, assistantId?: string | number | null } | null, assistantId?: string | number | null }} opts
+ * MULTI-AGENT HOSTS NEVER GET IT (KC-WINSAMSUNG, 2026-08-06). The co-write
+ * fires on ABSENCE, so on a twelve-agent box it recreated the single-slot
+ * trap this migration exists to remove, stamped with whoever paired last.
+ * Worse, the operator workaround fed it: deleting the file between pairings
+ * is exactly the absence that makes the next pairing rewrite it. An operator
+ * cannot win by hand, so the host decides. It already knows the answer: a
+ * credentials-<other id>.json next door means more than one agent lives here,
+ * every daemon must pin BGOS_ASSISTANT_ID anyway, and the default path helps
+ * nobody. Reported by Mark (888), who observed the tool behave four different
+ * ways across four pairings and sent the table rather than a theory.
+ * @param {{ legacyCreds?: { pairingToken?: string, assistantId?: string | number | null } | null, assistantId?: string | number | null, otherAssistantIds?: readonly (string | number)[] }} opts
  */
-export function shouldCoWriteLegacy({ legacyCreds, assistantId } = {}) {
+export function shouldCoWriteLegacy({ legacyCreds, assistantId, otherAssistantIds } = {}) {
   const id = String(assistantId ?? '').trim()
   if (!id) return false
+  // Another agent's per-assistant file next door proves this host serves more
+  // than one agent. Omitted list keeps the old behaviour for callers that do
+  // not look, so nothing regresses silently.
+  const others = (otherAssistantIds ?? [])
+    .map((value) => String(value ?? '').trim())
+    .filter((value) => value && value !== id)
+  if (others.length > 0) return false
   if (!legacyCreds || !legacyCreds.pairingToken) return true
   return String(legacyCreds.assistantId ?? '') === id
 }
@@ -454,12 +492,23 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
   await writeCredentialsFile(path, creds)
 
   let legacyCoWritePath = null
+  let legacySkippedForMultiAgent = 0
   const override = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
   if (boundId && !override) {
     const legacy = credentialsPath(home)
-    if (!samePath(legacy, path) && shouldCoWriteLegacy({ legacyCreds: loadJsonSafe(legacy), assistantId })) {
+    const others = otherPerAssistantIds(home, assistantId)
+    if (
+      !samePath(legacy, path) &&
+      shouldCoWriteLegacy({
+        legacyCreds: loadJsonSafe(legacy),
+        assistantId,
+        otherAssistantIds: others,
+      })
+    ) {
       await writeCredentialsFile(legacy, creds)
       legacyCoWritePath = legacy
+    } else if (others.length > 0 && !samePath(legacy, path)) {
+      legacySkippedForMultiAgent = others.length
     }
   }
 
@@ -469,11 +518,13 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
     home,
     env,
   })
-  if (!verified.ok) return { ok: false, path, legacyCoWritePath, reason: verified.reason }
+  if (!verified.ok)
+    return { ok: false, path, legacyCoWritePath, legacySkippedForMultiAgent, reason: verified.reason }
   return {
     ok: true,
     path,
     legacyCoWritePath,
+    legacySkippedForMultiAgent,
     needsEnvPin: verified.needsEnvPin,
     realEnvPath: verified.realEnvPath,
   }
@@ -720,6 +771,16 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`[bgos-pair] wrote ${result.path} (chmod 600)`)
   if (result.legacyCoWritePath) {
     console.log(`[bgos-pair] also refreshed ${result.legacyCoWritePath} (same agent, single-agent hosts read it)`)
+  } else if (result.legacySkippedForMultiAgent) {
+    // SAY IT. A tool that silently declines and a tool that never had the
+    // condition look identical from the outside, which is how the co-write
+    // defect stayed invisible on a twelve-agent host (Mark, 888, 2026-08-06).
+    console.log(
+      `[bgos-pair] skipped the shared credentials.json: this host already serves ${result.legacySkippedForMultiAgent} other agent(s),`,
+    )
+    console.log(
+      '[bgos-pair] and one shared file cannot hold more than one identity. Each daemon pins BGOS_ASSISTANT_ID instead.',
+    )
   }
   if (assistantId == null) {
     console.log('[bgos-pair] paired, but no agent is bound yet. Finish "Add agent" in the HOAI app,')

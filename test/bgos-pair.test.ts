@@ -584,3 +584,79 @@ test('writeCredentialsFile pins mode 600 and round-trips the JSON', async () => 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * KC-WINSAMSUNG, 2026-08-06. Mark (888) migrated four agents and watched the
+ * tool behave four different ways, then reported what it actually did:
+ *
+ *   chaser  935 -> "also refreshed credentials.json"   (legacy was ABSENT)
+ *   vera    909 -> "also refreshed credentials.json"   (legacy ABSENT, he had
+ *                                                       just deleted it)
+ *   minerva 972 -> refused, warned to pin the id       (legacy PRESENT, other)
+ *   noor    940 -> refused, warned to pin the id       (legacy PRESENT, other)
+ *
+ * The co-write exists for a real case: a daemon with an EMPTY env has no
+ * pinned id and can only find its pairing at the default path. On a host with
+ * ONE agent that is correct. On a host with twelve it recreates the exact
+ * single-slot trap this whole migration exists to remove, and the file then
+ * holds whoever paired last as a live identity trap.
+ *
+ * The sting is that the workaround feeds the defect: Mark deleted the legacy
+ * file after Chaser, and that absence is what made Vera recreate it. An
+ * operator cannot win by hand here, so the host has to decide. It already
+ * knows: a credentials-<other id>.json sitting next to it means more than one
+ * agent lives here.
+ */
+test('shouldCoWriteLegacy: a multi-agent host never gets the legacy file back', () => {
+  // THE DEFECT: absent legacy plus another agent's per-assistant file present.
+  // Before this fix that returned true and re-armed the trap.
+  assert.equal(
+    shouldCoWriteLegacy({
+      legacyCreds: null,
+      assistantId: 909,
+      otherAssistantIds: ['935'],
+    }),
+    false,
+  )
+  // Several other agents present: still no.
+  assert.equal(
+    shouldCoWriteLegacy({
+      legacyCreds: null,
+      assistantId: 940,
+      otherAssistantIds: ['909', '935', '972'],
+    }),
+    false,
+  )
+  // A single-agent host is unchanged: nothing else lives here, so the daemon
+  // with an empty env still needs the default path.
+  assert.equal(
+    shouldCoWriteLegacy({
+      legacyCreds: null,
+      assistantId: 901,
+      otherAssistantIds: [],
+    }),
+    true,
+  )
+  // Our own id appearing in the list is not another agent (idempotent re-pair).
+  assert.equal(
+    shouldCoWriteLegacy({
+      legacyCreds: null,
+      assistantId: 901,
+      otherAssistantIds: ['901'],
+    }),
+    true,
+  )
+  // Absent list keeps the old behaviour, so nothing regresses for callers
+  // that have not been taught to look.
+  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: 901 }), true)
+  // And the pre-existing refusal is untouched: another agent's live pairing in
+  // the legacy slot is never overwritten, list or no list.
+  assert.equal(
+    shouldCoWriteLegacy({
+      legacyCreds: mkCreds(872),
+      assistantId: 871,
+      otherAssistantIds: [],
+    }),
+    false,
+  )
+})
