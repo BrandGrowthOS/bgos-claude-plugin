@@ -38,6 +38,7 @@
  * echoed; only the file path and non-secret status lines are shown.
  */
 
+import { execFile } from 'node:child_process'
 import { mkdir, writeFile, chmod } from 'node:fs/promises'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
@@ -524,7 +525,7 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
     }
   }
 
-  await writeCredentialsFile(path, creds)
+  const protection = await writeCredentialsFile(path, creds)
 
   let legacyCoWritePath = null
   let legacySkippedForMultiAgent = 0
@@ -560,6 +561,7 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
     path,
     legacyCoWritePath,
     legacySkippedForMultiAgent,
+    protection,
     needsEnvPin: verified.needsEnvPin,
     realEnvPath: verified.realEnvPath,
   }
@@ -621,13 +623,76 @@ function readPluginVersion() {
 
 /** Write credentials.json with mode 600 (dir 700). writeFile mode is
  *  umask-affected, so an explicit chmod pins the exact bits. */
-export async function writeCredentialsFile(path, creds) {
+/**
+ * What protection did this file ACTUALLY get?
+ *
+ * fs.chmod(0o600) is a no-op on win32 (the mode reads back 0o666), so the old
+ * unconditional "(chmod 600)" line asserted a protection that had not
+ * happened, on the one platform where it had not (Mark, 888, 2026-08-05).
+ * A message that promises more than its write path delivers is the same
+ * disease as last_seen and the .in_use markers.
+ *
+ * A FAILED lock says UNPROTECTED. The operator has to know to fix it by hand;
+ * silence here would leave a pairing token readable and looking fine.
+ */
+export function describeFileProtection({ platform, aclApplied } = {}) {
+  if (platform !== 'win32') return 'chmod 600'
+  if (aclApplied) return 'locked to your Windows user'
+  return 'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand'
+}
+
+/**
+ * The icacls invocation that actually works on this platform.
+ *
+ * It goes through `cmd /c` deliberately: icacls with /inheritance:r invoked
+ * straight from PowerShell trips a safety guard that misreads it as a
+ * system-path deletion, and neither form fails loudly (Mark's gotcha from the
+ * twelve-agent migration). Returns null without a username rather than
+ * granting to an empty principal.
+ */
+export function win32AclCommand(path, username) {
+  const user = String(username ?? '').trim()
+  if (!user) return null
+  return {
+    file: 'cmd',
+    args: ['/c', `icacls "${path}" /inheritance:r /grant:r "${user}:F"`],
+  }
+}
+
+export async function writeCredentialsFile(path, creds, opts = {}) {
+  const platform = opts.platform ?? process.platform
   await mkdir(dirname(path), { recursive: true, mode: CREDENTIALS_DIR_MODE })
   await chmod(dirname(path), CREDENTIALS_DIR_MODE).catch(() => {})
   await writeFile(path, `${JSON.stringify(creds, null, 2)}\n`, {
     mode: CREDENTIALS_FILE_MODE,
   })
   await chmod(path, CREDENTIALS_FILE_MODE)
+  if (platform !== 'win32') return { platform, aclApplied: null }
+  // chmod did nothing here, so the file is world-readable until icacls runs.
+  // Doing it in the tool rather than in an operator's runbook: the manual
+  // step worked eleven times and would fail on the twelfth.
+  const username = String(
+    opts.username ?? process.env.USERNAME ?? process.env.USER ?? '',
+  ).trim()
+  const command = win32AclCommand(path, username)
+  if (!command) return { platform, aclApplied: false }
+  const run = opts.run ?? defaultRunCommand
+  try {
+    await run(command.file, command.args)
+    return { platform, aclApplied: true }
+  } catch {
+    // Never claim a protection that failed; the caller reports UNPROTECTED.
+    return { platform, aclApplied: false }
+  }
+}
+
+function defaultRunCommand(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true }, (error) => {
+      if (error) reject(error)
+      else resolve(undefined)
+    })
+  })
 }
 
 async function postJson(url, body, headers = {}) {
@@ -812,7 +877,14 @@ export async function main(argv = process.argv.slice(2)) {
     return 1
   }
 
-  console.log(`[bgos-pair] wrote ${result.path} (chmod 600)`)
+  // Report what the file ACTUALLY got, not what was intended. On win32 chmod
+  // is a no-op, so the old unconditional "(chmod 600)" asserted a protection
+  // that had not happened, and a failed ACL now says UNPROTECTED out loud.
+  console.log(
+    `[bgos-pair] wrote ${result.path} (${describeFileProtection(
+      result.protection ?? {},
+    )})`,
+  )
   if (result.legacyCoWritePath) {
     console.log(`[bgos-pair] also refreshed ${result.legacyCoWritePath} (same agent, single-agent hosts read it)`)
   } else if (result.legacySkippedForMultiAgent) {

@@ -39,7 +39,9 @@ import {
   credentialsWritePath,
   resolveReadCredentialsPath,
   verifyWrittenCredentials,
+  describeFileProtection,
   pairExitCode,
+  win32AclCommand,
   shouldCoWriteLegacy,
   legacyWriteBlocked,
   writeAndVerifyCredentials,
@@ -704,4 +706,69 @@ test('pairExitCode: an explicit override lets an operator proceed knowingly', ()
     pairExitCode({ needsEnvPin: true, otherAgentCount: 11, allowUnpinned: true }),
     0,
   )
+})
+
+/**
+ * WINDOWS CREDENTIALS ARE NOT PROTECTED BY chmod, and the tool said they were.
+ *
+ * Mark (888) found it running the suite on KC-WINSAMSUNG, 2026-08-05:
+ * fs.chmod(0o600) is a no-op on win32, the mode reads back 0o666, and after
+ * the migration twelve pairing-token files sat at default ACLs. He also caught
+ * the second half, which is the part that matters more: the success line
+ * prints "(chmod 600)" UNCONDITIONALLY, so on Windows the tool asserted a
+ * protection that had not happened. Same shape as last_seen and the .in_use
+ * markers, a message promising more than its write path delivers.
+ *
+ * His workaround was icacls by hand after every pairing, verified by reading
+ * the ACL back. That is a control which fails on attempt nine.
+ *
+ * Two rules here. The tool applies the protection itself on win32, and it
+ * describes what actually happened rather than what it intended: if the ACL
+ * call fails, the operator is told the file is UNPROTECTED, never that it is
+ * fine.
+ */
+test('describeFileProtection: posix reports the mode it really set', () => {
+  assert.equal(
+    describeFileProtection({ platform: 'darwin', aclApplied: null }),
+    'chmod 600',
+  )
+  assert.equal(
+    describeFileProtection({ platform: 'linux', aclApplied: null }),
+    'chmod 600',
+  )
+})
+
+test('describeFileProtection: win32 reports the ACL, not a mode it cannot set', () => {
+  assert.equal(
+    describeFileProtection({ platform: 'win32', aclApplied: true }),
+    'locked to your Windows user',
+  )
+})
+
+test('describeFileProtection: a FAILED win32 lock says unprotected, never fine', () => {
+  // The whole point. A tool that cannot protect the file must not claim it
+  // did; the operator has to know to fix it by hand.
+  assert.equal(
+    describeFileProtection({ platform: 'win32', aclApplied: false }),
+    'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand',
+  )
+})
+
+test('win32AclCommand: uses cmd so the inheritance flag is not eaten', () => {
+  // Mark's gotcha: icacls with /inheritance:r invoked straight from PowerShell
+  // trips a safety guard that misreads it as a system-path deletion. It has to
+  // go through cmd /c. Neither form fails loudly.
+  const cmd = win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim')
+  assert.equal(cmd.file, 'cmd')
+  assert.ok(cmd.args.includes('/c'))
+  assert.ok(cmd.args.some((a) => a.includes('icacls')))
+  assert.ok(cmd.args.some((a) => a.includes('/inheritance:r')))
+  assert.ok(cmd.args.some((a) => a.includes('karim:F')))
+})
+
+test('win32AclCommand: refuses to build a command without a username', () => {
+  // Granting to an empty principal would silently produce a file nobody can
+  // read, or worse, one everyone can.
+  assert.equal(win32AclCommand('C:\\x\\y.json', ''), null)
+  assert.equal(win32AclCommand('C:\\x\\y.json', undefined), null)
 })
