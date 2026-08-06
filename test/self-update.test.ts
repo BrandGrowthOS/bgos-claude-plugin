@@ -19,7 +19,9 @@ import {
   UPDATE_HEALTHY_AFTER_MS,
   UPDATE_JITTER_MAX_MS,
   compareSemver,
+  describePendingRestart,
   decideCheckoutAction,
+  shouldExitAfterUpdate,
   decideDrain,
   decideVersionUpdate,
   initializeSelfUpdater,
@@ -745,6 +747,10 @@ describe('real git check in dry-run mode', () => {
     expect(calls.some((call) => call.file === 'bun')).toBe(false)
   })
 
+  // Supervised host: this test predates the kc-server outage and pins the
+  // exit path, so it now opts in explicitly (BGOS_EXIT_AFTER_UPDATE). The
+  // behavior it asserts is unchanged FOR A SUPERVISED HOST; what changed is
+  // that exiting is no longer the assumption everywhere else.
   test('live apply releases its lock before exit after a drained ff-only merge', async () => {
     const rootDir = tempDir('self-update-apply-root-')
     mkdirSync(join(rootDir, '.git'))
@@ -756,7 +762,7 @@ describe('real git check in dry-run mode', () => {
     const updater = await initializeSelfUpdater({
       rootDir,
       stateFilePath,
-      env: { BGOS_AUTO_UPDATE: 'on' },
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
       runningVersion: '0.26.0',
       log: () => {},
       drainSnapshot: () => ({
@@ -1393,5 +1399,134 @@ describe('real git check in dry-run mode', () => {
     )
     expect(logs.some((line) => line.includes('Message intake remains drained'))).toBe(true)
     expect(existsSync(join(gitDir, 'bgos-auto-update.lock'))).toBe(false)
+  })
+})
+
+/**
+ * KC-SERVER OUTAGE, 2026-08-06. Five of seven agents on one host went silent
+ * overnight and nobody noticed until the owner asked why nothing answered.
+ * Their claude processes were all alive; their channel daemons were gone. The
+ * last three lines of each dead daemon's log were the auto-update installing
+ * and then "Exiting so the supervisor can restart the daemon."
+ *
+ * There was no supervisor on that host. The daemon exited into nothing, once
+ * per agent, staggered by whenever each reached its update.
+ *
+ * The invariant these tests pin: A DAEMON NEVER EXITS UNLESS SOMETHING WILL
+ * RESTART IT. Exiting stays available for hosts that really are supervised,
+ * but it is opt-in and explicit, never the default assumption.
+ *
+ * Second invariant, from Ava (871) reviewing the fix: not exiting trades death
+ * for staleness, so the pending restart must be announced on EVERY boot, not
+ * only in the moment it installs. Sessions here run for days; a line that
+ * scrolls past once is not a signal. An installed version is not a running
+ * version.
+ */
+describe('a daemon never exits into nothing', () => {
+  test('unsupervised host: the default is to keep serving, not to exit', () => {
+    expect(shouldExitAfterUpdate({})).toBe(false)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: '' })).toBe(false)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: '0' })).toBe(false)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: 'off' })).toBe(false)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: 'false' })).toBe(false)
+  })
+
+  test('supervised host opts in explicitly and keeps the old restart behavior', () => {
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: '1' })).toBe(true)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: 'true' })).toBe(true)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: 'on' })).toBe(true)
+    expect(shouldExitAfterUpdate({ BGOS_EXIT_AFTER_UPDATE: 'yes' })).toBe(true)
+  })
+
+  test('a pending restart is describable on every boot, not just at install', () => {
+    expect(
+      describePendingRestart({ runningVersion: '0.33.1', installedVersion: '0.34.0' }),
+    ).toBe(
+      'Pending update: running 0.33.1, installed 0.34.0, takes effect when this session restarts.',
+    )
+  })
+
+  test('no pending line when the running version IS the installed one', () => {
+    expect(
+      describePendingRestart({ runningVersion: '0.34.0', installedVersion: '0.34.0' }),
+    ).toBeNull()
+    expect(
+      describePendingRestart({ runningVersion: '0.34.0', installedVersion: null }),
+    ).toBeNull()
+    expect(
+      describePendingRestart({ runningVersion: null, installedVersion: '0.34.0' }),
+    ).toBeNull()
+  })
+})
+
+describe('the kc-server outage, end to end', () => {
+  test('unsupervised: update installs, daemon KEEPS SERVING and never exits', async () => {
+    const rootDir = tempDir('self-update-no-exit-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-no-exit-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => exits.push(code),
+      runner: gitRunner({ calls, dependencyChanges: 'bun.lock\n' }),
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    expect(updater).not.toBeNull()
+    await updater!.checkNow()
+
+    // The update really was applied.
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['merge', '--ff-only', '--no-edit', COMMIT_B],
+    })
+    // THE FIX: no exit on a host that never promised a supervisor.
+    expect(exits).toEqual([])
+    // And it is SERVING, not merely alive: drain was lifted again. A daemon
+    // that stays up drained is just as mute as one that died.
+    expect(drainModes[drainModes.length - 1]).toBe(false)
+    expect(
+      logs.some((line) => line.includes('takes effect when this session restarts')),
+    ).toBe(true)
+    expect(logs.some((line) => line.includes('Exiting so the supervisor'))).toBe(false)
+  })
+
+  test('supervised: opting in restores the exit, so real supervisors still cycle', async () => {
+    const rootDir = tempDir('self-update-opt-in-exit-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-opt-in-exit-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: (code) => exits.push(code),
+      runner: gitRunner({ calls, dependencyChanges: 'bun.lock\n' }),
+      schedule: () => setTimeout(() => {}, 60_000),
+    })
+    expect(updater).not.toBeNull()
+    await updater!.checkNow()
+    expect(exits).toEqual([0])
   })
 })
