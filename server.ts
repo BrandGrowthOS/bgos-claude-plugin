@@ -98,6 +98,7 @@ import {
   parseSlashCommandMarkdown,
   prepareSlashCommands,
   routeSlashCommand,
+  shouldSkipAlreadyForwarded,
   shouldSkipForwardedSlashCommand,
   slashCommandSyncPath,
   type PreparedSlashCommands,
@@ -4868,7 +4869,20 @@ async function pollChat(chatId: string): Promise<void> {
         msg.message.id,
         forwardedMessageIds,
       )) continue
-      if (isSlashCommand) rememberForwarded(msg.message.id)
+      // THE ECHO (Ava, 871, nine occurrences since 2026-05-10): the WS side
+      // refuses any id it has already forwarded, but this path checked that
+      // set for slash commands only, so a message delivered over the socket
+      // came round again here 25 to 60 seconds later. The replay arrives
+      // without the peer-origin framing the WS delivery adds, so an answered
+      // peer message reads as a fresh one, and reply-overdue fires on it.
+      // Loss avoidance is untouched: anything that arrived while the daemon
+      // was down was never forwarded, so it is not in the set and still gets
+      // delivered by the boot poll.
+      if (shouldSkipAlreadyForwarded(msg.message.id, forwardedMessageIds)) continue
+      // Claim every id this path delivers, so a WS frame that arrives late
+      // cannot deliver the same message a second time either. The dedupe only
+      // works if both transports both READ and WRITE the set.
+      rememberForwarded(msg.message.id)
 
       // Skip permission verdict messages/clicks, don't forward them to Claude
       let isPermissionVerdict = VERDICT_RE.test(text)
