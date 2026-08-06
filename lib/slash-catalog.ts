@@ -386,6 +386,31 @@ export function isSlashCommandPayload(payload: SlashCommandPayload): boolean {
   return String(payload.messageType ?? payload.message_type ?? '') === 'slash_command'
 }
 
+/**
+ * Has this exact message id already been handed to Claude by THIS process?
+ *
+ * Both transports share `forwardedMessageIds`, but only the WebSocket side
+ * consulted it for ordinary messages; the poll checked it for slash commands
+ * alone, on the reasoning that a text replay is harmless. It is not. The
+ * replayed copy arrives without the peer-origin framing the WS delivery
+ * carries, so an already-answered peer message reads as a fresh user message,
+ * and reply-overdue fires on it (Ava, 871, nine occurrences since
+ * 2026-05-10).
+ *
+ * The property this must NOT break is loss avoidance. Messages that arrived
+ * while the daemon was down were never forwarded, so they are absent from the
+ * set and still get delivered by the boot poll. A non-finite id also falls
+ * through to delivery: the failure mode of this guard has to be a duplicate,
+ * never a swallow.
+ */
+export function shouldSkipAlreadyForwarded(
+  messageId: number,
+  forwardedMessageIds: ReadonlySet<number>,
+): boolean {
+  if (!Number.isFinite(messageId)) return false
+  return forwardedMessageIds.has(messageId)
+}
+
 export function shouldSkipForwardedSlashCommand(
   payload: SlashCommandPayload,
   messageId: number,
