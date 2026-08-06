@@ -573,6 +573,19 @@ If you leave a marker file behind, make it say what it is: what it stops, that
 deleting it re-arms every daemon on the machine, and the removal sequence.
 Whoever finds it will not have your context.
 
+**Order matters, and getting it wrong loses the fleet.** Upgrading a
+multi-agent host is: **brake FIRST, then pull, then restart every daemon back
+to back.** Not the other way round. Between a pull and the brake there is a
+window where each daemon's next check finds a newer version and, if it is
+still running a version older than 0.33.2, takes the old exit path and dies
+into nothing. The window is as long as the gap between your two commands and
+the failure is silent: the daemons simply stop being there.
+
+The operator who found this got away with pulling first ONLY because his
+brake was already in place from hours earlier (Mark, 888, 2026-08-06,
+twelve agents). Someone following the steps in written order, installing the
+brake after the pull, would not.
+
 Manual updates remain supported:
 
 ```bash
