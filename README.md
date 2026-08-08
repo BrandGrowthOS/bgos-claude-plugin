@@ -467,6 +467,42 @@ Two additions that let the BGOS app supervise a running session:
 - **Stop button (`stop_turn`, cooperative)**: when the user presses Stop for a chat, the backend sends a `stop_turn` RPC over the same WebSocket lane as voice. The plugin cannot kill an in-flight Claude Code turn (there is no process-level cancel hook), so the stop is **cooperative and honest about it**: the plugin pushes a channel notification telling the live agent to stand down on that ONE chat immediately (no new tool calls, one short acknowledgement reply, partial results kept), posts a plain "Run stopped at your request." confirmation into the chat, and reports `{stopped: true, mode: 'cooperative'}`. If the live session is unreachable (or the frame has no chat id) it reports `{stopped: false, supported: false}` instead of pretending. Nothing is killed and other chats are never touched.
 - **Context gauge (`contextPct`)**: the plugin automatically PATCHes the assistant status with the context-window fill percent, computed from the LATEST assistant usage entry in the session transcript (input + cache-read + cache-creation tokens over the model's window; 1M for `[1m]` model ids, 200k otherwise). It refreshes after each reply and on the poll heartbeat. The value is **approximate**: it lags one turn (it reflects the last completed API call) and drops back down after the host compacts the conversation. Agents must never set `contextPct` themselves.
 
+## Agent Update Stream (v0.34.0+, experimental, default OFF)
+
+Set `BGOS_UPDATE_STREAM=true` (pairing mode only) to opt this daemon into the
+Agent Update Stream, the trusted delivery design from the BGOS architecture
+doc `docs/architecture/agent-message-routing.md`. With the flag unset (the
+default) nothing changes: the daemon runs exactly the legacy poll + WS paths.
+
+What the flag turns on, when the backend serves the feature:
+
+- **Session tokens.** At boot the daemon POSTs `/api/v1/integrations/session`
+  with its pairing token (bcrypt verified once) and receives a short-lived
+  session token that authenticates catch-up reads by hash lookup. The session
+  token lives in memory only; it is never written to disk or logs. A 401 with
+  code `session_expired` re-mints once and resumes; `pairing_revoked` stops
+  the stream.
+- **Sequenced pushes.** `inbound_message` events carrying `seq` +
+  `streamEpoch` are applied by arithmetic: the successor applies, a duplicate
+  drops, a jump buffers 500ms and then heals through one
+  `GET /api/v1/integrations/updates?assistant_id=&since=&limit=` call that
+  returns the missed updates plus the server's authoritative state
+  (`{updates, state, streamEpoch, final}`, or `{tooOld}` / `{invalidCursor}`
+  verdicts that route to one full boot-style resync).
+- **The 60s beacon.** `update_state {assistantId, seq, streamEpoch}` detects
+  a lost push or a silent room drop within one interval; `stream_authority`
+  on each socket auth says whether the stream is on. Sweeps demote only
+  while authority is present AND a beacon arrived on the current connection.
+- **Cheaper recovery.** A reconnect runs one jittered catch-up chain instead
+  of a full chat sweep; a WS outage polls the updates endpoint every 10s
+  instead of sweeping every chat; the healthy 5 minute sweep stretches to a
+  daily reconciliation while the stream is active.
+- **Graceful fallback.** A 404 from either endpoint means an old backend (or
+  the feature flagged off server-side): the daemon stays on, or reverts to,
+  today's legacy cadence. The stream cursor is persisted per pairing-token
+  fingerprint at `<state dir>/stream-cursor.json`, so a re-pair starts fresh
+  instead of resurrecting another pairing's position.
+
 ## Configuration Reference
 
 | Variable | Required | Description |
@@ -485,6 +521,7 @@ Two additions that let the BGOS app supervise a running session:
 | `BGOS_USAGE_REPORT` | No | `"off"` disables the per-turn usage self-report (Fleet Pulse). Default: on |
 | `BGOS_USAGE_BILLING_MODE` | No | `"api"` for API-key-billed sessions (reports as api billing). Default: `subscription` (Claude Max: token usage only, never dollars) |
 | `BGOS_REQUIRE_CONFIRMED_DISPATCH` | No | `"true"` to reject voice dispatches lacking `confirmed:true` (the Iris G5 confirm-gate belt; the backend already withholds unconfirmed proposals, this adds daemon-side defense in depth). Default: off |
+| `BGOS_UPDATE_STREAM` | No | `"true"` opts into the Agent Update Stream (sequenced pushes + session-token catch-up; see the section above). Anything else, including unset, keeps the daemon byte-for-byte on the legacy paths. Default: off |
 
 ### Permission Modes
 
