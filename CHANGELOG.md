@@ -2,6 +2,43 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.34.0 (8 August 2026)
+
+The Agent Update Stream consumer, strictly opt-in via
+`BGOS_UPDATE_STREAM=true` (pairing mode only). With the flag unset, the
+daemon is behaviorally identical to 0.33.6 and the whole pre-existing test
+suite passes unmodified.
+
+- **Sequenced delivery, trusted by arithmetic.** Stamped `inbound_message`
+  pushes (`seq` + `streamEpoch`) apply through the Telegram-style rule:
+  successor applies, duplicate drops, a jump buffers 500ms and then heals
+  with ONE `GET /integrations/updates` catch-up chain (slices, intermediate
+  cursor persisted before every next request, 429 resume, tooOld /
+  invalidCursor / epoch mismatch routed to one full boot-style resync, 404
+  feature detection for old backends).
+- **Session tokens, memory only.** `POST /integrations/session` exchanges
+  the pairing token for a short-lived session token used on catch-up reads;
+  `session_expired` re-mints once (single flight), `pairing_revoked` stops
+  the stream. The token never touches disk or logs.
+- **Beacon + authority.** The 60s `update_state` beacon detects lost pushes
+  and silent room drops; `stream_authority` is per connection, so sweeps
+  demote only with authority AND a beacon on the current connection, and
+  losing either degrades to the legacy cadence (never a reconnect loop).
+- **Recovery gets cheap.** Reconnect = one jittered chain instead of a full
+  sweep; WS-down = one updates poll per 10s instead of a full sweep; the
+  healthy 5 minute sweep stretches to a daily reconciliation while stream
+  mode is active.
+- **The daemon-side application contract (spec 5.7).** Empty system wakes
+  are held and their `message_finalized` delivers AS the wake; assistant
+  authored rows only advance cursors (reply boundary); the per-chat cursors
+  remain the dedup substrate and are fed by the stream; `buttons_answered`
+  announces only what the legacy detector would have and consumes the
+  transition, keeping the single-announce contract.
+- New pure modules `lib/stream-client.ts`, `lib/stream-cursor-store.ts`,
+  `lib/stream-apply.ts` (the consumer core `lib/update-stream.ts` landed
+  earlier on this branch), plus 76 new tests including the all-string meta
+  regression guards.
+
 ## 0.33.0 (5 August 2026)
 
 Two observability items; no behavior change to auth or to what remote
