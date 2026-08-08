@@ -211,17 +211,66 @@ test('empty wakes are held and their finalize delivers as the wake', () => {
   )
 })
 
-test('a stream-announced click consumes the transition before acting (single announce)', () => {
+test('a stream-announced click marks the shared set and consumes the baseline BEFORE acting', () => {
   const body = serverSource.slice(
     serverSource.indexOf('function applyStreamButtonsAnswered('),
     serverSource.indexOf('async function applyStreamMessage('),
   )
-  const consume = body.indexOf('tracked?.delete(view.messageId)')
+  const gate = body.indexOf('announcedClickIds.has(view.messageId)')
+  const mark = body.indexOf('rememberAnnouncedClick(view.messageId)')
+  const consume = body.indexOf('chatUnansweredButtons.get(chatId)?.delete(view.messageId)')
   const permission = body.indexOf('pending.resolve(')
   const forward = body.indexOf('buildStreamClickMeta(')
-  assert.ok(consume !== -1)
-  assert.ok(permission > consume, 'consume precedes the permission resolution')
-  assert.ok(forward > consume, 'consume precedes the click forward')
+  assert.ok(gate !== -1, 'the decision gates on the announced-ids set')
+  assert.ok(mark !== -1 && consume !== -1)
+  assert.ok(permission > mark, 'mark precedes the permission resolution')
+  assert.ok(forward > mark, 'mark precedes the click forward')
+  assert.ok(permission > consume && forward > consume, 'consume precedes acting')
+})
+
+test('the poll announce path feeds the shared announced-ids set', () => {
+  assert.ok(
+    serverSource.includes('for (const id of announced) rememberAnnouncedClick(id)'),
+    'poll-announced ids must block a later stream replay of the same tap',
+  )
+})
+
+test('the announced-ids set is bounded like forwardedMessageIds', () => {
+  const body = serverSource.slice(
+    serverSource.indexOf('function rememberAnnouncedClick('),
+  )
+  assert.ok(body.indexOf('announcedClickIds.size > FORWARD_CACHE_MAX') !== -1)
+})
+
+test('a rejecting stream handoff un-claims the forwarded id before rethrowing', () => {
+  const body = serverSource.slice(
+    serverSource.indexOf('async function forwardStreamInbound('),
+    serverSource.indexOf('function applyStreamButtonsAnswered('),
+  )
+  const claim = body.indexOf('rememberForwarded(view.messageId)')
+  const unclaim = body.indexOf('forwardedMessageIds.delete(view.messageId)')
+  assert.ok(claim !== -1 && unclaim !== -1, 'claim and un-claim must both exist')
+  assert.ok(unclaim > claim)
+  assert.match(
+    body.slice(unclaim),
+    /^\s*forwardedMessageIds\.delete\(view\.messageId\)\s*\n\s*throw err/m,
+    'the un-claim must rethrow so the chain pins the cursor for redelivery',
+  )
+})
+
+test('reconcile kinds coalesce to one deferred discoverChats per chain', () => {
+  assert.ok(serverSource.includes('streamReconcileNeeded = true'))
+  assert.ok(
+    serverSource.includes('!consumer.inDifference'),
+    'the deferred reconcile waits for the chain to go idle',
+  )
+})
+
+test('the held-empty wake map is bounded', () => {
+  assert.ok(serverSource.includes('STREAM_HELD_EMPTY_MAX'))
+  assert.ok(
+    serverSource.includes('streamHeldEmptyChatByMessageId.size > STREAM_HELD_EMPTY_MAX'),
+  )
 })
 
 // ── Boot ordering ───────────────────────────────────────────────────────────

@@ -16,10 +16,11 @@
  *  - The per-chat cursor remains the dedup substrate forever: a row at or
  *    under it was handled in a previous run and only advances the stream
  *    cursor.
- *  - buttons_answered forwards ONLY when the legacy selectClickTransitions
- *    detector would have announced it (the id was live-tracked unanswered);
- *    the caller then consumes the transition so the poll cannot announce a
- *    second time (single-announce contract).
+ *  - buttons_answered forwards iff the id is not in the announced-clicks
+ *    dedup set shared with the poll's transition detector; the caller then
+ *    marks it announced and consumes any live-tracked baseline entry so the
+ *    poll cannot announce a second time (single-announce contract, both
+ *    race orders, including ids the poll never baselined).
  *
  * All meta builders return ALL-STRING records with absent optionals OMITTED
  * (the wake-card contract: the Claude Code harness silently drops any
@@ -204,18 +205,26 @@ export function decideMessageFinalized(
 
 export type ButtonsAnsweredDecision = 'forward' | 'permission' | 'skip'
 
+/**
+ * The gate is an announced-ids dedup set SHARED with the poll's announce
+ * path, not the live-tracked baseline. A tracked-only gate black-holes
+ * clicks under stream mode: the healthy sweep stretches to daily, so an id
+ * pollChat never baselined would be skipped here AND could never be
+ * announced by selectClickTransitions either (it only announces ids seen
+ * unanswered on a PREVIOUS poll). Single-announce holds in both race
+ * orders: poll-first, the shared set blocks the stream replay; stream
+ * first, the caller consumes the tracked baseline entry so the poll's
+ * prevUnanswered can never contain the id again.
+ */
 export function decideButtonsAnswered(opts: {
   messageType: string | null | undefined
   callbackData: string
-  /** True when the legacy detector currently tracks this id as unanswered. */
-  trackedUnanswered: boolean
+  /** True when either transport already announced this id (the shared set). */
+  alreadyAnnounced: boolean
   permissionRe: RegExp
 }): ButtonsAnsweredDecision {
   if (opts.messageType === 'ask_user_input') return 'skip'
-  // Legacy parity: selectClickTransitions announces only ids it saw
-  // unanswered on a previous poll. Anything else stays silent here too, and
-  // is left UNCONSUMED so the poll detector keeps sole authority over it.
-  if (!opts.trackedUnanswered) return 'skip'
+  if (opts.alreadyAnnounced) return 'skip'
   if (opts.permissionRe.test(opts.callbackData)) return 'permission'
   return 'forward'
 }

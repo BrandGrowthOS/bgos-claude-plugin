@@ -4792,6 +4792,10 @@ async function pollChat(chatId: string): Promise<void> {
       isFirstPoll,
     })
     const announced = new Set(announce)
+    // Cross-transport single-announce: every id this poll announces joins
+    // the shared dedup set so a stream buttons_answered replay of the same
+    // tap stays silent (see rememberAnnouncedClick).
+    for (const id of announced) rememberAnnouncedClick(id)
     for (const m of data.messages) {
       const mm = m.message
       if (!announced.has(mm.id)) continue
@@ -5164,6 +5168,23 @@ const WS_URL = (() => {
 
 const forwardedMessageIds = new Set<number>()
 const FORWARD_CACHE_MAX = 500
+// Click ids already announced to the agent by EITHER transport (the poll's
+// transition detector or a stream buttons_answered replay). The shared set
+// is what makes single-announce hold in both race orders AND for ids the
+// poll never baselined (under stream mode the healthy sweep is daily, so a
+// tracked-only gate on the stream side would black-hole those taps: the
+// poll can never announce an id it never saw unanswered). Bounded like
+// forwardedMessageIds.
+const announcedClickIds = new Set<number>()
+
+function rememberAnnouncedClick(id: number): void {
+  if (announcedClickIds.has(id)) return
+  announcedClickIds.add(id)
+  if (announcedClickIds.size > FORWARD_CACHE_MAX) {
+    const first = announcedClickIds.values().next().value
+    if (first !== undefined) announcedClickIds.delete(first)
+  }
+}
 let realtimeSocket: IOClientSocket | null = null
 
 // ── Native voice (voice_rpc mint/consult) ────────────────────────────────────
@@ -5343,6 +5364,9 @@ let streamAuthority: StreamAuthority | null = null
 /** True once the session or updates endpoint answered non-404. */
 let streamFeatureDetected = false
 let streamLastBeaconAtMs = 0
+// Reconcile-kind updates (seat, meeting lifecycle) queue ONE deferred
+// discoverChats, drained by the scheduler tick after the chain goes idle.
+let streamReconcileNeeded = false
 const streamCursorFilePath = resolveStreamCursorFilePath(cursorStore.filePath)
 const streamTokenFingerprint =
   AUTH.mode === 'pairing' && AUTH.pairingToken
@@ -5352,6 +5376,7 @@ const streamTokenFingerprint =
 // state (id -> chatId). The finalize for a held id delivers AS the wake, and
 // advanceStreamChatCursor parks the per-chat cursor below every held id.
 const streamHeldEmptyChatByMessageId = new Map<number, string>()
+const STREAM_HELD_EMPTY_MAX = 500
 // Chats whose per-chat cursor the stream has fed since boot: they count as
 // covered for the wsCursorSafe interlock exactly like a completed boot poll
 // (5.7: the per-chat cursors remain the dedup substrate forever).
@@ -5471,38 +5496,47 @@ async function forwardStreamInbound(
   const senderUserId = view.senderUserId ?? USER_ID
   lastInboundUserByChat.set(chatId, senderUserId)
   log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
-  await trackMessageOperation(() =>
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content,
-        meta: buildStreamInboundMeta({
-          chatId,
-          messageId: view.messageId,
-          isSystem,
-          senderUserId,
-          assistantId: String(ASSISTANT_ID),
-          ts: view.sentDate,
-          sessionHandle: view.sessionHandle,
-          backlog: false,
-          slashMeta: slashDelivery ? (slashDelivery.meta as Record<string, string>) : null,
-          // EventMetaFragment is all-string by construction (see
-          // buildEventMeta); the assertion only supplies the index signature.
-          eventMeta: streamEventMeta as Record<string, string> | null,
-        }),
-      },
-    }),
-  )
+  try {
+    await trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: {
+          content,
+          meta: buildStreamInboundMeta({
+            chatId,
+            messageId: view.messageId,
+            isSystem,
+            senderUserId,
+            assistantId: String(ASSISTANT_ID),
+            ts: view.sentDate,
+            sessionHandle: view.sessionHandle,
+            backlog: false,
+            slashMeta: slashDelivery ? (slashDelivery.meta as Record<string, string>) : null,
+            // EventMetaFragment is all-string by construction (see
+            // buildEventMeta); the assertion only supplies the index signature.
+            eventMeta: streamEventMeta as Record<string, string> | null,
+          }),
+        },
+      }),
+    )
+  } catch (err) {
+    // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
+    // pins the stream cursor on this rejection (5.7) and the retry must not
+    // find its own claim and advance past an undelivered message.
+    forwardedMessageIds.delete(view.messageId)
+    throw err
+  }
   recordInbound(chatId, view.messageId)
 }
 
 /**
- * buttons_answered from the stream. THE SINGLE-ANNOUNCE CONTRACT: forward
- * only where the legacy selectClickTransitions detector would have (the id
- * was live-tracked unanswered), and CONSUME the transition from
- * chatUnansweredButtons in the same synchronous step so the poll detector
- * can never announce the same tap a second time. Untracked answers stay
- * untouched, leaving the poll detector sole authority over them.
+ * buttons_answered from the stream. THE SINGLE-ANNOUNCE CONTRACT, held by
+ * the shared announcedClickIds set: forward iff NEITHER transport announced
+ * this id yet (tracked or not; a tracked-only gate would black-hole taps
+ * the daily-demoted poll never baselined), then mark it announced and
+ * consume any live-tracked baseline entry in the same synchronous step.
+ * Poll-first: the set blocks this replay. Stream-first: the consumed
+ * baseline keeps selectClickTransitions silent forever after.
  */
 function applyStreamButtonsAnswered(update: StreamUpdate): void {
   const view = viewStreamMessage(update)
@@ -5510,17 +5544,18 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   const chatId = view.chatId
   const answer = view.answerPayload
   if (!answer) return
-  const tracked = chatUnansweredButtons.get(chatId)
   const decision = decideButtonsAnswered({
     messageType: view.messageType,
     callbackData: answer.callbackData,
-    trackedUnanswered: tracked?.has(view.messageId) ?? false,
+    alreadyAnnounced: announcedClickIds.has(view.messageId),
     permissionRe: PERMISSION_CALLBACK_RE,
   })
   if (decision === 'skip') return
-  // Consume BEFORE acting: the id leaves the unanswered baseline, so the
-  // poll's prevUnanswered can never contain it again.
-  tracked?.delete(view.messageId)
+  // Mark + consume BEFORE acting, atomically on the event loop: the poll's
+  // prevUnanswered can never contain the id again and its announce path
+  // consults the same shared set.
+  rememberAnnouncedClick(view.messageId)
+  chatUnansweredButtons.get(chatId)?.delete(view.messageId)
 
   if (decision === 'permission') {
     const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
@@ -5614,7 +5649,12 @@ async function applyStreamMessage(
   if (decision.action === 'hold_empty') {
     // Remember the id, do not forward, and do NOT advance the per-chat
     // cursor past it: the later finalize (same id) delivers AS the wake.
+    // Bounded: an abandoned write-1 flood cannot grow the map forever.
     streamHeldEmptyChatByMessageId.set(view.messageId, chatId)
+    if (streamHeldEmptyChatByMessageId.size > STREAM_HELD_EMPTY_MAX) {
+      const oldest = streamHeldEmptyChatByMessageId.keys().next().value
+      if (oldest !== undefined) streamHeldEmptyChatByMessageId.delete(oldest)
+    }
     streamCoveredChats.add(chatId)
     return
   }
@@ -5664,12 +5704,13 @@ async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
       return
     }
     case 'reconcile':
-      // Membership changed while we were behind (seat, meeting lifecycle):
-      // the existing discovery helper re-fetches meetings, remembers
-      // contexts, and reconciles, so the specialized state is rebuilt by
-      // the machinery that already owns it.
-      log(`stream: ${update.kind} (seq ${update.seq}), reconciling via discoverChats`)
-      await discoverChats()
+      // Membership changed while we were behind (seat, meeting lifecycle).
+      // Coalesced: N reconcile kinds in one chain queue ONE discoverChats,
+      // run from the scheduler tick once the chain is idle (the discovery
+      // helper re-fetches meetings and reconciles contexts, so the
+      // specialized state is rebuilt by the machinery that owns it).
+      log(`stream: ${update.kind} (seq ${update.seq}), reconcile queued`)
+      streamReconcileNeeded = true
       return
     case 'peer_closed': {
       const payload = update.payload as Record<string, unknown>
@@ -5813,6 +5854,14 @@ function streamSchedulerTick(nowMs: number): void {
     void trackMessageOperation(() => consumer.checkDeadlines(nowMs)).catch(
       (err) => log(`stream deadline check error: ${err}`),
     )
+    // Drain the coalesced reconcile once the chain is idle: N membership
+    // kinds applied by one chain cost ONE discoverChats, not N.
+    if (streamReconcileNeeded && !consumer.inDifference) {
+      streamReconcileNeeded = false
+      void trackMessageOperation(() => discoverChats()).catch((err) =>
+        log(`stream reconcile discoverChats failed: ${err}`),
+      )
+    }
   }
   if (
     streamLastBeaconAtMs > 0 &&
@@ -5855,7 +5904,6 @@ async function initUpdateStream(): Promise<void> {
   streamClient = new StreamClient({
     apiBase: API_BASE,
     pairingHeaders: () => authHeaders(AUTH),
-    log,
   })
   try {
     const mint = await streamClient.mintSession()

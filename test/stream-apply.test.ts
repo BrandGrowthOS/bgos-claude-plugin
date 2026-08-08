@@ -20,6 +20,7 @@ import {
   decideMessageNew,
   viewStreamMessage,
 } from '../lib/stream-apply.ts'
+import { selectClickTransitions } from '../lib/poll-core.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 
 function upd(
@@ -253,28 +254,33 @@ test('an assistant stream-end finalize only advances', () => {
   )
 })
 
-// ── decideButtonsAnswered (single-announce contract) ────────────────────────
+// ── decideButtonsAnswered (single-announce via the announced-ids set) ───────
+// A tracked-only gate black-holes clicks under stream mode: the healthy
+// sweep stretches to daily, so an id never baselined by pollChat would be
+// skipped here AND could never be announced by selectClickTransitions
+// either (it only announces ids seen unanswered on a PREVIOUS poll). The
+// gate is therefore an announced-ids dedup set shared with the poll path.
 
 const PERM_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
 
-test('a tracked transition forwards; announcing consumes it in the caller', () => {
+test('an unannounced answer forwards, tracked or not (the black hole is closed)', () => {
   assert.equal(
     decideButtonsAnswered({
       messageType: 'standard',
       callbackData: 'pick_a',
-      trackedUnanswered: true,
+      alreadyAnnounced: false,
       permissionRe: PERM_RE,
     }),
     'forward',
   )
 })
 
-test('an untracked answer is skipped: the legacy detector would not announce it', () => {
+test('an already-announced answer is skipped (single announce, both orders)', () => {
   assert.equal(
     decideButtonsAnswered({
       messageType: 'standard',
       callbackData: 'pick_a',
-      trackedUnanswered: false,
+      alreadyAnnounced: true,
       permissionRe: PERM_RE,
     }),
     'skip',
@@ -286,7 +292,7 @@ test('ask_user_input rows never announce (that tool owns its own polling)', () =
     decideButtonsAnswered({
       messageType: 'ask_user_input',
       callbackData: 'pick_a',
-      trackedUnanswered: true,
+      alreadyAnnounced: false,
       permissionRe: PERM_RE,
     }),
     'skip',
@@ -298,22 +304,98 @@ test('a permission callback resolves the pending verdict instead of forwarding',
     decideButtonsAnswered({
       messageType: 'standard',
       callbackData: 'perm:once:abcde',
-      trackedUnanswered: true,
+      alreadyAnnounced: false,
       permissionRe: PERM_RE,
     }),
     'permission',
   )
 })
 
-test('an untracked permission callback is also skipped (legacy parity)', () => {
+test('an already-resolved permission callback is skipped', () => {
   assert.equal(
     decideButtonsAnswered({
       messageType: 'standard',
       callbackData: 'perm:deny:abcde',
-      trackedUnanswered: false,
+      alreadyAnnounced: true,
       permissionRe: PERM_RE,
     }),
     'skip',
+  )
+})
+
+// ── The three race orders, driven through the REAL poll detector ────────────
+// Mirror of the two call sites (keep in lockstep with server.ts): the poll's
+// announce path ADDS every announced id to the shared set; the stream's
+// buttons_answered forwards iff the id is not in the set, adds it, and
+// consumes any live-tracked baseline entry.
+
+interface ClickHarness {
+  announced: Set<number>
+  unanswered: ReadonlySet<number>
+}
+
+function pollTick(
+  h: ClickHarness,
+  rows: Array<{ id: number; answered: boolean }>,
+  isFirstPoll: boolean,
+): number[] {
+  const { announce, nextUnanswered } = selectClickTransitions({
+    rows: rows.map((r) => ({
+      id: r.id,
+      sender: 'assistant',
+      messageType: 'standard',
+      hasOptions: true,
+      answered: r.answered,
+    })),
+    prevUnanswered: h.unanswered,
+    isFirstPoll,
+  })
+  for (const id of announce) h.announced.add(id)
+  h.unanswered = nextUnanswered
+  return announce
+}
+
+function streamReplay(h: ClickHarness, id: number): boolean {
+  const decision = decideButtonsAnswered({
+    messageType: 'standard',
+    callbackData: 'pick_a',
+    alreadyAnnounced: h.announced.has(id),
+    permissionRe: PERM_RE,
+  })
+  if (decision === 'skip') return false
+  h.announced.add(id)
+  ;(h.unanswered as Set<number>).delete(id)
+  return true
+}
+
+test('stream-first: the consumed baseline blocks the later poll announce', () => {
+  const h: ClickHarness = { announced: new Set(), unanswered: new Set() }
+  assert.deepEqual(pollTick(h, [{ id: 5, answered: false }], true), [], 'baseline only')
+  assert.equal(streamReplay(h, 5), true, 'the stream announces the tap')
+  assert.deepEqual(
+    pollTick(h, [{ id: 5, answered: true }], false),
+    [],
+    'the poll must not announce the same tap a second time',
+  )
+})
+
+test('poll-first: the announced set blocks the later stream replay', () => {
+  const h: ClickHarness = { announced: new Set(), unanswered: new Set() }
+  pollTick(h, [{ id: 5, answered: false }], true)
+  assert.deepEqual(pollTick(h, [{ id: 5, answered: true }], false), [5])
+  assert.equal(streamReplay(h, 5), false, 'the stream replay stays silent')
+})
+
+test('a never-baselined id announces exactly once through the stream', () => {
+  // Under stream mode the poll may not run for a day, so no baseline ever
+  // exists for this id; the tracked-only gate would have black-holed it.
+  const h: ClickHarness = { announced: new Set(), unanswered: new Set() }
+  assert.equal(streamReplay(h, 9), true, 'first stream announce delivers')
+  assert.equal(streamReplay(h, 9), false, 'a replayed slice stays silent')
+  assert.deepEqual(
+    pollTick(h, [{ id: 9, answered: true }], true),
+    [],
+    'the poll never announces it either (answered rows never baseline)',
   )
 })
 
