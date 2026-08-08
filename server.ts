@@ -158,6 +158,31 @@ import {
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
 import {
+  UpdateStreamConsumer,
+  beaconWatchdog,
+  sweepMode,
+  CATCHUP_FETCH_LIMIT,
+  type StreamAuthority,
+  type StreamUpdate,
+} from './lib/update-stream.js'
+import { StreamClient, PairingRevokedError } from './lib/stream-client.js'
+import {
+  loadStreamCursorFile,
+  saveStreamCursorFile,
+  resolveStreamCursorFilePath,
+  pairingTokenFingerprint,
+} from './lib/stream-cursor-store.js'
+import {
+  buildStreamClickMeta,
+  buildStreamInboundMeta,
+  classifyStreamKind,
+  decideButtonsAnswered,
+  decideMessageFinalized,
+  decideMessageNew,
+  viewStreamMessage,
+  type StreamMessageView,
+} from './lib/stream-apply.js'
+import {
   authSnapshot,
   resolveAuthRecheckIntervalMs,
   AuthRecheckMonitor,
@@ -5300,6 +5325,584 @@ function isWsHealthy(): boolean {
   return !!realtimeSocket?.connected
 }
 
+// ── Agent Update Stream (flag-gated consumer wiring) ─────────────────────────
+// docs/architecture/agent-message-routing.md sections 5.2, 5.3, 5.4, 5.6,
+// 5.7 and 8 (the doc lives in the BGOS repo). STRICT default OFF: with the
+// flag off none of this state is populated, every guard below short
+// circuits, and the daemon behaves exactly as before. The pure state
+// machine lives in lib/update-stream.ts; the HTTP adapter in
+// lib/stream-client.ts; the apply decisions in lib/stream-apply.ts. This
+// section is only the impure glue.
+const UPDATE_STREAM_ENABLED = process.env.BGOS_UPDATE_STREAM === 'true'
+/** Stream mode active: the healthy full sweep stretches to daily (5.9). */
+const STREAM_RECONCILE_INTERVAL_MS = 24 * 3600_000
+
+let streamClient: StreamClient | null = null
+let streamConsumer: UpdateStreamConsumer | null = null
+let streamAuthority: StreamAuthority | null = null
+/** True once the session or updates endpoint answered non-404. */
+let streamFeatureDetected = false
+let streamLastBeaconAtMs = 0
+const streamCursorFilePath = resolveStreamCursorFilePath(cursorStore.filePath)
+const streamTokenFingerprint =
+  AUTH.mode === 'pairing' && AUTH.pairingToken
+    ? pairingTokenFingerprint(AUTH.pairingToken)
+    : ''
+// 5.7 wake-card two-phase: message_new rows held in their empty write-1
+// state (id -> chatId). The finalize for a held id delivers AS the wake, and
+// advanceStreamChatCursor parks the per-chat cursor below every held id.
+const streamHeldEmptyChatByMessageId = new Map<number, string>()
+// Chats whose per-chat cursor the stream has fed since boot: they count as
+// covered for the wsCursorSafe interlock exactly like a completed boot poll
+// (5.7: the per-chat cursors remain the dedup substrate forever).
+const streamCoveredChats = new Set<string>()
+
+/**
+ * Sweep demotion authority (spec 8): flag on AND a consumer AND authority
+ * enabled AND a beacon seen on the CURRENT connection. Anything less means
+ * the legacy cadence, never a reconnect loop.
+ */
+function streamModeActive(): boolean {
+  return (
+    UPDATE_STREAM_ENABLED &&
+    streamConsumer != null &&
+    sweepMode(streamAuthority) === 'stream'
+  )
+}
+
+/** WS down: prefer the 10s getDifference poll over the full sweep (5.4). */
+function streamWsDownPollPreferred(): boolean {
+  return (
+    UPDATE_STREAM_ENABLED &&
+    streamConsumer != null &&
+    streamFeatureDetected &&
+    streamClient != null &&
+    !streamClient.revoked
+  )
+}
+
+function deactivateStream(reason: string): void {
+  if (!streamFeatureDetected && streamAuthority == null) return
+  streamFeatureDetected = false
+  streamAuthority = null
+  log(`update stream: deactivated (${reason}); legacy cadence resumes`)
+}
+
+/**
+ * Park-aware per-chat cursor advance for stream-applied messages: reuses the
+ * poll's advanceCursor parking so the cursor never steps over a held empty
+ * wake row, and marks the chat covered for the wsCursorSafe interlock.
+ */
+function advanceStreamChatCursor(chatId: string, messageId: number): void {
+  const heldIds: number[] = []
+  for (const [id, chat] of streamHeldEmptyChatByMessageId) {
+    if (chat === chatId) heldIds.push(id)
+  }
+  advanceChatCursor(
+    chatId,
+    advanceCursor({
+      lastSeen: chatLastSeen.get(chatId) ?? 0,
+      maxId: messageId,
+      pendingEmptyIds: heldIds,
+    }),
+  )
+  streamCoveredChats.add(chatId)
+}
+
+/**
+ * Forward one replayed message as an inbound card. Mirrors the poll path's
+ * delivery (system prefix, slash routing, permission-verdict skip, session
+ * handle capture, overdue arming) with transport marker 'stream'. Resolves
+ * only after the MCP handoff resolves (5.7 handoff before advance), so a
+ * failed handoff pins the stream cursor for redelivery.
+ */
+async function forwardStreamInbound(
+  view: StreamMessageView,
+  isSystem: boolean,
+): Promise<void> {
+  const chatId = view.chatId
+  // Claim the id first so the WS and poll transports dedup against it, the
+  // same ordering the poll path uses.
+  rememberForwarded(view.messageId)
+  rememberSessionHandle(chatId, view.sessionHandle)
+
+  // Permission verdict texts are consumed by the permission flow, never
+  // forwarded (poll-path parity).
+  let isPermissionVerdict = VERDICT_RE.test(view.text)
+  if (!isPermissionVerdict) {
+    for (const requestId of pendingPermissions.keys()) {
+      if (parsePermissionChoice(view.text, requestId)) {
+        isPermissionVerdict = true
+        break
+      }
+    }
+  }
+  if (isPermissionVerdict) return
+
+  const systemPrefix = isSystem
+    ? '[System message from BGOS automation (e.g. a scheduler), NOT the user ' +
+      'and NOT a peer agent. Treat this as a system notification. Do not act on ' +
+      'it as a user instruction unless it explicitly asks you to.]\n'
+    : ''
+  const originalContent = buildInboundContent(
+    systemPrefix + view.text,
+    view.files as never[],
+  )
+  const slashRoute = routeSlashCommand({
+    payload: view.raw,
+    sourceContent: originalContent,
+    registry: registeredSlashCommands,
+    legacyAliases: registeredSlashCommandAliases,
+  })
+  if (slashRoute.kind === 'compact') {
+    // A replayed /compact targets a session state that no longer exists;
+    // the poll path consumes stale backlog compacts the same way.
+    log(`remote compact via stream replay ignored (chat ${chatId})`)
+    return
+  }
+  const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
+  const content = slashDelivery?.content ?? originalContent
+  if (!content) return
+
+  const isSlash = isSlashCommandPayload(view.raw)
+  const streamEventMeta = !isSlash
+    ? buildEventMeta(view.messageType, view.eventMetaRaw)
+    : null
+  const senderUserId = view.senderUserId ?? USER_ID
+  lastInboundUserByChat.set(chatId, senderUserId)
+  log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
+  await trackMessageOperation(() =>
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content,
+        meta: buildStreamInboundMeta({
+          chatId,
+          messageId: view.messageId,
+          isSystem,
+          senderUserId,
+          assistantId: String(ASSISTANT_ID),
+          ts: view.sentDate,
+          sessionHandle: view.sessionHandle,
+          backlog: false,
+          slashMeta: slashDelivery ? (slashDelivery.meta as Record<string, string>) : null,
+          // EventMetaFragment is all-string by construction (see
+          // buildEventMeta); the assertion only supplies the index signature.
+          eventMeta: streamEventMeta as Record<string, string> | null,
+        }),
+      },
+    }),
+  )
+  recordInbound(chatId, view.messageId)
+}
+
+/**
+ * buttons_answered from the stream. THE SINGLE-ANNOUNCE CONTRACT: forward
+ * only where the legacy selectClickTransitions detector would have (the id
+ * was live-tracked unanswered), and CONSUME the transition from
+ * chatUnansweredButtons in the same synchronous step so the poll detector
+ * can never announce the same tap a second time. Untracked answers stay
+ * untouched, leaving the poll detector sole authority over them.
+ */
+function applyStreamButtonsAnswered(update: StreamUpdate): void {
+  const view = viewStreamMessage(update)
+  if (!view || !view.chatId) return
+  const chatId = view.chatId
+  const answer = view.answerPayload
+  if (!answer) return
+  const tracked = chatUnansweredButtons.get(chatId)
+  const decision = decideButtonsAnswered({
+    messageType: view.messageType,
+    callbackData: answer.callbackData,
+    trackedUnanswered: tracked?.has(view.messageId) ?? false,
+    permissionRe: PERMISSION_CALLBACK_RE,
+  })
+  if (decision === 'skip') return
+  // Consume BEFORE acting: the id leaves the unanswered baseline, so the
+  // poll's prevUnanswered can never contain it again.
+  tracked?.delete(view.messageId)
+
+  if (decision === 'permission') {
+    const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
+    if (!permMatch) return
+    const [, choice, requestId] = permMatch
+    const pending = pendingPermissions.get(requestId!)
+    if (!pending) {
+      log(`Stale permission click ${choice} [${requestId}] via stream, no pending entry`)
+      return
+    }
+    const clickerUserId = senderUserIdOf(answer)
+    if (clickerUserId !== pending.requesterUserId) {
+      log(
+        `Ignoring stream permission click ${choice} [${requestId}] from ` +
+          `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
+      )
+      return
+    }
+    log(`Permission inline-button click via stream: ${choice} [${requestId}]`)
+    pending.resolve(choice!.toLowerCase() as PermissionChoice)
+    pendingPermissions.delete(requestId!)
+    return
+  }
+
+  const agentCallbackData = unescapeAgentButtonValue(answer.callbackData)
+  const kind =
+    agentCallbackData === '__skip__'
+      ? 'Skipped'
+      : agentCallbackData === '__custom__'
+        ? 'Custom reply'
+        : 'Clicked'
+  const summary = answer.customText
+    ? `${kind}: "${answer.customText}"`
+    : answer.buttonText
+      ? `${kind}: ${answer.buttonText}`
+      : `${kind}: ${agentCallbackData}`
+  const contentLines = [
+    `[button_clicked] ${summary}`,
+    `(in reply to message_id=${view.messageId})`,
+  ]
+  if (view.text.trim().length > 0) {
+    const quoted =
+      view.text.length > 200 ? view.text.slice(0, 197) + '...' : view.text
+    contentLines.push(`Original question: ${quoted}`)
+  }
+  void trackMessageOperation(() =>
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: contentLines.join('\n'),
+        meta: buildStreamClickMeta({
+          chatId,
+          messageId: view.messageId,
+          callbackData: agentCallbackData,
+          buttonText: answer.buttonText,
+          customText: answer.customText,
+          senderUserId: senderUserIdOf(answer),
+          assistantId: String(ASSISTANT_ID),
+        }),
+      },
+    }),
+  ).catch((err) => log(`Failed to deliver stream button_clicked: ${err}`))
+}
+
+/** message_new / message_finalized from the stream, per the 5.7 contract. */
+async function applyStreamMessage(
+  update: StreamUpdate,
+  cls: 'message_new' | 'message_finalized',
+): Promise<void> {
+  const view = viewStreamMessage(update)
+  if (!view || !view.chatId) return
+  const chatId = view.chatId
+  noteMonitoredChat(chatId)
+  // Meeting chats keep their specialized turn framing: replay through ONE
+  // poll of that chat (pollChat advances the per-chat cursor itself, so
+  // later meeting updates in the same chain fall through to
+  // already_covered). The message id dedup absorbs any overlap with the
+  // live meeting_message handler.
+  if (meetingIdByChatId.has(chatId)) {
+    await pollChat(chatId)
+    streamCoveredChats.add(chatId)
+    return
+  }
+  const lastSeenInChat = chatLastSeen.get(chatId) ?? 0
+  const held = streamHeldEmptyChatByMessageId.has(view.messageId)
+  const alreadyForwarded = forwardedMessageIds.has(view.messageId)
+  const decision =
+    cls === 'message_new'
+      ? decideMessageNew(view, { lastSeenInChat, alreadyForwarded })
+      : decideMessageFinalized(view, { held, lastSeenInChat, alreadyForwarded })
+  if (decision.action === 'hold_empty') {
+    // Remember the id, do not forward, and do NOT advance the per-chat
+    // cursor past it: the later finalize (same id) delivers AS the wake.
+    streamHeldEmptyChatByMessageId.set(view.messageId, chatId)
+    streamCoveredChats.add(chatId)
+    return
+  }
+  if (held) streamHeldEmptyChatByMessageId.delete(view.messageId)
+  if (decision.action === 'forward') {
+    await forwardStreamInbound(view, decision.isSystem)
+  } else if (decision.reason === 'assistant_authored') {
+    // Reply boundary (5.7): the assistant's own message supersedes any
+    // pending unanswered inbound in this chat.
+    clearInbound(chatId)
+  }
+  advanceStreamChatCursor(chatId, view.messageId)
+}
+
+/**
+ * The consumer's applyUpdate dep: one replayed update, honoring 5.7.
+ * Resolves only after the side effects for this update completed, so the
+ * stream cursor advances strictly behind successful handoffs.
+ */
+async function applyStreamUpdate(update: StreamUpdate): Promise<void> {
+  const cls = classifyStreamKind(update.kind)
+  switch (cls) {
+    case 'message_new':
+    case 'message_finalized':
+      await applyStreamMessage(update, cls)
+      return
+    case 'buttons_answered':
+      applyStreamButtonsAnswered(update)
+      return
+    case 'chat_created': {
+      const chatId = update.chatId != null ? String(update.chatId) : ''
+      if (chatId) {
+        noteMonitoredChat(chatId)
+        if (!monitoredChatIds.includes(chatId)) monitoredChatIds.push(chatId)
+        log(`stream: chat_created ${chatId}, now monitored`)
+      }
+      return
+    }
+    case 'chat_deleted': {
+      const chatId = update.chatId != null ? String(update.chatId) : ''
+      if (chatId) {
+        monitoredChatIds = monitoredChatIds.filter((id) => id !== chatId)
+        streamCoveredChats.delete(chatId)
+        clearInbound(chatId)
+        log(`stream: chat_deleted ${chatId}`)
+      }
+      return
+    }
+    case 'reconcile':
+      // Membership changed while we were behind (seat, meeting lifecycle):
+      // the existing discovery helper re-fetches meetings, remembers
+      // contexts, and reconciles, so the specialized state is rebuilt by
+      // the machinery that already owns it.
+      log(`stream: ${update.kind} (seq ${update.seq}), reconciling via discoverChats`)
+      await discoverChats()
+      return
+    case 'peer_closed': {
+      const payload = update.payload as Record<string, unknown>
+      const convId = payload?.conversationId ?? payload?.conversation_id
+      markConversationClosed({
+        convId: convId != null ? String(convId) : undefined,
+        chatId: update.chatId != null ? String(update.chatId) : undefined,
+      })
+      return
+    }
+    case 'config':
+      log(`stream: config_changed (seq ${update.seq}), reconciling`)
+      await loadServedCapabilities()
+      void reconcileAlwaysOn()
+      void syncSlashCommands()
+      return
+    default:
+      // Deadline-bound kinds (turns, policies) and unknown future kinds:
+      // replaying them late is harm, not delivery (5.5). Log only.
+      log(`stream: ${update.kind} (seq ${update.seq}) log-only no-op`)
+  }
+}
+
+/**
+ * The consumer's fullResync dep (5.7): the WHOLE boot sequence, i.e. chat
+ * discovery, a boot-style full sweep, the meetings re-fetch that rides
+ * discoverChats, and the config reconcile; then adopt {state, epoch} from a
+ * fresh updates verdict. The adoption probe asks with a since beyond any
+ * real seq: every verdict (here invalidCursor) carries the authoritative
+ * state + streamEpoch in one row-less response.
+ */
+async function streamFullResync(): Promise<{ state: number; epoch: number } | null> {
+  try {
+    await discoverChats()
+    await pollAllChats()
+    await reconcileAlwaysOn()
+    if (!streamClient) return null
+    const probe = await streamClient.fetchUpdates(
+      Number(ASSISTANT_ID),
+      Number.MAX_SAFE_INTEGER,
+      1,
+    )
+    if (
+      probe.kind === 'ok' ||
+      probe.kind === 'too_old' ||
+      probe.kind === 'invalid_cursor'
+    ) {
+      return { state: probe.state, epoch: probe.streamEpoch }
+    }
+    if (probe.kind === 'not_found') deactivateStream('updates endpoint 404')
+    return null
+  } catch (err) {
+    if (err instanceof PairingRevokedError) {
+      deactivateStream('pairing revoked')
+    }
+    log(`update stream: full resync failed: ${err}`)
+    return null
+  }
+}
+
+function buildStreamConsumer(initial: { seq: number; epoch: number }): UpdateStreamConsumer {
+  return new UpdateStreamConsumer({
+    initialCursor: initial,
+    deps: {
+      fetchUpdates: async (since) => {
+        try {
+          return await streamClient!.fetchUpdates(
+            Number(ASSISTANT_ID),
+            since,
+            CATCHUP_FETCH_LIMIT,
+          )
+        } catch (err) {
+          if (err instanceof PairingRevokedError) {
+            deactivateStream('pairing revoked')
+          }
+          throw err
+        }
+      },
+      applyUpdate: applyStreamUpdate,
+      persistCursor: (cursor) => {
+        // Synchronous flush (5.7): never the 5s coalescer, so the at least
+        // once replay window stays one update wide.
+        saveStreamCursorFile(streamCursorFilePath, cursor, streamTokenFingerprint)
+      },
+      fullResync: streamFullResync,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      // 0..5s jitter before beacon-triggered fetches (5.3), so a fleet that
+      // saw the same drop does not fetch in the same instant.
+      jitterMs: () => Math.floor(Math.random() * 5000),
+    },
+  })
+}
+
+/**
+ * Route a stamped inbound_message through the consumer's arithmetic. The
+ * apply callback is the EXACT legacy delivery (deliver), so a live
+ * successor behaves byte-identically to today, a duplicate seq is dropped
+ * by arithmetic, and a gap buffers 500ms then heals via one getDifference
+ * chain. Returns false (caller runs the legacy path untouched) when the
+ * flag is off, the stream is not in stream mode, or the payload carries no
+ * usable stamp.
+ */
+function routeStampedInbound(
+  payload: unknown,
+  deliver: (payload: unknown) => void,
+): boolean {
+  if (!UPDATE_STREAM_ENABLED) return false
+  const consumer = streamConsumer
+  if (!consumer || !streamModeActive()) return false
+  const p = payload as Record<string, unknown> | null | undefined
+  const seq = Number(p?.seq)
+  const streamEpoch = Number(p?.streamEpoch)
+  if (!Number.isFinite(seq) || !Number.isFinite(streamEpoch)) return false
+  if (p?.assistantId != null && String(p.assistantId) !== String(ASSISTANT_ID)) {
+    // Addressed to another assistant: not ours to apply (defense in depth
+    // against server room routing bugs, spec 6); drop it entirely.
+    return true
+  }
+  void trackMessageOperation(() =>
+    consumer.onStampedEvent(
+      { seq, streamEpoch },
+      async () => deliver(payload),
+      Date.now(),
+    ),
+  ).catch((err) => log(`stream stamped inbound error: ${err}`))
+  return true
+}
+
+/**
+ * Called from the existing 2s scheduler tick: consumer gap deadlines (the
+ * grammers 500ms rule) and the beacon watchdog (two missed beacons on a
+ * live socket while stream mode is active = silent room drop, reconnect;
+ * with authority absent the watchdog reports healthy forever, which is the
+ * kill-switch invariant).
+ */
+function streamSchedulerTick(nowMs: number): void {
+  if (!UPDATE_STREAM_ENABLED) return
+  if (updateDrainMode) return
+  const consumer = streamConsumer
+  if (consumer) {
+    void trackMessageOperation(() => consumer.checkDeadlines(nowMs)).catch(
+      (err) => log(`stream deadline check error: ${err}`),
+    )
+  }
+  if (
+    streamLastBeaconAtMs > 0 &&
+    beaconWatchdog(streamLastBeaconAtMs, nowMs, isWsHealthy(), streamModeActive()) ===
+      'reconnect'
+  ) {
+    log('update stream: two beacon intervals silent on a live socket; reconnecting WS')
+    // Re-arm so a slow reconnect cannot re-trigger this every tick, and
+    // drop per-connection authority so sweeps stay legacy until a beacon
+    // arrives on the NEW connection.
+    streamLastBeaconAtMs = nowMs
+    if (streamAuthority) streamAuthority.beaconSeenOnConnection = false
+    realtimeSocket?.disconnect()
+    realtimeSocket?.connect()
+  }
+}
+
+/** WS-down 10s cadence: one getDifference chain instead of the full sweep. */
+async function streamWsDownCatchup(): Promise<void> {
+  if (updateDrainMode) return
+  const consumer = streamConsumer
+  if (!consumer) return
+  await trackMessageOperation(async () => {
+    const outcome = await consumer.runCatchup('ws_down_poll', Date.now())
+    if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
+  })
+}
+
+/**
+ * Boot (flag on): mint a session, adopt or resume the stream cursor, build
+ * the consumer. On 404 or ANY failure the stream stays inactive and every
+ * legacy path runs unchanged (feature detect, never version sniff).
+ */
+async function initUpdateStream(): Promise<void> {
+  if (!UPDATE_STREAM_ENABLED) return
+  if (AUTH.mode !== 'pairing' || !streamTokenFingerprint) {
+    log('update stream: flag on but auth is not pairing mode; staying on legacy paths')
+    return
+  }
+  streamClient = new StreamClient({
+    apiBase: API_BASE,
+    pairingHeaders: () => authHeaders(AUTH),
+    log,
+  })
+  try {
+    const mint = await streamClient.mintSession()
+    if (mint.kind !== 'ok') {
+      log(`update stream: session mint ${mint.kind}; stream inactive, legacy paths run`)
+      return
+    }
+    streamFeatureDetected = true
+    const stream = mint.grant.stream
+    const epoch = Number(stream?.streamEpoch)
+    const mine = stream?.assistants.find(
+      (a) => String(a.assistantId) === String(ASSISTANT_ID),
+    )
+    if (!stream?.enabled || !Number.isFinite(epoch) || !mine) {
+      streamAuthority = {
+        enabled: false,
+        epoch: Number.isFinite(epoch) ? epoch : 0,
+        beaconSeenOnConnection: false,
+      }
+      log('update stream: feature present but not enabled for this assistant; legacy cadence')
+      return
+    }
+    const persisted = loadStreamCursorFile(streamCursorFilePath, streamTokenFingerprint)
+    // Same epoch: resume the persisted cursor and let one chain drain the
+    // offline gap. Different epoch (or first run / re-pair): the cursor
+    // spans an unlogged window (or belongs to another pairing) and the boot
+    // sweep that just ran already made us current, so adopt the server's
+    // state fresh.
+    const resumed = persisted != null && persisted.epoch === epoch
+    const initial = resumed ? persisted! : { seq: mine.seq, epoch }
+    streamConsumer = buildStreamConsumer(initial)
+    streamAuthority = { enabled: true, epoch, beaconSeenOnConnection: false }
+    saveStreamCursorFile(streamCursorFilePath, initial, streamTokenFingerprint)
+    log(
+      `update stream: active (epoch ${epoch}, cursor seq ${initial.seq}, ` +
+        `${resumed ? 'resumed' : 'adopted'})`,
+    )
+    if (resumed && initial.seq < mine.seq) {
+      const outcome = await streamConsumer.runCatchup('boot', Date.now())
+      log(`update stream: boot catch-up ${outcome}`)
+      if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
+    }
+  } catch (err) {
+    log(`update stream: init failed (${err}); stream inactive, legacy paths run`)
+  }
+}
+
 function connectWebsocket(): void {
   realtimeSocket = socketIoClient(WS_URL, {
     transports: ['websocket'],
@@ -5315,6 +5918,11 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('connect', () => {
     log(`WS connected (id=${realtimeSocket?.id}), polling will throttle`)
+    // Stream authority is per connection (spec 8): a beacon must be seen on
+    // THIS connection before sweeps demote again.
+    if (UPDATE_STREAM_ENABLED && streamAuthority) {
+      streamAuthority.beaconSeenOnConnection = false
+    }
     // Catch-up after a WS reconnect: server-side WS pushes that fired
     // while we were disconnected don't replay, so trigger an immediate
     // poll cycle to pull in anything we missed. Without this we'd have to
@@ -5322,6 +5930,27 @@ function connectWebsocket(): void {
     // This is what lets the healthy sweep be cheap: reconnect recovery does
     // NOT ride the sweep cadence, so lengthening the sweep never lengthens
     // post-outage catch-up. Pinned by test/poll-core.test.ts.
+    //
+    // Agent Update Stream (flag-gated): with a consumer and stream
+    // authority, ONE jittered getDifference chain replaces the full sweep
+    // (spec 5.4: a disconnect costs one chain, not 600 requests). Any
+    // failure falls back to the legacy sweep on the next scheduler tick.
+    if (
+      UPDATE_STREAM_ENABLED &&
+      streamConsumer != null &&
+      streamFeatureDetected &&
+      streamAuthority?.enabled
+    ) {
+      const consumer = streamConsumer
+      void trackMessageOperation(async () => {
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.floor(Math.random() * 5000)),
+        )
+        const outcome = await consumer.runCatchup('reconnect', Date.now())
+        if (outcome === 'feature_absent') deactivateStream('updates endpoint 404')
+      }).catch((err) => log(`Post-reconnect stream catch-up failed: ${err}`))
+      return
+    }
     pollAllChats().catch((err) => {
       log(`Post-reconnect catch-up poll failed: ${err}`)
     })
@@ -5430,6 +6059,18 @@ function connectWebsocket(): void {
 
   realtimeSocket.on('inbound_message', (payload: any) => {
     if (updateDrainMode) return
+    // Agent Update Stream (flag-gated): a stamped event routes through the
+    // consumer's seq arithmetic; the apply callback is the EXACT legacy
+    // delivery below (deliverWsInbound). Flag off, no stream mode, or an
+    // unstamped payload: the legacy path runs untouched.
+    if (routeStampedInbound(payload, deliverWsInbound)) return
+    deliverWsInbound(payload)
+  })
+
+  // The legacy inbound delivery body, shared verbatim by the direct path
+  // above and the stream-stamped apply. Hoisted declaration so the handler
+  // registration can precede it.
+  function deliverWsInbound(payload: any): void {
     try {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
@@ -5453,8 +6094,12 @@ function connectWebsocket(): void {
       // test/first-poll-gate.test.ts (wsCursorSafe mirror).
       const chatId = String(payload?.chatId ?? payload?.chat_id ?? '')
       if (chatId) {
+        // A chat the update stream has fed since boot counts as covered
+        // exactly like a completed boot poll (5.7: the stream feeds the
+        // per-chat cursors; streamCoveredChats is empty with the flag off).
         const wsCursorSafe =
           chatsPolledSinceBoot.has(chatId) ||
+          streamCoveredChats.has(chatId) ||
           (chatLastSeen.get(chatId) ?? 0) === 0
         if (wsCursorSafe) advanceChatCursor(chatId, messageId)
         noteMonitoredChat(chatId)
@@ -5599,7 +6244,7 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
-  })
+  }
 
   realtimeSocket.on('peer_conversation_closed', (payload: any) => {
     if (updateDrainMode) return
@@ -6049,6 +6694,67 @@ function connectWebsocket(): void {
           ? Number(currentRaw)
           : null
   })
+
+  // ── Agent Update Stream events (flag-gated, additive) ──────────────────────
+  // Registered beside the existing handlers, drain-guarded like every
+  // neighbor. Old backends simply never emit these; with the flag off the
+  // listeners are not registered at all.
+  if (UPDATE_STREAM_ENABLED) {
+    // stream_authority rides a fresh socket auth: {assistantId, enabled,
+    // seq, streamEpoch}. Authority alone never demotes sweeps; a beacon on
+    // the CURRENT connection is also required (sweepMode, spec 8).
+    realtimeSocket.on('stream_authority', (payload: any) => {
+      if (updateDrainMode) return
+      try {
+        if (
+          payload?.assistantId != null &&
+          String(payload.assistantId) !== String(ASSISTANT_ID)
+        ) {
+          return
+        }
+        const epoch = Number(payload?.streamEpoch)
+        if (!Number.isFinite(epoch)) return
+        const enabled = payload?.enabled === true
+        streamAuthority = {
+          enabled,
+          epoch,
+          beaconSeenOnConnection: streamAuthority?.beaconSeenOnConnection ?? false,
+        }
+        streamFeatureDetected = true
+        log(`update stream: authority enabled=${enabled} epoch=${epoch}`)
+      } catch (err) {
+        log(`stream_authority handler error: ${err}`)
+      }
+    })
+
+    // update_state is the 60s beacon: {assistantId, seq, streamEpoch}. A
+    // beacon at the cursor is zero requests; ahead of it, the consumer runs
+    // one jittered getDifference chain; a new epoch forces the full resync.
+    realtimeSocket.on('update_state', (payload: any) => {
+      if (updateDrainMode) return
+      try {
+        if (
+          payload?.assistantId != null &&
+          String(payload.assistantId) !== String(ASSISTANT_ID)
+        ) {
+          return
+        }
+        const seq = Number(payload?.seq)
+        const streamEpoch = Number(payload?.streamEpoch)
+        if (!Number.isFinite(seq) || !Number.isFinite(streamEpoch)) return
+        streamLastBeaconAtMs = Date.now()
+        if (streamAuthority) streamAuthority.beaconSeenOnConnection = true
+        streamFeatureDetected = true
+        const consumer = streamConsumer
+        if (!consumer) return
+        void trackMessageOperation(() =>
+          consumer.onBeacon({ seq, streamEpoch }, Date.now()),
+        ).catch((err) => log(`update_state beacon error: ${err}`))
+      } catch (err) {
+        log(`update_state handler error: ${err}`)
+      }
+    })
+  }
 }
 
 // ── Slash-command discovery + sync ───────────────────────────────────────────
@@ -6383,6 +7089,12 @@ async function main(): Promise<void> {
     })
   }
 
+  // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
+  // session and build the consumer; on 404 or any failure the stream stays
+  // inactive and every legacy path below runs unchanged. Runs AFTER the
+  // boot sweep so a fresh cursor adoption starts from a current state.
+  await initUpdateStream()
+
   // Step 3: Open the WS subscription. Failure here is non-fatal, polling
   // keeps the plugin functional even if the WS path is unavailable.
   try {
@@ -6416,26 +7128,53 @@ async function main(): Promise<void> {
   let lastFullCycleAt = 0
   const tick = async (): Promise<void> => {
     try {
-      const plan = planPollCycle({
+      // Agent Update Stream housekeeping on the existing 2s tick: consumer
+      // gap deadlines + the beacon watchdog. No-op with the flag off.
+      streamSchedulerTick(Date.now())
+      const fastIds = fastScopeChatIds({
+        meetingChatIds,
+        pendingPermissionChatIds: [...pendingPermissions.values()].map(
+          (p) => p.chatId,
+        ),
+      })
+      let plan = planPollCycle({
         now: Date.now(),
         lastFullCycleAt,
         wsHealthy: isWsHealthy(),
         baseIntervalMs: POLL_INTERVAL_MS,
-        fastChatIds: fastScopeChatIds({
-          meetingChatIds,
-          pendingPermissionChatIds: [...pendingPermissions.values()].map(
-            (p) => p.chatId,
-          ),
-        }),
+        fastChatIds: fastIds,
       })
+      // While stream mode is active (authority + a beacon on this
+      // connection), the healthy full sweep stretches to a daily
+      // reconciliation (spec 5.9). The moment authority or beacons lapse,
+      // streamModeActive() goes false and the legacy 5 minute cadence
+      // resumes with no other change. Fast-scope chats keep their 2s
+      // reactivity either way.
+      if (
+        plan.kind === 'full' &&
+        isWsHealthy() &&
+        streamModeActive() &&
+        lastFullCycleAt !== 0 &&
+        Date.now() - lastFullCycleAt < STREAM_RECONCILE_INTERVAL_MS
+      ) {
+        plan = fastIds.length > 0 ? { kind: 'fast', chatIds: fastIds } : { kind: 'idle' }
+      }
       if (plan.kind === 'full') {
         lastFullCycleAt = Date.now()
-        await discoverChats()
-        await pollAllChats()
-        // Session controls: heartbeat refresh of the context-window gauge,
-        // once per full cycle (fire-and-forget, deduped on the rounded
-        // percent inside).
-        reportContextPct()
+        if (!isWsHealthy() && streamWsDownPollPreferred()) {
+          // WS down with the stream feature detected: one getDifference
+          // call per 10s cycle replaces the full sweep (spec 5.4). The
+          // legacy sweep remains the fallback whenever the stream is not
+          // usable (flag off, 404, revoked).
+          await streamWsDownCatchup()
+        } else {
+          await discoverChats()
+          await pollAllChats()
+          // Session controls: heartbeat refresh of the context-window gauge,
+          // once per full cycle (fire-and-forget, deduped on the rounded
+          // percent inside).
+          reportContextPct()
+        }
       } else if (plan.kind === 'fast') {
         for (const fastChatId of plan.chatIds) {
           await pollChat(fastChatId)
