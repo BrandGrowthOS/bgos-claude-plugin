@@ -65,7 +65,6 @@ export interface StreamClientDeps {
   /** The pairing auth headers (authHeaders(AUTH) in server.ts). */
   pairingHeaders: () => Record<string, string>
   fetchImpl?: typeof fetch
-  log?: (msg: string) => void
 }
 
 type UnauthorizedCode = 'session_expired' | 'pairing_revoked' | ''
@@ -96,17 +95,22 @@ function retryAfterSecondsOf(
   return RATE_LIMIT_DEFAULT_RETRY_SECONDS
 }
 
+/** A referent id that is not a finite number normalizes to null, never NaN. */
+function finiteIdOrNull(value: unknown): number | null {
+  if (value == null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function normalizeUpdate(raw: unknown): StreamUpdate | null {
   const r = raw as Record<string, unknown> | null | undefined
   const seq = Number(r?.seq)
   if (!Number.isFinite(seq)) return null
-  const chatId = r?.chatId
-  const messageId = r?.messageId
   return {
     seq,
     kind: String(r?.kind ?? ''),
-    chatId: chatId == null ? null : Number(chatId),
-    messageId: messageId == null ? null : Number(messageId),
+    chatId: finiteIdOrNull(r?.chatId),
+    messageId: finiteIdOrNull(r?.messageId),
     payload:
       r?.payload && typeof r.payload === 'object'
         ? (r.payload as Record<string, unknown>)
@@ -142,7 +146,6 @@ export class StreamClient {
   private readonly apiBase: string
   private readonly pairingHeaders: () => Record<string, string>
   private readonly fetchImpl: typeof fetch
-  private readonly log: (msg: string) => void
   /** MEMORY ONLY (spec 5.6): never persisted, logged, or exposed. */
   private sessionToken: string | null = null
   private remintInFlight: Promise<boolean> | null = null
@@ -152,7 +155,6 @@ export class StreamClient {
     this.apiBase = deps.apiBase.replace(/\/$/, '')
     this.pairingHeaders = deps.pairingHeaders
     this.fetchImpl = deps.fetchImpl ?? fetch
-    this.log = deps.log ?? (() => undefined)
   }
 
   /** True after a pairing_revoked verdict: the caller must stop the stream. */

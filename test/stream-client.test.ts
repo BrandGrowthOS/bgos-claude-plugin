@@ -207,6 +207,7 @@ test('a normal 200 maps to ok with normalized updates', async () => {
           { seq: 11, kind: 'message_new', chatId: 7, messageId: 100, payload: { text: 'hi' } },
           { seq: 12, kind: 'chat_created', chatId: 8, messageId: null },
           { seq: 'garbage', kind: 'message_new' },
+          { seq: 13, kind: 'config_changed', chatId: 'garbage', messageId: 'nope' },
         ],
         state: 12,
         streamEpoch: 3,
@@ -216,7 +217,7 @@ test('a normal 200 maps to ok with normalized updates', async () => {
   const result = await client(impl).fetchUpdates(900, 10)
   assert.equal(result.kind, 'ok')
   if (result.kind !== 'ok') return
-  assert.equal(result.updates.length, 2, 'a seq-less row is dropped, never applied')
+  assert.equal(result.updates.length, 3, 'a seq-less row is dropped, never applied')
   assert.deepEqual(result.updates[0], {
     seq: 11,
     kind: 'message_new',
@@ -231,6 +232,11 @@ test('a normal 200 maps to ok with normalized updates', async () => {
     messageId: null,
     payload: {},
   })
+  assert.deepEqual(
+    result.updates[2],
+    { seq: 13, kind: 'config_changed', chatId: null, messageId: null, payload: {} },
+    'non-numeric referent ids normalize to null, never NaN',
+  )
   assert.equal(result.state, 12)
   assert.equal(result.final, false)
   assert.equal(result.streamEpoch, 3)
