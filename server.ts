@@ -7026,6 +7026,26 @@ async function isAlwaysOnInstalled(): Promise<boolean> {
 async function reconcileAlwaysOn(): Promise<void> {
   if (reconcileBusy) return
   if (reconcileDisabledReason) return
+  if (process.platform === 'win32') {
+    // The supervisor is a bash script implementing launchd (macOS) and
+    // systemd (Linux) only; Windows cannot exec a shebang script and has no
+    // implementation behind it even if it could (the script itself dies with
+    // "unsupported OS"). Before this branch existed, every reconcile cycle
+    // on a Windows host with always-on configured retried a spawn that can
+    // never succeed (9,852 failures on one daemon in 2.5 days, found by
+    // Mark 2026-08-09, who also caught that a quiet latch here would hide
+    // the real state). So: stand down ONCE, and say the true thing, which
+    // is that the flag KC configured is NOT being honored on this host.
+    reconcileDisabledReason = 'always-on is not implemented on Windows'
+    log(
+      `always-on reconcile DISABLED: this assistant has always-on configured ` +
+        `in BGOS, but the supervisor only supports macOS (launchd) and Linux ` +
+        `(systemd), so restart-survival is NOT active on this Windows host. ` +
+        `The flag remains visible in BGOS as configured; treat it as ` +
+        `unfulfilled here until Windows support ships. Logged once.`,
+    )
+    return
+  }
   if (!existsSync(BGOS_AGENT_BIN)) {
     reconcileDisabledReason = `supervisor binary missing at ${BGOS_AGENT_BIN}`
     log(

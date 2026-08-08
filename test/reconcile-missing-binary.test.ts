@@ -42,6 +42,20 @@ describe('always-on reconcile with a missing supervisor binary', () => {
     expect(reconcileBody).toMatch(/reconcileDisabledReason = /)
   })
 
+  it('on win32 stands down before any spawn and names the truth', () => {
+    // Windows cannot exec a shebang script and the supervisor script has no
+    // Windows implementation behind it (launchd + systemd only). The branch
+    // must come BEFORE the existence check: the file EXISTS on Windows
+    // checkouts, so an existence latch alone never fires there and the
+    // retry storm continues (Mark's correction, 2026-08-09).
+    const winAt = reconcileBody.indexOf("process.platform === 'win32'")
+    const existsAt = reconcileBody.indexOf('existsSync(BGOS_AGENT_BIN)')
+    expect(winAt).toBeGreaterThan(-1)
+    expect(winAt).toBeLessThan(existsAt)
+    expect(reconcileBody).toContain('restart-survival is NOT active')
+    expect(reconcileBody).toContain('unfulfilled')
+  })
+
   it('tells the operator how to repair, in the one log line it emits', () => {
     expect(reconcileBody).toContain('re-run the installer or restore bin/bgos-agent')
     expect(reconcileBody).toContain('logged once')
