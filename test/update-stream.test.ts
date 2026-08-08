@@ -104,7 +104,9 @@ test('a live successor applies and advances the cursor after handoff', async () 
   const h = harness();
   const decision = await h.consumer.onStampedEvent(
     { seq: 11, streamEpoch: 3 },
-    async () => h.applied.push(11),
+    async () => {
+      h.applied.push(11)
+    },
     1_000,
   );
   assert.equal(decision, 'applied');
@@ -117,7 +119,9 @@ test('a reordered pair drains from the buffer in order with no catch-up call', a
   // seq 12 arrives before 11 (commit reorder): buffered, not applied.
   const first = await h.consumer.onStampedEvent(
     { seq: 12, streamEpoch: 3 },
-    async () => h.applied.push(12),
+    async () => {
+      h.applied.push(12)
+    },
     1_000,
   );
   assert.equal(first, 'buffered');
@@ -125,7 +129,9 @@ test('a reordered pair drains from the buffer in order with no catch-up call', a
   // 11 lands: applies, then the buffer drains 12 immediately.
   await h.consumer.onStampedEvent(
     { seq: 11, streamEpoch: 3 },
-    async () => h.applied.push(11),
+    async () => {
+      h.applied.push(11)
+    },
     1_100,
   );
   assert.deepEqual(h.applied, [11, 12]);
@@ -141,7 +147,9 @@ test('an unfilled gap past the 500ms deadline becomes ONE catch-up call', async 
   });
   await h.consumer.onStampedEvent(
     { seq: 12, streamEpoch: 3 },
-    async () => h.applied.push(12),
+    async () => {
+      h.applied.push(12)
+    },
     1_000,
   );
   await h.consumer.checkDeadlines(1_000 + GAP_BUFFER_MS + 1);
@@ -194,7 +202,9 @@ test('live pushes during a chain are ignored and trigger ONE extra round', async
   const chain = h.consumer.runCatchup('test', 1_000);
   const decision = await h.consumer.onStampedEvent(
     { seq: 12, streamEpoch: 3 },
-    async () => h.applied.push(999),
+    async () => {
+      h.applied.push(999)
+    },
     1_001,
   );
   assert.equal(decision, 'in_difference');
