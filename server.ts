@@ -266,7 +266,7 @@ function getApiBaseUrl(): string {
 
 const API_BASE = getApiBaseUrl()
 
-import { appendFileSync, statSync, watch } from 'node:fs'
+import { appendFileSync, existsSync, statSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join as pathJoin } from 'node:path'
 
@@ -7006,6 +7006,13 @@ function syncSlashCommands(prepared?: PreparedSlashCommands): Promise<void> {
 const execFileAsync = promisify(execFile)
 const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
 let reconcileBusy = false
+// A missing supervisor binary is a HOST-LAYOUT fact, not a transient: no
+// number of retries installs it. Without this latch a host whose install
+// never shipped bin/bgos-agent (seen on Windows, 2026-08-09: one daemon
+// burned 9,852 identical failed spawns in 2.5 days) retries on every cycle
+// forever and buries the one actionable log line in thousands of copies.
+// Log once, loudly, and stand down until the process restarts.
+let reconcileDisabledReason: string | null = null
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -7018,6 +7025,17 @@ async function isAlwaysOnInstalled(): Promise<boolean> {
 
 async function reconcileAlwaysOn(): Promise<void> {
   if (reconcileBusy) return
+  if (reconcileDisabledReason) return
+  if (!existsSync(BGOS_AGENT_BIN)) {
+    reconcileDisabledReason = `supervisor binary missing at ${BGOS_AGENT_BIN}`
+    log(
+      `always-on reconcile DISABLED for this session: ${reconcileDisabledReason}. ` +
+        `This host cannot install or remove the always-on supervisor until the ` +
+        `plugin install is repaired (re-run the installer or restore bin/bgos-agent). ` +
+        `This is logged once; no further attempts will be made.`,
+    )
+    return
+  }
   reconcileBusy = true
   try {
     // Cached-on-304 so a 304 still yields the flags: the reconcile must keep
