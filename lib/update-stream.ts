@@ -192,7 +192,10 @@ export class UpdateStreamConsumer {
     );
     if (decision.action === 'duplicate') return 'duplicate';
     if (decision.action === 'epoch_resync') {
-      await this.resync();
+      // The stamp itself is the PRE-sweep verdict: its content is delivered
+      // by the sweep, and anything committed DURING the sweep has a higher
+      // seq and replays through the next chain.
+      await this.resync({ state: stamp.seq, epoch: stamp.streamEpoch });
       return 'epoch_resync';
     }
     if (decision.action === 'gap') {
@@ -252,7 +255,7 @@ export class UpdateStreamConsumer {
       return;
     }
     if (beacon.streamEpoch !== this.cursor.epoch) {
-      await this.resync();
+      await this.resync({ state: beacon.seq, epoch: beacon.streamEpoch });
       return;
     }
     if (beacon.seq <= this.cursor.seq) return;
@@ -295,11 +298,11 @@ export class UpdateStreamConsumer {
           continue;
         }
         if (result.kind === 'too_old' || result.kind === 'invalid_cursor') {
-          await this.resync();
+          await this.resync({ state: result.state, epoch: result.streamEpoch });
           return 'resynced';
         }
         if (result.streamEpoch !== this.cursor.epoch) {
-          await this.resync();
+          await this.resync({ state: result.state, epoch: result.streamEpoch });
           return 'resynced';
         }
         for (const update of result.updates) {
@@ -317,11 +320,25 @@ export class UpdateStreamConsumer {
     return 'caught_up';
   }
 
-  private async resync(): Promise<void> {
+  /**
+   * One full resync. `verdict` is the {state, streamEpoch} carried by
+   * whatever TRIGGERED the resync (a tooOld/invalidCursor response, an
+   * epoch-mismatched beacon or stamp): those values were read BEFORE the
+   * sweep ran, so adopting them after the sweep completes means events
+   * committed DURING the sweep still have seq above the cursor and replay
+   * through the next chain (over-fetch is deduped by the per-chat cursors).
+   * A post-sweep probe would silently skip exactly those events, so the
+   * dep's own returned state is only the fallback when no verdict exists.
+   * Nothing is adopted when the sweep could not complete (fullResync null):
+   * the cursor stays put and the next beacon or gap retries.
+   */
+  private async resync(
+    verdict?: { state: number; epoch: number },
+  ): Promise<void> {
     const adopted = await this.deps.fullResync();
-    if (adopted) {
-      this.cursor = { seq: adopted.state, epoch: adopted.epoch };
-      await this.deps.persistCursor({ ...this.cursor });
-    }
+    if (!adopted) return;
+    const next = verdict ?? { state: adopted.state, epoch: adopted.epoch };
+    this.cursor = { seq: next.state, epoch: next.epoch };
+    await this.deps.persistCursor({ ...this.cursor });
   }
 }
