@@ -27,6 +27,55 @@ export function isNotModified(value: unknown): value is typeof NOT_MODIFIED {
   return value === NOT_MODIFIED
 }
 
+/** The author fields needed to reject a polled copy of our own peer send. */
+export interface PollMessageAuthor {
+  sender: string | null
+  senderAssistantId?: unknown
+  sender_assistant_id?: unknown
+}
+
+function finiteAssistantId(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Fail-open poll author filter. Only a user-slot row with explicit, finite
+ * provenance matching this assistant is suppressed. Human, legacy, malformed,
+ * system, and assistant rows remain eligible for the normal forwarding rules.
+ */
+export function shouldForwardPollMessage(
+  message: PollMessageAuthor,
+  assistantId: string | number,
+): boolean {
+  if (message.sender !== 'user') return true
+  const ownId = finiteAssistantId(assistantId)
+  if (ownId === null) return true
+  const authorIds = [message.senderAssistantId, message.sender_assistant_id]
+  return !authorIds.some((value) => finiteAssistantId(value) === ownId)
+}
+
+/**
+ * Claim the top-level messageId returned by an outbound peer-style send.
+ * Null, missing, and malformed ids are ignored.
+ */
+export function rememberReturnedMessageId(
+  result: unknown,
+  rememberForwarded: (messageId: number) => void,
+): number | null {
+  if (result === null || typeof result !== 'object') return null
+  const raw = (result as { messageId?: unknown }).messageId
+  if (raw === null || raw === undefined) return null
+  const messageId = Number(raw)
+  if (!Number.isFinite(messageId)) return null
+  rememberForwarded(messageId)
+  return messageId
+}
+
 // ── Per-key ETag cache (P1c) ─────────────────────────────────────────────────
 // Modeled on the Hermes client (hermes-channel-bgos bgos_api.py
 // _conditional_get): store the validator from each 200, send If-None-Match on

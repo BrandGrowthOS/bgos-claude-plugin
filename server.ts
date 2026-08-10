@@ -148,6 +148,8 @@ import {
   EtagCache,
   buildChatPollRequest,
   advanceCursor,
+  shouldForwardPollMessage,
+  rememberReturnedMessageId,
   fastScopeChatIds,
   planPollCycle,
   selectFirstPollBacklogIds,
@@ -420,7 +422,7 @@ const bgosEtagCache = new EtagCache()
 
 async function bgosGet(
   path: string,
-  opts?: { cacheKey?: string },
+  opts?: { cacheKey?: string; callerAssistantId?: string },
 ): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const cacheKey = opts?.cacheKey ?? path
@@ -428,6 +430,9 @@ async function bgosGet(
   const response = await fetch(url, {
     headers: {
       ...authHeaders(AUTH),
+      ...(opts?.callerAssistantId
+        ? { 'X-Caller-Assistant-Id': opts.callerAssistantId }
+        : {}),
       ...(prevEtag ? { 'If-None-Match': prevEtag } : {}),
     },
   })
@@ -2847,6 +2852,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             text,
             asAssistantId: Number(ASSISTANT_ID),
           })
+          rememberReturnedMessageId(result, rememberForwarded)
           log(`meeting reply sent via reply tool to meeting ${meetingIdForChat} (chat ${resolvedChatId})`)
           clearInbound(resolvedChatId)
           return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -3371,6 +3377,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             ...(turn_state !== undefined && { turnState: turn_state }),
           },
         )
+        rememberReturnedMessageId(result, rememberForwarded)
         // Clear any pending reply-overdue tracker for the side-thread chat
         //, the peer's inbound was just responded to, so the 2-min timer
         // should not fire for it.
@@ -3487,6 +3494,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
       try {
         const result = await bgosPost(`meetings/${meeting_id}/messages`, body)
+        rememberReturnedMessageId(result, rememberForwarded)
         const ctx = meetingContexts.get(Number(meeting_id))
         if (ctx?.chatId != null) clearInbound(String(ctx.chatId))
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
@@ -4120,6 +4128,8 @@ interface ChatMessage {
     // message. Null/absent on pre-Block-A backends (senderUserIdOf then falls
     // back to the configured owner). Lets a shared assistant tell who sent it.
     senderUserId?: string | null
+    senderAssistantId?: number | string | null
+    sender_assistant_id?: number | string | null
     senderType?: string | null
     sender_type?: string | null
     agentOrigin?: AgentOriginLike | null
@@ -4721,7 +4731,10 @@ async function pollChat(chatId: string): Promise<void> {
     forceFull: isBootPoll,
   })
   try {
-    const raw = await bgosGet(req.path, { cacheKey: req.cacheKey })
+    const raw = await bgosGet(req.path, {
+      cacheKey: req.cacheKey,
+      callerAssistantId: ASSISTANT_ID,
+    })
     // 304: byte-identical to a response we already fully processed.
     if (isNotModified(raw)) return
     const data = raw as ChatHistoryResponse
@@ -4735,6 +4748,9 @@ async function pollChat(chatId: string): Promise<void> {
     // orders them, but a bad sort would silently corrupt the heuristic).
     const ordered = [...data.messages].sort(
       (a, b) => a.message.id - b.message.id,
+    )
+    const pollForwardableRows = ordered.filter((m) =>
+      shouldForwardPollMessage(m.message, ASSISTANT_ID),
     )
 
     let newUserMessages: ChatMessage[]
@@ -4762,7 +4778,7 @@ async function pollChat(chatId: string): Promise<void> {
       // qualify. The cursor advance below still initializes the chat to its
       // tip either way.
       const MAX_FIRST_POLL_FORWARD = 10
-      const firstPollRows = ordered.map((m) => ({
+      const firstPollRows = pollForwardableRows.map((m) => ({
         id: m.message.id,
         sender: m.message.sender,
         pendingEmptySystem: isPendingEmptySystem(m),
@@ -4791,14 +4807,16 @@ async function pollChat(chatId: string): Promise<void> {
           )
         }
       }
-      newUserMessages = ordered.filter((m) => backlogIds.has(m.message.id))
+      newUserMessages = pollForwardableRows.filter((m) =>
+        backlogIds.has(m.message.id),
+      )
       // Mark these as a backlog so the notification framing makes it
       // explicit to Claude that these came in WHILE OFFLINE. Without
       // this, Claude can't tell a fresh user message apart from a
       // crash-recovered one and may treat it as already-handled.
       isBacklog = newUserMessages.length > 0
     } else {
-      newUserMessages = ordered.filter(
+      newUserMessages = pollForwardableRows.filter(
         (m) =>
           m.message.id > lastSeen &&
           (m.message.sender === 'user' || m.message.sender === 'system') &&

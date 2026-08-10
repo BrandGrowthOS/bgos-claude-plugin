@@ -20,12 +20,14 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import {
+  main,
   isRunAsMain,
   DEFAULT_API_BASE,
   CLAUDE_INTEGRATION,
   CLAUDE_AGENT_ROUTE,
   CLAUDE_AGENT_NAME,
   CREDENTIALS_FILE_MODE,
+  PAIR_EXIT_CODES,
   normalizeApiBase,
   extractPairCode,
   parsePairArgs,
@@ -684,8 +686,17 @@ test('pairExitCode: a multi-agent host refuses to call an unpinned pairing a suc
   // would read one of their files instead of the one just written.
   assert.equal(
     pairExitCode({ needsEnvPin: true, otherAgentCount: 11 }),
-    1,
+    PAIR_EXIT_CODES.PIN_REQUIRED,
   )
+})
+
+test('pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning', () => {
+  assert.deepEqual(PAIR_EXIT_CODES, {
+    DONE: 0,
+    UNEXPECTED_ERROR: 1,
+    SERVER_REFUSED: 2,
+    PIN_REQUIRED: 3,
+  })
 })
 
 test('pairExitCode: a single-agent host is unchanged', () => {
@@ -706,6 +717,91 @@ test('pairExitCode: an explicit override lets an operator proceed knowingly', ()
     pairExitCode({ needsEnvPin: true, otherAgentCount: 11, allowUnpinned: true }),
     0,
   )
+})
+
+test('main reaches the post-success pin check without a home ReferenceError', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-main-success-'))
+  const output: string[] = []
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await writeCredentialsFile(
+      join(home, '.bgos-agent', 'credentials-935.json'),
+      mkCreds(935, 'existing_agent_token'),
+    )
+    const requests: string[] = []
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      requests.push(url)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 77, user_id: 'user_mark' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          assistants: [{ assistant_id: 936, agent_route: 'claude', name: 'Mark' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, fetchImpl },
+    )
+
+    assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
+    assert.equal(requests.length, 4)
+    assert.match(output.join('\n'), /verified: this file resolves to assistant 936/)
+    assert.doesNotMatch(output.join('\n'), /done\. To go live/)
+    assert.match(errors.join('\n'), /NOT DONE/)
+    const written = JSON.parse(
+      await readFile(join(home, '.bgos-agent', 'credentials-936.json'), 'utf8'),
+    )
+    assert.equal(written.assistantId, 936)
+
+    output.length = 0
+    errors.length = 0
+    requests.length = 0
+    const safeCode = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: { BGOS_ASSISTANT_ID: '936' }, home, fetchImpl },
+    )
+    assert.equal(safeCode, PAIR_EXIT_CODES.DONE)
+    assert.equal(requests.length, 4)
+    assert.match(output.join('\n'), /done\. To go live/)
+    assert.doesNotMatch(errors.join('\n'), /NOT DONE/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main returns the documented server-refusal exit code', async () => {
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    console.log = () => {}
+    console.error = () => {}
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home: '/unused',
+        fetchImpl: async () => Response.json({ status: 'access_denied' }),
+      },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.SERVER_REFUSED)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+  }
 })
 
 /**
@@ -752,19 +848,37 @@ test('describeFileProtection: a FAILED win32 lock says unprotected, never fine',
     describeFileProtection({ platform: 'win32', aclApplied: false }),
     'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand',
   )
+  assert.equal(
+    describeFileProtection({
+      platform: 'win32',
+      aclApplied: false,
+      aclError: 'cmd.exe failed: spawn cmd.exe ENOENT',
+    }),
+    'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand: ' +
+      'cmd.exe failed: spawn cmd.exe ENOENT',
+  )
 })
 
-test('win32AclCommand: uses cmd so the inheritance flag is not eaten', () => {
+test('win32AclCommand: primary and fallback keep the explicit principal grant', () => {
   // Mark's gotcha: icacls with /inheritance:r invoked straight from PowerShell
   // trips a safety guard that misreads it as a system-path deletion. It has to
   // go through cmd /c. Neither form fails loudly.
   const cmd = win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim')
   assert.ok(cmd)
-  assert.equal(cmd.file, 'cmd')
-  assert.ok(cmd.args.includes('/c'))
-  assert.ok(cmd.args.some((a) => a.includes('icacls')))
-  assert.ok(cmd.args.some((a) => a.includes('/inheritance:r')))
-  assert.ok(cmd.args.some((a) => a.includes('karim:F')))
+  const args = [
+    '/c',
+    'icacls "C:\\Users\\karim\\.bgos-agent\\credentials-935.json" ' +
+      '/inheritance:r /grant:r "karim:F"',
+  ]
+  assert.deepEqual(cmd, { file: 'cmd.exe', args })
+  assert.deepEqual(
+    win32AclCommand(
+      'C:\\Users\\karim\\.bgos-agent\\credentials-935.json',
+      'karim',
+      'C:\\Windows\\System32\\cmd.exe',
+    ),
+    { file: 'C:\\Windows\\System32\\cmd.exe', args },
+  )
 })
 
 test('win32AclCommand: refuses to build a command without a username', () => {
@@ -772,4 +886,86 @@ test('win32AclCommand: refuses to build a command without a username', () => {
   // read, or worse, one everyone can.
   assert.equal(win32AclCommand('C:\\x\\y.json', ''), null)
   assert.equal(win32AclCommand('C:\\x\\y.json', undefined), null)
+})
+
+test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-fallback-'))
+  try {
+    const calls: Array<{ file: string, args: string[] }> = []
+    const result = await writeCredentialsFile(join(dir, 'credentials.json'), mkCreds(936), {
+      platform: 'win32',
+      username: 'karim',
+      systemRoot: 'C:\\Windows',
+      run: async (file: string, args: string[]) => {
+        calls.push({ file, args })
+        if (file === 'cmd.exe') {
+          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        }
+      },
+    })
+    assert.equal(result.aclApplied, true)
+    assert.deepEqual(calls.map((call) => call.file), [
+      'cmd.exe',
+      'C:\\Windows\\System32\\cmd.exe',
+    ])
+    assert.deepEqual(calls[1].args, calls[0].args)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeCredentialsFile reports an icacls exit without retrying a resolved cmd.exe', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-exit-'))
+  try {
+    const calls: string[] = []
+    const result = await writeCredentialsFile(join(dir, 'credentials-935.json'), mkCreds(935), {
+      platform: 'win32',
+      username: 'karim',
+      systemRoot: 'C:\\Windows',
+      run: async (file: string) => {
+        calls.push(file)
+        throw Object.assign(
+          new Error('Command failed for credentials-935.json: Access is denied.'),
+          { code: 5 },
+        )
+      },
+    })
+    assert.equal(result.aclApplied, false)
+    assert.deepEqual(calls, ['cmd.exe'])
+    assert.match(String(result.aclError), /Access is denied/)
+    assert.match(String(result.aclError), /code 5/)
+    assert.match(describeFileProtection(result), /^UNPROTECTED.*code 5/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unprotected', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-error-'))
+  try {
+    const calls: string[] = []
+    const result = await writeCredentialsFile(join(dir, 'credentials.json'), mkCreds(936), {
+      platform: 'win32',
+      username: 'karim',
+      systemRoot: 'C:\\Windows',
+      run: async (file: string) => {
+        calls.push(file)
+        if (file === 'cmd.exe') {
+          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        }
+        throw Object.assign(new Error('icacls: Access is denied.'), { code: 5 })
+      },
+    })
+    assert.equal(result.aclApplied, false)
+    assert.deepEqual(calls, ['cmd.exe', 'C:\\Windows\\System32\\cmd.exe'])
+    assert.match(String(result.aclError), /spawn cmd\.exe ENOENT/)
+    assert.match(String(result.aclError), /Access is denied/)
+    assert.match(String(result.aclError), /code 5/)
+    const description = describeFileProtection(result)
+    assert.match(description, /^UNPROTECTED/)
+    assert.match(description, /spawn cmd\.exe ENOENT/)
+    assert.match(description, /Access is denied/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
