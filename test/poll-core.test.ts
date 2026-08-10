@@ -36,6 +36,8 @@ import {
   EtagCache,
   buildChatPollRequest,
   advanceCursor,
+  shouldForwardPollMessage,
+  rememberReturnedMessageId,
   fastScopeChatIds,
   planPollCycle,
   globalIntervalMs,
@@ -200,6 +202,8 @@ interface Row {
   id: number
   sender: 'user' | 'assistant' | 'system'
   text: string | null
+  senderAssistantId?: number | string | null
+  sender_assistant_id?: number | string | null
 }
 
 function isPendingEmptySystem(r: Row): boolean {
@@ -255,7 +259,10 @@ function pollOnce(
   if (result.length === 0) return { forwarded: [], notModified: false }
   const ordered = [...result].sort((a, b) => a.id - b.id)
   const maxId = Math.max(...ordered.map((r) => r.id))
-  const forwarded = ordered
+  const pollForwardableRows = ordered.filter((r) =>
+    shouldForwardPollMessage(r, 888),
+  )
+  const forwarded = pollForwardableRows
     .filter(
       (r) =>
         r.id > state.cursor &&
@@ -269,6 +276,88 @@ function pollOnce(
   state.cursor = advanceCursor({ lastSeen: state.cursor, maxId, pendingEmptyIds })
   return { forwarded, notModified: false }
 }
+
+test('poll window does not forward an own-authored user row', () => {
+  const backend: FakeBackend = {
+    rows: [
+      {
+        id: 48141,
+        sender: 'user',
+        text: 'own peer send',
+        senderAssistantId: 888,
+      },
+      {
+        id: 48514,
+        sender: 'user',
+        text: 'real user message',
+        senderAssistantId: null,
+      },
+    ],
+    requests: [],
+    status200: 0,
+    status304: 0,
+  }
+  const state: HarnessState = { cursor: 48140, unansweredButtonCount: 0 }
+  const result = pollOnce(backend, state, new EtagCache())
+
+  assert.deepEqual(result.forwarded, [48514])
+  assert.equal(state.cursor, 48514, 'poll cursor still advances across the window')
+})
+
+test('poll author filter fails open for null and missing provenance', () => {
+  assert.equal(
+    shouldForwardPollMessage(
+      { sender: 'user', senderAssistantId: null },
+      888,
+    ),
+    true,
+  )
+  assert.equal(shouldForwardPollMessage({ sender: 'user' }, 888), true)
+})
+
+test('poll author filter accepts snake case and only suppresses user rows', () => {
+  assert.equal(
+    shouldForwardPollMessage(
+      { sender: 'user', sender_assistant_id: '888' },
+      888,
+    ),
+    false,
+  )
+  assert.equal(
+    shouldForwardPollMessage(
+      { sender: 'system', senderAssistantId: 888 },
+      888,
+    ),
+    true,
+  )
+})
+
+test('returned peer message id is registered in the forwarded set', () => {
+  const forwarded = new Set<number>()
+  const claimed = rememberReturnedMessageId(
+    { messageId: '48141' },
+    (id) => forwarded.add(id),
+  )
+
+  assert.equal(claimed, 48141)
+  assert.deepEqual([...forwarded], [48141])
+})
+
+test('returned message id claim ignores null and non-finite ids', () => {
+  const forwarded = new Set<number>()
+  assert.equal(
+    rememberReturnedMessageId({ messageId: null }, (id) => forwarded.add(id)),
+    null,
+  )
+  assert.equal(
+    rememberReturnedMessageId(
+      { messageId: 'not-a-number' },
+      (id) => forwarded.add(id),
+    ),
+    null,
+  )
+  assert.deepEqual([...forwarded], [])
+})
 
 test('poll sequence: first full fetch, then deltas that only carry new rows', () => {
   const backend: FakeBackend = {
@@ -665,10 +754,71 @@ const serverSource = readFileSync(
 
 test('server.ts polls chats through buildChatPollRequest (afterId delta path)', () => {
   assert.ok(serverSource.includes('buildChatPollRequest('))
-  assert.ok(
-    serverSource.includes('bgosGet(req.path, { cacheKey: req.cacheKey })'),
-    'pollChat must fetch through the built request (afterId + per-chat ETag key)',
+  const pollBody = serverSource.slice(
+    serverSource.indexOf('async function pollChat'),
+    serverSource.indexOf('async function pollAllChats'),
   )
+  assert.match(
+    pollBody,
+    /bgosGet\(req\.path, \{\s*cacheKey: req\.cacheKey,\s*callerAssistantId: ASSISTANT_ID,\s*\}\)/,
+    'pollChat must use the built request and identify the calling assistant',
+  )
+})
+
+test('server.ts scopes the caller assistant header to opted-in GETs', () => {
+  const getBody = serverSource.slice(
+    serverSource.indexOf('async function bgosGet('),
+    serverSource.indexOf('// For callers that need a VALUE'),
+  )
+  assert.ok(getBody.includes('callerAssistantId?: string'))
+  assert.ok(getBody.includes("'X-Caller-Assistant-Id': opts.callerAssistantId"))
+  assert.ok(getBody.includes('opts?.callerAssistantId'))
+  assert.equal(
+    serverSource.match(/callerAssistantId: ASSISTANT_ID/g)?.length,
+    1,
+  )
+})
+
+test('server.ts filters self-authored poll rows through the tested predicate', () => {
+  const pollBody = serverSource.slice(
+    serverSource.indexOf('async function pollChat'),
+    serverSource.indexOf('async function pollAllChats'),
+  )
+  const filterIndex = pollBody.indexOf(
+    'shouldForwardPollMessage(m.message, ASSISTANT_ID)',
+  )
+  const forwardIndex = pollBody.indexOf('for (const msg of newUserMessages)')
+  assert.ok(filterIndex >= 0, 'poll author filter must be wired')
+  assert.ok(filterIndex < forwardIndex, 'author filter must run before forwarding')
+})
+
+test('server.ts claims the message id returned by send_to_peer', () => {
+  const sendBody = serverSource.slice(
+    serverSource.indexOf("case 'send_to_peer':"),
+    serverSource.indexOf("case 'complete_peer_thread':"),
+  )
+  const postIndex = sendBody.indexOf('const result = await bgosPeerPost(')
+  const claimIndex = sendBody.indexOf(
+    'rememberReturnedMessageId(result, rememberForwarded)',
+  )
+  const returnIndex = sendBody.indexOf('JSON.stringify(result, null, 2)')
+  assert.ok(postIndex >= 0, 'send_to_peer post must exist')
+  assert.ok(claimIndex > postIndex, 'returned message id must be claimed after send')
+  assert.ok(returnIndex > claimIndex, 'message id must be claimed before returning')
+})
+
+test('server.ts claims ids from both meeting send paths', () => {
+  const replyBody = serverSource.slice(
+    serverSource.indexOf("case 'reply':"),
+    serverSource.indexOf("case 'edit_message':"),
+  )
+  const meetingBody = serverSource.slice(
+    serverSource.indexOf("case 'meeting_reply':"),
+    serverSource.indexOf("case 'call_owner':"),
+  )
+  const claim = 'rememberReturnedMessageId(result, rememberForwarded)'
+  assert.ok(replyBody.includes(claim), 'reply meeting reroute must claim its id')
+  assert.ok(meetingBody.includes(claim), 'meeting_reply must claim its id')
 })
 
 test('server.ts advances the poll cursor through advanceCursor', () => {
