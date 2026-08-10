@@ -42,7 +42,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, writeFile, chmod } from 'node:fs/promises'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, win32 as win32Path } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
@@ -52,6 +52,12 @@ export const CLAUDE_AGENT_NAME = 'Claude Code'
 /** credentials.json holds the pairing token; owner read/write only. */
 export const CREDENTIALS_FILE_MODE = 0o600
 export const CREDENTIALS_DIR_MODE = 0o700
+export const PAIR_EXIT_CODES = Object.freeze({
+  DONE: 0,
+  UNEXPECTED_ERROR: 1,
+  SERVER_REFUSED: 2,
+  PIN_REQUIRED: 3,
+})
 
 // The plugin version, used as daemonVersion so the backend can flag stale bridges.
 // Read lazily from package.json so it stays in lockstep without a build step.
@@ -432,7 +438,7 @@ export function verifyWrittenCredentials({
  *
  * On a host where other agents already have credentials files, an unpinned
  * pairing is not a warning, it is a wrong answer waiting for a restart: the
- * daemon will read one of THEIR files. Exit non-zero so a human or a script
+ * daemon will read one of THEIR files. Exit 3 so a human or a script
  * cannot mistake it for done.
  *
  * A single-agent host keeps exit 0: there is no other file to resolve to, so
@@ -441,9 +447,11 @@ export function verifyWrittenCredentials({
  * beats blocked.
  */
 export function pairExitCode({ needsEnvPin, otherAgentCount, allowUnpinned } = {}) {
-  if (!needsEnvPin) return 0
-  if (allowUnpinned) return 0
-  return Number(otherAgentCount ?? 0) > 0 ? 1 : 0
+  if (!needsEnvPin) return PAIR_EXIT_CODES.DONE
+  if (allowUnpinned) return PAIR_EXIT_CODES.DONE
+  return Number(otherAgentCount ?? 0) > 0
+    ? PAIR_EXIT_CODES.PIN_REQUIRED
+    : PAIR_EXIT_CODES.DONE
 }
 
 /** Path equality tolerant of symlinks and spelling differences. */
@@ -543,6 +551,7 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
   const protection = await writeCredentialsFile(path, creds)
 
   let legacyCoWritePath = null
+  let legacyProtection = null
   let legacySkippedForMultiAgent = 0
   const override = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
   if (boundId && !override) {
@@ -556,7 +565,7 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
         otherAssistantIds: others,
       })
     ) {
-      await writeCredentialsFile(legacy, creds)
+      legacyProtection = await writeCredentialsFile(legacy, creds)
       legacyCoWritePath = legacy
     } else if (others.length > 0 && !samePath(legacy, path)) {
       legacySkippedForMultiAgent = others.length
@@ -570,11 +579,19 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
     env,
   })
   if (!verified.ok)
-    return { ok: false, path, legacyCoWritePath, legacySkippedForMultiAgent, reason: verified.reason }
+    return {
+      ok: false,
+      path,
+      legacyCoWritePath,
+      legacyProtection,
+      legacySkippedForMultiAgent,
+      reason: verified.reason,
+    }
   return {
     ok: true,
     path,
     legacyCoWritePath,
+    legacyProtection,
     legacySkippedForMultiAgent,
     protection,
     needsEnvPin: verified.needsEnvPin,
@@ -613,9 +630,15 @@ Options:
                          resolve to a different assistant, nothing is written.
   --allow-unpinned       proceed even when the daemon would resolve a different
                          agent's credentials file. Without this, that case exits
-                         non-zero on a host serving other agents, because the
+                         3 on a host serving other agents, because the
                          pairing cannot work until the environment is pinned.
   -h, --help             show this help
+
+Exit codes:
+  0  done and live-safe
+  1  unexpected error
+  2  pairing refused by the server
+  3  paired but NOT DONE; an environment pin is required
 
 Get a code in the HOAI app: Add agent, then Claude Code. The code links this
 computer to your account, works once, and expires in 10 minutes.
@@ -650,28 +673,45 @@ function readPluginVersion() {
  * A FAILED lock says UNPROTECTED. The operator has to know to fix it by hand;
  * silence here would leave a pairing token readable and looking fine.
  */
-export function describeFileProtection({ platform, aclApplied } = {}) {
+export function describeFileProtection({ platform, aclApplied, aclError } = {}) {
   if (platform !== 'win32') return 'chmod 600'
   if (aclApplied) return 'locked to your Windows user'
-  return 'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand'
+  const message = 'UNPROTECTED, the Windows ACL could not be applied, restrict it by hand'
+  const detail = String(aclError ?? '').trim()
+  return detail ? `${message}: ${detail}` : message
 }
 
 /**
  * The icacls invocation that actually works on this platform.
  *
- * It goes through `cmd /c` deliberately: icacls with /inheritance:r invoked
+ * It goes through `cmd.exe /c` deliberately: icacls with /inheritance:r invoked
  * straight from PowerShell trips a safety guard that misreads it as a
  * system-path deletion, and neither form fails loudly (Mark's gotcha from the
- * twelve-agent migration). Returns null without a username rather than
- * granting to an empty principal.
+ * twelve-agent migration). The grant stays explicit to the actual process
+ * principal: /inheritance:r removes inherited access, then /grant:r gives that
+ * user full control. This depends on pairing and the agent running as the same
+ * Windows user, which is the principal layout verified on the fleet. Returns
+ * null without a username rather than granting to an empty principal.
  */
-export function win32AclCommand(path, username) {
+export function win32AclCommand(path, username, executable = 'cmd.exe') {
   const user = String(username ?? '').trim()
-  if (!user) return null
+  const file = String(executable ?? '').trim()
+  if (!user || !file) return null
   return {
-    file: 'cmd',
+    file,
     args: ['/c', `icacls "${path}" /inheritance:r /grant:r "${user}:F"`],
   }
+}
+
+function commandFailure(command, error) {
+  const message = String(error?.message ?? error ?? 'unknown error')
+  const code = error?.code
+  const codeDetail = code == null ? '' : ` (code ${code})`
+  return `${command.file} failed: ${message}${codeDetail}`
+}
+
+function commandWasNotFound(error) {
+  return error?.code === 'ENOENT' || error?.cause?.code === 'ENOENT'
 }
 
 export async function writeCredentialsFile(path, creds, opts = {}) {
@@ -690,14 +730,51 @@ export async function writeCredentialsFile(path, creds, opts = {}) {
     opts.username ?? process.env.USERNAME ?? process.env.USER ?? '',
   ).trim()
   const command = win32AclCommand(path, username)
-  if (!command) return { platform, aclApplied: false }
+  if (!command) {
+    return {
+      platform,
+      aclApplied: false,
+      aclError: 'Windows username is unavailable, so no explicit principal could be granted',
+    }
+  }
   const run = opts.run ?? defaultRunCommand
   try {
     await run(command.file, command.args)
     return { platform, aclApplied: true }
-  } catch {
-    // Never claim a protection that failed; the caller reports UNPROTECTED.
-    return { platform, aclApplied: false }
+  } catch (error) {
+    const firstFailure = commandFailure(command, error)
+    if (!commandWasNotFound(error)) {
+      // cmd.exe resolved, so an absolute path cannot repair this icacls exit.
+      // Never claim a protection that failed; the caller reports UNPROTECTED.
+      return { platform, aclApplied: false, aclError: firstFailure }
+    }
+
+    const systemRoot = String(
+      opts.systemRoot ?? process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '',
+    ).trim()
+    if (!systemRoot) {
+      return {
+        platform,
+        aclApplied: false,
+        aclError: `${firstFailure}; SystemRoot is unavailable, so the absolute cmd.exe fallback could not be tried`,
+      }
+    }
+
+    const fallback = win32AclCommand(
+      path,
+      username,
+      win32Path.join(systemRoot, 'System32', 'cmd.exe'),
+    )
+    try {
+      await run(fallback.file, fallback.args)
+      return { platform, aclApplied: true }
+    } catch (fallbackError) {
+      return {
+        platform,
+        aclApplied: false,
+        aclError: `${firstFailure}; ${commandFailure(fallback, fallbackError)}`,
+      }
+    }
   }
 }
 
@@ -710,8 +787,8 @@ function defaultRunCommand(file, args) {
   })
 }
 
-async function postJson(url, body, headers = {}) {
-  const res = await fetch(url, {
+async function postJson(url, body, headers = {}, fetchImpl = fetch) {
+  const res = await fetchImpl(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
     body: JSON.stringify(body),
@@ -719,8 +796,8 @@ async function postJson(url, body, headers = {}) {
   return readBody(res)
 }
 
-async function getJson(url, headers = {}) {
-  const res = await fetch(url, { headers: { Accept: 'application/json', ...headers } })
+async function getJson(url, headers = {}, fetchImpl = fetch) {
+  const res = await fetchImpl(url, { headers: { Accept: 'application/json', ...headers } })
   return readBody(res)
 }
 
@@ -737,16 +814,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-export async function main(argv = process.argv.slice(2)) {
+/**
+ * @param {string[]} [argv]
+ * @param {{
+ *   env?: Record<string, string | undefined>,
+ *   home?: string,
+ *   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
+ * }} [opts]
+ */
+export async function main(argv = process.argv.slice(2), opts = {}) {
+  const env = opts.env ?? process.env
+  const home = opts.home ?? homedir()
+  const fetchImpl = opts.fetchImpl ?? fetch
   const { args, errors } = parsePairArgs(argv)
   if (args.help) {
     process.stdout.write(USAGE)
-    return 0
+    return PAIR_EXIT_CODES.DONE
   }
   if (errors.length > 0) {
     for (const error of errors) console.error(`[bgos-pair] ${error}`)
     process.stdout.write(USAGE)
-    return 2
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
 
   const apiBase = args.apiBase
@@ -759,7 +847,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Claude pairing on the account.
   const requestedId = resolveRequestedAssistantId({
     argAssistantId: args.assistantId,
-    env: process.env,
+    env,
   })
   if (requestedId) {
     console.log(`[bgos-pair] pairing as assistant ${requestedId} (explicitly requested)`)
@@ -768,15 +856,20 @@ export async function main(argv = process.argv.slice(2)) {
   console.log('[bgos-pair] pairing this computer with your HOAI account...')
   let exchange
   try {
-    exchange = await postJson(`${apiBase}/integrations/pair-exchange`, buildExchangeBody({
-      code: args.code,
-      deviceLabel,
-      intendedAssistantId: requestedId,
-    }))
+    exchange = await postJson(
+      `${apiBase}/integrations/pair-exchange`,
+      buildExchangeBody({
+        code: args.code,
+        deviceLabel,
+        intendedAssistantId: requestedId,
+      }),
+      {},
+      fetchImpl,
+    )
   } catch (err) {
     console.error(`[bgos-pair] could not reach the backend: ${err?.message ?? err}`)
     console.error('[bgos-pair] check this computer\'s internet connection and try again.')
-    return 1
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
   const classified = classifyExchangeResponse(exchange.status, exchange.body)
   if (classified.kind !== 'ok') {
@@ -787,7 +880,7 @@ export async function main(argv = process.argv.slice(2)) {
     } else {
       console.error(`[bgos-pair] pairing failed: ${classified.message ?? classified.kind}`)
     }
-    return 1
+    return PAIR_EXIT_CODES.SERVER_REFUSED
   }
   const { pairingToken, pairingId, userId } = classified
 
@@ -800,6 +893,7 @@ export async function main(argv = process.argv.slice(2)) {
       `${apiBase}/integrations/pairings/${pairId}/agent-catalog`,
       buildCatalogBody(),
       { 'X-BGOS-Pairing': pairingToken },
+      fetchImpl,
     )
   } catch {
     // non-fatal: the exchange catalog is enough to bind below.
@@ -816,6 +910,7 @@ export async function main(argv = process.argv.slice(2)) {
       `${apiBase}/integrations/pairings/${pairId}/assistants`,
       buildCatalogBody(),
       { 'X-BGOS-Pairing': pairingToken },
+      fetchImpl,
     )
   } catch (err) {
     // If binding fails (for example the app already bound), fall through to the
@@ -830,7 +925,11 @@ export async function main(argv = process.argv.slice(2)) {
   while (Date.now() < deadline) {
     let me
     try {
-      me = await getJson(`${apiBase}/integrations/me`, { 'X-BGOS-Pairing': pairingToken })
+      me = await getJson(
+        `${apiBase}/integrations/me`,
+        { 'X-BGOS-Pairing': pairingToken },
+        fetchImpl,
+      )
     } catch {
       me = { ok: false }
     }
@@ -849,7 +948,7 @@ export async function main(argv = process.argv.slice(2)) {
         `but this pairing resolved to assistant ${binding.boundIds.join(', ')}.`,
     )
     console.error('[bgos-pair] nothing was written. Check the id in the HOAI app and rerun with --assistant-id <id>.')
-    return 1
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
   if (binding.kind === 'ambiguous') {
     console.error('[bgos-pair] this account has several bound agents; refusing to guess which one this session is:')
@@ -857,7 +956,7 @@ export async function main(argv = process.argv.slice(2)) {
       console.error(`[bgos-pair]   --assistant-id ${c.assistant_id}  ${c.name || c.agent_route}`.trimEnd())
     }
     console.error('[bgos-pair] nothing was written. Rerun with --assistant-id <id> (or set BGOS_ASSISTANT_ID).')
-    return 1
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
   if (binding.kind === 'none' && requestedId) {
     if (okPolls === 0) {
@@ -871,7 +970,7 @@ export async function main(argv = process.argv.slice(2)) {
       )
       console.error('[bgos-pair] nothing was written. Finish "Add agent" in the HOAI app, then rerun.')
     }
-    return 1
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
 
   const assistantId = binding.kind === 'ok' ? binding.assistantId : null
@@ -886,10 +985,10 @@ export async function main(argv = process.argv.slice(2)) {
   // Write per-assistant, co-write the legacy slot when that cannot clobber
   // another agent, then verify the result actually resolves for the intended
   // assistant. Never report success on an unverified or refused write.
-  const result = await writeAndVerifyCredentials({ creds, env: process.env })
+  const result = await writeAndVerifyCredentials({ creds, env, home })
   if (!result.ok) {
     console.error(`[bgos-pair] pairing NOT saved: ${result.reason}`)
-    return 1
+    return PAIR_EXIT_CODES.UNEXPECTED_ERROR
   }
 
   // Report what the file ACTUALLY got, not what was intended. On win32 chmod
@@ -901,7 +1000,11 @@ export async function main(argv = process.argv.slice(2)) {
     )})`,
   )
   if (result.legacyCoWritePath) {
-    console.log(`[bgos-pair] also refreshed ${result.legacyCoWritePath} (same agent, single-agent hosts read it)`)
+    console.log(
+      `[bgos-pair] also refreshed ${result.legacyCoWritePath} (${describeFileProtection(
+        result.legacyProtection ?? {},
+      )}; same agent, single-agent hosts read it)`,
+    )
   } else if (result.legacySkippedForMultiAgent) {
     // SAY IT. A tool that silently declines and a tool that never had the
     // condition look identical from the outside, which is how the co-write
@@ -925,9 +1028,6 @@ export async function main(argv = process.argv.slice(2)) {
           `Without it the daemon reads ${result.realEnvPath}, which belongs to a different pairing.`,
       )
     }
-    console.log('[bgos-pair] done. To go live,')
-    for (const line of restartInstructions()) console.log(`[bgos-pair] ${line}`)
-
     // The pairing is only a success if the daemon can actually find it. On a
     // host serving other agents, an unpinned pairing resolves to one of THEIR
     // files at the next restart, so saying "done" and exiting 0 would be a
@@ -938,17 +1038,20 @@ export async function main(argv = process.argv.slice(2)) {
       otherAgentCount,
       allowUnpinned,
     })
-    if (code !== 0) {
+    if (code !== PAIR_EXIT_CODES.DONE) {
       console.error(
         `[bgos-pair] NOT DONE: this host serves ${otherAgentCount} other agent(s) and this ` +
           `pairing is not pinned, so the daemon would read ${result.realEnvPath} instead of the ` +
           `file just written. Set the environment variable above and rerun, or pass ` +
           `--allow-unpinned if you are setting it yourself afterwards.`,
       )
+      return code
     }
-    return code
+    console.log('[bgos-pair] done. To go live,')
+    for (const line of restartInstructions()) console.log(`[bgos-pair] ${line}`)
+    return PAIR_EXIT_CODES.DONE
   }
-  return 0
+  return PAIR_EXIT_CODES.DONE
 }
 
 /**
@@ -973,6 +1076,6 @@ if (isRunAsMain()) {
     })
     .catch((err) => {
       console.error(`[bgos-pair] fatal: ${err?.message ?? err}`)
-      process.exitCode = 1
+      process.exitCode = PAIR_EXIT_CODES.UNEXPECTED_ERROR
     })
 }
