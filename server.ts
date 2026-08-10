@@ -39,9 +39,14 @@ import {
   unescapeAgentButtonValue,
   collidesWithReserved,
   protectBackslashesForMarkdown,
-  buildInboundContent,
   buildEventMeta,
 } from './lib/message-text.js'
+import {
+  buildInboundChannel,
+  type AgentOriginLike,
+  isAgentInbound,
+  isSelfAuthoredAgentOrigin,
+} from './lib/inbound-channel.js'
 import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
@@ -174,7 +179,6 @@ import {
 } from './lib/stream-cursor-store.js'
 import {
   buildStreamClickMeta,
-  buildStreamInboundMeta,
   classifyStreamKind,
   decideButtonsAnswered,
   decideMessageFinalized,
@@ -1643,6 +1647,14 @@ async function waitForVerdict(
       for (const msg of data.messages) {
         if (msg.message.id <= baselineId) continue
         if (msg.message.sender !== 'user') continue
+        if (
+          isAgentInbound({
+            senderType: pollSenderTypeOf(msg),
+            agentOrigin: pollAgentOriginOf(msg),
+          })
+        ) {
+          continue
+        }
 
         // User binding: only accept the verdict from the user who triggered
         // the request. We extract a per-sender user id from the message when
@@ -4108,9 +4120,25 @@ interface ChatMessage {
     // message. Null/absent on pre-Block-A backends (senderUserIdOf then falls
     // back to the configured owner). Lets a shared assistant tell who sent it.
     senderUserId?: string | null
+    senderType?: string | null
+    sender_type?: string | null
+    agentOrigin?: AgentOriginLike | null
+    agent_origin?: AgentOriginLike | null
+    peerConversationId?: string | number | null
+    peer_conversation_id?: string | number | null
+    turnState?: string | null
+    turn_state?: string | null
   }
   messageFiles?: MessageFileInfo[]
   messageOptions?: MessageOptionInfo[]
+  senderType?: string | null
+  sender_type?: string | null
+  agentOrigin?: AgentOriginLike | null
+  agent_origin?: AgentOriginLike | null
+  peerConversationId?: string | number | null
+  peer_conversation_id?: string | number | null
+  turnState?: string | null
+  turn_state?: string | null
 }
 
 interface ChatHistoryResponse {
@@ -4625,6 +4653,50 @@ function isPendingEmptySystem(m: ChatMessage): boolean {
   )
 }
 
+function pollAgentOriginOf(m: ChatMessage): AgentOriginLike | null {
+  return (
+    m.message.agentOrigin ??
+    m.message.agent_origin ??
+    m.agentOrigin ??
+    m.agent_origin ??
+    null
+  )
+}
+
+function pollSenderTypeOf(m: ChatMessage): string {
+  const declared =
+    m.message.senderType ??
+    m.message.sender_type ??
+    m.senderType ??
+    m.sender_type
+  if (declared) return String(declared)
+  if (pollAgentOriginOf(m)) return 'agent'
+  return m.message.sender === 'system' ? 'system' : 'user'
+}
+
+function pollPeerConversationIdOf(
+  m: ChatMessage,
+): string | number | null {
+  return (
+    m.message.peerConversationId ??
+    m.message.peer_conversation_id ??
+    m.peerConversationId ??
+    m.peer_conversation_id ??
+    pollAgentOriginOf(m)?.peerConversationId ??
+    null
+  )
+}
+
+function pollTurnStateOf(m: ChatMessage): string | null {
+  return (
+    m.message.turnState ??
+    m.message.turn_state ??
+    m.turnState ??
+    m.turn_state ??
+    null
+  )
+}
+
 async function pollChat(chatId: string): Promise<void> {
   if (updateDrainMode) return
   await trackMessageOperation(async () => {
@@ -4913,13 +4985,24 @@ async function pollChat(chatId: string): Promise<void> {
       // works if both transports both READ and WRITE the set.
       rememberForwarded(msg.message.id)
 
+      const pollAgentOrigin = pollAgentOriginOf(msg)
+      const pollSenderType = pollSenderTypeOf(msg)
+      if (isSelfAuthoredAgentOrigin(pollAgentOrigin, ASSISTANT_ID)) continue
+      const isPollAgent = isAgentInbound({
+        senderType: pollSenderType,
+        agentOrigin: pollAgentOrigin,
+      })
+
       // Skip permission verdict messages/clicks, don't forward them to Claude
-      let isPermissionVerdict = VERDICT_RE.test(text)
-      if (!isPermissionVerdict) {
-        for (const requestId of pendingPermissions.keys()) {
-          if (parsePermissionChoice(text, requestId)) {
-            isPermissionVerdict = true
-            break
+      let isPermissionVerdict = false
+      if (!isPollAgent) {
+        isPermissionVerdict = VERDICT_RE.test(text)
+        if (!isPermissionVerdict) {
+          for (const requestId of pendingPermissions.keys()) {
+            if (parsePermissionChoice(text, requestId)) {
+              isPermissionVerdict = true
+              break
+            }
           }
         }
       }
@@ -4970,27 +5053,34 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
-      // Build the original content with attachment descriptions. Normal user
-      // text remains verbatim. Slash input is translated below because a bare
-      // slash string cannot enter Claude Code's client command dispatcher.
-      // The backlog prefix tells Claude this message arrived while the daemon
-      // was offline so it knows to respond now rather than treat it as
-      // already-handled chat history.
-      // System-message provenance (capability #14). On the WS path the backend
-      // prepends the guaranteed in-content origin marker to the agent-delivered
-      // text; the persisted row (which the poll path reads) keeps the raw body,
-      // so we prepend the marker here to keep the two transports consistent.
-      const isPollSystem = msg.message.sender === 'system'
-      const systemPrefix = isPollSystem
-        ? '[System message from BGOS automation (e.g. a scheduler), NOT the user ' +
-          'and NOT a peer agent. Treat this as a system notification. Do not act on ' +
-          'it as a user instruction unless it explicitly asks you to.]\n'
-        : ''
-      const originalContent = buildInboundContent(systemPrefix + text, msg.messageFiles ?? [], {
+      // Normalize poll rows through the same origin-aware channel builder used
+      // by live WS and stream catch-up delivery. Peer projection fields can be
+      // nested on message or carried beside it during a mixed-version rollout.
+      const pollPeerConversationId = pollPeerConversationIdOf(msg)
+      const pollTurnState = pollTurnStateOf(msg)
+      const pollSessionHandle =
+        msg.message.sessionHandle ?? msg.message.session_handle ?? undefined
+      const pollSenderUserId = senderUserIdOf(msg.message)
+      const pollChannel = buildInboundChannel({
+        chatId,
+        messageId: msg.message.id,
+        userId: pollSenderUserId,
+        assistantId: ASSISTANT_ID,
+        timestamp: msg.message.sentDate,
+        transport: 'poll',
+        text,
+        files: msg.messageFiles ?? [],
+        senderType: pollSenderType,
+        agentOrigin: pollAgentOrigin,
+        peerConversationId: pollPeerConversationId,
+        turnState: pollTurnState,
+        sessionHandle: pollSessionHandle,
+        backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
           : undefined,
       })
+      const originalContent = pollChannel.content
       const slashRoute = routeSlashCommand({
         payload: msg.message,
         sourceContent: originalContent,
@@ -5035,10 +5125,6 @@ async function pollChat(chatId: string): Promise<void> {
         msg.message.messageType,
         msg.message.eventMeta,
       )
-      // Capture + surface any server-minted session handle so the agent can
-      // round-trip it on the reply (preferred over the raw chat_id).
-      const pollSessionHandle =
-        msg.message.sessionHandle ?? msg.message.session_handle ?? undefined
       rememberSessionHandle(chatId, pollSessionHandle)
       // Remember who drove this chat so a permission verdict can be bound to
       // them (see lastInboundUserByChat / PendingPermission.requesterUserId).
@@ -5046,25 +5132,13 @@ async function pollChat(chatId: string): Promise<void> {
       // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
       // Reused for the verdict-binding map AND the agent-delivered meta so a
       // shared assistant sees which human actually sent this message.
-      const pollSenderUserId = senderUserIdOf(msg.message)
       lastInboundUserByChat.set(chatId, pollSenderUserId)
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
           meta: {
-            chat_id: String(chatId),
-            message_id: String(msg.message.id),
-            user: isPollSystem ? 'System' : 'User',
-            user_id: String(pollSenderUserId),
-            assistant_id: String(ASSISTANT_ID),
-            ts: String(msg.message.sentDate ?? new Date().toISOString()),
-            ...(isPollSystem ? { system: 'true', sender_type: 'system' } : {}),
-            ...(typeof pollSessionHandle === 'string' && pollSessionHandle
-              ? { session_handle: String(pollSessionHandle) }
-              : {}),
-            ...(isBacklog ? { backlog: 'true' } : {}),
-            transport: 'poll',
+            ...pollChannel.meta,
             ...(slashDelivery ? slashDelivery.meta : {}),
             ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
           },
@@ -5078,7 +5152,17 @@ async function pollChat(chatId: string): Promise<void> {
       // a different process, or they might be stale. The backlog framing
       // itself prompts the agent to respond if relevant; double-tracking
       // creates false positives on plugin restart.
-      if (!isBacklog) recordInbound(chatId, msg.message.id)
+      if (pollPeerConversationId != null) {
+        const convId = String(pollPeerConversationId)
+        const priorConv = peerConvByChat.get(chatId)
+        if (closedPeerChats.has(chatId) && priorConv !== convId) {
+          closedPeerChats.delete(chatId)
+        }
+        rememberPeerConvChat(convId, chatId)
+      }
+      if (!isBacklog) {
+        recordInbound(chatId, msg.message.id, pollTurnState ?? undefined)
+      }
     }
 
     // Advance the cursor only now, AFTER the batch above was handed to the
@@ -5453,26 +5537,45 @@ async function forwardStreamInbound(
 
   // Permission verdict texts are consumed by the permission flow, never
   // forwarded (poll-path parity).
-  let isPermissionVerdict = VERDICT_RE.test(view.text)
-  if (!isPermissionVerdict) {
-    for (const requestId of pendingPermissions.keys()) {
-      if (parsePermissionChoice(view.text, requestId)) {
-        isPermissionVerdict = true
-        break
+  const isStreamAgent = isAgentInbound({
+    senderType: view.senderKind,
+    agentOrigin: view.agentOrigin,
+  })
+  let isPermissionVerdict = false
+  if (!isStreamAgent) {
+    isPermissionVerdict = VERDICT_RE.test(view.text)
+    if (!isPermissionVerdict) {
+      for (const requestId of pendingPermissions.keys()) {
+        if (parsePermissionChoice(view.text, requestId)) {
+          isPermissionVerdict = true
+          break
+        }
       }
     }
   }
   if (isPermissionVerdict) return
 
-  const systemPrefix = isSystem
-    ? '[System message from BGOS automation (e.g. a scheduler), NOT the user ' +
-      'and NOT a peer agent. Treat this as a system notification. Do not act on ' +
-      'it as a user instruction unless it explicitly asks you to.]\n'
-    : ''
-  const originalContent = buildInboundContent(
-    systemPrefix + view.text,
-    view.files as never[],
-  )
+  const senderUserId = view.senderUserId ?? USER_ID
+  const streamChannel = buildInboundChannel({
+    chatId,
+    messageId: view.messageId,
+    userId: senderUserId,
+    assistantId: ASSISTANT_ID,
+    timestamp: view.sentDate,
+    transport: 'stream',
+    text: view.text,
+    files: view.files as never[],
+    senderType: view.agentOrigin
+      ? 'agent'
+      : isSystem
+        ? 'system'
+        : view.senderKind,
+    agentOrigin: view.agentOrigin,
+    peerConversationId: view.peerConversationId,
+    turnState: view.turnState,
+    sessionHandle: view.sessionHandle,
+  })
+  const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
     payload: view.raw,
     sourceContent: originalContent,
@@ -5493,8 +5596,20 @@ async function forwardStreamInbound(
   const streamEventMeta = !isSlash
     ? buildEventMeta(view.messageType, view.eventMetaRaw)
     : null
-  const senderUserId = view.senderUserId ?? USER_ID
   lastInboundUserByChat.set(chatId, senderUserId)
+  // Map the conversation before the awaited handoff. A close event can arrive
+  // during that await; it must already be able to resolve this chat so the
+  // successful handoff below cannot arm a reply timer on a closed thread.
+  if (view.peerConversationId) {
+    const priorConv = peerConvByChat.get(chatId)
+    if (
+      closedPeerChats.has(chatId) &&
+      priorConv !== view.peerConversationId
+    ) {
+      closedPeerChats.delete(chatId)
+    }
+    rememberPeerConvChat(view.peerConversationId, chatId)
+  }
   log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
   try {
     await trackMessageOperation(() =>
@@ -5502,20 +5617,11 @@ async function forwardStreamInbound(
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: buildStreamInboundMeta({
-            chatId,
-            messageId: view.messageId,
-            isSystem,
-            senderUserId,
-            assistantId: String(ASSISTANT_ID),
-            ts: view.sentDate,
-            sessionHandle: view.sessionHandle,
-            backlog: false,
-            slashMeta: slashDelivery ? (slashDelivery.meta as Record<string, string>) : null,
-            // EventMetaFragment is all-string by construction (see
-            // buildEventMeta); the assertion only supplies the index signature.
-            eventMeta: streamEventMeta as Record<string, string> | null,
-          }),
+          meta: {
+            ...streamChannel.meta,
+            ...(slashDelivery ? slashDelivery.meta : {}),
+            ...(streamEventMeta ?? {}),
+          },
         },
       }),
     )
@@ -5526,7 +5632,7 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
-  recordInbound(chatId, view.messageId)
+  recordInbound(chatId, view.messageId, view.turnState)
 }
 
 /**
@@ -5625,7 +5731,7 @@ async function applyStreamMessage(
   update: StreamUpdate,
   cls: 'message_new' | 'message_finalized',
 ): Promise<void> {
-  const view = viewStreamMessage(update)
+  const view = viewStreamMessage(update, ASSISTANT_ID)
   if (!view || !view.chatId) return
   const chatId = view.chatId
   noteMonitoredChat(chatId)
@@ -6156,13 +6262,10 @@ function connectWebsocket(): void {
       // so we can prefer round-tripping it (over the raw chat_id) on the reply.
       const wsSessionHandle = payload?.sessionHandle ?? payload?.session_handle
       rememberSessionHandle(chatId, wsSessionHandle)
-      // Remember who drove this chat (for permission-verdict user binding).
-      if (chatId) lastInboundUserByChat.set(chatId, senderUserIdOf(payload))
-
       // Mirror pollChat's content-building: text PLUS attachment lines, with
       // the user's text forwarded VERBATIM. Backend ships files as
       // { id, filename, mime, url?, dataUri? } in the inbound_message payload.
-      // buildInboundContent handles both that WS shape and the poll shape, so
+      // buildInboundChannel handles both that WS shape and the poll shape, so
       // the two transports stay byte-for-byte consistent. Without attachment
       // handling the WS path silently drops files while bumping lastSeen, so the
       // poll fallback never re-emits and agents get text-only copies of media.
@@ -6170,7 +6273,54 @@ function connectWebsocket(): void {
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
       const isWsSlashCommand = isSlashCommandPayload(payload ?? {})
-      const originalContent = buildInboundContent(text, wsFiles)
+      const wsAgentOrigin = (payload?.agentOrigin ?? payload?.agent_origin ?? null) as
+        | AgentOriginLike
+        | null
+      if (isSelfAuthoredAgentOrigin(wsAgentOrigin, ASSISTANT_ID)) return
+      const wsSenderType = String(
+        payload?.senderType ??
+        payload?.sender_type ??
+        (wsAgentOrigin ? 'agent' : 'user'),
+      )
+      const wsPeerConversationId =
+        payload?.peer_conversation_id ??
+        payload?.peerConversationId ??
+        wsAgentOrigin?.peerConversationId ??
+        null
+      const wsTurnStateRaw = payload?.turn_state ?? payload?.turnState
+      const wsTurnState = wsTurnStateRaw == null
+        ? undefined
+        : String(wsTurnStateRaw)
+      const wsSenderUserId = senderUserIdOf(payload)
+      if (chatId) lastInboundUserByChat.set(chatId, wsSenderUserId)
+      const wsChannel = buildInboundChannel({
+        chatId,
+        messageId,
+        userId: wsSenderUserId,
+        assistantId: ASSISTANT_ID,
+        timestamp: new Date().toISOString(),
+        transport: 'ws',
+        text,
+        files: wsFiles,
+        senderType: wsSenderType,
+        agentOrigin: wsAgentOrigin,
+        peerConversationId: wsPeerConversationId,
+        turnState: wsTurnState,
+        sessionHandle: wsSessionHandle,
+        extraMeta: {
+          ...(payload?.sender?.displayName
+            ? { sender_display_name: String(payload.sender.displayName) }
+            : {}),
+          ...(payload?.sender?.relationship
+            ? { sender_relationship: String(payload.sender.relationship) }
+            : {}),
+          is_shared_recipient: String(payload?.isSharedRecipient ?? false),
+          ...(payload?.shareOwnerUserId
+            ? { share_owner_user_id: String(payload.shareOwnerUserId) }
+            : {}),
+        },
+      })
+      const originalContent = wsChannel.content
       const slashRoute = routeSlashCommand({
         payload: payload ?? {},
         sourceContent: originalContent,
@@ -6196,13 +6346,6 @@ function connectWebsocket(): void {
       const content = slashDelivery?.content ?? originalContent
       if (!content) return
 
-      // System-message provenance (capability #14). The backend sets
-      // senderType='system' when a non-human, non-agent automation (a
-      // scheduler / cron / n8n "System" send) authored this inbound, and ALSO
-      // prepends a guaranteed in-content origin marker to `text`. Surface a
-      // structured meta flag so the agent never mistakes it for the user.
-      const isWsSystem =
-        String(payload?.senderType ?? payload?.sender_type ?? '') === 'system'
       // Machine-delivered event enrichment (capability #12), same as the poll
       // path. Backend ships the envelope as `eventMeta` (camelCase) on the
       // inbound_message payload; accept event_meta defensively too.
@@ -6218,61 +6361,16 @@ function connectWebsocket(): void {
         params: {
           content,
           meta: {
-            chat_id: String(chatId),
-            message_id: String(messageId),
-            user: isWsSystem ? 'System' : 'User',
-            // Block A: forward the REAL human sender so a shared assistant can
-            // tell who is talking, falling back to the legacy top-level userId
-            // and then the configured owner for pre-Block-A backends.
-            // Channel `meta` MUST be all-string valued: the Claude Code harness
-            // silently drops any notifications/claude/channel card whose meta
-            // carries a non-string value. So stringify the boolean, coerce
-            // user_id, and only include the optional identity fields when
-            // present (never emit undefined or null). Regression: #17 shipped a
-            // boolean + null here and every live WS inbound card vanished.
-            user_id: String(payload?.sender?.userId ?? payload?.userId ?? USER_ID),
-            ...(payload?.sender?.displayName
-              ? { sender_display_name: String(payload.sender.displayName) }
-              : {}),
-            ...(payload?.sender?.relationship
-              ? { sender_relationship: String(payload.sender.relationship) }
-              : {}),
-            is_shared_recipient: String(payload?.isSharedRecipient ?? false),
-            ...(payload?.shareOwnerUserId
-              ? { share_owner_user_id: String(payload.shareOwnerUserId) }
-              : {}),
-            assistant_id: String(ASSISTANT_ID),
-            ts: new Date().toISOString(),
-            transport: 'ws',
-            ...(isWsSystem ? { system: 'true', sender_type: 'system' } : {}),
-            ...(typeof wsSessionHandle === 'string' && wsSessionHandle
-              ? { session_handle: String(wsSessionHandle) }
-              : {}),
+            ...wsChannel.meta,
             ...(slashDelivery ? slashDelivery.meta : {}),
             ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
-            ...(payload?.peer_conversation_id != null
-              ? { peer_conversation_id: String(payload.peer_conversation_id) }
-              : {}),
-            ...(payload?.peerConversationId != null
-              ? { peer_conversation_id: String(payload.peerConversationId) }
-              : {}),
-            ...(payload?.turn_state != null
-              ? { turn_state: String(payload.turn_state) }
-              : {}),
-            ...(payload?.turnState != null
-              ? { turn_state: String(payload.turnState) }
-              : {}),
           },
         },
       })).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
-      const convId =
-        payload?.peer_conversation_id ?? payload?.peerConversationId
-      const wsTurnState = (payload?.turn_state ?? payload?.turnState) as
-        | string
-        | undefined
+      const convId = wsPeerConversationId
       if (convId != null && chatId) {
         const convIdStr = String(convId)
         // A new (different) conversation id for a previously-closed side-thread

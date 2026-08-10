@@ -28,6 +28,11 @@
  */
 
 import type { StreamUpdate } from './update-stream.ts'
+import {
+  buildInboundChannel,
+  type AgentOriginLike,
+  isSelfAuthoredAgentOrigin,
+} from './inbound-channel.ts'
 
 // ── Payload normalization ────────────────────────────────────────────────────
 
@@ -42,7 +47,10 @@ export interface StreamMessageView {
   messageId: number
   text: string
   files: unknown[]
-  senderKind: 'user' | 'assistant' | 'system' | 'unknown'
+  senderKind: 'user' | 'assistant' | 'system' | 'agent' | 'unknown'
+  agentOrigin?: AgentOriginLike
+  peerConversationId?: string
+  turnState?: string
   sessionHandle?: string
   messageType: string
   senderUserId?: string
@@ -60,7 +68,7 @@ function str(value: unknown): string | undefined {
 }
 
 function senderKindOf(value: unknown): StreamMessageView['senderKind'] {
-  return value === 'user' || value === 'assistant' || value === 'system'
+  return value === 'user' || value === 'assistant' || value === 'system' || value === 'agent'
     ? value
     : 'unknown'
 }
@@ -82,7 +90,10 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
  * rebuilds rows through the same serializers those lanes use. Returns null
  * when no message id is resolvable.
  */
-export function viewStreamMessage(update: StreamUpdate): StreamMessageView | null {
+export function viewStreamMessage(
+  update: StreamUpdate,
+  recipientAssistantId?: string | number,
+): StreamMessageView | null {
   const payload = (update.payload ?? {}) as Record<string, unknown>
   const envelope = payload.message as Record<string, unknown> | undefined
   const isRow = envelope != null && typeof envelope === 'object'
@@ -97,11 +108,37 @@ export function viewStreamMessage(update: StreamUpdate): StreamMessageView | nul
     source.chatId ?? source.chat_id ?? payload.chatId ?? payload.chat_id ?? update.chatId
   const chatId = chatIdRaw == null ? '' : String(chatIdRaw)
 
-  const senderKind = isRow
+  const agentOrigin = (
+    source.agentOrigin ??
+    source.agent_origin ??
+    payload.agentOrigin ??
+    payload.agent_origin
+  ) as AgentOriginLike | undefined
+  const declaredSenderType =
+    source.senderType ??
+    source.sender_type ??
+    payload.senderType ??
+    payload.sender_type
+  const persistedSenderKind = isRow
     ? senderKindOf(source.sender)
     : typeof payload.sender === 'string'
       ? senderKindOf(payload.sender)
-      : senderKindOf(payload.senderType ?? payload.sender_type ?? 'user')
+      : 'unknown'
+  const isSelfAuthoredAgent =
+    recipientAssistantId != null &&
+    isSelfAuthoredAgentOrigin(agentOrigin, recipientAssistantId)
+  const senderKind =
+    persistedSenderKind === 'assistant' || isSelfAuthoredAgent
+      ? 'assistant'
+      : agentOrigin
+        ? 'agent'
+        : declaredSenderType != null
+          ? senderKindOf(declaredSenderType)
+          : persistedSenderKind !== 'unknown'
+            ? persistedSenderKind
+            : isRow
+              ? 'unknown'
+              : 'user'
 
   const files = isRow
     ? Array.isArray(payload.messageFiles)
@@ -118,6 +155,17 @@ export function viewStreamMessage(update: StreamUpdate): StreamMessageView | nul
     str(nestedSender && typeof nestedSender === 'object' ? nestedSender.userId : undefined) ??
     str(source.senderUserId ?? source.sender_user_id) ??
     str(isRow ? undefined : (payload.userId ?? payload.user_id))
+  const peerConversationIdRaw =
+    source.peerConversationId ??
+    source.peer_conversation_id ??
+    payload.peerConversationId ??
+    payload.peer_conversation_id ??
+    agentOrigin?.peerConversationId
+  const turnStateRaw =
+    source.turnState ??
+    source.turn_state ??
+    payload.turnState ??
+    payload.turn_state
 
   return {
     chatId,
@@ -125,6 +173,12 @@ export function viewStreamMessage(update: StreamUpdate): StreamMessageView | nul
     text: String(source.text ?? ''),
     files,
     senderKind,
+    agentOrigin,
+    peerConversationId:
+      peerConversationIdRaw == null
+        ? undefined
+        : String(peerConversationIdRaw),
+    turnState: turnStateRaw == null ? undefined : String(turnStateRaw),
     sessionHandle: str(source.sessionHandle ?? source.session_handle),
     messageType: String(source.messageType ?? source.message_type ?? ''),
     senderUserId,
@@ -185,7 +239,10 @@ export function decideMessageFinalized(
     // The wake's body fill: deliver AS the wake, unless the fill is somehow
     // still empty, in which case it stays parked for the next fill.
     if (isEmptyBody(view)) return { action: 'hold_empty' }
-    return { action: 'forward', isSystem: view.senderKind !== 'user' }
+    return {
+      action: 'forward',
+      isSystem: view.senderKind !== 'user' && view.senderKind !== 'agent',
+    }
   }
   if (view.messageId <= opts.lastSeenInChat) {
     return { action: 'advance_only', reason: 'already_covered' }
@@ -198,7 +255,10 @@ export function decideMessageFinalized(
   }
   // Never delivered (e.g. the poll parked under the write-1 row and this
   // daemon only now catches up): the finalize IS the delivery.
-  return { action: 'forward', isSystem: view.senderKind !== 'user' }
+  return {
+    action: 'forward',
+    isSystem: view.senderKind !== 'user' && view.senderKind !== 'agent',
+  }
 }
 
 // ── buttons_answered (single-announce contract) ──────────────────────────────
@@ -293,21 +353,30 @@ export function buildStreamInboundMeta(opts: {
   backlog: boolean
   slashMeta?: Record<string, string> | null
   eventMeta?: Record<string, string> | null
+  senderType?: string
+  agentOrigin?: AgentOriginLike
+  peerConversationId?: string
+  turnState?: string
 }): Record<string, string> {
-  return {
-    chat_id: String(opts.chatId),
-    message_id: String(opts.messageId),
-    user: opts.isSystem ? 'System' : 'User',
-    user_id: String(opts.senderUserId),
-    assistant_id: String(opts.assistantId),
-    ts: String(opts.ts ?? new Date().toISOString()),
-    ...(opts.isSystem ? { system: 'true', sender_type: 'system' } : {}),
-    ...(opts.sessionHandle ? { session_handle: String(opts.sessionHandle) } : {}),
-    ...(opts.backlog ? { backlog: 'true' } : {}),
+  return buildInboundChannel({
+    chatId: opts.chatId,
+    messageId: opts.messageId,
+    userId: opts.senderUserId,
+    assistantId: opts.assistantId,
+    timestamp: opts.ts,
     transport: 'stream',
-    ...(opts.slashMeta ?? {}),
-    ...(opts.eventMeta ?? {}),
-  }
+    text: '',
+    senderType: opts.senderType ?? (opts.isSystem ? 'system' : 'user'),
+    agentOrigin: opts.agentOrigin,
+    peerConversationId: opts.peerConversationId,
+    turnState: opts.turnState,
+    sessionHandle: opts.sessionHandle,
+    backlog: opts.backlog,
+    extraMeta: {
+      ...(opts.slashMeta ?? {}),
+      ...(opts.eventMeta ?? {}),
+    },
+  }).meta
 }
 
 /** The stream twin of the poll path's button_clicked meta. */

@@ -86,6 +86,74 @@ test('a poll-row-shaped payload (message envelope) normalizes identically', () =
   assert.equal(view!.sentDate, '2026-08-08T10:00:00.000Z')
 })
 
+test('a hydrated peer target keeps origin while the source stays assistant-authored', () => {
+  const agentOrigin = {
+    sourceAssistantId: 900,
+    sourceName: 'Data',
+    targetAssistantId: 901,
+    peerConversationId: 4595,
+    messageId: 47820,
+  }
+  const update = upd({
+    message: {
+      id: 47820,
+      chatId: 3582,
+      text: 'The analysis is complete.',
+      sender: 'user',
+      senderType: 'agent',
+      agentOrigin,
+      peerConversationId: 4595,
+      turnState: 'final',
+    },
+    messageFiles: [],
+  })
+  const view = viewStreamMessage(update, 901)
+
+  assert.ok(view)
+  assert.equal(view!.senderKind, 'agent')
+  assert.deepEqual(view!.agentOrigin, agentOrigin)
+  assert.equal(view!.peerConversationId, '4595')
+  assert.equal(view!.turnState, 'final')
+
+  const sourceView = viewStreamMessage(update, 900)
+  assert.ok(sourceView)
+  assert.equal(sourceView!.senderKind, 'assistant')
+  assert.deepEqual(
+    decideMessageNew(sourceView!, {
+      lastSeenInChat: 0,
+      alreadyForwarded: false,
+    }),
+    { action: 'advance_only', reason: 'assistant_authored' },
+  )
+})
+
+test('an explicit assistant sender wins over agent origin on a caller-side row', () => {
+  const view = viewStreamMessage(
+    upd({
+      message: {
+        id: 47820,
+        chatId: 3582,
+        text: 'The analysis is complete.',
+        sender: 'assistant',
+        senderType: 'agent',
+        agentOrigin: {
+          sourceAssistantId: 900,
+          sourceName: 'Data',
+          targetAssistantId: 901,
+          peerConversationId: 4595,
+          messageId: 47820,
+        },
+        peerConversationId: 4595,
+        turnState: 'final',
+      },
+      messageFiles: [],
+    }),
+  )
+
+  assert.ok(view)
+  assert.equal(view!.senderKind, 'assistant')
+})
+
 test('chat and message ids fall back to the update row fields', () => {
   const view = viewStreamMessage(upd({ text: 'x' }))
   assert.ok(view)
@@ -216,6 +284,28 @@ test('a finalized held row that is STILL empty stays held', () => {
 test('a finalize for an undelivered row above the cursor delivers (parked wake)', () => {
   assert.deepEqual(
     decideMessageFinalized(baseView({ senderType: 'system' }), {
+      held: false,
+      lastSeenInChat: 150,
+      alreadyForwarded: false,
+    }),
+    { action: 'forward', isSystem: true },
+  )
+})
+
+test('a finalized peer turn forwards without system framing', () => {
+  assert.deepEqual(
+    decideMessageFinalized(baseView({ senderType: 'agent' }), {
+      held: false,
+      lastSeenInChat: 150,
+      alreadyForwarded: false,
+    }),
+    { action: 'forward', isSystem: false },
+  )
+})
+
+test('a finalized unknown sender keeps the prior system fallback', () => {
+  assert.deepEqual(
+    decideMessageFinalized(baseView({ senderType: 'unknown' }), {
       held: false,
       lastSeenInChat: 150,
       alreadyForwarded: false,
@@ -483,6 +573,33 @@ test('stream inbound meta carries the system and backlog markers as strings', ()
   assert.equal(meta.command_name, 'cost')
   assert.equal(meta.event_source, 'scheduler')
   assert.equal(meta.ts, '2026-08-08T10:00:00.000Z')
+})
+
+test('stream inbound meta carries peer origin fields as strings', () => {
+  const meta = buildStreamInboundMeta({
+    chatId: '3582',
+    messageId: 47820,
+    isSystem: false,
+    senderType: 'agent',
+    senderUserId: 'user_owner',
+    assistantId: '901',
+    backlog: false,
+    agentOrigin: {
+      sourceAssistantId: 900,
+      sourceName: 'Data',
+      targetAssistantId: 901,
+      peerConversationId: 4595,
+      messageId: 47820,
+    },
+    peerConversationId: '4595',
+    turnState: 'final',
+  })
+
+  assertAllStrings(meta)
+  assert.equal(meta.sender_type, 'agent')
+  assert.equal(meta.peer_conversation_id, '4595')
+  assert.equal(meta.turn_state, 'final')
+  assert.equal('system' in meta, false)
 })
 
 test('stream click meta is all-string and omits an absent custom_text', () => {

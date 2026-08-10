@@ -759,6 +759,7 @@ test('win32AclCommand: uses cmd so the inheritance flag is not eaten', () => {
   // trips a safety guard that misreads it as a system-path deletion. It has to
   // go through cmd /c. Neither form fails loudly.
   const cmd = win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim')
+  assert.ok(cmd)
   assert.equal(cmd.file, 'cmd')
   assert.ok(cmd.args.includes('/c'))
   assert.ok(cmd.args.some((a) => a.includes('icacls')))
