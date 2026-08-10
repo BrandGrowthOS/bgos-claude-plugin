@@ -153,8 +153,23 @@ export function claudeCatalogEntry() {
  * 2026-08-04 fleet-wide pairing freeze). Omitted when nothing was pinned:
  * older backends whitelist-strip unknown fields, so sending nothing keeps the
  * legacy single-agent flow byte-identical.
+ *
+ * @param {{
+ *   code: string,
+ *   deviceLabel: string,
+ *   version?: string,
+ *   intendedAssistantId?: string | number | null,
+ * }} input
  */
 export function buildExchangeBody({ code, deviceLabel, version, intendedAssistantId }) {
+  /** @type {{
+   *   code: string,
+   *   deviceLabel: string,
+   *   integration: string,
+   *   agentCatalog: Array<{ agent_route: string, name: string }>,
+   *   daemonVersion: string,
+   *   intended_assistant_id?: number,
+   * }} */
   const body = {
     code,
     deviceLabel,
