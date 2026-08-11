@@ -27,7 +27,7 @@
 # =============================================================================
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 DEFAULT_BACKEND="https://api.brandgrowthos.ai/api/v1"
 DEFAULT_CHANNEL="server:bgos"
 
@@ -481,6 +481,114 @@ cmd_restart() {
   esac
 }
 
+# Restart an installed supervisor after an update. Updating the checkout has
+# already succeeded by this point, so a missing or unreachable service is a
+# warning, never an update failure.
+restart_after_update() { # $1 assistant id
+  local id="$1"
+  case "$OS" in
+    Darwin)
+      local plist; plist="$(plist_for "$id")"
+      if [ ! -f "$plist" ]; then
+        warn "agent $id has no installed service; quit and relaunch Claude Code"
+      elif launchd_reload "$plist" "$(label_for "$id")"; then
+        ok "restarted agent $id"
+      else
+        warn "could not restart agent $id; quit and relaunch Claude Code"
+      fi
+      ;;
+    Linux)
+      local unitfile; unitfile="$(unitfile_for "$id")"
+      if [ ! -f "$unitfile" ]; then
+        warn "agent $id has no installed service; quit and relaunch Claude Code"
+      else
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        if systemctl --user restart "$(unit_for "$id")"; then
+          ok "restarted agent $id"
+        else
+          warn "could not restart agent $id; quit and relaunch Claude Code"
+        fi
+      fi
+      ;;
+    *) warn "could not restart agent $id on $OS; quit and relaunch Claude Code" ;;
+  esac
+}
+
+# =============================================================================
+# update
+# =============================================================================
+cmd_update() {
+  command -v git >/dev/null 2>&1 || die "git not found, install it first"
+  command -v bun >/dev/null 2>&1 || die "bun not found, install from https://bun.sh"
+  [ -e "$PLUGIN_DIR/.git" ] \
+    || die "plugin at $PLUGIN_DIR is not a git checkout, reinstall with bgos-agent install"
+
+  if [ -n "${ASSISTANT_ID:-}" ]; then
+    valid_id "$ASSISTANT_ID" || die "--assistant must be a positive integer"
+  fi
+
+  local BEFORE AFTER branch dirty
+  BEFORE="$(bun -e '
+    const pkg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(pkg.version);
+  ' "$PLUGIN_DIR/package.json")" \
+    || die "could not read plugin version from $PLUGIN_DIR/package.json"
+
+  dirty="$(git -C "$PLUGIN_DIR" status --porcelain)" \
+    || die "could not inspect the plugin checkout at $PLUGIN_DIR"
+  [ -z "$dirty" ] \
+    || die "the plugin checkout has local changes, not overwriting; resolve them in $PLUGIN_DIR or reinstall"
+
+  branch="$(git -C "$PLUGIN_DIR" rev-parse --abbrev-ref HEAD)" \
+    || die "could not determine the plugin checkout branch"
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then branch="main"; fi
+
+  info "Fetching origin/$branch"
+  git -C "$PLUGIN_DIR" fetch --depth 1 origin "$branch" \
+    || die "could not fetch origin/$branch; the plugin checkout was not changed"
+  git -C "$PLUGIN_DIR" reset --hard "origin/$branch" \
+    || die "could not update the plugin checkout to origin/$branch"
+
+  info "Installing plugin deps (bun install)"
+  ( cd "$PLUGIN_DIR" && bun install --no-summary >/dev/null 2>&1 ) \
+    || warn "bun install reported an issue (continuing)"
+  install_daemon_wrapper
+
+  AFTER="$(bun -e '
+    const pkg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(pkg.version);
+  ' "$PLUGIN_DIR/package.json")" \
+    || die "could not read plugin version from $PLUGIN_DIR/package.json"
+  if [ "$BEFORE" = "$AFTER" ]; then
+    ok "already up to date at $AFTER"
+  else
+    ok "plugin updated: $BEFORE -> $AFTER"
+  fi
+
+  if [ -n "${ASSISTANT_ID:-}" ]; then
+    restart_after_update "$ASSISTANT_ID"
+    return 0
+  fi
+
+  local state_dir id service_file installed=0
+  for state_dir in "$STATE_ROOT"/[0-9]*; do
+    [ -d "$state_dir" ] || continue
+    id="${state_dir##*/}"
+    valid_id "$id" || continue
+    case "$OS" in
+      Darwin) service_file="$(plist_for "$id")" ;;
+      Linux)  service_file="$(unitfile_for "$id")" ;;
+      *)      continue ;;
+    esac
+    [ -f "$service_file" ] || continue
+    installed=1
+    restart_after_update "$id"
+  done
+  if [ "$installed" -eq 0 ]; then
+    warn "no installed agent services found; quit and relaunch Claude Code to use the update"
+  fi
+}
+
 cmd_logs() {
   require_id
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
@@ -545,6 +653,7 @@ ${B}Commands${Z}
   logs      --assistant <id>          tail the agent's logs
   uninstall --assistant <id>          remove the supervisor + state (keeps plugin + workspace)
   is-installed --assistant <id>       exit 0 if the always-on supervisor is installed (for scripts)
+  update    [--assistant <id>]         update the plugin and restart installed agents
   link                                symlink this script to ~/.local/bin
   help
 
@@ -620,6 +729,7 @@ case "$SUB" in
   start)     cmd_start;;
   stop)      cmd_stop;;
   restart)   cmd_restart;;
+  update)    cmd_update;;
   logs)      cmd_logs;;
   uninstall) cmd_uninstall;;
   is-installed) cmd_is_installed;;
