@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# bgos-agent, installer + always-on supervisor for a BGOS Claude Code agent.
+# hoai-agent, installer + always-on supervisor for a BGOS Claude Code agent.
 #
 # One command to set up (and optionally keep alive forever) a Claude Code agent
 # that talks to the BGOS app via the bgos channel plugin. It packages the recipe
@@ -18,12 +18,12 @@
 # (bun, claude, git, expect).
 #
 # Usage:
-#   bgos-agent pair <CODE> [--backend <url>]   (recommended: no raw API key)
-#   bgos-agent install --assistant <id> [--key <k> --user <u>] [--always-on] [opts]
-#   bgos-agent status   [--assistant <id>]
-#   bgos-agent start | stop | restart | logs | uninstall --assistant <id>
-#   bgos-agent link
-#   bgos-agent help
+#   hoai-agent pair <CODE> [--backend <url>]   (recommended: no raw API key)
+#   hoai-agent install --assistant <id> [--key <k> --user <u>] [--always-on] [opts]
+#   hoai-agent status   [--assistant <id>]
+#   hoai-agent start | stop | restart | logs | uninstall --assistant <id>
+#   hoai-agent link
+#   hoai-agent help
 # =============================================================================
 set -euo pipefail
 
@@ -166,9 +166,9 @@ cmd_install() {
   echo
   ok "Agent $ASSISTANT_ID is always-on."
   printf '  workspace : %s\n' "$workdir"
-  printf '  logs      : bgos-agent logs --assistant %s   (%s/agent.log)\n' "$ASSISTANT_ID" "$statedir"
-  printf '  status    : bgos-agent status --assistant %s\n' "$ASSISTANT_ID"
-  printf '  off       : bgos-agent uninstall --assistant %s\n' "$ASSISTANT_ID"
+  printf '  logs      : hoai-agent logs --assistant %s   (%s/agent.log)\n' "$ASSISTANT_ID" "$statedir"
+  printf '  status    : hoai-agent status --assistant %s\n' "$ASSISTANT_ID"
+  printf '  off       : hoai-agent uninstall --assistant %s\n' "$ASSISTANT_ID"
 }
 
 # --- file generators ---------------------------------------------------------
@@ -368,7 +368,7 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path
 </plist>
 PLIST
   plutil -lint "$plist" >/dev/null || die "generated plist failed validation: $plist"
-  launchd_reload "$plist" "$label" || die "launchctl bootstrap failed for $label (try: bgos-agent status --assistant $id)"
+  launchd_reload "$plist" "$label" || die "launchctl bootstrap failed for $label (try: hoai-agent status --assistant $id)"
   ok "launchd service $label loaded"
 }
 
@@ -442,7 +442,7 @@ cmd_status() {
           print "  pid="$1"  last-exit="$2;
           if ($1=="-" && $2!="0") print "  ! not running and last exit was nonzero, check logs"
         }'
-      else warn "$label is not loaded (install with: bgos-agent install --assistant $ASSISTANT_ID --always-on)"; fi
+      else warn "$label is not loaded (install with: hoai-agent install --assistant $ASSISTANT_ID --always-on)"; fi
       ;;
     Linux) ensure_user_bus; systemctl --user status "$(unit_for "$ASSISTANT_ID")" --no-pager || true;;
   esac
@@ -464,7 +464,7 @@ cmd_start() {
   case "$OS" in
     Darwin)
       local plist; plist="$(plist_for "$ASSISTANT_ID")"
-      [ -f "$plist" ] || die "not installed, run: bgos-agent install --assistant $ASSISTANT_ID --always-on"
+      [ -f "$plist" ] || die "not installed, run: hoai-agent install --assistant $ASSISTANT_ID --always-on"
       launchd_reload "$plist" "$(label_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(label_for "$ASSISTANT_ID")";;
     Linux)  ensure_user_bus; systemctl --user start "$(unit_for "$ASSISTANT_ID")" && ok "started" || die "could not start $(unit_for "$ASSISTANT_ID")";;
   esac
@@ -521,7 +521,7 @@ cmd_update() {
   command -v git >/dev/null 2>&1 || die "git not found, install it first"
   command -v bun >/dev/null 2>&1 || die "bun not found, install from https://bun.sh"
   [ -e "$PLUGIN_DIR/.git" ] \
-    || die "plugin at $PLUGIN_DIR is not a git checkout, reinstall with bgos-agent install"
+    || die "plugin at $PLUGIN_DIR is not a git checkout, reinstall with hoai-agent install"
 
   if [ -n "${ASSISTANT_ID:-}" ]; then
     valid_id "$ASSISTANT_ID" || die "--assistant must be a positive integer"
@@ -633,8 +633,9 @@ cmd_is_installed() { # exit 0 if the supervisor is installed for this id, else 1
 
 cmd_link() {
   mkdir -p "$HOME/.local/bin"
+  ln -sf "$SELF" "$HOME/.local/bin/hoai-agent"
   ln -sf "$SELF" "$HOME/.local/bin/bgos-agent"
-  ok "linked → $HOME/.local/bin/bgos-agent"
+  ok "linked → $HOME/.local/bin/hoai-agent"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) : ;;
     *) warn "add ~/.local/bin to PATH:  export PATH=\"\$HOME/.local/bin:\$PATH\"";;
@@ -643,7 +644,7 @@ cmd_link() {
 
 usage() {
   cat <<USAGE
-${B}bgos-agent${Z} v$VERSION, set up + keep alive a BGOS Claude Code agent.
+${B}hoai-agent${Z} v$VERSION, set up + keep alive a BGOS Claude Code agent.
 
 ${B}Commands${Z}
   pair      <CODE> [--backend <url>]  pair with a one time code from the HOAI app (recommended)
@@ -670,10 +671,10 @@ ${B}install options${Z}
   --no-clone           assume the plugin is already at \$BGOS_PLUGIN_DIR
 
 ${B}examples${Z}
-  bgos-agent pair BGOS-7F3A-2K
-  bgos-agent install --assistant 42 --key sk_... --user user_abc --always-on
-  bgos-agent status --assistant 42
-  bgos-agent uninstall --assistant 42
+  hoai-agent pair BGOS-7F3A-2K
+  hoai-agent install --assistant 42 --key sk_... --user user_abc --always-on
+  hoai-agent status --assistant 42
+  hoai-agent uninstall --assistant 42
 USAGE
 }
 
@@ -719,7 +720,7 @@ while [ $# -gt 0 ]; do
     --continue)  CONTINUE=1; shift;;
     --no-clone)  NO_CLONE=1; shift;;
     -h|--help)   usage; exit 0;;
-    *) die "unknown option: $1 (try: bgos-agent help)";;
+    *) die "unknown option: $1 (try: hoai-agent help)";;
   esac
 done
 
@@ -735,5 +736,5 @@ case "$SUB" in
   is-installed) cmd_is_installed;;
   link)      cmd_link;;
   help|-h|--help) usage;;
-  *) die "unknown command: $SUB (try: bgos-agent help)";;
+  *) die "unknown command: $SUB (try: hoai-agent help)";;
 esac
