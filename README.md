@@ -61,7 +61,7 @@ You **must** have all of the following installed before setting up the plugin:
 > not `API key`. Only then will the channel deliver inbound messages to your
 > session.
 
-## One-command setup: `bgos-agent` (recommended)
+## One-command setup: `hoai-agent` (recommended)
 
 [`bin/bgos-agent`](bin/bgos-agent) does the whole setup — and can keep the agent
 **always-on** (auto-restart + survive reboot) — in a single command. It's plain
@@ -73,7 +73,7 @@ bash you can read before it touches your machine; **macOS** (launchd) and
 ~/bgos-claude-plugin/bin/bgos-agent link
 
 # set up an agent AND keep it running forever:
-bgos-agent install --assistant <id> --key <api-key> --user <user-id> --always-on
+hoai-agent install --assistant <id> --key <api-key> --user <user-id> --always-on
 ```
 
 That single command:
@@ -95,14 +95,16 @@ Drop `--always-on` to just write the config and print the launch command (no
 service). Manage a running agent with:
 
 ```bash
-bgos-agent status    --assistant <id>     # running? + recent log  (no id = list all)
-bgos-agent logs      --assistant <id>
-bgos-agent restart   --assistant <id>
-bgos-agent uninstall --assistant <id>     # removes the service; keeps your workspace
+hoai-agent status    --assistant <id>     # running? + recent log  (no id = list all)
+hoai-agent logs      --assistant <id>
+hoai-agent restart   --assistant <id>
+hoai-agent uninstall --assistant <id>     # removes the service; keeps your workspace
 ```
 
 Each agent is keyed by its assistant id, so one host can run several. Full
-options: `bgos-agent help`.
+options: `hoai-agent help`.
+
+`bgos-agent` and `bgos-pair` still work as aliases for `hoai-agent` and `hoai-pair`.
 
 > **Subscription auth still required** (see the warning above) — the supervisor
 > runs Claude Code with a clean environment so it won't inherit `ANTHROPIC_API_KEY`,

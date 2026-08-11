@@ -1,6 +1,6 @@
 {
   "name": "claude-channel-bgos",
-  "version": "0.34.4",
+  "version": "0.34.5",
   "description": "HOAI channel plugin for Claude Code, chat with Claude Code through the HOAI desktop and mobile app",
   "license": "Apache-2.0",
   "type": "module",
@@ -10,6 +10,9 @@
   "bin": {
     "claude-channel-bgos": "./server.ts",
     "bgos-claim": "./bin/bgos-claim.mjs",
+    "hoai-agent": "./bin/bgos-agent",
+    "hoai-pair": "./bin/bgos-pair.mjs",
+    "bgos-agent": "./bin/bgos-agent",
     "bgos-pair": "./bin/bgos-pair.mjs"
   },
   "scripts": {
