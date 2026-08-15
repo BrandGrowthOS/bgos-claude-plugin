@@ -1187,7 +1187,7 @@ const mcp = new Server(
       'your turn output never reaches their chat, it stays in your local terminal',
       'only. Every response to a BGOS message MUST go through the `reply` tool.',
       'If you forget to call `reply`, the user sees nothing. The plugin enforces',
-      'this by sending a [reply-overdue] notification 2 minutes after any inbound',
+      'this by sending a [reply-overdue] notification 4 minutes after any inbound',
       'message that has not been answered via the `reply` (or `meeting_reply`) tool.',
       '',
       'Once you have a response, use the `reply` tool to send it back.',
@@ -4253,7 +4253,10 @@ const peerConvByChat = new Map<string, string>()
 // also clears any tracker that was already armed.
 const closedPeerChats = new Set<string>()
 const CLOSED_PEER_CHATS_MAX = 500
-const REPLY_OVERDUE_MS = 120_000
+// 4 minutes: agents legitimately run long (some tasks work up to ~10 min), so a
+// 2-minute nudge fired too early on work still in progress. KC 2026-08-15: push
+// the reply-overdue window to 4 min so the reminder only fires on genuine silence.
+const REPLY_OVERDUE_MS = 240_000
 
 // Mark a peer side-thread as closed and tear down any overdue tracker for it.
 // Accepts whichever identifier the caller has (conversation id and/or chat id);
