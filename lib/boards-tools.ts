@@ -120,6 +120,12 @@ const SCHEMA_OPS = [
   'set_description',
   'set_options',
   'move_field',
+  // Multi-table boards: the table lifecycle, folded under update_schema so the
+  // tool count stays 12. These address the /tables collection, not /fields.
+  'add_table',
+  'rename_table',
+  'move_table',
+  'delete_table',
 ] as const
 
 const ROLES = ['read', 'write', 'admin'] as const
@@ -153,6 +159,18 @@ const BOARD_ARG = {
     'The board id, or its exact name. Names are resolved server-side; an ' +
     'ambiguous name comes back with the matching name (id) pairs so you can ' +
     'pick one. Call boards_list when you do not know what you can reach.',
+}
+
+const TABLE_ARG = {
+  type: 'string',
+  description:
+    'Optional. A board can hold several tables (Airtable style); this is the ' +
+    'one to act on, given as a table id or its exact name. Names are resolved ' +
+    'server-side, and an ambiguous name comes back with the name (id) pairs ' +
+    'so you can pick one. Omit it for the board\'s default table (Main). Read ' +
+    'the tables and their ids with boards_describe. On boards_update_schema ' +
+    'this names the table the rename_table, move_table and delete_table ops ' +
+    'act on (use the id from boards_describe there).',
 }
 
 const RESPONSE_FORMAT_ARG = {
@@ -292,12 +310,15 @@ export const BOARDS_TOOL_DECLS = [
       'like any other write and signed with this agent\'s identity. Reach ' +
       'for this when the board\'s shape is wrong, not when a value is wrong. ' +
       'Adding a select option is the honest way to record a state the board ' +
-      'does not have a word for yet.',
+      'does not have a word for yet. A board can also hold several tables ' +
+      '(Airtable style): the add_table, rename_table, move_table and ' +
+      'delete_table ops manage them, and boards_describe lists what exists.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
       properties: {
         board: BOARD_ARG,
+        table: TABLE_ARG,
         op: {
           type: 'string',
           enum: [...SCHEMA_OPS],
@@ -305,7 +326,9 @@ export const BOARDS_TOOL_DECLS = [
             'add_field (needs field), rename_field (field_key + label), ' +
             'delete_field (field_key), set_description (field_key + ' +
             'description), set_options (field_key + options, optional ' +
-            'option_tones), move_field (field_key + position).',
+            'option_tones), move_field (field_key + position). Tables: ' +
+            'add_table (label is the new table name), rename_table (table + ' +
+            'label), move_table (table + position), delete_table (table).',
         },
         field: {
           ...FIELD_SPEC_SCHEMA,
@@ -351,12 +374,14 @@ export const BOARDS_TOOL_DECLS = [
       'only, with no hint of how many others exist. Filter by the board\'s ' +
       'own field labels and its select options as written, which you get ' +
       'from boards_describe. Query before you insert, so the board keeps one ' +
-      'row per real thing.',
+      'row per real thing. On a multi-table board, pass table to read one ' +
+      'table; omit it for the default table.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
       properties: {
         board: BOARD_ARG,
+        table: TABLE_ARG,
         filter: {
           anyOf: [
             {
@@ -472,11 +497,13 @@ export const BOARDS_TOOL_DECLS = [
       'Add a row, signed with this agent\'s identity. Needs write access. ' +
       'One row per real thing: query the board first so you update the ' +
       'existing row instead of adding a second one about the same thing. ' +
-      'Fill the cells with the board\'s own select options as written.',
+      'Fill the cells with the board\'s own select options as written. On a ' +
+      'multi-table board, pass table to choose which table the row lands in; ' +
+      'omit it for the default table.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
-      properties: { board: BOARD_ARG, cells: CELLS_ARG },
+      properties: { board: BOARD_ARG, table: TABLE_ARG, cells: CELLS_ARG },
       required: ['board', 'cells'],
     },
   },
@@ -628,6 +655,8 @@ const ALLOWED_ARGS: Record<string, string[]> = Object.fromEntries(
 const ARG_HINTS: Record<string, string> = {
   board:
     'the board id, or its exact name. Call boards_list to see what you can reach.',
+  table:
+    'the table id or its exact name, from boards_describe. Omit for the default table.',
   row_key: 'the short 8-character row key or the full row uuid, copied as printed.',
   cells: 'a map of field label to string value.',
   name: 'the name to show.',
@@ -637,10 +666,10 @@ const ARG_HINTS: Record<string, string> = {
   assistant_id: 'the numeric id of the agent, from the board access list.',
   field: 'the new column, for example { "label": "Owner", "type": "agent" }.',
   field_key: 'the field key as boards_describe prints it.',
-  label: 'the new column heading.',
+  label: 'the new name (a column heading, or a table name for a table op).',
   options: 'the full option list, in display order.',
   description: 'the one-line column description.',
-  position: 'the new zero-based column position.',
+  position: 'the new zero-based position.',
 }
 
 // ── Small validators ─────────────────────────────────────────────────────────
@@ -851,6 +880,31 @@ function readFieldKey(
     return fail(
       `${tool} "field_key" must be the field key as boards_describe prints ` +
         'it (letters, digits, underscore or hyphen), not the label.',
+    )
+  }
+  return { ok: true, value }
+}
+
+/**
+ * The `table` argument as a PATH segment for the table lifecycle ops. A table
+ * id or its exact name are both legal, so the segment is percent-encoded
+ * downstream rather than pattern-matched; but "." / ".." survive encoding and
+ * URL normalization then collapses them, so refuse those and any slash before
+ * the value can address something other than one of this board's tables. Same
+ * wall as `readBoard`, applied to `table`.
+ */
+function readTablePathSeg(
+  tool: string,
+  args: Record<string, unknown>,
+): Fail | { ok: true; value: string } {
+  const raw = readString(tool, args, 'table', true)
+  if (!raw.ok) return raw
+  const value = raw.value as string
+  if (value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
+    return fail(
+      `${tool} "table" must be a table id or its exact name, not a path. ` +
+        '"." and ".." and anything containing a slash are refused. Call ' +
+        'boards_describe to see the tables on this board.',
     )
   }
   return { ok: true, value }
@@ -1401,6 +1455,9 @@ async function buildCall(
       if (!limit.ok) return limit
       const cursor = readString(name, args, 'cursor', false)
       if (!cursor.ok) return cursor
+      // The table rides the query string, name-or-id, resolved server-side.
+      const table = readString(name, args, 'table', false)
+      if (!table.ok) return table
 
       const body: Record<string, unknown> = {}
       if (args.filter !== undefined && args.filter !== null) {
@@ -1412,7 +1469,14 @@ async function buildCall(
       if (limit.value !== undefined) body.limit = limit.value
       if (cursor.value) body.cursor = cursor.value
 
-      const path = boardPath(deps, boardSeg, `/rows/query?format=${fmt}`)
+      const tableQs = table.value
+        ? `&table=${encodeURIComponent(table.value)}`
+        : ''
+      const path = boardPath(
+        deps,
+        boardSeg,
+        `/rows/query?format=${fmt}${tableQs}`,
+      )
       return { ok: true, data: await deps.bgosPost(path, body) }
     }
 
@@ -1430,7 +1494,13 @@ async function buildCall(
     case 'boards_insert': {
       const cells = readStringMap(name, args, 'cells', true)
       if (!cells.ok) return cells
-      const path = boardPath(deps, boardSeg, '/rows')
+      // The table rides the query string, name-or-id, resolved server-side.
+      const table = readString(name, args, 'table', false)
+      if (!table.ok) return table
+      const suffix = table.value
+        ? `/rows?table=${encodeURIComponent(table.value)}`
+        : '/rows'
+      const path = boardPath(deps, boardSeg, suffix)
       return { ok: true, data: await deps.bgosPost(path, { cells: cells.value }) }
     }
 
@@ -1497,6 +1567,12 @@ const SCHEMA_OP_ARGS: Record<string, { needs: string[]; optional: string[] }> = 
   set_description: { needs: ['field_key', 'description'], optional: [] },
   set_options: { needs: ['field_key', 'options'], optional: ['option_tones'] },
   move_field: { needs: ['field_key', 'position'], optional: [] },
+  // Table lifecycle. `label` carries the table name (new table, or the new
+  // name on a rename); `table` names the existing table to act on.
+  add_table: { needs: ['label'], optional: [] },
+  rename_table: { needs: ['table', 'label'], optional: [] },
+  move_table: { needs: ['table', 'position'], optional: [] },
+  delete_table: { needs: ['table'], optional: [] },
 }
 
 async function updateSchema(
@@ -1531,6 +1607,16 @@ async function updateSchema(
     if (!field.ok) return field
     const path = boardPath(deps, boardSeg, '/fields')
     return { ok: true, data: await deps.bgosPost(path, field.field) }
+  }
+
+  // Table lifecycle ops address the /tables collection and never a field_key.
+  if (
+    op.value === 'add_table' ||
+    op.value === 'rename_table' ||
+    op.value === 'move_table' ||
+    op.value === 'delete_table'
+  ) {
+    return updateTables(name, args, deps, boardSeg, op.value)
   }
 
   const fieldKey = readFieldKey(name, args)
@@ -1571,6 +1657,56 @@ async function updateSchema(
   }
 
   return { ok: true, data: await deps.bgosPatch(fieldPath, body) }
+}
+
+/**
+ * The four table lifecycle ops (multi-table boards), folded under update_schema.
+ * `add_table` names no existing table; the others resolve `table` server-side
+ * (a table id, or a name that fails closed with the tables that DO exist).
+ *
+ * The per-op required arguments are already enforced by SCHEMA_OP_ARGS in
+ * updateSchema, so a missing name or table is caught there before this runs.
+ */
+async function updateTables(
+  name: string,
+  args: Record<string, unknown>,
+  deps: BoardsToolDeps,
+  boardSeg: string,
+  op: string,
+): Promise<{ ok: true; data: unknown } | Fail> {
+  // add_table creates a table; `label` carries its name. No table segment.
+  if (op === 'add_table') {
+    const label = readString(name, args, 'label', true)
+    if (!label.ok) return label
+    const path = boardPath(deps, boardSeg, '/tables')
+    return { ok: true, data: await deps.bgosPost(path, { name: label.value }) }
+  }
+
+  const table = readTablePathSeg(name, args)
+  if (!table.ok) return table
+  const tablePath = boardPath(
+    deps,
+    boardSeg,
+    `/tables/${encodeURIComponent(table.value)}`,
+  )
+
+  if (op === 'delete_table') {
+    if (!deps.bgosDelete) {
+      return fail(`${name} cannot delete a table on this connection.`)
+    }
+    return { ok: true, data: await deps.bgosDelete(tablePath) }
+  }
+
+  if (op === 'rename_table') {
+    const label = readString(name, args, 'label', true)
+    if (!label.ok) return label
+    return { ok: true, data: await deps.bgosPatch(tablePath, { name: label.value }) }
+  }
+
+  // move_table
+  const position = readInt(name, args, 'position', 0, 1000, true)
+  if (!position.ok) return position
+  return { ok: true, data: await deps.bgosPatch(tablePath, { position: position.value }) }
 }
 
 async function attach(
