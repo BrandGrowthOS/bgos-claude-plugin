@@ -23,7 +23,7 @@
  * never logs or echoes any credential.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export type AuthMode = 'pairing' | 'apikey'
@@ -77,34 +77,162 @@ function configuredAssistantId(env: Env): string {
   return value && value !== ASSISTANT_ID_PLACEHOLDER ? value : ''
 }
 
+/** The launch-folder pin file bgos-pair drops so a daemon started from that
+ *  folder self-resolves its identity with no env var. */
+export const FOLDER_PIN_FILE = '.bgos-agent-id'
+
+/**
+ * The extended, folder-scoped resolver server.ts consumes at boot. It answers
+ * "which credentials file is THIS daemon, and may it start at all".
+ *
+ *   ok    -> a single credentials file was chosen deterministically.
+ *   refuse -> this host has several paired agents and this daemon has no pin,
+ *             so it CANNOT tell which one it is; refusing beats answering as
+ *             the wrong agent (the multi-agent-per-host collision).
+ */
+export type CredentialsSelection =
+  | {
+      kind: 'ok'
+      path: string
+      via: 'env-path' | 'env-assistant' | 'folder-pin' | 'sole-per-assistant' | 'legacy'
+    }
+  | { kind: 'refuse'; candidateIds: string[]; agentDir: string }
+
+type FileProbes = {
+  exists?: (path: string) => boolean
+  readText?: (path: string) => string | null
+  listDir?: (path: string) => string[]
+}
+
+function defaultReadText(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function defaultListDir(path: string): string[] {
+  try {
+    return readdirSync(path)
+  } catch {
+    return []
+  }
+}
+
+/** The numeric id in a <cwd>/.bgos-agent-id pin, or '' when absent or junk. */
+function readFolderPinId(cwd: string, readText: (path: string) => string | null): string {
+  if (!cwd) return ''
+  const raw = readText(join(cwd, FOLDER_PIN_FILE))
+  if (raw == null) return ''
+  const id = String(raw).trim()
+  return /^\d+$/.test(id) ? id : ''
+}
+
+/** The assistant ids that have a credentials-<id>.json next to the default
+ *  file, ascending. [] when the directory is missing or unreadable. */
+function listPerAssistantIds(agentDir: string, listDir: (path: string) => string[]): string[] {
+  return listDir(agentDir)
+    .map((name) => /^credentials-(\d+)\.json$/.exec(name)?.[1])
+    .filter((found): found is string => Boolean(found))
+    .sort((a, b) => Number(a) - Number(b))
+}
+
 /**
  * Select the credentials file to read. Strict, total precedence so a host
  * running many agents under one OS user never has two files racing:
  *   1. BGOS_CREDENTIALS_PATH wins outright when set;
- *   2. else credentials-<BGOS_ASSISTANT_ID>.json (next to the default file)
- *      wins outright when it exists for the configured id: the legacy file is
- *      then IGNORED for that agent, even if it would also match;
- *   3. else the legacy single credentials.json (the whole pre-per-assistant
- *      fleet keeps working unchanged).
- * `exists` is injectable for tests; the default touches the real filesystem.
+ *   2. else credentials-<BGOS_ASSISTANT_ID>.json when it exists for the
+ *      configured id (an explicit env pin, which also SUPPRESSES the refusal);
+ *   3. with NO env pin, a <cwd>/.bgos-agent-id folder pin resolves that agents
+ *      own file (pairing drops it, so a bare launch from the agent folder needs
+ *      no env);
+ *   4. else a sole per-assistant file when there is no legacy file (a clean
+ *      single-agent host);
+ *   5. else, when several per-assistant files exist with no pin, REFUSE;
+ *   6. else the legacy single credentials.json (the pre-per-assistant fleet
+ *      keeps working unchanged).
+ * All filesystem probes are injectable for tests.
+ */
+export function resolveCredentialsSelection(opts: {
+  env?: Env
+  defaultPath: string
+  cwd?: string
+} & FileProbes): CredentialsSelection {
+  const env: Env = opts.env ?? {}
+  const exists = opts.exists ?? existsSync
+  const readText = opts.readText ?? defaultReadText
+  const listDir = opts.listDir ?? defaultListDir
+  const cwd = str(opts.cwd).trim()
+  const agentDir = dirname(opts.defaultPath)
+
+  // Trimmed, matching the bgos-pair write side: a padded path must not make
+  // the daemon read a different file than pairing wrote.
+  const override = str(env.BGOS_CREDENTIALS_PATH).trim()
+  if (override) return { kind: 'ok', path: override, via: 'env-path' }
+
+  const assistantId = configuredAssistantId(env)
+  if (assistantId) {
+    const perAssistant = join(agentDir, `credentials-${assistantId}.json`)
+    if (exists(perAssistant)) return { kind: 'ok', path: perAssistant, via: 'env-assistant' }
+    // Configured id but no matching file: keep the legacy fallback unchanged.
+    // An explicit env pin, even a stale one, never triggers the refusal.
+    return { kind: 'ok', path: opts.defaultPath, via: 'legacy' }
+  }
+
+  // No env pin from here: the folder is the only per-process anchor.
+  const folderId = readFolderPinId(cwd, readText)
+  if (folderId) {
+    const pinned = join(agentDir, `credentials-${folderId}.json`)
+    if (exists(pinned)) return { kind: 'ok', path: pinned, via: 'folder-pin' }
+    // A pin pointing at a missing file is stale: fall through, never obey it.
+  }
+
+  const ids = listPerAssistantIds(agentDir, listDir)
+  const hasLegacy = exists(opts.defaultPath)
+  if (ids.length === 1 && !hasLegacy) {
+    return { kind: 'ok', path: join(agentDir, `credentials-${ids[0]}.json`), via: 'sole-per-assistant' }
+  }
+  if (ids.length > 1) {
+    return { kind: 'refuse', candidateIds: ids, agentDir }
+  }
+  return { kind: 'ok', path: opts.defaultPath, via: 'legacy' }
+}
+
+/**
+ * The string-returning resolver kept for existing callers (the auth-recheck
+ * visibility path and the write-side mirror test). It delegates to
+ * resolveCredentialsSelection and maps the refuse case to the legacy default,
+ * so a string caller behaves exactly as before while the boot path
+ * (resolveCredentialsSelection) is the one that can actually refuse.
  */
 export function resolveCredentialsPath(opts: {
   env?: Env
   defaultPath: string
-  exists?: (path: string) => boolean
-}): string {
-  const env: Env = opts.env ?? {}
-  // Trimmed, matching the bgos-pair write side: a padded path must not make
-  // the daemon read a different file than pairing wrote.
-  const override = str(env.BGOS_CREDENTIALS_PATH).trim()
-  if (override) return override
-  const assistantId = configuredAssistantId(env)
-  if (assistantId) {
-    const exists = opts.exists ?? existsSync
-    const perAssistant = join(dirname(opts.defaultPath), `credentials-${assistantId}.json`)
-    if (exists(perAssistant)) return perAssistant
-  }
-  return opts.defaultPath
+  cwd?: string
+} & FileProbes): string {
+  const selection = resolveCredentialsSelection(opts)
+  return selection.kind === 'ok' ? selection.path : opts.defaultPath
+}
+
+/**
+ * The loud, secret-free boot-refusal line for the ambiguous multi-agent case,
+ * or '' when nothing was refused. Names the count, the ids, and BOTH pin routes
+ * (a folder pin via hoai-pair, or an explicit BGOS_ASSISTANT_ID) so the operator
+ * can fix it without guessing. Pure: server.ts does the logging and the exit.
+ */
+export function formatCredentialsRefusal(selection: CredentialsSelection): string {
+  if (selection.kind !== 'refuse') return ''
+  const ids = selection.candidateIds.join(', ')
+  const example = selection.candidateIds[0] ?? '<id>'
+  return (
+    `REFUSING to start: this host has ${selection.candidateIds.length} paired agents ` +
+    `(ids: ${ids}) in ${selection.agentDir}, but this daemon has no identity pin, so it ` +
+    `cannot tell which one it is. Pin it one of two ways: run hoai-pair from this agent's ` +
+    `own working folder (it bakes a ${FOLDER_PIN_FILE} pin there), or set ` +
+    `BGOS_ASSISTANT_ID=${example} in this agent's environment. Refusing rather than ` +
+    `answering as the wrong agent.`
+  )
 }
 
 /**

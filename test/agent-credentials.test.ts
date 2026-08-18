@@ -19,6 +19,8 @@ import { join } from 'node:path'
 import {
   resolveAuth,
   resolveCredentialsPath,
+  resolveCredentialsSelection,
+  formatCredentialsRefusal,
   formatAuthResolution,
   formatPairingRejection,
   loadCredentialsFile,
@@ -478,7 +480,7 @@ test('server startup threads the pairing rejection warn into the log', () => {
   )
 })
 
-test('server loads credentials from the resolved per-agent path', () => {
+test('server loads credentials from the folder-scoped selection and refuses the ambiguous case', () => {
   // The default path literal stays pinned (0.33.0 extracted it to a named
   // const so the auth divergence recheck re-resolves the SAME default).
   assert.equal(
@@ -487,12 +489,23 @@ test('server loads credentials from the resolved per-agent path', () => {
     ),
     true,
   )
+  // Phase two: boot resolves via the folder-scoped selection (with cwd), so a
+  // <cwd>/.bgos-agent-id pin or a sole file self-resolves with no env var.
   assert.equal(
-    /const CREDENTIALS_PATH = resolveCredentialsPath\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*\}\)/.test(
+    /const CREDENTIALS_SELECTION = resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: process\.cwd\(\),\s*\}\)/.test(
       serverSource,
     ),
     true,
   )
+  // The ambiguous many-agent-no-pin case REFUSES loudly and exits, never
+  // silently falling back to the shared legacy file.
+  assert.equal(
+    /if \(CREDENTIALS_SELECTION\.kind === 'refuse'\) \{[\s\S]*?formatCredentialsRefusal\(CREDENTIALS_SELECTION\)[\s\S]*?process\.exit\(1\)/.test(
+      serverSource,
+    ),
+    true,
+  )
+  assert.equal(/const CREDENTIALS_PATH = CREDENTIALS_SELECTION\.path/.test(serverSource), true)
   assert.equal(/creds: loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource), true)
 })
 
@@ -542,4 +555,157 @@ test('server logs the auth resolution for failed and complete startup', () => {
     serverSource.includes('log(formatAuthResolution(AUTH, CREDENTIALS_PATH))'),
     true,
   )
+})
+
+// ── Phase two: resolveCredentialsSelection (the folder-scoped auto-pin) ──────
+//
+// server.ts boot consumes this. With NO env pin it (1) reads a <cwd>/.bgos-agent-id
+// folder pin, (2) else uses a sole per-assistant file when there is no legacy,
+// (3) else REFUSES when several per-assistant files exist with no pin, so a
+// multi-agent host never silently collapses to one identity.
+
+// A stub agent dir: exists/listDir/readText driven from an in-memory map.
+function stubHost(opts: {
+  agentDir: string
+  perAssistantIds?: number[]
+  hasLegacy?: boolean
+  folderPin?: { cwd: string; id: string } | null
+}) {
+  const files = new Set<string>()
+  for (const id of opts.perAssistantIds ?? []) {
+    files.add(join(opts.agentDir, `credentials-${id}.json`))
+  }
+  if (opts.hasLegacy) files.add(join(opts.agentDir, 'credentials.json'))
+  const pinPath = opts.folderPin ? join(opts.folderPin.cwd, '.bgos-agent-id') : null
+  return {
+    exists: (p: string) => files.has(p),
+    listDir: (p: string) =>
+      p === opts.agentDir
+        ? (opts.perAssistantIds ?? []).map((id) => `credentials-${id}.json`).concat(opts.hasLegacy ? ['credentials.json'] : [])
+        : [],
+    readText: (p: string) => (pinPath && p === pinPath ? opts.folderPin!.id : null),
+  }
+}
+
+const AGENT_DIR = '/home/kc/.bgos-agent'
+const DEFAULT_PATH = '/home/kc/.bgos-agent/credentials.json'
+
+test('selection: BGOS_CREDENTIALS_PATH override wins as ok/env-path', () => {
+  const sel = resolveCredentialsSelection({
+    env: { BGOS_CREDENTIALS_PATH: '/x/c.json' },
+    defaultPath: DEFAULT_PATH,
+  })
+  assert.deepEqual(sel, { kind: 'ok', path: '/x/c.json', via: 'env-path' })
+})
+
+test('selection: configured BGOS_ASSISTANT_ID with a matching file is ok/env-assistant', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1017, 1019], hasLegacy: true })
+  const sel = resolveCredentialsSelection({
+    env: { BGOS_ASSISTANT_ID: '1017' },
+    defaultPath: DEFAULT_PATH,
+    ...host,
+  })
+  assert.equal(sel.kind, 'ok')
+  assert.equal(sel.path, join(AGENT_DIR, 'credentials-1017.json'))
+  assert.equal(sel.via, 'env-assistant')
+})
+
+test('selection: an env pin suppresses the refusal even on a many-file host', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1013, 1017, 1019], hasLegacy: true })
+  const sel = resolveCredentialsSelection({
+    env: { BGOS_ASSISTANT_ID: '1017' },
+    defaultPath: DEFAULT_PATH,
+    ...host,
+  })
+  assert.equal(sel.kind, 'ok')
+})
+
+test('selection: NO env, a folder pin resolves that agents own file (folder-pin)', () => {
+  const host = stubHost({
+    agentDir: AGENT_DIR,
+    perAssistantIds: [1013, 1015, 1017, 1019],
+    hasLegacy: true,
+    folderPin: { cwd: '/work/agent-1017', id: '1017' },
+  })
+  const sel = resolveCredentialsSelection({
+    env: {},
+    defaultPath: DEFAULT_PATH,
+    cwd: '/work/agent-1017',
+    ...host,
+  })
+  assert.deepEqual(sel, { kind: 'ok', path: join(AGENT_DIR, 'credentials-1017.json'), via: 'folder-pin' })
+})
+
+test('selection: NO env, seven paired agents (Alexs host) REFUSE, listing the ids', () => {
+  const ids = [1013, 1015, 1016, 1017, 1018, 1019, 1020]
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: ids, hasLegacy: true })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/nowhere', ...host })
+  assert.equal(sel.kind, 'refuse')
+  assert.deepEqual(sel.candidateIds, ids.map(String))
+  assert.equal(sel.agentDir, AGENT_DIR)
+})
+
+test('selection: NO env, a folder pin still wins over the many-file refusal', () => {
+  const ids = [1013, 1015, 1017]
+  const host = stubHost({
+    agentDir: AGENT_DIR,
+    perAssistantIds: ids,
+    hasLegacy: true,
+    folderPin: { cwd: '/work/agent-1015', id: '1015' },
+  })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/agent-1015', ...host })
+  assert.equal(sel.kind, 'ok')
+  assert.equal(sel.via, 'folder-pin')
+  assert.equal(sel.path, join(AGENT_DIR, 'credentials-1015.json'))
+})
+
+test('selection: NO env, a folder pin pointing at a missing file is ignored, not obeyed', () => {
+  const host = stubHost({
+    agentDir: AGENT_DIR,
+    perAssistantIds: [1013, 1017],
+    hasLegacy: true,
+    folderPin: { cwd: '/work/agent-9999', id: '9999' },
+  })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/agent-9999', ...host })
+  // 9999 has no file, so it falls through to the many-file refusal.
+  assert.equal(sel.kind, 'refuse')
+})
+
+test('selection: NO env, exactly one per-assistant file and no legacy is ok/sole-per-assistant', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1017], hasLegacy: false })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/solo', ...host })
+  assert.deepEqual(sel, { kind: 'ok', path: join(AGENT_DIR, 'credentials-1017.json'), via: 'sole-per-assistant' })
+})
+
+test('selection: fresh single-agent host (one per-assistant + legacy) does NOT regress: ok/legacy, never refuse', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [963], hasLegacy: true })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/solo', ...host })
+  assert.deepEqual(sel, { kind: 'ok', path: DEFAULT_PATH, via: 'legacy' })
+})
+
+test('selection: NO env, no files at all falls back to legacy (unchanged)', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [], hasLegacy: false })
+  const sel = resolveCredentialsSelection({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/empty', ...host })
+  assert.deepEqual(sel, { kind: 'ok', path: DEFAULT_PATH, via: 'legacy' })
+})
+
+test('formatCredentialsRefusal names the count, the ids, and both pin routes', () => {
+  const sel = resolveCredentialsSelection({
+    env: {},
+    defaultPath: DEFAULT_PATH,
+    cwd: '/work/nowhere',
+    ...stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1013, 1017, 1019], hasLegacy: true }),
+  })
+  const msg = formatCredentialsRefusal(sel)
+  assert.match(msg, /REFUSING to start/)
+  assert.match(msg, /1013, 1017, 1019/)
+  assert.match(msg, /BGOS_ASSISTANT_ID=1013/)
+  assert.match(msg, /hoai-pair/)
+  assert.doesNotMatch(msg, /[–—]/) // no en or em dashes
+})
+
+test('resolveCredentialsPath keeps its string contract: the refuse case maps to the legacy path', () => {
+  const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1013, 1017, 1019], hasLegacy: true })
+  const path = resolveCredentialsPath({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/nowhere', ...host })
+  assert.equal(path, DEFAULT_PATH)
 })
