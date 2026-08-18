@@ -49,6 +49,9 @@ import {
   writeAndVerifyCredentials,
   restartInstructions,
   writeCredentialsFile,
+  bakeMcpPin,
+  bakeLaunchPin,
+  FOLDER_PIN_FILE_NAME,
 } from '../bin/bgos-pair.mjs'
 
 test('normalizeApiBase always yields a single /api/v1 suffix', () => {
@@ -752,7 +755,7 @@ test('main reaches the post-success pin check without a home ReferenceError', as
 
     const code = await main(
       ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
-      { env: {}, home, fetchImpl },
+      { env: {}, home, cwd: home, fetchImpl },
     )
 
     assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
@@ -764,13 +767,16 @@ test('main reaches the post-success pin check without a home ReferenceError', as
       await readFile(join(home, '.bgos-agent', 'credentials-936.json'), 'utf8'),
     )
     assert.equal(written.assistantId, 936)
+    // The bake dropped a launch-folder pin so a bare launch from cwd resolves 936.
+    assert.equal((await readFile(join(home, FOLDER_PIN_FILE_NAME), 'utf8')).trim(), '936')
+    assert.match(output.join('\n'), /baked .*\.bgos-agent-id/)
 
     output.length = 0
     errors.length = 0
     requests.length = 0
     const safeCode = await main(
       ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
-      { env: { BGOS_ASSISTANT_ID: '936' }, home, fetchImpl },
+      { env: { BGOS_ASSISTANT_ID: '936' }, home, cwd: home, fetchImpl },
     )
     assert.equal(safeCode, PAIR_EXIT_CODES.DONE)
     assert.equal(requests.length, 4)
@@ -967,5 +973,117 @@ test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unpr
     assert.match(description, /Access is denied/)
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ── Phase two: the launch-folder auto-pin bake ──────────────────────────────
+//
+// After the verified credentials-<id>.json write, pairing bakes the pin into
+// the agent's own working folder so a bare launch from there self-resolves with
+// no env var: a <cwd>/.bgos-agent-id file (the load-bearing anchor server.ts
+// reads), and, when the folder already has a bgos MCP server configured, that
+// server's env.BGOS_ASSISTANT_ID. It must NOT clobber unrelated keys or servers
+// and must never fabricate a partial (command-less) bgos server.
+
+test('bakeMcpPin sets the bgos server env id and preserves command, args, other env keys, and sibling servers', () => {
+  const current = {
+    mcpServers: {
+      other: { command: 'node', args: ['x.js'] },
+      bgos: { command: 'bun', args: ['server.ts'], env: { BGOS_BACKEND_URL: 'https://api.example/api/v1' } },
+    },
+    someTopLevelKey: true,
+  }
+  const { changed, next } = bakeMcpPin(current, 1017)
+  assert.equal(changed, true)
+  assert.equal(next.mcpServers.bgos.env.BGOS_ASSISTANT_ID, '1017')
+  // preserved:
+  assert.equal(next.mcpServers.bgos.command, 'bun')
+  assert.deepEqual(next.mcpServers.bgos.args, ['server.ts'])
+  assert.equal(next.mcpServers.bgos.env.BGOS_BACKEND_URL, 'https://api.example/api/v1')
+  assert.deepEqual(next.mcpServers.other, { command: 'node', args: ['x.js'] })
+  assert.equal(next.someTopLevelKey, true)
+})
+
+test('bakeMcpPin is idempotent: a second bake reports no change', () => {
+  const current = { mcpServers: { bgos: { command: 'bun', args: ['server.ts'], env: { BGOS_ASSISTANT_ID: '1017' } } } }
+  const { changed } = bakeMcpPin(current, 1017)
+  assert.equal(changed, false)
+})
+
+test('bakeMcpPin never fabricates a bgos server when the folder config has none (no clobber of other servers)', () => {
+  const current = { mcpServers: { other: { command: 'node', args: ['x.js'] } } }
+  const { changed, next } = bakeMcpPin(current, 1017)
+  assert.equal(changed, false)
+  assert.equal(next.mcpServers.bgos, undefined)
+  assert.deepEqual(next.mcpServers.other, { command: 'node', args: ['x.js'] })
+})
+
+test('bakeLaunchPin writes the .bgos-agent-id folder pin with just the id', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'bgos-bake-pin-'))
+  try {
+    const result = await bakeLaunchPin({ cwd, assistantId: 1017 })
+    assert.equal(result.folderPinWritten, true)
+    const pin = await readFile(join(cwd, FOLDER_PIN_FILE_NAME), 'utf8')
+    assert.equal(pin.trim(), '1017')
+    // no .mcp.json in this folder, so none is fabricated
+    assert.equal(result.mcpUpdated, false)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('bakeLaunchPin patches an existing .mcp.json bgos server env and leaves the rest intact', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'bgos-bake-mcp-'))
+  try {
+    const original = {
+      mcpServers: {
+        other: { command: 'node', args: ['keep.js'] },
+        bgos: { command: 'bun', args: ['server.ts'], env: { BGOS_BACKEND_URL: 'https://api.example/api/v1' } },
+      },
+    }
+    await writeFile(join(cwd, '.mcp.json'), JSON.stringify(original, null, 2))
+    const result = await bakeLaunchPin({ cwd, assistantId: 1019 })
+    assert.equal(result.folderPinWritten, true)
+    assert.equal(result.mcpUpdated, true)
+    const patched = JSON.parse(await readFile(join(cwd, '.mcp.json'), 'utf8'))
+    assert.equal(patched.mcpServers.bgos.env.BGOS_ASSISTANT_ID, '1019')
+    assert.equal(patched.mcpServers.bgos.env.BGOS_BACKEND_URL, 'https://api.example/api/v1')
+    assert.deepEqual(patched.mcpServers.other, { command: 'node', args: ['keep.js'] })
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('bakeLaunchPin does not fabricate a bgos server in a .mcp.json that only has other servers', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'bgos-bake-noclobber-'))
+  try {
+    const original = { mcpServers: { other: { command: 'node', args: ['keep.js'] } } }
+    await writeFile(join(cwd, '.mcp.json'), JSON.stringify(original, null, 2))
+    const result = await bakeLaunchPin({ cwd, assistantId: 1019 })
+    assert.equal(result.folderPinWritten, true)
+    assert.equal(result.mcpUpdated, false)
+    const after = JSON.parse(await readFile(join(cwd, '.mcp.json'), 'utf8'))
+    assert.deepEqual(after, original) // untouched
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('bakeLaunchPin is idempotent: running it twice leaves identical files', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'bgos-bake-idem-'))
+  try {
+    await writeFile(
+      join(cwd, '.mcp.json'),
+      JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['server.ts'] } } }, null, 2),
+    )
+    await bakeLaunchPin({ cwd, assistantId: 1017 })
+    const first = await readFile(join(cwd, '.mcp.json'), 'utf8')
+    const firstPin = await readFile(join(cwd, FOLDER_PIN_FILE_NAME), 'utf8')
+    const second = await bakeLaunchPin({ cwd, assistantId: 1017 })
+    assert.equal(second.mcpUpdated, false)
+    assert.equal(await readFile(join(cwd, '.mcp.json'), 'utf8'), first)
+    assert.equal(await readFile(join(cwd, FOLDER_PIN_FILE_NAME), 'utf8'), firstPin)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
   }
 })

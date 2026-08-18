@@ -134,6 +134,8 @@ import {
 import {
   resolveAuth,
   resolveCredentialsPath,
+  resolveCredentialsSelection,
+  formatCredentialsRefusal,
   formatAuthResolution,
   formatPairingRejection,
   authHeaders,
@@ -220,10 +222,20 @@ import { join as joinPath } from 'node:path'
 // A pairing file cannot override a different explicit BGOS_ASSISTANT_ID.
 // Every outbound call uses authHeaders(AUTH); the WS uses wsAuthOptions(AUTH).
 const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials.json')
-const CREDENTIALS_PATH = resolveCredentialsPath({
+// Folder-scoped selection (phase two): with no env pin, a <cwd>/.bgos-agent-id
+// folder pin or a sole per-assistant file resolves this daemon's identity; a
+// host with several paired agents and NO pin REFUSES here rather than silently
+// falling back to the shared legacy file and answering as the wrong agent.
+const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
   defaultPath: DEFAULT_CREDENTIALS_FILE,
+  cwd: process.cwd(),
 })
+if (CREDENTIALS_SELECTION.kind === 'refuse') {
+  process.stderr.write(`[bgos] ${formatCredentialsRefusal(CREDENTIALS_SELECTION)}\n`)
+  process.exit(1)
+}
+const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
 const AUTH: ResolvedAuth = resolveAuth({
   env: process.env,
   creds: loadCredentialsFile(CREDENTIALS_PATH),

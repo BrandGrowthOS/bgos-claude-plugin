@@ -1244,3 +1244,204 @@ test('file_path and content_base64 together are refused rather than guessed', as
     assert.equal(f.calls.length, 0)
   })
 })
+
+// ── Multi-table boards (the optional table arg + table lifecycle ops) ─────────
+//
+// A board owns N ordered tables. The optional `table` arg (a table id or its
+// exact name) scopes the table-scoped reads and writes; the server resolves
+// name-or-id, the plugin never resolves names, exactly like the board segment.
+// Omitting it means the board's default table (Main), so a call without a table
+// stays byte-identical to the single-table wire. The four table lifecycle ops
+// fold under boards_update_schema, addressing the /tables collection.
+
+test('boards_query threads the optional table arg into the query string', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_query',
+    { board: 'decisions', table: 'Assets', filter: { Status: 'Pending' } },
+    f.deps,
+  )
+  assert.equal(
+    f.calls[0]!.path,
+    `${BASE}/decisions/rows/query?format=markdown&table=Assets`,
+  )
+})
+
+test('boards_query without a table is byte-identical to the single-table wire', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool('boards_query', { board: 'decisions' }, f.deps)
+  assert.equal(f.calls[0]!.path, `${BASE}/decisions/rows/query?format=markdown`)
+})
+
+test('boards_insert threads the optional table arg into the query string', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_insert',
+    { board: 'decisions', table: 'Assets', cells: { Item: 'Logo' } },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0], {
+    method: 'POST',
+    path: `${BASE}/decisions/rows?table=Assets`,
+    body: { cells: { Item: 'Logo' } },
+  })
+})
+
+test('boards_insert without a table keeps the plain rows path', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_insert',
+    { board: 'decisions', cells: { Item: 'Logo' } },
+    f.deps,
+  )
+  assert.equal(f.calls[0]!.path, `${BASE}/decisions/rows`)
+})
+
+test('the table arg is percent-encoded, never spliced raw', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_insert',
+    { board: 'decisions', table: 'Brand Assets', cells: { Item: 'Logo' } },
+    f.deps,
+  )
+  assert.ok(f.calls[0]!.path.includes('table=Brand%20Assets'), f.calls[0]!.path)
+  assert.ok(!f.calls[0]!.path.includes(' '), f.calls[0]!.path)
+})
+
+test('tools that are not table-scoped still reject a table arg as unknown', async () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['boards_get_row', { board: 'decisions', row_key: '3f9a2b7c', table: 'Assets' }],
+    [
+      'boards_update',
+      { board: 'decisions', row_key: '3f9a2b7c', cells: { A: 'b' }, table: 'Assets' },
+    ],
+    ['boards_search', { board: 'decisions', query: 'x', table: 'Assets' }],
+    ['boards_changes', { board: 'decisions', table: 'Assets' }],
+    ['boards_describe', { board: 'decisions', table: 'Assets' }],
+  ]
+  for (const [tool, args] of cases) {
+    const f = fakeDeps()
+    const r = await handleBoardsTool(tool, args, f.deps)
+    assert.equal(r.isError, true, `${tool} accepted table`)
+    assert.ok(textOf(r).includes('"table"'), `${tool}: ${textOf(r)}`)
+    assert.equal(f.calls.length, 0, `${tool} reached the backend`)
+  }
+})
+
+test('update_schema add_table posts the new table name to the tables collection', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'add_table', label: 'Assets' },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0], {
+    method: 'POST',
+    path: `${BASE}/decisions/tables`,
+    body: { name: 'Assets' },
+  })
+})
+
+test('update_schema rename_table patches the table with its new name', async () => {
+  const f = fakeDeps()
+  const tableId = '0c27e4b0-8b22-4a52-b433-32efd1a60cee'
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'rename_table', table: tableId, label: 'Brand Assets' },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0], {
+    method: 'PATCH',
+    path: `${BASE}/decisions/tables/${tableId}`,
+    body: { name: 'Brand Assets' },
+  })
+})
+
+test('update_schema move_table patches the table position', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'move_table', table: 'abc', position: 2 },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0], {
+    method: 'PATCH',
+    path: `${BASE}/decisions/tables/abc`,
+    body: { position: 2 },
+  })
+})
+
+test('update_schema delete_table deletes the table', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'delete_table', table: 'abc' },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0], {
+    method: 'DELETE',
+    path: `${BASE}/decisions/tables/abc`,
+  })
+})
+
+test('a table name is percent-encoded into the tables path, never spliced raw', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'rename_table', table: 'Brand Assets', label: 'Assets' },
+    f.deps,
+  )
+  assert.ok(f.calls[0]!.path.endsWith('/tables/Brand%20Assets'), f.calls[0]!.path)
+  assert.ok(!f.calls[0]!.path.includes(' '), f.calls[0]!.path)
+})
+
+test('update_schema add_table without a name is refused before the network', async () => {
+  const f = fakeDeps()
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'add_table' },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  assert.ok(textOf(r).includes('label'), textOf(r))
+  assert.equal(f.calls.length, 0)
+})
+
+test('a table lifecycle op rejects a stray field-op argument', async () => {
+  const f = fakeDeps()
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'delete_table', table: 'abc', field_key: 'status' },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  assert.ok(textOf(r).includes('field_key'), textOf(r))
+  assert.equal(f.calls.length, 0)
+})
+
+test('the table path segment cannot escape the URL path', async () => {
+  for (const bad of ['..', '.', 'a/b', 'x\\y', '']) {
+    const f = fakeDeps()
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { board: 'decisions', op: 'delete_table', table: bad },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted table ${JSON.stringify(bad)}`)
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('update_schema lists the table ops when the op is unknown', async () => {
+  const f = fakeDeps()
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'drop_table' },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  const t = textOf(r)
+  for (const op of ['add_table', 'rename_table', 'delete_table', 'move_table']) {
+    assert.ok(t.includes(op), `${op} missing from ${t}`)
+  }
+})
