@@ -599,6 +599,74 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
   }
 }
 
+// ── Launch-folder auto-pin (phase two) ───────────────────────────────────────
+
+/** The launch-folder pin file server.ts reads to self-resolve an identity with
+ *  no env var. The number inside IS the assistant id. */
+export const FOLDER_PIN_FILE_NAME = '.bgos-agent-id'
+
+/**
+ * Set the bgos MCP server's env.BGOS_ASSISTANT_ID inside a parsed .mcp.json
+ * object, WITHOUT touching any other key or server, and WITHOUT fabricating a
+ * bgos server when the folder config has none (a command-less server entry
+ * would be invalid and break the launch, so the folder pin carries the identity
+ * for that topology instead). Pure: returns { changed, next }.
+ * @param {Record<string, any> | null | undefined} current
+ * @param {string | number} assistantId
+ * @returns {{ changed: boolean, next: Record<string, any> }}
+ */
+export function bakeMcpPin(current, assistantId) {
+  const id = String(assistantId ?? '').trim()
+  const base = current && typeof current === 'object' ? current : {}
+  const servers =
+    base.mcpServers && typeof base.mcpServers === 'object' ? base.mcpServers : null
+  const bgos = servers && servers.bgos && typeof servers.bgos === 'object' ? servers.bgos : null
+  if (!id || !bgos) return { changed: false, next: base }
+  const existingEnv = bgos.env && typeof bgos.env === 'object' ? bgos.env : {}
+  if (String(existingEnv.BGOS_ASSISTANT_ID ?? '') === id) return { changed: false, next: base }
+  const next = {
+    ...base,
+    mcpServers: {
+      ...servers,
+      bgos: { ...bgos, env: { ...existingEnv, BGOS_ASSISTANT_ID: id } },
+    },
+  }
+  return { changed: true, next }
+}
+
+/**
+ * Bake the launch-folder auto-pin after a verified pairing write: always drop a
+ * <cwd>/.bgos-agent-id folder pin (the load-bearing anchor server.ts
+ * self-resolves from with no env var), and, when the folder already has a bgos
+ * MCP server configured, set its env.BGOS_ASSISTANT_ID too. Idempotent, and it
+ * never clobbers unrelated .mcp.json keys or servers. Best effort: the caller
+ * treats a failure as non-fatal because the credentials file is already
+ * written.
+ * @param {{ cwd?: string, assistantId?: string | number | null }} opts
+ */
+export async function bakeLaunchPin({ cwd, assistantId } = {}) {
+  const id = String(assistantId ?? '').trim()
+  const dir = String(cwd ?? '').trim() || process.cwd()
+  const pinPath = join(dir, FOLDER_PIN_FILE_NAME)
+  let folderPinWritten = false
+  if (id) {
+    await mkdir(dir, { recursive: true })
+    await writeFile(pinPath, `${id}\n`)
+    folderPinWritten = true
+  }
+  const mcpPath = join(dir, '.mcp.json')
+  let mcpUpdated = false
+  const current = loadJsonSafe(mcpPath)
+  if (current) {
+    const { changed, next } = bakeMcpPin(current, id)
+    if (changed) {
+      await writeFile(mcpPath, `${JSON.stringify(next, null, 2)}\n`)
+      mcpUpdated = true
+    }
+  }
+  return { folderPinPath: pinPath, folderPinWritten, mcpPath, mcpUpdated }
+}
+
 /**
  * Honest restart guidance for BOTH known topologies; pairing cannot know which
  * one this host uses, so it never prescribes a single channel form.
@@ -819,6 +887,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * @param {{
  *   env?: Record<string, string | undefined>,
  *   home?: string,
+ *   cwd?: string,
  *   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
  * }} [opts]
  */
@@ -1021,6 +1090,26 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     console.log('[bgos-pair] then start Claude Code with the HOAI channel and it will pick up the binding.')
   } else {
     console.log(`[bgos-pair] verified: this file resolves to assistant ${assistantId}.`)
+    // Bake the launch-folder auto-pin so a bare launch from THIS folder
+    // self-resolves this identity with no env var (server.ts reads the folder
+    // pin). Best effort: never fail a completed pairing on a bake hiccup.
+    try {
+      const baked = await bakeLaunchPin({ cwd: opts.cwd ?? process.cwd(), assistantId })
+      if (baked.folderPinWritten) {
+        console.log(
+          `[bgos-pair] baked ${baked.folderPinPath} (launch this agent from this folder and it self-resolves as assistant ${assistantId}, no env var needed)`,
+        )
+      }
+      if (baked.mcpUpdated) {
+        console.log(
+          `[bgos-pair] set BGOS_ASSISTANT_ID=${assistantId} in ${baked.mcpPath} (bgos server env)`,
+        )
+      }
+    } catch (err) {
+      console.error(
+        `[bgos-pair] note: could not bake the launch-folder pin (${err?.message ?? err}); set BGOS_ASSISTANT_ID=${assistantId} in this agent's environment yourself.`,
+      )
+    }
     if (result.needsEnvPin) {
       console.log(
         `[bgos-pair] REQUIRED: set BGOS_ASSISTANT_ID=${assistantId} ` +
