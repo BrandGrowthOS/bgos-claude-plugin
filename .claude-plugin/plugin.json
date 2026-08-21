@@ -19,8 +19,9 @@
   ],
   "mcpServers": {
     "bgos": {
-      "command": "bun",
+      "command": "node",
       "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/bgos-launch.mjs",
         "${CLAUDE_PLUGIN_ROOT}/server.ts"
       ],
       "env": {
