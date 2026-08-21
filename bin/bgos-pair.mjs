@@ -26,12 +26,16 @@
  *      0600; BGOS_CREDENTIALS_PATH overrides; legacy credentials.json only
  *      when no assistant is bound yet) with
  *      { backendUrl, pairingToken, pairingId, userId, assistantId, pairedAt },
- *      then verify the written file actually resolves for that assistant
+ *      dedupe the legacy single-slot file (a junk or stale same-agent
+ *      credentials.json is deleted, another agent's live pairing is left
+ *      alone), then verify the written file actually resolves for that
+ *      assistant
  *
  * server.ts reads that file, sends X-BGOS-Pairing, and the session is live.
  *
  * Self-contained plain JavaScript: node >= 18 builtins only, no imports from
- * the TS plugin sources. Import-safe: every helper is exported and main() only
+ * the TS plugin sources (the sibling plain-JS bin/bgos-install-method.mjs is
+ * the one local import). Import-safe: every helper is exported and main() only
  * runs when the file is executed directly, so tests can import the pure pieces.
  *
  * The pairing token is a device credential. It is never printed, logged, or
@@ -39,11 +43,13 @@
  */
 
 import { execFile } from 'node:child_process'
-import { mkdir, writeFile, chmod } from 'node:fs/promises'
+import { mkdir, writeFile, chmod, rm } from 'node:fs/promises'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { join, dirname, win32 as win32Path } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
+
+import { detectInstallMethod, launchCommand } from './bgos-install-method.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -475,35 +481,43 @@ function loadJsonSafe(path, read = readFileSync) {
 }
 
 /**
- * May the legacy single-slot file be co-written for this pairing? Yes when it
- * is absent, junk, or already this same assistant (a refresh); NEVER when it
- * holds another agent's pairing, which is the overwrite bug this exists to
- * prevent. The co-write is what keeps a daemon with an EMPTY env (packaged
- * plugin, no BGOS_ASSISTANT_ID configured) finding its pairing, as 0.31.0 did.
- * MULTI-AGENT HOSTS NEVER GET IT (KC-WINSAMSUNG, 2026-08-06). The co-write
- * fires on ABSENCE, so on a twelve-agent box it recreated the single-slot
- * trap this migration exists to remove, stamped with whoever paired last.
- * Worse, the operator workaround fed it: deleting the file between pairings
- * is exactly the absence that makes the next pairing rewrite it. An operator
- * cannot win by hand, so the host decides. It already knows the answer: a
- * credentials-<other id>.json next door means more than one agent lives here,
- * every daemon must pin BGOS_ASSISTANT_ID anyway, and the default path helps
- * nobody. Reported by Mark (888), who observed the tool behave four different
- * ways across four pairings and sent the table rather than a theory.
- * @param {{ legacyCreds?: { pairingToken?: string, assistantId?: string | number | null } | null, assistantId?: string | number | null, otherAssistantIds?: readonly (string | number)[] }} opts
+ * After the per-assistant write, what happens to the legacy single-slot
+ * credentials.json? -> 'delete' | 'keep'. The caller only consults this when a
+ * legacy file actually exists, so a null legacyCreds here means unreadable or
+ * unparsable, not absent.
+ *
+ * This REPLACES the legacy co-write (shouldCoWriteLegacy, removed 2026-08-22).
+ * The co-write kept a daemon with an EMPTY env (packaged plugin, no
+ * BGOS_ASSISTANT_ID configured) finding its pairing at the default path, as
+ * 0.31.0 did, but it did so by maintaining a second live copy of the pairing
+ * token, and that duplicate WAS the single-slot identity trap: on
+ * KC-WINSAMSUNG (Mark, 888, 2026-08-06) the tool behaved four different ways
+ * across four pairings, and deleting the file between pairings was exactly
+ * the absence that made the next pairing rewrite it. The read side has since
+ * grown the folder-aware boot resolver (lib/agent-credentials.ts
+ * resolveCredentialsSelection, rule 4): a SOLE credentials-<id>.json with NO
+ * legacy file next to it resolves for an empty env on its own. So the legacy
+ * copy is no longer a safety net anywhere, and pairing now DEDUPES at write
+ * time instead of co-writing:
+ *
+ *   - unbound write (no assistantId): 'keep'. The unbound flow writes the
+ *     legacy slot itself and owns it; deleting here would eat its own write.
+ *   - legacy unreadable / unparsable / tokenless junk: 'delete'. Junk at the
+ *     default path shadows rule 4 (any legacy file, even garbage, disables
+ *     the sole-per-assistant resolution), so it must go.
+ *   - legacy holds THIS assistant: 'delete'. The per-assistant file just
+ *     written is the single source of truth; a stale same-agent copy is the
+ *     next wrong-token incident waiting for a restart.
+ *   - legacy holds ANOTHER agent's live pairing: 'keep'. Not ours to remove;
+ *     that agent's empty-env daemon may still be reading it.
+ * @param {{ legacyCreds?: { pairingToken?: string, assistantId?: string | number | null } | null, assistantId?: string | number | null }} opts
+ * @returns {'delete' | 'keep'}
  */
-export function shouldCoWriteLegacy({ legacyCreds, assistantId, otherAssistantIds } = {}) {
+export function dedupeLegacyAfterWrite({ legacyCreds, assistantId } = {}) {
   const id = String(assistantId ?? '').trim()
-  if (!id) return false
-  // Another agent's per-assistant file next door proves this host serves more
-  // than one agent. Omitted list keeps the old behaviour for callers that do
-  // not look, so nothing regresses silently.
-  const others = (otherAssistantIds ?? [])
-    .map((value) => String(value ?? '').trim())
-    .filter((value) => value && value !== id)
-  if (others.length > 0) return false
-  if (!legacyCreds || !legacyCreds.pairingToken) return true
-  return String(legacyCreds.assistantId ?? '') === id
+  if (!id) return 'keep'
+  if (!legacyCreds || !legacyCreds.pairingToken) return 'delete'
+  return String(legacyCreds.assistantId ?? '') === id ? 'delete' : 'keep'
 }
 
 /**
@@ -521,10 +535,11 @@ export function legacyWriteBlocked(existingCreds) {
 }
 
 /**
- * The whole write step: pick the path, guard the legacy slot, write, co-write
- * the legacy file when safe, and verify the result resolves for the intended
- * assistant. Composed here (not inline in main) so tests can drive the real
- * flow against a temp HOME.
+ * The whole write step: pick the path, guard the legacy slot, write, DEDUPE
+ * the legacy single-slot file (delete it when it is junk or this same agent's
+ * stale copy, never when it is another agent's live pairing), and verify the
+ * result resolves for the intended assistant. Composed here (not inline in
+ * main) so tests can drive the real flow against a temp HOME.
  * @param {{ creds: { pairingToken: string, assistantId?: string | number | null },
  *           env?: Record<string, string | undefined>, home?: string }} opts
  */
@@ -539,7 +554,8 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
       return {
         ok: false,
         path,
-        legacyCoWritePath: null,
+        legacyDeduped: null,
+        legacyKeptForOtherAgent: null,
         reason:
           `refusing to overwrite ${path}: it holds a live pairing for ` +
           `assistant ${existing.assistantId}. Rerun with --assistant-id <id> ` +
@@ -550,25 +566,24 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
 
   const protection = await writeCredentialsFile(path, creds)
 
-  let legacyCoWritePath = null
-  let legacyProtection = null
-  let legacySkippedForMultiAgent = 0
+  // Dedupe the legacy single-slot file AFTER the per-assistant write landed
+  // (never before: an early delete followed by a failed write would leave the
+  // host with no credentials at all). Only a file that actually exists is
+  // judged; recording a "removed" for a file that was never there would be a
+  // false print.
+  let legacyDeduped = null
+  let legacyDedupedHeldSameAgent = false
+  let legacyKeptForOtherAgent = null
   const override = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
-  if (boundId && !override) {
-    const legacy = credentialsPath(home)
-    const others = otherPerAssistantIds(home, assistantId)
-    if (
-      !samePath(legacy, path) &&
-      shouldCoWriteLegacy({
-        legacyCreds: loadJsonSafe(legacy),
-        assistantId,
-        otherAssistantIds: others,
-      })
-    ) {
-      legacyProtection = await writeCredentialsFile(legacy, creds)
-      legacyCoWritePath = legacy
-    } else if (others.length > 0 && !samePath(legacy, path)) {
-      legacySkippedForMultiAgent = others.length
+  const legacy = credentialsPath(home)
+  if (boundId && !override && !samePath(legacy, path) && existsSync(legacy)) {
+    const legacyCreds = loadJsonSafe(legacy)
+    if (dedupeLegacyAfterWrite({ legacyCreds, assistantId }) === 'delete') {
+      await rm(legacy, { force: true })
+      legacyDeduped = legacy
+      legacyDedupedHeldSameAgent = Boolean(legacyCreds && legacyCreds.pairingToken)
+    } else {
+      legacyKeptForOtherAgent = String(legacyCreds?.assistantId ?? '')
     }
   }
 
@@ -582,19 +597,44 @@ export async function writeAndVerifyCredentials({ creds, env = {}, home = homedi
     return {
       ok: false,
       path,
-      legacyCoWritePath,
-      legacyProtection,
-      legacySkippedForMultiAgent,
+      legacyDeduped,
+      legacyDedupedHeldSameAgent,
+      legacyKeptForOtherAgent,
       reason: verified.reason,
     }
+
+  // The needsEnvPin probe inside verifyWrittenCredentials mirrors the STRING
+  // resolver, which for an empty env always answers the legacy path. The
+  // daemon's real boot path is the folder-aware resolveCredentialsSelection
+  // (lib/agent-credentials.ts), whose rule 4 resolves a SOLE
+  // credentials-<id>.json on its own when NO legacy file exists, no env pin is
+  // set, and no sibling per-assistant file competes. So after the dedupe above
+  // (or on a fresh host that never had a legacy file) the probe reports a pin
+  // the real daemon does not need; correct that here, and ONLY here. Any other
+  // per-assistant file next door, a BGOS_CREDENTIALS_PATH override, or a
+  // conflicting BGOS_ASSISTANT_ID already in the env keeps the pin requirement
+  // exactly as the probe computed it: the multi-agent refusal is untouched.
+  let needsEnvPin = verified.needsEnvPin
+  if (needsEnvPin && boundId && !override) {
+    const envId = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
+    const effectiveEnvId = envId && envId !== ASSISTANT_ID_PLACEHOLDER ? envId : ''
+    if (
+      !effectiveEnvId &&
+      !existsSync(legacy) &&
+      otherPerAssistantIds(home, assistantId).length === 0
+    ) {
+      needsEnvPin = false
+    }
+  }
+
   return {
     ok: true,
     path,
-    legacyCoWritePath,
-    legacyProtection,
-    legacySkippedForMultiAgent,
+    legacyDeduped,
+    legacyDedupedHeldSameAgent,
+    legacyKeptForOtherAgent,
     protection,
-    needsEnvPin: verified.needsEnvPin,
+    needsEnvPin,
     realEnvPath: verified.realEnvPath,
   }
 }
@@ -668,10 +708,30 @@ export async function bakeLaunchPin({ cwd, assistantId } = {}) {
 }
 
 /**
- * Honest restart guidance for BOTH known topologies; pairing cannot know which
- * one this host uses, so it never prescribes a single channel form.
+ * Restart guidance. With a detection result from detectInstallMethod (see
+ * bin/bgos-install-method.mjs: CLAUDE_PLUGIN_ROOT when set, else the realpath
+ * of this script), name exactly ONE launch command, the one this install
+ * actually needs, plus how the method was detected. On 2026-08-21 a
+ * marketplace install launched with the clone spec (server:bgos) dropped every
+ * inbound message with no error anywhere, so offering both forms to an
+ * operator when the evidence is in hand is not honesty, it is a coin flip.
+ * With no detection (null), keep the honest both-forms text: pairing then
+ * cannot know the topology and never prescribes a single channel form.
+ * @param {{ method?: 'marketplace' | 'clone' } | null} [detection]
  */
-export function restartInstructions() {
+export function restartInstructions(detection = null) {
+  const method = detection?.method
+  if (method === 'marketplace' || method === 'clone') {
+    const detectedVia =
+      method === 'marketplace'
+        ? 'detected: marketplace install, the plugin files live under the Claude config dir'
+        : 'detected: local checkout, the plugin files live outside the Claude config dir'
+    return [
+      'restart your agent process with:',
+      `  ${launchCommand(method)}`,
+      `    (${detectedVia})`,
+    ]
+  }
   return [
     'restart your agent process the way it normally starts. Known channel forms:',
     '  claude --dangerously-load-development-channels plugin:hoai@hoai',
@@ -1051,9 +1111,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     assistantId,
     nowIso: new Date().toISOString(),
   })
-  // Write per-assistant, co-write the legacy slot when that cannot clobber
-  // another agent, then verify the result actually resolves for the intended
-  // assistant. Never report success on an unverified or refused write.
+  // Write per-assistant, dedupe the legacy single-slot file (delete junk or
+  // this same agent's stale copy, never another agent's live pairing), then
+  // verify the result actually resolves for the intended assistant. Never
+  // report success on an unverified or refused write.
   const result = await writeAndVerifyCredentials({ creds, env, home })
   if (!result.ok) {
     console.error(`[bgos-pair] pairing NOT saved: ${result.reason}`)
@@ -1068,18 +1129,20 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       result.protection ?? {},
     )})`,
   )
-  if (result.legacyCoWritePath) {
+  if (result.legacyDeduped) {
+    // Deduped, and honest about WHAT was removed: "(same agent)" only when the
+    // legacy really held this agent's pairing; unreadable junk is named junk.
     console.log(
-      `[bgos-pair] also refreshed ${result.legacyCoWritePath} (${describeFileProtection(
-        result.legacyProtection ?? {},
-      )}; same agent, single-agent hosts read it)`,
+      result.legacyDedupedHeldSameAgent
+        ? `[bgos-pair] removed the stale shared credentials.json (same agent); credentials-${assistantId}.json is now the single source of truth`
+        : `[bgos-pair] removed the unreadable shared credentials.json; credentials-${assistantId}.json is now the single source of truth`,
     )
-  } else if (result.legacySkippedForMultiAgent) {
+  } else if (result.legacyKeptForOtherAgent) {
     // SAY IT. A tool that silently declines and a tool that never had the
     // condition look identical from the outside, which is how the co-write
     // defect stayed invisible on a twelve-agent host (Mark, 888, 2026-08-06).
     console.log(
-      `[bgos-pair] skipped the shared credentials.json: this host already serves ${result.legacySkippedForMultiAgent} other agent(s),`,
+      `[bgos-pair] left the shared credentials.json in place: it holds a live pairing for agent ${result.legacyKeptForOtherAgent},`,
     )
     console.log(
       '[bgos-pair] and one shared file cannot hold more than one identity. Each daemon pins BGOS_ASSISTANT_ID instead.',
@@ -1137,7 +1200,23 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       return code
     }
     console.log('[bgos-pair] done. To go live,')
-    for (const line of restartInstructions()) console.log(`[bgos-pair] ${line}`)
+    // Detect HOW this plugin is installed so the restart line names the ONE
+    // launch command this install actually needs (the wrong spec drops every
+    // inbound message silently, 2026-08-21). Evidence, not guesswork: the
+    // REAL path of this script plus the live process env, never the injected
+    // test env, because the install method is a property of this process, not
+    // of the pairing. Detection must never crash a completed pairing; any
+    // surprise falls back to the honest both-forms text.
+    let detection = null
+    try {
+      detection = detectInstallMethod({
+        scriptPath: fileURLToPath(import.meta.url),
+        env: process.env,
+      })
+    } catch {
+      detection = null
+    }
+    for (const line of restartInstructions(detection)) console.log(`[bgos-pair] ${line}`)
     return PAIR_EXIT_CODES.DONE
   }
   return PAIR_EXIT_CODES.DONE

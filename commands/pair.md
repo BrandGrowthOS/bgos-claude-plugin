@@ -14,14 +14,13 @@ Run exactly this command with the Bash tool and show the user the result:
 Rules:
 - Never print, echo, or repeat the pairing token or any secret from the output.
 - Only exit 0 is a completed, live-safe pairing. Then tell the user their agent
-  is being added in the HOAI app,
-  and that they should restart their agent process the way it normally starts.
-  Both known channel forms (relay whichever matches how this session was
-  launched): `claude --dangerously-load-development-channels plugin:hoai@hoai`
-  for the packaged HOAI channel from the plugin marketplace, or
-  `claude --dangerously-load-development-channels server:bgos` for a
+  is being added in the HOAI app, and that they should restart their agent
+  process the way it normally starts. The pairing output prints the exact
+  launch command for the install it detected; relay that command verbatim.
+  The two forms, for reference: `claude --channels plugin:hoai@hoai` for the
+  packaged HOAI channel from the plugin marketplace (no confirmation prompt),
+  or `claude --dangerously-load-development-channels server:bgos` for a
   checkout-based host running server.ts directly (e.g. a multi-agent server).
-  (The flag is temporary until HOAI is on the Claude channel allowlist.)
 - Exit 3 means the credentials were paired but the agent is NOT DONE because an
   environment pin is required. Relay the printed BGOS_ASSISTANT_ID or
   BGOS_CREDENTIALS_PATH instruction and do not describe it as ready.
