@@ -9,6 +9,7 @@ import assert from 'node:assert'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   LIVE_MARKER_FILE,
   liveMarkerPath,

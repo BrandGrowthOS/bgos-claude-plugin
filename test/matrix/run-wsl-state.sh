@@ -35,7 +35,9 @@ ASSISTANT_ID="${3:?assistant id}"
 REPO_DIR="${4:?path to the bgos-claude-plugin checkout}"
 SEED_DIR="${5:-}"
 
-ROOT="/tmp/hoai-matrix/$STATE"
+# /var/tmp, not /tmp: Ubuntu 24.04 mounts /tmp as tmpfs and WSL's idle
+# auto-shutdown evaporates it between invocations (learned live).
+ROOT="/var/tmp/hoai-matrix/$STATE"
 rm -rf "$ROOT"
 mkdir -p "$ROOT/home"
 export HOME="$ROOT/home"
@@ -124,6 +126,9 @@ EXIT_CODE=${PIPESTATUS[0]}
 DUR=$(( $(date +%s) - START ))
 [ -n "${DROPPER:-}" ] && kill "$DROPPER" 2>/dev/null
 
+# Preserve the full log on the host disk (WSL storage is disposable).
+HOST_EV="/mnt/e/oneclick-work/matrix-logs"
+mkdir -p "$HOST_EV" 2>/dev/null && cp "$ROOT/run.log" "$HOST_EV/state-$STATE-run.log" 2>/dev/null
 echo "=== state $STATE finished: exit=$EXIT_CODE after ${DUR}s"
 echo "=== postconditions:"
 for tool in node bun bunx claude; do
