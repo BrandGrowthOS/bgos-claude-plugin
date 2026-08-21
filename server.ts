@@ -285,18 +285,21 @@ function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl()
 
 import { appendFileSync, existsSync, statSync, watch } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join as pathJoin } from 'node:path'
+import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 
-// Default to a stable, predictable log path so remote agents (where
-// stderr isn't easily reachable from inside the agent loop) can read
-// it via their Read tool. Override with BGOS_LOG_FILE if you want
-// per-deployment routing.
-const DEFAULT_LOG_PATH = pathJoin(
-  tmpdir(),
-  `bgos-plugin-${ASSISTANT_ID || 'unknown'}.log`,
-)
-const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
+// One stable, documented log path under the plugin state root so remote
+// agents (where stderr isn't easily reachable from inside the agent loop)
+// can read it via their Read tool regardless of launch method. os.tmpdir()
+// moves between launchd sessions and login shells, so it is NOT used here
+// (lib/log-path.ts has the full story). Override with BGOS_LOG_FILE if you
+// want per-deployment routing.
+const LOG_FILE = resolveLogPath({
+  env: process.env,
+  home: homedir(),
+  assistantId: ASSISTANT_ID,
+})
+ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
 let updateDrainMode = false
