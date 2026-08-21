@@ -205,13 +205,34 @@ function channelSpecFor(method) {
 }
 
 /**
+ * The channel flag arguments for a method, as an argv slice.
+ *
+ * Marketplace installs use the APPROVED `--channels` flag: verified on Claude
+ * Code 2.1.239 (2026-08-22, fresh config dir) it loads a store-installed
+ * channel with NO confirmation prompt, which is what makes a zero-terminal
+ * auto-start possible. The `--dangerously-load-development-channels` flag
+ * shows a warning EVERY launch (default answer: accept) and is the only flag
+ * that loads a local-clone dev channel, so clones keep it. The reverse
+ * pairings are the two silent-drop traps: `--channels` on a clone loads
+ * nothing, and the dangerous flag with the clone spec on a marketplace
+ * install matches nothing (the 2026-08-21 incident).
+ * @param {'marketplace' | 'clone'} method
+ * @returns {string[]}
+ */
+export function launchFlagArgs(method) {
+  return method === 'marketplace'
+    ? ['--channels', MARKETPLACE_CHANNEL_SPEC]
+    : ['--dangerously-load-development-channels', CLONE_CHANNEL_SPEC]
+}
+
+/**
  * The exact launch command for a method. This is the line the 2026-08-21
  * incident was about: a marketplace install launched with the clone spec
  * connects nothing and drops every inbound message silently.
  * @param {'marketplace' | 'clone'} method
  */
 export function launchCommand(method) {
-  return `claude --dangerously-skip-permissions --dangerously-load-development-channels ${channelSpecFor(method)}`
+  return `claude --dangerously-skip-permissions ${launchFlagArgs(method).join(' ')}`
 }
 
 /**

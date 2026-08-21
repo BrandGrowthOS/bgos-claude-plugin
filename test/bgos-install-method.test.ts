@@ -319,7 +319,7 @@ test('parsePath keeps the root and separator style of the input', () => {
 test('launchCommand: the exact strings, one per install method', () => {
   assert.equal(
     launchCommand('marketplace'),
-    'claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
+    'claude --dangerously-skip-permissions --channels plugin:hoai@hoai',
   )
   assert.equal(
     launchCommand('clone'),
@@ -331,7 +331,7 @@ test('describeDetection: one line carrying method, root, and the paste-ready com
   assert.equal(
     describeDetection({ method: 'marketplace', pluginRoot: 'C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.37.0' }),
     'install method: marketplace (plugin root C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.37.0), ' +
-      'launch with: claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
+      'launch with: claude --dangerously-skip-permissions --channels plugin:hoai@hoai',
   )
   assert.equal(
     describeDetection({ method: 'clone', pluginRoot: '/home/kc/bgos-claude-plugin' }),
