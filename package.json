@@ -10,6 +10,7 @@
   "bin": {
     "claude-channel-bgos": "./server.ts",
     "bgos-claim": "./bin/bgos-claim.mjs",
+    "hoai": "./bin/hoai-core.mjs",
     "hoai-agent": "./bin/bgos-agent",
     "hoai-pair": "./bin/bgos-pair.mjs",
     "bgos-agent": "./bin/bgos-agent",

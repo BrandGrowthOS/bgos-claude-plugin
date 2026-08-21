@@ -635,6 +635,8 @@ cmd_link() {
   mkdir -p "$HOME/.local/bin"
   ln -sf "$SELF" "$HOME/.local/bin/hoai-agent"
   ln -sf "$SELF" "$HOME/.local/bin/bgos-agent"
+  # hoai is the bash dispatcher next to this script; it must reach hoai-core.mjs.
+  ln -sf "$BIN_DIR/hoai" "$HOME/.local/bin/hoai"
   ok "linked → $HOME/.local/bin/hoai-agent"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) : ;;
@@ -648,6 +650,7 @@ ${B}hoai-agent${Z} v$VERSION, set up + keep alive a BGOS Claude Code agent.
 
 ${B}Commands${Z}
   pair      <CODE> [--backend <url>]  pair with a one time code from the HOAI app (recommended)
+  doctor    [args]                    diagnose this host's HOAI agent setup
   install   --assistant <id> [opts]   set up the agent (and supervisor with --always-on)
   status    [--assistant <id>]        show service state (+ recent log); no id = list all
   start | stop | restart  --assistant <id>
@@ -690,6 +693,19 @@ cmd_pair() {
 }
 
 # =============================================================================
+# doctor, diagnose this host's HOAI agent setup. Hands off to bin/bgos-doctor.mjs
+# (which does its own arg parsing), same shape as pair. Also reachable as `hoai
+# doctor` via the bin/hoai dispatcher.
+# =============================================================================
+cmd_doctor() {
+  if command -v node >/dev/null 2>&1; then
+    exec node "$BIN_DIR/bgos-doctor.mjs" "$@"
+  fi
+  command -v bun >/dev/null 2>&1 || die "node (or bun) not found, install Node 18+ to run the doctor"
+  exec bun "$BIN_DIR/bgos-doctor.mjs" "$@"
+}
+
+# =============================================================================
 # arg parsing + dispatch
 # =============================================================================
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -700,6 +716,11 @@ SUB="$1"; shift || true
 # which only understands install-style --flags.
 if [ "$SUB" = "pair" ]; then
   cmd_pair "$@"
+fi
+
+# `doctor` likewise hands its whole tail to bgos-doctor.mjs.
+if [ "$SUB" = "doctor" ]; then
+  cmd_doctor "$@"
 fi
 
 # need_val <flag> <remaining-arg-count>, guards "shift 2" from aborting under
