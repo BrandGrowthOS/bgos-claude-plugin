@@ -19,7 +19,7 @@
   "scripts": {
     "start": "bun install --no-summary 1>&2 && bun server.ts",
     "build": "tsc --noEmit",
-    "test": "tsx --test \"test/**/*.test.ts\""
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
