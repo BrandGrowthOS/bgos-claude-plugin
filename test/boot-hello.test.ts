@@ -101,9 +101,12 @@ test('record + read round-trip on a real temp dir, mtime observable', async () =
 })
 
 test('recordLiveMarker never throws on an unwritable path', () => {
-  // A path that cannot be a directory parent (NUL device on win32, /dev/null
-  // elsewhere) must be swallowed: telemetry never crashes the daemon.
-  const bad = process.platform === 'win32' ? 'NUL\\x\\y.json' : '/dev/null/x/y.json'
+  // A FILE used as a directory parent fails mkdir on every platform WITHOUT
+  // creating anything. (The first version of this test used NUL\x\y.json and
+  // node's recursive mkdir happily created a literal directory named NUL on
+  // Windows, a landmine that needs a device-path rd to remove.) Telemetry
+  // must swallow the failure: it never crashes the daemon.
+  const bad = join(fileURLToPath(import.meta.url), 'x', 'y.json')
   recordLiveMarker(bad, '2026-08-22T00:00:00.000Z')
   assert.ok(true)
 })
