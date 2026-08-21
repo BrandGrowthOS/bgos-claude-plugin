@@ -40,7 +40,15 @@ param(
     [ValidateSet("auto", "marketplace", "clone")][string]$InstallMethod = "auto",
     [switch]$NoLaunch,
     [switch]$NonInteractive,
-    [int]$LoginTimeoutMinutes = 15
+    [int]$LoginTimeoutMinutes = 15,
+    # Where `claude plugin marketplace add` pulls the hoai marketplace from.
+    # Overridable so a staging run can point at a local marketplace checkout
+    # whose plugin ref is a branch; production leaves the default.
+    [string]$MarketplaceSource = "BrandGrowthOS/hoai-marketplace",
+    # Where the pair + doctor CLIs run from. Defaults to the installed plugin
+    # root; a dev run can point at a branch checkout so the bootstrap is
+    # testable before the marketplace ref carries the new tools.
+    [string]$ToolsRoot = ""
 )
 
 $ErrorActionPreference = 'Continue'
@@ -273,7 +281,7 @@ $PluginRoot = ''
 if ($ResolvedMethod -eq 'marketplace') {
     Say 'Installing the HOAI plugin from the Claude Code marketplace...'
     $global:LASTEXITCODE = 1
-    & claude plugin marketplace add BrandGrowthOS/hoai-marketplace
+    & claude plugin marketplace add $MarketplaceSource
     if ($LASTEXITCODE -ne 0) {
         # Idempotency: an already-added marketplace can refuse the re-add.
         & claude plugin marketplace update hoai
@@ -323,6 +331,7 @@ if ($ResolvedMethod -eq 'marketplace') {
     Say ('Wrote ' + $mcpPath)
 }
 Say ('Plugin ready at ' + $PluginRoot + ' (' + $ResolvedMethod + ' install)')
+if (-not $ToolsRoot) { $ToolsRoot = $PluginRoot }
 
 # --- the hoai alias ----------------------------------------------------------
 foreach ($aliasFile in @('hoai.ps1', 'hoai.cmd')) {
@@ -391,7 +400,7 @@ Say 'Verifying the launch end to end before claiming success...'
 $preseed = @'
 const fs = require("fs");
 const path = require("path");
-const [configDir, workdir] = process.argv.slice(1);
+const [configDir, workdir] = process.argv.slice(2);
 function load(p) { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return {}; } }
 const cfgPath = path.join(configDir, ".claude.json");
 const cfg = load(cfgPath);

@@ -24,6 +24,15 @@
  *     (shouldEscalateDeafSession), the daemon posts a warning INTO THE CHAT
  *     over REST (the path that provably works) naming the exact launch
  *     command (deafSessionChatMessage), once per boot.
+ *
+ * Semantics confirmed by Data (2026-08-22, oneclick handoff reply 1):
+ * at-least-once is the intended contract, a duplicate beats a silent loss.
+ * The redelivery CAP is structural rather than a counter: within one
+ * process the in-memory cursor dedups every poll (no notification loops),
+ * so a permanently-deaf session redelivers at most once per RESTART, and
+ * each restart also re-arms exactly one in-chat escalation naming the fix.
+ * A session that stays deaf forever therefore costs one redelivered batch
+ * and one chat warning per boot, never an unbounded loop within a boot.
  */
 
 /**

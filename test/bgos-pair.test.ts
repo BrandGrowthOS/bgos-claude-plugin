@@ -959,25 +959,29 @@ test('describeFileProtection: a FAILED win32 lock says unprotected, never fine',
   )
 })
 
-test('win32AclCommand: primary and fallback keep the explicit principal grant', () => {
-  // Mark's gotcha: icacls with /inheritance:r invoked straight from PowerShell
-  // trips a safety guard that misreads it as a system-path deletion. It has to
-  // go through cmd /c. Neither form fails loudly.
-  const cmd = win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim')
-  assert.ok(cmd)
+test('win32AclCommand: direct icacls argv, no cmd.exe string to re-parse', () => {
+  // The old `cmd.exe /c "<whole line>"` form double-quoted the grant
+  // (execFile quotes the array element, cmd re-parses it) and icacls saw
+  // `""karim:F""`: Invalid parameter, exit 87, file left world-readable
+  // (found live by the 2026-08-22 one-click E2E). Direct argv cannot be
+  // re-parsed, so the grant arrives exactly as built.
   const args = [
-    '/c',
-    'icacls "C:\\Users\\karim\\.bgos-agent\\credentials-935.json" ' +
-      '/inheritance:r /grant:r "karim:F"',
+    'C:\\Users\\karim\\.bgos-agent\\credentials-935.json',
+    '/inheritance:r',
+    '/grant:r',
+    'karim:F',
   ]
-  assert.deepEqual(cmd, { file: 'cmd.exe', args })
+  assert.deepEqual(
+    win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim'),
+    { file: 'icacls', args },
+  )
   assert.deepEqual(
     win32AclCommand(
       'C:\\Users\\karim\\.bgos-agent\\credentials-935.json',
       'karim',
-      'C:\\Windows\\System32\\cmd.exe',
+      'C:\\Windows\\System32\\icacls.exe',
     ),
-    { file: 'C:\\Windows\\System32\\cmd.exe', args },
+    { file: 'C:\\Windows\\System32\\icacls.exe', args },
   )
 })
 
@@ -988,7 +992,7 @@ test('win32AclCommand: refuses to build a command without a username', () => {
   assert.equal(win32AclCommand('C:\\x\\y.json', undefined), null)
 })
 
-test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async () => {
+test('writeCredentialsFile retries an absent icacls through SystemRoot', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-fallback-'))
   try {
     const calls: Array<{ file: string, args: string[] }> = []
@@ -998,15 +1002,15 @@ test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async 
       systemRoot: 'C:\\Windows',
       run: async (file: string, args: string[]) => {
         calls.push({ file, args })
-        if (file === 'cmd.exe') {
-          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        if (file === 'icacls') {
+          throw Object.assign(new Error('spawn icacls ENOENT'), { code: 'ENOENT' })
         }
       },
     })
     assert.equal(result.aclApplied, true)
     assert.deepEqual(calls.map((call) => call.file), [
-      'cmd.exe',
-      'C:\\Windows\\System32\\cmd.exe',
+      'icacls',
+      'C:\\Windows\\System32\\icacls.exe',
     ])
     assert.deepEqual(calls[1].args, calls[0].args)
   } finally {
@@ -1014,7 +1018,7 @@ test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async 
   }
 })
 
-test('writeCredentialsFile reports an icacls exit without retrying a resolved cmd.exe', async () => {
+test('writeCredentialsFile reports an icacls exit without retrying a resolved icacls', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-exit-'))
   try {
     const calls: string[] = []
@@ -1031,7 +1035,7 @@ test('writeCredentialsFile reports an icacls exit without retrying a resolved cm
       },
     })
     assert.equal(result.aclApplied, false)
-    assert.deepEqual(calls, ['cmd.exe'])
+    assert.deepEqual(calls, ['icacls'])
     assert.match(String(result.aclError), /Access is denied/)
     assert.match(String(result.aclError), /code 5/)
     assert.match(describeFileProtection(result), /^UNPROTECTED.*code 5/)
@@ -1040,7 +1044,7 @@ test('writeCredentialsFile reports an icacls exit without retrying a resolved cm
   }
 })
 
-test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unprotected', async () => {
+test('writeCredentialsFile reports both icacls failures when the ACL stays unprotected', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-error-'))
   try {
     const calls: string[] = []
@@ -1050,20 +1054,20 @@ test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unpr
       systemRoot: 'C:\\Windows',
       run: async (file: string) => {
         calls.push(file)
-        if (file === 'cmd.exe') {
-          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        if (file === 'icacls') {
+          throw Object.assign(new Error('spawn icacls ENOENT'), { code: 'ENOENT' })
         }
         throw Object.assign(new Error('icacls: Access is denied.'), { code: 5 })
       },
     })
     assert.equal(result.aclApplied, false)
-    assert.deepEqual(calls, ['cmd.exe', 'C:\\Windows\\System32\\cmd.exe'])
-    assert.match(String(result.aclError), /spawn cmd\.exe ENOENT/)
+    assert.deepEqual(calls, ['icacls', 'C:\\Windows\\System32\\icacls.exe'])
+    assert.match(String(result.aclError), /spawn icacls ENOENT/)
     assert.match(String(result.aclError), /Access is denied/)
     assert.match(String(result.aclError), /code 5/)
     const description = describeFileProtection(result)
     assert.match(description, /^UNPROTECTED/)
-    assert.match(description, /spawn cmd\.exe ENOENT/)
+    assert.match(description, /spawn icacls ENOENT/)
     assert.match(description, /Access is denied/)
   } finally {
     await rm(dir, { recursive: true, force: true })

@@ -812,22 +812,27 @@ export function describeFileProtection({ platform, aclApplied, aclError } = {}) 
 /**
  * The icacls invocation that actually works on this platform.
  *
- * It goes through `cmd.exe /c` deliberately: icacls with /inheritance:r invoked
- * straight from PowerShell trips a safety guard that misreads it as a
- * system-path deletion, and neither form fails loudly (Mark's gotcha from the
- * twelve-agent migration). The grant stays explicit to the actual process
- * principal: /inheritance:r removes inherited access, then /grant:r gives that
- * user full control. This depends on pairing and the agent running as the same
- * Windows user, which is the principal layout verified on the fleet. Returns
- * null without a username rather than granting to an empty principal.
+ * icacls is invoked DIRECTLY with an args array, never through a `cmd.exe /c
+ * "<whole line>"` string. The string form broke in practice: node's execFile
+ * quotes each array element for the Windows command line, cmd.exe then
+ * re-parses the already-quoted line with its own rules, and the grant arrived
+ * as `""karim:F""`, which icacls rejects with Invalid parameter, exit 87
+ * (found live by the 2026-08-22 one-click E2E; the credentials file was left
+ * world-readable and the output honestly said UNPROTECTED). The historic
+ * cmd.exe indirection existed to dodge a PowerShell-invocation safety guard
+ * (Mark's twelve-agent migration), which does not apply here: this runs via
+ * node's execFile with no shell at all. The grant stays explicit to the
+ * actual process principal: /inheritance:r removes inherited access, then
+ * /grant:r gives that user full control. Returns null without a username
+ * rather than granting to an empty principal.
  */
-export function win32AclCommand(path, username, executable = 'cmd.exe') {
+export function win32AclCommand(path, username, executable = 'icacls') {
   const user = String(username ?? '').trim()
   const file = String(executable ?? '').trim()
   if (!user || !file) return null
   return {
     file,
-    args: ['/c', `icacls "${path}" /inheritance:r /grant:r "${user}:F"`],
+    args: [String(path), '/inheritance:r', '/grant:r', `${user}:F`],
   }
 }
 
@@ -872,7 +877,7 @@ export async function writeCredentialsFile(path, creds, opts = {}) {
   } catch (error) {
     const firstFailure = commandFailure(command, error)
     if (!commandWasNotFound(error)) {
-      // cmd.exe resolved, so an absolute path cannot repair this icacls exit.
+      // icacls resolved, so an absolute path cannot repair this icacls exit.
       // Never claim a protection that failed; the caller reports UNPROTECTED.
       return { platform, aclApplied: false, aclError: firstFailure }
     }
@@ -884,14 +889,14 @@ export async function writeCredentialsFile(path, creds, opts = {}) {
       return {
         platform,
         aclApplied: false,
-        aclError: `${firstFailure}; SystemRoot is unavailable, so the absolute cmd.exe fallback could not be tried`,
+        aclError: `${firstFailure}; SystemRoot is unavailable, so the absolute icacls fallback could not be tried`,
       }
     }
 
     const fallback = win32AclCommand(
       path,
       username,
-      win32Path.join(systemRoot, 'System32', 'cmd.exe'),
+      win32Path.join(systemRoot, 'System32', 'icacls.exe'),
     )
     try {
       await run(fallback.file, fallback.args)
