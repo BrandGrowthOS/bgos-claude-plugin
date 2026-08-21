@@ -68,6 +68,7 @@ $EXIT = @{
     'preflight-failed' = 32
     'login-timeout'    = 33
     'node-install'     = 34
+    'channel-deaf'     = 35
 }
 
 function Step { param([string]$Name) [Console]::Out.WriteLine('::hoa-step::' + $Name); [Console]::Out.Flush() }
@@ -407,10 +408,26 @@ const cfg = load(cfgPath);
 if (cfg.hasCompletedOnboarding === undefined) cfg.hasCompletedOnboarding = true;
 if (cfg.theme === undefined) cfg.theme = "dark";
 cfg.projects = cfg.projects || {};
-const existing = cfg.projects[workdir] || {};
-existing.hasTrustDialogAccepted = true;
-if (existing.hasCompletedProjectOnboarding === undefined) existing.hasCompletedProjectOnboarding = true;
-cfg.projects[workdir] = existing;
+// The FULL entry shape Claude Code itself writes on a real trust accept.
+// A minimal {hasTrustDialogAccepted:true} entry is NOT honoured (verified
+// live 2026-08-22: the dialog still rendered until the sibling fields
+// existed), and the key must match process.cwd() byte for byte, so both
+// slash spellings of the workspace are seeded.
+function seed(key) {
+  const existing = cfg.projects[key] || {};
+  cfg.projects[key] = Object.assign({
+    allowedTools: [],
+    disabledMcpjsonServers: [],
+    enabledMcpjsonServers: [],
+    hasClaudeMdExternalIncludesApproved: false,
+    hasClaudeMdExternalIncludesWarningShown: false,
+    mcpContextUris: [],
+    projectOnboardingSeenCount: 1,
+    hasCompletedProjectOnboarding: true,
+  }, existing, { hasTrustDialogAccepted: true });
+}
+seed(workdir);
+seed(workdir.includes("\\") ? workdir.split("\\").join("/") : workdir.split("/").join("\\"));
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const setPath = path.join(configDir, "settings.json");
 const settings = load(setPath);
@@ -434,20 +451,37 @@ Say 'Preflight passed: MCP handshake ok, channel Connected.'
 Step 'launch'
 if ($NoLaunch) {
     Say 'Skipping launch (-NoLaunch). Start the agent any time: open the folder, run hoai.'
+    Step 'online'
+    Say ('Done (not launched). Your agent (assistant ' + $AssistantId + ') is paired and preflight-verified.')
+    Say ('  workspace : ' + $Workdir)
+    Say '  start it  : open that folder and run: hoai'
+    exit 0
+}
+$LaunchEpochMs = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+Say 'Starting your agent in a new window...'
+$hoaiCmd = Join-Path $HoaiBin 'hoai.cmd'
+if (Test-Path $hoaiCmd) {
+    Start-Process cmd -WorkingDirectory $Workdir -ArgumentList '/k', $hoaiCmd
 } else {
-    Say 'Starting your agent in a new window...'
-    $hoaiCmd = Join-Path $HoaiBin 'hoai.cmd'
-    if (Test-Path $hoaiCmd) {
-        Start-Process cmd -WorkingDirectory $Workdir -ArgumentList '/k', $hoaiCmd
-    } else {
-        Start-Process powershell -WorkingDirectory $Workdir -ArgumentList '-NoExit', '-Command', 'hoai'
-    }
+    Start-Process powershell -WorkingDirectory $Workdir -ArgumentList '-NoExit', '-Command', 'hoai'
 }
 
 Step 'online'
+# The last gate, and the one Connected cannot fake: on a first-ever pairing
+# the daemon asks the session to greet the user (boot hello), the greeting's
+# tool call writes the channel-live marker, and setup only claims success
+# once that marker is touched AFTER this launch. A wrong channel flag loads
+# the plugin, connects, and still drops every message; this catches exactly
+# that (Vulcan E2E, 2026-08-22).
+Say 'Waiting for your agent to say hello in the app (the end-to-end channel proof)...'
+$global:LASTEXITCODE = 1
+& node (Join-Path $ToolsRoot 'bin\bgos-doctor.mjs') --wait-live-since $LaunchEpochMs --wait-live-timeout 150 --assistant-id $AssistantId --workdir $Workdir
+if ($LASTEXITCODE -ne 0) {
+    Say 'The agent started but never proved it can hear the channel. Run: hoai doctor'
+    Fail 'channel-deaf'
+}
 Say ''
-Say ('Done. Your agent (assistant ' + $AssistantId + ') is paired and verified on this computer.')
+Say ('Done. Your agent (assistant ' + $AssistantId + ') is live on this computer and answered in the app.')
 Say ('  workspace : ' + $Workdir)
 Say '  trouble?  : open that folder and run: hoai doctor'
-Say 'The HOAI app flips to Connected the moment the agent reports in.'
 exit 0

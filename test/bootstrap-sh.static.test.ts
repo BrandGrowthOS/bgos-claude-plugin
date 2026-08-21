@@ -53,6 +53,7 @@ test('exit-code table matches the shared one-click contract', () => {
     'preflight-failed': 32,
     'login-timeout': 33,
     'node-install': 34,
+    'channel-deaf': 35,
   }
   for (const [reason, code] of Object.entries(expected)) {
     const re = new RegExp(`${reason}\\)\\s+echo ${code}\\b`)
@@ -73,7 +74,7 @@ test('pre-seeds every characterized one-time prompt', () => {
 
 test('pairing runs from the workspace and carries the assistant id', () => {
   assert.ok(
-    sh.includes('cd "$WORKDIR" && node "$PLUGIN_ROOT/bin/bgos-pair.mjs"'),
+    sh.includes('cd "$WORKDIR" && node "$TOOLS_ROOT/bin/bgos-pair.mjs"'),
     'pair runs with cwd = workspace (folder pin lands there)',
   )
   assert.ok(sh.includes('--assistant-id "$ASSISTANT_ID"'), 'assistant id is never typed by hand')

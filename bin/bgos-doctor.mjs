@@ -36,7 +36,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -389,6 +390,30 @@ export function buildDoctorRows(probes) {
 
   // daemon log path (always ok; the path IS the information)
   row('log', 'Daemon log', true, String(p.logPath ?? ''))
+
+  // Channel liveness (fix 09): has this install EVER proven it can hear a
+  // channel event (the marker the first tool call of a boot writes)? Not a
+  // hard failure when absent (a machine that has not launched yet is not
+  // broken), but the one row that separates "Connected" from "actually
+  // hearing", so it renders WARN with the exact next action.
+  if (p.liveMarker !== undefined) {
+    const marker = p.liveMarker
+    if (marker && marker.exists) {
+      const age = Number(marker.ageMs)
+      const ageText = Number.isFinite(age)
+        ? `last proven ${Math.max(0, Math.round(age / 60_000))} min ago`
+        : 'proven'
+      row('live', 'Channel liveness', true, `the session has acted on a channel event (${ageText})`)
+    } else {
+      row(
+        'live',
+        'Channel liveness',
+        null,
+        'never proven: no session has acted on a channel event yet',
+        'launch the agent (open its folder, run: hoai) and wait for its hello; if it never arrives, the channel launch flag is wrong (see the Install method row)',
+      )
+    }
+  }
 
   return rows
 }
@@ -765,8 +790,65 @@ Options:
   --backend <url>        backend base (default ${DEFAULT_BACKEND_URL})
   --json                 print the rows as JSON instead of the table
   --skip-handshake       skip the live MCP initialize handshake (fast mode)
+  --wait-live-since <ms> wait-only mode: poll for the channel-live marker to
+                         be touched at or after this epoch-ms instant (the
+                         bootstrap passes its launch time), exit 0 on proof
+  --wait-live-timeout <s> how long the wait-only mode polls (default 120)
   -h, --help             show this help
 `
+
+// ── Channel-live marker (fix 09) ─────────────────────────────────────────────
+// The daemon writes <state dir>/channel-live.json on the first tool call of
+// every boot: positive, on-disk proof the session HEARS channel events.
+// `claude mcp list` saying Connected cannot prove that (a wrong launch flag
+// loads tools, connects, and wires no inbound; Vulcan E2E 2026-08-22), so the
+// bootstrap's final step waits for this marker instead of trusting Connected.
+
+/** Mirror of lib/cursor-store.ts resolveCursorFilePath's directory rule, in
+ *  plain JS: BGOS_PLUGIN_STATE_DIR else ~/.bgos-plugin-state, keyed by the
+ *  assistant id (digits) else a cwd hash. */
+export function liveMarkerPathFor({ env = process.env, home = homedir(), assistantId = '', cwd = process.cwd() } = {}) {
+  const root = String(env.BGOS_PLUGIN_STATE_DIR ?? '').trim() || join(home, '.bgos-plugin-state')
+  const raw = String(assistantId ?? '').trim()
+  const key = /^[A-Za-z0-9_-]{1,64}$/.test(raw)
+    ? raw
+    : `cwd-${createHash('sha256').update(String(cwd)).digest('hex').slice(0, 16)}`
+  return join(root, key, 'channel-live.json')
+}
+
+/**
+ * Poll for the marker to be touched at or after `sinceMs`. Injectable clock,
+ * stat, and sleep so tests never actually wait.
+ * @param {{ path: string, sinceMs: number, timeoutMs?: number, pollMs?: number,
+ *           statImpl?: (path: string) => { mtimeMs: number },
+ *           now?: () => number, sleep?: (ms: number) => Promise<unknown>,
+ *           onTick?: (mtimeMs: number | null) => void }} opts
+ * @returns {Promise<{ ok: boolean, mtimeMs: number | null }>}
+ */
+export async function waitForLiveMarker({
+  path,
+  sinceMs,
+  timeoutMs = 120_000,
+  pollMs = 2_000,
+  statImpl = statSync,
+  now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  onTick = () => {},
+} = {}) {
+  const deadline = now() + timeoutMs
+  for (;;) {
+    let mtimeMs = null
+    try {
+      mtimeMs = statImpl(path).mtimeMs
+    } catch {
+      mtimeMs = null
+    }
+    if (mtimeMs != null && mtimeMs >= sinceMs) return { ok: true, mtimeMs }
+    if (now() >= deadline) return { ok: false, mtimeMs }
+    onTick(mtimeMs)
+    await sleep(pollMs)
+  }
+}
 
 export function parseDoctorArgs(argv) {
   const args = {
@@ -777,6 +859,8 @@ export function parseDoctorArgs(argv) {
     json: false,
     skipHandshake: false,
     help: false,
+    waitLiveSince: null,
+    waitLiveTimeoutS: 120,
   }
   const errors = []
   for (let i = 0; i < (argv ?? []).length; i++) {
@@ -797,6 +881,14 @@ export function parseDoctorArgs(argv) {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
       else args.backend = normalizeApiBase(value)
+    } else if (arg === '--wait-live-since') {
+      const value = Number(argv[++i])
+      if (!Number.isFinite(value) || value <= 0) errors.push(`${arg} needs an epoch-ms value`)
+      else args.waitLiveSince = value
+    } else if (arg === '--wait-live-timeout') {
+      const value = Number(argv[++i])
+      if (!Number.isFinite(value) || value <= 0) errors.push(`${arg} needs a positive seconds value`)
+      else args.waitLiveTimeoutS = value
     } else errors.push(`unknown flag: ${arg}`)
   }
   return { args, errors }
@@ -824,6 +916,38 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
   const workdir = args.workdir || process.cwd()
+
+  // Wait-only mode (the bootstrap's final gate): poll for the channel-live
+  // marker to be touched after the launch instant. Positive proof the
+  // just-launched session heard a channel event and ACTED (the boot hello's
+  // reply). Everything else is skipped; this mode is called right after the
+  // full preflight already ran.
+  if (args.waitLiveSince != null) {
+    const markerAssistantId =
+      args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim() || readFolderPin(workdir)
+    const markerPath = liveMarkerPathFor({ env, home, assistantId: markerAssistantId, cwd: workdir })
+    console.log(
+      `[bgos-doctor] waiting up to ${args.waitLiveTimeoutS}s for the agent's first reply ` +
+        `(channel-live marker at ${markerPath})...`,
+    )
+    const waited = await waitForLiveMarker({
+      path: markerPath,
+      sinceMs: args.waitLiveSince,
+      timeoutMs: args.waitLiveTimeoutS * 1000,
+    })
+    if (waited.ok) {
+      console.log('[bgos-doctor] channel proven live: the session acted on a channel event.')
+      return 0
+    }
+    console.error(
+      waited.mtimeMs == null
+        ? '[bgos-doctor] the agent never proved it can hear the channel (no live marker appeared). ' +
+            'The usual cause is a wrong channel launch flag; run the full doctor for the exact command.'
+        : '[bgos-doctor] a live marker exists but predates this launch; the NEW session has not proven itself. ' +
+            'Give it a moment or run the full doctor.',
+    )
+    return 1
+  }
 
   const claude = probeClaude({ platform })
   const auth = claude.found
@@ -855,6 +979,19 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     home,
     assistantId: assistantId || String(credentials.assistantId ?? ''),
   })
+  const markerPath = liveMarkerPathFor({
+    env,
+    home,
+    assistantId: assistantId || String(credentials.assistantId ?? ''),
+    cwd: workdir,
+  })
+  let liveMarker = { exists: false, ageMs: null }
+  try {
+    const markerStat = statSync(markerPath)
+    liveMarker = { exists: true, ageMs: Date.now() - markerStat.mtimeMs }
+  } catch {
+    // stays not-proven
+  }
 
   const rows = buildDoctorRows({
     platform,
@@ -869,6 +1006,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     mcpList,
     backend,
     logPath,
+    liveMarker,
   })
 
   if (args.json) {

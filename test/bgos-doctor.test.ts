@@ -40,6 +40,8 @@ import {
   parseDoctorArgs,
   DEFAULT_BACKEND_URL,
   isRunAsMain,
+  liveMarkerPathFor,
+  waitForLiveMarker,
 } from '../bin/bgos-doctor.mjs'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
 import { launchCommand } from '../bin/bgos-install-method.mjs'
@@ -529,4 +531,70 @@ test('isRunAsMain: importing the module does not run main', () => {
   // The fact this suite runs at all proves the guard held; pin the predicate too.
   assert.equal(isRunAsMain(undefined as unknown as string), false)
   assert.equal(isRunAsMain('/some/other/file.mjs'), false)
+})
+
+// ── Channel-live marker wait (fix 09) ────────────────────────────────────────
+
+test('liveMarkerPathFor: assistant id keys the state dir, junk falls to cwd hash', () => {
+  const byId = liveMarkerPathFor({
+    env: {},
+    home: '/home/kc',
+    assistantId: '1032',
+    cwd: '/x',
+  })
+  assert.ok(byId.endsWith(join('.bgos-plugin-state', '1032', 'channel-live.json')))
+  const byCwd = liveMarkerPathFor({ env: {}, home: '/home/kc', assistantId: '', cwd: '/agents/ava' })
+  assert.match(byCwd, /cwd-[0-9a-f]{16}/)
+  const overridden = liveMarkerPathFor({
+    env: { BGOS_PLUGIN_STATE_DIR: '/custom' },
+    home: '/home/kc',
+    assistantId: '7',
+    cwd: '/x',
+  })
+  assert.ok(overridden.startsWith(join('/custom', '7')))
+})
+
+test('waitForLiveMarker: resolves on a fresh mtime, times out on stale or absent', async () => {
+  let clock = 1_000_000
+  const sleeps = []
+  const mk = (mtimes: Array<number | null>) => {
+    let call = 0
+    return {
+      path: 'X',
+      sinceMs: 1_000_000,
+      timeoutMs: 10_000,
+      pollMs: 1_000,
+      now: () => clock,
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+        clock += ms
+      },
+      statImpl: () => {
+        const value = mtimes[Math.min(call++, mtimes.length - 1)]
+        if (value == null) throw new Error('ENOENT')
+        return { mtimeMs: value }
+      },
+    }
+  }
+  // Fresh marker on the third poll.
+  const fresh = await waitForLiveMarker(mk([null, 999_999, 1_000_500]))
+  assert.deepEqual(fresh, { ok: true, mtimeMs: 1_000_500 })
+  // Only a stale marker: times out with the stale mtime reported.
+  clock = 1_000_000
+  const stale = await waitForLiveMarker(mk([999_999]))
+  assert.equal(stale.ok, false)
+  assert.equal(stale.mtimeMs, 999_999)
+  // Never any marker: times out with null.
+  clock = 1_000_000
+  const absent = await waitForLiveMarker(mk([null]))
+  assert.deepEqual(absent, { ok: false, mtimeMs: null })
+})
+
+test('parseDoctorArgs: wait-live flags parse and validate', () => {
+  const ok = parseDoctorArgs(['--wait-live-since', '1755800000000', '--wait-live-timeout', '90'])
+  assert.equal(ok.errors.length, 0)
+  assert.equal(ok.args.waitLiveSince, 1755800000000)
+  assert.equal(ok.args.waitLiveTimeoutS, 90)
+  const bad = parseDoctorArgs(['--wait-live-since', 'soon'])
+  assert.ok(bad.errors.length > 0)
 })

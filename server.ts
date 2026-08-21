@@ -171,6 +171,13 @@ import {
   deafSessionChatMessage,
   shouldEscalateDeafSession,
 } from './lib/channel-liveness.js'
+import {
+  liveMarkerPath,
+  readLiveMarker,
+  recordLiveMarker,
+  shouldSendBootHello,
+  buildBootHelloNotification,
+} from './lib/boot-hello.js'
 import { detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
 import {
   UpdateStreamConsumer,
@@ -291,7 +298,7 @@ function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl()
 
 import { appendFileSync, existsSync, statSync, watch } from 'node:fs'
-import { join as pathJoin } from 'node:path'
+import { join as pathJoin, dirname as pathDirname } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -2795,8 +2802,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // Every bgos tool call flows through this one handler, making it the
   // liveness chokepoint: a session that calls ANY tool can hear us, so mark
   // before the drain check (a call during an update drain proves liveness
-  // just the same).
-  channelLiveness.markToolCall()
+  // just the same). The first call of a boot also records the persistent
+  // channel-live marker (fix 09): positive, on-disk proof this install can
+  // hear channel events, which the bootstrap's final wait watches for.
+  if (!channelLiveness.live) {
+    channelLiveness.markToolCall()
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+  }
   if (updateDrainMode) {
     return Promise.resolve({
       content: [
@@ -4197,9 +4209,17 @@ interface ChatHistoryResponse {
 // lib/cursor-store.ts). All writes go through advanceChatCursor below so
 // every advance marks the store dirty.
 const DAEMON_START_MS = Date.now()
-const cursorStore = new CursorStore(
-  resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() }),
-)
+const CURSOR_FILE_PATH = resolveCursorFilePath({
+  assistantId: ASSISTANT_ID,
+  cwd: process.cwd(),
+})
+// Fix 09: the channel-live marker lives next to the cursor file. Written on
+// the first tool call of every boot (positive proof the session hears us);
+// its absence marks a pairing that has NEVER proven live, which is what
+// triggers the one-time boot hello below and what the bootstrap's final
+// wait watches for.
+const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
+const cursorStore = new CursorStore(CURSOR_FILE_PATH)
 const cursorBoot = cursorStore.load()
 const chatLastSeen = cursorBoot.cursors
 
@@ -4494,6 +4514,9 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
 // full window on a session with zero tool calls since boot, we post the fix
 // into the chat over REST, the path that provably works, once per boot.
 let deafEscalationDone = false
+
+// Fix 09: the one-per-boot latch for the first-ever-boot hello (see main()).
+let bootHelloSent = false
 
 function checkReplyOverdue(): void {
   if (updateDrainMode) return
@@ -7357,6 +7380,38 @@ async function main(): Promise<void> {
   await discoverChats()
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
   await pollAllChats()
+
+  // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
+  // on disk), ask the session to greet its owner via the reply tool. The
+  // greeting is the user-visible "your agent is alive" moment AND the
+  // positive proof the channel is wired: the tool call it triggers flips
+  // liveness and writes the marker the bootstrap's final wait watches for.
+  // Connected in `claude mcp list` cannot prove hearing (Vulcan E2E,
+  // 2026-08-22: a wrong flag loads tools, says Connected, wires nothing).
+  // BGOS_BOOT_HELLO=off is the kill switch; later boots stay quiet.
+  if (
+    shouldSendBootHello({
+      markerExists: readLiveMarker(LIVE_MARKER_PATH) != null,
+      sentThisBoot: bootHelloSent,
+      killSwitch: process.env.BGOS_BOOT_HELLO,
+    })
+  ) {
+    const helloChat = monitoredChatIds[0]
+    if (helloChat) {
+      bootHelloSent = true
+      const hello = buildBootHelloNotification({ chatId: helloChat })
+      log(
+        `boot hello: first-ever boot for this pairing, asking the session to ` +
+          `greet the user in chat ${helloChat} (the reply is the channel proof)`,
+      )
+      void trackMessageOperation(() =>
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: hello.content, meta: hello.meta },
+        }),
+      ).catch((err) => log(`boot hello delivery failed: ${err}`))
+    }
+  }
 
   // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
   // fix). The store was loaded synchronously at module init, before any

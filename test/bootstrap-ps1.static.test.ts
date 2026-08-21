@@ -47,6 +47,7 @@ test('exit-code table matches the shared one-click contract', () => {
     'preflight-failed': 32,
     'login-timeout': 33,
     'node-install': 34,
+    'channel-deaf': 35,
   }
   for (const [reason, code] of Object.entries(expected)) {
     const re = new RegExp(`'${reason}'\\s*=\\s*${code}\\b`)

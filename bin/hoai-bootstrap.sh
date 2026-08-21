@@ -55,6 +55,7 @@ exit_code_for() {
         preflight-failed)   echo 32 ;;
         login-timeout)      echo 33 ;;
         node-install)       echo 34 ;;
+        channel-deaf)       echo 35 ;;
         *)                  echo 29 ;;
     esac
 }
@@ -90,6 +91,8 @@ INSTALL_METHOD="auto"
 NO_LAUNCH=0
 NON_INTERACTIVE=0
 LOGIN_TIMEOUT_MINUTES=15
+MARKETPLACE_SOURCE="BrandGrowthOS/hoai-marketplace"
+TOOLS_ROOT=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -102,6 +105,8 @@ while [ $# -gt 0 ]; do
         --no-launch)             NO_LAUNCH=1; shift ;;
         --non-interactive)       NON_INTERACTIVE=1; shift ;;
         --login-timeout-minutes) LOGIN_TIMEOUT_MINUTES="${2:-}"; shift; shift ;;
+        --marketplace-source)    MARKETPLACE_SOURCE="${2:-}"; shift; shift ;;
+        --tools-root)            TOOLS_ROOT="${2:-}"; shift; shift ;;
         *) say "[hoai] unknown option: $1"; fail 'script-error' ;;
     esac
 done
@@ -353,7 +358,7 @@ PLUGIN_ROOT=""
 
 if [ "$RESOLVED_METHOD" = "marketplace" ]; then
     say 'Installing the HOAI plugin from the Claude Code marketplace...'
-    if ! claude plugin marketplace add BrandGrowthOS/hoai-marketplace; then
+    if ! claude plugin marketplace add "$MARKETPLACE_SOURCE"; then
         # Idempotency: an already-added marketplace can refuse the re-add.
         claude plugin marketplace update hoai
     fi
@@ -447,7 +452,8 @@ esac
 # =============================================================================
 step 'pair'
 say "Pairing this computer as assistant $ASSISTANT_ID..."
-( cd "$WORKDIR" && node "$PLUGIN_ROOT/bin/bgos-pair.mjs" "$PAIR_CODE" --assistant-id "$ASSISTANT_ID" --backend "$BACKEND" )
+[ -n "$TOOLS_ROOT" ] || TOOLS_ROOT="$PLUGIN_ROOT"
+( cd "$WORKDIR" && node "$TOOLS_ROOT/bin/bgos-pair.mjs" "$PAIR_CODE" --assistant-id "$ASSISTANT_ID" --backend "$BACKEND" )
 PAIR_EXIT=$?
 if [ "$PAIR_EXIT" -eq 3 ]; then
     # Paired but the mirror probe wants an env pin. Pairing ran from the
@@ -486,10 +492,24 @@ const cfg = load(cfgPath);
 if (cfg.hasCompletedOnboarding === undefined) cfg.hasCompletedOnboarding = true;
 if (cfg.theme === undefined) cfg.theme = "dark";
 cfg.projects = cfg.projects || {};
-const existing = cfg.projects[workdir] || {};
-existing.hasTrustDialogAccepted = true;
-if (existing.hasCompletedProjectOnboarding === undefined) existing.hasCompletedProjectOnboarding = true;
-cfg.projects[workdir] = existing;
+// The FULL entry shape Claude Code itself writes on a real trust accept. A
+// minimal {hasTrustDialogAccepted:true} entry is NOT honoured (verified live
+// 2026-08-22 on 2.1.239: the dialog still rendered until the sibling fields
+// existed), and the key must match process.cwd() byte for byte.
+function seed(key) {
+  const existing = cfg.projects[key] || {};
+  cfg.projects[key] = Object.assign({
+    allowedTools: [],
+    disabledMcpjsonServers: [],
+    enabledMcpjsonServers: [],
+    hasClaudeMdExternalIncludesApproved: false,
+    hasClaudeMdExternalIncludesWarningShown: false,
+    mcpContextUris: [],
+    projectOnboardingSeenCount: 1,
+    hasCompletedProjectOnboarding: true,
+  }, existing, { hasTrustDialogAccepted: true });
+}
+seed(workdir);
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const setPath = path.join(configDir, "settings.json");
 const settings = load(setPath);
@@ -500,7 +520,7 @@ JS
 node "$PRESEED_JS" "$CONFIG_DIR" "$WORKDIR" \
     || say '[hoai] warning: prompt pre-seed failed; the first launch may stop on a one-time question.'
 
-if ! node "$PLUGIN_ROOT/bin/bgos-doctor.mjs" --preflight --assistant-id "$ASSISTANT_ID" --workdir "$WORKDIR" --backend "$BACKEND"; then
+if ! node "$TOOLS_ROOT/bin/bgos-doctor.mjs" --preflight --assistant-id "$ASSISTANT_ID" --workdir "$WORKDIR" --backend "$BACKEND"; then
     say 'Preflight FAILED. The table above names the broken piece and its fix command.'
     fail 'preflight-failed'
 fi
@@ -511,19 +531,36 @@ step 'launch'
 if [ "$NO_LAUNCH" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ]; then
     say 'Skipping launch. Start the agent any time:'
     say "  cd \"$WORKDIR\" && hoai"
-else
-    say 'Starting your agent in a new window...'
-    if ! open_terminal_with "cd '$WORKDIR' && hoai"; then
-        say 'Could not open a terminal window automatically. Start the agent yourself:'
-        say "  cd \"$WORKDIR\" && hoai"
-    fi
+    step 'online'
+    say "Done (not launched). Your agent (assistant $ASSISTANT_ID) is paired and preflight-verified."
+    say "  workspace : $WORKDIR"
+    DONE=1
+    exit 0
+fi
+# Epoch ms of the launch instant, for the channel-live wait below. macOS date
+# has no %N; node is already a hard prerequisite, so ask it.
+LAUNCH_EPOCH_MS="$(node -e 'process.stdout.write(String(Date.now()))')"
+say 'Starting your agent in a new window...'
+if ! open_terminal_with "cd '$WORKDIR' && hoai"; then
+    say 'Could not open a terminal window automatically. Start the agent yourself:'
+    say "  cd \"$WORKDIR\" && hoai"
 fi
 
 step 'online'
+# The last gate, and the one Connected cannot fake: on a first-ever pairing
+# the daemon asks the session to greet the user (boot hello), the greeting's
+# tool call writes the channel-live marker, and setup only claims success
+# once that marker is touched AFTER this launch. A wrong channel flag loads
+# the plugin, connects, and still drops every message; this catches exactly
+# that (Vulcan E2E, 2026-08-22).
+say 'Waiting for your agent to say hello in the app (the end-to-end channel proof)...'
+if ! node "$TOOLS_ROOT/bin/bgos-doctor.mjs" --wait-live-since "$LAUNCH_EPOCH_MS" --wait-live-timeout 150 --assistant-id "$ASSISTANT_ID" --workdir "$WORKDIR"; then
+    say 'The agent started but never proved it can hear the channel. Run: hoai doctor'
+    fail 'channel-deaf'
+fi
 say ''
-say "Done. Your agent (assistant $ASSISTANT_ID) is paired and verified on this computer."
+say "Done. Your agent (assistant $ASSISTANT_ID) is live on this computer and answered in the app."
 say "  workspace : $WORKDIR"
 say '  trouble?  : open that folder and run: hoai doctor'
-say 'The HOAI app flips to Connected the moment the agent reports in.'
 DONE=1
 exit 0
