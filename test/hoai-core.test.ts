@@ -38,9 +38,9 @@ const MARKETPLACE_SCRIPT_DIR =
   'C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.37.0\\bin'
 const CLONE_SCRIPT_DIR = '/home/kc/bgos-claude-plugin/bin'
 
-// Flag per install method (bgos-install-method.mjs launchFlagArgs):
-// marketplace = the approved, promptless --channels; clone = the dev flag.
-const MARKETPLACE_FLAGS = ['--dangerously-skip-permissions', '--channels']
+// Both methods use the dev-channels flag (bgos-install-method.mjs
+// launchFlagArgs documents why --channels is a trap); only the spec differs.
+const MARKETPLACE_FLAGS = ['--dangerously-skip-permissions', '--dangerously-load-development-channels']
 const CLONE_FLAGS = ['--dangerously-skip-permissions', '--dangerously-load-development-channels']
 
 /** A readFile stub serving exactly one path. */

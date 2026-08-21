@@ -17,10 +17,12 @@ Rules:
   is being added in the HOAI app, and that they should restart their agent
   process the way it normally starts. The pairing output prints the exact
   launch command for the install it detected; relay that command verbatim.
-  The two forms, for reference: `claude --channels plugin:hoai@hoai` for the
-  packaged HOAI channel from the plugin marketplace (no confirmation prompt),
-  or `claude --dangerously-load-development-channels server:bgos` for a
-  checkout-based host running server.ts directly (e.g. a multi-agent server).
+  The two forms, for reference:
+  `claude --dangerously-load-development-channels plugin:hoai@hoai` for the
+  packaged HOAI channel from the plugin marketplace, or the same flag with
+  `server:bgos` for a checkout-based host running server.ts directly. (The
+  approved-sounding `--channels` flag loads the plugin but silently wires no
+  inbound delivery for a not-yet-allowlisted channel; never suggest it.)
 - Exit 3 means the credentials were paired but the agent is NOT DONE because an
   environment pin is required. Relay the printed BGOS_ASSISTANT_ID or
   BGOS_CREDENTIALS_PATH instruction and do not describe it as ready.

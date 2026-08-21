@@ -207,22 +207,26 @@ function channelSpecFor(method) {
 /**
  * The channel flag arguments for a method, as an argv slice.
  *
- * Marketplace installs use the APPROVED `--channels` flag: verified on Claude
- * Code 2.1.239 (2026-08-22, fresh config dir) it loads a store-installed
- * channel with NO confirmation prompt, which is what makes a zero-terminal
- * auto-start possible. The `--dangerously-load-development-channels` flag
- * shows a warning EVERY launch (default answer: accept) and is the only flag
- * that loads a local-clone dev channel, so clones keep it. The reverse
- * pairings are the two silent-drop traps: `--channels` on a clone loads
- * nothing, and the dangerous flag with the clone spec on a marketplace
- * install matches nothing (the 2026-08-21 incident).
+ * BOTH methods use `--dangerously-load-development-channels`; only the spec
+ * differs. Do NOT be tempted by the approved-sounding `--channels` flag:
+ * verified live on 2.1.239 (2026-08-22, Vulcan E2E) it loads a marketplace
+ * plugin's tools promptlessly, `claude mcp list` even says Connected, and
+ * yet it wires NO inbound channel delivery for a plugin that is not on
+ * Anthropic's channel allowlist (HOAI is not, yet): the daemon delivered a
+ * message, the session never started a turn, reply-overdue fired. That is a
+ * third silent-drop vector alongside the two from 2026-08-21 (`--channels`
+ * on a clone loads nothing; the dangerous flag with the clone spec on a
+ * marketplace install matches nothing). The dev flag's warning prompt shows
+ * every launch with Accept as the DEFAULT answer, so launchers auto-accept
+ * it with one Enter. Revisit when HOAI lands on the allowlist.
  * @param {'marketplace' | 'clone'} method
  * @returns {string[]}
  */
 export function launchFlagArgs(method) {
-  return method === 'marketplace'
-    ? ['--channels', MARKETPLACE_CHANNEL_SPEC]
-    : ['--dangerously-load-development-channels', CLONE_CHANNEL_SPEC]
+  return [
+    '--dangerously-load-development-channels',
+    method === 'marketplace' ? MARKETPLACE_CHANNEL_SPEC : CLONE_CHANNEL_SPEC,
+  ]
 }
 
 /**
