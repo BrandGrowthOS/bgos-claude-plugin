@@ -21,7 +21,7 @@ jobs:
           node-version: 24
 
       - name: Run tests
-        run: node --test "test/**/*.test.ts"
+        run: npm test
 
       - name: Type check
         run: bun run build
