@@ -209,11 +209,45 @@ if ! command -v node >/dev/null 2>&1; then
         brew install node || fail 'node-install'
         refresh_known_paths
     else
-        # No package manager to lean on. A system-wide install would need
-        # sudo, and a bootstrap must never ask for a password; hand back the
-        # one-line instruction instead.
-        say 'Node.js is required. Install it from https://nodejs.org and run this script again.'
-        fail 'node-install'
+        # No package manager: install the official binary into $HOME (a
+        # bootstrap must never ask for a sudo password). Mirrors the Windows
+        # zip fallback: latest LTS from nodejs.org, extracted under
+        # ~/.local, node + npm + npx symlinked into ~/.local/bin.
+        NODE_ARCH=""
+        case "$(uname -m)" in
+            x86_64)  NODE_ARCH="x64" ;;
+            aarch64) NODE_ARCH="arm64" ;;
+            arm64)   NODE_ARCH="arm64" ;;
+        esac
+        NODE_OS=""
+        case "$UNAME" in
+            Darwin) NODE_OS="darwin" ;;
+            Linux)  NODE_OS="linux" ;;
+        esac
+        if [ -z "$NODE_ARCH" ] || [ -z "$NODE_OS" ]; then
+            say 'Node.js is required. Install it from https://nodejs.org and run this script again.'
+            fail 'node-install'
+        fi
+        # latest-v22.x is a stable alias for the newest release of the LTS
+        # line; its SHASUMS file names the exact version. Fall back to a
+        # known-good pin when the fetch or the parse fails.
+        NODE_VER="$(curl -fsSL 'https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt' 2>/dev/null \
+            | grep -o "node-v22[0-9.]*-$NODE_OS-$NODE_ARCH\.tar\.gz" | head -1 \
+            | sed "s/^node-//; s/-$NODE_OS-$NODE_ARCH\.tar\.gz\$//")"
+        [ -n "$NODE_VER" ] || NODE_VER="v22.16.0"
+        NODE_TAR="node-$NODE_VER-$NODE_OS-$NODE_ARCH.tar.gz"
+        say "Downloading https://nodejs.org/dist/$NODE_VER/$NODE_TAR"
+        NODE_TMP="${TMPDIR:-/tmp}/hoai-node.tar.gz"
+        curl -fsSL "https://nodejs.org/dist/$NODE_VER/$NODE_TAR" -o "$NODE_TMP" || fail 'node-install'
+        NODE_HOME="$HOME/.local/node-lts"
+        rm -rf "$NODE_HOME"
+        mkdir -p "$NODE_HOME"
+        tar -xzf "$NODE_TMP" -C "$NODE_HOME" --strip-components=1 || fail 'node-install'
+        for tool in node npm npx; do
+            ln -sf "$NODE_HOME/bin/$tool" "$LOCAL_BIN/$tool"
+        done
+        ensure_on_path_now "$LOCAL_BIN"
+        ensure_in_profiles '.local/bin'
     fi
     command -v node >/dev/null 2>&1 || fail 'node-install'
     say "Node.js ready: $(node --version)"
@@ -224,7 +258,33 @@ fi
 # --- bun (the plugin's runtime; BOTH bun and bunx must be on PATH) -----------
 if ! command -v bun >/dev/null 2>&1; then
     say 'Bun is not installed yet. Installing it now (one time)...'
-    curl -fsSL https://bun.sh/install | bash || fail 'bun-install'
+    if command -v unzip >/dev/null 2>&1; then
+        curl -fsSL https://bun.sh/install | bash || fail 'bun-install'
+    else
+        # bun.sh's installer hard-requires unzip, which a fresh Ubuntu does
+        # not ship, and a bootstrap must never sudo. python3 IS on a fresh
+        # Ubuntu (and on macOS with the CLT), and its zipfile module extracts
+        # the official release zip just as well.
+        command -v python3 >/dev/null 2>&1 || { say 'Installing bun needs either unzip or python3; install one and rerun.'; fail 'bun-install'; }
+        BUN_TARGET=""
+        case "$UNAME:$(uname -m)" in
+            Linux:x86_64)   BUN_TARGET="bun-linux-x64" ;;
+            Linux:aarch64)  BUN_TARGET="bun-linux-aarch64" ;;
+            Darwin:x86_64)  BUN_TARGET="bun-darwin-x64" ;;
+            Darwin:arm64)   BUN_TARGET="bun-darwin-aarch64" ;;
+            *) say "Unsupported platform for the bun zip fallback: $UNAME $(uname -m)"; fail 'bun-install' ;;
+        esac
+        BUN_ZIP="${TMPDIR:-/tmp}/hoai-bun.zip"
+        say "Downloading https://github.com/oven-sh/bun/releases/latest/download/$BUN_TARGET.zip"
+        curl -fsSL "https://github.com/oven-sh/bun/releases/latest/download/$BUN_TARGET.zip" -o "$BUN_ZIP" || fail 'bun-install'
+        BUN_EXTRACT="${TMPDIR:-/tmp}/hoai-bun-extract"
+        rm -rf "$BUN_EXTRACT"
+        python3 -m zipfile -e "$BUN_ZIP" "$BUN_EXTRACT/" || fail 'bun-install'
+        mkdir -p "$HOME/.bun/bin"
+        cp "$BUN_EXTRACT/$BUN_TARGET/bun" "$HOME/.bun/bin/bun" || fail 'bun-install'
+        chmod +x "$HOME/.bun/bin/bun"
+        ln -sf "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+    fi
     export BUN_INSTALL="$HOME/.bun"
     ensure_on_path_now "$BUN_INSTALL/bin"
     command -v bun >/dev/null 2>&1 || fail 'bun-install'

@@ -108,9 +108,16 @@ if ($AssistantId -notmatch '^[0-9]+$') { Say 'The assistant id must be a number 
 if (-not $PairCode) { Fail 'creds-missing' }
 
 # Prepend a directory to the User PATH (registry) and this process, once.
+# HOAI_TEST_SKIP_USERPATH=1 keeps a matrix/test run from mutating the real
+# user's registry PATH (the in-process PATH update below still applies, so
+# the run itself behaves identically).
 function Ensure-OnPath {
     param([string]$Dir)
     if (-not (Test-Path $Dir)) { return }
+    if ($env:HOAI_TEST_SKIP_USERPATH -eq '1') {
+        if (($env:Path -split ';') -notcontains $Dir) { $env:Path = $Dir + ';' + $env:Path }
+        return
+    }
     $current = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ($null -eq $current) { $current = '' }
     $parts = $current -split ';' | Where-Object { $_ -ne '' }
