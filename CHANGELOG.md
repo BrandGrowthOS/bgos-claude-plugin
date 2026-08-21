@@ -2,6 +2,60 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.37.0 (22 August 2026)
+
+One click, zero terminal: the onboarding release. Every fix from the
+approved design (bgos-oneclick-design.vercel.app) plus one the build's own
+E2E discovered, each with a regression test.
+
+- **Launch shim (fix 01).** The plugin manifest and generated configs launch
+  `bin/bgos-launch.mjs` under node, which resolves bun (BUN_INSTALL, ~/.bun,
+  PATH, then bunx) and prints the exact install command instead of a bare
+  ENOENT when bun is missing.
+- **Install-method detection (fix 02).** `bin/bgos-install-method.mjs`
+  detects marketplace vs clone and picks the matching channel spec
+  (plugin:hoai@hoai vs server:bgos); pairing prints the ONE exact launch
+  command for the install it found. The approved-sounding `--channels` flag
+  is documented as a trap: it loads a non-allowlisted plugin's tools and
+  wires no inbound (proven live 2026-08-22).
+- **Preflight gate + doctor (fixes 03, 08).** `bin/bgos-doctor.mjs` prints
+  the prerequisite table with one fix command per failing row; --preflight
+  requires the MCP initialize handshake and a Connected row in
+  `claude mcp list` before setup may claim success. `/hoai:doctor` runs it
+  from chat; `hoai doctor` from a terminal.
+- **Boot hello + channel-live marker (fix 09, new).** Connected cannot
+  prove the session HEARS channel events, so on the first-ever boot of a
+  pairing the daemon asks the session to greet its owner; the greeting's
+  tool call writes a persistent channel-live marker, and the bootstraps'
+  final step waits for it (doctor --wait-live-since) before declaring done.
+- **Deaf-session honesty (fix 04).** Cursor PERSISTENCE is gated on channel
+  liveness (first tool call since boot): a session that cannot hear never
+  marks messages delivered, so a restart with the fixed flag redelivers
+  them. When the reply-overdue nudge itself goes unacted on such a session,
+  the daemon posts the exact launch command into the chat over REST, once
+  per boot.
+- **Credentials dedupe (fix 05).** The legacy credentials.json co-write is
+  replaced by dedupe-at-write: a legacy file holding the same agent's
+  pairing (or junk) is deleted after the verified per-assistant write;
+  another agent's live pairing is never touched. The Windows ACL now
+  applies (direct icacls argv; the cmd.exe string form double-quoted the
+  grant and left the file world-readable).
+- **Stable log path (fix 06).** `~/.bgos-agent/logs/bgos-plugin-<id>.log`
+  regardless of launch method; BGOS_LOG_FILE still wins.
+- **Session binding (fix 07).** The newest-mtime last resort binds only
+  when unambiguous (a sole candidate, or exactly one active in the last 10
+  minutes); otherwise the binder refuses and waits for reply-marker proof.
+- **One-click bootstraps.** `bin/hoai-bootstrap.ps1` (Windows) and
+  `bin/hoai-bootstrap.sh` (macOS/Linux): idempotent, sentinel-emitting,
+  install only missing prerequisites (node, bun with BOTH bun and bunx on
+  PATH, Claude Code), stop at the login gate until `claude auth status`
+  says loggedIn, pair from the workspace with --assistant-id, pre-seed the
+  characterized one-time prompts (trust; the bypass warning whose DEFAULT
+  answer is exit), run the preflight, and wait for the channel-live proof.
+- **The hoai alias.** Open the folder, run `hoai`: launches with the right
+  flags via the folder pin; `hoai doctor`, `hoai pair`, `hoai logs`.
+- **CI.** The full test suite + tsc now run on every PR.
+
 ## 0.34.0 (8 August 2026)
 
 The Agent Update Stream consumer, strictly opt-in via
