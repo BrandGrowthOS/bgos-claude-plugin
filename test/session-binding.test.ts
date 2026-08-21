@@ -20,6 +20,7 @@ import {
   tailContainsMarker,
   findMarkerFile,
   resolveBinding,
+  AMBIGUITY_WINDOW_MS,
   SessionTranscriptBinder,
 } from '../lib/session-binding.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
@@ -100,18 +101,30 @@ test('newest marker wins across files', () => {
 
 // ── resolveBinding priority chain ────────────────────────────────────────────
 
+// Every resolveBinding call passes an explicit `now`; the ambiguity rule
+// (rule 5) measures candidate mtimes against it. RECENT_* sit inside the
+// AMBIGUITY_WINDOW_MS window, STALE sits just outside it.
+const NOW = 100 * 60_000
+const RECENT_A = NOW - 2000
+const RECENT_B = NOW - 1000
+const STALE = NOW - AMBIGUITY_WINDOW_MS - 1
+
+// Two recent candidates plus a stale env-id file: rule 5 alone would refuse
+// this set as ambiguous, so every positive-signal test below also proves its
+// signal (marker / sticky marker / env / sticky previous) beats ambiguity.
 const cands = [
-  { name: 'a.jsonl', mtimeMs: 1000 },
-  { name: 'b.jsonl', mtimeMs: 2000 },
-  { name: 'env-id.jsonl', mtimeMs: 500 },
+  { name: 'a.jsonl', mtimeMs: RECENT_A },
+  { name: 'b.jsonl', mtimeMs: RECENT_B },
+  { name: 'env-id.jsonl', mtimeMs: STALE },
 ]
 
-test('marker evidence beats everything', () => {
+test('marker evidence beats everything, two-recent ambiguity included', () => {
   const b = resolveBinding({
     candidates: cands,
     envSessionId: 'env-id',
     markerFile: 'a.jsonl',
     previous: { name: 'b.jsonl', source: 'newest-mtime' },
+    now: NOW,
   })
   assert.deepEqual(b, { name: 'a.jsonl', source: 'marker' })
 })
@@ -122,26 +135,38 @@ test('a marker-proven binding is sticky across scan misses', () => {
     envSessionId: 'env-id',
     markerFile: null,
     previous: { name: 'a.jsonl', source: 'marker' },
+    now: NOW,
   })
   assert.deepEqual(b, { name: 'a.jsonl', source: 'marker' })
 })
 
-test('env session id binds when its file exists (fresh launch)', () => {
+test('env session id binds when its file exists, ambiguity and staleness aside', () => {
   const b = resolveBinding({
     candidates: cands,
     envSessionId: 'env-id',
     markerFile: null,
     previous: null,
+    now: NOW,
   })
+  // env-id.jsonl is stale and a/b are both recent; the env id still wins
+  // because it is a positive signal, not an mtime guess.
   assert.deepEqual(b, { name: 'env-id.jsonl', source: 'env' })
 })
 
 test('env session id is ignored when its file is absent (--continue launch)', () => {
+  // Rewritten for the ambiguity rule: the old expectation bound b.jsonl by
+  // newest mtime among several live candidates, which is exactly the guess
+  // rule 5 now refuses. One recent + one stale keeps the fallthrough
+  // unambiguous, so the test still pins the env-file-absent behavior.
   const b = resolveBinding({
-    candidates: cands.filter((c) => c.name !== 'env-id.jsonl'),
+    candidates: [
+      { name: 'a.jsonl', mtimeMs: STALE },
+      { name: 'b.jsonl', mtimeMs: RECENT_B },
+    ],
     envSessionId: 'env-id',
     markerFile: null,
     previous: null,
+    now: NOW,
   })
   assert.deepEqual(b, { name: 'b.jsonl', source: 'newest-mtime' })
 })
@@ -152,18 +177,29 @@ test('sticky previous binding: a foreign session cannot steal it via mtime', () 
     envSessionId: null,
     markerFile: null,
     previous: { name: 'a.jsonl', source: 'newest-mtime' },
+    now: NOW,
   })
-  // b.jsonl is newer, but the binding holds.
+  // b.jsonl is newer and both are recent (ambiguous for rule 5), but the
+  // held binding survives without falling through to a guess.
   assert.deepEqual(b, { name: 'a.jsonl', source: 'newest-mtime' })
 })
 
-test('newest-mtime is the last resort; empty dir yields null', () => {
+test('newest-mtime fires only when unambiguous; empty dir yields null', () => {
+  // Rewritten for the ambiguity rule: the old test bound the newest of
+  // three live candidates with no signal at all, the always-guess behavior
+  // rule 5 no longer has. A sole recent candidate among stale ones is the
+  // unambiguous case that still binds.
   assert.deepEqual(
     resolveBinding({
-      candidates: cands,
+      candidates: [
+        { name: 'a.jsonl', mtimeMs: STALE },
+        { name: 'b.jsonl', mtimeMs: RECENT_B },
+        { name: 'c.jsonl', mtimeMs: STALE - 5000 },
+      ],
       envSessionId: null,
       markerFile: null,
       previous: null,
+      now: NOW,
     }),
     { name: 'b.jsonl', source: 'newest-mtime' },
   )
@@ -173,9 +209,52 @@ test('newest-mtime is the last resort; empty dir yields null', () => {
       envSessionId: 'env-id',
       markerFile: 'x.jsonl',
       previous: { name: 'y.jsonl', source: 'marker' },
+      now: NOW,
     }),
     null,
   )
+})
+
+// ── resolveBinding ambiguity refusal (rule 5) ────────────────────────────────
+
+test('two recent candidates and no positive signal refuse to bind', () => {
+  const b = resolveBinding({
+    candidates: [
+      { name: 'a.jsonl', mtimeMs: RECENT_A },
+      { name: 'b.jsonl', mtimeMs: RECENT_B },
+    ],
+    envSessionId: null,
+    markerFile: null,
+    previous: null,
+    now: NOW,
+  })
+  assert.equal(b, null)
+})
+
+test('one recent + one stale binds the recent one', () => {
+  const b = resolveBinding({
+    candidates: [
+      { name: 'stale.jsonl', mtimeMs: STALE },
+      { name: 'live.jsonl', mtimeMs: RECENT_B },
+    ],
+    envSessionId: null,
+    markerFile: null,
+    previous: null,
+    now: NOW,
+  })
+  assert.deepEqual(b, { name: 'live.jsonl', source: 'newest-mtime' })
+})
+
+test('a sole candidate binds even when stale', () => {
+  // Nothing else exists to confuse it with, so staleness is no objection.
+  const b = resolveBinding({
+    candidates: [{ name: 'only.jsonl', mtimeMs: STALE }],
+    envSessionId: null,
+    markerFile: null,
+    previous: null,
+    now: NOW,
+  })
+  assert.deepEqual(b, { name: 'only.jsonl', source: 'newest-mtime' })
 })
 
 // ── SessionTranscriptBinder (fs-backed) ──────────────────────────────────────
@@ -220,8 +299,43 @@ test('binder: falls back to newest-mtime with a log line when no signal exists',
   const resolved = binder.resolve(now)
   assert.ok(resolved)
   assert.equal(resolved.binding.source, 'newest-mtime')
-  assert.ok(logs.some((l) => l.includes('newest-mtime')))
+  assert.ok(
+    logs.some((l) => l.includes('newest-mtime') && l.includes('unambiguous')),
+  )
   assert.equal(binder.readContextPct(), 50)
+})
+
+test('binder: refuses to guess between two recent transcripts, logs once', () => {
+  const cwd = '/work/ambiguous'
+  const { home, dir } = makeProjectDir(cwd)
+  const now = Date.now()
+  writeFileSync(join(dir, 'one.jsonl'), `${assistantLine(50_000)}\n`)
+  writeFileSync(join(dir, 'two.jsonl'), `${assistantLine(60_000)}\n`)
+  const logs: string[] = []
+  const binder = new SessionTranscriptBinder(cwd, {
+    claudeHome: home,
+    log: (m) => logs.push(m),
+  })
+  // Both transcripts are recent and nothing positive distinguishes them:
+  // stay unbound rather than track a possible neighbour, and say so once.
+  assert.equal(binder.resolve(now), null)
+  assert.equal(binder.readContextPct(), null)
+  assert.equal(binder.resolve(now), null)
+  assert.equal(
+    logs.filter((l) => l.includes('refusing to guess')).length,
+    1,
+  )
+  // The first reply marker resolves the ambiguity with positive proof.
+  writeFileSync(
+    join(dir, 'one.jsonl'),
+    `${assistantLine(50_000)}\n${markerLine(31337)}\n`,
+  )
+  binder.recordReplyMessageId(31337)
+  const resolved = binder.resolve(now)
+  assert.ok(resolved)
+  assert.equal(resolved.binding.name, 'one.jsonl')
+  assert.equal(resolved.binding.source, 'marker')
+  assert.equal(binder.readContextPct(), 25)
 })
 
 test('binder: env session id binds a fresh launch', () => {
