@@ -27,13 +27,19 @@
 //
 // Resolution chain (strongest evidence first):
 //   marker hit > sticky marker binding > env session id file >
-//   sticky previous binding > newest-mtime (last resort, logged).
+//   sticky previous binding > UNAMBIGUOUS newest-mtime (last resort, logged).
 //
 // The newest-mtime last resort is still correct at daemon BOOT for
 // --continue launches: --continue itself picks the newest-mtime session at
-// CLI start, and the daemon starts in the same instant. The sticky rule then
-// prevents a later foreign session from stealing the binding, and the first
-// reply marker upgrades the binding to positive proof.
+// CLI start, and the daemon starts in the same instant. But when two or more
+// sessions share the project dir, the newest mtime is a coin toss on a
+// neighbour's transcript, so the last resort fires only when it cannot be
+// wrong about WHICH file is plausibly ours: a sole candidate, or exactly one
+// candidate active within AMBIGUITY_WINDOW_MS. Anything else and the binder
+// refuses to guess, staying unbound (gauge unreported) until the first reply
+// marker proves a transcript. The sticky rule then prevents a later foreign
+// session from stealing the binding, and the first reply marker upgrades the
+// binding to positive proof.
 
 import {
   readdirSync,
@@ -45,7 +51,10 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { latestContextPctFromJsonl, mungeCwd } from './usage-report.js'
+// NB: .ts extension (not .js): node's type stripping resolves specifiers
+// literally, so the .js form only works under bun. Same convention as
+// lib/resting.ts; tsconfig has allowImportingTsExtensions.
+import { latestContextPctFromJsonl, mungeCwd } from './usage-report.ts'
 
 export type BindingSource = 'marker' | 'env' | 'sticky' | 'newest-mtime'
 
@@ -102,15 +111,24 @@ export function findMarkerFile(
 }
 
 /**
+ * A candidate counts as "recent" when its mtime falls within this window of
+ * now. The newest-mtime last resort fires only for a sole candidate or a
+ * sole recent candidate; two or more recent candidates are ambiguous.
+ */
+export const AMBIGUITY_WINDOW_MS = 10 * 60_000
+
+/**
  * Pure resolution chain. `previous` is the currently-held binding (sticky);
  * `markerFile` is the result of the marker scan (or null when no markers
- * exist yet / nothing matched); `envSessionId` is CLAUDE_CODE_SESSION_ID.
+ * exist yet / nothing matched); `envSessionId` is CLAUDE_CODE_SESSION_ID;
+ * `now` (Date.now()) anchors the ambiguity window of the last resort.
  */
 export function resolveBinding(args: {
   candidates: TranscriptCandidate[]
   envSessionId: string | null
   markerFile: string | null
   previous: Binding | null
+  now: number
 }): Binding | null {
   const names = new Set(args.candidates.map((c) => c.name))
   // 1. Fresh positive proof: a transcript containing OUR reply marker.
@@ -132,12 +150,22 @@ export function resolveBinding(args: {
   // 4. Sticky previous binding: never let a foreign session steal the
   //    binding just by having a newer mtime (the original bug).
   if (args.previous && names.has(args.previous.name)) return args.previous
-  // 5. Last resort: newest mtime (correct at daemon boot, see header).
-  let best: TranscriptCandidate | null = null
-  for (const c of args.candidates) {
-    if (!best || c.mtimeMs > best.mtimeMs) best = c
+  // 5. Last resort: newest mtime, but ONLY when unambiguous. A sole
+  //    candidate is safe even when stale (nothing else exists to confuse it
+  //    with). Otherwise exactly one candidate active within
+  //    AMBIGUITY_WINDOW_MS is required; two or more recent candidates mean
+  //    the newest mtime would guess a neighbour's transcript, so refuse and
+  //    stay unbound until a reply marker proves a transcript (see header).
+  if (args.candidates.length === 1) {
+    return { name: args.candidates[0]!.name, source: 'newest-mtime' }
   }
-  return best ? { name: best.name, source: 'newest-mtime' } : null
+  const recent = args.candidates.filter(
+    (c) => args.now - c.mtimeMs <= AMBIGUITY_WINDOW_MS,
+  )
+  if (recent.length === 1) {
+    return { name: recent[0]!.name, source: 'newest-mtime' }
+  }
+  return null
 }
 
 /** Reply markers kept for scanning (newest first). */
@@ -159,6 +187,7 @@ export class SessionTranscriptBinder {
   private markers: string[] = []
   private binding: Binding | null = null
   private loggedFallback = false
+  private loggedRefusal = false
 
   constructor(
     cwd: string,
@@ -236,8 +265,20 @@ export class SessionTranscriptBinder {
       envSessionId: this.envSessionId,
       markerFile,
       previous: this.binding,
+      now,
     })
-    if (!next) return null
+    if (!next) {
+      // Several transcripts and no positive signal: refusing the guess is
+      // the point of the ambiguity rule, so say so, once.
+      if (candidates.length > 1 && !this.loggedRefusal) {
+        this.log(
+          'session binding: several recent transcripts and no positive ' +
+            'signal yet, refusing to guess (binds on the first reply)',
+        )
+        this.loggedRefusal = true
+      }
+      return null
+    }
     if (
       !this.binding ||
       this.binding.name !== next.name ||
@@ -247,8 +288,9 @@ export class SessionTranscriptBinder {
     }
     if (next.source === 'newest-mtime' && !this.loggedFallback) {
       this.log(
-        'session binding: no positive session signal yet, using newest-mtime ' +
-          'transcript as last resort (upgrades to positive proof on the first reply)',
+        'session binding: no positive session signal yet, binding the ' +
+          'unambiguous newest-mtime transcript as last resort (upgrades to ' +
+          'positive proof on the first reply)',
       )
       this.loggedFallback = true
     }

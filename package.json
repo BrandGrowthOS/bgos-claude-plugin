@@ -1,6 +1,6 @@
 {
   "name": "claude-channel-bgos",
-  "version": "0.36.0",
+  "version": "0.37.0",
   "description": "HOAI channel plugin for Claude Code, chat with Claude Code through the HOAI desktop and mobile app",
   "license": "Apache-2.0",
   "type": "module",
@@ -10,6 +10,7 @@
   "bin": {
     "claude-channel-bgos": "./server.ts",
     "bgos-claim": "./bin/bgos-claim.mjs",
+    "hoai": "./bin/hoai-core.mjs",
     "hoai-agent": "./bin/bgos-agent",
     "hoai-pair": "./bin/bgos-pair.mjs",
     "bgos-agent": "./bin/bgos-agent",
@@ -18,7 +19,7 @@
   "scripts": {
     "start": "bun install --no-summary 1>&2 && bun server.ts",
     "build": "tsc --noEmit",
-    "test": "node --test \"test/**/*.test.ts\""
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# hoai: thin dispatcher for bin/hoai-core.mjs. Every decision lives in the
+# core; this only resolves its own directory through symlinks (so a
+# ~/.local/bin/hoai link still finds the checkout) and picks a JS runtime.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SOURCE" ]; do                      # follow symlinks (e.g. ~/.local/bin)
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+
+# Two homes: inside the plugin's bin/ (core sits next to this file), or copied
+# elsewhere by an installer that left a hoai-plugin-root.txt breadcrumb naming
+# the plugin root the core lives under.
+CORE="$DIR/hoai-core.mjs"
+if [ ! -f "$CORE" ] && [ -f "$DIR/hoai-plugin-root.txt" ]; then
+  PLUGIN_ROOT="$(head -1 "$DIR/hoai-plugin-root.txt" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+  [ -n "$PLUGIN_ROOT" ] && CORE="$PLUGIN_ROOT/bin/hoai-core.mjs"
+fi
+if [ ! -f "$CORE" ]; then
+  echo "hoai: hoai-core.mjs not found next to this script or via hoai-plugin-root.txt; reinstall with the HOAI app or hoai-bootstrap" >&2
+  exit 127
+fi
+
+if command -v node >/dev/null 2>&1; then
+  exec node "$CORE" "$@"
+fi
+if command -v bun >/dev/null 2>&1; then
+  exec bun "$CORE" "$@"
+fi
+echo "hoai: neither node nor bun was found; install Node 18+ (nodejs.org) or bun (bun.sh)" >&2
+exit 127

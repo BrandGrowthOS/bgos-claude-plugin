@@ -167,6 +167,20 @@ import {
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
 import {
+  ChannelLiveness,
+  deafSessionChatMessage,
+  shouldEscalateDeafSession,
+} from './lib/channel-liveness.js'
+import {
+  liveMarkerPath,
+  readLiveMarker,
+  recordLiveMarker,
+  shouldSendBootHello,
+  shouldBackfillLiveMarker,
+  buildBootHelloNotification,
+} from './lib/boot-hello.js'
+import { detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
+import {
   UpdateStreamConsumer,
   beaconWatchdog,
   sweepMode,
@@ -285,22 +299,32 @@ function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl()
 
 import { appendFileSync, existsSync, statSync, watch } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join as pathJoin } from 'node:path'
+import { join as pathJoin, dirname as pathDirname } from 'node:path'
+import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 
-// Default to a stable, predictable log path so remote agents (where
-// stderr isn't easily reachable from inside the agent loop) can read
-// it via their Read tool. Override with BGOS_LOG_FILE if you want
-// per-deployment routing.
-const DEFAULT_LOG_PATH = pathJoin(
-  tmpdir(),
-  `bgos-plugin-${ASSISTANT_ID || 'unknown'}.log`,
-)
-const LOG_FILE = process.env.BGOS_LOG_FILE || DEFAULT_LOG_PATH
+// One stable, documented log path under the plugin state root so remote
+// agents (where stderr isn't easily reachable from inside the agent loop)
+// can read it via their Read tool regardless of launch method. os.tmpdir()
+// moves between launchd sessions and login shells, so it is NOT used here
+// (lib/log-path.ts has the full story). Override with BGOS_LOG_FILE if you
+// want per-deployment routing.
+const LOG_FILE = resolveLogPath({
+  env: process.env,
+  home: homedir(),
+  assistantId: ASSISTANT_ID,
+})
+ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
 let updateDrainMode = false
 const messageActivity = new MessageActivityTracker()
+// Channel liveness (fix 04): flips true on the first bgos tool call this
+// process sees. A Claude Code session launched without the channel flag
+// accepts our notifications at the transport and silently discards them,
+// and such a session never calls a tool; zero tool calls since boot is the
+// deafness signal. Gates cursor persistence (flushChatCursors) and arms the
+// deaf-session escalation in checkReplyOverdue.
+const channelLiveness = new ChannelLiveness()
 
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
@@ -2776,6 +2800,16 @@ async function handleShowComponent(opts: {
 }
 
 mcp.setRequestHandler(CallToolRequestSchema, (req) => {
+  // Every bgos tool call flows through this one handler, making it the
+  // liveness chokepoint: a session that calls ANY tool can hear us, so mark
+  // before the drain check (a call during an update drain proves liveness
+  // just the same). The first call of a boot also records the persistent
+  // channel-live marker (fix 09): positive, on-disk proof this install can
+  // hear channel events, which the bootstrap's final wait watches for.
+  if (!channelLiveness.live) {
+    channelLiveness.markToolCall()
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+  }
   if (updateDrainMode) {
     return Promise.resolve({
       content: [
@@ -4176,9 +4210,17 @@ interface ChatHistoryResponse {
 // lib/cursor-store.ts). All writes go through advanceChatCursor below so
 // every advance marks the store dirty.
 const DAEMON_START_MS = Date.now()
-const cursorStore = new CursorStore(
-  resolveCursorFilePath({ assistantId: ASSISTANT_ID, cwd: process.cwd() }),
-)
+const CURSOR_FILE_PATH = resolveCursorFilePath({
+  assistantId: ASSISTANT_ID,
+  cwd: process.cwd(),
+})
+// Fix 09: the channel-live marker lives next to the cursor file. Written on
+// the first tool call of every boot (positive proof the session hears us);
+// its absence marks a pairing that has NEVER proven live, which is what
+// triggers the one-time boot hello below and what the bootstrap's final
+// wait watches for.
+const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
+const cursorStore = new CursorStore(CURSOR_FILE_PATH)
 const cursorBoot = cursorStore.load()
 const chatLastSeen = cursorBoot.cursors
 
@@ -4209,6 +4251,26 @@ function advanceChatCursor(chatId: string, id: number): void {
   if (id <= seen) return
   chatLastSeen.set(chatId, id)
   cursorStore.markDirty()
+}
+
+/**
+ * The only flush path for the cursor store (fix 04, deaf-session cursor
+ * gate). A session with zero bgos tool calls since boot (channelLiveness)
+ * may be silently discarding every channel notification, and persisting its
+ * cursor advances would mark the discarded messages as delivered forever.
+ * The record such a session may persist (gatePersistedCursors in
+ * lib/channel-liveness.ts) is exactly the boot-time content, which is
+ * exactly what the cursor file already holds, so the gate is implemented as
+ * "leave the file alone". That also keeps a deaf FIRST run from creating a
+ * cursor file at all: writing one would disarm the first-run gate on the
+ * next boot and replay dormant history (see lib/cursor-store.ts). The store
+ * stays dirty while gated, so the first flush after the session proves live
+ * persists the full advanced map. In-memory advances are NOT gated; they
+ * dedup polls within this process.
+ */
+function flushChatCursors(): void {
+  if (!channelLiveness.live) return
+  cursorStore.flushIfDirty()
 }
 
 // ── Reply-overdue tracking ──────────────────────────────────────────────────
@@ -4447,10 +4509,48 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
   return ctx.currentSpeakerId === me
 }
 
+// Deaf-session escalation fired this boot? The nudge below is itself a
+// channel notification, so a session launched without the channel flag
+// discards the rescue too (fix 04). When the nudge goes unacted for a second
+// full window on a session with zero tool calls since boot, we post the fix
+// into the chat over REST, the path that provably works, once per boot.
+let deafEscalationDone = false
+
+// Fix 09: the one-per-boot latch for the first-ever-boot hello (see main()).
+let bootHelloSent = false
+
 function checkReplyOverdue(): void {
   if (updateDrainMode) return
   const now = Date.now()
   for (const [chatId, p] of pendingInbounds.entries()) {
+    if (
+      shouldEscalateDeafSession({
+        live: channelLiveness.live,
+        pending: p,
+        now,
+        alreadyEscalated: deafEscalationDone,
+        windowMs: REPLY_OVERDUE_MS,
+      })
+    ) {
+      deafEscalationDone = true
+      log(
+        `WARN deaf session suspected: nudge for chat ${chatId} message ${p.messageId} ` +
+          'went unacted and this session has made zero bgos tool calls since ' +
+          'boot; posting launch guidance into the chat',
+      )
+      let fixCommand: string
+      try {
+        fixCommand = launchCommand(
+          detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
+            .method,
+        )
+      } catch {
+        fixCommand = launchCommand('clone')
+      }
+      void sendDaemonText(chatId, deafSessionChatMessage(fixCommand)).catch(
+        (err) => log(`Failed to post deaf-session warning: ${err}`),
+      )
+    }
     if (p.reminded) continue
     if (now - p.ts < REPLY_OVERDUE_MS) continue
     p.reminded = true
@@ -7282,6 +7382,61 @@ async function main(): Promise<void> {
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
   await pollAllChats()
 
+  // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
+  // on disk), ask the session to greet its owner via the reply tool. The
+  // greeting is the user-visible "your agent is alive" moment AND the
+  // positive proof the channel is wired: the tool call it triggers flips
+  // liveness and writes the marker the bootstrap's final wait watches for.
+  // Connected in `claude mcp list` cannot prove hearing (Vulcan E2E,
+  // 2026-08-22: a wrong flag loads tools, says Connected, wires nothing).
+  // BGOS_BOOT_HELLO=off is the kill switch; later boots stay quiet.
+  // An already-paired agent (cursor file existed at boot, the same signal the
+  // first-run gate uses) has processed channel messages before, so it has
+  // ALREADY proven it can hear. The marker is new in this version, so every
+  // existing pairing lacks it; without this guard the WHOLE FLEET would greet
+  // its owners once when daemons restart onto the new build. Suppress the hello
+  // for such agents and backfill the marker silently so the doctor reports them
+  // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
+  // file) still greets, which is the onboarding channel proof.
+  const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
+  const bootHelloExistingPairing = cursorBoot.fileExisted
+  if (
+    shouldBackfillLiveMarker({
+      markerExists: bootHelloMarkerExists,
+      hasPriorCursorState: bootHelloExistingPairing,
+    })
+  ) {
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    log(
+      `boot hello: existing pairing on upgrade (cursor file present, no marker) ` +
+        `- backfilled live marker, staying quiet (no fleet-wide greeting)`,
+    )
+  }
+  if (
+    shouldSendBootHello({
+      markerExists: bootHelloMarkerExists,
+      sentThisBoot: bootHelloSent,
+      hasPriorCursorState: bootHelloExistingPairing,
+      killSwitch: process.env.BGOS_BOOT_HELLO,
+    })
+  ) {
+    const helloChat = monitoredChatIds[0]
+    if (helloChat) {
+      bootHelloSent = true
+      const hello = buildBootHelloNotification({ chatId: helloChat })
+      log(
+        `boot hello: first-ever boot for this pairing, asking the session to ` +
+          `greet the user in chat ${helloChat} (the reply is the channel proof)`,
+      )
+      void trackMessageOperation(() =>
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: hello.content, meta: hello.meta },
+        }),
+      ).catch((err) => log(`boot hello delivery failed: ${err}`))
+    }
+  }
+
   // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
   // fix). The store was loaded synchronously at module init, before any
   // poll; persistence deliberately starts only AFTER the boot sweep above
@@ -7293,15 +7448,16 @@ async function main(): Promise<void> {
   // dirty flag: one flush per interval however many cursors advanced.
   // Losing the last few seconds on a hard crash is fine (the poll filter
   // dedups a short replay); the signal/exit hooks cover normal shutdowns.
-  cursorStore.flushIfDirty()
-  setInterval(() => cursorStore.flushIfDirty(), CURSOR_FLUSH_INTERVAL_MS).unref()
+  // Every site goes through flushChatCursors, the deaf-session cursor gate.
+  flushChatCursors()
+  setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS).unref()
   process.on('exit', () => {
-    cursorStore.flushIfDirty()
+    flushChatCursors()
   })
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       selfUpdater?.markGracefulStop()
-      cursorStore.flushIfDirty()
+      flushChatCursors()
       process.exit(signal === 'SIGINT' ? 130 : 143)
     })
   }

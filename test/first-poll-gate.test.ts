@@ -366,10 +366,11 @@ test('server.ts excludes abandoned pending-empty rows from gated first-poll park
 test('server.ts starts cursor persistence only after the boot sweep', () => {
   // A partial first sweep flushed to disk would disarm the first-run gate on
   // the next boot, so the flush timer and exit hooks must come AFTER the
-  // boot pollAllChats() in main().
+  // boot pollAllChats() in main(). Since fix 04 every flush site goes through
+  // flushChatCursors, the deaf-session cursor gate.
   const sweepIdx = serverSource.indexOf('await pollAllChats()')
   const flushIdx = serverSource.indexOf(
-    'setInterval(() => cursorStore.flushIfDirty(), CURSOR_FLUSH_INTERVAL_MS)',
+    'setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS)',
   )
   assert.ok(sweepIdx !== -1 && flushIdx !== -1)
   assert.ok(flushIdx > sweepIdx, 'flush hooks must start after the first full sweep')
@@ -378,8 +379,22 @@ test('server.ts starts cursor persistence only after the boot sweep', () => {
 test('server.ts flushes the store on a coalescing timer and at exit', () => {
   assert.ok(
     serverSource.includes(
-      'setInterval(() => cursorStore.flushIfDirty(), CURSOR_FLUSH_INTERVAL_MS)',
+      'setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS)',
     ),
   )
   assert.ok(serverSource.includes("process.on('exit'"))
+})
+
+test('server.ts gates every cursor flush on channel liveness (fix 04)', () => {
+  // The gate is "leave the file alone while no bgos tool call has proven the
+  // session can hear us": flushChatCursors is the ONLY caller of
+  // cursorStore.flushIfDirty, and it early-returns while not live.
+  assert.ok(serverSource.includes('function flushChatCursors'))
+  assert.ok(serverSource.includes('if (!channelLiveness.live) return'))
+  const direct = serverSource.match(/cursorStore\.flushIfDirty\(\)/g) ?? []
+  assert.equal(
+    direct.length,
+    1,
+    'cursorStore.flushIfDirty must be called only inside flushChatCursors',
+  )
 })

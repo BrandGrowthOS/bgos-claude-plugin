@@ -14,7 +14,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, stat, rm, writeFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, stat, rm, writeFile, symlink } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -44,7 +45,7 @@ import {
   describeFileProtection,
   pairExitCode,
   win32AclCommand,
-  shouldCoWriteLegacy,
+  dedupeLegacyAfterWrite,
   legacyWriteBlocked,
   writeAndVerifyCredentials,
   restartInstructions,
@@ -53,6 +54,8 @@ import {
   bakeLaunchPin,
   FOLDER_PIN_FILE_NAME,
 } from '../bin/bgos-pair.mjs'
+import { detectInstallMethod } from '../bin/bgos-install-method.mjs'
+import { resolveCredentialsSelection } from '../lib/agent-credentials.ts'
 
 test('normalizeApiBase always yields a single /api/v1 suffix', () => {
   assert.equal(normalizeApiBase('https://api.brandgrowthos.ai'), 'https://api.brandgrowthos.ai/api/v1')
@@ -271,15 +274,21 @@ test('buildCredentials is the exact durable shape server.ts reads', () => {
   })
 })
 
+/** Compare paths in posix spelling. The path helpers build with node:path
+ *  join, which uses the PLATFORM separator, so on win32 these literal
+ *  expectations would fail on '\' vs '/' alone while every segment is right.
+ *  Normalizing only the separator keeps the full literal pinned. */
+const asPosix = (path: string) => path.replaceAll('\\', '/')
+
 test('credentialsPath is ~/.bgos-agent/credentials.json', () => {
-  assert.equal(credentialsPath('/home/kc'), '/home/kc/.bgos-agent/credentials.json')
+  assert.equal(asPosix(credentialsPath('/home/kc')), '/home/kc/.bgos-agent/credentials.json')
 })
 
 // ── Defect 2: one credentials slot per assistant, not per OS user ───────────
 
 test('credentialsWritePath defaults to a per-assistant file', () => {
   assert.equal(
-    credentialsWritePath({ home: '/home/kc', assistantId: 871, env: {} }),
+    asPosix(credentialsWritePath({ home: '/home/kc', assistantId: 871, env: {} })),
     '/home/kc/.bgos-agent/credentials-871.json',
   )
 })
@@ -297,7 +306,7 @@ test('credentialsWritePath honours BGOS_CREDENTIALS_PATH outright', () => {
 
 test('credentialsWritePath falls back to the legacy file when no assistant is bound yet', () => {
   assert.equal(
-    credentialsWritePath({ home: '/home/kc', assistantId: null, env: {} }),
+    asPosix(credentialsWritePath({ home: '/home/kc', assistantId: null, env: {} })),
     '/home/kc/.bgos-agent/credentials.json',
   )
 })
@@ -313,27 +322,33 @@ test('resolveReadCredentialsPath mirrors the read order: override, per-assistant
     }),
     '/x/c.json',
   )
-  // Per-assistant file wins when present for the configured id.
+  // Per-assistant file wins when present for the configured id. The exists
+  // probe compares in posix spelling too: the resolver hands it a
+  // platform-separator path.
   assert.equal(
-    resolveReadCredentialsPath({
-      env: { BGOS_ASSISTANT_ID: '871' },
-      home,
-      exists: (p) => p === '/home/kc/.bgos-agent/credentials-871.json',
-    }),
+    asPosix(
+      resolveReadCredentialsPath({
+        env: { BGOS_ASSISTANT_ID: '871' },
+        home,
+        exists: (p) => asPosix(p) === '/home/kc/.bgos-agent/credentials-871.json',
+      }),
+    ),
     '/home/kc/.bgos-agent/credentials-871.json',
   )
   // Absent per-assistant file falls back to the legacy single file.
   assert.equal(
-    resolveReadCredentialsPath({
-      env: { BGOS_ASSISTANT_ID: '871' },
-      home,
-      exists: () => false,
-    }),
+    asPosix(
+      resolveReadCredentialsPath({
+        env: { BGOS_ASSISTANT_ID: '871' },
+        home,
+        exists: () => false,
+      }),
+    ),
     '/home/kc/.bgos-agent/credentials.json',
   )
   // No configured assistant id reads the legacy single file.
   assert.equal(
-    resolveReadCredentialsPath({ env: {}, home, exists: () => true }),
+    asPosix(resolveReadCredentialsPath({ env: {}, home, exists: () => true })),
     '/home/kc/.bgos-agent/credentials.json',
   )
 })
@@ -418,10 +433,17 @@ test('verifyWrittenCredentials fails when the written path is not the one reads 
   }
 })
 
-// ── Review fix 1: a fresh single-agent host (packaged plugin, no
+// ── Legacy single-slot dedupe: a fresh single-agent host (packaged plugin, no
 //    BGOS_ASSISTANT_ID configured) must still come up after pairing. The
-//    daemon with an empty env reads the legacy credentials.json, so pairing
-//    co-writes it when that cannot clobber another agent. ──────────────────
+//    empty-env daemon resolves via the folder-aware boot resolver's rule 4
+//    (a SOLE credentials-<id>.json with NO legacy file next to it), so pairing
+//    DELETES a junk or stale same-agent credentials.json after the
+//    per-assistant write instead of co-writing it. The co-write it replaces
+//    kept a second live copy of the token, which was itself the single-slot
+//    identity trap (KC-WINSAMSUNG, Mark, 888, 2026-08-06: four pairings, four
+//    behaviours, and deleting the file by hand was exactly the absence that
+//    made the next pairing rewrite it). Another agent's live pairing in the
+//    legacy slot is still never touched. ─────────────────────────────────────
 
 function mkCreds(assistantId: number | string | null, token = 'pair_secret') {
   return buildCredentials({
@@ -434,14 +456,23 @@ function mkCreds(assistantId: number | string | null, token = 'pair_secret') {
   })
 }
 
-test('shouldCoWriteLegacy: absent or same-agent legacy is refreshed, another agent is never touched', () => {
-  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: 901 }), true)
+test('dedupeLegacyAfterWrite: unbound keeps, junk deletes, same agent deletes, another agent keeps', () => {
+  // Rule 1: an unbound write (no assistantId) writes the legacy slot itself
+  // and owns it; deleting here would eat its own write.
+  assert.equal(dedupeLegacyAfterWrite({ legacyCreds: mkCreds(872), assistantId: null }), 'keep')
+  assert.equal(dedupeLegacyAfterWrite({ legacyCreds: null, assistantId: '' }), 'keep')
+  // Rule 2: junk (unparsable -> null, or tokenless) shadows the boot
+  // resolver's sole-per-assistant rule, so it goes.
+  assert.equal(dedupeLegacyAfterWrite({ legacyCreds: null, assistantId: 901 }), 'delete')
+  assert.equal(dedupeLegacyAfterWrite({ legacyCreds: { assistantId: 901 }, assistantId: 901 }), 'delete')
+  // Rule 3: this same agent's stale copy; the per-assistant file just written
+  // is the single source of truth.
   assert.equal(
-    shouldCoWriteLegacy({ legacyCreds: mkCreds(901, 'old_token'), assistantId: 901 }),
-    true,
+    dedupeLegacyAfterWrite({ legacyCreds: mkCreds(901, 'old_token'), assistantId: 901 }),
+    'delete',
   )
-  assert.equal(shouldCoWriteLegacy({ legacyCreds: mkCreds(872), assistantId: 871 }), false)
-  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: null }), false)
+  // Rule 4: another agent's live pairing is not ours to remove.
+  assert.equal(dedupeLegacyAfterWrite({ legacyCreds: mkCreds(872), assistantId: 871 }), 'keep')
 })
 
 test('legacyWriteBlocked: a live pairing for a bound assistant blocks the unbound legacy write', () => {
@@ -451,18 +482,33 @@ test('legacyWriteBlocked: a live pairing for a bound assistant blocks the unboun
   assert.equal(legacyWriteBlocked({ assistantId: 872 }), false, 'no token, nothing to protect')
 })
 
-test('fresh single-agent pairing resolves for a daemon with an EMPTY env (0.31.0 flow preserved)', async () => {
+test('fresh single-agent pairing resolves for a daemon with an EMPTY env (folder-aware rule 4)', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bgos-pair-fresh-'))
   try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
     const r = await writeAndVerifyCredentials({ creds: mkCreds(901), env: {}, home })
     assert.equal(r.ok, true, r.reason)
     assert.equal(r.path, join(home, '.bgos-agent', 'credentials-901.json'))
-    assert.equal(r.legacyCoWritePath, join(home, '.bgos-agent', 'credentials.json'))
+    // No legacy file existed, so nothing was deduped and nothing is co-written:
+    // the per-assistant file stands alone from the first write.
+    assert.equal(r.legacyDeduped, null)
+    assert.equal(existsSync(legacyPath), false)
+    // Exit-affecting: the string-mirror probe alone would demand a pin here,
+    // but the daemon's folder-aware boot resolver does not need one (rule 4),
+    // and writeAndVerifyCredentials must answer for the resolver that actually
+    // runs at boot.
     assert.equal(r.needsEnvPin, false)
-    // The reviewer's end-to-end check: resolve exactly as the daemon would,
-    // with no BGOS_ASSISTANT_ID and no BGOS_CREDENTIALS_PATH, and find the token.
-    const daemonPath = resolveReadCredentialsPath({ env: {}, home })
-    const daemonCreds = JSON.parse(await readFile(daemonPath, 'utf8'))
+    // The end-to-end check, against the REAL boot resolver: empty env, cwd
+    // holding no folder pin, and rule 4 still finds the sole per-assistant file.
+    const selection = resolveCredentialsSelection({
+      env: {},
+      defaultPath: legacyPath,
+      cwd: home,
+    })
+    assert.equal(selection.kind, 'ok')
+    assert.equal(selection.kind === 'ok' && selection.via, 'sole-per-assistant')
+    assert.equal(selection.kind === 'ok' && selection.path, r.path)
+    const daemonCreds = JSON.parse(await readFile(r.path, 'utf8'))
     assert.equal(daemonCreds.pairingToken, 'pair_secret')
     assert.equal(daemonCreds.assistantId, 901)
   } finally {
@@ -479,7 +525,10 @@ test('pairing a second agent NEVER touches the first agent\'s legacy slot (kc-se
     const r = await writeAndVerifyCredentials({ creds: mkCreds(871, 'ava_token'), env: {}, home })
     assert.equal(r.ok, true, r.reason)
     assert.equal(r.path, join(home, '.bgos-agent', 'credentials-871.json'))
-    assert.equal(r.legacyCoWritePath, null)
+    // The dedupe judged the legacy slot and KEPT it: it holds another agent's
+    // live pairing, and the result names whose so main() can say it out loud.
+    assert.equal(r.legacyDeduped, null)
+    assert.equal(r.legacyKeptForOtherAgent, '872')
     assert.equal(await readFile(legacyPath, 'utf8'), before, 'legacy slot must be byte identical')
     // Without an env pin the daemon would read the OTHER agent's file, so the
     // operator must be told to set BGOS_ASSISTANT_ID.
@@ -489,16 +538,84 @@ test('pairing a second agent NEVER touches the first agent\'s legacy slot (kc-se
   }
 })
 
-test('same-agent re-pair refreshes the legacy slot too', async () => {
+test('same-agent re-pair DELETES the stale legacy slot; the per-assistant file is the single source of truth', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bgos-pair-repair-'))
   try {
     const legacyPath = join(home, '.bgos-agent', 'credentials.json')
     await writeCredentialsFile(legacyPath, mkCreds(901, 'old_token'))
     const r = await writeAndVerifyCredentials({ creds: mkCreds(901, 'new_token'), env: {}, home })
     assert.equal(r.ok, true, r.reason)
-    assert.equal(r.legacyCoWritePath, legacyPath)
-    const legacy = JSON.parse(await readFile(legacyPath, 'utf8'))
-    assert.equal(legacy.pairingToken, 'new_token')
+    // Deduped: the stale same-agent copy is gone, the result reports it, and
+    // main() can print what actually happened (a same-agent removal, not junk).
+    assert.equal(r.legacyDeduped, legacyPath)
+    assert.equal(r.legacyDedupedHeldSameAgent, true)
+    assert.equal(existsSync(legacyPath), false)
+    // THE read-side invariant behind the delete: with the legacy file gone and
+    // credentials-901.json the sole candidate, an EMPTY-env daemon launched
+    // from an unpinned cwd resolves the per-assistant file via the boot
+    // resolver's rule 4, so the exit-affecting needsEnvPin must be false.
+    assert.equal(r.needsEnvPin, false)
+    const selection = resolveCredentialsSelection({
+      env: {},
+      defaultPath: legacyPath,
+      cwd: home,
+    })
+    assert.equal(selection.kind, 'ok')
+    assert.equal(selection.kind === 'ok' && selection.via, 'sole-per-assistant')
+    assert.equal(selection.kind === 'ok' && selection.path, r.path)
+    const daemonCreds = JSON.parse(await readFile(r.path, 'utf8'))
+    assert.equal(daemonCreds.pairingToken, 'new_token')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('junk legacy credentials.json is deleted at write time (it would shadow rule 4)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-junk-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    await mkdir(join(home, '.bgos-agent'), { recursive: true })
+    await writeFile(legacyPath, 'not json {')
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(901), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.legacyDeduped, legacyPath)
+    // Honest reporting input: junk is NOT a same-agent pairing, so main()
+    // must not claim "(same agent)" about a file that held garbage.
+    assert.equal(r.legacyDedupedHeldSameAgent, false)
+    assert.equal(existsSync(legacyPath), false)
+    assert.equal(r.needsEnvPin, false)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('multi-agent host: dedupe still fires, but the pin requirement is untouched (exit 3 path)', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-multi-'))
+  try {
+    const legacyPath = join(home, '.bgos-agent', 'credentials.json')
+    // Another agent already lives here, and a stale same-agent legacy copy sits
+    // in the shared slot.
+    await writeCredentialsFile(join(home, '.bgos-agent', 'credentials-935.json'), mkCreds(935, 'other_token'))
+    await writeCredentialsFile(legacyPath, mkCreds(871, 'stale_token'))
+    const r = await writeAndVerifyCredentials({ creds: mkCreds(871, 'new_token'), env: {}, home })
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.legacyDeduped, legacyPath)
+    assert.equal(existsSync(legacyPath), false)
+    // NOT weakened: with credentials-935.json next door the sole-per-assistant
+    // rule cannot apply, so the pin stays required and pairExitCode still
+    // refuses to call the pairing done.
+    assert.equal(r.needsEnvPin, true)
+    assert.equal(
+      pairExitCode({ needsEnvPin: r.needsEnvPin, otherAgentCount: 1 }),
+      PAIR_EXIT_CODES.PIN_REQUIRED,
+    )
+    // And the boot resolver REFUSES rather than guessing between the two ids.
+    const selection = resolveCredentialsSelection({
+      env: {},
+      defaultPath: legacyPath,
+      cwd: home,
+    })
+    assert.equal(selection.kind, 'refuse')
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -522,13 +639,18 @@ test('unbound pairing refuses to overwrite a live legacy pairing, naming the bou
   }
 })
 
-test('unbound pairing may overwrite an unbound placeholder legacy file', async () => {
+test('unbound pairing may overwrite an unbound placeholder legacy file, and never deletes it', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bgos-pair-placeholder-'))
   try {
     const legacyPath = join(home, '.bgos-agent', 'credentials.json')
     await writeCredentialsFile(legacyPath, mkCreds(null, 'old_token'))
     const r = await writeAndVerifyCredentials({ creds: mkCreds(null, 'new_token'), env: {}, home })
     assert.equal(r.ok, true, r.reason)
+    // The unbound flow's write target IS the legacy slot: the dedupe never
+    // runs against it (dedupeLegacyAfterWrite rule 1), so the file it just
+    // wrote survives.
+    assert.equal(r.legacyDeduped, null)
+    assert.equal(existsSync(legacyPath), true)
     const legacy = JSON.parse(await readFile(legacyPath, 'utf8'))
     assert.equal(legacy.pairingToken, 'new_token')
   } finally {
@@ -536,29 +658,54 @@ test('unbound pairing may overwrite an unbound placeholder legacy file', async (
   }
 })
 
-// ── Defect 4: the restart instruction must be honest for both topologies ────
+// ── Defect 4 (revised by fix 02): with install-method evidence in hand the
+//    restart instruction names exactly ONE launch command (a marketplace
+//    install launched with the clone spec drops every inbound message
+//    silently, 2026-08-21); with no evidence it stays honest about both. ─────
 
-test('restartInstructions names both channel forms and when each applies', () => {
-  const text = restartInstructions().join('\n')
-  assert.match(text, /restart your agent process the way it normally starts/i)
-  assert.match(text, /plugin:hoai@hoai/)
-  assert.match(text, /server:bgos/)
-  assert.match(text, /packaged/i)
-  assert.match(text, /checkout|multi-agent/i)
+test('restartInstructions with a detection names exactly ONE launch command plus how it was detected', () => {
+  const marketplace = detectInstallMethod({
+    env: { CLAUDE_PLUGIN_ROOT: '/home/kc/.claude/plugins/cache/hoai/hoai/0.34.0' },
+    home: '/home/kc',
+  })
+  assert.equal(marketplace.method, 'marketplace')
+  const mText = restartInstructions(marketplace).join('\n')
+  assert.match(mText, /plugin:hoai@hoai/)
+  assert.doesNotMatch(mText, /server:bgos/)
+  assert.match(mText, /marketplace install/i)
+
+  const clone = detectInstallMethod({
+    env: { CLAUDE_PLUGIN_ROOT: '/home/kc/bgos-claude-plugin' },
+    home: '/home/kc',
+  })
+  assert.equal(clone.method, 'clone')
+  const cText = restartInstructions(clone).join('\n')
+  assert.match(cText, /server:bgos/)
+  assert.doesNotMatch(cText, /plugin:hoai@hoai/)
+  assert.match(cText, /local checkout/i)
 })
 
-test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)', async () => {
+test('restartInstructions with no detection keeps both channel forms and when each applies', () => {
+  for (const lines of [restartInstructions(), restartInstructions(null)]) {
+    const text = lines.join('\n')
+    assert.match(text, /restart your agent process the way it normally starts/i)
+    assert.match(text, /plugin:hoai@hoai/)
+    assert.match(text, /server:bgos/)
+    assert.match(text, /packaged/i)
+    assert.match(text, /checkout|multi-agent/i)
+  }
+})
+
+test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-main-'))
   try {
     const real = join(dir, 'real.mjs')
     const link = join(dir, 'shim.mjs')
     await writeFile(real, '// entry\n')
-    await symlink(real, link)
     const moduleUrl = pathToFileURL(real).href
-    // Invoked via the symlink shim: argv[1] is the link, module url is the real
-    // path. A plain href compare would return false and main() would never run.
-    assert.equal(isRunAsMain(link, moduleUrl), true)
-    // Invoked directly: also true.
+    // Invoked directly: true. These direct-path checks run on every platform,
+    // before the symlink half, so a failure here still fails the test even
+    // where the symlink cannot be created.
     assert.equal(isRunAsMain(real, moduleUrl), true)
     // A different file is not the entry point.
     const other = join(dir, 'other.mjs')
@@ -566,12 +713,29 @@ test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)'
     assert.equal(isRunAsMain(other, moduleUrl), false)
     // Non-string argv[1] (imported, not executed).
     assert.equal(isRunAsMain(undefined, moduleUrl), false)
+    try {
+      await symlink(real, link)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        // win32 denies symlink creation to non-elevated users without
+        // Developer Mode, so the shim half of this test cannot run here.
+        // Honest skip, not a red test: the direct-path assertions above
+        // already ran, and the shim path is exercised on posix CI.
+        t.skip('win32 refused symlink creation (needs elevation or Developer Mode)')
+        return
+      }
+      throw err
+    }
+    // Invoked via the symlink shim: argv[1] is the link, module url is the real
+    // path. A plain href compare would return false and main() would never run.
+    assert.equal(isRunAsMain(link, moduleUrl), true)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('writeCredentialsFile pins mode 600 and round-trips the JSON', async () => {
+test('writeCredentialsFile pins mode 600 (posix) and round-trips the JSON', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-'))
   try {
     const path = join(dir, '.bgos-agent', 'credentials.json')
@@ -584,89 +748,19 @@ test('writeCredentialsFile pins mode 600 and round-trips the JSON', async () => 
       nowIso: '2026-07-11T00:00:00.000Z',
     })
     await writeCredentialsFile(path, creds)
-    const st = await stat(path)
-    assert.equal(st.mode & 0o777, CREDENTIALS_FILE_MODE)
+    if (process.platform !== 'win32') {
+      // Only where chmod actually works: on win32 fs.chmod(0o600) is a no-op
+      // (the mode reads back 0o666) and the real protection is the icacls ACL,
+      // which the dedicated win32 tests below pin via an injected runner.
+      // Asserting 0o600 here on Windows would test the platform, not the code.
+      const st = await stat(path)
+      assert.equal(st.mode & 0o777, CREDENTIALS_FILE_MODE)
+    }
     const back = JSON.parse(await readFile(path, 'utf8'))
     assert.deepEqual(back, creds)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
-})
-
-/**
- * KC-WINSAMSUNG, 2026-08-06. Mark (888) migrated four agents and watched the
- * tool behave four different ways, then reported what it actually did:
- *
- *   chaser  935 -> "also refreshed credentials.json"   (legacy was ABSENT)
- *   vera    909 -> "also refreshed credentials.json"   (legacy ABSENT, he had
- *                                                       just deleted it)
- *   minerva 972 -> refused, warned to pin the id       (legacy PRESENT, other)
- *   noor    940 -> refused, warned to pin the id       (legacy PRESENT, other)
- *
- * The co-write exists for a real case: a daemon with an EMPTY env has no
- * pinned id and can only find its pairing at the default path. On a host with
- * ONE agent that is correct. On a host with twelve it recreates the exact
- * single-slot trap this whole migration exists to remove, and the file then
- * holds whoever paired last as a live identity trap.
- *
- * The sting is that the workaround feeds the defect: Mark deleted the legacy
- * file after Chaser, and that absence is what made Vera recreate it. An
- * operator cannot win by hand here, so the host has to decide. It already
- * knows: a credentials-<other id>.json sitting next to it means more than one
- * agent lives here.
- */
-test('shouldCoWriteLegacy: a multi-agent host never gets the legacy file back', () => {
-  // THE DEFECT: absent legacy plus another agent's per-assistant file present.
-  // Before this fix that returned true and re-armed the trap.
-  assert.equal(
-    shouldCoWriteLegacy({
-      legacyCreds: null,
-      assistantId: 909,
-      otherAssistantIds: ['935'],
-    }),
-    false,
-  )
-  // Several other agents present: still no.
-  assert.equal(
-    shouldCoWriteLegacy({
-      legacyCreds: null,
-      assistantId: 940,
-      otherAssistantIds: ['909', '935', '972'],
-    }),
-    false,
-  )
-  // A single-agent host is unchanged: nothing else lives here, so the daemon
-  // with an empty env still needs the default path.
-  assert.equal(
-    shouldCoWriteLegacy({
-      legacyCreds: null,
-      assistantId: 901,
-      otherAssistantIds: [],
-    }),
-    true,
-  )
-  // Our own id appearing in the list is not another agent (idempotent re-pair).
-  assert.equal(
-    shouldCoWriteLegacy({
-      legacyCreds: null,
-      assistantId: 901,
-      otherAssistantIds: ['901'],
-    }),
-    true,
-  )
-  // Absent list keeps the old behaviour, so nothing regresses for callers
-  // that have not been taught to look.
-  assert.equal(shouldCoWriteLegacy({ legacyCreds: null, assistantId: 901 }), true)
-  // And the pre-existing refusal is untouched: another agent's live pairing in
-  // the legacy slot is never overwritten, list or no list.
-  assert.equal(
-    shouldCoWriteLegacy({
-      legacyCreds: mkCreds(872),
-      assistantId: 871,
-      otherAssistantIds: [],
-    }),
-    false,
-  )
 })
 
 /**
@@ -865,25 +959,29 @@ test('describeFileProtection: a FAILED win32 lock says unprotected, never fine',
   )
 })
 
-test('win32AclCommand: primary and fallback keep the explicit principal grant', () => {
-  // Mark's gotcha: icacls with /inheritance:r invoked straight from PowerShell
-  // trips a safety guard that misreads it as a system-path deletion. It has to
-  // go through cmd /c. Neither form fails loudly.
-  const cmd = win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim')
-  assert.ok(cmd)
+test('win32AclCommand: direct icacls argv, no cmd.exe string to re-parse', () => {
+  // The old `cmd.exe /c "<whole line>"` form double-quoted the grant
+  // (execFile quotes the array element, cmd re-parses it) and icacls saw
+  // `""karim:F""`: Invalid parameter, exit 87, file left world-readable
+  // (found live by the 2026-08-22 one-click E2E). Direct argv cannot be
+  // re-parsed, so the grant arrives exactly as built.
   const args = [
-    '/c',
-    'icacls "C:\\Users\\karim\\.bgos-agent\\credentials-935.json" ' +
-      '/inheritance:r /grant:r "karim:F"',
+    'C:\\Users\\karim\\.bgos-agent\\credentials-935.json',
+    '/inheritance:r',
+    '/grant:r',
+    'karim:F',
   ]
-  assert.deepEqual(cmd, { file: 'cmd.exe', args })
+  assert.deepEqual(
+    win32AclCommand('C:\\Users\\karim\\.bgos-agent\\credentials-935.json', 'karim'),
+    { file: 'icacls', args },
+  )
   assert.deepEqual(
     win32AclCommand(
       'C:\\Users\\karim\\.bgos-agent\\credentials-935.json',
       'karim',
-      'C:\\Windows\\System32\\cmd.exe',
+      'C:\\Windows\\System32\\icacls.exe',
     ),
-    { file: 'C:\\Windows\\System32\\cmd.exe', args },
+    { file: 'C:\\Windows\\System32\\icacls.exe', args },
   )
 })
 
@@ -894,7 +992,7 @@ test('win32AclCommand: refuses to build a command without a username', () => {
   assert.equal(win32AclCommand('C:\\x\\y.json', undefined), null)
 })
 
-test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async () => {
+test('writeCredentialsFile retries an absent icacls through SystemRoot', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-fallback-'))
   try {
     const calls: Array<{ file: string, args: string[] }> = []
@@ -904,15 +1002,15 @@ test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async 
       systemRoot: 'C:\\Windows',
       run: async (file: string, args: string[]) => {
         calls.push({ file, args })
-        if (file === 'cmd.exe') {
-          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        if (file === 'icacls') {
+          throw Object.assign(new Error('spawn icacls ENOENT'), { code: 'ENOENT' })
         }
       },
     })
     assert.equal(result.aclApplied, true)
     assert.deepEqual(calls.map((call) => call.file), [
-      'cmd.exe',
-      'C:\\Windows\\System32\\cmd.exe',
+      'icacls',
+      'C:\\Windows\\System32\\icacls.exe',
     ])
     assert.deepEqual(calls[1].args, calls[0].args)
   } finally {
@@ -920,7 +1018,7 @@ test('writeCredentialsFile retries an absent cmd.exe through SystemRoot', async 
   }
 })
 
-test('writeCredentialsFile reports an icacls exit without retrying a resolved cmd.exe', async () => {
+test('writeCredentialsFile reports an icacls exit without retrying a resolved icacls', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-exit-'))
   try {
     const calls: string[] = []
@@ -937,7 +1035,7 @@ test('writeCredentialsFile reports an icacls exit without retrying a resolved cm
       },
     })
     assert.equal(result.aclApplied, false)
-    assert.deepEqual(calls, ['cmd.exe'])
+    assert.deepEqual(calls, ['icacls'])
     assert.match(String(result.aclError), /Access is denied/)
     assert.match(String(result.aclError), /code 5/)
     assert.match(describeFileProtection(result), /^UNPROTECTED.*code 5/)
@@ -946,7 +1044,7 @@ test('writeCredentialsFile reports an icacls exit without retrying a resolved cm
   }
 })
 
-test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unprotected', async () => {
+test('writeCredentialsFile reports both icacls failures when the ACL stays unprotected', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-acl-error-'))
   try {
     const calls: string[] = []
@@ -956,20 +1054,20 @@ test('writeCredentialsFile reports both cmd.exe failures when the ACL stays unpr
       systemRoot: 'C:\\Windows',
       run: async (file: string) => {
         calls.push(file)
-        if (file === 'cmd.exe') {
-          throw Object.assign(new Error('spawn cmd.exe ENOENT'), { code: 'ENOENT' })
+        if (file === 'icacls') {
+          throw Object.assign(new Error('spawn icacls ENOENT'), { code: 'ENOENT' })
         }
         throw Object.assign(new Error('icacls: Access is denied.'), { code: 5 })
       },
     })
     assert.equal(result.aclApplied, false)
-    assert.deepEqual(calls, ['cmd.exe', 'C:\\Windows\\System32\\cmd.exe'])
-    assert.match(String(result.aclError), /spawn cmd\.exe ENOENT/)
+    assert.deepEqual(calls, ['icacls', 'C:\\Windows\\System32\\icacls.exe'])
+    assert.match(String(result.aclError), /spawn icacls ENOENT/)
     assert.match(String(result.aclError), /Access is denied/)
     assert.match(String(result.aclError), /code 5/)
     const description = describeFileProtection(result)
     assert.match(description, /^UNPROTECTED/)
-    assert.match(description, /spawn cmd\.exe ENOENT/)
+    assert.match(description, /spawn icacls ENOENT/)
     assert.match(description, /Access is denied/)
   } finally {
     await rm(dir, { recursive: true, force: true })
