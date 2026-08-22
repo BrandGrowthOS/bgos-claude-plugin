@@ -44,7 +44,7 @@ describe('shouldSendVersionHeartbeat', () => {
 describe('startVersionHeartbeat', () => {
   test('pairing mode posts daemonVersion at boot and arms the 6h timer', async () => {
     const calls: Array<{ path: string; body: Record<string, unknown> }> = []
-    const timer = startVersionHeartbeat({
+    const handle = startVersionHeartbeat({
       authMode: 'pairing',
       rootDir: dirWithPackage('0.22.0'),
       post: async (path, body) => {
@@ -53,7 +53,7 @@ describe('startVersionHeartbeat', () => {
       },
       log: () => {},
     })
-    expect(timer).not.toBeNull()
+    expect(handle).not.toBeNull()
     await Bun.sleep(0)
     expect(calls.length).toBe(1)
     expect(calls[0]!.path).toBe('integrations/heartbeat')
@@ -62,8 +62,71 @@ describe('startVersionHeartbeat', () => {
     // see WHERE the agent is running. Asserted by shape, not by deep equality,
     // so adding a future env field does not break this contract test.
     expect(calls[0]!.body.env).toBeDefined()
+    // Without an updateStatus provider the one-click fields stay absent, so
+    // an older wiring cannot accidentally send updateReadiness: undefined.
+    expect('latestKnownVersion' in calls[0]!.body).toBe(false)
+    expect('updateReadiness' in calls[0]!.body).toBe(false)
     expect(VERSION_HEARTBEAT_INTERVAL_MS).toBe(6 * 60 * 60 * 1000)
-    clearInterval(timer!)
+    clearInterval(handle!.timer)
+  })
+
+  test('updateStatus providers ride the body and sendNow posts immediately', async () => {
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+    const readiness = {
+      supervised: 'launcher' as const,
+      autoUpdateEnabled: true,
+      rollbackLatched: false,
+      pendingRestartVersion: '0.39.0',
+    }
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.38.0'),
+      post: async (path, body) => {
+        calls.push({ path, body })
+        return {}
+      },
+      log: () => {},
+      updateStatus: {
+        latestKnownVersion: () => '0.39.0',
+        updateReadiness: () => readiness,
+      },
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.body.latestKnownVersion).toBe('0.39.0')
+    expect(calls[0]!.body.updateReadiness).toEqual(readiness)
+    handle!.sendNow()
+    await Bun.sleep(0)
+    expect(calls.length).toBe(2)
+    expect(calls[1]!.body.daemonVersion).toBe('0.38.0')
+    clearInterval(handle!.timer)
+  })
+
+  test('a throwing updateStatus provider never blocks the heartbeat', async () => {
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.38.0'),
+      post: async (path, body) => {
+        calls.push({ path, body })
+        return {}
+      },
+      log: () => {},
+      updateStatus: {
+        latestKnownVersion: () => {
+          throw new Error('git exploded')
+        },
+        updateReadiness: () => {
+          throw new Error('fs exploded')
+        },
+      },
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.body.daemonVersion).toBe('0.38.0')
+    expect('latestKnownVersion' in calls[0]!.body).toBe(false)
+    expect('updateReadiness' in calls[0]!.body).toBe(false)
+    clearInterval(handle!.timer)
   })
   test('apikey mode is a no-op', () => {
     expect(
@@ -76,7 +139,7 @@ describe('startVersionHeartbeat', () => {
     ).toBeNull()
   })
   test('a rejecting post never throws', async () => {
-    const timer = startVersionHeartbeat({
+    const handle = startVersionHeartbeat({
       authMode: 'pairing',
       rootDir: dirWithPackage('0.22.0'),
       post: async () => {
@@ -85,7 +148,7 @@ describe('startVersionHeartbeat', () => {
       log: () => {},
     })
     await Bun.sleep(0)
-    clearInterval(timer!)
+    clearInterval(handle!.timer)
   })
 })
 

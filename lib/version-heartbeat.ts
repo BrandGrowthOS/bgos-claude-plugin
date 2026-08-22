@@ -13,6 +13,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { UpdateReadiness } from './update-readiness.js'
+
 /** Read the plugin version from package.json next to the server entry. Never throws. */
 export function readOwnVersion(rootDir: string): string | null {
   try {
@@ -67,24 +69,49 @@ export function shouldSendVersionHeartbeat(authMode: string, version: string | n
 
 export const VERSION_HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000
 
+/** One-click update telemetry providers (wire contract v1 section 1),
+ *  evaluated per send because the launcher supervisor and the latch files
+ *  can change under a running daemon. */
+export interface HeartbeatUpdateStatus {
+  latestKnownVersion: () => string | null
+  updateReadiness: () => UpdateReadiness
+}
+
 /**
  * Start the heartbeat loop. `post` is the plugin's authenticated POST helper.
- * Returns the timer (unref'd) or null when skipped, for tests.
+ * Returns { timer, sendNow } (timer unref'd) or null when skipped, for tests
+ * and for the update_rpc handler, whose 'staged' path fires sendNow so
+ * pendingRestartVersion does not wait up to 6 hours (the backend's own
+ * >=10s per-pairing debounce still applies).
  */
 export function startVersionHeartbeat(deps: {
   authMode: string
   rootDir: string
   post: (path: string, body: Record<string, unknown>) => Promise<unknown>
   log: (msg: string) => void
-}): ReturnType<typeof setInterval> | null {
+  updateStatus?: HeartbeatUpdateStatus
+}): { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null {
   const version = readOwnVersion(deps.rootDir)
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
   const send = async () => {
     try {
-      await deps.post('integrations/heartbeat', {
+      const body: Record<string, unknown> = {
         daemonVersion: version,
         env: heartbeatEnv(process),
-      })
+      }
+      // Guarded per provider: readiness must still ride when the
+      // latest-version probe throws, and vice versa. The backend ignores
+      // invalid values rather than 400ing, so null is always safe to send.
+      const status = deps.updateStatus
+      if (status) {
+        try {
+          body.latestKnownVersion = status.latestKnownVersion()
+        } catch {}
+        try {
+          body.updateReadiness = status.updateReadiness()
+        } catch {}
+      }
+      await deps.post('integrations/heartbeat', body)
     } catch {
       // Telemetry only: never let a heartbeat failure surface.
     }
@@ -93,5 +120,5 @@ export function startVersionHeartbeat(deps: {
   deps.log(`version heartbeat armed (v${version}, every 6h)`)
   const timer = setInterval(send, VERSION_HEARTBEAT_INTERVAL_MS)
   timer.unref?.()
-  return timer
+  return { timer, sendNow: () => void send() }
 }

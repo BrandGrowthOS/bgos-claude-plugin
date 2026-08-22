@@ -2,6 +2,43 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.0 (22 August 2026)
+
+One-click updates (wire contract v1, BrandGrowthOS/BGOS
+docs/handoff/one-click-plugin-update/wire-contract.md): the app's "update
+this agent" button reaches the daemon, and interactive sessions finally
+have a restart authority.
+
+- **update_rpc handler.** The backend pushes `update_rpc {rpcId, op}` to
+  the pairing room; the frame carries NOTHING else (no version, no url, no
+  script), the daemon resolves the update from its own pinned source with
+  every existing brake honored (same-major gate, dirty-tree, checkout lock,
+  rollback latches). Ack + progress ride REST
+  (`integrations/update-rpc/:rpcId/ack` / `/progress`); the handler is
+  deliberately NOT drain-gated and never tracked as message work (either
+  would deadlock or deafen its own drain). Kill switch off, latch tripped,
+  nothing newer, marketplace install: each is a descriptive terminal error,
+  never silence (`lib/update-rpc.ts`).
+- **Restart ladder, never a bare exit.** After installing: an installed
+  always-on service triggers a DETACHED delayed restart (systemd-run /
+  launchctl kickstart); else a live hoai launcher gets a
+  restart-requested.json marker; else the daemon reports 'staged', keeps
+  serving the old code, and the pending restart rides the next heartbeat.
+  The daemon itself never calls process.exit (the kc-server invariant).
+- **Launcher-loop supervisor.** A bare `hoai` now supervises the claude it
+  spawns: it writes `~/.bgos-agent/<id>/supervisor.json` (pid + relaunch
+  capability), polls for the restart marker every 3s, and on marker SIGTERMs
+  claude and relaunches it with the re-detected channel flags plus
+  --continue. Marker contents are ignored (existence only, so the marker can
+  never carry commands), a normal exit never relaunches, and a 3-per-hour
+  budget stops update-crash loops (`bin/hoai-core.mjs superviseClaude`).
+- **Readiness heartbeat.** The 6h version heartbeat now also reports
+  `latestKnownVersion` (last origin/main inspection; null on marketplace
+  installs) and `updateReadiness` {supervised: systemd|launchd|launcher|none,
+  autoUpdateEnabled, rollbackLatched, pendingRestartVersion}, so the app can
+  show update_available / restart_pending / paused per pairing. A 'staged'
+  update fires one immediate heartbeat instead of waiting 6 hours.
+
 ## 0.37.0 (22 August 2026)
 
 One click, zero terminal: the onboarding release. Every fix from the

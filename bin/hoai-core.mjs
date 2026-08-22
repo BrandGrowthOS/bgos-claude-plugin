@@ -9,7 +9,13 @@
  *   hoai              launch the agent from this folder with the CORRECT
  *                     channel flag. The flag is detected, never guessed: on
  *                     2026-08-21 a marketplace install launched with the clone
- *                     spec dropped every inbound message silently.
+ *                     spec dropped every inbound message silently. The launch
+ *                     is SUPERVISED: while claude runs, hoai watches the
+ *                     agent's state dir for a restart-requested.json marker
+ *                     (written by the daemon's one-click update handler) and
+ *                     relaunches claude with --continue when it appears, so
+ *                     interactive sessions, Windows included, finally have a
+ *                     restart authority.
  *   hoai doctor       diagnose this host (hands off to bin/bgos-doctor.mjs)
  *   hoai pair <CODE>  pair this folder (hands off to bin/bgos-pair.mjs); a
  *                     bare BGOS-/OC- code routes here too
@@ -26,7 +32,15 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -228,6 +242,212 @@ export function buildRunPlan({
   return { ok: true, command: 'claude', args, detection, note: `${methodLine}\n${identityLine}` }
 }
 
+// -- The supervise loop (one-click updates) -----------------------------------
+
+/** Mirror of lib/update-readiness.ts SUPERVISOR_FILE / RESTART_MARKER_FILE:
+ *  the daemon detects and pokes this launcher through these two files in the
+ *  agent's state dir (~/.bgos-agent/<id>/). Pinned by
+ *  test/update-readiness.test.ts, which imports both sides. */
+export const SUPERVISOR_FILE_NAME = 'supervisor.json'
+export const RESTART_MARKER_FILE_NAME = 'restart-requested.json'
+
+/** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
+ *  an update-crash loop must not bounce the session forever. */
+export const MAX_RELAUNCHES_PER_WINDOW = 3
+export const RELAUNCH_WINDOW_MS = 60 * 60 * 1000
+export const MARKER_POLL_MS = 3000
+
+/**
+ * The assistant id this launch supervises: folder pin, else env pin, else
+ * this host's sole paired agent, else '' (supervision off, launch exactly as
+ * before). Mirrors buildRunPlan's identity precedence; ids are digits-only
+ * (the state dirs are numeric), anything else disables supervision.
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, home?: string,
+ *   readFile?: (path: string) => string | null, listDir?: (path: string) => string[] }} [opts]
+ */
+export function superviseAssistantId({
+  cwd,
+  env = {},
+  home = homedir(),
+  readFile = defaultReadText,
+  listDir = defaultListDir,
+} = {}) {
+  const pinned = readFolderPin(cwd, readFile) || configuredAssistantId(env)
+  if (pinned) return /^\d+$/.test(pinned) ? pinned : ''
+  const ids = listPairedAssistantIds(home, listDir)
+  return ids.length === 1 ? ids[0] : ''
+}
+
+/** supervisor.json body: what the daemon validates before trusting this
+ *  launcher as a restart authority (the pid must still be alive and the
+ *  relaunch capability must be declared). */
+export function supervisorFileBody(pid, startedAt) {
+  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt })
+}
+
+/**
+ * Pure relaunch budget: prior marker-relaunch timestamps plus now in,
+ * decision out. `recent` is the pruned rolling window the caller keeps.
+ * @param {readonly number[]} relaunchesAt
+ * @param {number} now
+ * @returns {{ allow: boolean, recent: number[] }}
+ */
+export function decideMarkerRelaunch(relaunchesAt, now) {
+  const recent = (Array.isArray(relaunchesAt) ? relaunchesAt : []).filter(
+    (at) => Number.isFinite(at) && now - at < RELAUNCH_WINDOW_MS,
+  )
+  return { allow: recent.length < MAX_RELAUNCHES_PER_WINDOW, recent }
+}
+
+/**
+ * The args for a marker-triggered relaunch: FRESH install-method detection
+ * (an update can move a marketplace cache dir, so the flag is re-detected,
+ * never reused blind) plus --continue so the session resumes where it was
+ * instead of starting cold.
+ * @param {{ scriptDir?: string, env?: Record<string, string | undefined>, home?: string }} [opts]
+ */
+export function relaunchClaudeArgs({ scriptDir = '', env = process.env, home = homedir() } = {}) {
+  const detection = detectInstallMethod({
+    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+    env,
+    home,
+  })
+  return ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method), '--continue']
+}
+
+/** Best-effort write with parent mkdir; false on failure. */
+function defaultWriteFile(path, content) {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Best-effort delete; false when the file was not removed. */
+function defaultRemoveFile(path) {
+  try {
+    unlinkSync(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Launch claude and supervise it: while the child runs, poll the agent's
+ * state dir for a restart-requested.json marker (written by the daemon's
+ * update_rpc handler). Marker present: delete it, SIGTERM the child, await
+ * its exit, and relaunch with the correct channel flags plus --continue.
+ * This is the restart authority for interactive sessions, Windows included,
+ * where no launchd/systemd service exists.
+ *
+ * Guarantees:
+ *   - marker CONTENTS are ignored, existence only, so the marker can never
+ *     carry commands (and a stale marker from a previous run is consumed
+ *     before the first spawn, never acted on);
+ *   - a child exit WITHOUT a marker is a normal exit, no relaunch, exactly
+ *     today's behavior;
+ *   - at most MAX_RELAUNCHES_PER_WINDOW marker relaunches per rolling hour,
+ *     then supervision stops (printed) and the session runs on to a normal
+ *     exit;
+ *   - supervisor.json is written at start and removed on the way out, and
+ *     carries this launcher's pid so the daemon can verify liveness.
+ * @param {readonly string[]} args
+ * @param {{
+ *   platform?: string, env?: Record<string, string | undefined>, home?: string,
+ *   cwd?: string, scriptDir?: string,
+ *   readFile?: (path: string) => string | null,
+ *   listDir?: (path: string) => string[],
+ *   spawnImpl?: typeof spawn, writeErr?: (text: string) => void,
+ *   exists?: (path: string) => boolean,
+ *   writeFile?: (path: string, content: string) => boolean,
+ *   removeFile?: (path: string) => boolean,
+ *   pollMs?: number, now?: () => number, print?: (line: string) => void,
+ * }} [opts]
+ * @returns {Promise<number>}
+ */
+export async function superviseClaude(args, opts = {}) {
+  const platform = opts.platform ?? process.platform
+  const env = opts.env ?? process.env
+  const home = opts.home ?? homedir()
+  const cwd = opts.cwd ?? process.cwd()
+  const scriptDir = opts.scriptDir ?? ''
+  const readFile = opts.readFile ?? defaultReadText
+  const listDir = opts.listDir ?? defaultListDir
+  const spawnImpl = opts.spawnImpl ?? spawn
+  const writeErr = opts.writeErr ?? ((text) => process.stderr.write(text))
+  const exists = opts.exists ?? existsSync
+  const writeFile = opts.writeFile ?? defaultWriteFile
+  const removeFile = opts.removeFile ?? defaultRemoveFile
+  const pollMs = opts.pollMs ?? MARKER_POLL_MS
+  const now = opts.now ?? Date.now
+  const print = opts.print ?? ((line) => console.log(line))
+
+  const spawnOnce = (spawnArgs, onSpawn) =>
+    spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+
+  const id = superviseAssistantId({ cwd, env, home, readFile, listDir })
+  if (!id) return spawnOnce(args)
+  const stateDir = joinDir(agentDir(home), id)
+  const supervisorPath = joinDir(stateDir, SUPERVISOR_FILE_NAME)
+  const markerPath = joinDir(stateDir, RESTART_MARKER_FILE_NAME)
+  const body = supervisorFileBody(process.pid, new Date(now()).toISOString())
+  if (!writeFile(supervisorPath, body)) {
+    // No state dir to arm in: launch exactly as before, unsupervised.
+    return spawnOnce(args)
+  }
+  // A marker left behind by a dead launcher is moot: this launch already
+  // starts the newest installed code.
+  if (exists(markerPath)) removeFile(markerPath)
+  print(`[hoai] restart supervisor armed for assistant ${id}`)
+  let relaunchesAt = []
+  let exhausted = false
+  let currentArgs = [...args]
+  try {
+    while (true) {
+      /** @type {import('node:child_process').ChildProcess | null} */
+      let childRef = null
+      let restartRequested = false
+      const exited = spawnOnce(currentArgs, (child) => {
+        childRef = child
+      })
+      const poller = setInterval(() => {
+        if (exhausted || restartRequested || !childRef) return
+        if (!exists(markerPath)) return
+        removeFile(markerPath)
+        const decision = decideMarkerRelaunch(relaunchesAt, now())
+        relaunchesAt = decision.recent
+        if (!decision.allow) {
+          exhausted = true
+          print(
+            `[hoai] restart marker ignored: ${MAX_RELAUNCHES_PER_WINDOW} relaunches in the ` +
+              'last hour. Not relaunching again; exit and run hoai to pick up the update.',
+          )
+          return
+        }
+        relaunchesAt.push(now())
+        restartRequested = true
+        print('[hoai] restart requested by the daemon; restarting claude to pick up the update...')
+        try {
+          childRef.kill()
+        } catch {
+          // The child already died; its exit resolves the loop below.
+        }
+      }, pollMs)
+      const code = await exited
+      clearInterval(poller)
+      if (!restartRequested) return code
+      currentArgs = relaunchClaudeArgs({ scriptDir, env, home })
+      print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
+    }
+  } finally {
+    removeFile(supervisorPath)
+  }
+}
+
 // -- Logs ---------------------------------------------------------------------
 
 /**
@@ -304,9 +524,11 @@ function spawnErrorMeansNotFound(err) {
 /**
  * Try the candidates in order; resolve with the exit code of the first one
  * that actually runs, or EXIT_NOT_FOUND after printing an install hint when
- * none of them exists.
+ * none of them exists. `onSpawn` (optional) receives every spawned candidate
+ * child, so the supervise loop can SIGTERM the live one; a fallback attempt
+ * calls it again with the replacement child.
  */
-export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text) } = {}) {
+export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {}) {
   const candidates = claudeSpawnCandidates(args, platform, env)
   return new Promise((resolve) => {
     const tryNext = (index) => {
@@ -328,6 +550,7 @@ export function spawnClaude(args, { platform = process.platform, env = process.e
         resolve(1)
         return
       }
+      onSpawn?.(child)
       child.on('error', (err) => {
         if (spawnErrorMeansNotFound(err)) return tryNext(index + 1)
         writeErr(`[hoai] could not start ${candidate.file}: ${err?.message ?? err}\n`)
@@ -453,7 +676,16 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     return 1
   }
   console.log(plan.note)
-  return spawnClaude(plan.args, { platform, env, spawnImpl })
+  return superviseClaude(plan.args, {
+    platform,
+    env,
+    home,
+    cwd,
+    scriptDir,
+    readFile,
+    listDir,
+    spawnImpl,
+  })
 }
 
 /**

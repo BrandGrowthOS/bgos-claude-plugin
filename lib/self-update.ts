@@ -116,13 +116,29 @@ export function describePendingRestart(params: {
   installedVersion: string | null | undefined
 }): string | null {
   const running = params.runningVersion?.trim()
-  const installed = params.installedVersion?.trim()
+  const installed = pendingRestartVersionFrom(
+    params.runningVersion,
+    params.installedVersion,
+  )
   if (!running || !installed) return null
-  if (running === installed) return null
   return (
     `Pending update: running ${running}, installed ${installed}, ` +
     'takes effect when this session restarts.'
   )
+}
+
+/** The installed-but-not-running version, or null when nothing is pending.
+ *  The comparison describePendingRestart narrates, extracted so the
+ *  heartbeat's updateReadiness.pendingRestartVersion (wire contract v1) and
+ *  the update_rpc ladder read the exact same fact. */
+export function pendingRestartVersionFrom(
+  runningVersion: string | null | undefined,
+  installedVersion: string | null | undefined,
+): string | null {
+  const running = runningVersion?.trim()
+  const installed = installedVersion?.trim()
+  if (!running || !installed || running === installed) return null
+  return installed
 }
 
 export function updateJitterMs(randomValue: number): number {
@@ -757,6 +773,32 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
+/** What a triggered (update_rpc 'update_now') run produced. 'failed' with
+ *  latched:true means the checkout latched itself drained (the existing
+ *  worst-case posture); every other outcome leaves intake serving. */
+export type UpdateNowOutcome =
+  | { kind: 'busy' }
+  | { kind: 'latched' }
+  | {
+      kind: 'no-update'
+      latestVersion: string | null
+      reason: 'invalid-version' | 'not-newer' | 'major-change'
+    }
+  | { kind: 'dirty-tree' }
+  | { kind: 'not-fast-forward' }
+  | { kind: 'installed'; targetVersion: string }
+  | { kind: 'failed'; message: string; latched: boolean }
+
+/** applyUpdate's per-mode result. 'exited' only ever surfaces in tests
+ *  (the injected exit spy returns); in production opts.exit never does. */
+type ApplyUpdateOutcome =
+  | 'installed'
+  | 'exited'
+  | 'skipped-dirty'
+  | 'skipped-not-ff'
+  | 'skipped-target-mismatch'
+  | 'failed-latched'
+
 export interface SelfUpdaterOptions {
   rootDir: string
   stateFilePath: string
@@ -787,6 +829,7 @@ export class SelfUpdater {
   private exiting = false
   private started = false
   private healthyTimer: ReturnType<typeof setTimeout> | null = null
+  private lastInspectedVersion: string | null = null
 
   constructor(
     private readonly opts: SelfUpdaterOptions,
@@ -802,6 +845,28 @@ export class SelfUpdater {
     this.delay = opts.delay ?? sleep
     this.lockPath = join(opts.rootDir, '.git', AUTO_UPDATE_LOCK_FILE)
     this.safetyPath = join(opts.rootDir, '.git', AUTO_UPDATE_SAFETY_FILE)
+  }
+
+  /** The newest version the last origin/main inspection found (heartbeat
+   *  telemetry, wire contract v1 latestKnownVersion). Null before the first
+   *  successful check; non-git installs never construct an updater at all. */
+  get latestKnownVersion(): string | null {
+    return this.lastInspectedVersion
+  }
+
+  /** True when either rollback latch (this daemon's state or the shared
+   *  checkout safety file) is holding updates off. */
+  isRollbackLatched(): boolean {
+    return this.state.disabled || loadSharedUpdateSafety(this.safetyPath).disabled
+  }
+
+  /** The installed-but-not-running version, if any: live-state source of the
+   *  fact describePendingRestart reads at boot. */
+  pendingRestartVersion(): string | null {
+    return pendingRestartVersionFrom(
+      this.opts.runningVersion,
+      this.state.validationPending ? this.state.targetVersion : null,
+    )
   }
 
   armValidationTimer(): void {
@@ -873,6 +938,7 @@ export class SelfUpdater {
         this.opts.log('Auto-update skipped because the checkout has local changes.')
         return
       }
+      this.lastInspectedVersion = inspection.latestVersion
       if (inspection.versionDecision.kind !== 'update') {
         this.opts.log(
           `Auto-update check: running ${this.opts.runningVersion ?? 'unknown'}, ` +
@@ -892,6 +958,78 @@ export class SelfUpdater {
     } finally {
       this.checkRunning = false
       this.scheduleNext()
+    }
+  }
+
+  /**
+   * One-click update (update_rpc 'update_now'): the same inspection, drain,
+   * and ff-only apply as a scheduled check, run on demand and WITHOUT any
+   * exit: the caller owns the restart ladder (service restart, launcher
+   * marker, or staged), because a triggered update that self-exits on an
+   * unsupervised host is the kc-server outage again. Reports 'draining' and
+   * 'installing' through `report` (which must not throw); every other stage
+   * belongs to the caller. After 'installed' the drain deliberately stays ON
+   * until the caller restarts or stages; every other outcome (except a
+   * latched failure, which stays drained by design) leaves intake serving.
+   */
+  async updateNow(
+    report: (stage: 'draining' | 'installing', targetVersion: string | null) => Promise<void>,
+  ): Promise<UpdateNowOutcome> {
+    if (this.checkRunning || this.exiting) return { kind: 'busy' }
+    this.checkRunning = true
+    try {
+      if (this.isRollbackLatched()) return { kind: 'latched' }
+      if (this.state.validationPending) {
+        // An update is already on disk awaiting a restart (or the freshly
+        // restarted code is inside its 60s validation window): nothing to
+        // pull. With a pending version the caller goes straight to the
+        // restart ladder; mid-validation there is no coherent answer yet.
+        const pending = this.pendingRestartVersion()
+        return pending ? { kind: 'installed', targetVersion: pending } : { kind: 'busy' }
+      }
+      const inspection = await inspectGitUpdate({
+        rootDir: this.opts.rootDir,
+        runningVersion: this.opts.runningVersion,
+        runner: this.runner,
+      })
+      if (inspection.kind === 'dirty-tree') return { kind: 'dirty-tree' }
+      this.lastInspectedVersion = inspection.latestVersion
+      if (inspection.versionDecision.kind !== 'update') {
+        return {
+          kind: 'no-update',
+          latestVersion: inspection.latestVersion,
+          reason: inspection.versionDecision.reason,
+        }
+      }
+      if (!inspection.canFastForward && inspection.currentCommit !== inspection.targetCommit) {
+        return { kind: 'not-fast-forward' }
+      }
+      await report('draining', inspection.latestVersion)
+      await this.waitForDrain()
+      await report('installing', inspection.latestVersion)
+      const applied = await this.applyUpdate(inspection, 'triggered')
+      if (applied === 'installed' || applied === 'exited') {
+        return { kind: 'installed', targetVersion: inspection.latestVersion! }
+      }
+      if (applied === 'skipped-dirty') return { kind: 'dirty-tree' }
+      if (applied === 'skipped-not-ff') return { kind: 'not-fast-forward' }
+      if (applied === 'skipped-target-mismatch') {
+        return {
+          kind: 'failed',
+          message: 'another daemon installed a different target',
+          latched: false,
+        }
+      }
+      return {
+        kind: 'failed',
+        message: 'update failed and this checkout latched itself drained; see the daemon log',
+        latched: true,
+      }
+    } catch (error) {
+      this.opts.setDrainMode(false)
+      return { kind: 'failed', message: errorText(error), latched: false }
+    } finally {
+      this.checkRunning = false
     }
   }
 
@@ -923,7 +1061,8 @@ export class SelfUpdater {
 
   private async applyUpdate(
     inspection: Extract<GitUpdateInspection, { kind: 'checked' }>,
-  ): Promise<void> {
+    mode: 'scheduled' | 'triggered' = 'scheduled',
+  ): Promise<ApplyUpdateOutcome> {
     await this.waitForDrain()
     const lock = tryAcquireUpdateLock(this.lockPath, this.now())
     if (lock.kind === 'held') {
@@ -943,18 +1082,26 @@ export class SelfUpdater {
             'The shared checkout update did not install the inspected target. This daemon will continue.',
           )
           this.opts.setDrainMode(false)
-          return
+          return 'skipped-target-mismatch'
         }
         this.recordInstalled(inspection.targetCommit, inspection.latestVersion!)
+        if (mode === 'triggered') {
+          // The rpc caller owns the restart ladder; report installed, never
+          // exit (kc-server invariant).
+          this.opts.log('The shared checkout update was completed by another daemon.')
+          completedLock.release()
+          completedLock = null
+          return 'installed'
+        }
         this.opts.log('The shared checkout update is complete. Restarting this daemon.')
         this.exiting = true
         completedLock.release()
         completedLock = null
         this.opts.exit(0)
+        return 'exited'
       } finally {
         completedLock?.release()
       }
-      return
     }
     try {
       const status = await git(this.runner, this.opts.rootDir, [
@@ -981,7 +1128,7 @@ export class SelfUpdater {
             : 'Auto-update skipped because the checkout cannot fast-forward to origin/main.',
         )
         this.opts.setDrainMode(false)
-        return
+        return action.reason === 'dirty-tree' ? 'skipped-dirty' : 'skipped-not-ff'
       }
       const stateBeforeUpdate = this.state
       const dependencyChanges =
@@ -1059,13 +1206,22 @@ export class SelfUpdater {
                 throw new Error('could not preserve target validation state')
               }
               this.state = pendingInstalledState
+              if (mode === 'triggered') {
+                // The target checkout is on disk; the rpc caller's restart
+                // ladder (or the next restart) validates it. Never exit.
+                this.opts.log(
+                  'Auto-update could not restore the previous revision. The target checkout and dependencies were restored; a restart validates it.',
+                )
+                lock.release()
+                return 'installed'
+              }
               this.opts.log(
                 'Auto-update could not restore the previous revision. The target checkout and dependencies were restored for supervised validation.',
               )
               this.exiting = true
               lock.release()
               this.opts.exit(0)
-              return
+              return 'exited'
             } catch (targetRecoveryError) {
               this.state = pendingInstalledState
               const safetySaved = saveSharedUpdateSafety(this.safetyPath, {
@@ -1085,7 +1241,7 @@ export class SelfUpdater {
                   ? 'Auto-update is disabled for this shared checkout until the flag is reset.'
                   : 'Auto-update could not persist the shared safety latch. This daemon remains drained.',
               )
-              return
+              return 'failed-latched'
             }
           } else {
             if (!saveAutoUpdateState(this.opts.stateFilePath, stateBeforeUpdate)) {
@@ -1100,7 +1256,7 @@ export class SelfUpdater {
                   ? 'Auto-update failed before the pull and could not restore its state. Future checks are disabled and message intake remains drained.'
                   : 'Auto-update failed before the pull and could not restore its state or shared safety latch. This daemon remains drained.',
               )
-              return
+              return 'failed-latched'
             }
             this.state = stateBeforeUpdate
           }
@@ -1112,6 +1268,14 @@ export class SelfUpdater {
       } else {
         this.opts.log('Auto-update was already installed by another daemon.')
       }
+      if (mode === 'triggered') {
+        // The rpc caller decides between a real restart (drain stays on
+        // until the process dies) and 'staged' (the caller un-drains). Never
+        // exit here, whatever BGOS_EXIT_AFTER_UPDATE says: the ladder is the
+        // restart authority for a triggered update.
+        lock.release()
+        return 'installed'
+      }
       // A DAEMON NEVER EXITS UNLESS SOMETHING WILL RESTART IT (kc-server,
       // 2026-08-06). Exiting is opt in; see shouldExitAfterUpdate.
       if (shouldExitAfterUpdate(this.opts.env)) {
@@ -1119,7 +1283,7 @@ export class SelfUpdater {
         this.exiting = true
         lock.release()
         this.opts.exit(0)
-        return
+        return 'exited'
       }
       this.opts.log(
         `Auto-update complete. This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +
@@ -1129,6 +1293,7 @@ export class SelfUpdater {
       // wearing a healthier-looking process list.
       this.opts.setDrainMode(false)
       lock.release()
+      return 'installed'
     } finally {
       lock.release()
     }
