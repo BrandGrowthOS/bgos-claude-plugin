@@ -176,6 +176,7 @@ import {
   readLiveMarker,
   recordLiveMarker,
   shouldSendBootHello,
+  shouldBackfillLiveMarker,
   buildBootHelloNotification,
 } from './lib/boot-hello.js'
 import { detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
@@ -7389,10 +7390,33 @@ async function main(): Promise<void> {
   // Connected in `claude mcp list` cannot prove hearing (Vulcan E2E,
   // 2026-08-22: a wrong flag loads tools, says Connected, wires nothing).
   // BGOS_BOOT_HELLO=off is the kill switch; later boots stay quiet.
+  // An already-paired agent (cursor file existed at boot, the same signal the
+  // first-run gate uses) has processed channel messages before, so it has
+  // ALREADY proven it can hear. The marker is new in this version, so every
+  // existing pairing lacks it; without this guard the WHOLE FLEET would greet
+  // its owners once when daemons restart onto the new build. Suppress the hello
+  // for such agents and backfill the marker silently so the doctor reports them
+  // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
+  // file) still greets, which is the onboarding channel proof.
+  const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
+  const bootHelloExistingPairing = cursorBoot.fileExisted
+  if (
+    shouldBackfillLiveMarker({
+      markerExists: bootHelloMarkerExists,
+      hasPriorCursorState: bootHelloExistingPairing,
+    })
+  ) {
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    log(
+      `boot hello: existing pairing on upgrade (cursor file present, no marker) ` +
+        `- backfilled live marker, staying quiet (no fleet-wide greeting)`,
+    )
+  }
   if (
     shouldSendBootHello({
-      markerExists: readLiveMarker(LIVE_MARKER_PATH) != null,
+      markerExists: bootHelloMarkerExists,
       sentThisBoot: bootHelloSent,
+      hasPriorCursorState: bootHelloExistingPairing,
       killSwitch: process.env.BGOS_BOOT_HELLO,
     })
   ) {

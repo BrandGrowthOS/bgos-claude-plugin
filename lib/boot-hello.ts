@@ -75,14 +75,40 @@ export function nextLiveMarker(
  * stays quiet: a returning agent greeting its owner at every restart would
  * be noise, and the runtime deaf-session escalation already covers a later
  * regression.
+ *
+ * `hasPriorCursorState` suppresses the hello for an EXISTING pairing on the
+ * upgrade that introduced the marker. The marker is new, so every already
+ * paired agent lacks it, but an agent that has processed channel messages
+ * before (it has a chat-cursors file) has ALREADY proven it can hear: the
+ * hello is the ONBOARDING proof for a genuinely-new pairing, not something
+ * the whole fleet should fire at once when its daemons restart onto the new
+ * version. See shouldBackfillLiveMarker for the silent marker write that
+ * keeps such an agent consistent afterwards.
  */
 export function shouldSendBootHello(input: {
   markerExists: boolean
   sentThisBoot: boolean
+  hasPriorCursorState?: boolean
   killSwitch?: string | undefined
 }): boolean {
   if (String(input.killSwitch ?? '').trim().toLowerCase() === 'off') return false
+  if (input.hasPriorCursorState) return false
   return !input.markerExists && !input.sentThisBoot
+}
+
+/**
+ * On the upgrade that introduced the marker, an existing pairing (one with
+ * prior cursor state) has no marker yet but has already proven it can hear.
+ * Backfill the marker silently so the doctor reports it live and no later
+ * boot re-evaluates it as an onboarding boot. Only when there is prior cursor
+ * state AND no marker; a genuinely-new pairing writes its marker the normal
+ * way (the first proven-live tool call).
+ */
+export function shouldBackfillLiveMarker(input: {
+  markerExists: boolean
+  hasPriorCursorState: boolean
+}): boolean {
+  return !input.markerExists && input.hasPriorCursorState
 }
 
 /**

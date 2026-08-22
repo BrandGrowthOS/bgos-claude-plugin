@@ -16,6 +16,7 @@ import {
   parseLiveMarker,
   nextLiveMarker,
   shouldSendBootHello,
+  shouldBackfillLiveMarker,
   buildBootHelloNotification,
   readLiveMarker,
   recordLiveMarker,
@@ -63,6 +64,49 @@ test('shouldSendBootHello: only the never-proven pairing, once per boot, killabl
   assert.equal(
     shouldSendBootHello({ markerExists: false, sentThisBoot: false, killSwitch: 'on' }),
     true,
+  )
+})
+
+test('shouldSendBootHello: an EXISTING pairing (prior cursor state) never greets on upgrade', () => {
+  // The fleet-wide-greeting fix: the marker is new, so every already-paired
+  // agent lacks it, but a cursor file proves it has heard before. It must stay
+  // quiet even though markerExists is false and it has not sent one this boot.
+  assert.equal(
+    shouldSendBootHello({
+      markerExists: false,
+      sentThisBoot: false,
+      hasPriorCursorState: true,
+    }),
+    false,
+  )
+  // A genuinely-new pairing (no cursor file) still greets: that is the
+  // onboarding channel proof.
+  assert.equal(
+    shouldSendBootHello({
+      markerExists: false,
+      sentThisBoot: false,
+      hasPriorCursorState: false,
+    }),
+    true,
+  )
+})
+
+test('shouldBackfillLiveMarker: only an existing pairing that has no marker yet', () => {
+  // existing agent on upgrade: cursor file present, marker absent -> backfill
+  assert.equal(
+    shouldBackfillLiveMarker({ markerExists: false, hasPriorCursorState: true }),
+    true,
+  )
+  // genuinely-new pairing: no cursor file -> do NOT backfill (it greets and
+  // writes its marker the normal way on the first proven-live tool call)
+  assert.equal(
+    shouldBackfillLiveMarker({ markerExists: false, hasPriorCursorState: false }),
+    false,
+  )
+  // already has a marker -> nothing to backfill, regardless of cursor state
+  assert.equal(
+    shouldBackfillLiveMarker({ markerExists: true, hasPriorCursorState: true }),
+    false,
   )
 })
 
