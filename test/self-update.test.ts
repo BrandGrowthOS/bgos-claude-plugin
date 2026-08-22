@@ -1530,3 +1530,146 @@ describe('the kc-server outage, end to end', () => {
     expect(exits).toEqual([0])
   })
 })
+
+describe('updateNow (one-click update_rpc trigger)', () => {
+  function updaterHarness(opts: {
+    runner?: CommandRunner
+    env?: Record<string, string | undefined>
+  } = {}) {
+    const rootDir = tempDir('self-update-now-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-now-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
+    const runner = opts.runner ?? gitRunner({ calls })
+    const build = () =>
+      initializeSelfUpdater({
+        rootDir,
+        stateFilePath,
+        env: opts.env ?? { BGOS_AUTO_UPDATE: 'on' },
+        runningVersion: '0.26.0',
+        log: (message) => logs.push(message),
+        drainSnapshot: () => ({
+          activeOperations: 0,
+          pendingMessages: 0,
+          pendingPermissions: 0,
+        }),
+        setDrainMode: (enabled) => drainModes.push(enabled),
+        exit: (code) => exits.push(code),
+        runner,
+        schedule: () => setTimeout(() => {}, 60_000),
+      })
+    return { rootDir, stateFilePath, calls, exits, drainModes, logs, build }
+  }
+
+  test('happy path: drains, installs, keeps the drain ON, and NEVER exits', async () => {
+    const h = updaterHarness()
+    const updater = (await h.build())!
+    expect(updater).not.toBeNull()
+    const stages: Array<{ stage: string; targetVersion: string | null }> = []
+    const outcome = await updater.updateNow(async (stage, targetVersion) => {
+      stages.push({ stage, targetVersion })
+    })
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(stages).toEqual([
+      { stage: 'draining', targetVersion: '0.27.0' },
+      { stage: 'installing', targetVersion: '0.27.0' },
+    ])
+    // Triggered mode: drain goes ON for the apply (updateNow's pre-drain
+    // plus applyUpdate's own wait, both idempotent) and STAYS on (the rpc
+    // ladder un-drains on 'staged' or dies on restart); no exit, ever.
+    expect(h.drainModes.length).toBeGreaterThan(0)
+    expect(h.drainModes.every((enabled) => enabled === true)).toBe(true)
+    expect(h.exits).toEqual([])
+    expect(h.calls.some((c) => c.args[0] === 'merge')).toBe(true)
+    // The heartbeat's telemetry sees both facts immediately.
+    expect(updater.latestKnownVersion).toBe('0.27.0')
+    expect(updater.pendingRestartVersion()).toBe('0.27.0')
+  })
+
+  test('a second updateNow short-circuits to the already-installed version', async () => {
+    const h = updaterHarness()
+    const updater = (await h.build())!
+    await updater.updateNow(async () => {})
+    const fetchesBefore = h.calls.filter((c) => c.args[0] === 'fetch').length
+    const stages: string[] = []
+    const outcome = await updater.updateNow(async (stage) => {
+      stages.push(stage)
+    })
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    // No new inspection, no new drain, no stages: straight to the ladder.
+    expect(stages).toEqual([])
+    expect(h.calls.filter((c) => c.args[0] === 'fetch').length).toBe(fetchesBefore)
+  })
+
+  test('BGOS_EXIT_AFTER_UPDATE is ignored on the triggered path (the ladder owns restarts)', async () => {
+    const h = updaterHarness({ env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' } })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(h.exits).toEqual([])
+  })
+
+  test('nothing newer reports no-update with the inspected version', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const h = updaterHarness({ runner: gitRunner({ calls, latestVersion: '0.26.0' }) })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {
+      throw new Error('no stages expected before an actual install')
+    })
+    expect(outcome).toEqual({
+      kind: 'no-update',
+      latestVersion: '0.26.0',
+      reason: 'not-newer',
+    })
+    expect(h.drainModes).toEqual([])
+    expect(updater.latestKnownVersion).toBe('0.26.0')
+  })
+
+  test('a dirty checkout reports dirty-tree and touches nothing', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const h = updaterHarness({ runner: gitRunner({ calls, status: ' M server.ts\n' }) })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'dirty-tree' })
+    expect(calls.some((c) => c.args[0] === 'merge')).toBe(false)
+    expect(h.drainModes).toEqual([])
+  })
+
+  test('a shared latch written after boot wins before any git work', async () => {
+    const h = updaterHarness()
+    const updater = (await h.build())!
+    expect(
+      saveSharedUpdateSafety(join(h.rootDir, '.git', 'bgos-auto-update-disabled.json'), {
+        schemaVersion: 1,
+        disabled: true,
+        resetArmed: false,
+      }),
+    ).toBe(true)
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'latched' })
+    expect(h.calls.some((c) => c.args[0] === 'fetch')).toBe(false)
+    expect(updater.isRollbackLatched()).toBe(true)
+  })
+
+  test('a git failure mid-flight restores intake and reports a descriptive failure', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const base = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (args.join(' ').startsWith('fetch')) throw new Error('network is down')
+      return base(file, args, opts)
+    }
+    const h = updaterHarness({ runner })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({
+      kind: 'failed',
+      message: 'network is down',
+      latched: false,
+    })
+    // Intake is restored even though the failure struck before any drain.
+    expect(h.drainModes).toEqual([false])
+  })
+})

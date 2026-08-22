@@ -13,7 +13,7 @@
 
 import { readFile, stat, readdir, realpath } from 'node:fs/promises'
 import { basename } from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, spawn as spawnProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 
@@ -219,11 +219,22 @@ import {
 import { homedir } from 'node:os'
 import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
 import {
+  AUTO_UPDATE_SAFETY_FILE,
   initializeSelfUpdater,
+  isAutoUpdateEnabled,
+  loadAutoUpdateState,
+  loadSharedUpdateSafety,
   MessageActivityTracker,
+  pendingRestartVersionFrom,
   resolveAutoUpdateStatePath,
   type SelfUpdater,
 } from './lib/self-update'
+import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
+import {
+  chooseRestartAuthority,
+  detectSupervision,
+  type UpdateReadiness,
+} from './lib/update-readiness.js'
 import { join as joinPath } from 'node:path'
 
 // ── Configuration ────────────────────────────────────────────────────────────
@@ -298,7 +309,15 @@ function getApiBaseUrl(): string {
 
 const API_BASE = getApiBaseUrl()
 
-import { appendFileSync, existsSync, statSync, watch } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  watch,
+  writeFileSync,
+} from 'node:fs'
 import { join as pathJoin, dirname as pathDirname } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 
@@ -316,6 +335,14 @@ const LOG_FILE = resolveLogPath({
 ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
+// The heartbeat handle, once armed in main (pairing mode only): the
+// update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
+// the backend immediately instead of on the next 6h tick.
+let versionHeartbeat: { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null = null
+// Captured ONCE at boot: after an install the package.json on disk already
+// shows the NEW version while this process still runs the old code, and
+// readiness must compare against what is RUNNING.
+const RUNNING_VERSION = readOwnVersion(import.meta.dir)
 let updateDrainMode = false
 const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
@@ -5483,6 +5510,94 @@ const voiceRpc = new VoiceRpcHandler({
   log,
 })
 
+// ── One-click updates (update_rpc + heartbeat readiness) ─────────────────────
+// The backend's "update this agent" button (wire contract v1). Frames carry
+// ONLY {rpcId, op}; version resolution, the same-major gate, the dirty-tree
+// brake, the checkout lock, and the rollback latches all stay inside
+// SelfUpdater, and the restart ladder never exits this process itself
+// (lib/update-rpc.ts).
+
+function readTextOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+// Heartbeat readiness snapshot (wire contract v1 section 1), computed at
+// send time because the launcher supervisor and the latch files can change
+// under a running daemon. Live SelfUpdater state wins; without an updater
+// (kill switch off, latch armed at boot, non-git install) the on-disk state
+// files answer, with their existing fail-closed parse semantics.
+function updateReadinessSnapshot(): UpdateReadiness {
+  const state = loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
+  return {
+    supervised: detectSupervision({
+      platform: process.platform,
+      home: homedir(),
+      assistantId: ASSISTANT_ID,
+      exists: existsSync,
+      readFile: readTextOrNull,
+    }),
+    autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
+    rollbackLatched:
+      selfUpdater?.isRollbackLatched() ??
+      (state.disabled ||
+        loadSharedUpdateSafety(
+          pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
+        ).disabled),
+    pendingRestartVersion:
+      selfUpdater?.pendingRestartVersion() ??
+      pendingRestartVersionFrom(
+        RUNNING_VERSION,
+        state.validationPending ? state.targetVersion : null,
+      ),
+  }
+}
+
+const updateRpc = new UpdateRpcHandler({
+  postAck: (rpcId) =>
+    bgosPost(`integrations/update-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/update-rpc/${encodeURIComponent(rpcId)}/progress`, body),
+  log,
+  installMethod: () => {
+    try {
+      return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) }).method
+    } catch {
+      return 'clone'
+    }
+  },
+  autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
+  updater: () => selfUpdater,
+  restartAuthority: () =>
+    chooseRestartAuthority({
+      platform: process.platform,
+      home: homedir(),
+      assistantId: ASSISTANT_ID,
+      exists: existsSync,
+      readFile: readTextOrNull,
+      uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    }),
+  spawnDetached: (file, args) => {
+    const child = spawnProcess(file, args, { detached: true, stdio: 'ignore' })
+    child.unref()
+  },
+  writeMarker: (path) => {
+    try {
+      mkdirSync(pathDirname(path), { recursive: true })
+      // Existence is the whole signal; the launcher ignores the contents.
+      writeFileSync(path, JSON.stringify({ requestedAt: new Date().toISOString() }))
+      return true
+    } catch {
+      return false
+    }
+  },
+  setDrainMode: setUpdateDrainMode,
+  requestHeartbeat: () => versionHeartbeat?.sendNow(),
+})
+
 // ── Agent Packs (export_pack / export_pack_manifest) ─────────────────────────
 // Type 3 "Full handoff": the backend asks THIS host to package the agent's
 // body (CLAUDE.md, rules, skills, opted-in memory) into a deterministic zip
@@ -6341,6 +6456,25 @@ function connectWebsocket(): void {
       })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
+    }
+  })
+
+  // One-click updates: the backend asks THIS daemon to update itself now.
+  // Deliberately NOT gated by updateDrainMode (every other handler here is):
+  // the update flow drains intake itself, and a control rail that goes deaf
+  // the moment an update starts could never be retried or observed. Also not
+  // wrapped in trackMessageOperation: a tracked update would hold
+  // activeOperations above zero and deadlock its own drain wait.
+  realtimeSocket.on('update_rpc', (payload: any) => {
+    try {
+      const frame = normalizeUpdateRpc(payload)
+      if (!frame) return
+      log(`update_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void updateRpc.handle(frame).catch((err) => {
+        log(`update_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`update_rpc handler error: ${err}`)
     }
   })
 
@@ -7592,11 +7726,17 @@ async function main(): Promise<void> {
   // version (POST integrations/heartbeat) at boot and every 6h so the app's
   // plugin-update prompt can see when this install is behind the floor.
   // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
-  startVersionHeartbeat({
+  versionHeartbeat = startVersionHeartbeat({
     authMode: AUTH.mode,
     rootDir: import.meta.dir,
     post: bgosPost,
     log,
+    // One-click update telemetry (wire contract v1): the newest version this
+    // daemon found at its own pinned source, and what would restart it.
+    updateStatus: {
+      latestKnownVersion: () => selfUpdater?.latestKnownVersion ?? null,
+      updateReadiness: updateReadinessSnapshot,
+    },
   })
 
   // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
