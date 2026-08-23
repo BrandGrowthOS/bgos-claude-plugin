@@ -452,9 +452,18 @@ export function verifyWrittenCredentials({
  * --allow-unpinned, for a flow that sets the environment afterwards; knowing
  * beats blocked.
  */
-export function pairExitCode({ needsEnvPin, otherAgentCount, allowUnpinned } = {}) {
+export function pairExitCode({ needsEnvPin, otherAgentCount, allowUnpinned, folderPinLiveSafe } = {}) {
   if (!needsEnvPin) return PAIR_EXIT_CODES.DONE
   if (allowUnpinned) return PAIR_EXIT_CODES.DONE
+  // A VERIFIED launch-folder pin IS a pin (2026-08-23, MacBook-Air-2): on a
+  // ten-agent host, one-click paired successfully server-side, the CLI exited
+  // 3 anyway because this verdict only honored the ENV pin, the app read the
+  // nonzero as pair-failed, and the retry then bounced off the mint guard's
+  // 409 because the first pairing WAS live. The daemon's own resolver
+  // (lib/agent-credentials.ts rule 3) resolves the folder pin with no env
+  // var, so a pairing whose baked pin provably resolves from its launch
+  // folder is live-safe and must say DONE.
+  if (folderPinLiveSafe) return PAIR_EXIT_CODES.DONE
   return Number(otherAgentCount ?? 0) > 0
     ? PAIR_EXIT_CODES.PIN_REQUIRED
     : PAIR_EXIT_CODES.DONE
@@ -705,6 +714,45 @@ export async function bakeLaunchPin({ cwd, assistantId } = {}) {
     }
   }
   return { folderPinPath: pinPath, folderPinWritten, mcpPath, mcpUpdated }
+}
+
+/**
+ * Would a daemon launched from `cwd` with this real environment resolve the
+ * pairing just written, via the launch-folder pin? This VERIFIES the baked
+ * state on disk rather than trusting the bake's return value, mirroring the
+ * daemon's own resolution order (lib/agent-credentials.ts
+ * resolveCredentialsSelection): a BGOS_CREDENTIALS_PATH override outranks
+ * everything; an explicit BGOS_ASSISTANT_ID outranks the pin (so a
+ * CONFLICTING env id defeats it while a matching one is equally safe); with
+ * no env pin, rule 3 reads <cwd>/.bgos-agent-id and resolves that agent's
+ * credentials-<id>.json. When all of that holds, the pairing is live-safe
+ * for an agent launched from this folder, which is exactly how one-click
+ * and the hoai alias launch it.
+ * @param {{ cwd: string, assistantId: string | number, env?: Record<string, string | undefined>,
+ *           home?: string, exists?: (path: string) => boolean,
+ *           read?: (path: string, encoding: string) => string }} opts
+ */
+export function launchFolderLiveSafe({
+  cwd,
+  assistantId,
+  env = {},
+  home = homedir(),
+  exists = existsSync,
+  read = readFileSync,
+}) {
+  const id = String(assistantId ?? '').trim()
+  if (!id) return false
+  if (String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()) return false
+  const envId = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
+  if (envId && envId !== ASSISTANT_ID_PLACEHOLDER && envId !== id) return false
+  let pinned = ''
+  try {
+    pinned = String(read(join(String(cwd ?? ''), FOLDER_PIN_FILE_NAME), 'utf8')).trim()
+  } catch {
+    return false
+  }
+  if (pinned !== id) return false
+  return exists(perAssistantCredentialsPath(home, id))
 }
 
 /**
@@ -1161,8 +1209,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // Bake the launch-folder auto-pin so a bare launch from THIS folder
     // self-resolves this identity with no env var (server.ts reads the folder
     // pin). Best effort: never fail a completed pairing on a bake hiccup.
+    const pairCwd = opts.cwd ?? process.cwd()
     try {
-      const baked = await bakeLaunchPin({ cwd: opts.cwd ?? process.cwd(), assistantId })
+      const baked = await bakeLaunchPin({ cwd: pairCwd, assistantId })
       if (baked.folderPinWritten) {
         console.log(
           `[bgos-pair] baked ${baked.folderPinPath} (launch this agent from this folder and it self-resolves as assistant ${assistantId}, no env var needed)`,
@@ -1178,22 +1227,44 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
         `[bgos-pair] note: could not bake the launch-folder pin (${err?.message ?? err}); set BGOS_ASSISTANT_ID=${assistantId} in this agent's environment yourself.`,
       )
     }
+    // Verify the baked state ON DISK: a pin that provably resolves from this
+    // folder makes the pairing live-safe for an agent launched here (which is
+    // how one-click and the hoai alias launch it), and the verdict below must
+    // honor it (2026-08-23: on a ten-agent host the env-pin-only verdict
+    // exited 3, the one-click script read pair-failed, and the retry bounced
+    // off the live first pairing).
+    const folderPinLiveSafe = launchFolderLiveSafe({
+      cwd: pairCwd,
+      assistantId,
+      env,
+      home,
+    })
     if (result.needsEnvPin) {
-      console.log(
-        `[bgos-pair] REQUIRED: set BGOS_ASSISTANT_ID=${assistantId} ` +
-          `(or BGOS_CREDENTIALS_PATH=${result.path}) in this agent's environment. ` +
-          `Without it the daemon reads ${result.realEnvPath}, which belongs to a different pairing.`,
-      )
+      if (folderPinLiveSafe) {
+        console.log(
+          `[bgos-pair] live-safe via the launch-folder pin: an agent launched from ${pairCwd} ` +
+            `resolves this pairing with no env var. Launching from any OTHER folder still needs ` +
+            `BGOS_ASSISTANT_ID=${assistantId} (or BGOS_CREDENTIALS_PATH=${result.path}).`,
+        )
+      } else {
+        console.log(
+          `[bgos-pair] REQUIRED: set BGOS_ASSISTANT_ID=${assistantId} ` +
+            `(or BGOS_CREDENTIALS_PATH=${result.path}) in this agent's environment. ` +
+            `Without it the daemon reads ${result.realEnvPath}, which belongs to a different pairing.`,
+        )
+      }
     }
     // The pairing is only a success if the daemon can actually find it. On a
     // host serving other agents, an unpinned pairing resolves to one of THEIR
     // files at the next restart, so saying "done" and exiting 0 would be a
-    // false claim rather than a warning.
+    // false claim rather than a warning. A VERIFIED launch-folder pin counts
+    // as found (see pairExitCode).
     const otherAgentCount = otherPerAssistantIds(home, assistantId).length
     const code = pairExitCode({
       needsEnvPin: result.needsEnvPin,
       otherAgentCount,
       allowUnpinned,
+      folderPinLiveSafe,
     })
     if (code !== PAIR_EXIT_CODES.DONE) {
       console.error(
