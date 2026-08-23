@@ -2,6 +2,23 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.1 (24 August 2026)
+
+One fix, found live: one-click onboarding failed at the pairing stage on any
+host already serving other agents (MacBook-Air-2, ten agents, 2026-08-23),
+while the server side had paired fine.
+
+- **A verified launch-folder pin now counts as a pin.** `hoai-pair` bakes a
+  `.bgos-agent-id` pin into its working folder and then, on a multi-agent
+  host, still exited 3 (pin required) because the live-safe verdict only
+  honored the ENV pin. The one-click script read any nonzero as
+  pair-failed, and the retry bounced off the mint guard's 409 because the
+  first pairing WAS live. `launchFolderLiveSafe` now verifies the baked pin
+  on disk (override absent, env id absent or matching, pin id matching,
+  per-assistant credentials present) and a pairing that provably resolves
+  from its launch folder exits 0 with a line naming exactly where it is
+  live-safe from. The exit-3 refusal remains for a failed or elsewhere bake.
+
 ## 0.38.0 (22 August 2026)
 
 One-click updates (wire contract v1, BrandGrowthOS/BGOS

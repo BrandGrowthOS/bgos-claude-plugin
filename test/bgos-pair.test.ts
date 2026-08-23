@@ -52,6 +52,7 @@ import {
   writeCredentialsFile,
   bakeMcpPin,
   bakeLaunchPin,
+  launchFolderLiveSafe,
   FOLDER_PIN_FILE_NAME,
 } from '../bin/bgos-pair.mjs'
 import { detectInstallMethod } from '../bin/bgos-install-method.mjs'
@@ -852,11 +853,18 @@ test('main reaches the post-success pin check without a home ReferenceError', as
       { env: {}, home, cwd: home, fetchImpl },
     )
 
-    assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
+    // CONTRACT CHANGE (2026-08-23, MacBook-Air-2 one-click failure): a
+    // successfully baked launch-folder pin now makes a multi-agent pairing
+    // live-safe, so this is DONE, not PIN_REQUIRED. The one-click script
+    // launches the agent from exactly this cwd, so the pin genuinely
+    // resolves it; exit 3 for this shape is what broke onboarding on a
+    // ten-agent host while the server side had paired fine.
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
     assert.equal(requests.length, 4)
     assert.match(output.join('\n'), /verified: this file resolves to assistant 936/)
-    assert.doesNotMatch(output.join('\n'), /done\. To go live/)
-    assert.match(errors.join('\n'), /NOT DONE/)
+    assert.match(output.join('\n'), /live-safe via the launch-folder pin/)
+    assert.match(output.join('\n'), /done\. To go live/)
+    assert.doesNotMatch(errors.join('\n'), /NOT DONE/)
     const written = JSON.parse(
       await readFile(join(home, '.bgos-agent', 'credentials-936.json'), 'utf8'),
     )
@@ -1183,5 +1191,124 @@ test('bakeLaunchPin is idempotent: running it twice leaves identical files', asy
     assert.equal(await readFile(join(cwd, FOLDER_PIN_FILE_NAME), 'utf8'), firstPin)
   } finally {
     await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+// ── Launch-folder live-safety (the MacBook-Air-2 one-click failure) ─────────
+//
+// 2026-08-23: on a TEN-agent host, one-click paired successfully server-side
+// (exchange 201, rebind 201) and then hoai-pair exited 3 (pin required), which
+// the app's script read as pair-failed; the retry then hit the mint guard's
+// 409 because the first pairing WAS live. But the pairing IS live-safe when
+// the agent launches from the folder the pin was just baked into (the
+// daemon's folder-aware resolver, lib/agent-credentials.ts rule 3). The exit
+// verdict must account for the pin it just baked.
+
+test('launchFolderLiveSafe: baked pin + per-assistant file + clean env is live-safe', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-pair-pinlive-'))
+  try {
+    const home = join(dir, 'home')
+    const cwd = join(dir, 'ws')
+    await mkdir(join(home, '.bgos-agent'), { recursive: true })
+    await mkdir(cwd, { recursive: true })
+    await writeFile(join(home, '.bgos-agent', 'credentials-1035.json'), '{"pairingToken":"t","assistantId":1035}')
+    await writeFile(join(cwd, FOLDER_PIN_FILE_NAME), '1035\n')
+    assert.equal(launchFolderLiveSafe({ cwd, assistantId: 1035, env: {}, home }), true)
+    // A pin for a DIFFERENT agent is not live-safe for this pairing.
+    await writeFile(join(cwd, FOLDER_PIN_FILE_NAME), '999\n')
+    assert.equal(launchFolderLiveSafe({ cwd, assistantId: 1035, env: {}, home }), false)
+    // Restore the pin; a BGOS_CREDENTIALS_PATH override outranks the pin.
+    await writeFile(join(cwd, FOLDER_PIN_FILE_NAME), '1035\n')
+    assert.equal(
+      launchFolderLiveSafe({ cwd, assistantId: 1035, env: { BGOS_CREDENTIALS_PATH: '/elsewhere.json' }, home }),
+      false,
+    )
+    // A CONFLICTING env id outranks the pin; a matching one keeps it safe.
+    assert.equal(
+      launchFolderLiveSafe({ cwd, assistantId: 1035, env: { BGOS_ASSISTANT_ID: '999' }, home }),
+      false,
+    )
+    assert.equal(
+      launchFolderLiveSafe({ cwd, assistantId: 1035, env: { BGOS_ASSISTANT_ID: '1035' }, home }),
+      true,
+    )
+    // No credentials file, no safety.
+    await rm(join(home, '.bgos-agent', 'credentials-1035.json'))
+    assert.equal(launchFolderLiveSafe({ cwd, assistantId: 1035, env: {}, home }), false)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('pairExitCode: a live-safe launch folder downgrades PIN_REQUIRED to DONE', () => {
+  // The multi-agent refusal stands without the pin...
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 10, allowUnpinned: false }),
+    PAIR_EXIT_CODES.PIN_REQUIRED,
+  )
+  // ...and stands when the pin bake failed or landed elsewhere...
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 10, allowUnpinned: false, folderPinLiveSafe: false }),
+    PAIR_EXIT_CODES.PIN_REQUIRED,
+  )
+  // ...but a verified live-safe folder pin IS a pin: the daemon launched from
+  // that folder resolves this pairing, so the pairing is done.
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 10, allowUnpinned: false, folderPinLiveSafe: true }),
+    PAIR_EXIT_CODES.DONE,
+  )
+  // Single-agent hosts and --allow-unpinned keep their existing verdicts.
+  assert.equal(
+    pairExitCode({ needsEnvPin: true, otherAgentCount: 0, allowUnpinned: false, folderPinLiveSafe: false }),
+    PAIR_EXIT_CODES.DONE,
+  )
+})
+
+test('main still exits PIN_REQUIRED on a multi-agent host when the pin cannot bake', async () => {
+  // The exit-3 path is still real: when the launch-folder pin cannot land
+  // (here: cwd points at a FILE, so the bake's mkdir/write fails), an
+  // unpinned multi-agent pairing remains not live-safe and must refuse to
+  // claim done. This preserves the coverage the live-safe contract change
+  // removed from the happy-bake test above.
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-main-nobake-'))
+  const originalLog = console.log
+  const originalError = console.error
+  const output: string[] = []
+  const errors: string[] = []
+  try {
+    await writeCredentialsFile(
+      join(home, '.bgos-agent', 'credentials-935.json'),
+      mkCreds(935, 'existing_agent_token'),
+    )
+    const fileAsCwd = join(home, 'not-a-directory')
+    await writeFile(fileAsCwd, 'occupied')
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 78, user_id: 'user_mark' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          assistants: [{ assistant_id: 936, agent_route: 'claude', name: 'Mark' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, cwd: fileAsCwd, fetchImpl },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
+    assert.match(errors.join('\n'), /NOT DONE/)
+    assert.match(output.join('\n'), /REQUIRED: set BGOS_ASSISTANT_ID=936/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
   }
 })
