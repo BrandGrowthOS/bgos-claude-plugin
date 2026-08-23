@@ -13,9 +13,11 @@
  *                     is SUPERVISED: while claude runs, hoai watches the
  *                     agent's state dir for a restart-requested.json marker
  *                     (written by the daemon's one-click update handler) and
- *                     relaunches claude with --continue when it appears, so
- *                     interactive sessions, Windows included, finally have a
- *                     restart authority.
+ *                     relaunches claude resuming THIS agent's own pinned session
+ *                     (never --continue, which would resume a neighbour's
+ *                     session in a shared cwd) when it appears, so interactive
+ *                     sessions, Windows included, finally have a restart
+ *                     authority.
  *   hoai doctor       diagnose this host (hands off to bin/bgos-doctor.mjs)
  *   hoai pair <CODE>  pair this folder (hands off to bin/bgos-pair.mjs); a
  *                     bare BGOS-/OC- code routes here too
@@ -32,6 +34,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
@@ -58,7 +61,25 @@ const ASSISTANT_ID_PLACEHOLDER = '${user_config.assistant_id}'
 /** POSIX convention for "command not found". */
 export const EXIT_NOT_FOUND = 127
 
+/** A bare `hoai` that refuses to start because a live supervisor already owns
+ *  this agent (the singleton guard). Distinct so a wrapper can tell "declined,
+ *  already running" from a claude failure. */
+export const EXIT_ALREADY_SUPERVISED = 3
+
 // -- Small pure helpers -------------------------------------------------------
+
+/** Is this pid alive on THIS host? Mirror of lib/update-readiness.ts
+ *  defaultPidAlive: signal 0 probes without touching the process, EPERM means
+ *  it exists under another user (still alive). Kept in plain JS because hoai
+ *  runs under bare node and must not import the TS sources. */
+export function defaultPidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err?.code === 'EPERM'
+  }
+}
 
 /** Best-effort text read; null when absent or unreadable. */
 function defaultReadText(path) {
@@ -250,12 +271,24 @@ export function buildRunPlan({
  *  test/update-readiness.test.ts, which imports both sides. */
 export const SUPERVISOR_FILE_NAME = 'supervisor.json'
 export const RESTART_MARKER_FILE_NAME = 'restart-requested.json'
+/** The agent's pinned resume identity (GAP 1: identity-safe relaunch). A UUID
+ *  minted once and stored here so every (re)launch resumes THIS agent's own
+ *  session by id, never `--continue` (newest-in-shared-cwd, the identity bleed
+ *  that caused the 2026-08-23 fleet incident). */
+export const SESSION_ID_FILE_NAME = 'session-id'
 
 /** Marker-triggered relaunch budget: 3 per rolling hour. A daemon stuck in
  *  an update-crash loop must not bounce the session forever. */
 export const MAX_RELAUNCHES_PER_WINDOW = 3
 export const RELAUNCH_WINDOW_MS = 60 * 60 * 1000
 export const MARKER_POLL_MS = 3000
+
+/** How long a relaunched session must survive to count as healthy. A resumed
+ *  relaunch that dies faster than this (non-zero) is treated as a rejected
+ *  resume and retried once as a fresh session, so the supervisor never leaves
+ *  the agent dead after its own kill. Mirrors the tmux/expect keepalive.sh
+ *  "resumed session died in <25s, retrying fresh" window. */
+export const RELAUNCH_HEALTHY_MS = 25_000
 
 /**
  * The assistant id this launch supervises: folder pin, else env pin, else
@@ -300,19 +333,224 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
 }
 
 /**
- * The args for a marker-triggered relaunch: FRESH install-method detection
- * (an update can move a marketplace cache dir, so the flag is re-detected,
- * never reused blind) plus --continue so the session resumes where it was
- * instead of starting cold.
- * @param {{ scriptDir?: string, env?: Record<string, string | undefined>, home?: string }} [opts]
+ * The singleton guard's decision: given the CURRENT supervisor.json body (raw,
+ * or null when absent), our own pid, and a pid-liveness probe, decide whether
+ * this launch may arm as the restart authority for the agent.
+ *
+ * A second `hoai` in the same folder (a stray terminal, a launcher plus a
+ * manual run) would otherwise produce two claude sessions AND two supervisors
+ * racing the same marker. A restart authority must be a singleton per agent.
+ *
+ * Fails toward NOT double-launching a LIVE owner, but never wedges on junk:
+ *   - absent/empty body                         -> arm (nothing owns it)
+ *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE and
+ *     is not our own                            -> refuse, name the owner
+ *   - our own pid, a dead pid, malformed json, or a body without the relaunch
+ *     capability                                -> arm and reclaim (a crashed
+ *                                                  prior run left a stale file)
+ * @param {{ existingRaw: string | null | undefined, ownPid: number,
+ *   pidAlive?: (pid: number) => boolean }} params
+ * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number }}
  */
-export function relaunchClaudeArgs({ scriptDir = '', env = process.env, home = homedir() } = {}) {
+export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive }) {
+  if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
+  let parsed
+  try {
+    parsed = JSON.parse(String(existingRaw))
+  } catch {
+    return { arm: true, reclaimedStale: true }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { arm: true, reclaimedStale: true }
+  }
+  const pid = parsed.pid
+  const capabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities : []
+  const isAuthority =
+    typeof pid === 'number' &&
+    Number.isInteger(pid) &&
+    pid > 0 &&
+    capabilities.includes('relaunch')
+  if (!isAuthority) return { arm: true, reclaimedStale: true }
+  if (pid === ownPid) return { arm: true, reclaimedStale: true }
+  if (pidAlive(pid)) return { arm: false, ownerPid: pid }
+  return { arm: true, reclaimedStale: true }
+}
+
+/**
+ * Relaunch-verify decision (never leave the agent dead): after a self-initiated
+ * child exit (no marker asked for the restart), decide whether to recover.
+ *
+ * `isResumeAttempt` is true when the child that exited was RESUMING an existing
+ * session (--resume <id>): a marker relaunch, OR the initial launch of a fresh
+ * hoai process whose pinned session already exists on disk (e.g. the external
+ * keepalive restarted it). A resume that exits NON-ZERO inside the health window
+ * is a rejected/corrupt/locked session (the keepalive.sh "resumed session died
+ * in <25s" failure), so returning here would leave the agent dead or loop the
+ * external supervisor on the same rejection forever. It retries ONCE as a fresh,
+ * brand-new OWN session instead. A CLEAN exit (code 0) is a deliberate quit and
+ * is always honored, never hijacked; a slow exit, an already-tried fallback, and
+ * a fresh CREATE (--session-id, never a resume) all return unchanged, so a
+ * fundamentally broken launch (e.g. claude not installed) is not looped on.
+ * @param {{ isResumeAttempt: boolean, exitCode: number | null, elapsedMs: number,
+ *   freshTried: boolean, healthyMs?: number }} params
+ * @returns {{ action: 'return' | 'retry-fresh' }}
+ */
+export function decideRelaunchRecovery({
+  isResumeAttempt,
+  exitCode,
+  elapsedMs,
+  freshTried,
+  healthyMs = RELAUNCH_HEALTHY_MS,
+}) {
+  if (
+    isResumeAttempt &&
+    !freshTried &&
+    exitCode !== 0 &&
+    Number.isFinite(elapsedMs) &&
+    elapsedMs < healthyMs
+  ) {
+    return { action: 'retry-fresh' }
+  }
+  return { action: 'return' }
+}
+
+// -- Identity-safe session args (GAP 1) --------------------------------------
+
+/** Claude Code's project-dir munge: every non-alphanumeric char of the cwd
+ *  becomes '-'. Mirror of lib/usage-report.ts mungeCwd (kept in plain JS; hoai
+ *  runs under bare node and must not import the TS sources). A session's
+ *  transcript lives under ~/.claude/projects/<munged-cwd>/. */
+export function mungeSessionCwd(cwd) {
+  return String(cwd ?? '').replace(/[^a-zA-Z0-9]/g, '-')
+}
+
+/** Where Claude Code writes THIS session's transcript. Its existence is how we
+ *  tell "resume my session" from "create it with a known id". */
+export function sessionTranscriptPath(home, cwd, sessionId) {
+  const projects = joinDir(joinDir(home, '.claude'), 'projects')
+  const dir = joinDir(projects, mungeSessionCwd(cwd))
+  return joinDir(dir, `${sessionId}.jsonl`)
+}
+
+/** A pinned id looks like a UUID; anything else is treated as no pin (we never
+ *  pass junk to --session-id / --resume). */
+export function isSessionIdLike(value) {
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+    String(value ?? '').trim(),
+  )
+}
+
+/**
+ * The identity-safe launch args for a pinned session id. Resume the agent's OWN
+ * session when its transcript already exists, otherwise create it with that
+ * exact id. NEVER --continue (newest-in-shared-cwd, the identity bleed). Empty
+ * when no id is resolvable, so the caller falls back to a plain fresh launch.
+ * @param {string} sessionId
+ * @param {boolean} sessionExists
+ * @returns {string[]}
+ */
+export function sessionArgsFor(sessionId, sessionExists) {
+  if (!sessionId) return []
+  return sessionExists ? ['--resume', sessionId] : ['--session-id', sessionId]
+}
+
+/**
+ * Read the agent's pinned session id, or mint and persist one. Returns '' only
+ * when there is neither a valid pin nor a way to write one (then the caller
+ * launches a plain fresh session, exactly as before pinning existed).
+ * @param {{ path: string, readFile: (p: string) => string | null,
+ *   writeFile: (p: string, c: string) => boolean, generateId?: () => string }} deps
+ * @returns {string}
+ */
+export function ensurePinnedSessionId({ path, readFile, writeFile, generateId = randomUUID }) {
+  const existing = String(readFile(path) ?? '').trim()
+  if (isSessionIdLike(existing)) return existing
+  const fresh = String(generateId()).trim()
+  if (!fresh) return ''
+  return writeFile(path, fresh) ? fresh : ''
+}
+
+// -- Startup-gate auto-accept (GAP 2) ----------------------------------------
+
+/** A clone (dev) install launches with --dangerously-load-development-channels,
+ *  which shows a confirmation prompt at (re)start with no non-interactive flag
+ *  to accept it. A marketplace install uses the approved --channels flag and
+ *  never prompts. So only a clone (re)launch needs the gate auto-accepted. */
+export function relaunchNeedsGateAutoAccept(installMethod) {
+  return installMethod === 'clone'
+}
+
+/**
+ * A minimal expect script that spawns claude and auto-accepts the startup gate,
+ * mirroring the fleet's proven run.expect: the Claude Code TUI splits words
+ * with cursor-move escapes, so only the single contiguous word "confirm" (every
+ * selection prompt's "Enter to confirm" footer) matches the raw PTY stream;
+ * sending Enter on it accepts folder-trust, dev-channels, and bypass gates
+ * alike. It stops on the live-TUI markers, nudges Enter on an unrecognised
+ * prompt, then hands off with interact so a human at the terminal is still
+ * relayed. A SIGTERM trap kills the spawned claude before exiting, so when the
+ * supervisor SIGTERMs this expect process claude cannot be orphaned into a
+ * second live session (which would reintroduce the identity bleed).
+ *
+ * Each arg is brace-quoted (Tcl literal, no substitution) so a future arg with
+ * a space or a Tcl-special char cannot break or inject into the script; today's
+ * args are fixed flags plus a regex-validated UUID, so this is defense in depth.
+ * @param {{ claudePath: string, args: readonly string[] }} params
+ * @returns {string}
+ */
+export function buildGateAutoAcceptExpect({ claudePath, args }) {
+  const quoted = (args ?? []).map((a) => `{${a}}`).join(' ')
+  const spawnLine = quoted ? `spawn ${claudePath} ${quoted}` : `spawn ${claudePath}`
+  return [
+    'set timeout 12',
+    'set done 0',
+    spawnLine,
+    // Kill the spawned claude on SIGTERM so a supervisor kill never orphans it.
+    'trap {catch {exec kill [exp_pid]}; exit 143} SIGTERM',
+    'for {set i 0} {$i < 6 && !$done} {incr i} {',
+    '  expect {',
+    '    -re {(?i)experimental} { set done 1 }',
+    '    -re {(?i)connecting}   { set done 1 }',
+    '    -re {(?i)confirm}      { sleep 1; send "\\r" }',
+    '    timeout                { send "\\r" }',
+    '    eof                    { exit 1 }',
+    '  }',
+    '}',
+    'set timeout -1',
+    'interact',
+  ].join('\n')
+}
+
+/**
+ * The args for a relaunch: FRESH install-method detection (an update can move a
+ * marketplace cache dir, so the flag is re-detected, never reused blind) plus
+ * the caller's identity-safe session args (--resume <own-id> / --session-id
+ * <own-id>, or [] for a plain fresh session). NEVER --continue: that resumes
+ * the newest session in a shared cwd, which is another agent's (GAP 1).
+ * @param {{ scriptDir?: string, env?: Record<string, string | undefined>, home?: string, sessionArgs?: readonly string[] }} [opts]
+ */
+export function relaunchClaudeArgs({
+  scriptDir = '',
+  env = process.env,
+  home = homedir(),
+  sessionArgs = [],
+} = {}) {
   const detection = detectInstallMethod({
     scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
     env,
     home,
   })
-  return ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method), '--continue']
+  return ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method), ...sessionArgs]
+}
+
+/** The install method for a relaunch (fresh detection), used to decide whether
+ *  the startup gate needs auto-accepting (GAP 2). */
+export function relaunchInstallMethod({ scriptDir = '', env = process.env, home = homedir() } = {}) {
+  return detectInstallMethod({
+    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+    env,
+    home,
+  }).method
 }
 
 /** Best-effort write with parent mkdir; false on failure. */
@@ -336,13 +574,29 @@ function defaultRemoveFile(path) {
   }
 }
 
+/** Is `expect` available to auto-accept the dev-channels startup gate? Never on
+ *  win32 (no expect, and dev-channels clone launches are posix dev hosts). */
+function defaultHasExpect(platform) {
+  if (platform === 'win32') return false
+  return ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect', '/bin/expect'].some(
+    (p) => {
+      try {
+        return existsSync(p)
+      } catch {
+        return false
+      }
+    },
+  )
+}
+
 /**
  * Launch claude and supervise it: while the child runs, poll the agent's
  * state dir for a restart-requested.json marker (written by the daemon's
  * update_rpc handler). Marker present: delete it, SIGTERM the child, await
- * its exit, and relaunch with the correct channel flags plus --continue.
- * This is the restart authority for interactive sessions, Windows included,
- * where no launchd/systemd service exists.
+ * its exit, and relaunch with the correct channel flags RESUMING this agent's
+ * own pinned session (--resume <id>, never --continue). This is the restart
+ * authority for interactive sessions, Windows included, where no launchd/systemd
+ * service exists.
  *
  * Guarantees:
  *   - marker CONTENTS are ignored, existence only, so the marker can never
@@ -366,6 +620,8 @@ function defaultRemoveFile(path) {
  *   writeFile?: (path: string, content: string) => boolean,
  *   removeFile?: (path: string) => boolean,
  *   pollMs?: number, now?: () => number, print?: (line: string) => void,
+ *   pidAlive?: (pid: number) => boolean,
+ *   generateId?: () => string, hasExpect?: boolean,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -385,33 +641,92 @@ export async function superviseClaude(args, opts = {}) {
   const pollMs = opts.pollMs ?? MARKER_POLL_MS
   const now = opts.now ?? Date.now
   const print = opts.print ?? ((line) => console.log(line))
+  const pidAlive = opts.pidAlive ?? defaultPidAlive
+  const generateId = opts.generateId ?? randomUUID
+  const hasExpect = opts.hasExpect ?? defaultHasExpect(platform)
 
-  const spawnOnce = (spawnArgs, onSpawn) =>
-    spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+  // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
+  // (re)start; an unattended supervised launch strands on it. When expect is
+  // available, spawn claude under it and auto-accept the gate (mirror of the
+  // fleet's run.expect); otherwise spawn directly and warn once.
+  let warnedGate = false
+  const spawnSupervised = (spawnArgs, onSpawn) => {
+    const method = relaunchInstallMethod({ scriptDir, env, home })
+    if (relaunchNeedsGateAutoAccept(method) && platform !== 'win32') {
+      if (hasExpect) {
+        const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: spawnArgs })
+        return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
+      }
+      if (!warnedGate) {
+        warnedGate = true
+        writeErr(
+          '[hoai] this dev (clone) restart may block on the dev-channels confirmation ' +
+            'prompt, and no `expect` was found to auto-accept it. Install expect ' +
+            '(e.g. brew install expect), or use a marketplace install (no prompt).\n',
+        )
+      }
+    }
+    return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+  }
 
   const id = superviseAssistantId({ cwd, env, home, readFile, listDir })
-  if (!id) return spawnOnce(args)
+  if (!id) return spawnSupervised(args)
   const stateDir = joinDir(agentDir(home), id)
   const supervisorPath = joinDir(stateDir, SUPERVISOR_FILE_NAME)
   const markerPath = joinDir(stateDir, RESTART_MARKER_FILE_NAME)
+  // Singleton guard: never start a second session behind a live supervisor.
+  const arming = decideSupervisorArming({
+    existingRaw: readFile(supervisorPath),
+    ownPid: process.pid,
+    pidAlive,
+  })
+  if (!arming.arm) {
+    print(
+      `[hoai] assistant ${id} is already supervised by a live launcher (pid ${arming.ownerPid}). ` +
+        'Not starting a second session. If that launcher is actually stale, remove ' +
+        `${supervisorPath} and re-run hoai; only stop pid ${arming.ownerPid} after confirming ` +
+        'it really is this agent (a reused pid could be an unrelated process).',
+    )
+    return EXIT_ALREADY_SUPERVISED
+  }
   const body = supervisorFileBody(process.pid, new Date(now()).toISOString())
   if (!writeFile(supervisorPath, body)) {
     // No state dir to arm in: launch exactly as before, unsupervised.
-    return spawnOnce(args)
+    return spawnSupervised(args)
   }
   // A marker left behind by a dead launcher is moot: this launch already
   // starts the newest installed code.
   if (exists(markerPath)) removeFile(markerPath)
   print(`[hoai] restart supervisor armed for assistant ${id}`)
+
+  // GAP 1: pin a per-agent session id and resume THIS agent's OWN session on
+  // every (re)launch, never --continue (newest-in-shared-cwd = identity bleed).
+  const sessionIdPath = joinDir(stateDir, SESSION_ID_FILE_NAME)
+  let pinnedId = ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
+  // Once we have launched the pinned id it exists; a marker relaunch then
+  // resumes it. Cross-process (a prior hoai run created it), the transcript on
+  // disk answers.
+  let sessionCreated = false
+  const sessionExistsNow = () =>
+    sessionCreated || (pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId)) : false)
+
   let relaunchesAt = []
   let exhausted = false
-  let currentArgs = [...args]
+  let currentArgs = [...args, ...sessionArgsFor(pinnedId, sessionExistsNow())]
+  // The never-leave-dead fresh fallback is one-shot per relaunch cycle; a
+  // marker relaunch (a genuine update) resets it below. Recovery keys on whether
+  // the exited child was RESUMING a session (--resume present), which covers a
+  // marker relaunch AND a fresh hoai process whose pinned session already exists
+  // (the external keepalive restarted it); a fresh --session-id CREATE that dies
+  // fast is never looped on.
+  let freshTried = false
   try {
     while (true) {
       /** @type {import('node:child_process').ChildProcess | null} */
       let childRef = null
       let restartRequested = false
-      const exited = spawnOnce(currentArgs, (child) => {
+      const startedAt = now()
+      const exited = spawnSupervised(currentArgs, (child) => {
         childRef = child
       })
       const poller = setInterval(() => {
@@ -439,9 +754,54 @@ export async function superviseClaude(args, opts = {}) {
       }, pollMs)
       const code = await exited
       clearInterval(poller)
-      if (!restartRequested) return code
-      currentArgs = relaunchClaudeArgs({ scriptDir, env, home })
-      print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
+      // We just created or resumed the pinned session, so it exists now.
+      if (pinnedId) sessionCreated = true
+      if (restartRequested) {
+        // A daemon-driven update restart: relaunch resuming THIS agent's OWN
+        // session (never --continue), and give this cycle a fresh fallback.
+        currentArgs = relaunchClaudeArgs({
+          scriptDir,
+          env,
+          home,
+          sessionArgs: sessionArgsFor(pinnedId, true),
+        })
+        freshTried = false
+        print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
+        continue
+      }
+      // A self-initiated exit. If a RESUME died non-zero inside the health
+      // window we already killed the old session (or the external keepalive
+      // would loop on the same rejection), so never leave the agent dead: retry
+      // once as a brand-new OWN session (a fresh pinned id).
+      const recovery = decideRelaunchRecovery({
+        isResumeAttempt: currentArgs.includes('--resume'),
+        exitCode: code,
+        elapsedMs: now() - startedAt,
+        freshTried,
+      })
+      if (recovery.action === 'retry-fresh') {
+        freshTried = true
+        const freshId = String(generateId()).trim()
+        // Mint and pin a NEW id so future relaunches resume the healthy session.
+        // If the re-pin write fails, launch a PLAIN fresh session (claude mints
+        // its own id): never --session-id an id that already exists (it errors),
+        // and never --resume the session we just fled.
+        let freshSessionArgs
+        if (freshId && writeFile(sessionIdPath, freshId)) {
+          pinnedId = freshId
+          sessionCreated = false
+          freshSessionArgs = sessionArgsFor(freshId, false)
+        } else {
+          freshSessionArgs = []
+        }
+        currentArgs = relaunchClaudeArgs({ scriptDir, env, home, sessionArgs: freshSessionArgs })
+        print(
+          '[hoai] the resumed session exited immediately (a rejected resume or a fast ' +
+            'fault); relaunching a FRESH own session so the agent is not left down...',
+        )
+        continue
+      }
+      return code
     }
   } finally {
     removeFile(supervisorPath)
@@ -562,6 +922,36 @@ export function spawnClaude(args, { platform = process.platform, env = process.e
       })
     }
     tryNext(0)
+  })
+}
+
+/**
+ * Spawn `expect -c <script>` and resolve with its exit code. Used by the
+ * supervised launch to auto-accept the dev-channels startup gate (GAP 2). The
+ * script (from buildGateAutoAcceptExpect) is fixed structure with the claude
+ * args interpolated; expect owns the PTY and hands off with interact, so a
+ * human at the terminal is still relayed and the supervisor's kill still ends
+ * the session. `onSpawn` receives the expect child so the loop can SIGTERM it.
+ */
+export function spawnExpectScript(
+  script,
+  { spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {},
+) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawnImpl('expect', ['-c', script], { stdio: 'inherit', shell: false })
+    } catch (err) {
+      writeErr(`[hoai] could not start expect: ${err?.message ?? err}\n`)
+      resolve(1)
+      return
+    }
+    onSpawn?.(child)
+    child.on('error', (err) => {
+      writeErr(`[hoai] expect error: ${err?.message ?? err}\n`)
+      resolve(1)
+    })
+    child.on('exit', (code, signal) => resolve(exitCodeForChild(code, signal)))
   })
 }
 

@@ -2,6 +2,35 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+Supervised-restart safety, after a live fleet incident on the night of
+2026-08-23 where roughly six agents restarted and all resumed one agent's
+conversation. Not released; staged rollout required (see
+`docs/one-click-restart-helper.md`).
+
+- **Identity-safe relaunch (GAP 1).** The supervise loop no longer relaunches
+  with `--continue` (which resumes the MOST RECENT conversation in the cwd, so
+  agents sharing a folder resume a neighbour's session, the identity bleed that
+  caused the incident). Each agent now pins a per-agent session id in
+  `~/.bgos-agent/<id>/session-id` and relaunches resuming ONLY its own session
+  (`--resume <id>`, created once with `--session-id <id>`). Verified against the
+  `claude` CLI: `--session-id` creates, `--resume` resumes, a reused id errors.
+- **Dev-channels prompt-stranding fix (GAP 2).** A clone (dev) launch shows the
+  `--dangerously-load-development-channels` confirm prompt at (re)start, with no
+  non-interactive flag to accept it, so an unattended supervised restart came
+  back blocked until a human pressed Enter. The supervised launch now auto-
+  accepts the gate under `expect` (mirror of the fleet's `run.expect`) when it is
+  available, and warns clearly when it is not. Marketplace installs use the
+  approved `--channels` flag and never prompt.
+- **Singleton guard.** A second `hoai` in the same folder refuses to start when a
+  live supervisor already owns the agent, instead of doubling the session and
+  racing the restart marker.
+- **Never-leave-dead.** A resumed relaunch that exits non-zero inside a 25s
+  health window (the `keepalive.sh` lesson) is retried once as a fresh OWN
+  session, so the supervisor never returns after its own kill with the agent
+  down. A clean quit (code 0) is always honored, never hijacked.
+
 ## 0.38.1 (24 August 2026)
 
 One fix, found live: one-click onboarding failed at the pairing stage on any
