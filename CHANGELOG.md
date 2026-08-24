@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.3 (2026-08-24)
+
+One-click update robustness (#84): the update dirty-tree check now ignores
+untracked and ignored files, so a stray report or note left in the connector
+folder no longer aborts the update with "dirty_tree". It still refuses only on a
+genuinely conflicting tracked change; the ff-only pull and detached-checkout
+rollback remain safe backstops.
+
 ## 0.38.2 (2026-08-24)
 
 Supervised-restart safety, after a live fleet incident on the night of
