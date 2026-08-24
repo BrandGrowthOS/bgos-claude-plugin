@@ -1,0 +1,11 @@
+{
+  "$comment": "plugin update exits 1; the inline reinstall (uninstall -y, install -y) succeeds and lands 0.38.3.",
+  "state": { "version": "0.38.3" },
+  "commands": {
+    "plugin update hoai@hoai --scope user -y": {
+      "outcome": "failure",
+      "code": 1,
+      "stderr": "Failed to update plugin \"hoai@hoai\": simulated network failure while fetching https://github.com/BrandGrowthOS/bgos-claude-plugin.git\n"
+    }
+  }
+}

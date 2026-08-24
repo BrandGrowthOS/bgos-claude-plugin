@@ -1,0 +1,4 @@
+{
+  "$comment": "Converge from nothing: no marketplace, no plugin. Every command succeeds and writes the real config files; marketplace add declares 0.38.3, so the executor learns the target at refresh_marketplace.",
+  "state": { "version": "0.38.3" }
+}

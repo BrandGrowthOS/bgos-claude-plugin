@@ -1,0 +1,4 @@
+{
+  "$comment": "Marketplace declares 0.38.3, 0.38.1 installed (seeded by the test). plugin update writes 0.38.3 and prints the real restart-required line.",
+  "state": { "version": "0.38.3" }
+}

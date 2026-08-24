@@ -1,0 +1,16 @@
+{
+  "$comment": "plugin update exits 1, uninstall succeeds (entry removed, cache dir kept), install exits 1: the ladder is exhausted and the snapshot must be restored byte for byte. Also used for the rollback-impossible test, where the test deletes the old cache dir mid-run.",
+  "state": { "version": "0.38.3" },
+  "commands": {
+    "plugin update hoai@hoai --scope user -y": {
+      "outcome": "failure",
+      "code": 1,
+      "stderr": "Failed to update plugin \"hoai@hoai\": simulated failure\n"
+    },
+    "plugin install hoai@hoai --scope user -y": {
+      "outcome": "failure",
+      "code": 1,
+      "stderr": "Failed to install plugin \"hoai@hoai\": simulated failure\n"
+    }
+  }
+}
