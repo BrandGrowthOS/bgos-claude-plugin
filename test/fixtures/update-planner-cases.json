@@ -1,0 +1,1055 @@
+{
+  "$comment": "Eval dataset for lib/update-planner.mjs (planMachine). Every rule in the design is at least one case here. expected: verdict, reason (blocked only), targetVersion, stepKinds (exact order), targets (kind to ordered target ids), onFailure (kind to policy, every step of that kind), via (restart_agent target to mechanism), notes (exact). Ported verbatim to the BGOS evals repo; keep it self contained and free of em or en dashes.",
+  "cases": [
+    {
+      "name": "nothing installed on darwin",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": null,
+        "marketplace": { "registered": false, "latestVersion": null },
+        "installed": { "present": false, "version": null, "installPath": null },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "none", "recipe": true, "running": false }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["register_marketplace", "refresh_marketplace", "snapshot", "install_plugin", "verify_installed", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] },
+        "onFailure": { "register_marketplace": "stop", "refresh_marketplace": "stop", "snapshot": "stop", "install_plugin": "escalate", "verify_installed": "rollback", "restart_agent": "continue", "verify_agent": "rollback" },
+        "via": { "912": "recipe" }
+      }
+    },
+    {
+      "name": "nothing installed on linux",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": null,
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": false, "version": null, "installPath": null },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "install_plugin", "verify_installed", "stage_pending_restart"],
+        "onFailure": { "install_plugin": "escalate", "stage_pending_restart": "stop" }
+      }
+    },
+    {
+      "name": "nothing installed on win32",
+      "state": {
+        "platform": "win32",
+        "installMethod": "marketplace",
+        "runningVersion": null,
+        "marketplace": { "registered": false, "latestVersion": "0.38.3" },
+        "installed": { "present": false, "version": null, "installPath": null },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "C:\\Users\\kc\\hoai-agents\\ava", "supervisor": "none", "recipe": true, "running": false }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["register_marketplace", "refresh_marketplace", "snapshot", "install_plugin", "verify_installed", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] },
+        "via": { "912": "recipe" }
+      }
+    },
+    {
+      "name": "marketplace missing but plugin cache present",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": false, "latestVersion": null },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["register_marketplace", "refresh_marketplace", "verify_installed"],
+        "onFailure": { "verify_installed": "stop" },
+        "reobserve": true,
+        "notes": ["agent steps deferred until latest version is known"]
+      }
+    },
+    {
+      "name": "older installed version",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.1",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.1", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.1" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912", "918"], "verify_agent": ["912", "918"] },
+        "onFailure": { "refresh_marketplace": "stop", "snapshot": "stop", "update_plugin": "escalate", "verify_installed": "rollback", "restart_agent": "continue", "verify_agent": "rollback" },
+        "via": { "912": "marker", "918": "marker" }
+      }
+    },
+    {
+      "name": "already latest with all agents running",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "nothing_to_do",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "already latest with one agent down (reconcile)",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "918", "cwd": "/home/kc/hoai-agents/nono", "supervisor": "service", "recipe": true, "running": false }
+        ],
+        "intent": "reconcile"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["918"], "verify_agent": ["918"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" },
+        "via": { "918": "service" }
+      }
+    },
+    {
+      "name": "dirty clone",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "0.38.4", "dirty": true, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": "b1c2d3e" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "dirty_tree",
+        "targetVersion": "0.38.4",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "clone not fast-forward",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "0.38.4", "dirty": false, "canFastForward": false, "currentCommit": "9eea3d3", "targetCommit": "b1c2d3e" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "not_fast_forward",
+        "targetVersion": "0.38.4",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "clone fast-forward",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "0.38.4", "dirty": false, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": "b1c2d3e" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.4",
+        "stepKinds": ["snapshot", "git_fast_forward", "verify_installed", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] },
+        "onFailure": { "snapshot": "stop", "git_fast_forward": "rollback", "verify_installed": "rollback", "verify_agent": "rollback" },
+        "via": { "912": "marker" }
+      }
+    },
+    {
+      "name": "no restart authority at all (stage)",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.1",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.1", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.1" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "none", "recipe": false, "running": true },
+          { "assistantId": "918", "cwd": null, "supervisor": "none", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "manual_restart_required", "manual_restart_required", "stage_pending_restart"],
+        "targets": { "manual_restart_required": ["912", "918"] },
+        "onFailure": { "manual_restart_required": "continue", "stage_pending_restart": "stop" }
+      }
+    },
+    {
+      "name": "six agents mixed on darwin",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "7", "cwd": "/Users/kc/hoai-agents/old", "supervisor": "none", "recipe": false, "running": true },
+          { "assistantId": "300", "cwd": "/Users/kc/hoai-agents/david", "supervisor": "none", "recipe": true, "running": true },
+          { "assistantId": "1001", "cwd": null, "supervisor": "none", "recipe": true, "running": true },
+          { "assistantId": "55", "cwd": "/Users/kc/hoai-agents/nicole", "supervisor": "service", "recipe": false, "running": true },
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "manual_restart_required", "restart_agent", "verify_agent", "restart_agent", "verify_agent", "restart_agent", "verify_agent", "restart_agent", "verify_agent", "manual_restart_required"],
+        "targets": { "restart_agent": ["55", "300", "912", "918"], "verify_agent": ["55", "300", "912", "918"], "manual_restart_required": ["7", "1001"] },
+        "via": { "55": "service", "300": "recipe", "912": "marker", "918": "marker" }
+      }
+    },
+    {
+      "name": "same six on win32",
+      "state": {
+        "platform": "win32",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "918", "cwd": "C:\\Users\\kc\\hoai-agents\\nono", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "7", "cwd": "C:\\Users\\kc\\hoai-agents\\old", "supervisor": "none", "recipe": false, "running": true },
+          { "assistantId": "300", "cwd": "C:\\Users\\kc\\hoai-agents\\david", "supervisor": "none", "recipe": true, "running": true },
+          { "assistantId": "1001", "cwd": null, "supervisor": "none", "recipe": true, "running": true },
+          { "assistantId": "55", "cwd": "C:\\Users\\kc\\hoai-agents\\nicole", "supervisor": "service", "recipe": false, "running": true },
+          { "assistantId": "912", "cwd": "C:\\Users\\kc\\hoai-agents\\ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "manual_restart_required", "manual_restart_required", "restart_agent", "verify_agent", "restart_agent", "verify_agent", "restart_agent", "verify_agent", "manual_restart_required"],
+        "targets": { "restart_agent": ["300", "912", "918"], "verify_agent": ["300", "912", "918"], "manual_restart_required": ["7", "55", "1001"] },
+        "via": { "300": "recipe", "912": "marker", "918": "marker" }
+      }
+    },
+    {
+      "name": "repair intent",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "repair"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "reinstall_plugin", "verify_installed", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] },
+        "onFailure": { "reinstall_plugin": "rollback", "verify_installed": "rollback", "verify_agent": "rollback" },
+        "via": { "912": "marker" }
+      }
+    },
+    {
+      "name": "latched",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.1",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.1", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.1" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": true,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "rollback_latched",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "disabled",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.1",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.1", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.1" },
+        "autoUpdateEnabled": false,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "updates_disabled",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "disabled + restart_only",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": false,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "restart_only"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912", "918"], "verify_agent": ["912", "918"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" }
+      }
+    },
+    {
+      "name": "major jump",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "1.0.0" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "major_version_blocked",
+        "targetVersion": "1.0.0",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "unknown latest",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": null },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["refresh_marketplace", "verify_installed"],
+        "onFailure": { "refresh_marketplace": "stop", "verify_installed": "stop" },
+        "reobserve": true,
+        "notes": ["agent steps deferred until latest version is known"]
+      }
+    },
+    {
+      "name": "restart_only with three agents",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.4" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "55", "cwd": "/home/kc/hoai-agents/nicole", "supervisor": "service", "recipe": false, "running": true },
+          { "assistantId": "300", "cwd": "/home/kc/hoai-agents/david", "supervisor": "none", "recipe": true, "running": true }
+        ],
+        "intent": "restart_only"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent", "restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["55", "300", "912"], "verify_agent": ["55", "300", "912"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" },
+        "via": { "55": "service", "300": "recipe", "912": "marker" }
+      }
+    },
+    {
+      "name": "refreshWatcher true with nothing else to do",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update",
+        "refreshWatcher": true
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_watcher"],
+        "onFailure": { "refresh_watcher": "continue" }
+      }
+    },
+    {
+      "name": "refreshWatcher true after an update",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update",
+        "refreshWatcher": true
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "restart_agent", "verify_agent", "refresh_watcher"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] }
+      }
+    },
+    {
+      "name": "malformed agent ids ignored",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "abc", "cwd": "/Users/kc/hoai-agents/abc", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "", "cwd": "/Users/kc/hoai-agents/blank", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "9x1", "cwd": "/Users/kc/hoai-agents/nine", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": 77, "cwd": "/Users/kc/hoai-agents/num", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true },
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava-copy", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "restart_only"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912", "918"], "verify_agent": ["912", "918"] },
+        "notes": [
+          "ignored agent with malformed id \"abc\"",
+          "ignored agent with malformed id \"\"",
+          "ignored agent with malformed id \"9x1\"",
+          "ignored agent with non-string id (number)",
+          "ignored duplicate agent id \"912\""
+        ]
+      }
+    },
+    {
+      "name": "nothing newer but one agent runs an older version",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true, "version": "0.38.3" },
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true, "version": "0.38.2" }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["918"], "verify_agent": ["918"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" },
+        "via": { "918": "marker" }
+      }
+    },
+    {
+      "name": "latch does not block restart_only",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.4" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": true,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": false }
+        ],
+        "intent": "restart_only"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912"], "verify_agent": ["912"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" },
+        "via": { "912": "marker" },
+        "notes": ["updates latched, restart only"]
+      }
+    },
+    {
+      "name": "latch blocks reconcile",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": true,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": false }
+        ],
+        "intent": "reconcile"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "rollback_latched",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "installed newer than marketplace (no downgrade)",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.39.0",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.39.0", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.39.0" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "nothing_to_do",
+        "targetVersion": "0.39.0",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "clone latest unknown",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": null, "dirty": false, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": null },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "nothing_to_do",
+        "targetVersion": "0.38.3",
+        "stepKinds": [],
+        "notes": ["clone latest unknown, no fast-forward planned"]
+      }
+    },
+    {
+      "name": "clone nothing newer with dirty tree",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "0.38.3", "dirty": true, "canFastForward": false, "currentCommit": "9eea3d3", "targetCommit": "9eea3d3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "nothing_to_do",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "installed version unknown (marketplace)",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": null,
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": null, "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/broken" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "installed_version_unknown",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "clone running version unknown",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": null,
+        "clone": { "latestVersion": "0.38.4", "dirty": false, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": "b1c2d3e" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "installed_version_unknown",
+        "targetVersion": "0.38.4",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "unknown install method",
+      "state": {
+        "platform": "linux",
+        "installMethod": "npm",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.4" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "unknown_install_method",
+        "targetVersion": null,
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "unknown intent",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "yolo"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "unknown_intent",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "restart_only with zero agents",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "restart_only"
+      },
+      "expected": {
+        "verdict": "nothing_to_do",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "repair on clone with nothing newer",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "0.38.3", "dirty": false, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": "9eea3d3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "918", "cwd": "/home/kc/hoai-agents/nono", "supervisor": "service", "recipe": true, "running": true },
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "repair"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912", "918"], "verify_agent": ["912", "918"] },
+        "onFailure": { "restart_agent": "continue", "verify_agent": "continue" },
+        "via": { "912": "marker", "918": "service" }
+      }
+    },
+    {
+      "name": "reconcile with an update restarts every agent",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true, "version": "0.38.2" },
+          { "assistantId": "918", "cwd": "/Users/kc/hoai-agents/nono", "supervisor": "launcher-live", "recipe": true, "running": true, "version": "0.38.2" }
+        ],
+        "intent": "reconcile"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "restart_agent", "verify_agent", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["912", "918"], "verify_agent": ["912", "918"] },
+        "onFailure": { "verify_agent": "rollback" }
+      }
+    },
+    {
+      "name": "major jump under repair",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "1.0.0" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "repair"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "major_version_blocked",
+        "targetVersion": "1.0.0",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "latest unknown under repair",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": null },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "repair"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["refresh_marketplace", "verify_installed"],
+        "onFailure": { "verify_installed": "stop" },
+        "reobserve": true,
+        "notes": ["agent steps deferred until latest version is known"]
+      }
+    },
+    {
+      "name": "updates disabled + reconcile",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": false,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": false }
+        ],
+        "intent": "reconcile"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "updates_disabled",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "clone major jump",
+      "state": {
+        "platform": "linux",
+        "installMethod": "clone",
+        "runningVersion": "0.38.3",
+        "clone": { "latestVersion": "1.0.0", "dirty": false, "canFastForward": true, "currentCommit": "9eea3d3", "targetCommit": "c0ffee1" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "major_version_blocked",
+        "targetVersion": "1.0.0",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "win32 service supervisor with a recipe restarts via recipe",
+      "state": {
+        "platform": "win32",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "55", "cwd": "C:\\Users\\kc\\hoai-agents\\nicole", "supervisor": "service", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "restart_agent", "verify_agent"],
+        "targets": { "restart_agent": ["55"], "verify_agent": ["55"] },
+        "via": { "55": "recipe" }
+      }
+    },
+    {
+      "name": "missing agents field is an empty fleet",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "/home/kc/.claude/plugins/cache/hoai/hoai/0.38.2" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["refresh_marketplace", "snapshot", "update_plugin", "verify_installed", "stage_pending_restart"]
+      }
+    },
+    {
+      "name": "autoUpdateEnabled missing fails closed",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.2",
+        "marketplace": { "registered": true, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.2", "installPath": "/home/kc/.claude/plugins/cache/hoai/hoai/0.38.2" },
+        "rollbackLatched": false,
+        "agents": [],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "blocked",
+        "reason": "updates_disabled",
+        "targetVersion": "0.38.3",
+        "stepKinds": []
+      }
+    },
+    {
+      "name": "unparseable latest string is treated as unknown",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": "v0.38.4" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["refresh_marketplace", "verify_installed"],
+        "reobserve": true,
+        "notes": ["agent steps deferred until latest version is known"]
+      }
+    },
+    {
+      "name": "not registered but already latest still registers and refreshes",
+      "state": {
+        "platform": "darwin",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": false, "latestVersion": "0.38.3" },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/Users/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/Users/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": true }
+        ],
+        "intent": "update"
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": "0.38.3",
+        "stepKinds": ["register_marketplace", "refresh_marketplace"],
+        "onFailure": { "register_marketplace": "stop", "refresh_marketplace": "stop" }
+      }
+    },
+    {
+      "name": "unknown latest defers the watcher refresh and a down agent until re-observed",
+      "state": {
+        "platform": "linux",
+        "installMethod": "marketplace",
+        "runningVersion": "0.38.3",
+        "marketplace": { "registered": true, "latestVersion": null },
+        "installed": { "present": true, "version": "0.38.3", "installPath": "/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3" },
+        "autoUpdateEnabled": true,
+        "rollbackLatched": false,
+        "agents": [
+          { "assistantId": "912", "cwd": "/home/kc/hoai-agents/ava", "supervisor": "launcher-live", "recipe": true, "running": false }
+        ],
+        "intent": "reconcile",
+        "refreshWatcher": true
+      },
+      "expected": {
+        "verdict": "plan",
+        "targetVersion": null,
+        "stepKinds": ["refresh_marketplace", "verify_installed"],
+        "reobserve": true,
+        "notes": ["agent steps deferred until latest version is known"]
+      }
+    }
+  ]
+}
