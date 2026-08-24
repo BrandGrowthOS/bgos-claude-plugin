@@ -2,12 +2,13 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.38.2 (2026-08-24)
 
 Supervised-restart safety, after a live fleet incident on the night of
 2026-08-23 where roughly six agents restarted and all resumed one agent's
-conversation. Not released; staged rollout required (see
-`docs/one-click-restart-helper.md`).
+conversation. The supervised launcher migration is a separate staged step (see
+`docs/one-click-restart-helper.md`); this release ships the hardened restart
+code so the one-click update path is safe when adopted.
 
 - **Identity-safe relaunch (GAP 1).** The supervise loop no longer relaunches
   with `--continue` (which resumes the MOST RECENT conversation in the cwd, so
