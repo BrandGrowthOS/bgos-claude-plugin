@@ -593,6 +593,30 @@ export function decideCheckoutAction(input: {
   return { kind: 'pull' }
 }
 
+/**
+ * Does a `git status --porcelain` body describe a tree too dirty to update?
+ *
+ * UNTRACKED files (porcelain `??`) and IGNORED files (`!!`) do NOT count: a
+ * fetch + fast-forward merge never touches them, and git itself refuses a
+ * checkout only when an untracked file would actually be overwritten (which
+ * the ff-only merge surfaces on its own). Refusing on any stray file -- a
+ * report .md someone dropped into the clone -- made one-click updates fail
+ * with 'dirty_tree' for no real reason (KC incident 2026-08-24). Only TRACKED
+ * modifications, staged changes, deletions, renames, or merge conflicts make
+ * the tree dirty. We deliberately never `git clean`: a user's untracked files
+ * are theirs to keep.
+ */
+export function porcelainIndicatesDirtyTree(status: string): boolean {
+  return status.split('\n').some((rawLine) => {
+    const line = rawLine.replace(/\r$/, '')
+    if (line.length === 0) return false
+    // Porcelain v1 status codes live in the first two columns; '??' is
+    // untracked and '!!' is ignored. Everything else is a real change.
+    if (line.startsWith('??') || line.startsWith('!!')) return false
+    return true
+  })
+}
+
 export interface CommandResult {
   stdout: string
   stderr: string
@@ -675,7 +699,7 @@ export async function inspectGitUpdate(opts: {
     '--porcelain',
     '--untracked-files=normal',
   ])
-  if (status.length > 0) return { kind: 'dirty-tree' }
+  if (porcelainIndicatesDirtyTree(status)) return { kind: 'dirty-tree' }
   await git(runner, opts.rootDir, ['fetch', '--quiet', 'origin', 'main'])
   const [currentCommit, targetCommit] = await Promise.all([
     git(runner, opts.rootDir, ['rev-parse', 'HEAD']),
@@ -1111,7 +1135,7 @@ export class SelfUpdater {
       ])
       const currentCommit = await git(this.runner, this.opts.rootDir, ['rev-parse', 'HEAD'])
       const action = decideCheckoutAction({
-        dirty: status.length > 0,
+        dirty: porcelainIndicatesDirtyTree(status),
         lockHeld: false,
         currentCommit,
         targetCommit: inspection.targetCommit,
@@ -1316,7 +1340,7 @@ export class SelfUpdater {
         '--porcelain',
         '--untracked-files=normal',
       ])
-      if (status.length > 0) {
+      if (porcelainIndicatesDirtyTree(status)) {
         this.opts.log('Auto-update rollback skipped because the checkout has local changes.')
         return
       }

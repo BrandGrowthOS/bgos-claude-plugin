@@ -558,6 +558,39 @@ test('rollback never changes a dirty checkout', async () => {
   assert.equal(calls.some((args) => args[0] === 'checkout'), false)
 })
 
+test('rollback proceeds when only untracked files are present', async () => {
+  // KC incident 2026-08-24: a stray untracked file must not block a legitimate
+  // rollback (nor disable auto-updates); checkout --detach is untracked-safe.
+  const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-untracked-'))
+  const stateDir = join(root, 'state')
+  const coreStatePath = join(stateDir, 'auto-update.json')
+  await mkdir(join(root, '.git'), { recursive: true })
+  await mkdir(stateDir, { recursive: true })
+  await writeFile(coreStatePath, JSON.stringify(pendingCoreState()))
+  const calls: Array<{ file: string; args: readonly string[] }> = []
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push({ file, args: [...args] })
+    if (file === 'git' && args[0] === 'rev-parse') {
+      return { stdout: `${COMMIT_B}\n`, stderr: '' }
+    }
+    if (file === 'git' && args[0] === 'status') {
+      return { stdout: '?? report.md\n', stderr: '' }
+    }
+    if (file === 'git' && args[0] === 'diff') {
+      return { stdout: 'bun.lock\n', stderr: '' }
+    }
+    return { stdout: '', stderr: '' }
+  }
+  assert.equal(
+    await rollbackInstalledUpdate({ rootDir: root, coreStatePath, exec }),
+    true,
+  )
+  assert.deepEqual(
+    calls.find((call) => call.file === 'git' && call.args[0] === 'checkout'),
+    { file: 'git', args: ['checkout', '--detach', COMMIT_A] },
+  )
+})
+
 test('rollback restores dependencies when another daemon already moved HEAD', async () => {
   const root = await mkdtemp(join(tmpdir(), 'bgos-wrapper-shared-rollback-'))
   const stateDir = join(root, 'state')
