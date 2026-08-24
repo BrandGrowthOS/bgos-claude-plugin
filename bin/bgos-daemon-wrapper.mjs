@@ -402,6 +402,24 @@ async function git(exec, rootDir, args, timeoutMs = 60_000) {
   return result.stdout.trim()
 }
 
+/**
+ * Does a `git status --porcelain` body describe a tree too dirty to roll back?
+ * UNTRACKED (`??`) and IGNORED (`!!`) files do NOT count: the rollback does a
+ * `git checkout --detach`, which git itself refuses only when an untracked file
+ * would actually be overwritten, so a stray untracked file (a report .md in the
+ * clone) must not block a legitimate rollback and disable auto-updates (KC
+ * incident 2026-08-24). Mirror of lib/self-update.ts porcelainIndicatesDirtyTree
+ * (kept local because this .mjs wrapper cannot import the TS source).
+ */
+export function porcelainIndicatesDirtyTree(status) {
+  return status.split('\n').some((rawLine) => {
+    const line = rawLine.replace(/\r$/, '')
+    if (line.length === 0) return false
+    if (line.startsWith('??') || line.startsWith('!!')) return false
+    return true
+  })
+}
+
 export function tryAcquireLock(lockPath, now = Date.now()) {
   const attempt = () => {
     const token = randomUUID()
@@ -492,7 +510,7 @@ export async function rollbackInstalledUpdate(opts) {
       '--porcelain',
       '--untracked-files=normal',
     ])
-    if (status.length > 0) {
+    if (porcelainIndicatesDirtyTree(status)) {
       writeSharedDisabled(safetyPath)
       log('Auto-update rollback skipped because the checkout has local changes.')
       return false

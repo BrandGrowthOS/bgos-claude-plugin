@@ -31,6 +31,7 @@ import {
   loadSharedUpdateSafety,
   nextUpdateCheckDelayMs,
   parseSemver,
+  porcelainIndicatesDirtyTree,
   resolveAutoUpdateStatePath,
   runSelfUpdateDryRun,
   saveAutoUpdateState,
@@ -696,6 +697,40 @@ describe('checkout safety decisions', () => {
   })
 })
 
+describe('porcelainIndicatesDirtyTree (untracked files never block an update)', () => {
+  test('an empty status is clean', () => {
+    expect(porcelainIndicatesDirtyTree('')).toBe(false)
+    expect(porcelainIndicatesDirtyTree('\n')).toBe(false)
+  })
+
+  test('untracked-only files (a stray report .md) are NOT dirty', () => {
+    // KC incident 2026-08-24: a `?? report.md` dropped into the clone must
+    // not fail the one-click update, because fetch+ff-only never touches it.
+    expect(porcelainIndicatesDirtyTree('?? report.md\n')).toBe(false)
+    expect(porcelainIndicatesDirtyTree('?? a.md\n?? nested/dir/b.txt\n')).toBe(false)
+  })
+
+  test('ignored files are NOT dirty either', () => {
+    expect(porcelainIndicatesDirtyTree('!! node_modules/\n')).toBe(false)
+  })
+
+  test('a tracked modification IS dirty', () => {
+    expect(porcelainIndicatesDirtyTree(' M server.ts\n')).toBe(true)
+  })
+
+  test('staged, deleted, renamed, and conflicted trees are all dirty', () => {
+    expect(porcelainIndicatesDirtyTree('M  staged.ts\n')).toBe(true)
+    expect(porcelainIndicatesDirtyTree('A  added.ts\n')).toBe(true)
+    expect(porcelainIndicatesDirtyTree('D  deleted.ts\n')).toBe(true)
+    expect(porcelainIndicatesDirtyTree('R  old.ts -> new.ts\n')).toBe(true)
+    expect(porcelainIndicatesDirtyTree('UU conflict.ts\n')).toBe(true)
+  })
+
+  test('a real change mixed in with untracked files is still dirty', () => {
+    expect(porcelainIndicatesDirtyTree('?? stray.md\n M server.ts\n')).toBe(true)
+  })
+})
+
 describe('real git check in dry-run mode', () => {
   test('uses fixed argv, fetches metadata, and never invokes merge or checkout', async () => {
     const calls: Array<{ file: string; args: readonly string[] }> = []
@@ -727,6 +762,21 @@ describe('real git check in dry-run mode', () => {
     })
     expect(result).toEqual({ kind: 'dirty-tree' })
     expect(calls).toHaveLength(1)
+  })
+
+  test('an untracked-only checkout is NOT dirty and the inspection proceeds', async () => {
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const result = await inspectGitUpdate({
+      rootDir: tempDir('self-update-untracked-'),
+      runningVersion: '0.26.0',
+      runner: gitRunner({ status: '?? report.md\n', calls }),
+    })
+    expect(result.kind).toBe('checked')
+    // It moved past the status check and fetched remote metadata.
+    expect(calls).toContainEqual({
+      file: 'git',
+      args: ['fetch', '--quiet', 'origin', 'main'],
+    })
   })
 
   test('dry-run logs the correct decision and cannot execute an update', async () => {
@@ -1636,6 +1686,17 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     expect(outcome).toEqual({ kind: 'dirty-tree' })
     expect(calls.some((c) => c.args[0] === 'merge')).toBe(false)
     expect(h.drainModes).toEqual([])
+  })
+
+  test('an untracked-only checkout is not dirty and the one-click update installs', async () => {
+    // KC incident 2026-08-24: the click failed 'dirty_tree' only because a
+    // stray untracked file sat in the clone. It must now install cleanly.
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const h = updaterHarness({ runner: gitRunner({ calls, status: '?? report.md\n' }) })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(calls.some((c) => c.args[0] === 'merge')).toBe(true)
   })
 
   test('a shared latch written after boot wins before any git work', async () => {
