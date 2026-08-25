@@ -29,6 +29,7 @@ import {
   buildLaunchRecipe,
   credentialsPath,
   detectSupervisor,
+  discoverFolderAgents,
   joinDir,
   launchRecipePath,
   listAgents,
@@ -638,4 +639,142 @@ test('listAgents: a discovered service reaches the row, so the restart is addres
   assert.equal(agent!.service?.handle, 'ai.bgos.session.912')
   assert.equal(agent!.serviceFile, BESPOKE_PLIST)
   assert.equal(JSON.stringify(agent).includes('secret'), false)
+})
+
+// -- folder-declared agents: the machine has no single registry -------------------------
+
+/**
+ * An agent folder as `bgos-agent install --key --user` and `bgos-claim`
+ * actually leave it: the API key and the assistant id live in the folder's
+ * .mcp.json and there is NO ~/.bgos-agent/credentials-<id>.json at all. This
+ * is the layout of agent 900 on the BGOS dev Mac, the agent the inventory used
+ * to omit entirely.
+ */
+function apiKeyAgentFolder(dir: string, assistantId: string) {
+  return {
+    [`${dir}/.mcp.json`]: JSON.stringify({
+      mcpServers: {
+        bgos: {
+          command: 'bun',
+          args: ['/home/kc/bgos-claude-plugin/server.ts'],
+          env: {
+            BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1',
+            BGOS_API_KEY: 'sk-live-do-not-leak-me',
+            BGOS_USER_ID: 'user_abc',
+            BGOS_ASSISTANT_ID: assistantId,
+          },
+        },
+      },
+    }),
+  }
+}
+
+/** A loaded launchd job, the way plutil prints it, running in `cwd`. */
+function loadedJob(handle: string, cwd: string, kind: 'launchd' | 'systemd' = 'launchd') {
+  return {
+    kind,
+    handle,
+    file: `/home/kc/Library/LaunchAgents/${handle}.plist`,
+    job: {
+      handle,
+      workingDirectory: cwd,
+      paths: ['/bin/bash', `/home/kc/.${handle}/keepalive.sh`, cwd],
+    },
+  }
+}
+
+test('discoverFolderAgents: an agent declared ONLY in its folder is found through the job that runs it', () => {
+  const files = { ...apiKeyAgentFolder('/home/kc/BGOS', '900') }
+  const fs = memFs(files, ['/home/kc/BGOS'])
+  const found = discoverFolderAgents({
+    home: HOME,
+    jobs: [loadedJob('ai.bgos.claude.session', '/home/kc/BGOS')],
+    readFile: fs.readFile,
+  })
+  assert.deepEqual([...found.keys()], ['900'])
+  assert.equal(found.get('900')!.cwd, '/home/kc/BGOS')
+  assert.deepEqual(found.get('900')!.notes, [])
+})
+
+test('discoverFolderAgents: the home directory, a silent folder and a conflicted folder declare nobody', () => {
+  const fs = memFs({
+    ...apiKeyAgentFolder(HOME, '900'),
+    '/home/kc/quiet/.mcp.json': JSON.stringify({ mcpServers: { bgos: { command: 'bun' } } }),
+    ...apiKeyAgentFolder('/home/kc/torn', '5'),
+    '/home/kc/torn/.bgos-agent-id': '6\n',
+  })
+  const found = discoverFolderAgents({
+    home: HOME,
+    jobs: [
+      // The home directory is shared by everything and identifies no agent.
+      loadedJob('ai.bgos.home', HOME),
+      loadedJob('ai.bgos.quiet', '/home/kc/quiet'),
+      // A folder whose two identity sources disagree cannot be claimed.
+      loadedJob('ai.bgos.torn', '/home/kc/torn'),
+      // A job with no working directory at all.
+      { kind: 'launchd' as const, handle: 'ai.bgos.nowd', file: '/x.plist', job: { handle: 'ai.bgos.nowd', workingDirectory: '', paths: [] } },
+    ],
+    readFile: fs.readFile,
+  })
+  assert.deepEqual([...found.keys()], [])
+})
+
+test('discoverFolderAgents: two folders claiming one agent still yield a ROW, just no cwd to restart into', () => {
+  // Vanishing here would reintroduce the exact bug: a silent omission is worse
+  // than an honest "manual restart required" step.
+  const fs = memFs({
+    ...apiKeyAgentFolder('/home/kc/one', '900'),
+    ...apiKeyAgentFolder('/home/kc/two', '900'),
+  })
+  const found = discoverFolderAgents({
+    home: HOME,
+    jobs: [loadedJob('ai.bgos.one', '/home/kc/one'), loadedJob('ai.bgos.two', '/home/kc/two')],
+    readFile: fs.readFile,
+  })
+  assert.deepEqual([...found.keys()], ['900'])
+  assert.equal(found.get('900')!.cwd, null)
+  assert.deepEqual(found.get('900')!.notes, ['ambiguous_supervised_folders:2'])
+})
+
+test('listAgents: an agent with NO credentials file is inventoried, and is restartable', () => {
+  // The regression this closes: eight agents ran on the dev Mac, seven had
+  // credentials files, and 900 got no row and therefore no step at all, so a
+  // reconcile looked complete while skipping an agent.
+  const plist = '/home/kc/Library/LaunchAgents/ai.bgos.claude.session.plist'
+  const jobJson = JSON.stringify({
+    Label: 'ai.bgos.claude.session',
+    ProgramArguments: ['/bin/bash', '/home/kc/.bgos-claude-session/keepalive.sh'],
+    WorkingDirectory: '/home/kc/BGOS',
+  })
+  const files: Record<string, string> = {
+    // Exactly one credentials file, for the OTHER agent.
+    '/home/kc/.bgos-agent/credentials-912.json': '{"pairingToken":"secret"}',
+    ...apiKeyAgentFolder('/home/kc/BGOS', '900'),
+    [plist]: jobJson,
+  }
+  const fs = memFs(files, ['/home/kc/BGOS'])
+  const execSync = (file: string, args: string[]) => {
+    if (file === 'launchctl' && args[0] === 'list') {
+      return { code: 0, stdout: 'PID\tStatus\tLabel\n1\t0\tai.bgos.claude.session' }
+    }
+    if (file === 'plutil') {
+      const path = args[args.length - 1]!
+      return path in files ? { code: 0, stdout: files[path]! } : { code: 1, stdout: '' }
+    }
+    return { code: 127, stdout: '' }
+  }
+  const agents = listAgents({ home: HOME, env: {}, platform: 'darwin', fs, pidAlive: () => false, execSync })
+  assert.deepEqual(agents.map((a) => a.assistantId), ['900', '912'])
+  const orchestrator = agents[0]!
+  assert.equal(orchestrator.discoveredVia, 'supervised-folder')
+  assert.equal(orchestrator.cwd, '/home/kc/BGOS')
+  assert.equal(orchestrator.supervisor, 'service')
+  assert.equal(orchestrator.service?.handle, 'ai.bgos.claude.session')
+  assert.equal(orchestrator.running, true)
+  // The agent that DID have a credentials file is unchanged.
+  assert.equal(agents[1]!.discoveredVia, 'credentials')
+  assert.equal(agents[1]!.supervisor, 'none')
+  // The API key that sits beside the id in .mcp.json never reaches a row.
+  assert.equal(JSON.stringify(agents).includes('sk-live-do-not-leak-me'), false)
+  assert.equal(JSON.stringify(agents).includes('secret'), false)
 })

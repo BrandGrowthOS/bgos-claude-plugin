@@ -30,6 +30,7 @@ import {
   parseSemver,
   planMachine,
   restartMechanism,
+  inventoryBasis,
 } from '../lib/update-planner.mjs'
 
 type FixtureCase = {
@@ -492,5 +493,67 @@ describe('generated cases beyond the fixture', () => {
       assert.ok(['string', 'number', 'boolean'].includes(typeof value), `${path} is a primitive (${typeof value})`)
     }
     walk(plan, 'plan')
+  })
+})
+
+describe('inventory basis: the checklist states what it was built from', () => {
+  test('inventoryBasis counts each source and names the blind spot', () => {
+    const basis = inventoryBasis([
+      { assistantId: '900', discoveredVia: 'supervised-folder' },
+      { assistantId: '901', discoveredVia: 'credentials' },
+      { assistantId: '910', discoveredVia: 'credentials' },
+    ])
+    assert.equal(basis.total, 3)
+    assert.equal(basis.credentials, 2)
+    assert.equal(basis.supervisedFolder, 1)
+    // The blind spot has to be stated, or a reader takes the checklist for the
+    // whole machine. An agent with no credentials file whose folder no loaded
+    // job names cannot be seen from here.
+    assert.match(basis.basis, /not visible from this machine and gets no step/)
+    assert.deepEqual(inventoryBasis([]), {
+      total: 0,
+      credentials: 0,
+      supervisedFolder: 0,
+      basis:
+        '0 agents: 0 from ~/.bgos-agent credentials files, 0 from a supervised job\'s folder config. ' +
+        'An agent with neither is not visible from this machine and gets no step here.',
+    })
+  })
+
+  test('every plan carries the basis, and a folder-only agent is called out in the notes', () => {
+    const state = (agents: Record<string, unknown>[]): any => ({
+      intent: 'restart_only',
+      installMethod: 'clone',
+      platform: 'darwin',
+      autoUpdateEnabled: true,
+      rollbackLatched: false,
+      runningVersion: '1.0.0',
+      installed: { present: true, version: '1.0.0', installPath: null },
+      agents,
+    })
+    const plain = planMachine(
+      state([{ assistantId: '901', supervisor: 'service', running: true, discoveredVia: 'credentials' }]),
+    )
+    assert.equal(plain.inventory?.total, 1)
+    assert.equal(plain.inventory?.supervisedFolder, 0)
+    // notes stays the ANOMALY channel when nothing anomalous happened.
+    assert.deepEqual(plain.notes, [])
+
+    const widened = planMachine(
+      state([
+        { assistantId: '900', supervisor: 'service', running: true, discoveredVia: 'supervised-folder' },
+        { assistantId: '901', supervisor: 'service', running: true, discoveredVia: 'credentials' },
+      ]),
+    )
+    assert.equal(widened.inventory?.total, 2)
+    assert.equal(widened.inventory?.supervisedFolder, 1)
+    assert.deepEqual(widened.notes, [
+      '1 agent found only through a supervised job folder, not a credentials file',
+    ])
+    // And the folder-discovered agent gets a real step, not an omission.
+    assert.deepEqual(
+      widened.steps.filter((s: Record<string, any>) => s.kind === 'restart_agent').map((s: Record<string, any>) => s.target),
+      ['900', '901'],
+    )
   })
 })
