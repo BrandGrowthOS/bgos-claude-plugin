@@ -276,10 +276,18 @@ test('the held-empty wake map is bounded', () => {
 // ── Boot ordering ───────────────────────────────────────────────────────────
 
 test('the stream boots after the boot sweep and before the WS connects', () => {
-  const bootSweep = serverSource.indexOf('await pollAllChats()')
-  const streamInit = serverSource.indexOf('await initUpdateStream()')
+  // 2026-08-25: same invariant, new call shape. Both steps are now narrated
+  // through startupPhase (a hang between the transport and the poll used to
+  // be indistinguishable from a crash), so the ordering is read from the
+  // phase calls, and from main() rather than the whole file: streamFullResync
+  // also calls pollAllChats and used to be what the first index found.
+  const mainSource = serverSource.slice(
+    serverSource.indexOf('async function main()'),
+  )
+  const bootSweep = mainSource.indexOf("phase('boot poll sweep'")
+  const streamInit = mainSource.indexOf("phase('update stream init'")
   // The CALL in main (the definition line also contains the bare string).
-  const wsConnect = serverSource.indexOf('\n    connectWebsocket()')
+  const wsConnect = mainSource.indexOf('\n    connectWebsocket()')
   assert.ok(bootSweep !== -1 && streamInit !== -1 && wsConnect !== -1)
   assert.ok(streamInit > bootSweep, 'cursor adoption needs a current state')
   assert.ok(streamInit < wsConnect, 'the consumer must exist before handlers can feed it')
