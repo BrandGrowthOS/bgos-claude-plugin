@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -493,7 +494,7 @@ export function relaunchNeedsGateAutoAccept(installMethod) {
  *  warning, which the settings file suppresses anyway) is never answered by
  *  it. Pure argv builder so the spawn is unit-testable. */
 export const WIN32_GATE_HELPER_FILE = 'win32-accept-dev-channels.ps1'
-export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds = 120 }) {
+export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds = 120, logFile = '' }) {
   return [
     '-NoProfile',
     '-NonInteractive',
@@ -505,6 +506,7 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
     String(consolePid),
     '-TimeoutSeconds',
     String(timeoutSeconds),
+    ...(logFile ? ['-LogFile', logFile] : []),
   ]
 }
 
@@ -605,10 +607,21 @@ function defaultRemoveFile(path) {
 /** Spawn the win32 gate helper detached and hidden (stdio ignored, unref'd)
  *  so it outlives nothing and blocks nothing; the console pid is this
  *  launcher's own, which claude shares. */
-function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writeErr }) {
-  const child = spawnImpl('powershell.exe', win32GateHelperArgs({ scriptDir, consolePid }), {
-    stdio: 'ignore',
-    detached: true,
+function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writeErr, home = homedir() }) {
+  const logFile = joinDir(joinDir(agentDir(home), 'logs'), 'win32-gate-helper.log')
+  // The helper's own stdout/stderr go to the log too, so a PowerShell that
+  // refuses to run the script (policy, AMSI, a bad path) leaves a reason.
+  let logFd = 'ignore'
+  try {
+    mkdirSync(dirname(logFile), { recursive: true })
+    logFd = openSync(logFile, 'a')
+  } catch {}
+  // NOT detached: a DETACHED_PROCESS powershell exits 0 without running the
+  // script at all (measured 2026-08-25: detached -> silent exit 0, attached
+  // -> runs, attaches, polls). Hidden so no second window flashes.
+  const child = spawnImpl('powershell.exe', win32GateHelperArgs({ scriptDir, consolePid, logFile }), {
+    stdio: ['ignore', logFd, logFd],
+    detached: false,
     windowsHide: true,
     shell: false,
   })
@@ -702,7 +715,8 @@ export async function superviseClaude(args, opts = {}) {
         // attached to that same console accepts the gate once it is on screen.
         const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
         try {
-          spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr })
+          const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
+          print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
         } catch (err) {
           writeErr(`[hoai] could not start the dev-channels gate helper: ${err?.message ?? err}\n`)
         }

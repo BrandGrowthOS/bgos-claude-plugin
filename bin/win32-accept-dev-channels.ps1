@@ -22,14 +22,21 @@
 param(
   [Parameter(Mandatory = $true)][int]$ConsolePid,
   [int]$TimeoutSeconds = 120,
-  [string]$Marker = 'Loading development channels'
+  [string]$Marker = 'Loading development channels',
+  [string]$LogFile = ''
 )
+function Note([string]$line) {
+  if ($LogFile) { try { Add-Content -Path $LogFile -Value ((Get-Date).ToString('o') + ' pid=' + $PID + ' ' + $line) } catch {} }
+}
+Note "start console=$ConsolePid timeout=$TimeoutSeconds"
+
 $src = @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class HoaiConsole {
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool FreeConsole();
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool AttachConsole(uint pid);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetConsoleScreenBufferInfo(IntPtr h, out CSBI info);
@@ -49,16 +56,20 @@ public static class HoaiConsole {
   }
 }
 '@
-Add-Type -TypeDefinition $src -ErrorAction Stop
+try { Add-Type -TypeDefinition $src -ErrorAction Stop } catch { Note ("add-type failed: " + $_.Exception.Message); exit 5 }
 [HoaiConsole]::FreeConsole() | Out-Null
-if (-not [HoaiConsole]::AttachConsole([uint32]$ConsolePid)) { exit 2 }
+if (-not [HoaiConsole]::AttachConsole([uint32]$ConsolePid)) { Note ("attach failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 2 }
+Note "attached"
 # GENERIC_READ | GENERIC_WRITE as an unsigned literal (0xC0000000 parses as a
 # negative int32 in PowerShell and fails the cast).
 $GENERIC_RW = [uint32]3221225472; $SHARE_RW = [uint32]3; $OPEN_EXISTING = [uint32]3
-$out = [HoaiConsole]::CreateFileW('CONOUT$', $GENERIC_RW, $SHARE_RW, [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
 $in = [HoaiConsole]::CreateFileW('CONIN$', $GENERIC_RW, $SHARE_RW, [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 while ((Get-Date) -lt $deadline) {
+  # Re-open CONOUT$ on EVERY poll: the TUI switches to an alternate screen
+  # buffer after start, and a handle opened before that switch keeps reading
+  # the old buffer, where the gate never appears.
+  $out = [HoaiConsole]::CreateFileW('CONOUT$', $GENERIC_RW, $SHARE_RW, [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
   $info = New-Object HoaiConsole+CSBI
   if ([HoaiConsole]::GetConsoleScreenBufferInfo($out, [ref]$info)) {
     $w = [int]$info.Size.X
@@ -80,9 +91,11 @@ while ((Get-Date) -lt $deadline) {
         $recs[$i] = $r
       }
       $written = [uint32]0
-      if ([HoaiConsole]::WriteConsoleInputW($in, $recs, 2, [ref]$written)) { exit 0 } else { exit 3 }
+      if ([HoaiConsole]::WriteConsoleInputW($in, $recs, 2, [ref]$written)) { Note "accepted"; exit 0 } else { Note ("inject failed err=" + [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()); exit 3 }
     }
   }
+  [HoaiConsole]::CloseHandle($out) | Out-Null
   Start-Sleep -Milliseconds 500
 }
+Note "timeout without the gate on screen"
 exit 4
