@@ -806,12 +806,16 @@ export async function superviseClaude(args, opts = {}) {
   // every (re)launch, never --continue (newest-in-shared-cwd = identity bleed).
   const sessionIdPath = joinDir(stateDir, SESSION_ID_FILE_NAME)
   let pinnedId = ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
-  // Once we have launched the pinned id it exists; a marker relaunch then
-  // resumes it. Cross-process (a prior hoai run created it), the transcript on
-  // disk answers.
-  let sessionCreated = false
+  // Whether the pinned session can be RESUMED is answered by its transcript
+  // on disk, every time, including a marker relaunch. "We launched it, so
+  // it exists" is not true for a channel-only session: Claude Code writes
+  // no transcript for one, so --resume is rejected on the spot, the fresh
+  // fallback mints a NEW id, and every restart cost a doomed launch and the
+  // agent's pinned identity. No transcript means create it again with the
+  // SAME id (never --continue); the fresh fallback below still covers a
+  // rejected resume.
   const sessionExistsNow = () =>
-    sessionCreated || (pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId, env.CLAUDE_CONFIG_DIR)) : false)
+    pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId, env.CLAUDE_CONFIG_DIR)) : false
 
   let relaunchesAt = []
   let exhausted = false
@@ -857,16 +861,15 @@ export async function superviseClaude(args, opts = {}) {
       }, pollMs)
       const code = await exited
       clearInterval(poller)
-      // We just created or resumed the pinned session, so it exists now.
-      if (pinnedId) sessionCreated = true
       if (restartRequested) {
-        // A daemon-driven update restart: relaunch resuming THIS agent's OWN
-        // session (never --continue), and give this cycle a fresh fallback.
+        // A daemon-driven update restart: relaunch THIS agent's OWN session
+        // (resume it when its transcript exists, else create it again by
+        // id; never --continue), and give this cycle a fresh fallback.
         currentArgs = relaunchClaudeArgs({
           scriptDir,
           env,
           home,
-          sessionArgs: sessionArgsFor(pinnedId, true),
+          sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
         freshTried = false
         recordRecipe(currentArgs)
@@ -893,7 +896,6 @@ export async function superviseClaude(args, opts = {}) {
         let freshSessionArgs
         if (freshId && writeFile(sessionIdPath, freshId)) {
           pinnedId = freshId
-          sessionCreated = false
           freshSessionArgs = sessionArgsFor(freshId, false)
         } else {
           freshSessionArgs = []

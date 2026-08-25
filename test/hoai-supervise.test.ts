@@ -388,6 +388,8 @@ test('superviseClaude: a marker kills the child and relaunches resuming the agen
   const h = loopHarness()
   const done = h.run(BASE_ARGS)
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  // The session wrote its transcript, so it can be resumed.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   // Marker contents are hostile on purpose: only existence may matter.
   h.files.set(MARKER_PATH, JSON.stringify({ exec: 'rm -rf /' }))
   await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
@@ -399,6 +401,24 @@ test('superviseClaude: a marker kills the child and relaunches resuming the agen
   h.spawns[1]!.exit(0)
   assert.equal(await done, 0)
   assert.equal(h.files.has(SUPERVISOR_PATH), false)
+})
+
+test('superviseClaude: a marker relaunch of a session with NO transcript creates it again by the SAME id (one launch, pin kept)', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.deepEqual(h.spawns[0]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  // A channel-only session writes no transcript: --resume would be rejected
+  // on the spot and cost a doomed launch plus a new id. Not tried.
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  assert.equal(h.files.get(SESSION_ID_PATH), UUIDS[0])
+  // Runs on healthily: nothing else is spawned.
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(h.spawns.length, 2)
+  h.spawns[1]!.exit(0)
+  assert.equal(await done, 0)
 })
 
 test('superviseClaude: the relaunch budget stops the loop, the session runs on', async () => {
@@ -651,6 +671,8 @@ test('superviseClaude: a resumed relaunch that dies fast falls back to a fresh O
   const done = h.run(BASE_ARGS)
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
   // Marker relaunch: kills child 0, relaunches child 1 resuming the OWN session.
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   h.files.set(MARKER_PATH, '{}')
   await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
   assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--resume', UUIDS[0]])
@@ -756,6 +778,8 @@ test('superviseClaude: if the fresh re-pin write fails, it launches a PLAIN fres
     hasExpect: false,
   })
   await waitUntil(() => spawns.length === 1, 'first spawn')
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   files.set(MARKER_PATH, '{}')
   await waitUntil(() => spawns.length === 2, 'marker relaunch')
   spawns[1]!.exit(1) // resumed relaunch dies fast non-zero -> fresh fallback
@@ -842,6 +866,8 @@ test('superviseClaude: writes the launch recipe when it arms and rewrites it on 
   }
   // A marker relaunch (which resumes the pinned session) rewrites the recipe,
   // still without the session args it launched with.
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   h.files.set(MARKER_PATH, '{}')
   await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
   assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--resume', UUIDS[0]])
