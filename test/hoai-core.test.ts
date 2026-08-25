@@ -15,10 +15,20 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   FOLDER_PIN_FILE,
   EXIT_NOT_FOUND,
+  USAGE,
+  classifyRunFlag,
+  freshPinnedSessionId,
+  installHoaiCli,
+  main,
+  resolveWrapperPluginRoot,
+  winPathHelperArgs,
   resolveHoaiAction,
   buildRunPlan,
   readFolderPin,
@@ -59,42 +69,108 @@ const noDir = () => [] as string[]
 // -- resolveHoaiAction --------------------------------------------------------
 
 test('resolveHoaiAction: the routing table', () => {
-  assert.deepEqual(resolveHoaiAction([]), { action: 'run', rest: [] })
-  assert.deepEqual(resolveHoaiAction(['run']), { action: 'run', rest: [] })
+  assert.deepEqual(resolveHoaiAction([]), { action: 'run', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['run']), { action: 'run', rest: [], fresh: false })
   assert.deepEqual(resolveHoaiAction(['doctor', '--verbose']), {
     action: 'doctor',
     rest: ['--verbose'],
+    fresh: false,
   })
   assert.deepEqual(resolveHoaiAction(['pair', 'BGOS-7F3A-2K']), {
     action: 'pair',
     rest: ['BGOS-7F3A-2K'],
+    fresh: false,
   })
-  assert.deepEqual(resolveHoaiAction(['logs']), { action: 'logs', rest: [] })
-  assert.deepEqual(resolveHoaiAction(['help']), { action: 'help', rest: [] })
-  assert.deepEqual(resolveHoaiAction(['-h']), { action: 'help', rest: [] })
-  assert.deepEqual(resolveHoaiAction(['--help']), { action: 'help', rest: [] })
+  assert.deepEqual(resolveHoaiAction(['logs']), { action: 'logs', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['install-cli']), {
+    action: 'install-cli',
+    rest: [],
+    fresh: false,
+  })
+  assert.deepEqual(resolveHoaiAction(['help']), { action: 'help', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['-h']), { action: 'help', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['--help']), { action: 'help', rest: [], fresh: false })
+})
+
+test('resolveHoaiAction: -c, --continue and --resume are synonyms of a bare hoai', () => {
+  // The gap KC hit: these three PRINTED THE HELP, so a user who typed the
+  // spelling they know got a dead end instead of their agent. They route to
+  // run, and they are deliberately identical to each other and to bare hoai:
+  // the run path already resumes this agent's OWN pinned session.
+  const bare = resolveHoaiAction([])
+  for (const flag of ['-c', '--continue', '--resume', '-C', '--RESUME']) {
+    assert.deepEqual(resolveHoaiAction([flag]), bare, `${flag} routes exactly like a bare hoai`)
+  }
+  // Also accepted after the explicit `run` verb.
+  assert.deepEqual(resolveHoaiAction(['run', '--continue']), bare)
+})
+
+test('resolveHoaiAction: --new routes to run and asks for a fresh session', () => {
+  assert.deepEqual(resolveHoaiAction(['--new']), { action: 'run', rest: [], fresh: true })
+  assert.deepEqual(resolveHoaiAction(['run', '--new']), { action: 'run', rest: [], fresh: true })
+  assert.deepEqual(resolveHoaiAction(['--NEW']), { action: 'run', rest: [], fresh: true })
+  // The resume synonyms are NOT fresh; that is the whole distinction.
+  assert.equal(resolveHoaiAction(['-c']).fresh, false)
+})
+
+test('classifyRunFlag: only the documented flags classify', () => {
+  assert.equal(classifyRunFlag('-c'), 'resume')
+  assert.equal(classifyRunFlag('--continue'), 'resume')
+  assert.equal(classifyRunFlag('--resume'), 'resume')
+  assert.equal(classifyRunFlag('--new'), 'new')
+  for (const other of ['', null, undefined, '-n', '--continue-please', 'continue', 'new', '--fresh']) {
+    assert.equal(classifyRunFlag(other), null, `${String(other)} is not a run flag`)
+  }
 })
 
 test('resolveHoaiAction: a bare pair code routes to pair with itself prepended', () => {
   assert.deepEqual(resolveHoaiAction(['BGOS-7F3A-2K']), {
     action: 'pair',
     rest: ['BGOS-7F3A-2K'],
+    fresh: false,
   })
   // Case insensitive prefix, and trailing flags ride along after the code.
   assert.deepEqual(resolveHoaiAction(['oc-abc-12', '--backend', 'http://x']), {
     action: 'pair',
     rest: ['oc-abc-12', '--backend', 'http://x'],
+    fresh: false,
   })
 })
 
 test('resolveHoaiAction: anything else routes to help, keeping the tokens', () => {
-  assert.deepEqual(resolveHoaiAction(['status']), { action: 'help', rest: ['status'] })
+  assert.deepEqual(resolveHoaiAction(['status']), {
+    action: 'help',
+    rest: ['status'],
+    fresh: false,
+  })
   assert.deepEqual(resolveHoaiAction(['--nonsense', 'x']), {
     action: 'help',
     rest: ['--nonsense', 'x'],
+    fresh: false,
   })
   // A dashed token that is NOT a pair code is not mistaken for one.
-  assert.deepEqual(resolveHoaiAction(['BOGUS-1234']), { action: 'help', rest: ['BOGUS-1234'] })
+  assert.deepEqual(resolveHoaiAction(['BOGUS-1234']), {
+    action: 'help',
+    rest: ['BOGUS-1234'],
+    fresh: false,
+  })
+  // An unknown flag that merely LOOKS like one of the new run flags still
+  // reaches help rather than silently launching the agent.
+  assert.deepEqual(resolveHoaiAction(['--continue-later']), {
+    action: 'help',
+    rest: ['--continue-later'],
+    fresh: false,
+  })
+})
+
+test('USAGE: says the run flags are the same thing, and gives the short restart line', () => {
+  // Task 3: the manual restart instruction is /exit then hoai, not a claude
+  // command line with flags a user can get wrong.
+  assert.match(USAGE, /type \/exit, then run hoai from the same folder/)
+  assert.ok(!/--dangerously-load-development-channels/.test(USAGE), 'no raw channel flag in the help')
+  // The synonyms are named as synonyms, and --new is offered as the way out.
+  assert.match(USAGE, /--continue and\s*\n?\s*--resume/)
+  assert.match(USAGE, /hoai --new/)
 })
 
 // -- buildRunPlan -------------------------------------------------------------
@@ -329,10 +405,11 @@ test('resolveHoaiAction: setup routes with its argv intact', () => {
   assert.deepEqual(resolveHoaiAction(['setup', 'BGOS-7F3A-2K']), {
     action: 'setup',
     rest: ['BGOS-7F3A-2K'],
+    fresh: false,
   })
   assert.deepEqual(
     resolveHoaiAction(['SETUP', 'BGOS-7F3A-2K', '--assistant-id', '901']),
-    { action: 'setup', rest: ['BGOS-7F3A-2K', '--assistant-id', '901'] },
+    { action: 'setup', rest: ['BGOS-7F3A-2K', '--assistant-id', '901'], fresh: false },
   )
 })
 
@@ -397,30 +474,40 @@ function scriptedChild(code: number) {
   return child
 }
 
-/** Harness: records the claude arg vectors and the sibling-script spawns. */
+/** Harness: records the claude arg vectors and the sibling-script spawns.
+ *  The PATH step is stubbed: it is covered on its own in
+ *  test/hoai-wrapper-install.test.ts, and it must never touch a real home. */
 function setupHarness(claudeCodes: number[]) {
   const claudeCalls: string[][] = []
   const siblingCalls: { file: string; args: string[] }[] = []
   const prints: string[] = []
   const errs: string[] = []
+  const order: string[] = []
   let claudeIdx = 0
   return {
     claudeCalls,
     siblingCalls,
     prints,
     errs,
+    order,
     run: (pairArgs: string[]) =>
       runSetup(pairArgs, {
         platform: 'linux',
         env: {},
+        home: POSIX_HOME,
         scriptDir: CLONE_SCRIPT_DIR,
         spawnImpl: ((file: string, args: readonly string[]) => {
+          order.push('pair')
           siblingCalls.push({ file, args: [...args] })
           return scriptedChild(0)
         }) as never,
         spawnClaudeImpl: (async (args: readonly string[]) => {
           claudeCalls.push([...args])
           return claudeCodes[claudeIdx++] ?? 0
+        }) as never,
+        installCliImpl: (async () => {
+          order.push('install-cli')
+          return { ok: true, binDir: `${POSIX_HOME}/.local/bin` }
         }) as never,
         print: (line: string) => prints.push(line),
         writeErr: (line: string) => {
@@ -432,7 +519,7 @@ function setupHarness(claudeCodes: number[]) {
   }
 }
 
-test('runSetup: marketplace, install, pair, in that order and with no shell', async () => {
+test('runSetup: marketplace, install, PATH, pair, in that order and with no shell', async () => {
   const h = setupHarness([0, 0])
   const code = await h.run(['BGOS-7F3A-2K', '--assistant-id', '901'])
   assert.equal(code, 0)
@@ -440,7 +527,10 @@ test('runSetup: marketplace, install, pair, in that order and with no shell', as
     ['plugin', 'marketplace', 'add', HOAI_MARKETPLACE],
     ['plugin', 'install', HOAI_PLUGIN_REF],
   ])
-  // Step 3 runs bgos-pair under THIS node, with the pair argv untouched.
+  // The PATH step runs BEFORE pairing, so that pairing's own closing line
+  // ("run hoai from this folder") is true by the time the user reads it.
+  assert.deepEqual(h.order, ['install-cli', 'pair'])
+  // The last step runs bgos-pair under THIS node, with the pair argv untouched.
   assert.equal(h.siblingCalls.length, 1)
   assert.equal(h.siblingCalls[0]!.file, process.execPath)
   assert.deepEqual(h.siblingCalls[0]!.args, [
@@ -479,4 +569,248 @@ test('runSetup: no claude on this machine stops at step one with 127', async () 
   assert.equal(code, EXIT_NOT_FOUND)
   assert.equal(h.claudeCalls.length, 1)
   assert.equal(h.siblingCalls.length, 0)
+})
+
+// -- Putting `hoai` itself on PATH --------------------------------------------
+//
+// KC, 2026-08-25: aliases created automatically at install, so people can type
+// one word. The one-click bootstrap already installed the shim; the CLI
+// onboarding path (`hoai setup <CODE>`, the line the app hands out) did not.
+
+test('resolveWrapperPluginRoot: the MARKETPLACE install path wins over this script own root', async () => {
+  // The npx trap: `npx --package github:... hoai setup <CODE>` runs from a temp
+  // directory that is deleted the moment setup returns, so a shim pointed at
+  // this script's own root would be dead on arrival. The recorded marketplace
+  // install path outlives the process, and is the very path a later one-click
+  // update re-points the shim to (update-executor refreshAlias).
+  const installPath = '/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3'
+  const root = await resolveWrapperPluginRoot({
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: '/tmp/npx-cache-3f9a/node_modules/claude-channel-bgos/bin',
+    exists: ((path: string) => path === installPath) as never,
+    observe: (async () => ({ installed: { installPath } })) as never,
+  })
+  assert.equal(root, installPath)
+})
+
+test('resolveWrapperPluginRoot: falls back to this script own root when nothing is recorded', async () => {
+  const root = await resolveWrapperPluginRoot({
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    exists: (() => false) as never,
+    observe: (async () => ({ installed: { installPath: null } })) as never,
+  })
+  assert.equal(root, '/home/kc/bgos-claude-plugin')
+})
+
+test('resolveWrapperPluginRoot: an install path recorded but no longer on disk is not used', async () => {
+  const root = await resolveWrapperPluginRoot({
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    exists: (() => false) as never,
+    observe: (async () => ({ installed: { installPath: '/gone/hoai/0.1.0' } })) as never,
+  })
+  assert.equal(root, '/home/kc/bgos-claude-plugin')
+})
+
+test('resolveWrapperPluginRoot: an unreadable config dir never throws', async () => {
+  const root = await resolveWrapperPluginRoot({
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    exists: (() => false) as never,
+    observe: (async () => {
+      throw new Error('EACCES')
+    }) as never,
+  })
+  assert.equal(root, '/home/kc/bgos-claude-plugin')
+})
+
+test('installHoaiCli: hands the resolved root to the installer and reports the bin dir', async () => {
+  const prints: string[] = []
+  const seen: { pluginRoot?: string } = {}
+  const outcome = await installHoaiCli({
+    platform: 'linux',
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    resolveRoot: async () => '/home/kc/bgos-claude-plugin',
+    installImpl: ((opts: { pluginRoot: string }) => {
+      seen.pluginRoot = opts.pluginRoot
+      return {
+        ok: true,
+        binDir: '/home/kc/.local/bin',
+        wrote: ['/home/kc/.local/bin/hoai'],
+        notes: [],
+        onPath: false,
+        profiles: ['/home/kc/.zshrc'],
+      }
+    }) as never,
+    print: (line: string) => prints.push(line),
+  })
+  assert.equal(outcome.ok, true)
+  assert.equal(seen.pluginRoot, '/home/kc/bgos-claude-plugin')
+  assert.ok(prints.some((line) => line.includes('/home/kc/.local/bin')))
+  assert.ok(prints.some((line) => line.includes('.zshrc')))
+})
+
+test('installHoaiCli: no resolvable plugin root says so instead of writing a broken shim', async () => {
+  const prints: string[] = []
+  const outcome = await installHoaiCli({
+    platform: 'linux',
+    env: {},
+    home: POSIX_HOME,
+    resolveRoot: async () => '',
+    installImpl: (() => {
+      throw new Error('must not be called')
+    }) as never,
+    print: (line: string) => prints.push(line),
+  })
+  assert.equal(outcome.ok, false)
+  assert.ok(prints.some((line) => /could not work out where the plugin lives/.test(line)))
+})
+
+// -- The run path, end to end -------------------------------------------------
+//
+// The safety property the new flags must not break: `claude --continue` resumes
+// whatever conversation is NEWEST in the folder, which in a shared fleet folder
+// brought several agents up as the same assistant, fought over one pairing and
+// drained the account (2026-08-23). `hoai -c` therefore means "bring THIS agent
+// back as itself" and is implemented through the pinned-session path, so no
+// spelling of it may ever put a bare --continue on claude's command line.
+
+/** The claude argv from one recorded spawn, whichever route the launch took:
+ *  directly, or under `expect -c <script>` when this machine has expect (the
+ *  dev-channels gate auto-accept). The expect script brace-quotes each arg. */
+function claudeArgsFrom(record: { file: string; args: string[] }): string[] {
+  if (record.file !== 'expect') return record.args
+  const line = /^spawn claude (.*)$/m.exec(record.args[1] ?? '')?.[1] ?? ''
+  return [...line.matchAll(/\{([^}]*)\}/g)].map((match) => match[1]!)
+}
+
+/** A throwaway home + agent folder with a baked folder pin, so main() runs the
+ *  full supervised path (state dir, session pin) without touching a real home. */
+function tempAgentFolder(): { home: string; cwd: string } {
+  const home = mkdtempSync(join(tmpdir(), 'hoai-home-'))
+  const cwd = mkdtempSync(join(tmpdir(), 'hoai-agent-'))
+  writeFileSync(join(cwd, FOLDER_PIN_FILE), '871\n')
+  return { home, cwd }
+}
+
+async function runMainCapturingSpawns(argv: string[], home: string, cwd: string) {
+  const spawns: { file: string; args: string[] }[] = []
+  const code = await main(argv, {
+    platform: 'linux',
+    env: {},
+    home,
+    cwd,
+    scriptDir: CLONE_SCRIPT_DIR,
+    spawnImpl: ((file: string, args: readonly string[]) => {
+      spawns.push({ file, args: [...args] })
+      return scriptedChild(0)
+    }) as never,
+  })
+  return { code, spawns }
+}
+
+test('the run path never passes a bare --continue to claude, for ANY of the new forms', async () => {
+  for (const argv of [[], ['-c'], ['--continue'], ['--resume'], ['--new'], ['run', '--continue']]) {
+    const { home, cwd } = tempAgentFolder()
+    const { code, spawns } = await runMainCapturingSpawns(argv, home, cwd)
+    const label = argv.length ? `hoai ${argv.join(' ')}` : 'hoai'
+    assert.equal(code, 0, `${label} exits with the child's code`)
+    assert.equal(spawns.length, 1, `${label} launches exactly once`)
+    const args = claudeArgsFrom(spawns[0]!)
+    assert.equal(args.includes('--continue'), false, `${label} must not forward --continue`)
+    assert.equal(args.includes('-c'), false, `${label} must not forward -c`)
+    // It resumes by PINNED ID instead: that is what makes it identity safe.
+    assert.equal(args.includes('--session-id'), true, `${label} pins its own session id`)
+    assert.ok(args.includes('server:bgos'), `${label} still carries the detected channel spec`)
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('hoai -c resumes THIS agent own pinned session, and --new leaves it for a brand new one', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const sessionIdPath = join(home, '.bgos-agent', '871', 'session-id')
+  try {
+    // First launch: no pin yet, so one is minted and the session is created by id.
+    const first = await runMainCapturingSpawns([], home, cwd)
+    const pinned = readFileSync(sessionIdPath, 'utf8').trim()
+    assert.deepEqual(claudeArgsFrom(first.spawns[0]!).slice(-2), ['--session-id', pinned])
+
+    // Pretend that session wrote its transcript, so it can be resumed.
+    const projects = join(home, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(projects, { recursive: true })
+    writeFileSync(join(projects, `${pinned}.jsonl`), '{}\n')
+
+    // `hoai -c` brings the agent back AS ITSELF: same pin, resumed by id.
+    const again = await runMainCapturingSpawns(['-c'], home, cwd)
+    assert.deepEqual(claudeArgsFrom(again.spawns[0]!).slice(-2), ['--resume', pinned])
+    assert.equal(readFileSync(sessionIdPath, 'utf8').trim(), pinned, 'the pin is unchanged')
+
+    // `hoai --new` repins to a DIFFERENT id and creates that one, so the stuck
+    // conversation is left behind instead of being resumed forever.
+    const fresh = await runMainCapturingSpawns(['--new'], home, cwd)
+    const repinned = readFileSync(sessionIdPath, 'utf8').trim()
+    assert.notEqual(repinned, pinned, '--new mints a new pinned session id')
+    assert.deepEqual(claudeArgsFrom(fresh.spawns[0]!).slice(-2), ['--session-id', repinned])
+    assert.equal(claudeArgsFrom(fresh.spawns[0]!).includes('--resume'), false)
+
+    // And the new pin sticks: a later bare hoai carries on the NEW conversation.
+    writeFileSync(join(projects, `${repinned}.jsonl`), '{}\n')
+    const after = await runMainCapturingSpawns([], home, cwd)
+    assert.deepEqual(claudeArgsFrom(after.spawns[0]!).slice(-2), ['--resume', repinned])
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('freshPinnedSessionId: repins to a NEW id and never falls back to the old one', () => {
+  const writes: { path: string; content: string }[] = []
+  const id = freshPinnedSessionId({
+    path: '/state/session-id',
+    writeFile: (path: string, content: string) => {
+      writes.push({ path, content })
+      return true
+    },
+    generateId: () => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  })
+  assert.equal(id, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  assert.deepEqual(writes, [
+    { path: '/state/session-id', content: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+  ])
+  // A failed repin returns '' so the caller launches a plain FRESH session.
+  // The one thing --new must never do is resume the session the user just left,
+  // so it never reads the old pin as a fallback.
+  assert.equal(
+    freshPinnedSessionId({
+      path: '/state/session-id',
+      writeFile: () => false,
+      generateId: () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    }),
+    '',
+  )
+})
+
+test('winPathHelperArgs: runs the repo helper non-interactively for one directory', () => {
+  const args = winPathHelperArgs({
+    scriptDir: 'C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.38.3\\bin',
+    binDir: 'C:\\Users\\x\\AppData\\Local\\hoai\\bin',
+  })
+  assert.deepEqual(args, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    'C:\\Users\\x\\.claude\\plugins\\cache\\hoai\\hoai\\0.38.3\\bin\\hoai-add-to-path.ps1',
+    '-Dir',
+    'C:\\Users\\x\\AppData\\Local\\hoai\\bin',
+  ])
 })

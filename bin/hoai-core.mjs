@@ -18,6 +18,15 @@
  *                     session in a shared cwd) when it appears, so interactive
  *                     sessions, Windows included, finally have a restart
  *                     authority.
+ *   hoai -c           the same thing, spelled the way people type it.
+ *   hoai --continue     -c, --continue and --resume are SYNONYMS of a bare
+ *   hoai --resume       hoai; none of them forwards --continue to claude.
+ *   hoai --new        start a genuinely NEW session for THIS agent in this
+ *                     folder (the escape hatch when a conversation is stuck
+ *                     or too long). Still identity safe: a new pinned id for
+ *                     this agent, with the same detected channel flag.
+ *   hoai install-cli  put the `hoai` command itself on this machine's PATH
+ *                     (what `hoai setup` does for you on a first run)
  *   hoai doctor       diagnose this host (hands off to bin/bgos-doctor.mjs)
  *   hoai pair <CODE>  pair this folder (hands off to bin/bgos-pair.mjs); a
  *                     bare BGOS-/OC- code routes here too
@@ -45,7 +54,7 @@
  * runs when the file is executed directly, so tests can import the pure pieces.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
   existsSync,
@@ -61,8 +70,10 @@ import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { detectInstallMethod, launchFlagArgs } from './bgos-install-method.mjs'
+import { claudeConfigDir, detectInstallMethod, launchFlagArgs } from './bgos-install-method.mjs'
 import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -156,31 +167,82 @@ export function listPairedAssistantIds(home, listDir = defaultListDir) {
 // -- Action routing -----------------------------------------------------------
 
 /**
+ * The flags that mean "bring this agent back as itself", all SYNONYMS of a
+ * bare `hoai`. They exist because people type them: before this, `hoai -c`
+ * printed the help and left the user with nothing to run.
+ *
+ * They are spelled after the claude flags on purpose, and they do NOT forward
+ * those flags to claude. `claude --continue` resumes whatever conversation is
+ * NEWEST in the folder, which on a shared fleet folder brought several agents
+ * up as the same assistant, fought over one pairing and drained the account
+ * (2026-08-23). The run path instead resumes THIS agent's own pinned session
+ * id (see sessionArgsFor), which is what the user meant by "continue" anyway.
+ */
+export const RUN_RESUME_FLAGS = Object.freeze(['-c', '--continue', '--resume'])
+
+/**
+ * The flags that mean "start a genuinely NEW session for this agent". The
+ * escape hatch for a conversation that is stuck or has grown too long: without
+ * it, a user whose `hoai` always resumes has to fall back to the long raw
+ * claude command line, which is the exact thing this command exists to avoid.
+ * Still identity safe: a new session for THIS agent in THIS folder, launched
+ * with the install-method-correct channel flag.
+ */
+export const RUN_FRESH_FLAGS = Object.freeze(['--new'])
+
+/**
+ * Classify one token as a run flag: 'resume' (a synonym of bare `hoai`),
+ * 'new' (force a fresh session), or null (not a run flag).
+ * @param {unknown} token
+ * @returns {'resume' | 'new' | null}
+ */
+export function classifyRunFlag(token) {
+  const value = String(token ?? '')
+    .trim()
+    .toLowerCase()
+  if (!value) return null
+  if (RUN_RESUME_FLAGS.includes(value)) return 'resume'
+  if (RUN_FRESH_FLAGS.includes(value)) return 'new'
+  return null
+}
+
+/**
  * Route argv to an action. The first token decides:
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
  *   setup -> setup              logs -> logs         help / -h / --help -> help
+ *   install-cli -> install-cli (put the hoai command on PATH)
+ * A run flag (-c / --continue / --resume, and --new) routes to run, either as
+ * the first token or right after `run`; `fresh` says which kind it was.
  * An unknown first token that LOOKS like a pair code (BGOS-... / OC-...)
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
- * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'help', rest: string[] }}
+ * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'help',
+ *             rest: string[], fresh: boolean }}
  */
 export function resolveHoaiAction(argv) {
   const args = Array.isArray(argv) ? argv.map((value) => String(value ?? '')) : []
-  if (args.length === 0) return { action: 'run', rest: [] }
+  const route = (action, rest, fresh = false) => ({ action, rest, fresh })
+  if (args.length === 0) return route('run', [])
   const first = args[0]
   const lowered = first.toLowerCase()
   const rest = args.slice(1)
-  if (lowered === 'run') return { action: 'run', rest }
-  if (lowered === 'doctor') return { action: 'doctor', rest }
-  if (lowered === 'pair') return { action: 'pair', rest }
-  if (lowered === 'setup') return { action: 'setup', rest }
-  if (lowered === 'logs') return { action: 'logs', rest }
-  if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
-    return { action: 'help', rest }
+  if (lowered === 'run') {
+    const flag = classifyRunFlag(rest[0])
+    return flag ? route('run', rest.slice(1), flag === 'new') : route('run', rest)
   }
-  if (/^(BGOS|OC)-/i.test(first)) return { action: 'pair', rest: [first, ...rest] }
-  return { action: 'help', rest: args }
+  if (lowered === 'doctor') return route('doctor', rest)
+  if (lowered === 'pair') return route('pair', rest)
+  if (lowered === 'setup') return route('setup', rest)
+  if (lowered === 'logs') return route('logs', rest)
+  if (lowered === 'install-cli') return route('install-cli', rest)
+  if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
+    return route('help', rest)
+  }
+  const runFlag = classifyRunFlag(first)
+  if (runFlag) return route('run', rest, runFlag === 'new')
+  if (/^(BGOS|OC)-/i.test(first)) return route('pair', [first, ...rest])
+  return route('help', args)
 }
 
 // -- The run plan -------------------------------------------------------------
@@ -487,6 +549,26 @@ export function ensurePinnedSessionId({ path, readFile, writeFile, generateId = 
   return writeFile(path, fresh) ? fresh : ''
 }
 
+/**
+ * `hoai --new`: mint a NEW pinned session id and repin the agent to it, so this
+ * launch starts a clean conversation AND every later bare `hoai` resumes the
+ * new one rather than the abandoned one. The old transcript is left on disk,
+ * nothing is deleted.
+ *
+ * Returns '' when the repin cannot be written; the caller then launches a plain
+ * fresh session (claude mints its own id), which is still a NEW session, just
+ * an unpinned one. It NEVER falls back to reading the old pin, because the one
+ * thing --new must not do is resume the session the user asked to leave.
+ * @param {{ path: string, writeFile: (p: string, c: string) => boolean,
+ *   generateId?: () => string }} deps
+ * @returns {string}
+ */
+export function freshPinnedSessionId({ path, writeFile, generateId = randomUUID }) {
+  const fresh = String(generateId()).trim()
+  if (!fresh) return ''
+  return writeFile(path, fresh) ? fresh : ''
+}
+
 // -- Startup-gate auto-accept (GAP 2) ----------------------------------------
 
 /** Every launch that carries --dangerously-load-development-channels shows the
@@ -693,6 +775,7 @@ function defaultHasExpect(platform) {
  *   pollMs?: number, now?: () => number, print?: (line: string) => void,
  *   pidAlive?: (pid: number) => boolean,
  *   generateId?: () => string, hasExpect?: boolean,
+ *   freshSession?: boolean,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -715,6 +798,7 @@ export async function superviseClaude(args, opts = {}) {
   const pidAlive = opts.pidAlive ?? defaultPidAlive
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? defaultHasExpect(platform)
+  const freshSession = opts.freshSession === true
 
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
@@ -817,8 +901,12 @@ export async function superviseClaude(args, opts = {}) {
 
   // GAP 1: pin a per-agent session id and resume THIS agent's OWN session on
   // every (re)launch, never --continue (newest-in-shared-cwd = identity bleed).
+  // `hoai --new` repins to a BRAND NEW id first, so this launch creates a
+  // clean session and later bare `hoai` runs resume that one.
   const sessionIdPath = joinDir(stateDir, SESSION_ID_FILE_NAME)
-  let pinnedId = ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
+  let pinnedId = freshSession
+    ? freshPinnedSessionId({ path: sessionIdPath, writeFile, generateId })
+    : ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
   // Whether the pinned session can be RESUMED is answered by its transcript
   // on disk, every time, including a marker relaunch. "We launched it, so
   // it exists" is not true for a channel-only session: Claude Code writes
@@ -1092,37 +1180,45 @@ export function parseSetupArgs(rest) {
 }
 
 /**
- * Run the three first-run steps in order, each as its own child process with
+ * Run the four first-run steps in order, each as its own child process with
  * no shell involved:
  *   1. claude plugin marketplace add BrandGrowthOS/hoai-marketplace
  *   2. claude plugin install hoai@hoai
- *   3. bgos-pair <CODE> [...]
+ *   3. put the `hoai` command itself on this machine's PATH
+ *   4. bgos-pair <CODE> [...]
  *
  * Step 1 is deliberately NON fatal on a plain failure. The old `&&` chain
  * aborted the whole line when the marketplace was already added, which is the
  * normal state of any machine connecting a SECOND agent, so a re-run could
  * never reach the pair step. `claude` being missing entirely is a different
  * thing and does stop the run: spawnClaude has already printed the install
- * hint, and steps 2 and 3 could only repeat it.
+ * hint, and the later steps could only repeat it.
+ *
+ * Step 3 is also non fatal: a shim that could not be written is worth saying
+ * out loud, but it is not worth abandoning a machine one step from paired. It
+ * runs BEFORE pairing so that the pairing step's own closing instruction ("run
+ * hoai from this folder") is true by the time the user reads it.
  *
  * @param {readonly string[]} pairArgs argv for bgos-pair (code first)
- * @returns {Promise<number>} exit code (0 only when all three steps passed)
+ * @returns {Promise<number>} exit code (0 only when the fatal steps passed)
  */
 export async function runSetup(
   pairArgs,
   {
     platform = process.platform,
     env = process.env,
+    home = homedir(),
     scriptDir = defaultScriptDir(),
     spawnImpl = spawn,
     spawnClaudeImpl = spawnClaude,
+    installCliImpl = installHoaiCli,
     print = (text) => console.log(text),
     writeErr = (text) => process.stderr.write(text),
   } = {},
 ) {
   const claudeOpts = { platform, env, spawnImpl, writeErr }
 
-  print(`[hoai] 1/3 adding the HOAI marketplace (${HOAI_MARKETPLACE})`)
+  print(`[hoai] 1/4 adding the HOAI marketplace (${HOAI_MARKETPLACE})`)
   const added = await spawnClaudeImpl(
     ['plugin', 'marketplace', 'add', HOAI_MARKETPLACE],
     claudeOpts,
@@ -1134,7 +1230,7 @@ export async function runSetup(
     )
   }
 
-  print(`[hoai] 2/3 installing the HOAI plugin (${HOAI_PLUGIN_REF})`)
+  print(`[hoai] 2/4 installing the HOAI plugin (${HOAI_PLUGIN_REF})`)
   const installed = await spawnClaudeImpl(
     ['plugin', 'install', HOAI_PLUGIN_REF],
     claudeOpts,
@@ -1146,8 +1242,124 @@ export async function runSetup(
     return installed
   }
 
-  print('[hoai] 3/3 pairing this machine with the code from the app')
+  print('[hoai] 3/4 putting the hoai command on your PATH')
+  await installCliImpl({ platform, env, home, scriptDir, print })
+
+  print('[hoai] 4/4 pairing this machine with the code from the app')
   return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), pairArgs, spawnImpl)
+}
+
+// -- Putting `hoai` itself on PATH -------------------------------------------
+
+/**
+ * WHICH plugin root the `hoai` shim should point at.
+ *
+ * The marketplace install path wins whenever one is recorded, because that is
+ * the directory a one-click update re-points the shim to
+ * (lib/update-executor.mjs refreshAlias) and it outlives this process. The
+ * running script's own root is the fallback, which is right for a clone
+ * install. It matters most in the case this exists for: `npx --yes --package
+ * github:BrandGrowthOS/bgos-claude-plugin hoai setup <CODE>` runs from a temp
+ * npx directory that is deleted the moment setup returns, so a shim pointed
+ * there would be dead on arrival.
+ * @returns {Promise<string>} '' when neither source yields a root
+ */
+export async function resolveWrapperPluginRoot({
+  env = process.env,
+  home = homedir(),
+  scriptDir = '',
+  exists = existsSync,
+  observe = observeMarketplaceInstall,
+} = {}) {
+  try {
+    const observation = await observe({ configDir: claudeConfigDir({ env, home }) })
+    const installPath = String(observation?.installed?.installPath ?? '').trim()
+    if (installPath && exists(installPath)) return installPath
+  } catch {
+    // No readable config dir: fall through to this script's own root.
+  }
+  const detection = detectInstallMethod({
+    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+    env,
+    home,
+  })
+  return String(detection?.pluginRoot ?? '').trim()
+}
+
+/**
+ * Put the `hoai` command on this machine's PATH (or repair a shim that points
+ * somewhere stale). Best effort by design: onboarding must not fail because a
+ * shim could not be written, so this always resolves and only ever prints.
+ *
+ * The Windows User-PATH write goes through bin/hoai-add-to-path.ps1, the same
+ * registry mechanism bin/hoai-bootstrap.ps1 uses. No shell alias is ever
+ * written, on any platform: an alias would have to freeze a channel spec, and
+ * the correct spec is only knowable at run time.
+ * @returns {Promise<{ ok: boolean, binDir: string }>}
+ */
+export async function installHoaiCli({
+  platform = process.platform,
+  env = process.env,
+  home = homedir(),
+  scriptDir = '',
+  spawnSyncImpl = spawnSync,
+  print = (line) => console.log(line),
+  installImpl = installWrapper,
+  resolveRoot = resolveWrapperPluginRoot,
+} = {}) {
+  const pluginRoot = await resolveRoot({ env, home, scriptDir })
+  if (!pluginRoot) {
+    print('[hoai] could not work out where the plugin lives, so the hoai command was not installed.')
+    return { ok: false, binDir: '' }
+  }
+  const result = installImpl({
+    pluginRoot,
+    platform,
+    env,
+    home,
+    runPathHelper: (binDir) => runWinPathHelper(binDir, { scriptDir, spawnSyncImpl }),
+  })
+  if (result.wrote.length > 0) {
+    print(`[hoai] the hoai command is installed in ${result.binDir} (pointing at ${pluginRoot})`)
+  }
+  for (const profile of result.profiles) {
+    print(`[hoai] added ${result.binDir} to your PATH in ${profile}`)
+  }
+  for (const note of result.notes) print(`[hoai] ${note}`)
+  if (result.wrote.length > 0 && !result.onPath && result.profiles.length === 0) {
+    print(`[hoai] open a new terminal (or add ${result.binDir} to your PATH) before typing hoai.`)
+  }
+  return { ok: result.ok, binDir: result.binDir }
+}
+
+/** The argv for bin/hoai-add-to-path.ps1. Pure so the spawn is unit-testable
+ *  (the same shape as win32GateHelperArgs). */
+export function winPathHelperArgs({ scriptDir = '', binDir = '' }) {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    joinDir(scriptDir, WIN_PATH_HELPER_FILE),
+    '-Dir',
+    binDir,
+  ]
+}
+
+/** Add a directory to the Windows User PATH through the PowerShell helper.
+ *  Synchronous on purpose: it is one short registry write and the caller has
+ *  nothing useful to do while it runs. Returns false on any failure. */
+function runWinPathHelper(binDir, { scriptDir = '', spawnSyncImpl = spawnSync } = {}) {
+  try {
+    const result = spawnSyncImpl('powershell', winPathHelperArgs({ scriptDir, binDir }), {
+      stdio: 'inherit',
+      shell: false,
+    })
+    return result?.status === 0
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -1200,15 +1412,28 @@ function runSiblingScript(scriptPath, args, spawnImpl = spawn) {
 export const USAGE = `hoai: the one command for a HOAI Claude Code agent folder
 
 Usage:
-  hoai                 launch the agent from this folder with the correct channel flag
+  hoai                 start this folder's agent with the correct channel flag.
+                       On a first run it starts a new conversation; after that
+                       it brings the agent back with its own history.
+  hoai -c              exactly the same as a bare hoai. So are --continue and
+                       --resume: they are spellings people type, not different
+                       modes, and none of them is passed on to claude.
+  hoai --new           start a brand new conversation for this agent instead of
+                       carrying on the old one. Nothing is deleted.
   hoai doctor [...]    diagnose this host's HOAI agent setup
-  hoai setup <CODE>    first run: add the marketplace, install HOAI, then pair
-                       (this is the line the app hands you; it works the same
-                       in bash, zsh and Windows PowerShell)
+  hoai setup <CODE>    first run: add the marketplace, install HOAI, put the
+                       hoai command on your PATH, then pair (this is the line
+                       the app hands you; it works the same in bash, zsh and
+                       Windows PowerShell)
   hoai pair <CODE>     pair this folder with a one time code from the HOAI app
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
+  hoai install-cli     put the hoai command on your PATH (or repair it)
   hoai logs            show the last 60 lines of this agent's daemon log
   hoai help            show this help
+
+To restart the agent by hand: type /exit, then run hoai from the same folder.
+There is no long claude command line to remember, and no channel flag to get
+wrong: hoai works out the right one for this machine every time it starts.
 
 Run hoai from the agent's own folder: pairing bakes a ${FOLDER_PIN_FILE} pin
 there, and a bare hoai launch self-resolves that identity with no env vars.
@@ -1252,7 +1477,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const listDir = opts.listDir ?? defaultListDir
   const spawnImpl = opts.spawnImpl ?? spawn
 
-  const { action, rest } = resolveHoaiAction(argv)
+  const { action, rest, fresh } = resolveHoaiAction(argv)
 
   if (action === 'help') {
     if (rest.length > 0 && !/^(help|-h|--help)$/i.test(rest[0] ?? '')) {
@@ -1278,7 +1503,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       console.error(`[hoai] ${parsed.reason}`)
       return EXIT_SETUP_NO_CODE
     }
-    return runSetup(parsed.pairArgs, { platform, env, scriptDir, spawnImpl })
+    return runSetup(parsed.pairArgs, { platform, env, home, scriptDir, spawnImpl })
+  }
+
+  if (action === 'install-cli') {
+    const outcome = await installHoaiCli({ platform, env, home, scriptDir })
+    return outcome.ok ? 0 : 1
   }
 
   if (action === 'logs') {
@@ -1303,6 +1533,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     return 1
   }
   console.log(plan.note)
+  if (fresh) {
+    console.log(
+      '[hoai] --new: starting a brand new conversation for this agent. The previous ' +
+        'one stays on disk; it is simply not the one being resumed from now on.',
+    )
+  }
   return superviseClaude(plan.args, {
     platform,
     env,
@@ -1312,6 +1548,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     readFile,
     listDir,
     spawnImpl,
+    freshSession: fresh,
   })
 }
 
