@@ -39,7 +39,24 @@ with the app side in BGOS #1157/#1158. Binding wire contract:
    no loaded-job list at all all read as no service, which is the fail-closed
    answer. Whatever is resolved carries the handle it was resolved by, and the
    restart is addressed to THAT handle, so the supervisor re-runs its own recipe
-   in its own working directory. See
+   in its own working directory.
+
+   The working-directory anchor is vetoed when the folder DECLARES a different
+   assistant. Both sources of that declaration count: `<cwd>/.bgos-agent-id`
+   (what `bakeLaunchPin` writes) and `<cwd>/.mcp.json`'s BGOS_ASSISTANT_ID (what
+   older agent folders carry, and what the launcher itself reads). Only the id
+   is ever taken out of `.mcp.json`; the API key beside it never leaves the
+   parser.
+
+   Only the daemon knows its own working directory, so the watcher would be
+   blind to any agent hoai did not launch (no `launch.json`, so no cwd). Each
+   daemon therefore publishes what it resolved for itself to
+   `~/.bgos-agent/<id>/service.json` (id, kind, handle, the cwd it resolved
+   from, a timestamp, no token) and the watcher treats it as a HINT: it
+   contributes the working directory, the verdict comes from the same live
+   resolution, and the live result must still name the same kind and handle
+   before the record counts. A stale, repointed or tampered record therefore
+   resolves to nothing rather than restarting something else. See
    `docs/learnings/restart-authority-detected-not-guessed.md`.
 5. Completion truth stays server-side: a heartbeat with `daemonVersion >=
    targetVersion` flips `done`; silence times out to `unknown`, never faked.

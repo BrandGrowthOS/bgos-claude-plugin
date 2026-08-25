@@ -46,6 +46,8 @@ import {
   type SyncExecResult,
 } from './service-supervision.mjs'
 
+export type { ResolvedService, SyncExecResult }
+
 /** Mirror of bin/hoai-core.mjs SUPERVISOR_FILE_NAME / RESTART_MARKER_FILE_NAME
  *  (pinned by test/update-readiness.test.ts, which imports both sides). */
 export const SUPERVISOR_FILE = 'supervisor.json'

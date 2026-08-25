@@ -30,20 +30,29 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  FOLDER_PIN_FILE_NAME,
+  MCP_CONFIG_FILE_NAME,
   SERVICE_HANDLE_RE,
+  SERVICE_RECORD_FILE_NAME,
+  SERVICE_RECORD_SCHEMA_VERSION,
   agentStateDirFor,
+  buildServiceRecord,
   isSafeServiceHandle,
   launchAgentsDir,
   matchJobToAgent,
   parseLaunchctlList,
   parseLaunchdJobJson,
+  parseMcpAssistantId,
+  parseServiceRecord,
   parseSystemctlUnitList,
   parseSystemdUnitFile,
   pathIsInside,
   pickSoleMatch,
+  readFolderIdentity,
   resolveSupervisingService,
   serviceRestartCommandForHandle,
   systemdUserDir,
+  verifyServiceRecord,
 } from '../lib/service-supervision.mjs'
 import { detectSupervision, resolveSupervision } from '../lib/update-readiness'
 import { detectSupervisor, resolveAgentSupervisor } from '../lib/agent-inventory.mjs'
@@ -677,4 +686,260 @@ test('the daemon and the watcher resolve the same authority and the same handle'
     assert.equal(daemon.service?.handle ?? null, scenario.expectHandle, `daemon handle: ${scenario.name}`)
     assert.equal(watcher.service?.handle ?? null, scenario.expectHandle, `watcher handle: ${scenario.name}`)
   }
+})
+
+// -- folder identity: the veto must read what the fleet actually has ---------------------
+
+/**
+ * A folder laid out the way EVERY agent folder on the BGOS dev Mac actually
+ * is: no `.bgos-agent-id` at all (those eight agents predate bakeLaunchPin),
+ * and `.mcp.json` carrying the real BGOS_ASSISTANT_ID next to the API key.
+ * A veto that reads only the pin file is inert against this layout, which is
+ * the whole point of these cases.
+ */
+function realAgentFolder(dir: string, assistantId: string) {
+  return {
+    [`${dir}/${MCP_CONFIG_FILE_NAME}`]: JSON.stringify({
+      mcpServers: {
+        bgos: {
+          command: 'bun',
+          args: ['/Users/fitecho/bgos-claude-plugin/server.ts'],
+          env: {
+            BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1',
+            BGOS_API_KEY: 'sk-live-do-not-leak-me',
+            BGOS_ASSISTANT_ID: assistantId,
+          },
+        },
+      },
+    }),
+  }
+}
+
+test('parseMcpAssistantId: the id from any server env, nothing else, and a conflict is not an id', () => {
+  const files = realAgentFolder('/x', '910')
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  assert.equal(parseMcpAssistantId(files[`/x/${MCP_CONFIG_FILE_NAME}`]!), '910')
+  // The marketplace topology names the server something else.
+  assert.equal(parseMcpAssistantId(mcpWith({ hoai: { env: { BGOS_ASSISTANT_ID: '77' } } })), '77')
+  // Two entries agreeing is still one identity.
+  assert.equal(
+    parseMcpAssistantId(mcpWith({ a: { env: { BGOS_ASSISTANT_ID: '5' } }, b: { env: { BGOS_ASSISTANT_ID: '5' } } })),
+    '5',
+  )
+  // Two entries disagreeing is a folder whose identity cannot be established.
+  assert.equal(
+    parseMcpAssistantId(mcpWith({ a: { env: { BGOS_ASSISTANT_ID: '5' } }, b: { env: { BGOS_ASSISTANT_ID: '6' } } })),
+    'conflict',
+  )
+  assert.equal(parseMcpAssistantId(mcpWith({ bgos: { command: 'bun' } })), null)
+  assert.equal(parseMcpAssistantId('not json'), null)
+  assert.equal(parseMcpAssistantId('[]'), null)
+  assert.equal(parseMcpAssistantId(null), null)
+  assert.equal(parseMcpAssistantId(mcpWith({ bgos: { env: { BGOS_ASSISTANT_ID: 'nine' } } })), null)
+})
+
+test('readFolderIdentity: either source is authoritative, disagreement is a conflict, silence is usable', () => {
+  const mcp = realAgentFolder('/x', '910')
+  const read = (files: Record<string, string>) => (p: string) => (p in files ? files[p]! : null)
+  const PIN = `/x/${FOLDER_PIN_FILE_NAME}`
+  // .mcp.json alone: the ONLY source the real fleet folders have.
+  assert.deepEqual(readFolderIdentity('/x', read(mcp)), { id: '910', conflict: false })
+  // The pin file alone: what bakeLaunchPin writes for a freshly paired folder.
+  assert.deepEqual(readFolderIdentity('/x', read({ [PIN]: '910\n' })), { id: '910', conflict: false })
+  // Both, agreeing.
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '910\n' })), { id: '910', conflict: false })
+  // Both, disagreeing: no identity, and the caller must refuse the folder.
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '777\n' })), { id: null, conflict: true })
+  // Neither: a folder that declares nothing stays usable.
+  assert.deepEqual(readFolderIdentity('/x', read({})), { id: null, conflict: false })
+})
+
+test('a REAL agent folder (no pin file, .mcp.json only) vetoes a job belonging to another agent', () => {
+  // The coordinator's negative control, run against the layout the fleet has:
+  // assistant 999 pointed at agent 910's folder must resolve NOTHING, because
+  // restarting ai.bgos.session.910 restarts 910, not 999.
+  const cwd = '/home/kc/Voxor/Vexa'
+  const host = fakeHost({
+    files: { [SESSION_PLIST]: SESSION_JOB, ...realAgentFolder(cwd, '910') },
+    loadedLaunchd: ['ai.bgos.session.910'],
+  })
+  const probe = {
+    platform: 'darwin',
+    home: HOME,
+    cwd,
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  }
+  assert.equal(resolveSupervisingService({ ...probe, assistantId: '999' }), null)
+  // The agent the folder DOES belong to still resolves its own job.
+  assert.equal(
+    resolveSupervisingService({ ...probe, assistantId: '910' })?.handle,
+    'ai.bgos.session.910',
+  )
+  // A folder claiming two identities at once resolves for neither.
+  const conflicted = fakeHost({
+    files: {
+      [SESSION_PLIST]: SESSION_JOB,
+      ...realAgentFolder(cwd, '910'),
+      [`${cwd}/${FOLDER_PIN_FILE_NAME}`]: '777\n',
+    },
+    loadedLaunchd: ['ai.bgos.session.910'],
+  })
+  assert.equal(
+    resolveSupervisingService({
+      ...probe,
+      assistantId: '910',
+      listDir: conflicted.listDir,
+      readFile: conflicted.readFile,
+      execSync: conflicted.execSync,
+    }),
+    null,
+  )
+})
+
+test('the API key sitting next to the id in .mcp.json never leaves the resolver', () => {
+  const cwd = '/home/kc/Voxor/Vexa'
+  const host = fakeHost({
+    files: { [SESSION_PLIST]: SESSION_JOB, ...realAgentFolder(cwd, '910') },
+    loadedLaunchd: ['ai.bgos.session.910'],
+  })
+  const resolved = resolveSupervisingService({
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '910',
+    cwd,
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  })
+  assert.equal(JSON.stringify(resolved).includes('sk-live-do-not-leak-me'), false)
+  assert.equal(JSON.stringify(resolved).includes('BGOS_API_KEY'), false)
+})
+
+// -- the published record, and its live re-verification -----------------------------------
+
+const RECORD_CWD = '/home/kc/Voxor/Vexa'
+const GOOD_SERVICE = {
+  kind: 'launchd' as const,
+  handle: 'ai.bgos.session.910',
+  via: 'working-directory' as const,
+  file: SESSION_PLIST,
+}
+
+function recordHost(extra: Record<string, string> = {}, loaded = ['ai.bgos.session.910']) {
+  return fakeHost({
+    files: { [SESSION_PLIST]: SESSION_JOB, ...realAgentFolder(RECORD_CWD, '910'), ...extra },
+    loadedLaunchd: loaded,
+  })
+}
+
+test('buildServiceRecord / parseServiceRecord: a round trip, and every malformed record is nothing', () => {
+  const record = buildServiceRecord({
+    assistantId: '910',
+    service: GOOD_SERVICE,
+    cwd: RECORD_CWD,
+    resolvedAt: '2026-08-25T09:00:00.000Z',
+  })!
+  assert.deepEqual(record, {
+    schemaVersion: SERVICE_RECORD_SCHEMA_VERSION,
+    assistantId: '910',
+    kind: 'launchd',
+    handle: 'ai.bgos.session.910',
+    via: 'working-directory',
+    cwd: RECORD_CWD,
+    resolvedAt: '2026-08-25T09:00:00.000Z',
+  })
+  assert.deepEqual(parseServiceRecord(JSON.stringify(record)), record)
+  // The record names a job, never a token, and never the config it came from.
+  assert.equal(JSON.stringify(record).includes('BGOS_API_KEY'), false)
+  assert.equal(buildServiceRecord({ assistantId: 'x', service: GOOD_SERVICE, cwd: RECORD_CWD }), null)
+  assert.equal(buildServiceRecord({ assistantId: '910', service: GOOD_SERVICE, cwd: '' }), null)
+  assert.equal(
+    buildServiceRecord({ assistantId: '910', service: { ...GOOD_SERVICE, handle: 'a; rm -rf /' }, cwd: RECORD_CWD }),
+    null,
+  )
+  for (const bad of [
+    'not json',
+    '[]',
+    JSON.stringify({ ...record, schemaVersion: 99 }),
+    JSON.stringify({ ...record, assistantId: 'x' }),
+    JSON.stringify({ ...record, kind: 'upstart' }),
+    JSON.stringify({ ...record, handle: 'evil label' }),
+    JSON.stringify({ ...record, cwd: '' }),
+  ]) {
+    assert.equal(parseServiceRecord(bad), null, `expected ${bad.slice(0, 40)} to parse as nothing`)
+  }
+})
+
+test('verifyServiceRecord: the platform must independently agree before a record counts', () => {
+  const host = recordHost()
+  const base = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '910',
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  }
+  const record = buildServiceRecord({ assistantId: '910', service: GOOD_SERVICE, cwd: RECORD_CWD })!
+  assert.deepEqual(verifyServiceRecord({ ...base, record }), GOOD_SERVICE)
+
+  // Stale: launchd no longer has that job loaded.
+  const unloaded = recordHost({}, ['com.apple.mdworker'])
+  assert.equal(
+    verifyServiceRecord({ ...base, record, listDir: unloaded.listDir, readFile: unloaded.readFile, execSync: unloaded.execSync }),
+    null,
+  )
+  // Tampered handle: the live resolution names a different job, so no.
+  assert.equal(verifyServiceRecord({ ...base, record: { ...record, handle: 'com.apple.mdworker' } }), null)
+  // Tampered kind.
+  assert.equal(verifyServiceRecord({ ...base, record: { ...record, kind: 'systemd' } }), null)
+  // Filed under another agent.
+  assert.equal(verifyServiceRecord({ ...base, record: { ...record, assistantId: '777' } }), null)
+  // Tampered cwd, pointing at a folder that belongs to somebody else: the
+  // folder-identity veto refuses it, so the record buys nothing.
+  const foreign = recordHost({ ...realAgentFolder('/home/kc/other', '777') })
+  assert.equal(
+    verifyServiceRecord({
+      ...base,
+      record: { ...record, cwd: '/home/kc/other' },
+      listDir: foreign.listDir,
+      readFile: foreign.readFile,
+      execSync: foreign.execSync,
+    }),
+    null,
+  )
+  assert.equal(verifyServiceRecord({ ...base, record: null }), null)
+  assert.equal(verifyServiceRecord({ ...base, record, assistantId: 'x' }), null)
+})
+
+test('the watcher resolves an agent it has NO recipe for, via the published record only', () => {
+  // The six hand-started agents on the dev Mac: no launch.json, so the watcher
+  // has no cwd of its own and used to resolve none while the daemon resolved
+  // them fine. Now the daemon leaves the record and the watcher verifies it.
+  const host = recordHost()
+  const record = buildServiceRecord({ assistantId: '910', service: GOOD_SERVICE, cwd: RECORD_CWD })!
+  const recordPath = `${HOME}/.bgos-agent/910/${SERVICE_RECORD_FILE_NAME}`
+  const withRecord = (body: string | null) => ({
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '910',
+    // No recipe, so the watcher brings no working directory of its own.
+    cwd: null,
+    exists: () => false,
+    readFile: (p: string) => (p === recordPath ? body : host.readFile(p)),
+    listDir: host.listDir,
+    execSync: host.execSync,
+    pidAlive: () => false,
+  })
+  const resolved = resolveAgentSupervisor(withRecord(JSON.stringify(record)))
+  assert.equal(resolved.supervisor, 'service')
+  assert.equal(resolved.service?.handle, 'ai.bgos.session.910')
+  // Without the record the watcher is blind to this agent, which is the state
+  // this tier exists to fix.
+  assert.equal(resolveAgentSupervisor(withRecord(null)).supervisor, 'none')
+  // A record the live job list does not corroborate buys nothing.
+  const bogus = JSON.stringify({ ...record, handle: 'com.apple.mdworker' })
+  assert.equal(resolveAgentSupervisor(withRecord(bogus)).supervisor, 'none')
 })

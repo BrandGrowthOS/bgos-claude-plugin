@@ -59,8 +59,20 @@ Details that turned out to matter:
   exact failure this module exists to prevent.
 - **An exact `WorkingDirectory` match, never a prefix.** A prefix test would let
   `~/agents` claim every agent under it.
-- **A working directory pinned to ANOTHER agent vetoes the match**, and the home
-  directory (shared by everything) is refused as an anchor outright.
+- **A working directory that DECLARES another agent vetoes the match**, and the
+  home directory (shared by everything) is refused as an anchor outright.
+- **A guard proven only against fixtures is not proven.** The first version of
+  that veto read only `<cwd>/.bgos-agent-id`, and a unit test that supplied a
+  pin file killed the mutant, so it looked guarded. On the real fleet the veto
+  was completely inert: `bakeLaunchPin` writes that pin, but all eight agents on
+  the Mac predate it, so every folder has NO `.bgos-agent-id` while every
+  `.mcp.json` carries the real `BGOS_ASSISTANT_ID` right next to the API key.
+  The negative control that caught it is one line: resolve assistant `999`
+  against agent `910`'s folder and see whether it hands back `ai.bgos.session.910`.
+  It did. The veto now reads BOTH sources, treats either as authoritative, treats
+  disagreement as a conflict, and keeps "declares nothing" usable so a bare
+  single-agent host is unaffected. The regression test is now built from the
+  layout the fleet actually has, with no pin file at all.
 - **The restart must be addressed to the handle that was resolved.** Detecting
   `ai.bgos.session.910` and then running
   `launchctl kickstart -k gui/501/ai.bgos.agent.910` is a failed restart at best.
@@ -69,6 +81,26 @@ Details that turned out to matter:
   handle comes off disk it is validated against `SERVICE_HANDLE_RE` before it can
   reach a command line, and that rule lives in exactly ONE place: a duplicate
   copy in the caller masked the first, so neither could be proven by a mutant.
+
+**The watcher could see far less than the daemon, and that is the half the
+feature is sold on.** Only the daemon knows its own working directory
+(`process.cwd()`), and the working directory is the anchor that finds a bespoke
+supervisor. The per-machine watcher, looking at OTHER agents, has a working
+directory only for agents `hoai` launched (`launch.json`). Six of the eight
+agents here were started by hand, so the daemons resolved 8 of 8 and the watcher
+resolved 2 of 8. A one-click "update this machine" that restarts a quarter of
+the fleet is the same experience that got this feature called useless the first
+time. So each daemon now publishes what it resolved for itself to
+`~/.bgos-agent/<id>/service.json` (id, kind, handle, the cwd it resolved from, a
+timestamp, no token), and the watcher treats that file as a HINT, never an
+authority: all it contributes is the working directory, and the verdict is then
+produced by the same live resolution the daemon used, re-reading the loaded job
+list, re-reading the job's own launch recipe and re-applying the folder-identity
+veto, after which the live result must still name the same kind and handle the
+record claims. Verified live against a throwaway launchd job: an honest record
+resolves; a tampered handle, a cwd repointed at another agent's real folder, a
+record filed under another id, an unknown schema, and a job that has since been
+booted out all resolve to nothing.
 
 Why going through the supervisor is the safety property and not just a
 convenience: `launchctl kickstart -k` / `systemctl --user restart` make the
@@ -80,7 +112,11 @@ launches anything itself.
 
 **How to apply next time:** when code asks "does capability X exist for this
 subject", check whether it is asking the SYSTEM or asserting a name the code
-itself would have chosen. The second reads as an audit and is really a
+itself would have chosen. And when you write a guard, run its negative control
+against the REAL layout before believing it: a mutant killed by a fixture you
+authored only proves the test and the code agree, not that the guard fires on
+anything that exists. Ask which file the guard reads and then go and look at
+whether that file is there. The second reads as an audit and is really a
 tautology: it can only ever see the installs we performed. Ask the platform,
 match on the subject's own identity-bearing facts, and fail closed on zero and
 on more than one. And when the answer will be acted on, carry the resolved
@@ -93,7 +129,14 @@ match; foreign folder pin vetoes; home / root refused; unsafe handle builds no
 command; win32 resolves nothing; plus a shared scenario table asserting
 `lib/update-readiness.ts` and `lib/agent-inventory.mjs` agree on both the
 authority and the handle, so the mirror cannot drift apart again).
+plus the folder-identity cases built on the REAL fleet layout (no pin file,
+`.mcp.json` only): a foreign id is vetoed, a folder claiming two identities is
+vetoed, and the API key next to the id never leaves the resolver. The published
+record has its own cases: strict parse, and `verifyServiceRecord` refusing a
+stale, tampered, foreign-id or unloaded record while accepting a corroborated
+one, plus the watcher resolving an agent it has no recipe for.
 `test/update-readiness.test.ts` and `test/agent-inventory.test.ts` pin each entry
 point; `test/agent-restart.test.ts` pins that the watcher kickstarts the
-DISCOVERED label. All 12 guards were mutation-checked: each mutant compiles and
-turns the named test red.
+DISCOVERED label. All 19 guards were mutation-checked: each mutant compiles and
+turns the named test red, and the folder-identity mutant is killed by a test
+whose folder has no pin file at all.
