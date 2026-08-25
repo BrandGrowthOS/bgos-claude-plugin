@@ -21,6 +21,18 @@
  *   hoai doctor       diagnose this host (hands off to bin/bgos-doctor.mjs)
  *   hoai pair <CODE>  pair this folder (hands off to bin/bgos-pair.mjs); a
  *                     bare BGOS-/OC- code routes here too
+ *   hoai setup <CODE> first-run onboarding in ONE command: add the HOAI
+ *                     marketplace, install the plugin, then pair. This exists
+ *                     so the app has a line it can hand to ANY shell. It used
+ *                     to hand out `claude plugin marketplace add ... && claude
+ *                     plugin install ... && npx ... hoai-pair <CODE>`, and
+ *                     `&&` is a parse error in Windows PowerShell 5.1, so the
+ *                     whole paste died before the first step on the shell most
+ *                     Windows owners have open. Sequencing the three steps
+ *                     HERE means the pasted line carries no shell syntax at
+ *                     all, and the code and assistant id reach bgos-pair as
+ *                     argv entries rather than being re-parsed by whichever
+ *                     shell pasted them.
  *   hoai logs         show the last lines of this agent's daemon log
  *   hoai help         usage
  *
@@ -146,12 +158,12 @@ export function listPairedAssistantIds(home, listDir = defaultListDir) {
 /**
  * Route argv to an action. The first token decides:
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
- *   logs -> logs                help / -h / --help -> help
+ *   setup -> setup              logs -> logs         help / -h / --help -> help
  * An unknown first token that LOOKS like a pair code (BGOS-... / OC-...)
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
- * @returns {{ action: 'run' | 'doctor' | 'pair' | 'logs' | 'help', rest: string[] }}
+ * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'help', rest: string[] }}
  */
 export function resolveHoaiAction(argv) {
   const args = Array.isArray(argv) ? argv.map((value) => String(value ?? '')) : []
@@ -162,6 +174,7 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'run') return { action: 'run', rest }
   if (lowered === 'doctor') return { action: 'doctor', rest }
   if (lowered === 'pair') return { action: 'pair', rest }
+  if (lowered === 'setup') return { action: 'setup', rest }
   if (lowered === 'logs') return { action: 'logs', rest }
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return { action: 'help', rest }
@@ -1039,6 +1052,104 @@ export function spawnClaude(args, { platform = process.platform, env = process.e
   })
 }
 
+// -- setup: marketplace + install + pair, in one shell-neutral command --------
+
+/** The marketplace the HOAI plugin is published from. */
+export const HOAI_MARKETPLACE = 'BrandGrowthOS/hoai-marketplace'
+
+/** The plugin ref inside that marketplace. */
+export const HOAI_PLUGIN_REF = 'hoai@hoai'
+
+/** `hoai setup` ran with no pair code (nothing to pair, nothing to do). */
+export const EXIT_SETUP_NO_CODE = 2
+
+/**
+ * Split `setup <CODE> [...]` into the pair code and the argv that goes on to
+ * bgos-pair.
+ *
+ * Everything after the code is passed through UNTOUCHED and in order, so
+ * `--assistant-id <id>` (and any other pair flag, e.g. --backend) reaches the
+ * pair CLI exactly as the caller wrote it. Nothing is re-quoted or re-parsed
+ * on the way: these become argv entries of a shell:false spawn, which is what
+ * lets a value containing a space or a shell metacharacter survive verbatim on
+ * macOS, Linux and Windows alike.
+ *
+ * @param {readonly string[]} rest argv after the `setup` token
+ * @returns {{ ok: true, code: string, pairArgs: string[] }
+ *          | { ok: false, reason: string }}
+ */
+export function parseSetupArgs(rest) {
+  const args = Array.isArray(rest) ? rest.map((value) => String(value ?? '')) : []
+  const code = args[0] ?? ''
+  if (code === '' || code.startsWith('-')) {
+    return {
+      ok: false,
+      reason:
+        'hoai setup needs the one time pair code from the app, e.g. hoai setup BGOS-7F3A-2K',
+    }
+  }
+  return { ok: true, code, pairArgs: [...args] }
+}
+
+/**
+ * Run the three first-run steps in order, each as its own child process with
+ * no shell involved:
+ *   1. claude plugin marketplace add BrandGrowthOS/hoai-marketplace
+ *   2. claude plugin install hoai@hoai
+ *   3. bgos-pair <CODE> [...]
+ *
+ * Step 1 is deliberately NON fatal on a plain failure. The old `&&` chain
+ * aborted the whole line when the marketplace was already added, which is the
+ * normal state of any machine connecting a SECOND agent, so a re-run could
+ * never reach the pair step. `claude` being missing entirely is a different
+ * thing and does stop the run: spawnClaude has already printed the install
+ * hint, and steps 2 and 3 could only repeat it.
+ *
+ * @param {readonly string[]} pairArgs argv for bgos-pair (code first)
+ * @returns {Promise<number>} exit code (0 only when all three steps passed)
+ */
+export async function runSetup(
+  pairArgs,
+  {
+    platform = process.platform,
+    env = process.env,
+    scriptDir = defaultScriptDir(),
+    spawnImpl = spawn,
+    spawnClaudeImpl = spawnClaude,
+    print = (text) => console.log(text),
+    writeErr = (text) => process.stderr.write(text),
+  } = {},
+) {
+  const claudeOpts = { platform, env, spawnImpl, writeErr }
+
+  print(`[hoai] 1/3 adding the HOAI marketplace (${HOAI_MARKETPLACE})`)
+  const added = await spawnClaudeImpl(
+    ['plugin', 'marketplace', 'add', HOAI_MARKETPLACE],
+    claudeOpts,
+  )
+  if (added === EXIT_NOT_FOUND) return EXIT_NOT_FOUND
+  if (added !== 0) {
+    print(
+      '[hoai] the marketplace was not added just now (most often it is already there). Continuing.',
+    )
+  }
+
+  print(`[hoai] 2/3 installing the HOAI plugin (${HOAI_PLUGIN_REF})`)
+  const installed = await spawnClaudeImpl(
+    ['plugin', 'install', HOAI_PLUGIN_REF],
+    claudeOpts,
+  )
+  if (installed !== 0) {
+    writeErr(
+      `[hoai] could not install ${HOAI_PLUGIN_REF}. Fix the error above, then run this command again.\n`,
+    )
+    return installed
+  }
+
+  print('[hoai] 3/3 pairing this machine with the code from the app')
+  return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), pairArgs, spawnImpl)
+}
+
 /**
  * Spawn `expect -c <script>` and resolve with its exit code. Used by the
  * supervised launch to auto-accept the dev-channels startup gate (GAP 2). The
@@ -1091,6 +1202,9 @@ export const USAGE = `hoai: the one command for a HOAI Claude Code agent folder
 Usage:
   hoai                 launch the agent from this folder with the correct channel flag
   hoai doctor [...]    diagnose this host's HOAI agent setup
+  hoai setup <CODE>    first run: add the marketplace, install HOAI, then pair
+                       (this is the line the app hands you; it works the same
+                       in bash, zsh and Windows PowerShell)
   hoai pair <CODE>     pair this folder with a one time code from the HOAI app
   hoai <CODE>          shorthand for hoai pair <CODE> (BGOS-... / OC-... codes)
   hoai logs            show the last 60 lines of this agent's daemon log
@@ -1156,6 +1270,15 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
 
   if (action === 'pair') {
     return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), rest, spawnImpl)
+  }
+
+  if (action === 'setup') {
+    const parsed = parseSetupArgs(rest)
+    if (!parsed.ok) {
+      console.error(`[hoai] ${parsed.reason}`)
+      return EXIT_SETUP_NO_CODE
+    }
+    return runSetup(parsed.pairArgs, { platform, env, scriptDir, spawnImpl })
   }
 
   if (action === 'logs') {

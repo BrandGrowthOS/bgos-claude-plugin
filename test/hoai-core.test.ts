@@ -14,6 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 
 import {
   FOLDER_PIN_FILE,
@@ -30,6 +31,10 @@ import {
   exitCodeForChild,
   joinDir,
   isRunAsMain,
+  parseSetupArgs,
+  runSetup,
+  HOAI_MARKETPLACE,
+  HOAI_PLUGIN_REF,
 } from '../bin/hoai-core.mjs'
 
 const WIN_HOME = 'C:\\Users\\x'
@@ -309,4 +314,169 @@ test('EXIT_NOT_FOUND is the POSIX 127', () => {
 
 test('isRunAsMain is false when imported by the test runner', () => {
   assert.equal(isRunAsMain(), false)
+})
+
+// -- hoai setup ---------------------------------------------------------------
+//
+// `hoai setup <CODE>` exists so the app can hand out ONE line that works in
+// every shell. What it replaced was `claude plugin marketplace add ... &&
+// claude plugin install ... && npx ... hoai-pair <CODE>`, and `&&` is a parse
+// error in Windows PowerShell 5.1, so on the shell most Windows owners have
+// open that paste failed before the first step ever ran. Sequencing the steps
+// here (each a shell:false spawn) is what removes shell syntax from the line.
+
+test('resolveHoaiAction: setup routes with its argv intact', () => {
+  assert.deepEqual(resolveHoaiAction(['setup', 'BGOS-7F3A-2K']), {
+    action: 'setup',
+    rest: ['BGOS-7F3A-2K'],
+  })
+  assert.deepEqual(
+    resolveHoaiAction(['SETUP', 'BGOS-7F3A-2K', '--assistant-id', '901']),
+    { action: 'setup', rest: ['BGOS-7F3A-2K', '--assistant-id', '901'] },
+  )
+})
+
+test('parseSetupArgs: the code leads, everything after it passes through in order', () => {
+  assert.deepEqual(parseSetupArgs(['BGOS-7F3A-2K']), {
+    ok: true,
+    code: 'BGOS-7F3A-2K',
+    pairArgs: ['BGOS-7F3A-2K'],
+  })
+  // The pinned-identity form the create-first flow emits. Both the code and
+  // the id must reach bgos-pair byte for byte: pairing 404s on a mangled code
+  // and binds the WRONG agent on a mangled id.
+  assert.deepEqual(
+    parseSetupArgs(['BGOS-7F3A-2K', '--assistant-id', '901']),
+    {
+      ok: true,
+      code: 'BGOS-7F3A-2K',
+      pairArgs: ['BGOS-7F3A-2K', '--assistant-id', '901'],
+    },
+  )
+  // Unknown pair flags ride along rather than being dropped.
+  const withBackend = parseSetupArgs([
+    'BGOS-7F3A-2K',
+    '--backend',
+    'http://localhost:8080/api/v1',
+  ])
+  assert.equal(withBackend.ok, true)
+  assert.deepEqual(withBackend.ok ? withBackend.pairArgs : [], [
+    'BGOS-7F3A-2K',
+    '--backend',
+    'http://localhost:8080/api/v1',
+  ])
+})
+
+test('parseSetupArgs: a value with a space or a shell metacharacter stays ONE argv entry', () => {
+  // The whole point of sequencing in node: these are argv entries of a
+  // shell:false spawn, so nothing re-splits or re-interprets them on any
+  // platform. A shell would have split the first and eaten the second.
+  const parsed = parseSetupArgs(['CODE WITH SPACE', '--assistant-id', 'a b&c;d`e'])
+  assert.equal(parsed.ok, true)
+  assert.deepEqual(parsed.ok && parsed.pairArgs, [
+    'CODE WITH SPACE',
+    '--assistant-id',
+    'a b&c;d`e',
+  ])
+})
+
+test('parseSetupArgs: refuses a missing code and a flag standing where the code goes', () => {
+  for (const argv of [[], [''], ['--assistant-id', '901']]) {
+    const parsed = parseSetupArgs(argv)
+    assert.equal(parsed.ok, false)
+    assert.match(parsed.ok ? '' : parsed.reason, /pair code/)
+  }
+})
+
+/** A child whose exit code is decided up front (spawn returns synchronously,
+ *  the exit lands on the next tick, like the real thing). */
+function scriptedChild(code: number) {
+  const child = new EventEmitter() as EventEmitter & { exitCode: number }
+  child.exitCode = code
+  setImmediate(() => child.emit('exit', code, null))
+  return child
+}
+
+/** Harness: records the claude arg vectors and the sibling-script spawns. */
+function setupHarness(claudeCodes: number[]) {
+  const claudeCalls: string[][] = []
+  const siblingCalls: { file: string; args: string[] }[] = []
+  const prints: string[] = []
+  const errs: string[] = []
+  let claudeIdx = 0
+  return {
+    claudeCalls,
+    siblingCalls,
+    prints,
+    errs,
+    run: (pairArgs: string[]) =>
+      runSetup(pairArgs, {
+        platform: 'linux',
+        env: {},
+        scriptDir: CLONE_SCRIPT_DIR,
+        spawnImpl: ((file: string, args: readonly string[]) => {
+          siblingCalls.push({ file, args: [...args] })
+          return scriptedChild(0)
+        }) as never,
+        spawnClaudeImpl: (async (args: readonly string[]) => {
+          claudeCalls.push([...args])
+          return claudeCodes[claudeIdx++] ?? 0
+        }) as never,
+        print: (line: string) => prints.push(line),
+        writeErr: (line: string) => {
+          errs.push(line)
+          // Mirrors the real writeErr (process.stderr.write returns boolean).
+          return true
+        },
+      }),
+  }
+}
+
+test('runSetup: marketplace, install, pair, in that order and with no shell', async () => {
+  const h = setupHarness([0, 0])
+  const code = await h.run(['BGOS-7F3A-2K', '--assistant-id', '901'])
+  assert.equal(code, 0)
+  assert.deepEqual(h.claudeCalls, [
+    ['plugin', 'marketplace', 'add', HOAI_MARKETPLACE],
+    ['plugin', 'install', HOAI_PLUGIN_REF],
+  ])
+  // Step 3 runs bgos-pair under THIS node, with the pair argv untouched.
+  assert.equal(h.siblingCalls.length, 1)
+  assert.equal(h.siblingCalls[0]!.file, process.execPath)
+  assert.deepEqual(h.siblingCalls[0]!.args, [
+    joinDir(CLONE_SCRIPT_DIR, 'bgos-pair.mjs'),
+    'BGOS-7F3A-2K',
+    '--assistant-id',
+    '901',
+  ])
+})
+
+test('runSetup: a marketplace already added does NOT abort the run (the && chain did)', async () => {
+  // The regression this subcommand also fixes: `add` fails on a machine that
+  // already has the marketplace, which is every machine connecting a SECOND
+  // agent, and the old `&&` chain then never reached install or pair.
+  const h = setupHarness([1, 0])
+  const code = await h.run(['BGOS-7F3A-2K'])
+  assert.equal(code, 0)
+  assert.equal(h.claudeCalls.length, 2)
+  assert.equal(h.siblingCalls.length, 1)
+  assert.ok(h.prints.some((line) => /already there/.test(line)))
+})
+
+test('runSetup: a failed install stops before pairing and says so', async () => {
+  const h = setupHarness([0, 24])
+  const code = await h.run(['BGOS-7F3A-2K'])
+  assert.equal(code, 24)
+  assert.equal(h.siblingCalls.length, 0)
+  assert.ok(h.errs.some((line) => line.includes(HOAI_PLUGIN_REF)))
+})
+
+test('runSetup: no claude on this machine stops at step one with 127', async () => {
+  // spawnClaude has already printed the install hint; repeating it through
+  // two more failing steps would only bury it.
+  const h = setupHarness([EXIT_NOT_FOUND])
+  const code = await h.run(['BGOS-7F3A-2K'])
+  assert.equal(code, EXIT_NOT_FOUND)
+  assert.equal(h.claudeCalls.length, 1)
+  assert.equal(h.siblingCalls.length, 0)
 })
