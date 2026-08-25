@@ -473,12 +473,39 @@ export function ensurePinnedSessionId({ path, readFile, writeFile, generateId = 
 
 // -- Startup-gate auto-accept (GAP 2) ----------------------------------------
 
-/** A clone (dev) install launches with --dangerously-load-development-channels,
- *  which shows a confirmation prompt at (re)start with no non-interactive flag
- *  to accept it. A marketplace install uses the approved --channels flag and
- *  never prompts. So only a clone (re)launch needs the gate auto-accepted. */
+/** Every launch that carries --dangerously-load-development-channels shows the
+ *  "WARNING: Loading development channels" confirm at (re)start, for a
+ *  marketplace install as much as for a clone (verified live on Claude Code
+ *  2.1.241, Windows, 2026-08-25 disposable E2E; the earlier belief that a
+ *  marketplace install never prompts was wrong). Its default answer is
+ *  "I am using this for local development", one Enter accepts it, and no
+ *  settings key silences it. So every (re)launch needs the gate accepted:
+ *  under `expect` on posix, through the console-input helper on win32. The
+ *  parameter is kept so callers stay explicit about what they detected. */
 export function relaunchNeedsGateAutoAccept(installMethod) {
-  return installMethod === 'clone'
+  return installMethod === 'clone' || installMethod === 'marketplace'
+}
+
+/** The win32 gate helper (bin/win32-accept-dev-channels.ps1): attaches to the
+ *  console this launcher shares with claude, waits for the gate's marker text
+ *  to be ON SCREEN, then injects exactly one Enter (the gate's default). It
+ *  never presses blindly, so a prompt with a dangerous default (the bypass
+ *  warning, which the settings file suppresses anyway) is never answered by
+ *  it. Pure argv builder so the spawn is unit-testable. */
+export const WIN32_GATE_HELPER_FILE = 'win32-accept-dev-channels.ps1'
+export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds = 120 }) {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    joinDir(scriptDir, WIN32_GATE_HELPER_FILE),
+    '-ConsolePid',
+    String(consolePid),
+    '-TimeoutSeconds',
+    String(timeoutSeconds),
+  ]
 }
 
 /**
@@ -575,8 +602,23 @@ function defaultRemoveFile(path) {
   }
 }
 
+/** Spawn the win32 gate helper detached and hidden (stdio ignored, unref'd)
+ *  so it outlives nothing and blocks nothing; the console pid is this
+ *  launcher's own, which claude shares. */
+function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writeErr }) {
+  const child = spawnImpl('powershell.exe', win32GateHelperArgs({ scriptDir, consolePid }), {
+    stdio: 'ignore',
+    detached: true,
+    windowsHide: true,
+    shell: false,
+  })
+  child.on?.('error', (err) => writeErr?.(`[hoai] dev-channels gate helper failed to start: ${err?.message ?? err}\n`))
+  child.unref?.()
+  return child
+}
+
 /** Is `expect` available to auto-accept the dev-channels startup gate? Never on
- *  win32 (no expect, and dev-channels clone launches are posix dev hosts). */
+ *  win32 (no expect; win32 uses the console-input helper instead). */
 function defaultHasExpect(platform) {
   if (platform === 'win32') return false
   return ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect', '/bin/expect'].some(
@@ -651,9 +693,21 @@ export async function superviseClaude(args, opts = {}) {
   // available, spawn claude under it and auto-accept the gate (mirror of the
   // fleet's run.expect); otherwise spawn directly and warn once.
   let warnedGate = false
+  const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const spawnSupervised = (spawnArgs, onSpawn) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
-    if (relaunchNeedsGateAutoAccept(method) && platform !== 'win32') {
+    if (relaunchNeedsGateAutoAccept(method)) {
+      if (platform === 'win32') {
+        // No expect on Windows: claude gets the console, and a hidden helper
+        // attached to that same console accepts the gate once it is on screen.
+        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+        try {
+          spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr })
+        } catch (err) {
+          writeErr(`[hoai] could not start the dev-channels gate helper: ${err?.message ?? err}\n`)
+        }
+        return exited
+      }
       if (hasExpect) {
         const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: spawnArgs })
         return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
@@ -661,9 +715,9 @@ export async function superviseClaude(args, opts = {}) {
       if (!warnedGate) {
         warnedGate = true
         writeErr(
-          '[hoai] this dev (clone) restart may block on the dev-channels confirmation ' +
-            'prompt, and no `expect` was found to auto-accept it. Install expect ' +
-            '(e.g. brew install expect), or use a marketplace install (no prompt).\n',
+          '[hoai] this restart may block on the dev-channels confirmation prompt, and ' +
+            'no `expect` was found to auto-accept it. Install expect (e.g. brew install ' +
+            'expect, or apt install expect) so unattended restarts can pass the gate.\n',
         )
       }
     }

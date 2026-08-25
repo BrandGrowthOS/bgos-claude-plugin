@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 /**
  * Launcher-loop supervisor tests (one-click updates): pure decision pieces
  * plus the full superviseClaude loop with fake spawn and fake fs. The loop
@@ -33,6 +34,7 @@ import {
   mungeSessionCwd,
   relaunchClaudeArgs,
   relaunchNeedsGateAutoAccept,
+  win32GateHelperArgs,
   sessionArgsFor,
   sessionTranscriptPath,
   superviseAssistantId,
@@ -178,9 +180,9 @@ test('ensurePinnedSessionId: a malformed (non-UUID) pin is replaced, never passe
 
 // -- GAP 2: dev-channels prompt-stranding auto-accept -------------------------
 
-test('relaunchNeedsGateAutoAccept: clone installs prompt, marketplace installs do not', () => {
+test('relaunchNeedsGateAutoAccept: clone AND marketplace installs prompt on 2.1.241 (verified live on Windows)', () => {
   assert.equal(relaunchNeedsGateAutoAccept('clone'), true)
-  assert.equal(relaunchNeedsGateAutoAccept('marketplace'), false)
+  assert.equal(relaunchNeedsGateAutoAccept('marketplace'), true)
 })
 
 test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-accepts the confirm gate', () => {
@@ -891,4 +893,28 @@ test('superviseClaude: a failed recipe write changes nothing about the launch', 
   assert.deepEqual(spawns[0]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
   spawns[0]!.exit(0)
   assert.equal(await done, 0)
+})
+
+test('win32GateHelperArgs: the helper is powershell -File <bin>/win32-accept-dev-channels.ps1 with the console pid and a timeout', () => {
+  assert.deepEqual(win32GateHelperArgs({ scriptDir: 'C:\\p\\bin', consolePid: 4321 }), [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    'C:\\p\\bin\\win32-accept-dev-channels.ps1',
+    '-ConsolePid',
+    '4321',
+    '-TimeoutSeconds',
+    '120',
+  ])
+})
+
+test('win32 gate helper source: only ever presses Enter after the gate marker is on screen, never blindly', () => {
+  const src = readFileSync(new URL('../bin/win32-accept-dev-channels.ps1', import.meta.url), 'utf8')
+  assert.match(src, /Loading development channels/)
+  assert.match(src, /Contains\(\$Marker\)/)
+  assert.match(src, /WriteConsoleInputW/)
+  assert.ok(!src.includes('SendKeys'), 'no focus-dependent SendKeys')
+  assert.equal(src.includes('\r'), false, 'LF only')
 })
