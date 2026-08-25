@@ -223,10 +223,24 @@ function channelSpecFor(method) {
  * @returns {string[]}
  */
 export function launchFlagArgs(method) {
-  return [
-    '--dangerously-load-development-channels',
-    method === 'marketplace' ? MARKETPLACE_CHANNEL_SPEC : CLONE_CHANNEL_SPEC,
-  ]
+  return channelFlagArgsForSpec(channelSpecFor(method))
+}
+
+/**
+ * The channel flag pair for an ALREADY RESOLVED spec.
+ *
+ * The flag name lives here and only here, so a caller that resolved its spec
+ * some other way cannot end up spelling the flag differently. The one such
+ * caller today is bin/hoai-core.mjs, which prefers the spec a workspace
+ * .mcp.json actually publishes (`server:<entry name>`) over install-method
+ * detection: detection answers where the plugin FILES live, which is the wrong
+ * question for a folder that declares its own MCP server. See the invariant
+ * pinned in test/bgos-agent.static.test.ts.
+ * @param {string} spec
+ * @returns {string[]}
+ */
+export function channelFlagArgsForSpec(spec) {
+  return ['--dangerously-load-development-channels', String(spec ?? '')]
 }
 
 /**

@@ -42,7 +42,9 @@ import {
   matchJobToAgent,
   parseLaunchctlList,
   parseLaunchdJobJson,
+  MCP_SERVER_NAME_RE,
   parseMcpAssistantId,
+  parseMcpChannelServerName,
   parseServiceRecord,
   parseSystemctlUnitList,
   parseSystemdUnitFile,
@@ -942,4 +944,83 @@ test('the watcher resolves an agent it has NO recipe for, via the published reco
   // A record the live job list does not corroborate buys nothing.
   const bogus = JSON.stringify({ ...record, handle: 'com.apple.mdworker' })
   assert.equal(resolveAgentSupervisor(withRecord(bogus)).supervisor, 'none')
+})
+
+// -- parseMcpChannelServerName ------------------------------------------------
+//
+// The sibling of parseMcpAssistantId, over the same parse: a folder's .mcp.json
+// declares not only WHICH agent it is, but which CHANNEL that agent listens on.
+// Claude Code loads an MCP server entry's channel as `server:<entry name>`, so
+// the name is the second half of the spec. bin/hoai-core.mjs prefers it over
+// install-method detection, because detection answers where the plugin FILES
+// live, and that proxy breaks for exactly these folders.
+
+test('parseMcpChannelServerName: the NAME of our entry, whatever it is called', () => {
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  const ours = { command: 'bun', env: { BGOS_BACKEND_URL: 'https://api', BGOS_ASSISTANT_ID: '900' } }
+
+  assert.equal(parseMcpChannelServerName(mcpWith({ bgos: ours })), 'bgos')
+  // Keying on the env, not the name: the name is exactly what a user may have
+  // renamed, and a rename must not silently send the agent back to detection.
+  assert.equal(parseMcpChannelServerName(mcpWith({ atlas: ours })), 'atlas')
+  // A single BGOS_ key is enough; not every writer sets an assistant id (the
+  // clone bootstrap writes only BGOS_BACKEND_URL and BGOS_AUTO_APPROVE).
+  assert.equal(
+    parseMcpChannelServerName(mcpWith({ bgos: { env: { BGOS_BACKEND_URL: 'https://api' } } })),
+    'bgos',
+  )
+})
+
+test('parseMcpChannelServerName: other peoples servers are not ours', () => {
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  const ours = { env: { BGOS_BACKEND_URL: 'https://api' } }
+  assert.equal(
+    parseMcpChannelServerName(mcpWith({ linear: { env: { LINEAR_API_KEY: 'x' } } })),
+    null,
+  )
+  // Ours found even when it shares the file with strangers.
+  assert.equal(
+    parseMcpChannelServerName(mcpWith({ linear: { env: { LINEAR_API_KEY: 'x' } }, bgos: ours })),
+    'bgos',
+  )
+  // An entry with no env at all declares nothing.
+  assert.equal(parseMcpChannelServerName(mcpWith({ bgos: { command: 'bun' } })), null)
+})
+
+test('parseMcpChannelServerName: two of ours is a conflict, never a guess', () => {
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  const ours = { env: { BGOS_BACKEND_URL: 'https://api' } }
+  // Two HOAI channels in one workspace has no single right answer, and picking
+  // one is how an agent ends up loading a channel nobody delivers to.
+  assert.equal(parseMcpChannelServerName(mcpWith({ bgos: ours, bgos2: ours })), 'conflict')
+})
+
+test('parseMcpChannelServerName: a name that could not be spelled on a command line is refused', () => {
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  const ours = { env: { BGOS_BACKEND_URL: 'https://api' } }
+  for (const name of ['a name with spaces', 'has:colon', '-leading-dash', '', 'x'.repeat(65)]) {
+    assert.equal(parseMcpChannelServerName(mcpWith({ [name]: ours })), null, `refused: ${name}`)
+  }
+  assert.ok(MCP_SERVER_NAME_RE.test('bgos'))
+})
+
+test('parseMcpChannelServerName: junk input never throws, it declares nothing', () => {
+  for (const raw of ['', 'not json', '{}', '[]', 'null', '{"mcpServers":"nope"}', null, undefined]) {
+    assert.equal(parseMcpChannelServerName(raw as never), null, `junk: ${String(raw)}`)
+  }
+})
+
+test('parseMcpChannelServerName: nothing but the name leaves the function', () => {
+  // Same secrecy rule as parseMcpAssistantId, and it matters as much here: this
+  // file holds BGOS_API_KEY. The return type is a string, so the only way a
+  // secret escapes is if someone returns the entry; pin that it is the name.
+  const raw = JSON.stringify({
+    mcpServers: {
+      bgos: { env: { BGOS_BACKEND_URL: 'https://api', BGOS_API_KEY: 'sk-super-secret-value' } },
+    },
+  })
+  const result = parseMcpChannelServerName(raw)
+  assert.equal(result, 'bgos')
+  assert.equal(typeof result, 'string')
+  assert.ok(!String(result).includes('sk-super-secret-value'))
 })

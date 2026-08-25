@@ -188,12 +188,22 @@ if you have no `hoai` at all), then open a new terminal.
 - `--dangerously-load-development-channels <spec>`: enables receiving messages
   from the BGOS chat
 
-**The `<spec>` differs per install and is only knowable at run time**, which is
+**The `<spec>` differs per folder and is only knowable at run time**, which is
 exactly why `hoai` works it out on every launch instead of you writing it down.
-A local clone (Step 1 above) needs `server:bgos`; a marketplace install needs
-`plugin:hoai@hoai`. Getting it wrong is **silent**: on 2026-08-21 a marketplace
+It asks two questions in order:
+
+1. Does this folder's `.mcp.json` declare a HOAI MCP server? Then the channel is
+   `server:<that entry's name>`, because that entry is what the session loads.
+   This is the case for every agent made by `hoai-agent` or `bgos-claim`.
+2. Otherwise, how was the plugin installed? A local clone (Step 1 above) needs
+   `server:bgos`; a marketplace install needs `plugin:hoai@hoai`.
+
+Getting it wrong is **silent in both directions**: on 2026-08-21 a marketplace
 install launched with the clone spec, connected nothing, and dropped every
-inbound message with no error anywhere.
+inbound message with no error anywhere. The mirror image is just as quiet, and
+was live until 2026-08-25: an agent whose channel lives in its folder's
+`.mcp.json`, on a machine that also has the marketplace plugin, was launched
+with `plugin:hoai@hoai` and heard nothing.
 
 For the same reason, **do not put a `hoai` shell alias in your `.zshrc`** (or
 any other profile). An alias freezes one spec into a string, so it keeps

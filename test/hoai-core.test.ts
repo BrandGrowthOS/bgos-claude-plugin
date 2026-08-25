@@ -23,8 +23,11 @@ import {
   FOLDER_PIN_FILE,
   EXIT_NOT_FOUND,
   USAGE,
+  channelNote,
   classifyRunFlag,
   freshPinnedSessionId,
+  relaunchClaudeArgs,
+  resolveChannelSpec,
   installHoaiCli,
   main,
   resolveWrapperPluginRoot,
@@ -813,4 +816,243 @@ test('winPathHelperArgs: runs the repo helper non-interactively for one director
     '-Dir',
     'C:\\Users\\x\\AppData\\Local\\hoai\\bin',
   ])
+})
+
+// -- The channel spec: what the FOLDER publishes beats where the FILES live ---
+//
+// resolveChannelSpec is the fix for a restart instruction that was silently
+// wrong for a whole population of agents. `hoai` used to derive the channel
+// only from install-method detection, which answers "where do the plugin FILES
+// live". That is a PROXY for "how will the channel be loaded", and the proxy
+// breaks on the agents that carry their identity and their channel in their
+// folder's .mcp.json: on a machine that ALSO has the marketplace plugin
+// installed, detection says `marketplace`, hoai launched `plugin:hoai@hoai`,
+// and the workspace publishes `bgos`. The session comes up, `claude mcp list`
+// says Connected, and not one inbound message is ever delivered.
+//
+// That population is real, not hypothetical: agent 900 on the BGOS dev Mac has
+// its credential ONLY in its folder's .mcp.json, with no credentials-900.json.
+
+/** A readFile stub serving a workspace .mcp.json (and nothing else). */
+function mcpServing(cwd: string, body: unknown) {
+  const text = typeof body === 'string' ? body : JSON.stringify(body)
+  return (requested: string) => (requested === `${cwd}/.mcp.json` ? text : null)
+}
+
+/** One .mcp.json declaring a single HOAI server under `name`. */
+function hoaiWorkspace(name: string, extraServers: Record<string, unknown> = {}) {
+  return {
+    mcpServers: {
+      [name]: {
+        command: 'bun',
+        args: ['/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs'],
+        env: { BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1', BGOS_ASSISTANT_ID: '900' },
+      },
+      ...extraServers,
+    },
+  }
+}
+
+/** A marketplace install on a POSIX home, which is the shape the agent-900
+ *  scenario actually has (a Mac). The file-level MARKETPLACE_SCRIPT_DIR is a
+ *  win32 path and only reads as marketplace against WIN_HOME. */
+const POSIX_MARKETPLACE_SCRIPT_DIR = '/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3/bin'
+
+const AGENT_CWD = '/home/kc/.bgos-agent/900-workspace'
+
+test('channel: a workspace .mcp.json WINS over marketplace file detection (the deaf-agent bug)', () => {
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, hoaiWorkspace('bgos')),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  // Detection still SAYS marketplace, and is still reported honestly...
+  assert.equal(resolution.method, 'marketplace')
+  // ...but the spec comes from what this folder actually publishes.
+  assert.equal(resolution.spec, 'server:bgos')
+  assert.equal(resolution.source, 'workspace')
+  assert.equal(resolution.conflict, false)
+})
+
+test('channel: with no .mcp.json the install method still decides, exactly as before', () => {
+  // The bootstrap marketplace branch writes NO .mcp.json, so there is nothing
+  // to read and the plugin's own location is the only evidence there is.
+  const marketplace = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: noFiles,
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(marketplace.spec, 'plugin:hoai@hoai')
+  assert.equal(marketplace.source, 'install-method')
+
+  const clone = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: noFiles,
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(clone.spec, 'server:bgos')
+  assert.equal(clone.source, 'install-method')
+})
+
+test('channel: the spec is the entry NAME, so a renamed server still works', () => {
+  // Reading beats guessing: keying on the name being `bgos` would defeat the
+  // point, since the name is exactly what a user may legitimately have changed.
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, hoaiWorkspace('atlas')),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(resolution.spec, 'server:atlas')
+  assert.equal(resolution.serverName, 'atlas')
+})
+
+test('channel: somebody else MCP servers are not mistaken for ours', () => {
+  // A workspace with only foreign servers declares nothing about our channel.
+  const foreign = {
+    mcpServers: {
+      linear: { command: 'npx', args: ['linear-mcp'], env: { LINEAR_API_KEY: 'x' } },
+      github: { command: 'npx', args: ['gh-mcp'] },
+    },
+  }
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, foreign),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(resolution.spec, 'plugin:hoai@hoai')
+  assert.equal(resolution.source, 'install-method')
+})
+
+test('channel: ours alongside foreign servers is still found', () => {
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(
+      AGENT_CWD,
+      hoaiWorkspace('bgos', { linear: { command: 'npx', env: { LINEAR_API_KEY: 'x' } } }),
+    ),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(resolution.spec, 'server:bgos')
+})
+
+test('channel: TWO of our servers is a conflict that falls back and SAYS so', () => {
+  // No single right answer, so do not pick one. Falling back is at least the
+  // behavior that shipped before, and the note tells the operator to name one.
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(
+      AGENT_CWD,
+      hoaiWorkspace('bgos', {
+        bgos2: { command: 'bun', env: { BGOS_BACKEND_URL: 'https://other' } },
+      }),
+    ),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(resolution.spec, 'plugin:hoai@hoai')
+  assert.equal(resolution.conflict, true)
+  assert.match(channelNote(resolution), /declares MORE than one HOAI server/)
+})
+
+test('channel: unreadable or junk .mcp.json never throws, it falls back', () => {
+  for (const body of ['', 'not json at all', '{"mcpServers":"nope"}', '[]', 'null']) {
+    const resolution = resolveChannelSpec({
+      cwd: AGENT_CWD,
+      env: {},
+      home: POSIX_HOME,
+      readFile: mcpServing(AGENT_CWD, body),
+      scriptDir: CLONE_SCRIPT_DIR,
+    })
+    assert.equal(resolution.spec, 'server:bgos', `junk body ${JSON.stringify(body)} falls back`)
+    assert.equal(resolution.source, 'install-method')
+  }
+})
+
+test('channel: a server name that could not be spelled on a command line is refused', () => {
+  const resolution = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, hoaiWorkspace('a name with spaces')),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(resolution.source, 'install-method')
+})
+
+test('channel: the note names the source, so an operator can see WHY', () => {
+  const workspace = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, hoaiWorkspace('bgos')),
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.match(channelNote(workspace), /channel server:bgos \(declared by this folder's \.mcp\.json/)
+  const detected = resolveChannelSpec({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: noFiles,
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.match(channelNote(detected), /install method: marketplace; channel plugin:hoai@hoai/)
+})
+
+test('buildRunPlan: an .mcp.json workspace on a marketplace host launches the WORKSPACE channel', () => {
+  // The end-to-end shape of the bug, through the function that actually builds
+  // the argv. Before this change these args ended `plugin:hoai@hoai`.
+  const plan = buildRunPlan({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile: mcpServing(AGENT_CWD, hoaiWorkspace('bgos')),
+    listDir: noDir,
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, true)
+  assert.deepEqual(plan.ok && plan.args, [
+    '--dangerously-skip-permissions',
+    '--dangerously-load-development-channels',
+    'server:bgos',
+  ])
+  assert.equal(plan.ok && plan.args.includes('plugin:hoai@hoai'), false)
+})
+
+test('relaunchClaudeArgs: a restart resolves the channel the SAME way as the launch', () => {
+  // The marker relaunch is unattended. If it resolved the channel differently
+  // from the first launch, the agent would come back deaf on a spec it was
+  // never listening on and nobody would be watching when it happened.
+  const readFile = mcpServing(AGENT_CWD, hoaiWorkspace('bgos'))
+  const launch = buildRunPlan({
+    cwd: AGENT_CWD,
+    env: {},
+    home: POSIX_HOME,
+    readFile,
+    listDir: noDir,
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+  })
+  const relaunch = relaunchClaudeArgs({
+    scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+    env: {},
+    home: POSIX_HOME,
+    cwd: AGENT_CWD,
+    readFile,
+    sessionArgs: ['--resume', 'abc-123'],
+  })
+  assert.deepEqual(relaunch, [...(launch.ok ? launch.args : []), '--resume', 'abc-123'])
+  assert.ok(relaunch.includes('server:bgos'))
+  assert.equal(relaunch.includes('plugin:hoai@hoai'), false)
 })
