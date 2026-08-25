@@ -16,8 +16,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   slugify,
@@ -36,6 +38,7 @@ import {
   requiredEnvStillNeeded,
   shellQuote,
   buildLaunchCommand,
+  MCP_SERVER_NAME,
   writeMcpJsonFile,
   installPluginWrapper,
   scaffoldWorkspace,
@@ -47,7 +50,10 @@ import {
   PACK_ZIP_MAX_BYTES,
   packZipTooLarge,
 } from '../bin/bgos-claim.mjs'
+import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC, launchCommand } from '../bin/bgos-install-method.mjs'
 import { buildStoredZip } from '../lib/pack-zip.ts'
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -327,6 +333,72 @@ test('the launch command targets the scaffold dir with the channel flags', () =>
     buildLaunchCommand('/home/kc/bgos-agents/atlas'),
     "cd '/home/kc/bgos-agents/atlas' && claude --dangerously-skip-permissions " +
       '--dangerously-load-development-channels server:bgos',
+  )
+})
+
+// The invariant that makes the line above CORRECT, and the drift guard for it.
+//
+// `server:<name>` names a channel that comes from an MCP SERVER ENTRY, not from
+// a marketplace plugin. buildMcpJson writes this workspace's own .mcp.json with
+// exactly one server, and buildLaunchCommand launches claude in that directory,
+// so the spec it prints must be `server:` plus THAT server's name. Two hand
+// typed strings in two functions can drift apart in silence, and the symptom of
+// drift is the worst one this repo has: an agent that starts, reports
+// Connected, and never receives a message.
+//
+// This is deliberately NOT a detectInstallMethod() assertion. Detection answers
+// where the plugin FILES live, which is a different question, and on a host that
+// also has a marketplace install it would answer `marketplace` and make this
+// line name a channel that does not exist in this workspace.
+
+test('claim: the printed spec is server:<the very server buildMcpJson writes>', () => {
+  const config = buildMcpJson({
+    pluginWrapperPath: '/home/kc/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
+    pluginDir: '/home/kc/bgos-claude-plugin',
+    backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+    apiKey: 'k',
+    userId: 'u',
+    assistantId: '901',
+  })
+  const servers = Object.keys(config.mcpServers)
+  assert.deepEqual(servers, [MCP_SERVER_NAME], 'exactly one MCP server, and it is the named one')
+  const printed = buildLaunchCommand('/tmp/x')
+  assert.ok(
+    printed.endsWith(` server:${servers[0]}`),
+    `launch line must end with server:${servers[0]}, got: ${printed}`,
+  )
+})
+
+test('claim: the emitted spec agrees with the shared constant and the whole flag pair', () => {
+  assert.ok(buildLaunchCommand('/tmp/x').endsWith(` ${CLONE_CHANNEL_SPEC}`))
+  assert.equal(CLONE_CHANNEL_SPEC, `server:${MCP_SERVER_NAME}`)
+  // The whole flag pair comes from launchCommand, so a change to the FLAGS
+  // themselves cannot leave this one caller behind.
+  assert.ok(buildLaunchCommand('/tmp/x').endsWith(launchCommand('clone')))
+})
+
+test('claim: the spec literal is not retyped in the source, it is imported', () => {
+  // The assertions above compare VALUES, so a hand retyped string that happens
+  // to be byte identical satisfies them: they cannot tell shared from copied.
+  // That is what actually rots, so check the source text instead. Same guard as
+  // test/bgos-agent.static.test.ts, and the reason both exist: two copies of a
+  // channel spec in two files drift apart in silence, and the symptom of drift
+  // is an agent that starts, reports Connected, and hears nothing.
+  const source = readFileSync(join(repoRoot, 'bin', 'bgos-claim.mjs'), 'utf8')
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments (the rationale mentions specs)
+    .replace(/^\s*\/\/.*$/gm, '') // line comments
+  assert.ok(
+    !code.includes(CLONE_CHANNEL_SPEC),
+    `bin/bgos-claim.mjs must not hand type ${CLONE_CHANNEL_SPEC}; take it from launchCommand()`,
+  )
+  assert.ok(
+    !code.includes(MARKETPLACE_CHANNEL_SPEC),
+    `bin/bgos-claim.mjs must not emit ${MARKETPLACE_CHANNEL_SPEC}: it launches into a workspace .mcp.json`,
+  )
+  assert.ok(
+    /import \{ launchCommand \} from '\.\/bgos-install-method\.mjs'/.test(source),
+    'the spec must come from the detection module, which is where it is written down',
   )
 })
 

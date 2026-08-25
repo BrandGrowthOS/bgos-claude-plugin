@@ -29,7 +29,35 @@ set -euo pipefail
 
 VERSION="0.2.0"
 DEFAULT_BACKEND="https://api.brandgrowthos.ai/api/v1"
-DEFAULT_CHANNEL="server:bgos"
+
+# --- the channel spec, and why it is a constant here -------------------------
+# `server:<name>` is how Claude Code names a channel that comes from an MCP
+# SERVER ENTRY; `plugin:<plugin>@<marketplace>` names one that comes from a
+# marketplace plugin. Handing a session the wrong one connects nothing and
+# drops every inbound message in silence (2026-08-21), so the choice matters.
+#
+# This script does not have to GUESS which world it is in, because it
+# guarantees the answer. cmd_install refuses to continue unless the workspace
+# has a .mcp.json (it writes one from --key/--user, or uses an existing one, or
+# dies), every .mcp.json this repo writes names its MCP server `bgos`
+# (write_mcp_json below, bin/bgos-claim.mjs buildMcpJson, bin/hoai-bootstrap.sh,
+# bin/hoai-bootstrap.ps1, .mcp.json.example), and both supervisors run claude
+# with WorkingDirectory set to that workspace. So the session this script
+# launches loads THAT server, and `server:bgos` is correct by construction.
+#
+# DO NOT "fix" this to bin/bgos-install-method.mjs detectInstallMethod().
+# Detection answers a DIFFERENT question, where the plugin FILES live. On a host
+# that also has a marketplace HOAI install it answers `marketplace`, which would
+# bake `plugin:hoai@hoai` into run.expect while the workspace publishes `bgos`:
+# a permanently deaf agent held up forever by launchd or systemd. That is the
+# 2026-08-21 failure signature, pointed the other way.
+#
+# The name is spelled once (MCP_SERVER_NAME) so test/bgos-agent.static.test.ts
+# can pin the two halves of that invariant against each other and against
+# CLONE_CHANNEL_SPEC in bin/bgos-install-method.mjs. Use --channel only for a
+# workspace whose .mcp.json names its server something else.
+MCP_SERVER_NAME="bgos"
+DEFAULT_CHANNEL="server:$MCP_SERVER_NAME"
 
 # --- resolve self + plugin root (bin/bgos-agent -> repo root) ----------------
 SOURCE="${BASH_SOURCE[0]:-$0}"
@@ -183,14 +211,14 @@ install_daemon_wrapper() {
 # interpolation), so a key/url with quotes or backslashes can't corrupt or
 # inject into the config.
 write_mcp_json() { # $1 path $2 backend $3 key $4 user $5 id $6 auto [$7 openai-key]
-  BGOS_WRAPPER="$WRAPPER_PATH" BGOS_PLUGIN="$PLUGIN_DIR" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" BGOS_OAI="${7:-}" \
+  BGOS_WRAPPER="$WRAPPER_PATH" BGOS_PLUGIN="$PLUGIN_DIR" BGOS_MCP_NAME="$MCP_SERVER_NAME" BGOS_B="$2" BGOS_K="$3" BGOS_U="$4" BGOS_AID="$5" BGOS_AUTO="$6" BGOS_OAI="${7:-}" \
   bun -e '
     const e = process.env;
     const env = { BGOS_BACKEND_URL: e.BGOS_B, BGOS_API_KEY: e.BGOS_K, BGOS_USER_ID: e.BGOS_U,
                   BGOS_ASSISTANT_ID: e.BGOS_AID, BGOS_AUTO_APPROVE: e.BGOS_AUTO };
     // Optional: enables live voice calls (Talk button), see README "Voice Calls".
     if (e.BGOS_OAI) env.BGOS_OPENAI_API_KEY = e.BGOS_OAI;
-    const cfg = { mcpServers: { bgos: { command: "bun", args: [e.BGOS_WRAPPER, "--plugin-dir", e.BGOS_PLUGIN], env } } };
+    const cfg = { mcpServers: { [e.BGOS_MCP_NAME]: { command: "bun", args: [e.BGOS_WRAPPER, "--plugin-dir", e.BGOS_PLUGIN], env } } };
     process.stdout.write(JSON.stringify(cfg, null, 2) + "\n");
   ' > "$1"
 }

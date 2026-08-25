@@ -210,7 +210,10 @@ not, yet). Never use it.
 ### Step 4: Verify
 
 1. Type `/mcp` in the Claude Code CLI — you should see `bgos` listed as connected
-2. You should see: `Listening for channel messages from: server:bgos`
+2. You should see: `Listening for channel messages from: <spec>`, where `<spec>`
+   is `server:bgos` for the clone install above, or `plugin:hoai@hoai` on a
+   marketplace install. `hoai` prints the one it detected before it launches,
+   so compare against that rather than against a spec written down here.
 3. Open the BGOS app, go to your assistant's chat, and send a message
 4. The message should appear in the Claude Code terminal as a `<channel>` event
 
