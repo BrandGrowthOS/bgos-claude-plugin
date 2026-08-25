@@ -265,10 +265,19 @@ test('poll native slash envelope has only string metadata and omits absent optio
 
 test('local registry is ready before boot delivery and catalog publishing uses the auth scoped contract', () => {
   const main = sliceBetween('async function main()', 'main().catch((err) =>')
-  const registryIndex = main.indexOf('await refreshSlashCommandRegistry()')
-  const pollIndex = main.indexOf('await pollAllChats()')
+  // 2026-08-25: the ordering invariant is unchanged, the call shape is not.
+  // The registry walk is now bounded (withDeadline) and the boot sweep is
+  // narrated (startupPhase), so this reads the calls rather than the old
+  // literal `await` forms. The registry must still be built BEFORE any boot
+  // backlog can be delivered, which is the whole point of this assertion.
+  const registryIndex = main.indexOf('refreshSlashCommandRegistry()')
+  const pollIndex = main.indexOf("phase('boot poll sweep'")
   const wsIndex = main.indexOf('connectWebsocket()')
   assert.ok(registryIndex >= 0)
+  assert.ok(
+    main.includes('withDeadline(refreshSlashCommandRegistry()'),
+    'the registry walk must stay bounded so a stalled filesystem cannot hold messages',
+  )
   assert.ok(pollIndex > registryIndex)
   assert.ok(wsIndex > registryIndex)
 

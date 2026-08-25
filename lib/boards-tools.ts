@@ -28,6 +28,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import { guessOutboundMime } from './message-text.js'
+import { boundedFetch, UPLOAD_DEADLINE_MS } from './bounded-fetch.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1135,15 +1136,31 @@ export function extractBackendErrorBody(err: unknown): string {
 
 // ── Transports ───────────────────────────────────────────────────────────────
 
-type BoardsFetch = (
-  url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
-) => Promise<{
+interface BoardsResponse {
   ok: boolean
   status: number
   headers: { get(name: string): string | null }
   text(): Promise<string>
-}>
+}
+
+type BoardsFetch = (
+  url: string,
+  init: {
+    method: string
+    headers: Record<string, string>
+    body?: string
+    // Added by the shared deadline wrapper (lib/bounded-fetch.ts). Declared
+    // here so a real fetch receives it and a test fake may ignore it.
+    signal?: AbortSignal
+  },
+) => Promise<BoardsResponse>
+
+/**
+ * Fallback deadline when the caller does not pass one. Board answers are
+ * paginated tables, never bulk exports, so 30s is far above any healthy
+ * answer and still finite.
+ */
+const BOARDS_DEFAULT_TIMEOUT_MS = 30_000
 
 export interface BoardsTransportOptions {
   /** e.g. https://host/api/v1 */
@@ -1152,6 +1169,13 @@ export interface BoardsTransportOptions {
   headers: () => Record<string, string>
   fetchImpl?: BoardsFetch
   maxBytes?: number
+  /**
+   * Deadline for a whole board call, headers plus body. Omitted in tests
+   * (their fakes answer instantly); server.ts passes the daemon's ordinary
+   * HTTP bound so no board tool can hang the session forever.
+   */
+  timeoutMs?: number
+  log?: (msg: string) => void
 }
 
 /**
@@ -1183,33 +1207,45 @@ export function createBoardsTransports(
   ): Promise<unknown> => {
     const headers: Record<string, string> = { ...opts.headers() }
     if (body !== undefined) headers['Content-Type'] = 'application/json'
-    const response = await doFetch(`${base}/${path.replace(/^\//, '')}`, {
-      method,
-      headers,
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    })
-    if (!response.ok) {
-      const text = await response.text().catch(() => '')
-      throw new Error(
-        `${method} ${response.status}: ${text.slice(0, BOARDS_ERROR_BODY_MAX_CHARS)}`,
-      )
-    }
-    const declared = Number(response.headers.get('content-length') ?? '')
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      throw new Error(
-        `${method} ${path}: the board answer is too large (${declared} bytes). ` +
-          'Narrow it with a filter or a smaller limit.',
-      )
-    }
-    const text = await response.text().catch(() => '')
-    if (!text.trim()) return {}
-    try {
-      return JSON.parse(text) as unknown
-    } catch {
-      // A success the backend did not send as JSON. The write landed; say so
-      // rather than turning it into a failure the model would retry.
-      return {}
-    }
+    // The whole call runs under one deadline (headers AND body) so the
+    // content-length guard below still runs before anything is read.
+    return boundedFetch<unknown, BoardsResponse>(
+      {
+        url: `${base}/${path.replace(/^\//, '')}`,
+        init: {
+          method,
+          headers,
+          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        },
+        timeoutMs: opts.timeoutMs ?? BOARDS_DEFAULT_TIMEOUT_MS,
+        label: `${method} ${path}`,
+      },
+      async (response) => {
+        if (!response.ok) {
+          const text = await response.text().catch(() => '')
+          throw new Error(
+            `${method} ${response.status}: ${text.slice(0, BOARDS_ERROR_BODY_MAX_CHARS)}`,
+          )
+        }
+        const declared = Number(response.headers.get('content-length') ?? '')
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          throw new Error(
+            `${method} ${path}: the board answer is too large (${declared} bytes). ` +
+              'Narrow it with a filter or a smaller limit.',
+          )
+        }
+        const text = await response.text().catch(() => '')
+        if (!text.trim()) return {}
+        try {
+          return JSON.parse(text) as unknown
+        } catch {
+          // A success the backend did not send as JSON. The write landed; say
+          // so rather than turning it into a failure the model would retry.
+          return {}
+        }
+      },
+      { fetchImpl: doFetch, log: opts.log },
+    )
   }
 
   return {
@@ -1326,20 +1362,38 @@ async function resolveAttachmentBytes(
   return { ok: true, bytes, base64, name, mime }
 }
 
+/**
+ * The presigned attachment PUT. Bounded like every other call the daemon
+ * makes, and on the SAME shared deadline as the message-file upload in
+ * server.ts: this one was missed when the boards transports were bounded, and
+ * it was the last unbounded `await fetch` on the daemon surface.
+ *
+ * The label deliberately does not include the url: it is a presigned S3 link
+ * and carries a signature.
+ */
 async function defaultPutBytes(
   url: string,
   bytes: Uint8Array,
   mime: string,
 ): Promise<void> {
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': mime },
-    body: bytes as unknown as BodyInit,
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
-  }
+  await boundedFetch<void, BoardsResponse>(
+    {
+      url,
+      init: {
+        method: 'PUT',
+        headers: { 'Content-Type': mime },
+        body: bytes as unknown as BodyInit,
+      },
+      timeoutMs: UPLOAD_DEADLINE_MS,
+      label: `PUT board attachment (${bytes.length} bytes)`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
+      }
+    },
+  )
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

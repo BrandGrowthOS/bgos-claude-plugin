@@ -60,6 +60,15 @@ import {
   type ServedCapabilities,
 } from './lib/capabilities.js'
 import {
+  boundedFetch,
+  createBoundedFetchImpl,
+  isFetchTimeoutError,
+  isDeadlineExceeded,
+  startupPhase,
+  UPLOAD_DEADLINE_MS,
+  withDeadline,
+} from './lib/bounded-fetch.js'
+import {
   ExportPackHandler,
   normalizeExportPack,
   normalizeExportPackManifest,
@@ -521,6 +530,48 @@ void DOC_MIMES
 
 // ── BGOS REST Client ─────────────────────────────────────────────────────────
 
+// Deadlines. Before 2026-08-25 not one fetch in this daemon carried an
+// AbortSignal, so a socket that connected and then stalled hung the call
+// forever; when that happened during startup (the capability warm-up is the
+// first call the process makes) the daemon never reached its poll loop and
+// went silent for hours with no further log line. Every outbound call now
+// goes through lib/bounded-fetch.ts, so a new call site inherits a deadline
+// instead of having to remember one.
+//
+// The numbers are per USE, not one global:
+//
+//  - ordinary REST (chat polls, replies, PATCHes, the version heartbeat):
+//    the edge in front of the backend closes an idle connection at 60s, so an
+//    answer we will ever receive arrives well inside 30s. Past that the call
+//    is dead weight and the next poll tick (2s-10s) is a better retry than a
+//    longer wait. Overridable for a pathological network via
+//    BGOS_HTTP_TIMEOUT_MS, floored at 1s so a typo cannot disable HTTP.
+const HTTP_TIMEOUT_MS = Math.max(
+  1_000,
+  Number(process.env.BGOS_HTTP_TIMEOUT_MS) || 30_000,
+)
+//  - startup warm-up (the served capability canon): it exists to make the
+//    `bgos_capabilities` tool instant and it has a BUNDLED FALLBACK, so time
+//    spent waiting buys nothing a fallback does not already give. Give up
+//    fast, log it, boot.
+const STARTUP_WARMUP_TIMEOUT_MS = 8_000
+//  - peer sends: send_to_peer with wait_for_reply deliberately holds the
+//    request open server side for up to PEER_WAIT_CAP_SECONDS (50s). A client
+//    deadline BELOW that would cut off a legitimate reply, so this one is
+//    deliberately the longest ordinary bound: the server cap plus margin.
+const PEER_HTTP_TIMEOUT_MS = 75_000
+//  - S3 uploads: the outbound video limit is 100 MB, which on a slow uplink is
+//    genuinely many minutes of PUT. Bounded, but generously, because the
+//    failure this guards is a stalled socket and not a slow one. The number
+//    and its rationale live in lib/bounded-fetch.ts because the BOARDS
+//    attachment PUT needs the same bound, and keeping two copies is how the
+//    two upload paths drifted apart the first time (one bounded, one not).
+const UPLOAD_TIMEOUT_MS = UPLOAD_DEADLINE_MS
+//  - the local slash-command catalog walk is not a network call, but it is
+//    awaited before delivery starts and it walks the filesystem, which can be
+//    a stalled network mount. Bounded so a slow disk cannot hold messages.
+const SLASH_REGISTRY_DEADLINE_MS = 10_000
+
 // Conditional GETs (SERVERPERF P1c, modeled on the Hermes client's
 // _conditional_get): remember the ETag of every 200 per cache key, send
 // If-None-Match on the next request, and surface a 304 as the NOT_MODIFIED
@@ -531,6 +582,18 @@ void DOC_MIMES
 // iteration, value-returning callers use bgosGetCachedOn304 below.
 const bgosEtagCache = new EtagCache()
 
+// One chokepoint for every HTTP call this daemon makes. It exists so the
+// deadline is a property of the transport rather than something each new call
+// site has to remember, and so a fired deadline is logged HERE, once, with the
+// path that stalled, instead of being swallowed or reported as a generic
+// network failure by whatever catch block happens to be above it.
+function bgosCall<T>(
+  call: { url: string; init?: RequestInit; timeoutMs: number; label: string },
+  consume: (response: Response) => Promise<T>,
+): Promise<T> {
+  return boundedFetch(call, consume, { log })
+}
+
 async function bgosGet(
   path: string,
   opts?: { cacheKey?: string; callerAssistantId?: string },
@@ -538,22 +601,31 @@ async function bgosGet(
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const cacheKey = opts?.cacheKey ?? path
   const prevEtag = bgosEtagCache.ifNoneMatch(cacheKey)
-  const response = await fetch(url, {
-    headers: {
-      ...authHeaders(AUTH),
-      ...(opts?.callerAssistantId
-        ? { 'X-Caller-Assistant-Id': opts.callerAssistantId }
-        : {}),
-      ...(prevEtag ? { 'If-None-Match': prevEtag } : {}),
+  return bgosCall(
+    {
+      url,
+      init: {
+        headers: {
+          ...authHeaders(AUTH),
+          ...(opts?.callerAssistantId
+            ? { 'X-Caller-Assistant-Id': opts.callerAssistantId }
+            : {}),
+          ...(prevEtag ? { 'If-None-Match': prevEtag } : {}),
+        },
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `GET ${path}`,
     },
-  })
-  if (response.status === 304) return NOT_MODIFIED
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
-  }
-  bgosEtagCache.record(cacheKey, response.headers.get('etag'))
-  return response.json()
+    async (response) => {
+      if (response.status === 304) return NOT_MODIFIED
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+      }
+      bgosEtagCache.record(cacheKey, response.headers.get('etag'))
+      return response.json()
+    },
+  )
 }
 
 // For callers that need a VALUE on every call (mission lookup, meetings list,
@@ -617,80 +689,150 @@ const boardsTransports = createBoardsTransports({
   apiBase: API_BASE,
   headers: () => authHeaders(AUTH),
   maxBytes: BOARDS_FETCH_MAX_BYTES,
+  // Boards keeps its own error/204 semantics but not its own hang: the
+  // deadline is applied inside lib/boards-tools.ts around the whole call so
+  // the content-length guard still runs before any body is read.
+  timeoutMs: HTTP_TIMEOUT_MS,
+  log,
 })
 
-async function bgosGetCapped(path: string, maxBytes: number): Promise<unknown> {
+async function bgosGetCapped(
+  path: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, { headers: { ...authHeaders(AUTH) } })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
-  }
-  const declared = Number(response.headers.get('content-length') ?? '')
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new Error(`capability response too large: ${declared} bytes`)
-  }
-  return response.json()
+  return bgosCall(
+    {
+      url,
+      init: { headers: { ...authHeaders(AUTH) } },
+      timeoutMs,
+      label: `GET ${path}`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+      }
+      // Read the declared size BEFORE touching the body: the point of the cap
+      // is to refuse a giant response, not to buffer it and then complain.
+      const declared = Number(response.headers.get('content-length') ?? '')
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        throw new Error(`capability response too large: ${declared} bytes`)
+      }
+      return response.json()
+    },
+  )
 }
+
+// Single-flight. The warm-up now runs in the BACKGROUND at startup (it must
+// not gate message delivery), so the `bgos_capabilities` tool can be called
+// while it is still in flight; without this both would fetch, and on a slow
+// backend the tool would wait out its own copy of the deadline.
+let capabilitiesInFlight: Promise<ServedCapabilities> | null = null
 
 async function loadServedCapabilities(): Promise<ServedCapabilities> {
   if (cachedCapabilities) return cachedCapabilities
-  let data: unknown = null
-  try {
-    data = await bgosGetCapped(
-      'integrations/capabilities?channel=claude',
-      CAPABILITIES_FETCH_MAX_BYTES,
+  if (capabilitiesInFlight) return capabilitiesInFlight
+  capabilitiesInFlight = (async () => {
+    let data: unknown = null
+    try {
+      data = await bgosGetCapped(
+        'integrations/capabilities?channel=claude',
+        CAPABILITIES_FETCH_MAX_BYTES,
+        // Warm-up deadline, not the ordinary one: this call has a bundled
+        // fallback, so waiting longer than a few seconds buys nothing.
+        STARTUP_WARMUP_TIMEOUT_MS,
+      )
+    } catch (err) {
+      // Never silent, and the two failures read differently: a deadline says
+      // the backend accepted the connection and never answered, which is the
+      // shape that used to hang this daemon forever.
+      const reason = err instanceof Error ? err.message : String(err)
+      log(
+        isFetchTimeoutError(err)
+          ? `Capability canon fetch exceeded its ${STARTUP_WARMUP_TIMEOUT_MS}ms warm-up deadline ` +
+              `(backend reachable but not answering); using bundled fallback`
+          : `Capability canon fetch failed (${reason}); using bundled fallback`,
+      )
+    }
+    cachedCapabilities = pickCapabilities(data)
+    log(
+      `Capability canon ready: v${cachedCapabilities.version} ` +
+        `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
     )
-  } catch (err) {
-    log(`Capability canon fetch failed (${err instanceof Error ? err.message : String(err)}); using bundled fallback`)
+    return cachedCapabilities
+  })()
+  try {
+    return await capabilitiesInFlight
+  } finally {
+    capabilitiesInFlight = null
   }
-  cachedCapabilities = pickCapabilities(data)
-  log(
-    `Capability canon ready: v${cachedCapabilities.version} ` +
-      `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
-  )
-  return cachedCapabilities
 }
 
 async function bgosPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `POST ${path}`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 async function bgosPatch(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`PATCH ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `PATCH ${path}`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`PATCH ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 async function bgosDelete(path: string): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'DELETE',
-    headers: { ...authHeaders(AUTH) },
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+  return bgosCall(
+    {
+      url,
+      init: { method: 'DELETE', headers: { ...authHeaders(AUTH) } },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `DELETE ${path}`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 // Positive self-session transcript binding (lib/session-binding.ts): the
@@ -1007,16 +1149,25 @@ async function confirmCompaction(
 
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `PUT ${path}`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 // ── BGOS REST Client (peer endpoints, adds X-Caller-Assistant-Id) ───────────
@@ -1028,58 +1179,89 @@ async function bgosPut(path: string, body: Record<string, unknown>): Promise<unk
 
 async function bgosPeerGet(path: string): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    headers: {
-      ...authHeaders(AUTH),
-      'X-Caller-Assistant-Id': ASSISTANT_ID,
+  return bgosCall(
+    {
+      url,
+      init: {
+        headers: {
+          ...authHeaders(AUTH),
+          'X-Caller-Assistant-Id': ASSISTANT_ID,
+        },
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `GET ${path}`,
     },
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 async function bgosPeerPost(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...authHeaders(AUTH),
-      'X-Caller-Assistant-Id': ASSISTANT_ID,
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(AUTH),
+          'X-Caller-Assistant-Id': ASSISTANT_ID,
+        },
+        body: JSON.stringify(body),
+      },
+      // send_to_peer with wait_for_reply holds this request open server side
+      // for up to PEER_WAIT_CAP_SECONDS (50s), so the peer deadline is the one
+      // bound that must sit ABOVE the ordinary one or we would cut off a reply
+      // the backend was about to hand us.
+      timeoutMs: PEER_HTTP_TIMEOUT_MS,
+      label: `POST ${path}`,
     },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
-  }
-  return response.json()
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+      }
+      return response.json()
+    },
+  )
 }
 
 async function bgosPeerDelete(path: string): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
-  const response = await fetch(url, {
-    method: 'DELETE',
-    headers: {
-      ...authHeaders(AUTH),
-      'X-Caller-Assistant-Id': ASSISTANT_ID,
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'DELETE',
+        headers: {
+          ...authHeaders(AUTH),
+          'X-Caller-Assistant-Id': ASSISTANT_ID,
+        },
+      },
+      timeoutMs: HTTP_TIMEOUT_MS,
+      label: `DELETE ${path}`,
     },
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
-  }
-  // DELETE may return an empty body; tolerate both.
-  const raw = await response.text().catch(() => '')
-  if (!raw) return { deleted: true }
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return { deleted: true }
-  }
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`DELETE ${response.status}: ${text.slice(0, 200)}`)
+      }
+      // DELETE may return an empty body; tolerate both.
+      const raw = await response.text().catch(() => '')
+      if (!raw) return { deleted: true }
+      try {
+        return JSON.parse(raw)
+      } catch {
+        return { deleted: true }
+      }
+    },
+  )
 }
 
 // ── File Upload & Resolution ─────────────────────────────────────────────────
@@ -1102,11 +1284,24 @@ async function uploadViaS3(
     `files/upload-url?userId=${encodeURIComponent(USER_ID)}`,
     { fileName, contentType, size: fileBuffer.length },
   )) as { uploadUrl: string; key: string }
-  const putResp = await fetch(uploadInfo.uploadUrl, {
-    method: 'PUT', headers: { 'Content-Type': contentType },
-    body: new Uint8Array(fileBuffer),
-  })
-  if (!putResp.ok) throw new Error(`S3 upload failed (HTTP ${putResp.status})`)
+  await bgosCall(
+    {
+      url: uploadInfo.uploadUrl,
+      init: {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: new Uint8Array(fileBuffer),
+      },
+      // A 100 MB video on a slow uplink is genuinely minutes of PUT, so this
+      // deadline is generous on purpose. What it still refuses to do is wait
+      // forever on a socket that stopped moving.
+      timeoutMs: UPLOAD_TIMEOUT_MS,
+      label: `PUT s3 upload (${fileBuffer.length} bytes)`,
+    },
+    async (putResp) => {
+      if (!putResp.ok) throw new Error(`S3 upload failed (HTTP ${putResp.status})`)
+    },
+  )
   const fileMeta = (await bgosPost(
     `files?userId=${encodeURIComponent(USER_ID)}`,
     { key: uploadInfo.key, type: contentType, size: fileBuffer.length },
@@ -3126,19 +3321,29 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // message is rendered the same way, so it needs the same fix.
         const safeText = protectBackslashesForMarkdown(text)
         const baseUrl = BACKEND_URL.replace(/\/api\/v1$/i, '').replace(/\/$/, '')
-        await fetch(`${baseUrl}/webhook/edited_message`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event_type: 'edited_message',
-            message_id,
-            chat_id: '0',
-            user_id: USER_ID,
-            timestamp: new Date().toISOString(),
-            text: safeText,
-            message: { text: safeText },
-          }),
-        })
+        await bgosCall(
+          {
+            url: `${baseUrl}/webhook/edited_message`,
+            init: {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                event_type: 'edited_message',
+                message_id,
+                chat_id: '0',
+                user_id: USER_ID,
+                timestamp: new Date().toISOString(),
+                text: safeText,
+                message: { text: safeText },
+              }),
+            },
+            timeoutMs: HTTP_TIMEOUT_MS,
+            label: 'POST webhook/edited_message',
+          },
+          // The original code never inspected the response; it only needed the
+          // request to leave. Keep that, but bounded.
+          async () => undefined,
+        )
         return { content: [{ type: 'text', text: 'Edited' }] }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
@@ -3693,12 +3898,27 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       // bgosPost helper (used by dozens of call sites) stays untouched.
       try {
         const url = `${API_BASE}/voice/outbound-call`
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
-          body: JSON.stringify(body),
-        })
-        const raw = await response.text().catch(() => '')
+        // Bounded like every other call, but the body is read INSIDE the
+        // deadline and handed back so the structured-guidance handling below
+        // is unchanged.
+        const response = await bgosCall(
+          {
+            url,
+            init: {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+              body: JSON.stringify(body),
+            },
+            timeoutMs: HTTP_TIMEOUT_MS,
+            label: 'POST voice/outbound-call',
+          },
+          async (res) => ({
+            ok: res.ok,
+            status: res.status,
+            raw: await res.text().catch(() => ''),
+          }),
+        )
+        const raw = response.raw
         let parsed: any = null
         try {
           parsed = raw ? JSON.parse(raw) : null
@@ -6549,6 +6769,13 @@ async function initUpdateStream(): Promise<void> {
   streamClient = new StreamClient({
     apiBase: API_BASE,
     pairingHeaders: () => authHeaders(AUTH),
+    // The stream mints its session INSIDE startup, before the poll loop is
+    // armed, so an unbounded call here is the same class of hang the
+    // capability warm-up was. It takes a plain fetch, so it gets the plain
+    // bounded adapter.
+    fetchImpl: createBoundedFetchImpl(HTTP_TIMEOUT_MS, 'update-stream', {
+      log,
+    }) as unknown as typeof fetch,
   })
   try {
     const mint = await streamClient.mintSession()
@@ -7819,22 +8046,71 @@ async function main(): Promise<void> {
   await mcp.connect(transport)
   log('MCP server connected over stdio')
 
+  // Everything from here to the poll loop is narrated (lib/bounded-fetch.ts
+  // startupPhase): one line before a phase, one after. Until 2026-08-25 a
+  // daemon that hung in this window and a daemon that crashed in it produced
+  // the SAME log, ending at the line above, and an external tester lost most
+  // of a day to that ambiguity. Now a phase with a `start` and no `ok` names
+  // the hang, and a `FAILED` line names the throw with its message.
+  const phase = <T,>(name: string, run: () => Promise<T>): Promise<T> =>
+    startupPhase(name, run, { log })
+
   // Step 1.5: Warm the served capability canon (capability bootstrap) so the
   // `bgos_capabilities` tool returns instantly and the fetch (or the bundled
-  // fallback) is logged at startup. Non-fatal: loadServedCapabilities never
-  // throws (it falls back to the bundled copy on any error).
-  await loadServedCapabilities()
+  // fallback) is logged at startup.
+  //
+  // NOT AWAITED. This is a warm-up with a bundled fallback: the tool answers
+  // correctly whether or not the fetch ever lands, so it can inform delivery
+  // but must never gate it. It used to be the FIRST outbound call of the
+  // process and, unbounded, the one most likely to strand a daemon that could
+  // otherwise have polled. loadServedCapabilities is single-flight, so a tool
+  // call arriving while this is in flight joins it rather than refetching.
+  void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
+    // loadServedCapabilities does not throw (it falls back), but a background
+    // phase must never become an unhandled rejection if that ever changes.
+    (err) => log(`capability canon warm-up gave up: ${err}`),
+  )
 
   // Step 1.75: build the local slash registry before any boot backlog can be
   // delivered. Publishing is intentionally background work, so an unavailable
   // backend cannot block the poll and WebSocket delivery paths.
-  const initialSlashCommands = await refreshSlashCommandRegistry()
-  void syncSlashCommands(initialSlashCommands)
+  //
+  // AWAITED, but bounded. Unlike the canon this one has a real ordering
+  // reason to run first (an inbound slash command delivered before the
+  // registry exists routes wrong), and it is local filesystem work, not a
+  // network call. What it must not do is block delivery FOREVER: a home
+  // directory on a stalled network mount makes readdir hang, and that would
+  // stop messages just as effectively as a stalled socket. On the deadline we
+  // proceed; the walk is not cancelled, so if it ever finishes it still
+  // installs itself, and syncSlashCommands re-discovers the catalog anyway.
+  const initialSlashCommands = await phase('slash-command registry', () =>
+    withDeadline(refreshSlashCommandRegistry(), {
+      timeoutMs: SLASH_REGISTRY_DEADLINE_MS,
+      label: 'slash-command registry walk',
+      log,
+    }),
+  )
+  void syncSlashCommands(
+    isDeadlineExceeded(initialSlashCommands) ? undefined : initialSlashCommands,
+  )
 
-  // Step 2: Discover and baseline chats
-  await discoverChats()
+  // Step 2: Discover and baseline chats.
+  //
+  // AWAITED, and it stays awaited: this is not a warm-up. It is what decides
+  // WHICH chats exist to poll, so starting the poll without it polls nothing.
+  // It is now bounded (one authenticated GET peers/inbox), it already logs its
+  // own failure, and a boot that discovers nothing self-heals: the poll
+  // scheduler re-runs discoverChats on every full cycle (10s while the WS is
+  // down, 5 min while it is healthy).
+  await phase('discover chats', () => discoverChats())
   log(`Monitoring ${monitoredChatIds.length} chat(s)`)
-  await pollAllChats()
+  // The boot sweep stays awaited too, and deliberately so: cursor persistence
+  // below must NOT begin until it finishes. A partial sweep flushed to disk
+  // would leave the next boot with a cursor file and the first-run backlog
+  // gate disarmed for every chat this sweep never reached. pollChat swallows
+  // its own errors, so this cannot throw, and every call inside it is now
+  // bounded, so it cannot stall forever either.
+  await phase('boot poll sweep', () => pollAllChats())
 
   // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
   // on disk), ask the session to greet its owner via the reply tool. The
@@ -7968,12 +8244,17 @@ async function main(): Promise<void> {
   // session and build the consumer; on 404 or any failure the stream stays
   // inactive and every legacy path below runs unchanged. Runs AFTER the
   // boot sweep so a fresh cursor adoption starts from a current state.
-  await initUpdateStream()
+  // Narrated and bounded for the same reason as the phases above: this one
+  // mints a session over HTTP and it, too, sits between the daemon booting
+  // and the daemon polling.
+  await phase('update stream init', () => initUpdateStream())
 
   // Step 3: Open the WS subscription. Failure here is non-fatal, polling
   // keeps the plugin functional even if the WS path is unavailable.
   try {
+    log('startup phase start: websocket connect')
     connectWebsocket()
+    log('startup phase ok: websocket connect (handshake continues async)')
   } catch (err) {
     log(`WS connect failed: ${err}; falling back to polling only`)
   }
@@ -8061,6 +8342,10 @@ async function main(): Promise<void> {
     setTimeout(tick, POLL_INTERVAL_MS)
   }
   setTimeout(tick, POLL_INTERVAL_MS)
+  // The single line that says delivery is live. Its ABSENCE in a log is the
+  // signal to read back up the startup phases and find the one that started
+  // and never finished.
+  log('startup complete: polling armed, message delivery is live')
 
   // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
   // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
