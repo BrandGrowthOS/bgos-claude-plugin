@@ -28,6 +28,19 @@ with the app side in BGOS #1157/#1158. Binding wire contract:
    (a live supervise loop that declared `relaunch`) -> write the existence-only
    marker `~/.bgos-agent/<id>/restart-requested.json`; else `staged` (keep serving,
    ride `pendingRestartVersion`, never self-exit: the kc-server invariant).
+
+   The `service` rung is not a name test. `bin/bgos-agent` installs
+   `ai.bgos.agent.<id>` / `bgos-agent-<id>` and that is checked first, but an
+   agent some other launcher installed under its own label is found by
+   `lib/service-supervision.mjs`, which enumerates the LOADED launchd jobs /
+   systemd `--user` units and keeps the single one whose own launch recipe names
+   this agent (a path inside `~/.bgos-agent/<id>`, or a `WorkingDirectory` equal
+   to the agent's working directory). Nothing matched, more than one matched, or
+   no loaded-job list at all all read as no service, which is the fail-closed
+   answer. Whatever is resolved carries the handle it was resolved by, and the
+   restart is addressed to THAT handle, so the supervisor re-runs its own recipe
+   in its own working directory. See
+   `docs/learnings/restart-authority-detected-not-guessed.md`.
 5. Completion truth stays server-side: a heartbeat with `daemonVersion >=
    targetVersion` flips `done`; silence times out to `unknown`, never faked.
 

@@ -52,6 +52,10 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/watcher-bundle.mjs',
     'lib/agent-inventory.mjs',
     'lib/agent-restart.mjs',
+    // The shared restart-authority resolver both agent-inventory and
+    // agent-restart import; the watcher runs from this bundle, so leaving it
+    // out is an import error at reconcile time, not a missing feature.
+    'lib/service-supervision.mjs',
     'lib/agent-verify.mjs',
     'lib/claude-preseed.mjs',
   ])

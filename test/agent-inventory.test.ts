@@ -38,6 +38,7 @@ import {
   parseSupervisorFile,
   probeMarkerPath,
   readFolderPin,
+  resolveAgentSupervisor,
   readLaunchRecipe,
   restartMarkerPath,
   serviceFilePath,
@@ -500,4 +501,141 @@ test('listAgents: BGOS_PLUGIN_STATE_DIR moves the live marker path for every age
   })
   assert.equal(agent!.liveMarkerPath, '/var/state/912/channel-live.json')
   assert.equal(agent!.pluginStateDir, '/var/state/912')
+})
+
+// -- detectSupervisor: the discovery tier ---------------------------------------------
+
+/** A fake launchd host: plists on disk plus the labels launchctl reports loaded. */
+function launchdHost(files: Record<string, string>, loaded: string[]) {
+  const listDir = (dir: string) =>
+    Object.keys(files)
+      .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+      .map((p) => p.slice(dir.length + 1))
+  const readFile = (p: string) => (p in files ? files[p]! : null)
+  const execSync = (file: string, args: string[]) => {
+    if (file === 'launchctl' && args[0] === 'list') {
+      return { code: 0, stdout: ['PID\tStatus\tLabel', ...loaded.map((l) => `1\t0\t${l}`)].join('\n') }
+    }
+    if (file === 'plutil') {
+      const path = args[args.length - 1]!
+      return path in files ? { code: 0, stdout: files[path]! } : { code: 1, stdout: '' }
+    }
+    return { code: 127, stdout: '' }
+  }
+  return { files, listDir, readFile, execSync }
+}
+
+const BESPOKE_PLIST = '/home/kc/Library/LaunchAgents/ai.bgos.session.912.plist'
+const BESPOKE_JOB = JSON.stringify({
+  Label: 'ai.bgos.session.912',
+  ProgramArguments: ['/bin/bash', '/home/kc/.bgos-session-912/keepalive.sh'],
+  WorkingDirectory: '/home/kc/hoai-agents/ava',
+})
+
+test('detectSupervisor: a launchd job under a NON-CANONICAL label is a service, resolved to its own handle', () => {
+  // The bug this closes: bin/bgos-agent installs ai.bgos.agent.<id>, so an
+  // agent some other launcher put under its own label reported 'none' and the
+  // app withheld the one-click update button from a restartable daemon.
+  const host = launchdHost({ [BESPOKE_PLIST]: BESPOKE_JOB }, ['ai.bgos.session.912'])
+  const probe = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '912',
+    cwd: '/home/kc/hoai-agents/ava',
+    exists: (p: string) => p in host.files,
+    readFile: host.readFile,
+    listDir: host.listDir,
+    execSync: host.execSync,
+    pidAlive: () => false,
+  }
+  assert.equal(detectSupervisor(probe), 'service')
+  const resolved = resolveAgentSupervisor(probe)
+  assert.equal(resolved.service?.kind, 'launchd')
+  assert.equal(resolved.service?.handle, 'ai.bgos.session.912')
+  assert.equal(resolved.service?.via, 'working-directory')
+})
+
+test('detectSupervisor: an agent nothing supervises is still none, with every probe wired', () => {
+  const host = launchdHost({ [BESPOKE_PLIST]: BESPOKE_JOB }, ['ai.bgos.session.912'])
+  const unsupervised = {
+    platform: 'darwin',
+    home: HOME,
+    // A different agent, whose folder no loaded job declares.
+    assistantId: '7',
+    cwd: '/home/kc/hoai-agents/old',
+    exists: (p: string) => p in host.files,
+    readFile: host.readFile,
+    listDir: host.listDir,
+    execSync: host.execSync,
+    pidAlive: () => false,
+  }
+  assert.equal(detectSupervisor(unsupervised), 'none')
+  assert.equal(resolveAgentSupervisor(unsupervised).service, null)
+  // And the same agent when the job exists on disk but launchd has not loaded
+  // it: an unloaded plist cannot bring anything back.
+  const dormant = launchdHost({ [BESPOKE_PLIST]: BESPOKE_JOB }, ['com.apple.mdworker'])
+  assert.equal(
+    detectSupervisor({
+      platform: 'darwin',
+      home: HOME,
+      assistantId: '912',
+      cwd: '/home/kc/hoai-agents/ava',
+      exists: (p: string) => p in dormant.files,
+      readFile: dormant.readFile,
+      listDir: dormant.listDir,
+      execSync: dormant.execSync,
+      pidAlive: () => false,
+    }),
+    'none',
+  )
+})
+
+test('detectSupervisor: a live hoai launcher still wins over no service, and the canonical file still wins over both', () => {
+  const sup = '/home/kc/.bgos-agent/912/supervisor.json'
+  const host = launchdHost({}, [])
+  const withLauncher = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '912',
+    cwd: '/home/kc/hoai-agents/ava',
+    exists: () => false,
+    readFile: (p: string) => (p === sup ? supervisorFileBody(77, 'x') : null),
+    listDir: host.listDir,
+    execSync: host.execSync,
+    pidAlive: (pid: number) => pid === 77,
+  }
+  assert.equal(detectSupervisor(withLauncher), 'launcher-live')
+  assert.equal(resolveAgentSupervisor(withLauncher).service, null)
+  const canonical = serviceFilePath('darwin', HOME, '912')!
+  const withCanonical = { ...withLauncher, exists: (p: string) => p === canonical }
+  assert.equal(detectSupervisor(withCanonical), 'service')
+  assert.equal(resolveAgentSupervisor(withCanonical).service?.handle, 'ai.bgos.agent.912')
+  assert.equal(resolveAgentSupervisor(withCanonical).service?.via, 'canonical-file')
+})
+
+test('listAgents: a discovered service reaches the row, so the restart is addressed to that job', () => {
+  const files: Record<string, string> = {
+    '/home/kc/.bgos-agent/credentials-912.json': '{"pairingToken":"secret"}',
+    '/home/kc/.bgos-agent/912/launch.json': recipeFor('912', '/home/kc/hoai-agents/ava'),
+    [BESPOKE_PLIST]: BESPOKE_JOB,
+  }
+  const host = launchdHost(files, ['ai.bgos.session.912'])
+  const fs = {
+    exists: (p: string) => p in files || p === '/home/kc/hoai-agents/ava',
+    readFile: host.readFile,
+    listDir: host.listDir,
+  }
+  const [agent] = listAgents({
+    home: HOME,
+    env: {},
+    platform: 'darwin',
+    fs,
+    pidAlive: () => false,
+    execSync: host.execSync,
+  })
+  assert.equal(agent!.supervisor, 'service')
+  assert.equal(agent!.running, true)
+  assert.equal(agent!.service?.handle, 'ai.bgos.session.912')
+  assert.equal(agent!.serviceFile, BESPOKE_PLIST)
+  assert.equal(JSON.stringify(agent).includes('secret'), false)
 })

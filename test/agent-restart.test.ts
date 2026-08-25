@@ -340,3 +340,55 @@ test('recipeLaunchCommand win32: a cmd.exe metacharacter anywhere in the embedde
   }
   assert.notEqual(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\hoai agents (2)', nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT }), null)
 })
+
+test('restartAgent: a DISCOVERED supervisor is kickstarted by ITS label, never the canonical one', async () => {
+  // The row lib/agent-inventory.mjs produced for an agent launchd supervises
+  // under a label bin/bgos-agent never wrote. Addressing the restart to
+  // ai.bgos.agent.912 here would fail (no such job) and, worse, would be a
+  // guess: only the resolved label restarts the process that IS this agent.
+  const { calls, exec } = recordingExec()
+  const mac = await restartAgent(
+    agentRow({
+      supervisor: 'service',
+      serviceFile: '/home/kc/Library/LaunchAgents/ai.bgos.session.912.plist',
+      service: {
+        kind: 'launchd',
+        handle: 'ai.bgos.session.912',
+        via: 'working-directory',
+        file: '/home/kc/Library/LaunchAgents/ai.bgos.session.912.plist',
+      },
+    }),
+    { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached },
+  )
+  assert.deepEqual(calls, [{ file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.session.912'] }])
+  assert.equal(mac.ok, true)
+  assert.equal(mac.how, 'service')
+  const linux = recordingExec()
+  await restartAgent(
+    agentRow({
+      supervisor: 'service',
+      serviceFile: '/home/kc/.config/systemd/user/vexa-agent.service',
+      service: { kind: 'systemd', handle: 'vexa-agent.service', via: 'state-dir', file: null },
+    }),
+    { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: linux.exec, spawnDetached: recordingSpawn().spawnDetached },
+  )
+  assert.deepEqual(linux.calls, [{ file: 'systemctl', args: ['--user', 'restart', 'vexa-agent.service'] }])
+})
+
+test('restartAgent: a service row whose handle is not command-line safe runs NO command', async () => {
+  const { spawns, spawnDetached } = recordingSpawn()
+  const { calls, exec } = recordingExec()
+  const result = await restartAgent(
+    agentRow({
+      supervisor: 'service',
+      serviceFile: '/x.plist',
+      service: { kind: 'launchd', handle: 'evil label; rm -rf /', via: 'working-directory', file: null },
+    }),
+    { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec, spawnDetached, hasTmux: true },
+  )
+  assert.equal(calls.length, 0)
+  // No service command is runnable, so it falls through to the recipe exactly
+  // as a darwin service with no uid does: never a blind or a built command.
+  assert.equal(result.how, 'recipe-tmux')
+  assert.equal(spawns.length, 1)
+})
