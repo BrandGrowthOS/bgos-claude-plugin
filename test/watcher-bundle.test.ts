@@ -194,7 +194,7 @@ test('readBundleManifest: null for absent or junk or a non-semver version', () =
   )
   assert.deepEqual(
     readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: '0.38.3-e2e.1', fingerprint: 'abc', claudeConfigDir: null }) })),
-    { version: '0.38.3-e2e.1', fingerprint: 'abc', installedAt: null, pluginRoot: null, files: [] },
+    { version: '0.38.3-e2e.1', fingerprint: 'abc', installedAt: null, pluginRoot: null, claudeConfigDir: null, files: [] },
   )
 })
 
