@@ -166,22 +166,46 @@ inside WSL and use the corresponding Linux paths.
 
 ```bash
 cd /path/to/your/project
-claude --dangerously-skip-permissions --dangerously-load-development-channels server:bgos
+hoai
 ```
 
-Both flags are required:
-- `--dangerously-skip-permissions` — allows the plugin to auto-approve tool usage
-- `--dangerously-load-development-channels server:bgos` — enables receiving messages from the BGOS chat
+That is the whole command, on macOS, Linux and Windows alike. **This is also
+how you restart the agent by hand at any time: type `/exit`, then run `hoai`
+from the same folder.** There is no long command line to remember and no
+channel flag to get wrong.
 
-> **Note on the launch flag — local clone vs. plugin store:** Because you
-> installed this plugin by **cloning it locally** (Step 1 above), it is a
-> *development channel* and MUST be loaded with
-> `--dangerously-load-development-channels server:bgos`. The shorter
-> `--channels server:bgos` form **only loads channels installed from the Claude
-> Code plugin store** — for a local clone it is silently accepted but never
-> wires up inbound delivery, so messages you send from the BGOS app never reach
-> the agent. If inbound messages aren't arriving, confirm you launched with
-> `--dangerously-load-development-channels`, not `--channels`.
+`hoai` is installed on your PATH by `hoai setup` and by the one-click
+installer. If your shell cannot find it, run `hoai install-cli` once (or
+`npx --yes --package github:BrandGrowthOS/bgos-claude-plugin hoai install-cli`
+if you have no `hoai` at all), then open a new terminal.
+
+<details>
+<summary>What <code>hoai</code> runs for you, and why you should not hardcode it</summary>
+
+`hoai` launches `claude` with two flags:
+
+- `--dangerously-skip-permissions`: allows the plugin to auto-approve tool usage
+- `--dangerously-load-development-channels <spec>`: enables receiving messages
+  from the BGOS chat
+
+**The `<spec>` differs per install and is only knowable at run time**, which is
+exactly why `hoai` works it out on every launch instead of you writing it down.
+A local clone (Step 1 above) needs `server:bgos`; a marketplace install needs
+`plugin:hoai@hoai`. Getting it wrong is **silent**: on 2026-08-21 a marketplace
+install launched with the clone spec, connected nothing, and dropped every
+inbound message with no error anywhere.
+
+For the same reason, **do not put a `hoai` shell alias in your `.zshrc`** (or
+any other profile). An alias freezes one spec into a string, so it keeps
+launching the wrong one after you switch install methods or move machines. The
+`hoai` on your PATH is a shim that re-detects instead.
+
+The shorter `--channels <spec>` form is a third silent-drop trap: it loads the
+plugin's tools, `claude mcp list` even reports Connected, and it wires **no**
+inbound delivery for a channel that is not on Anthropic's allowlist (HOAI is
+not, yet). Never use it.
+
+</details>
 
 ### Step 4: Verify
 
@@ -432,7 +456,8 @@ With backend support (2026-07-05+) and an OpenAI key on the agent host, the BGOS
 
 **Setup:**
 
-1. Add `"BGOS_OPENAI_API_KEY": "<an OpenAI API key with Realtime access>"` to the `env` block of the agent's `.mcp.json` and restart the agent session.
+1. Add `"BGOS_OPENAI_API_KEY": "<an OpenAI API key with Realtime access>"` to the `env` block of the agent's `.mcp.json` and restart the agent session (`/exit`,
+   then run `hoai` from the same folder).
 2. In the BGOS app, open the agent's settings → Voice → set the provider to **Native (realtime)** and save.
 3. Tap **Talk**. Mint happens on this host (`POST /v1/realtime/client_secrets`), so the ephemeral session secret never leaves it.
 
@@ -548,7 +573,8 @@ The catalog refresh is best-effort: if `PUT /integrations/assistants/:id/command
 
 Automatic updates are off by default. To opt in, add
 `"BGOS_AUTO_UPDATE": "on"` to the plugin `env` object in `.mcp.json` and
-restart the agent. The plugin checks at boot, then after each 24 hour interval
+restart the agent (`/exit`, then run `hoai` from the same folder). The plugin
+checks at boot, then after each 24 hour interval
 plus a random zero to six hour jitter. It updates only to a newer version in
 the same major release line.
 
@@ -634,7 +660,8 @@ bun install
 bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon-wrapper.mjs"
 ```
 
-Then relaunch Claude Code. The wrapper path in `.mcp.json` stays unchanged.
+Then restart the agent: type `/exit` in its session and run `hoai` from the
+same folder. The wrapper path in `.mcp.json` stays unchanged.
 
 ## Troubleshooting
 
