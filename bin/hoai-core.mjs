@@ -428,8 +428,10 @@ export function mungeSessionCwd(cwd) {
 
 /** Where Claude Code writes THIS session's transcript. Its existence is how we
  *  tell "resume my session" from "create it with a known id". */
-export function sessionTranscriptPath(home, cwd, sessionId) {
-  const projects = joinDir(joinDir(home, '.claude'), 'projects')
+export function sessionTranscriptPath(home, cwd, sessionId, configDir = '') {
+  // CLAUDE_CONFIG_DIR moves the whole config tree, transcripts included.
+  const base = String(configDir ?? '').trim() || joinDir(home, '.claude')
+  const projects = joinDir(base, 'projects')
   const dir = joinDir(projects, mungeSessionCwd(cwd))
   return joinDir(dir, `${sessionId}.jsonl`)
 }
@@ -792,6 +794,7 @@ export async function superviseClaude(args, opts = {}) {
         installMethod: detection.method,
         pluginRoot: detection.pluginRoot,
         node: process.execPath,
+        claudeConfigDir: String(env.CLAUDE_CONFIG_DIR ?? '').trim() || null,
         startedAt: new Date(now()).toISOString(),
         pid: process.pid,
       }),
@@ -808,7 +811,7 @@ export async function superviseClaude(args, opts = {}) {
   // disk answers.
   let sessionCreated = false
   const sessionExistsNow = () =>
-    sessionCreated || (pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId)) : false)
+    sessionCreated || (pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId, env.CLAUDE_CONFIG_DIR)) : false)
 
   let relaunchesAt = []
   let exhausted = false

@@ -102,6 +102,7 @@ test('installWatcherBundle: copies bin/ + lib/ preserving layout, writes the man
     version: '0.38.3',
     fingerprint: result.fingerprint,
     installedAt: '2026-08-25T01:02:03.000Z',
+    claudeConfigDir: null,
     pluginRoot: ROOT,
     files: [...WATCHER_BUNDLE_FILES],
   })
@@ -192,7 +193,7 @@ test('readBundleManifest: null for absent or junk or a non-semver version', () =
     null,
   )
   assert.deepEqual(
-    readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: '0.38.3-e2e.1', fingerprint: 'abc' }) })),
+    readBundleManifest(HOME, memoryFs({ '/home/kc/.bgos-agent/watcher/manifest.json': JSON.stringify({ version: '0.38.3-e2e.1', fingerprint: 'abc', claudeConfigDir: null }) })),
     { version: '0.38.3-e2e.1', fingerprint: 'abc', installedAt: null, pluginRoot: null, files: [] },
   )
 })

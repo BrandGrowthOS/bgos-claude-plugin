@@ -5752,7 +5752,13 @@ const watcherInstallRpc = new WatcherInstallRpcHandler({
   enroll: (body) => bgosPost('integrations/watchers/enroll', body),
   ensureMachineId: () => ensureMachineId({ home: homedir() }),
   installWatcherBundle: ({ pluginRoot, home, pluginVersion }) =>
-    installWatcherBundle({ pluginRoot, home, pluginVersion }),
+    installWatcherBundle({
+      pluginRoot,
+      home,
+      pluginVersion,
+      // The watcher must reconcile the SAME Claude install this daemon runs under.
+      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+    }),
   writeWatcherCredentials: async (creds) => {
     const path = writeWatcherCredentials(homedir(), creds)
     if (process.platform === 'win32') {

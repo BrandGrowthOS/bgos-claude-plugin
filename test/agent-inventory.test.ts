@@ -223,6 +223,7 @@ test('buildLaunchRecipe: exact schema, launcher hoai, session args stripped', ()
     pluginRoot: '/home/kc/.claude/plugins/cache/hoai/hoai/0.38.3',
     node: '/usr/local/bin/node',
     startedAt: '2026-08-25T00:00:00.000Z',
+    claudeConfigDir: null,
     launcher: 'hoai',
     pid: 4242,
   })
@@ -264,6 +265,7 @@ test('parseLaunchRecipe: round trips a built recipe and rejects every malformed 
     pluginRoot: null,
     node: null,
     startedAt: null,
+    claudeConfigDir: null,
     launcher: 'hoai',
     pid: null,
   })
