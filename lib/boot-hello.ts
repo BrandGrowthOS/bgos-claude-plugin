@@ -27,6 +27,8 @@
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+import { agentStateDir } from './update-readiness.js'
+
 /** File name inside the per-assistant state dir (next to chat-cursors.json). */
 export const LIVE_MARKER_FILE = 'channel-live.json'
 
@@ -162,5 +164,68 @@ export function liveMarkerMtimeMs(path: string): number | null {
     return statSync(path).mtimeMs
   } catch {
     return null
+  }
+}
+
+// ── Liveness probe after a restart (zero-terminal lifecycle, design 7.2) ─────
+//
+// The marker above refreshes only on the FIRST tool call of a boot, and the
+// hello fires only on a pairing's first boot ever, so after a routine
+// restart nothing proves the session hears the channel until the user
+// speaks. The watcher manufactures that proof without touching the
+// conversation: it writes ~/.bgos-agent/<id>/probe-requested.json (existence
+// only, contents ignored) and the daemon, polling that file every 3s,
+// unlinks it and pushes ONE silent channel notification asking the session
+// to call the `channel_ack` tool. That call goes through the CallTool
+// chokepoint, flips liveness, and touches channel-live.json, which is what
+// the watcher reads (mtime > restartedAt) to call the restart proven.
+
+/** File name inside ~/.bgos-agent/<id>/ (the launcher's state dir, NOT the
+ *  plugin state dir that holds the live marker; design 7.1). */
+export const PROBE_REQUEST_FILE = 'probe-requested.json'
+/** How often the daemon stats the probe file (cheap, unref'd). */
+export const LIVENESS_PROBE_POLL_MS = 3_000
+/** At most one probe notification per this window, however often the file
+ *  reappears (the watcher rewrites it every 30s while it waits). */
+export const LIVENESS_PROBE_MIN_INTERVAL_MS = 30_000
+
+/** ~/.bgos-agent/<id>/probe-requested.json, or null for an invalid id. */
+export function probeRequestPath(
+  home: string,
+  assistantId: string | number | null | undefined,
+): string | null {
+  const dir = agentStateDir(home, assistantId)
+  return dir ? join(dir, PROBE_REQUEST_FILE) : null
+}
+
+/** Pure rate-limited decision: send when the marker is present and the last
+ *  probe (if any) is at least the minimum interval old. */
+export function shouldSendLivenessProbe(input: {
+  markerExists: boolean
+  lastSentAt: number | null
+  now: number
+}): boolean {
+  if (!input.markerExists) return false
+  if (input.lastSentAt === null) return true
+  return input.now - input.lastSentAt >= LIVENESS_PROBE_MIN_INTERVAL_MS
+}
+
+/**
+ * The silent probe notification. It names the tool, forbids any user-facing
+ * message, and tells the session to resume what it was doing; the meta
+ * event_type lets a CLAUDE.md or a future filter recognise it.
+ */
+export function buildLivenessProbeNotification(
+  input: { chatId?: string | null } = {},
+): { content: string; meta: Record<string, string> } {
+  const meta: Record<string, string> = { event_type: 'liveness_probe' }
+  const chatId = String(input.chatId ?? '').trim()
+  if (chatId) meta.chat_id = chatId
+  return {
+    content:
+      '[hoai] Liveness check after a restart. Call the channel_ack tool now, ' +
+      'then continue whatever you were doing. Do NOT send any message to the ' +
+      'user for this.',
+    meta,
   }
 }

@@ -207,3 +207,83 @@ describe('heartbeatEnv', () => {
     expect(typeof env.cwd).toBe('string')
   })
 })
+
+describe('heartbeatEnv machine identity (zero-terminal lifecycle)', () => {
+  const MACHINE_ID = '0f8a7b6c-1234-4abc-8def-0123456789ab'
+
+  test('carries the provider machineId and role agent', () => {
+    const env = heartbeatEnv({ cwd: () => '/x', platform: 'linux' }, { machineId: () => MACHINE_ID })
+    expect(env.machineId).toBe(MACHINE_ID)
+    expect(env.role).toBe('agent')
+    expect(env.cwd).toBe('/x')
+  })
+
+  test('no provider: role still rides, machineId is absent rather than guessed', () => {
+    const env = heartbeatEnv({ cwd: () => '/x', platform: 'linux' })
+    expect(env.role).toBe('agent')
+    expect('machineId' in env).toBe(false)
+  })
+
+  test('a throwing provider never breaks the env', () => {
+    const env = heartbeatEnv(
+      { cwd: () => '/x', platform: 'darwin' },
+      {
+        machineId: () => {
+          throw new Error('home unreadable')
+        },
+      },
+    )
+    expect(env.platform).toBe('darwin')
+    expect(env.role).toBe('agent')
+    expect('machineId' in env).toBe(false)
+  })
+
+  test('an empty or malformed id is omitted, never sent', () => {
+    for (const bad of ['', 'short', 'has spaces here', 'x'.repeat(65)]) {
+      const env = heartbeatEnv({ cwd: () => '/x', platform: 'linux' }, { machineId: () => bad })
+      expect('machineId' in env).toBe(false)
+    }
+  })
+
+  test('startVersionHeartbeat threads the provider into the body', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.38.3'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      machineId: () => MACHINE_ID,
+    })
+    await Bun.sleep(0)
+    const env = calls[0]!.env as { machineId?: string; role?: string }
+    expect(env.machineId).toBe(MACHINE_ID)
+    expect(env.role).toBe('agent')
+    clearInterval(handle!.timer)
+  })
+
+  test('a throwing machineId provider never blocks the send', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.38.3'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      machineId: () => {
+        throw new Error('disk on fire')
+      },
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.daemonVersion).toBe('0.38.3')
+    const env = calls[0]!.env as { machineId?: string; role?: string }
+    expect('machineId' in env).toBe(false)
+    expect(env.role).toBe('agent')
+    clearInterval(handle!.timer)
+  })
+})

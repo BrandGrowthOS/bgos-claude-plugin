@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { MACHINE_ID_RE } from './machine-id.mjs'
 import type { UpdateReadiness } from './update-readiness.js'
 
 /** Read the plugin version from package.json next to the server entry. Never throws. */
@@ -38,14 +39,30 @@ export function readOwnVersion(rootDir: string): string | null {
  * a default, so until the daemon says it, the owner sees "not reported" rather
  * than a comforting guess.
  *
+ * `machineId` (zero-terminal lifecycle, design 2.1) is what lets the backend
+ * group every agent and the watcher on one host under one machine; it comes
+ * from an injected provider (lib/machine-id.mjs) and is omitted, never
+ * guessed, when the provider throws or yields a shape the backend rejects.
+ * `role` is always 'agent' here: the watcher sends its own heartbeat.
+ *
  * Pure and total: it reads process state and cannot throw, so the telemetry
  * rule above still holds.
  */
-export function heartbeatEnv(proc: {
-  cwd: () => string;
-  platform: string;
-}): { cwd?: string; platform?: string } {
-  const env: { cwd?: string; platform?: string } = {}
+export interface HeartbeatEnv {
+  cwd?: string
+  platform?: string
+  machineId?: string
+  role: 'agent'
+}
+
+export function heartbeatEnv(
+  proc: {
+    cwd: () => string;
+    platform: string;
+  },
+  providers: { machineId?: () => string } = {},
+): HeartbeatEnv {
+  const env: HeartbeatEnv = { role: 'agent' }
   try {
     const cwd = proc.cwd()
     // The backend caps cwd at 512 chars. Send nothing rather than a truncated
@@ -58,6 +75,14 @@ export function heartbeatEnv(proc: {
   }
   if (typeof proc.platform === 'string' && proc.platform.length > 0) {
     env.platform = proc.platform
+  }
+  try {
+    const machineId = providers.machineId?.()
+    if (typeof machineId === 'string' && MACHINE_ID_RE.test(machineId)) {
+      env.machineId = machineId
+    }
+  } catch {
+    // An unreadable machine id is omitted; the rest of the env still rides.
   }
   return env
 }
@@ -90,6 +115,8 @@ export function startVersionHeartbeat(deps: {
   post: (path: string, body: Record<string, unknown>) => Promise<unknown>
   log: (msg: string) => void
   updateStatus?: HeartbeatUpdateStatus
+  /** lib/machine-id.mjs ensureMachineId, injected so tests never touch a home dir. */
+  machineId?: () => string
 }): { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null {
   const version = readOwnVersion(deps.rootDir)
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
@@ -97,7 +124,7 @@ export function startVersionHeartbeat(deps: {
     try {
       const body: Record<string, unknown> = {
         daemonVersion: version,
-        env: heartbeatEnv(process),
+        env: heartbeatEnv(process, { machineId: deps.machineId }),
       }
       // Guarded per provider: readiness must still ride when the
       // latest-version probe throws, and vice versa. The backend ignores

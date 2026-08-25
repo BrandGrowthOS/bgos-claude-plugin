@@ -178,8 +178,12 @@ import {
   shouldSendBootHello,
   shouldBackfillLiveMarker,
   buildBootHelloNotification,
+  buildLivenessProbeNotification,
+  shouldSendLivenessProbe,
+  probeRequestPath,
+  LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
-import { detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
+import { claudeConfigDir, detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -217,7 +221,11 @@ import {
   LATE_UPGRADE_PROBE_INTERVAL_MS,
 } from './lib/compact-capability.js'
 import { homedir } from 'node:os'
-import { readOwnVersion, startVersionHeartbeat } from './lib/version-heartbeat'
+import {
+  readOwnVersion,
+  startVersionHeartbeat,
+  VERSION_HEARTBEAT_INTERVAL_MS,
+} from './lib/version-heartbeat'
 import {
   AUTO_UPDATE_SAFETY_FILE,
   initializeSelfUpdater,
@@ -236,6 +244,35 @@ import {
   type UpdateReadiness,
 } from './lib/update-readiness.js'
 import { join as joinPath } from 'node:path'
+import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
+// Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
+// identity, marketplace one-click updates, the watcher installer, and the
+// P3 failure-signature intake. Plain .mjs modules shared with the watcher.
+import { ensureMachineId } from './lib/machine-id.mjs'
+import {
+  createMarketplaceLatestTracker,
+  observeMarketplaceLatest,
+  observeMarketplaceState,
+  readLocalMarketplaceLatestSync,
+  refreshMarketplaceLatest,
+  runMarketplaceUpdate,
+  MARKETPLACE_LATEST_INITIAL_DELAY_MS,
+} from './lib/marketplace-update.mjs'
+import { postFailureDiagnostics } from './lib/update-diagnostics.mjs'
+import {
+  WatcherInstallRpcHandler,
+  normalizeWatcherInstallRpc,
+  resolveNodePath,
+} from './lib/watcher-install.mjs'
+import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
+import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import {
+  applyWin32CredentialsAcl,
+  installWatcherService,
+  watcherCredentialsPath,
+  watcherServiceSpec,
+  writeWatcherCredentials,
+} from './lib/watcher-service.mjs'
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -315,6 +352,7 @@ import {
   mkdirSync,
   readFileSync,
   statSync,
+  unlinkSync,
   watch,
   writeFileSync,
 } from 'node:fs'
@@ -2718,6 +2756,22 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['kind', 'chat_id'],
       },
     },
+    {
+      // Zero-terminal lifecycle (design 7.2): the silent liveness probe's
+      // answer. The watcher writes probe-requested.json after restarting
+      // this agent, the daemon pushes one channel notification asking for
+      // this tool, and the call is the proof the new session hears us.
+      name: 'channel_ack',
+      description:
+        'Liveness acknowledgement after a restart; call when a [hoai] liveness ' +
+        'check asks for it. Sends nothing to the user. Internal: the HOAI ' +
+        'watcher reads the resulting tool call as proof that this session ' +
+        'hears channel events.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
     // Agent Boards: the 12 boards_* tools (lib/boards-tools.ts). They ride
     // this daemon's existing pairing, so they only ever reach boards the
     // owner granted THIS assistant; an ungranted board answers not_found and
@@ -2836,6 +2890,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   if (!channelLiveness.live) {
     channelLiveness.markToolCall()
     recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+  }
+  // channel_ack (zero-terminal lifecycle, design 7.2): the liveness probe's
+  // answer. It refreshes the marker EVERY time (the watcher compares the
+  // marker against its restart timestamp), answers even mid-drain (a probe
+  // during an update still proves the session hears us), and is not a
+  // tracked message operation, so it can never hold a drain open.
+  if (req.params.name === 'channel_ack') {
+    channelLiveness.markToolCall()
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    return Promise.resolve({ content: [{ type: 'text' as const, text: 'ok' }] })
   }
   if (updateDrainMode) {
     return Promise.resolve({
@@ -5556,21 +5620,96 @@ function updateReadinessSnapshot(): UpdateReadiness {
   }
 }
 
+// Install method + plugin root, detected once. For a marketplace install the
+// root is the VERSIONED cache dir this process was loaded from (design 7.3),
+// which is also where the watcher bundle is copied FROM.
+const INSTALL_DETECTION = (() => {
+  try {
+    return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
+  } catch {
+    return null
+  }
+})()
+const INSTALL_METHOD: 'marketplace' | 'clone' = INSTALL_DETECTION?.method ?? 'clone'
+const PLUGIN_ROOT = INSTALL_DETECTION?.pluginRoot ?? import.meta.dir
+const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
+
+function safeUsername(): string {
+  try {
+    return osUserInfo().username
+  } catch {
+    return ''
+  }
+}
+
+// Marketplace installs: the newest version the LOCAL marketplace files name
+// (cheap read per heartbeat, never network) plus a network refresh
+// (`claude plugin marketplace update hoai`) 30s after boot and then once per
+// heartbeat interval, so update_available lights up without a restart
+// (design 1.4). Armed in main() for marketplace installs only.
+const marketplaceLatest = createMarketplaceLatestTracker({
+  readLocal: () =>
+    readLocalMarketplaceLatestSync({ configDir: CLAUDE_CONFIG_DIR, parse: readMarketplaceLatest }),
+  observeLocal: () => observeMarketplaceLatest({ configDir: CLAUDE_CONFIG_DIR, log }),
+  refresh: () => refreshMarketplaceLatest({ cli: runClaudeCli, configDir: CLAUDE_CONFIG_DIR, log }),
+  intervalMs: VERSION_HEARTBEAT_INTERVAL_MS,
+  initialDelayMs: MARKETPLACE_LATEST_INITIAL_DELAY_MS,
+  log,
+})
+
+// The daemon's live drain counters (shared with SelfUpdater in main()).
+function updateDrainSnapshot() {
+  return {
+    activeOperations: messageActivity.activeOperations,
+    pendingMessages: pendingInbounds.size,
+    pendingPermissions: pendingPermissions.size,
+  }
+}
+
 const updateRpc = new UpdateRpcHandler({
   postAck: (rpcId) =>
     bgosPost(`integrations/update-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postProgress: (rpcId, body) =>
     bgosPost(`integrations/update-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
-  installMethod: () => {
-    try {
-      return detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) }).method
-    } catch {
-      return 'clone'
-    }
-  },
+  installMethod: () => INSTALL_METHOD,
   autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
   updater: () => selfUpdater,
+  // Marketplace installs (design 1.4): observe THIS machine, then plan +
+  // execute with agents = [self]. The executor's restart/verify hooks are
+  // satisfied by the daemon's own ladder, which runs after the outcome.
+  marketplaceUpdate: async (report) => {
+    const state = await observeMarketplaceState({
+      configDir: CLAUDE_CONFIG_DIR,
+      home: homedir(),
+      platform: process.platform,
+      runningVersion: RUNNING_VERSION,
+      assistantId: String(ASSISTANT_ID),
+      cwd: process.cwd(),
+      supervised: detectSupervision({
+        platform: process.platform,
+        home: homedir(),
+        assistantId: ASSISTANT_ID,
+        exists: existsSync,
+        readFile: readTextOrNull,
+      }),
+      autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
+      rollbackLatched: updateReadinessSnapshot().rollbackLatched,
+    })
+    return runMarketplaceUpdate({
+      state,
+      cli: (args, opts) => runClaudeCli(args, opts),
+      home: homedir(),
+      configDir: CLAUDE_CONFIG_DIR,
+      platform: process.platform,
+      log,
+      report,
+      nodeVersion: process.version,
+      username: safeUsername(),
+    })
+  },
+  drainSnapshot: updateDrainSnapshot,
+  postFailureDiagnostics: (diagnostics) => postFailureDiagnostics(bgosPost, diagnostics),
   restartAuthority: () =>
     chooseRestartAuthority({
       platform: process.platform,
@@ -5596,6 +5735,73 @@ const updateRpc = new UpdateRpcHandler({
   },
   setDrainMode: setUpdateDrainMode,
   requestHeartbeat: () => versionHeartbeat?.sendNow(),
+})
+
+// ── Watcher install (watcher_install_rpc) ────────────────────────────────────
+// The app's "set up the watcher on this machine" button (design 7.6): this
+// running agent enrolls a watcher pairing, copies the watcher bundle out of
+// the plugin folder, writes its credentials, and installs the always-on
+// service. lib/watcher-install.mjs owns the step ledger, the fail-closed
+// posture (credentials removed when the service did not install), and the
+// dedupe; this block only wires REST, the filesystem, and platform pieces.
+const watcherInstallRpc = new WatcherInstallRpcHandler({
+  postAck: (rpcId) =>
+    bgosPost(`integrations/machine-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/machine-rpc/${encodeURIComponent(rpcId)}/progress`, body),
+  enroll: (body) => bgosPost('integrations/watchers/enroll', body),
+  ensureMachineId: () => ensureMachineId({ home: homedir() }),
+  installWatcherBundle: ({ pluginRoot, home, pluginVersion }) =>
+    installWatcherBundle({ pluginRoot, home, pluginVersion }),
+  writeWatcherCredentials: async (creds) => {
+    const path = writeWatcherCredentials(homedir(), creds)
+    if (process.platform === 'win32') {
+      // chmod is a no-op on NTFS; lock the file to this user like bgos-pair.
+      const acl = await applyWin32CredentialsAcl(path, { username: safeUsername() })
+      if (!acl.ok) log(`WARN watcher credentials: ${acl.message}`)
+    }
+    return path
+  },
+  removeWatcherCredentials: () => {
+    try {
+      unlinkSync(watcherCredentialsPath(homedir()))
+      return true
+    } catch {
+      return false
+    }
+  },
+  serviceSpec: ({ nodePath, bundleDir }) =>
+    watcherServiceSpec({
+      platform: process.platform,
+      home: homedir(),
+      nodePath,
+      bundleDir,
+      uid: typeof process.getuid === 'function' ? process.getuid() : null,
+      localAppData: process.env.LOCALAPPDATA,
+      username: safeUsername(),
+    }),
+  installWatcherService: (spec) =>
+    installWatcherService(spec as Parameters<typeof installWatcherService>[0]),
+  // `node` on PATH first, then this executable ONLY when it is node: the
+  // watcher bundle is bare node and a service pinned to bun would die the
+  // day bun moves.
+  nodePath: () =>
+    resolveNodePath({
+      env: process.env,
+      platform: process.platform,
+      execPath: process.execPath,
+      exists: existsSync,
+    }),
+  hostname: () => osHostname(),
+  pluginRoot: PLUGIN_ROOT,
+  ownVersion: RUNNING_VERSION,
+  home: homedir(),
+  platform: process.platform,
+  installMethod: INSTALL_METHOD,
+  nodeVersion: process.version,
+  username: safeUsername(),
+  postFailureDiagnostics: (diagnostics) => postFailureDiagnostics(bgosPost, diagnostics),
+  log,
 })
 
 // ── Agent Packs (export_pack / export_pack_manifest) ─────────────────────────
@@ -6475,6 +6681,23 @@ function connectWebsocket(): void {
       })
     } catch (err) {
       log(`update_rpc handler error: ${err}`)
+    }
+  })
+
+  // Watcher install (design 7.6): the backend asks THIS agent to install the
+  // machine's watcher. Same posture as update_rpc: a control rail, so not
+  // drain-gated and not a tracked operation; the handler acks, reports the
+  // steps, and fails closed.
+  realtimeSocket.on('watcher_install_rpc', (payload: any) => {
+    try {
+      const frame = normalizeWatcherInstallRpc(payload)
+      if (!frame) return
+      log(`watcher_install_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void watcherInstallRpc.handle(frame).catch((err) => {
+        log(`watcher_install_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`watcher_install_rpc handler error: ${err}`)
     }
   })
 
@@ -7596,6 +7819,54 @@ async function main(): Promise<void> {
     })
   }
 
+  // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
+  // the watcher restarts this agent nothing proves the new session HEARS the
+  // channel until the user speaks (the marker only refreshes on the first
+  // tool call of a boot; the hello fires once per pairing). So the watcher
+  // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
+  // silent channel notification asking for the channel_ack tool; that call
+  // goes through the CallTool chokepoint and touches channel-live.json,
+  // which the watcher reads (newer than its restart timestamp) as proof.
+  // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
+  // often the file reappears. The file is unlinked BEFORE the push so a
+  // failed push cannot loop on the same file (the watcher rewrites it every
+  // 30s while it waits anyway).
+  const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
+  let lastLivenessProbeAt: number | null = null
+  if (PROBE_REQUEST_PATH) {
+    setInterval(() => {
+      let markerExists = false
+      try {
+        markerExists = existsSync(PROBE_REQUEST_PATH)
+      } catch {
+        markerExists = false
+      }
+      if (
+        !shouldSendLivenessProbe({
+          markerExists,
+          lastSentAt: lastLivenessProbeAt,
+          now: Date.now(),
+        })
+      ) {
+        return
+      }
+      try {
+        unlinkSync(PROBE_REQUEST_PATH)
+      } catch {
+        // Already gone or unremovable: the rate limit still bounds us.
+      }
+      lastLivenessProbeAt = Date.now()
+      const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0] })
+      log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
+      void trackMessageOperation(() =>
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: probe.content, meta: probe.meta },
+        }),
+      ).catch((err) => log(`liveness probe delivery failed: ${err}`))
+    }, LIVENESS_PROBE_POLL_MS).unref()
+  }
+
   // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
   // session and build the consumer; on 404 or any failure the stream stays
   // inactive and every legacy path below runs unchanged. Runs AFTER the
@@ -7726,17 +7997,36 @@ async function main(): Promise<void> {
   // version (POST integrations/heartbeat) at boot and every 6h so the app's
   // plugin-update prompt can see when this install is behind the floor.
   // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
+  if (INSTALL_METHOD === 'marketplace') {
+    // Seed the marketplace latest-version cache from the local files (no
+    // network, a few file reads) so the boot heartbeat below already
+    // carries it, then arm the delayed + periodic network refresh.
+    await marketplaceLatest.observeNow()
+    marketplaceLatest.start()
+    log(
+      `marketplace latest-version refresh armed (local now: ${marketplaceLatest.current() ?? 'unknown'}; ` +
+        `network refresh ${MARKETPLACE_LATEST_INITIAL_DELAY_MS / 1000}s after boot, then every 6h)`,
+    )
+  }
   versionHeartbeat = startVersionHeartbeat({
     authMode: AUTH.mode,
     rootDir: import.meta.dir,
     post: bgosPost,
     log,
     // One-click update telemetry (wire contract v1): the newest version this
-    // daemon found at its own pinned source, and what would restart it.
+    // daemon found at its own pinned source (origin/main for a clone, the
+    // local marketplace files for a marketplace install), and what would
+    // restart it.
     updateStatus: {
-      latestKnownVersion: () => selfUpdater?.latestKnownVersion ?? null,
+      latestKnownVersion: () =>
+        INSTALL_METHOD === 'marketplace'
+          ? marketplaceLatest.current()
+          : selfUpdater?.latestKnownVersion ?? null,
       updateReadiness: updateReadinessSnapshot,
     },
+    // Machine identity (design 2.1): ~/.bgos-agent/machine-id, minted once,
+    // shared by every agent and the watcher on this host.
+    machineId: () => ensureMachineId({ home: homedir() }),
   })
 
   // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
