@@ -813,3 +813,82 @@ test('superviseClaude: a clone launch with expect available spawns claude UNDER 
   children[0]!.exit(0)
   assert.equal(await done, 0)
 })
+
+// -- Launch recipe (design 1.7: the per-machine watcher's relaunch input) ----
+
+test('superviseClaude: writes the launch recipe when it arms and rewrites it on every relaunch; never a session id, never a token', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  const recipePath = `${STATE_DIR}/launch.json`
+  const firstText = h.files.get(recipePath)
+  assert.ok(firstText, 'launch.json written at arm time')
+  const first = JSON.parse(firstText!)
+  assert.equal(first.schemaVersion, 1)
+  assert.equal(first.assistantId, '871')
+  assert.equal(first.cwd, '/agents/athena')
+  // The channel flags only: what a relaunch needs, and nothing identity-bound.
+  assert.deepEqual(first.argv, BASE_ARGS)
+  assert.equal(first.installMethod, 'clone')
+  assert.equal(first.pluginRoot, '/home/kc/bgos-claude-plugin')
+  assert.equal(first.launcher, 'hoai')
+  assert.equal(first.pid, process.pid)
+  assert.equal(typeof first.node, 'string')
+  assert.equal(typeof first.startedAt, 'string')
+  for (const banned of ['--session-id', '--resume', '--continue', UUIDS[0]!, 'pairingToken', 'apiKey']) {
+    assert.equal(firstText!.includes(banned), false, `recipe must not contain ${banned}`)
+  }
+  // A marker relaunch (which resumes the pinned session) rewrites the recipe,
+  // still without the session args it launched with.
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--resume', UUIDS[0]])
+  const secondText = h.files.get(recipePath)!
+  const second = JSON.parse(secondText)
+  assert.deepEqual(second.argv, BASE_ARGS)
+  assert.equal(secondText.includes('--resume'), false)
+  assert.equal(secondText.includes(UUIDS[0]!), false)
+  h.spawns[1]!.exit(0)
+  assert.equal(await done, 0)
+  // The recipe outlives the session (existence-only for the watcher; the
+  // supervisor.json is what says "live").
+  assert.equal(h.files.has(recipePath), true)
+  assert.equal(h.files.has(SUPERVISOR_PATH), false)
+})
+
+test('superviseClaude: a failed recipe write changes nothing about the launch', async () => {
+  const files = new Map<string, string>()
+  const spawns: FakeChild[] = []
+  const done = superviseClaude(BASE_ARGS, {
+    platform: 'linux',
+    env: {},
+    home: POSIX_HOME,
+    cwd: '/agents/athena',
+    scriptDir: CLONE_SCRIPT_DIR,
+    readFile: (p: string) =>
+      p === '/agents/athena/.bgos-agent-id' ? '871' : files.get(p) ?? null,
+    listDir: () => [],
+    spawnImpl: ((_file: string, args: readonly string[]) => {
+      const child = new FakeChild(args)
+      spawns.push(child)
+      return child
+    }) as never,
+    writeErr: () => {},
+    exists: (p: string) => files.has(p),
+    writeFile: (p: string, content: string) => {
+      if (p.endsWith('/launch.json')) return false
+      files.set(p, content)
+      return true
+    },
+    removeFile: (p: string) => files.delete(p),
+    pollMs: 5,
+    print: () => {},
+    generateId: () => UUIDS[0]!,
+    hasExpect: false,
+  })
+  await waitUntil(() => spawns.length === 1, 'first spawn')
+  assert.equal(files.has(`${STATE_DIR}/launch.json`), false)
+  assert.deepEqual(spawns[0]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  spawns[0]!.exit(0)
+  assert.equal(await done, 0)
+})

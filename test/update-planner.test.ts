@@ -233,8 +233,9 @@ describe('agent helpers', () => {
 
   test('normalizeAgents tolerates a missing or non-array fleet', () => {
     assert.deepEqual(normalizeAgents(undefined), { agents: [], notes: [] })
-    assert.deepEqual(normalizeAgents(null), { agents: [], notes: [] })
-    assert.deepEqual(normalizeAgents('nope' as any), { agents: [], notes: [] })
+    assert.deepEqual(normalizeAgents(null), { agents: [], notes: ['ignored agents that is not an array (null)'] })
+    assert.deepEqual(normalizeAgents('nope' as any), { agents: [], notes: ['ignored agents that is not an array (string)'] })
+    assert.deepEqual(normalizeAgents({ 912: {} } as any), { agents: [], notes: ['ignored agents that is not an array (object)'] })
   })
 
   test('restartMechanism follows the authority ladder and the win32 service rule', () => {

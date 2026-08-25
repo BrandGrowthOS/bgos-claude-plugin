@@ -34,6 +34,7 @@ import {
   aliasSymlinkPath,
   dirnameLike,
   executePlan,
+  executeWithReobserve,
   joinLike,
   nodeFs,
   pathWithin,
@@ -89,12 +90,17 @@ const OUT = {
   refreshed: { code: 0, stdout: 'Successfully updated marketplace: hoai\n', stderr: '' },
   installed: { code: 0, stdout: 'Successfully installed plugin: hoai@hoai (scope: user)\n', stderr: '' },
   alreadyInstalled: { code: 0, stdout: 'Plugin "hoai@hoai" is already installed (scope: user)\n', stderr: '' },
+  // Real 2.1.241 update lines (the progress line alone would be garbage).
   updated: (from: string, to: string) => ({
     code: 0,
-    stdout: `Successfully updated plugin: hoai@hoai from ${from} to ${to} (restart required to apply)\n`,
+    stdout: `Checking for updates for plugin "hoai@hoai" at user scope...\nPlugin "hoai" updated from ${from} to ${to} for scope user. Restart to apply changes.\n`,
     stderr: '',
   }),
-  alreadyLatest: (version: string) => ({ code: 0, stdout: `hoai@hoai is already at the latest version (${version}).\n`, stderr: '' }),
+  alreadyLatest: (version: string) => ({
+    code: 0,
+    stdout: `Checking for updates for plugin "hoai@hoai" at user scope...\nhoai@hoai is already at the latest version (${version}).\n`,
+    stderr: '',
+  }),
   uninstalled: { code: 0, stdout: 'Successfully uninstalled plugin: hoai@hoai (scope: user)\n', stderr: '' },
   notInstalled: { code: 1, stdout: '', stderr: 'Failed to uninstall plugin "hoai@hoai": Plugin "hoai@hoai" not found in installed plugins\n' },
   failure: (code = 1, stderr = 'Failed to update plugin "hoai@hoai": simulated failure\n') => ({ code, stdout: '', stderr }),
@@ -249,6 +255,8 @@ function realisticScript(world: World, latest: string, overrides: CliScript = {}
     },
     [KEY.refresh]: () => {
       if (!world.files.has(world.paths.knownMarketplaces)) return OUT.failure(1, 'Failed to update marketplace "hoai": Marketplace "hoai" not found\n')
+      // Like the real CLI (and the fake): a missing marketplace.json is re-cloned.
+      if (!world.files.has(world.paths.marketplaceJson)) world.setLatest(latest)
       return OUT.refreshed
     },
     [KEY.install]: () => {
@@ -841,10 +849,12 @@ test('refresh_marketplace failure is ok-with-warning when the target is known, m
     unknownPlan.steps.map((s) => s.kind),
     ['refresh_marketplace', 'verify_installed'],
   )
-  const unknownRun = memDeps(unknown, realisticScript(unknown, '0.38.3'))
+  // A refresh that succeeds in the CLI sense but leaves marketplace.json unreadable.
+  const unknownRun = memDeps(unknown, realisticScript(unknown, '0.38.3', { [KEY.refresh]: OUT.refreshed }))
   const unknownResult = await executePlan(unknownPlan, unknownRun.deps)
   assert.equal(unknownResult.verdict, 'failed')
   assert.deepEqual(unknownResult.failedStep, { id: 's01-refresh_marketplace', kind: 'refresh_marketplace', message: 'marketplace_latest_unknown' })
+  assert.equal(stepById(unknownResult, 's01-refresh_marketplace').detail, 'marketplace.json unreadable after refresh')
   assert.equal(stepById(unknownResult, 's02-verify_installed').state, 'skipped')
 })
 
@@ -1322,6 +1332,193 @@ test('clone: a failed merge rolls back with git checkout --detach <previous sha>
   assert.equal(result.installedVersion, '0.38.1')
 })
 
+// -- Observe, plan, execute, re-observe ---------------------------------------
+
+/** An observer over the in-memory world, the way the watcher would build one. */
+function memObserver(world: World, agents: MachineState['agents'], platform = 'linux') {
+  return async (): Promise<MachineState> => {
+    const observed = await observeMarketplaceInstall({ configDir: world.configDir, readFile: world.fs.readFile, exists: world.fs.exists })
+    return {
+      platform,
+      installMethod: 'marketplace',
+      runningVersion: observed.installed.version,
+      marketplace: { registered: observed.marketplaceRegistered, latestVersion: observed.marketplaceLatest?.version ?? null },
+      installed: observed.installed,
+      autoUpdateEnabled: true,
+      rollbackLatched: false,
+      agents,
+      intent: 'update',
+    } as MachineState
+  }
+}
+const oneAgent = () => [agentState('912')] as MachineState['agents']
+
+test('idPrefix prefixes every step id, inline ids and failedStep alike', async () => {
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const script = realisticScript(world, '0.38.3', { [KEY.update]: OUT.failure(1), [KEY.install]: OUT.failure(1) })
+  const { deps } = memDeps(world, script)
+  const { events, report } = recorder()
+  const result = await executePlan(plan, deps, report, { idPrefix: 'r2-' })
+  assert.deepEqual(stepView(result.steps).slice(0, 5), [
+    'r2-s01-refresh_marketplace:ok:updated',
+    'r2-s02-snapshot:ok:recorded',
+    'r2-s03-update_plugin:failed:cli_failed:1',
+    'r2-s03-update_plugin.reinstall:failed:cli_failed:1',
+    'r2-s03-update_plugin.rollback:rolled_back:rolled_back',
+  ])
+  assert.equal(result.failedStep?.id, 'r2-s03-update_plugin')
+  assert.ok(events.every((event) => event.id.startsWith('r2-')))
+})
+
+test('a partial (reobserve) plan: verify_installed only records what is installed; an older version is observed, not a failure', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  world.files.delete(world.paths.marketplaceJson)
+  const plan = planMachine(await memObserver(world, oneAgent())())
+  assert.equal(plan.reobserve, true)
+  assert.deepEqual(
+    plan.steps.map((s) => s.kind),
+    ['refresh_marketplace', 'verify_installed'],
+  )
+  const { deps, calls } = memDeps(world, realisticScript(world, '0.38.3'))
+  const result = await executePlan(plan, deps)
+  assert.deepEqual(stepView(result.steps), ['s01-refresh_marketplace:ok:updated', 's02-verify_installed:ok:observed'])
+  assert.equal(stepById(result, 's02-verify_installed').detail, 'installed:0.38.1;latest:0.38.3;source:list')
+  assert.equal(result.verdict, 'done')
+  assert.equal(result.targetVersion, '0.38.3')
+  assert.equal(result.installedVersion, '0.38.1')
+  assert.deepEqual(calls, [KEY.refresh, KEY.list])
+  assert.equal(world.fs.readdir(rollbackRootFor(world.home)).length, 0, 'no snapshot without a mutation')
+})
+
+test('a partial plan with nothing installed reports not_installed (hand-built; the planner never emits this shape)', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  const plan = {
+    verdict: 'plan',
+    reobserve: true,
+    targetVersion: null,
+    steps: [
+      { id: 's01-refresh_marketplace', kind: 'refresh_marketplace', onFailure: 'stop', why: 'x' },
+      { id: 's02-verify_installed', kind: 'verify_installed', onFailure: 'stop', why: 'x' },
+    ],
+  } as Plan
+  const { deps } = memDeps(world, realisticScript(world, '0.38.3'))
+  const result = await executePlan(plan, deps)
+  assert.deepEqual(stepView(result.steps), ['s01-refresh_marketplace:ok:updated', 's02-verify_installed:failed:not_installed'])
+  assert.equal(result.verdict, 'failed')
+})
+
+test('executeWithReobserve: marketplace.json absent at first, present after the refresh, then a full round 2 with r2- ids', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  world.files.delete(world.paths.marketplaceJson)
+  const { deps, calls, restarts } = memDeps(world, realisticScript(world, '0.38.3'))
+  const { events, report } = recorder()
+  const result = await executeWithReobserve({ observe: memObserver(world, oneAgent()), deps, report })
+  assert.deepEqual(stepView(result.steps), [
+    's01-refresh_marketplace:ok:updated',
+    's02-verify_installed:ok:observed',
+    'r2-s01-refresh_marketplace:ok:updated',
+    'r2-s02-snapshot:ok:recorded',
+    'r2-s03-update_plugin:ok:updated',
+    'r2-s04-verify_installed:ok:verified',
+    'r2-s05-restart_agent-912:ok:restarted',
+    'r2-s06-verify_agent-912:ok:live',
+  ])
+  assert.equal(result.ok, true)
+  assert.equal(result.verdict, 'done')
+  assert.equal(result.rounds, 2)
+  assert.equal(result.reobserved, true)
+  assert.equal(result.targetVersion, '0.38.3')
+  assert.equal(result.installedVersion, '0.38.3')
+  assert.deepEqual(calls, [KEY.refresh, KEY.list, KEY.refresh, KEY.update, KEY.list])
+  assert.equal(restarts.length, 1, 'agents restart once, in round 2 only')
+  const { order } = lastReported(events)
+  assert.deepEqual(order, result.steps.map((s) => s.id), 'ids stay unique across rounds')
+  assert.equal(world.installedVersion(), '0.38.3')
+})
+
+test('executeWithReobserve: a full plan on round 1 runs exactly once with plain ids', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  const { deps, calls } = memDeps(world, realisticScript(world, '0.38.3'))
+  const result = await executeWithReobserve({ observe: memObserver(world, oneAgent()), deps })
+  assert.equal(result.rounds, 1)
+  assert.equal(result.reobserved, false)
+  assert.equal(result.verdict, 'done')
+  assert.equal(result.steps[0].id, 's01-refresh_marketplace')
+  assert.deepEqual(calls, [KEY.refresh, KEY.update, KEY.list])
+})
+
+test('executeWithReobserve: a second partial plan is marketplace_latest_unknown and is not executed', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  world.files.delete(world.paths.marketplaceJson)
+  const real = memObserver(world, oneAgent())
+  // An observer that never sees the latest version (say it reads another path).
+  const blind = async () => ({ ...(await real()), marketplace: { registered: true, latestVersion: null } }) as MachineState
+  const { deps, calls } = memDeps(world, realisticScript(world, '0.38.3'))
+  const { events, report } = recorder()
+  const result = await executeWithReobserve({ observe: blind, deps, report })
+  assert.deepEqual(stepView(result.steps), [
+    's01-refresh_marketplace:ok:updated',
+    's02-verify_installed:ok:observed',
+    'r2-plan:failed:marketplace_latest_unknown',
+  ])
+  assert.equal(result.ok, false)
+  assert.equal(result.verdict, 'failed')
+  assert.deepEqual(result.failedStep, { id: 'r2-plan', kind: 'verify_installed', message: 'marketplace_latest_unknown' })
+  assert.equal(result.rounds, 1)
+  assert.equal(result.reobserved, true)
+  assert.deepEqual(calls, [KEY.refresh, KEY.list], 'the second partial plan never runs')
+  assert.equal(events.at(-1)?.id, 'r2-plan')
+})
+
+test('executeWithReobserve: a partial round whose refresh cannot learn the latest stops there', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  world.files.delete(world.paths.marketplaceJson)
+  const script = realisticScript(world, '0.38.3', { [KEY.refresh]: OUT.failure(1, 'Failed to update marketplace "hoai": offline\n') })
+  const { deps } = memDeps(world, script)
+  const result = await executeWithReobserve({ observe: memObserver(world, oneAgent()), deps })
+  assert.deepEqual(stepView(result.steps), ['s01-refresh_marketplace:failed:marketplace_latest_unknown', 's02-verify_installed:skipped:not_reached'])
+  assert.equal(result.rounds, 1)
+  assert.equal(result.reobserved, false)
+  assert.equal(result.verdict, 'failed')
+})
+
+test('executeWithReobserve: round 2 nothing_to_do reads as done; round 2 blocked surfaces the planner reason and keeps round 1 steps', async () => {
+  const done = memWorld()
+  done.seedMarketplace('0.38.3')
+  done.seedInstalled('0.38.3')
+  done.files.delete(done.paths.marketplaceJson)
+  const doneRun = memDeps(done, realisticScript(done, '0.38.3'))
+  const doneResult = await executeWithReobserve({ observe: memObserver(done, oneAgent()), deps: doneRun.deps })
+  assert.deepEqual(stepView(doneResult.steps), ['s01-refresh_marketplace:ok:updated', 's02-verify_installed:ok:verified'])
+  assert.equal(doneResult.verdict, 'done')
+  assert.equal(doneResult.ok, true)
+  assert.equal(doneResult.rounds, 2)
+
+  const blocked = memWorld()
+  blocked.seedMarketplace('1.0.0')
+  blocked.seedInstalled('0.38.1')
+  blocked.files.delete(blocked.paths.marketplaceJson)
+  const blockedRun = memDeps(blocked, realisticScript(blocked, '1.0.0'))
+  const blockedResult = await executeWithReobserve({ observe: memObserver(blocked, oneAgent()), deps: blockedRun.deps })
+  assert.deepEqual(stepView(blockedResult.steps), ['s01-refresh_marketplace:ok:updated', 's02-verify_installed:ok:observed'])
+  assert.equal(blockedResult.verdict, 'blocked')
+  assert.equal(blockedResult.reason, 'major_version_blocked')
+  assert.equal(blockedResult.ok, false)
+  assert.equal(blockedResult.rounds, 2)
+})
+
 // -- Sandbox: the real fake CLI against real files ---------------------------
 
 function scenario(name: string) {
@@ -1628,6 +1825,42 @@ test('sandbox: success with the wrong version on disk is version_mismatch, one r
     assert.deepEqual(argvLog(sandbox), [KEY.refresh, KEY.update, KEY.list, KEY.uninstall, KEY.install, KEY.list])
     assert.equal(result.verdict, 'done')
     assert.equal(sandbox.readJson<any>(sandbox.paths.installedPlugins).plugins['hoai@hoai'][0].version, '0.38.3')
+  } finally {
+    sandbox.cleanup()
+  }
+})
+
+test('sandbox: executeWithReobserve drives a real partial plan (marketplace.json absent, present after refresh) into a full round 2', async () => {
+  const sandbox = makeSandbox()
+  try {
+    sandbox.writeScenario(scenario('update-ok.json'))
+    sandbox.seedMarketplace('0.38.3')
+    sandbox.seedInstalled('0.38.1')
+    rmSync(sandbox.paths.marketplaceJson, { force: true })
+    const first = planMachine(await sandboxState(sandbox, ONE_AGENT))
+    assert.equal(first.reobserve, true, 'the planner cannot read a latest version yet')
+    const { deps, restarts } = sandboxDeps(sandbox)
+    const { events, report } = recorder()
+    const result = await executeWithReobserve({ observe: () => sandboxState(sandbox, ONE_AGENT), deps, report })
+    assert.deepEqual(stepView(result.steps), [
+      's01-refresh_marketplace:ok:updated',
+      's02-verify_installed:ok:observed',
+      'r2-s01-refresh_marketplace:ok:updated',
+      'r2-s02-snapshot:ok:recorded',
+      'r2-s03-update_plugin:ok:updated',
+      'r2-s04-verify_installed:ok:verified',
+      'r2-s05-restart_agent-912:ok:restarted',
+      'r2-s06-verify_agent-912:ok:live',
+    ])
+    assert.equal(result.verdict, 'done')
+    assert.equal(result.rounds, 2)
+    assert.equal(result.reobserved, true)
+    assert.deepEqual(argvLog(sandbox), [KEY.refresh, KEY.list, KEY.refresh, KEY.update, KEY.list])
+    assert.ok(existsSync(sandbox.paths.marketplaceJson), 'the refresh re-created marketplace.json')
+    assert.equal(sandbox.readJson<any>(sandbox.paths.installedPlugins).plugins['hoai@hoai'][0].version, '0.38.3')
+    assert.equal(restarts.length, 1)
+    const { order } = lastReported(events)
+    assert.deepEqual(order, result.steps.map((s) => s.id))
   } finally {
     sandbox.cleanup()
   }
