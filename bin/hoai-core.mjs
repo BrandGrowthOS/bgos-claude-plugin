@@ -289,9 +289,17 @@ export function buildRunPlan({
     env,
     home,
   })
-  // Flag per method (see bgos-install-method.mjs launchFlagArgs): marketplace
-  // installs use the approved --channels flag, which loads a store channel
-  // with no confirmation prompt; only a local clone needs the dangerous flag.
+  // Flag per method (see bgos-install-method.mjs launchFlagArgs): BOTH methods
+  // use --dangerously-load-development-channels, only the SPEC differs.
+  //
+  // This comment used to say marketplace installs use the approved --channels
+  // flag and that only a clone needs the dangerous one. That was never what the
+  // line below does, and it is not true: verified live on 2.1.239, --channels
+  // loads a marketplace plugin's tools promptlessly, `claude mcp list` even
+  // reports Connected, and it wires NO inbound delivery for a channel that is
+  // not on Anthropic's allowlist (HOAI is not, yet). It is a third silent-drop
+  // vector, and a comment recommending it is how someone re-introduces the bug
+  // while believing they are following the design.
   const args = ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method)]
   const methodLine = `[hoai] install method: ${detection.method}; channel ${detection.channelSpec}`
 

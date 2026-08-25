@@ -122,8 +122,21 @@ NO non-interactive flag to accept it (`claude --help`: only the WORKSPACE TRUST
 dialog is auto-skipped in non-interactive mode; the dev-channels confirm is not).
 A supervised, unattended restart therefore comes back BLOCKED on that prompt and the
 agent is offline until a human presses Enter (verified by a test-restart on the
-night of 2026-08-23). Marketplace/store installs use the approved `--channels` flag
-and have no such prompt, so this is the clone/dev path.
+night of 2026-08-23).
+
+CORRECTION (2026-08-25): this section used to end "Marketplace/store installs use
+the approved `--channels` flag and have no such prompt, so this is the clone/dev
+path." Both halves are wrong, and the same wrong claim sat in a comment in
+bin/hoai-core.mjs until it was removed. `--channels` is a silent-drop trap, not
+an approved alternative: it loads a marketplace plugin's tools with no prompt,
+`claude mcp list` reports Connected, and it wires NO inbound delivery for a
+channel that is not on Anthropic's allowlist. So HOAI uses
+`--dangerously-load-development-channels` for BOTH install methods and only the
+spec differs (`plugin:hoai@hoai` vs `server:bgos`), which means the gate shows
+for marketplace installs too. See
+`docs/learnings/dev-channels-gate-on-marketplace-installs-and-the-windows-console.md`,
+where that was verified live on Claude Code 2.1.241, and
+`bin/bgos-install-method.mjs` launchFlagArgs, which is the code that decides.
 
 The fleet's tmux `run.expect` already solves this: it spawns claude under a PTY and
 sends Enter on `confirm`. `superviseClaude` spawns with plain `stdio:'inherit'` and

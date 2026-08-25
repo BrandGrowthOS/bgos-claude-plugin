@@ -44,6 +44,7 @@ import {
   installStableWrapper,
   stableWrapperPath,
 } from './bgos-daemon-wrapper.mjs'
+import { launchCommand } from './bgos-install-method.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -372,7 +373,7 @@ export function buildMcpJson({
 }) {
   return {
     mcpServers: {
-      bgos: {
+      [MCP_SERVER_NAME]: {
         command: 'bun',
         args: [pluginWrapperPath, '--plugin-dir', pluginDir],
         env: {
@@ -398,11 +399,37 @@ export function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
+/** The MCP server name buildMcpJson writes into the scaffold's .mcp.json. It is
+ *  half of the invariant below, named once so the drift test can compare the
+ *  two halves rather than two hand-typed strings. */
+export const MCP_SERVER_NAME = 'bgos'
+
+/**
+ * The launch line printed after a claim.
+ *
+ * The channel spec here is `server:bgos`, and it is correct BY CONSTRUCTION,
+ * not by luck and not by detection. `server:<name>` is how Claude Code names a
+ * channel that comes from an MCP SERVER ENTRY rather than from a marketplace
+ * plugin, and scaffoldWorkspace has just written this workspace's own
+ * .mcp.json with exactly one server, named `bgos` (buildMcpJson above). The
+ * session this line starts runs in that directory and therefore loads that
+ * server, whatever else happens to be installed on the host.
+ *
+ * DO NOT "fix" this to detectInstallMethod(). Detection answers a DIFFERENT
+ * question: where the plugin FILES live. On a host that also has a marketplace
+ * HOAI install, detection answers `marketplace`, this line would become
+ * `plugin:hoai@hoai`, and it would name a channel that has nothing to do with
+ * the .mcp.json we just wrote: the agent would start, look alive, and drop
+ * every inbound message in silence. That is the 2026-08-21 failure signature,
+ * pointed the other way.
+ *
+ * What IS shared with the detection module is the literal itself: the spec is
+ * taken from launchCommand('clone') so the string is written down once, in
+ * bgos-install-method.mjs, and test/bgos-claim.test.ts pins it against
+ * MCP_SERVER_NAME so the two halves of the invariant cannot drift apart.
+ */
 export function buildLaunchCommand(dir) {
-  return (
-    `cd ${shellQuote(dir)} && claude --dangerously-skip-permissions ` +
-    `--dangerously-load-development-channels server:bgos`
-  )
+  return `cd ${shellQuote(dir)} && ${launchCommand('clone')}`
 }
 
 // ── Effectful pieces (kept small; main() composes them) ──────────────────────
