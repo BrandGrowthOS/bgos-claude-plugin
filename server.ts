@@ -183,7 +183,7 @@ import {
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
-import { claudeConfigDir, detectInstallMethod, launchCommand } from './bin/bgos-install-method.mjs'
+import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -4642,14 +4642,19 @@ function checkReplyOverdue(): void {
           'went unacted and this session has made zero bgos tool calls since ' +
           'boot; posting launch guidance into the chat',
       )
+      // The fix line must never carry a GUESSED channel spec: this message
+      // goes to a user whose agent is already deaf, and a wrong spec would
+      // send them round the same loop. When detection cannot name the install
+      // (launchCommandFor returns ''), tell them to run `hoai`, which works
+      // the channel out on the spot and refuses out loud if it cannot.
       let fixCommand: string
       try {
-        fixCommand = launchCommand(
-          detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
-            .method,
-        )
+        fixCommand =
+          launchCommandFor(
+            detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) }),
+          ) || 'hoai'
       } catch {
-        fixCommand = launchCommand('clone')
+        fixCommand = 'hoai'
       }
       void sendDaemonText(chatId, deafSessionChatMessage(fixCommand)).catch(
         (err) => log(`Failed to post deaf-session warning: ${err}`),
@@ -5708,8 +5713,14 @@ const INSTALL_DETECTION = (() => {
     return null
   }
 })()
-const INSTALL_METHOD: 'marketplace' | 'clone' = INSTALL_DETECTION?.method ?? 'clone'
-const PLUGIN_ROOT = INSTALL_DETECTION?.pluginRoot ?? import.meta.dir
+// `unknown` is unreachable in practice here (the daemon is loaded FROM the
+// install, so its own path is the evidence), but it is a real return value now
+// and it must not be spelled as a method: everything downstream only ever asks
+// `=== 'marketplace'`, so it lands on the clone branch either way, explicitly.
+const INSTALL_METHOD: 'marketplace' | 'clone' =
+  INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
+const PLUGIN_ROOT =
+  (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 function safeUsername(): string {

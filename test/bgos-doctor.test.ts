@@ -217,11 +217,54 @@ test('buildDoctorRows: null handshake and mcpList probes render as not probed (o
   assert.equal(rowById(rows, 'mcp-list').fix, '')
 })
 
-test('buildDoctorRows: mcp list fix falls back to the clone launch command when method was not probed', () => {
+// Superseded 2026-08-25. This used to assert that an UNPROBED install method
+// made the mcp-list fix line fall back to the CLONE launch command. That was
+// the fail-open direction: on a marketplace install it hands the user the one
+// spec that connects nothing and drops every message in silence, which is the
+// exact failure a real user hit through `npx ... hoai doctor` on 2026-08-24.
+// With no method there is no command to give, and saying so is the fix.
+test('buildDoctorRows: with no probed install method the mcp list fix names NO channel spec', () => {
   const rows = buildDoctorRows(
     healthyProbes({ method: null, mcpList: { ok: false, state: 'failed' } }),
   )
-  assert.ok(rowById(rows, 'mcp-list').fix.includes(launchCommand('clone')))
+  const fix = rowById(rows, 'mcp-list').fix
+  assert.doesNotMatch(fix, /--dangerously-load-development-channels/)
+  assert.doesNotMatch(fix, /server:bgos/)
+  assert.doesNotMatch(fix, /plugin:hoai@/)
+  assert.match(fix, /Install method row/i)
+})
+
+test('buildDoctorRows: the mcp list fix uses the spec DETECTION resolved, marketplace name included', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: {
+        method: 'marketplace',
+        channelSpec: 'plugin:hoai@hoai-latest',
+        pluginRoot: '/home/kc/.claude/plugins/cache/hoai-latest/hoai/0.34.3',
+      },
+      mcpList: { ok: false, state: 'failed' },
+    }),
+  )
+  // Not the hardcoded default: the machine's own marketplace name travels
+  // through, because plugin:hoai@hoai on a hoai-latest machine is just as deaf.
+  assert.match(rowById(rows, 'mcp-list').fix, /--dangerously-load-development-channels plugin:hoai@hoai-latest/)
+})
+
+test('buildDoctorRows: an UNDETERMINED install method is a FAIL row carrying its reason', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: {
+        method: 'unknown',
+        channelSpec: '',
+        pluginRoot: '',
+        reason: 'this command is running from a temporary package-runner directory',
+      },
+    }),
+  )
+  const row = rowById(rows, 'method')
+  assert.equal(row.ok, false, 'undetermined must never render as PASS')
+  assert.match(row.detail, /temporary package-runner directory/)
+  assert.match(row.fix, /not through npx/i)
 })
 
 test('buildDoctorRows: the log row is always ok with the path as detail', () => {

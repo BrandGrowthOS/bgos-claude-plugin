@@ -195,15 +195,24 @@ It asks two questions in order:
 1. Does this folder's `.mcp.json` declare a HOAI MCP server? Then the channel is
    `server:<that entry's name>`, because that entry is what the session loads.
    This is the case for every agent made by `hoai-agent` or `bgos-claim`.
-2. Otherwise, how was the plugin installed? A local clone (Step 1 above) needs
-   `server:bgos`; a marketplace install needs `plugin:hoai@hoai`.
+2. Otherwise, what does this machine have INSTALLED? A local clone (Step 1
+   above) needs `server:bgos`; a marketplace install needs
+   `plugin:hoai@<marketplace name>`, and the name is read off the machine
+   (`<config>/plugins/installed_plugins.json`, or the plugin's own path), so a
+   marketplace registered under another name gets that name in the spec.
+3. If neither question can be answered, `hoai` **refuses to launch** and prints
+   why. That happens when it is reached through `npx`, whose temporary unpack
+   directory is not an install, on a machine with no install recorded. A loud
+   refusal you can act on beats an agent that looks connected and hears nothing.
 
-Getting it wrong is **silent in both directions**: on 2026-08-21 a marketplace
+Getting it wrong is **silent in every direction**: on 2026-08-21 a marketplace
 install launched with the clone spec, connected nothing, and dropped every
 inbound message with no error anywhere. The mirror image is just as quiet, and
 was live until 2026-08-25: an agent whose channel lives in its folder's
 `.mcp.json`, on a machine that also has the marketplace plugin, was launched
-with `plugin:hoai@hoai` and heard nothing.
+with `plugin:hoai@hoai` and heard nothing. And until 2026-08-25 `hoai` reached
+through `npx` concluded `clone` from npm's temp directory, which handed every
+marketplace user the spec that makes them deaf.
 
 For the same reason, **do not put a `hoai` shell alias in your `.zshrc`** (or
 any other profile). An alias freezes one spec into a string, so it keeps
@@ -221,9 +230,10 @@ not, yet). Never use it.
 
 1. Type `/mcp` in the Claude Code CLI — you should see `bgos` listed as connected
 2. You should see: `Listening for channel messages from: <spec>`, where `<spec>`
-   is `server:bgos` for the clone install above, or `plugin:hoai@hoai` on a
-   marketplace install. `hoai` prints the one it detected before it launches,
-   so compare against that rather than against a spec written down here.
+   is `server:bgos` for the clone install above, or `plugin:hoai@<marketplace>`
+   on a marketplace install. `hoai` prints the one it resolved before it
+   launches, so compare against that rather than against a spec written down
+   here: the marketplace name comes from your machine, not from this page.
 3. Open the BGOS app, go to your assistant's chat, and send a message
 4. The message should appear in the Claude Code terminal as a `<channel>` event
 

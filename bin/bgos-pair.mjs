@@ -781,8 +781,10 @@ export const PLUGIN_PACKAGE_REF = 'github:BrandGrowthOS/bgos-claude-plugin'
  * needs to come back as this agent.
  *
  * The detection line is kept when we have one, as a diagnostic for an operator
- * reading the pairing output, not as something to type.
- * @param {{ method?: 'marketplace' | 'clone' } | null} [detection]
+ * reading the pairing output, not as something to type. An UNDETERMINED
+ * detection gets its own line saying so, because pairing is very often reached
+ * through npx and a silent omission there reads as "all fine".
+ * @param {{ method?: 'marketplace' | 'clone' | 'unknown' } | null} [detection]
  */
 export function restartInstructions(detection = null) {
   const lines = [
@@ -796,6 +798,17 @@ export function restartInstructions(detection = null) {
       method === 'marketplace'
         ? '  (detected: marketplace install, the plugin files live under the Claude config dir)'
         : '  (detected: local checkout, the plugin files live outside the Claude config dir)',
+    )
+  } else if (method === 'unknown') {
+    // Reached when pairing ran through npx (`npx ... hoai setup <CODE>` ends
+    // here) on a machine whose install could not be identified. Saying so is
+    // the point: the old code silently claimed "local checkout", and the next
+    // `hoai` on a marketplace machine came up deaf.
+    lines.push(
+      '  (the install method could NOT be determined from this command, most often because it',
+      '   was reached through npx, whose temporary directory is not an install. hoai works the',
+      '   channel out again when you run it from the agent folder; if it refuses there too, it',
+      '   will print exactly what is missing.)',
     )
   }
   lines.push(
