@@ -53,6 +53,28 @@ Two smaller lessons fell out of it:
   provenance rides in its own field so an anomaly-free plan still has an empty
   `notes`.
 
+**The same blindness ran through the LAUNCHER, and further than the inventory.**
+`bin/hoai-core.mjs` has three readers that resolve an agent's identity, and all
+three consulted the `.bgos-agent-id` pin and then the process environment:
+`buildRunPlan` (which agent to launch), `superviseAssistantId` (whether to
+supervise at all), and `logsAssistantId` (what to key the log file by). The trap
+is an asymmetry that is easy to miss: Claude Code injects an MCP server entry's
+`env` block into the DAEMON's process environment, so the daemon does find
+`BGOS_ASSISTANT_ID` there and authenticates fine. `hoai` runs OUTSIDE claude,
+launching it, so the launcher's own environment never contains it. An agent
+whose id lives only in `.mcp.json` is therefore invisible to every launcher-side
+reader while being perfectly visible to the daemon.
+
+Measured on the dev Mac against unmodified main: `hoai` could launch **0 of 8**
+agents and supervised **0 of 8**, because not one of those folders has a
+`.bgos-agent-id` (they all predate `bakeLaunchPin`) and the host has more than
+one credentials file, so the sole-agent fallback never fired. The refusal even
+told the operator the folder "has no `.bgos-agent-id` pin" while `.mcp.json` two
+lines away declared the id. All three readers now go through the same
+`readFolderIdentity`, which grew a `source` field precisely so the message can
+name the file that actually answered, and a folder declaring two different ids
+is refused as a named CONFLICT rather than launched under a guess.
+
 **How to apply next time:** before treating a directory listing, a table or a
 file-name convention as "the set of X", find every writer that creates an X and
 check they all write there. Here two of the three install paths did not. The
@@ -63,7 +85,11 @@ configured the other way silently absent. When you cannot enumerate exhaustively
 publish what the enumeration WAS, so no reader mistakes a partial list for a
 complete one.
 
-**Regression guard:** `test/agent-inventory.test.ts` (`discoverFolderAgents`
+**Regression guard:** `test/hoai-core.test.ts` (an agent declared only in
+`.mcp.json` is launched, supervised and log-keyed; the launch note names
+`.mcp.json` and never says "folder pin"; a folder declaring two ids is refused
+as a conflict; the multi-agent refusal names both sources in its DIAGNOSIS, not
+only in its remedy). `test/agent-inventory.test.ts` (`discoverFolderAgents`
 finds an agent declared only in its folder; the home directory, a silent folder
 and a conflicted folder declare nobody; two folders claiming one agent still
 yield a row with no cwd; and `listAgents` inventories an agent with NO

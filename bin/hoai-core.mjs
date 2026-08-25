@@ -85,6 +85,7 @@ import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
+  readFolderIdentity,
 } from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
 
@@ -415,8 +416,23 @@ export function buildRunPlan({
   const args = launchArgsFor(resolution)
   const methodLine = channelNote(resolution)
 
-  const folderPin = readFolderPin(cwd, readFile)
-  if (folderPin) {
+  const declared = folderIdentity(cwd, readFile)
+  if (declared.conflict) {
+    // Two sources naming two agents is not a missing pin, and saying so would
+    // send the user to fix the wrong thing.
+    return {
+      ok: false,
+      reason:
+        `this folder declares TWO different assistant ids (${FOLDER_PIN_FILE} and ` +
+        `${MCP_CONFIG_FILE_NAME} disagree, or two ${MCP_CONFIG_FILE_NAME} servers name different ` +
+        'ids). hoai will not guess which agent this folder is: make them agree, then re-run.',
+    }
+  }
+  if (declared.id) {
+    const via =
+      declared.source === 'mcp'
+        ? `the BGOS_ASSISTANT_ID this folder's ${MCP_CONFIG_FILE_NAME} declares`
+        : `the ${FOLDER_PIN_FILE} folder pin`
     return {
       ok: true,
       command: 'claude',
@@ -424,7 +440,7 @@ export function buildRunPlan({
       detection,
       note:
         `${methodLine}\n` +
-        `[hoai] launching as assistant ${folderPin} via the ${FOLDER_PIN_FILE} folder pin; ` +
+        `[hoai] launching as assistant ${declared.id} via ${via}; ` +
         `no BGOS_ASSISTANT_ID env pin is needed, the daemon self-resolves from this folder.`,
     }
   }
@@ -448,8 +464,10 @@ export function buildRunPlan({
       ok: false,
       reason:
         `this host has ${ids.length} paired agents (ids: ${ids.join(', ')}) and this folder ` +
-        `has no ${FOLDER_PIN_FILE} pin, so hoai cannot tell which one to launch. ` +
-        `Run hoai from the agent's own folder (pairing bakes the pin there), ` +
+        `declares no assistant (no ${FOLDER_PIN_FILE} pin and no BGOS_ASSISTANT_ID in ` +
+        `${MCP_CONFIG_FILE_NAME}), so hoai cannot tell which one to launch. ` +
+        `Run hoai from the agent's own folder (pairing bakes the pin there, and ` +
+        `bgos-agent / bgos-claim write the id into ${MCP_CONFIG_FILE_NAME}), ` +
         `or set BGOS_ASSISTANT_ID=${ids[0]} in this agent's environment.`,
     }
   }
@@ -502,10 +520,43 @@ export function superviseAssistantId({
   readFile = defaultReadText,
   listDir = defaultListDir,
 } = {}) {
-  const pinned = readFolderPin(cwd, readFile) || configuredAssistantId(env)
+  const pinned = readFolderDeclaredId(cwd, readFile) || configuredAssistantId(env)
   if (pinned) return /^\d+$/.test(pinned) ? pinned : ''
   const ids = listPairedAssistantIds(home, listDir)
   return ids.length === 1 ? ids[0] : ''
+}
+
+/**
+ * The assistant id THIS FOLDER declares, from either source of truth: the
+ * `.bgos-agent-id` pin, or `.mcp.json`'s BGOS_ASSISTANT_ID.
+ *
+ * Why the second source matters here and not in the daemon: Claude Code
+ * injects an MCP server entry's `env` block into the DAEMON's process
+ * environment, so `configuredAssistantId(env)` finds the id there. `hoai` runs
+ * OUTSIDE claude, launching it, so the launcher's own environment never
+ * contains it. An agent installed by `bgos-agent install --key --user` or by
+ * `bgos-claim` has its id only in `.mcp.json` and no `credentials-<id>.json`
+ * at all, so every launcher-side reader that consulted the pin and the env
+ * came back empty for it: `hoai` refused to launch it on a multi-agent host,
+ * supervision was skipped so it had no launcher restart authority, and its
+ * logs were keyed `unknown`.
+ *
+ * '' for a folder that declares nothing, and '' for a folder that declares two
+ * DIFFERENT ids: an identity that cannot be established must not be launched,
+ * supervised or logged under a guess. Callers that can say something useful
+ * about the conflict check `.conflict` themselves.
+ *
+ * @param {string} cwd
+ * @param {(path: string) => string | null} [readFile]
+ * @returns {string}
+ */
+export function readFolderDeclaredId(cwd, readFile = defaultReadText) {
+  return folderIdentity(cwd, readFile).id ?? ''
+}
+
+/** The full verdict, for callers that report WHERE the identity came from. */
+export function folderIdentity(cwd, readFile = defaultReadText) {
+  return readFolderIdentity(cwd, readFile)
 }
 
 /** supervisor.json body: what the daemon validates before trusting this
@@ -1172,7 +1223,7 @@ export function hoaiLogPath({ env = {}, home = homedir(), assistantId } = {}) {
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, readFile?: (path: string) => string | null }} [opts]
  */
 export function logsAssistantId({ cwd, env = {}, readFile = defaultReadText } = {}) {
-  return readFolderPin(cwd, readFile) || configuredAssistantId(env) || 'unknown'
+  return readFolderDeclaredId(cwd, readFile) || configuredAssistantId(env) || 'unknown'
 }
 
 /** The last `count` non-trailing-blank lines of a text blob. */

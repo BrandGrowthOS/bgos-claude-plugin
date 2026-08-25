@@ -746,15 +746,15 @@ test('readFolderIdentity: either source is authoritative, disagreement is a conf
   const read = (files: Record<string, string>) => (p: string) => (p in files ? files[p]! : null)
   const PIN = `/x/${FOLDER_PIN_FILE_NAME}`
   // .mcp.json alone: the ONLY source the real fleet folders have.
-  assert.deepEqual(readFolderIdentity('/x', read(mcp)), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read(mcp)), { id: '910', conflict: false, source: 'mcp' })
   // The pin file alone: what bakeLaunchPin writes for a freshly paired folder.
-  assert.deepEqual(readFolderIdentity('/x', read({ [PIN]: '910\n' })), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({ [PIN]: '910\n' })), { id: '910', conflict: false, source: 'pin' })
   // Both, agreeing.
-  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '910\n' })), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '910\n' })), { id: '910', conflict: false, source: 'pin' })
   // Both, disagreeing: no identity, and the caller must refuse the folder.
-  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '777\n' })), { id: null, conflict: true })
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '777\n' })), { id: null, conflict: true, source: null })
   // Neither: a folder that declares nothing stays usable.
-  assert.deepEqual(readFolderIdentity('/x', read({})), { id: null, conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({})), { id: null, conflict: false, source: null })
 })
 
 test('a REAL agent folder (no pin file, .mcp.json only) vetoes a job belonging to another agent', () => {
