@@ -18,7 +18,9 @@ import {
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_HEALTHY_AFTER_MS,
   UPDATE_JITTER_MAX_MS,
+  UPDATE_DRAIN_TIMEOUT_MS,
   compareSemver,
+  decideDrainWait,
   describePendingRestart,
   decideCheckoutAction,
   shouldExitAfterUpdate,
@@ -1733,4 +1735,102 @@ describe('updateNow (one-click update_rpc trigger)', () => {
     // Intake is restored even though the failure struck before any drain.
     expect(h.drainModes).toEqual([false])
   })
+})
+
+describe('bounded drain for triggered updates (UPDATE_DRAIN_TIMEOUT_MS)', () => {
+  const idle = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
+  const busy = { activeOperations: 1, pendingMessages: 0, pendingPermissions: 0 }
+
+  test('the deadline is 45 seconds', () => {
+    expect(UPDATE_DRAIN_TIMEOUT_MS).toBe(45_000)
+  })
+
+  test('decideDrainWait: ready beats the deadline, the deadline beats waiting, Infinity never times out', () => {
+    expect(decideDrainWait({ startedAt: 0, now: 100_000, timeoutMs: 45_000, snapshot: idle })).toBe('ready')
+    expect(decideDrainWait({ startedAt: 0, now: 44_999, timeoutMs: 45_000, snapshot: busy })).toBe('wait')
+    expect(decideDrainWait({ startedAt: 0, now: 45_000, timeoutMs: 45_000, snapshot: busy })).toBe('timeout')
+    expect(decideDrainWait({ startedAt: 1_000, now: 46_000, timeoutMs: 45_000, snapshot: busy })).toBe('timeout')
+    expect(
+      decideDrainWait({
+        startedAt: 0,
+        now: Number.MAX_SAFE_INTEGER,
+        timeoutMs: Number.POSITIVE_INFINITY,
+        snapshot: busy,
+      }),
+    ).toBe('wait')
+    for (const pending of [
+      { ...idle, pendingMessages: 2 },
+      { ...idle, pendingPermissions: 1 },
+    ]) {
+      expect(decideDrainWait({ startedAt: 0, now: 10, timeoutMs: 45_000, snapshot: pending })).toBe('wait')
+    }
+  })
+
+  function drainHarness(snapshot: () => typeof idle) {
+    const rootDir = mkdtempSync(join(tmpdir(), 'self-update-drain-root-'))
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(mkdtempSync(join(tmpdir(), 'self-update-drain-state-')), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
+    let clock = 1_000_000
+    const build = () =>
+      initializeSelfUpdater({
+        rootDir,
+        stateFilePath,
+        env: { BGOS_AUTO_UPDATE: 'on' },
+        runningVersion: '0.26.0',
+        log: (message) => logs.push(message),
+        drainSnapshot: snapshot,
+        setDrainMode: (enabled) => drainModes.push(enabled),
+        exit: () => {
+          throw new Error('a triggered update never exits')
+        },
+        runner: gitRunner({ calls }),
+        now: () => clock,
+        // Every poll advances the fake clock ten seconds; five polls cross the deadline.
+        delay: async () => {
+          clock += 10_000
+        },
+        schedule: () => setTimeout(() => {}, 60_000),
+      })
+    return { calls, drainModes, logs, build }
+  }
+
+  test('updateNow: a drain that never settles fails drain_timeout after the deadline, un-drains, and pulls nothing', async () => {
+    const h = drainHarness(() => busy)
+    const updater = (await h.build())!
+    const stages: string[] = []
+    const outcome = await updater.updateNow(async (stage) => {
+      stages.push(stage)
+    })
+    expect(outcome).toEqual({ kind: 'failed', message: 'drain_timeout', latched: false })
+    expect(stages).toEqual(['draining'])
+    // Drained for the wait, then intake handed back: the daemon is never left mute.
+    expect(h.drainModes).toEqual([true, false])
+    expect(h.calls.some((c) => c.args[0] === 'merge')).toBe(false)
+    expect(updater.pendingRestartVersion()).toBeNull()
+    expect(updater.isRollbackLatched()).toBe(false)
+    expect(h.logs.some((line) => line.includes('gave up waiting'))).toBe(true)
+  })
+
+  test('updateNow: a drain that settles before the deadline installs exactly as before', async () => {
+    let polls = 0
+    const h = drainHarness(() => (polls++ < 2 ? busy : idle))
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(h.drainModes.length).toBeGreaterThan(0)
+    expect(h.drainModes.every((enabled) => enabled === true)).toBe(true)
+    expect(h.calls.some((c) => c.args[0] === 'merge')).toBe(true)
+  })
+})
+
+test('server.ts never arms the git self-updater on a marketplace install (its root is Claude Code\'s cache clone)', () => {
+  const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const gate = src.indexOf("if (INSTALL_METHOD === 'marketplace') {\n    selfUpdater = null")
+  const init = src.indexOf('selfUpdater = await initializeSelfUpdater({')
+  expect(gate).toBeGreaterThan(0)
+  expect(init).toBeGreaterThan(gate)
+  expect(src.slice(gate, init)).toMatch(/\} else \{/)
 })

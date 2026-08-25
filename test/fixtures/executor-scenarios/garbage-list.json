@@ -1,0 +1,7 @@
+{
+  "$comment": "plugin update succeeds but plugin list --json prints binary junk with rc 0; verify_installed must fall back to installed_plugins.json.",
+  "state": { "version": "0.38.3" },
+  "commands": {
+    "plugin list --json": { "outcome": "garbage" }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "$comment": "plugin update prints the real success line but writes 0.0.1: verify_installed must see version_mismatch, reinstall once (which lands 0.38.3) and re-verify.",
+  "state": { "version": "0.38.3" },
+  "commands": {
+    "plugin update hoai@hoai --scope user -y": { "outcome": "success_wrong_version", "version": "0.0.1" }
+  }
+}

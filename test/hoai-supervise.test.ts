@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 /**
  * Launcher-loop supervisor tests (one-click updates): pure decision pieces
  * plus the full superviseClaude loop with fake spawn and fake fs. The loop
@@ -33,6 +34,7 @@ import {
   mungeSessionCwd,
   relaunchClaudeArgs,
   relaunchNeedsGateAutoAccept,
+  win32GateHelperArgs,
   sessionArgsFor,
   sessionTranscriptPath,
   superviseAssistantId,
@@ -178,9 +180,9 @@ test('ensurePinnedSessionId: a malformed (non-UUID) pin is replaced, never passe
 
 // -- GAP 2: dev-channels prompt-stranding auto-accept -------------------------
 
-test('relaunchNeedsGateAutoAccept: clone installs prompt, marketplace installs do not', () => {
+test('relaunchNeedsGateAutoAccept: clone AND marketplace installs prompt on 2.1.241 (verified live on Windows)', () => {
   assert.equal(relaunchNeedsGateAutoAccept('clone'), true)
-  assert.equal(relaunchNeedsGateAutoAccept('marketplace'), false)
+  assert.equal(relaunchNeedsGateAutoAccept('marketplace'), true)
 })
 
 test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-accepts the confirm gate', () => {
@@ -386,6 +388,8 @@ test('superviseClaude: a marker kills the child and relaunches resuming the agen
   const h = loopHarness()
   const done = h.run(BASE_ARGS)
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  // The session wrote its transcript, so it can be resumed.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   // Marker contents are hostile on purpose: only existence may matter.
   h.files.set(MARKER_PATH, JSON.stringify({ exec: 'rm -rf /' }))
   await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
@@ -397,6 +401,41 @@ test('superviseClaude: a marker kills the child and relaunches resuming the agen
   h.spawns[1]!.exit(0)
   assert.equal(await done, 0)
   assert.equal(h.files.has(SUPERVISOR_PATH), false)
+})
+
+test('superviseClaude: a marker relaunch of a session with NO transcript creates it again by the SAME id (one launch, pin kept)', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  assert.deepEqual(h.spawns[0]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  // A channel-only session writes no transcript: --resume would be rejected
+  // on the spot and cost a doomed launch plus a new id. Not tried.
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  assert.equal(h.files.get(SESSION_ID_PATH), UUIDS[0])
+  // Runs on healthily: nothing else is spawned.
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(h.spawns.length, 2)
+  h.spawns[1]!.exit(0)
+  assert.equal(await done, 0)
+})
+
+test('superviseClaude: a marker relaunch by id (no transcript) that dies fast non-zero still gets the one-shot fresh retry (never-leave-dead)', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  // A broken relaunch: dies fast, non-zero. Before, only a --resume got the
+  // fresh retry; this shape returned the exit code and left the agent dead.
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'fresh fallback relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE_ARGS, '--session-id', UUIDS[1]])
+  assert.equal(h.files.get(SESSION_ID_PATH), UUIDS[1])
+  h.spawns[2]!.exit(0)
+  assert.equal(await done, 0)
 })
 
 test('superviseClaude: the relaunch budget stops the loop, the session runs on', async () => {
@@ -649,6 +688,8 @@ test('superviseClaude: a resumed relaunch that dies fast falls back to a fresh O
   const done = h.run(BASE_ARGS)
   await waitUntil(() => h.spawns.length === 1, 'first spawn')
   // Marker relaunch: kills child 0, relaunches child 1 resuming the OWN session.
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   h.files.set(MARKER_PATH, '{}')
   await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
   assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--resume', UUIDS[0]])
@@ -754,6 +795,8 @@ test('superviseClaude: if the fresh re-pin write fails, it launches a PLAIN fres
     hasExpect: false,
   })
   await waitUntil(() => spawns.length === 1, 'first spawn')
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
   files.set(MARKER_PATH, '{}')
   await waitUntil(() => spawns.length === 2, 'marker relaunch')
   spawns[1]!.exit(1) // resumed relaunch dies fast non-zero -> fresh fallback
@@ -812,4 +855,109 @@ test('superviseClaude: a clone launch with expect available spawns claude UNDER 
   assert.equal(/confirm/.test(script), true)
   children[0]!.exit(0)
   assert.equal(await done, 0)
+})
+
+// -- Launch recipe (design 1.7: the per-machine watcher's relaunch input) ----
+
+test('superviseClaude: writes the launch recipe when it arms and rewrites it on every relaunch; never a session id, never a token', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  const recipePath = `${STATE_DIR}/launch.json`
+  const firstText = h.files.get(recipePath)
+  assert.ok(firstText, 'launch.json written at arm time')
+  const first = JSON.parse(firstText!)
+  assert.equal(first.schemaVersion, 1)
+  assert.equal(first.assistantId, '871')
+  assert.equal(first.cwd, '/agents/athena')
+  // The channel flags only: what a relaunch needs, and nothing identity-bound.
+  assert.deepEqual(first.argv, BASE_ARGS)
+  assert.equal(first.installMethod, 'clone')
+  assert.equal(first.pluginRoot, '/home/kc/bgos-claude-plugin')
+  assert.equal(first.launcher, 'hoai')
+  assert.equal(first.pid, process.pid)
+  assert.equal(typeof first.node, 'string')
+  assert.equal(typeof first.startedAt, 'string')
+  for (const banned of ['--session-id', '--resume', '--continue', UUIDS[0]!, 'pairingToken', 'apiKey']) {
+    assert.equal(firstText!.includes(banned), false, `recipe must not contain ${banned}`)
+  }
+  // A marker relaunch (which resumes the pinned session) rewrites the recipe,
+  // still without the session args it launched with.
+  // The session wrote its transcript, so the marker relaunch resumes it.
+  h.files.set(`${POSIX_HOME}/.claude/projects/-agents-athena/${UUIDS[0]}.jsonl`, '{}')
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--resume', UUIDS[0]])
+  const secondText = h.files.get(recipePath)!
+  const second = JSON.parse(secondText)
+  assert.deepEqual(second.argv, BASE_ARGS)
+  assert.equal(secondText.includes('--resume'), false)
+  assert.equal(secondText.includes(UUIDS[0]!), false)
+  h.spawns[1]!.exit(0)
+  assert.equal(await done, 0)
+  // The recipe outlives the session (existence-only for the watcher; the
+  // supervisor.json is what says "live").
+  assert.equal(h.files.has(recipePath), true)
+  assert.equal(h.files.has(SUPERVISOR_PATH), false)
+})
+
+test('superviseClaude: a failed recipe write changes nothing about the launch', async () => {
+  const files = new Map<string, string>()
+  const spawns: FakeChild[] = []
+  const done = superviseClaude(BASE_ARGS, {
+    platform: 'linux',
+    env: {},
+    home: POSIX_HOME,
+    cwd: '/agents/athena',
+    scriptDir: CLONE_SCRIPT_DIR,
+    readFile: (p: string) =>
+      p === '/agents/athena/.bgos-agent-id' ? '871' : files.get(p) ?? null,
+    listDir: () => [],
+    spawnImpl: ((_file: string, args: readonly string[]) => {
+      const child = new FakeChild(args)
+      spawns.push(child)
+      return child
+    }) as never,
+    writeErr: () => {},
+    exists: (p: string) => files.has(p),
+    writeFile: (p: string, content: string) => {
+      if (p.endsWith('/launch.json')) return false
+      files.set(p, content)
+      return true
+    },
+    removeFile: (p: string) => files.delete(p),
+    pollMs: 5,
+    print: () => {},
+    generateId: () => UUIDS[0]!,
+    hasExpect: false,
+  })
+  await waitUntil(() => spawns.length === 1, 'first spawn')
+  assert.equal(files.has(`${STATE_DIR}/launch.json`), false)
+  assert.deepEqual(spawns[0]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  spawns[0]!.exit(0)
+  assert.equal(await done, 0)
+})
+
+test('win32GateHelperArgs: the helper is powershell -File <bin>/win32-accept-dev-channels.ps1 with the console pid and a timeout', () => {
+  assert.deepEqual(win32GateHelperArgs({ scriptDir: 'C:\\p\\bin', consolePid: 4321 }), [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    'C:\\p\\bin\\win32-accept-dev-channels.ps1',
+    '-ConsolePid',
+    '4321',
+    '-TimeoutSeconds',
+    '120',
+  ])
+})
+
+test('win32 gate helper source: only ever presses Enter after the gate marker is on screen, never blindly', () => {
+  const src = readFileSync(new URL('../bin/win32-accept-dev-channels.ps1', import.meta.url), 'utf8')
+  assert.match(src, /Loading development channels/)
+  assert.match(src, /Contains\(\$Marker\)/)
+  assert.match(src, /WriteConsoleInputW/)
+  assert.ok(!src.includes('SendKeys'), 'no focus-dependent SendKeys')
+  assert.equal(src.includes('\r'), false, 'LF only')
 })

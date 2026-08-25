@@ -38,6 +38,7 @@ import { randomUUID } from 'node:crypto'
 import {
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -49,6 +50,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { detectInstallMethod, launchFlagArgs } from './bgos-install-method.mjs'
+import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -426,8 +428,10 @@ export function mungeSessionCwd(cwd) {
 
 /** Where Claude Code writes THIS session's transcript. Its existence is how we
  *  tell "resume my session" from "create it with a known id". */
-export function sessionTranscriptPath(home, cwd, sessionId) {
-  const projects = joinDir(joinDir(home, '.claude'), 'projects')
+export function sessionTranscriptPath(home, cwd, sessionId, configDir = '') {
+  // CLAUDE_CONFIG_DIR moves the whole config tree, transcripts included.
+  const base = String(configDir ?? '').trim() || joinDir(home, '.claude')
+  const projects = joinDir(base, 'projects')
   const dir = joinDir(projects, mungeSessionCwd(cwd))
   return joinDir(dir, `${sessionId}.jsonl`)
 }
@@ -472,12 +476,40 @@ export function ensurePinnedSessionId({ path, readFile, writeFile, generateId = 
 
 // -- Startup-gate auto-accept (GAP 2) ----------------------------------------
 
-/** A clone (dev) install launches with --dangerously-load-development-channels,
- *  which shows a confirmation prompt at (re)start with no non-interactive flag
- *  to accept it. A marketplace install uses the approved --channels flag and
- *  never prompts. So only a clone (re)launch needs the gate auto-accepted. */
+/** Every launch that carries --dangerously-load-development-channels shows the
+ *  "WARNING: Loading development channels" confirm at (re)start, for a
+ *  marketplace install as much as for a clone (verified live on Claude Code
+ *  2.1.241, Windows, 2026-08-25 disposable E2E; the earlier belief that a
+ *  marketplace install never prompts was wrong). Its default answer is
+ *  "I am using this for local development", one Enter accepts it, and no
+ *  settings key silences it. So every (re)launch needs the gate accepted:
+ *  under `expect` on posix, through the console-input helper on win32. The
+ *  parameter is kept so callers stay explicit about what they detected. */
 export function relaunchNeedsGateAutoAccept(installMethod) {
-  return installMethod === 'clone'
+  return installMethod === 'clone' || installMethod === 'marketplace'
+}
+
+/** The win32 gate helper (bin/win32-accept-dev-channels.ps1): attaches to the
+ *  console this launcher shares with claude, waits for the gate's marker text
+ *  to be ON SCREEN, then injects exactly one Enter (the gate's default). It
+ *  never presses blindly, so a prompt with a dangerous default (the bypass
+ *  warning, which the settings file suppresses anyway) is never answered by
+ *  it. Pure argv builder so the spawn is unit-testable. */
+export const WIN32_GATE_HELPER_FILE = 'win32-accept-dev-channels.ps1'
+export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds = 120, logFile = '' }) {
+  return [
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    joinDir(scriptDir, WIN32_GATE_HELPER_FILE),
+    '-ConsolePid',
+    String(consolePid),
+    '-TimeoutSeconds',
+    String(timeoutSeconds),
+    ...(logFile ? ['-LogFile', logFile] : []),
+  ]
 }
 
 /**
@@ -574,8 +606,34 @@ function defaultRemoveFile(path) {
   }
 }
 
+/** Spawn the win32 gate helper detached and hidden (stdio ignored, unref'd)
+ *  so it outlives nothing and blocks nothing; the console pid is this
+ *  launcher's own, which claude shares. */
+function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writeErr, home = homedir() }) {
+  const logFile = joinDir(joinDir(agentDir(home), 'logs'), 'win32-gate-helper.log')
+  // The helper's own stdout/stderr go to the log too, so a PowerShell that
+  // refuses to run the script (policy, AMSI, a bad path) leaves a reason.
+  let logFd = 'ignore'
+  try {
+    mkdirSync(dirname(logFile), { recursive: true })
+    logFd = openSync(logFile, 'a')
+  } catch {}
+  // NOT detached: a DETACHED_PROCESS powershell exits 0 without running the
+  // script at all (measured 2026-08-25: detached -> silent exit 0, attached
+  // -> runs, attaches, polls). Hidden so no second window flashes.
+  const child = spawnImpl('powershell.exe', win32GateHelperArgs({ scriptDir, consolePid, logFile }), {
+    stdio: ['ignore', logFd, logFd],
+    detached: false,
+    windowsHide: true,
+    shell: false,
+  })
+  child.on?.('error', (err) => writeErr?.(`[hoai] dev-channels gate helper failed to start: ${err?.message ?? err}\n`))
+  child.unref?.()
+  return child
+}
+
 /** Is `expect` available to auto-accept the dev-channels startup gate? Never on
- *  win32 (no expect, and dev-channels clone launches are posix dev hosts). */
+ *  win32 (no expect; win32 uses the console-input helper instead). */
 function defaultHasExpect(platform) {
   if (platform === 'win32') return false
   return ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect', '/bin/expect'].some(
@@ -650,9 +708,22 @@ export async function superviseClaude(args, opts = {}) {
   // available, spawn claude under it and auto-accept the gate (mirror of the
   // fleet's run.expect); otherwise spawn directly and warn once.
   let warnedGate = false
+  const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const spawnSupervised = (spawnArgs, onSpawn) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
-    if (relaunchNeedsGateAutoAccept(method) && platform !== 'win32') {
+    if (relaunchNeedsGateAutoAccept(method)) {
+      if (platform === 'win32') {
+        // No expect on Windows: claude gets the console, and a hidden helper
+        // attached to that same console accepts the gate once it is on screen.
+        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+        try {
+          const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
+          print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
+        } catch (err) {
+          writeErr(`[hoai] could not start the dev-channels gate helper: ${err?.message ?? err}\n`)
+        }
+        return exited
+      }
       if (hasExpect) {
         const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: spawnArgs })
         return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
@@ -660,9 +731,9 @@ export async function superviseClaude(args, opts = {}) {
       if (!warnedGate) {
         warnedGate = true
         writeErr(
-          '[hoai] this dev (clone) restart may block on the dev-channels confirmation ' +
-            'prompt, and no `expect` was found to auto-accept it. Install expect ' +
-            '(e.g. brew install expect), or use a marketplace install (no prompt).\n',
+          '[hoai] this restart may block on the dev-channels confirmation prompt, and ' +
+            'no `expect` was found to auto-accept it. Install expect (e.g. brew install ' +
+            'expect, or apt install expect) so unattended restarts can pass the gate.\n',
         )
       }
     }
@@ -699,16 +770,52 @@ export async function superviseClaude(args, opts = {}) {
   if (exists(markerPath)) removeFile(markerPath)
   print(`[hoai] restart supervisor armed for assistant ${id}`)
 
+  // Launch recipe (design 1.7): what a per-machine watcher needs to relaunch
+  // THIS agent as itself in this folder when no supervisor is alive any more
+  // (lib/agent-inventory.mjs readLaunchRecipe). Written at arm time and on
+  // every relaunch; existence-only for others (contents are re-validated on
+  // read). It never carries a session id (buildLaunchRecipe strips the
+  // session args; hoai resumes its own pin itself) nor a token. Best effort:
+  // a failed write changes nothing about this launch.
+  const recordRecipe = (launchArgs) => {
+    const detection = detectInstallMethod({
+      scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+      env,
+      home,
+    })
+    writeLaunchRecipe({
+      home,
+      assistantId: id,
+      writeFile,
+      recipe: buildLaunchRecipe({
+        assistantId: id,
+        cwd,
+        argv: launchArgs,
+        installMethod: detection.method,
+        pluginRoot: detection.pluginRoot,
+        node: process.execPath,
+        claudeConfigDir: String(env.CLAUDE_CONFIG_DIR ?? '').trim() || null,
+        startedAt: new Date(now()).toISOString(),
+        pid: process.pid,
+      }),
+    })
+  }
+  recordRecipe(args)
+
   // GAP 1: pin a per-agent session id and resume THIS agent's OWN session on
   // every (re)launch, never --continue (newest-in-shared-cwd = identity bleed).
   const sessionIdPath = joinDir(stateDir, SESSION_ID_FILE_NAME)
   let pinnedId = ensurePinnedSessionId({ path: sessionIdPath, readFile, writeFile, generateId })
-  // Once we have launched the pinned id it exists; a marker relaunch then
-  // resumes it. Cross-process (a prior hoai run created it), the transcript on
-  // disk answers.
-  let sessionCreated = false
+  // Whether the pinned session can be RESUMED is answered by its transcript
+  // on disk, every time, including a marker relaunch. "We launched it, so
+  // it exists" is not true for a channel-only session: Claude Code writes
+  // no transcript for one, so --resume is rejected on the spot, the fresh
+  // fallback mints a NEW id, and every restart cost a doomed launch and the
+  // agent's pinned identity. No transcript means create it again with the
+  // SAME id (never --continue); the fresh fallback below still covers a
+  // rejected resume.
   const sessionExistsNow = () =>
-    sessionCreated || (pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId)) : false)
+    pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId, env.CLAUDE_CONFIG_DIR)) : false
 
   let relaunchesAt = []
   let exhausted = false
@@ -720,6 +827,11 @@ export async function superviseClaude(args, opts = {}) {
   // (the external keepalive restarted it); a fresh --session-id CREATE that dies
   // fast is never looped on.
   let freshTried = false
+  // A marker relaunch that dies fast gets the same one-shot fresh retry a
+  // rejected --resume gets: since 604e914 a transcript-less relaunch is
+  // --session-id <pinned>, and keying recovery on '--resume' alone left
+  // that (the normal) shape with no retry at all.
+  let lastLaunchWasRelaunch = false
   try {
     while (true) {
       /** @type {import('node:child_process').ChildProcess | null} */
@@ -754,18 +866,19 @@ export async function superviseClaude(args, opts = {}) {
       }, pollMs)
       const code = await exited
       clearInterval(poller)
-      // We just created or resumed the pinned session, so it exists now.
-      if (pinnedId) sessionCreated = true
       if (restartRequested) {
-        // A daemon-driven update restart: relaunch resuming THIS agent's OWN
-        // session (never --continue), and give this cycle a fresh fallback.
+        // A daemon-driven update restart: relaunch THIS agent's OWN session
+        // (resume it when its transcript exists, else create it again by
+        // id; never --continue), and give this cycle a fresh fallback.
         currentArgs = relaunchClaudeArgs({
           scriptDir,
           env,
           home,
-          sessionArgs: sessionArgsFor(pinnedId, true),
+          sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
         freshTried = false
+        lastLaunchWasRelaunch = true
+        recordRecipe(currentArgs)
         print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
         continue
       }
@@ -774,13 +887,14 @@ export async function superviseClaude(args, opts = {}) {
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
       const recovery = decideRelaunchRecovery({
-        isResumeAttempt: currentArgs.includes('--resume'),
+        isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
         exitCode: code,
         elapsedMs: now() - startedAt,
         freshTried,
       })
       if (recovery.action === 'retry-fresh') {
         freshTried = true
+        lastLaunchWasRelaunch = false
         const freshId = String(generateId()).trim()
         // Mint and pin a NEW id so future relaunches resume the healthy session.
         // If the re-pin write fails, launch a PLAIN fresh session (claude mints
@@ -789,12 +903,12 @@ export async function superviseClaude(args, opts = {}) {
         let freshSessionArgs
         if (freshId && writeFile(sessionIdPath, freshId)) {
           pinnedId = freshId
-          sessionCreated = false
           freshSessionArgs = sessionArgsFor(freshId, false)
         } else {
           freshSessionArgs = []
         }
         currentArgs = relaunchClaudeArgs({ scriptDir, env, home, sessionArgs: freshSessionArgs })
+        recordRecipe(currentArgs)
         print(
           '[hoai] the resumed session exited immediately (a rejected resume or a fast ' +
             'fault); relaunching a FRESH own session so the agent is not left down...',

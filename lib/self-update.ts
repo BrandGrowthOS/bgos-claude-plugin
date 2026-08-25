@@ -21,6 +21,14 @@ export const UPDATE_JITTER_MAX_MS = 6 * 60 * 60 * 1000
 export const UPDATE_HEALTHY_AFTER_MS = 60 * 1000
 export const UPDATE_DRAIN_POLL_MS = 500
 export const UPDATE_LOCK_STALE_MS = 10 * 60 * 1000
+/** How long a TRIGGERED (one-click) update waits for intake to drain
+ *  before giving up. A scheduled check keeps the unbounded wait (it has
+ *  all night); a click has a person watching a progress sheet, and a
+ *  daemon stuck draining behind a wedged operation is the mute outage
+ *  wearing a spinner. Clone installs un-drain and fail 'drain_timeout';
+ *  marketplace installs proceed (lib/update-rpc.ts), because the install
+ *  lands in a different directory and the running code is in memory. */
+export const UPDATE_DRAIN_TIMEOUT_MS = 45_000
 
 const REMOTE_REF = 'refs/remotes/origin/main'
 const SHA_RE = /^[0-9a-f]{40}$/i
@@ -164,6 +172,24 @@ export function decideDrain(snapshot: DrainSnapshot): 'ready' | 'wait' {
     snapshot.pendingPermissions === 0
     ? 'ready'
     : 'wait'
+}
+
+export type DrainWaitDecision = 'ready' | 'wait' | 'timeout'
+
+/** The bounded drain decision, table-testable: ready beats everything (a
+ *  drain that completed exactly at the deadline is still a drain), then
+ *  the deadline, then wait. Infinity never times out (the scheduled path). */
+export function decideDrainWait(input: {
+  startedAt: number
+  now: number
+  timeoutMs: number
+  snapshot: DrainSnapshot
+}): DrainWaitDecision {
+  if (decideDrain(input.snapshot) === 'ready') return 'ready'
+  if (Number.isFinite(input.timeoutMs) && input.now - input.startedAt >= input.timeoutMs) {
+    return 'timeout'
+  }
+  return 'wait'
 }
 
 export class MessageActivityTracker {
@@ -1029,7 +1055,15 @@ export class SelfUpdater {
         return { kind: 'not-fast-forward' }
       }
       await report('draining', inspection.latestVersion)
-      await this.waitForDrain()
+      if ((await this.waitForDrain(UPDATE_DRAIN_TIMEOUT_MS)) === 'timeout') {
+        // A clone update rewrites the directory this process runs from, so
+        // it must not proceed over live work. Give intake back and say why.
+        this.opts.log(
+          `One-click update gave up waiting for message processing to finish after ${UPDATE_DRAIN_TIMEOUT_MS / 1000}s; intake restored.`,
+        )
+        this.opts.setDrainMode(false)
+        return { kind: 'failed', message: 'drain_timeout', latched: false }
+      }
       await report('installing', inspection.latestVersion)
       const applied = await this.applyUpdate(inspection, 'triggered')
       if (applied === 'installed' || applied === 'exited') {
@@ -1057,10 +1091,22 @@ export class SelfUpdater {
     }
   }
 
-  private async waitForDrain(): Promise<void> {
+  /** Drain intake and wait for in-flight work to settle. Unbounded by
+   *  default (the scheduled path); the triggered path passes
+   *  UPDATE_DRAIN_TIMEOUT_MS and handles 'timeout' itself. Drain mode is
+   *  left ON on timeout: the caller decides whether to proceed or un-drain. */
+  private async waitForDrain(timeoutMs = Number.POSITIVE_INFINITY): Promise<'ready' | 'timeout'> {
     this.opts.setDrainMode(true)
+    const startedAt = this.now()
     let logged = false
-    while (decideDrain(this.opts.drainSnapshot()) !== 'ready') {
+    while (true) {
+      const decision = decideDrainWait({
+        startedAt,
+        now: this.now(),
+        timeoutMs,
+        snapshot: this.opts.drainSnapshot(),
+      })
+      if (decision !== 'wait') return decision
       if (!logged) {
         this.opts.log('Auto-update is waiting for current message processing to finish.')
         logged = true

@@ -1,0 +1,7 @@
+{
+  "$comment": "plugin update hangs for 20s; the test runs with a 1.5s network budget so the step must end with the token timeout, after which the inline reinstall recovers.",
+  "state": { "version": "0.38.3" },
+  "commands": {
+    "plugin update hoai@hoai --scope user -y": { "outcome": "hang", "delayMs": 20000 }
+  }
+}
