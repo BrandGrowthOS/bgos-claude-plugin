@@ -49,7 +49,7 @@ import { homedir, hostname } from 'node:os'
 import { join, dirname, win32 as win32Path } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
-import { detectInstallMethod, launchCommand } from './bgos-install-method.mjs'
+import { detectInstallMethod } from './bgos-install-method.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -755,38 +755,58 @@ export function launchFolderLiveSafe({
   return exists(perAssistantCredentialsPath(home, id))
 }
 
+/** The npm package spec that lets a machine with no `hoai` on PATH bootstrap
+ *  one. `hoai install-cli` resolves the plugin root from the RECORDED
+ *  marketplace install, not from wherever npx unpacked it, so the shim it
+ *  writes points somewhere durable. Never suggest `npx ... hoai` to LAUNCH:
+ *  run that way, install-method detection sees the npx temp dir, calls it a
+ *  clone, and hands a marketplace install the wrong channel spec. */
+export const PLUGIN_PACKAGE_REF = 'github:BrandGrowthOS/bgos-claude-plugin'
+
 /**
- * Restart guidance. With a detection result from detectInstallMethod (see
- * bin/bgos-install-method.mjs: CLAUDE_PLUGIN_ROOT when set, else the realpath
- * of this script), name exactly ONE launch command, the one this install
- * actually needs, plus how the method was detected. On 2026-08-21 a
- * marketplace install launched with the clone spec (server:bgos) dropped every
- * inbound message with no error anywhere, so offering both forms to an
- * operator when the evidence is in hand is not honesty, it is a coin flip.
- * With no detection (null), keep the honest both-forms text: pairing then
- * cannot know the topology and never prescribes a single channel form.
+ * Restart guidance: one short instruction, the same one on every platform and
+ * for every install shape.
+ *
+ * This used to print a raw `claude ... --dangerously-load-development-channels
+ * <spec>` line, chosen from a detection result when one was in hand and
+ * offered as BOTH forms when it was not. The spec matters enormously: on
+ * 2026-08-21 a marketplace install launched with the clone spec (server:bgos)
+ * dropped every inbound message with no error anywhere, so the both-forms
+ * branch was a coin flip handed to an operator.
+ *
+ * `hoai` removes the choice instead of making it better. It re-detects the
+ * install method on EVERY launch (bin/hoai-core.mjs buildRunPlan), so the
+ * user has nothing to remember and nothing to get wrong, and pairing has
+ * bakeLaunchPin'd this folder already, which is exactly what a bare `hoai`
+ * needs to come back as this agent.
+ *
+ * The detection line is kept when we have one, as a diagnostic for an operator
+ * reading the pairing output, not as something to type.
  * @param {{ method?: 'marketplace' | 'clone' } | null} [detection]
  */
 export function restartInstructions(detection = null) {
+  const lines = [
+    'restart your agent: type /exit in its Claude Code session, then run',
+    '  hoai',
+    'from this same folder. That is the whole instruction.',
+  ]
   const method = detection?.method
   if (method === 'marketplace' || method === 'clone') {
-    const detectedVia =
+    lines.push(
       method === 'marketplace'
-        ? 'detected: marketplace install, the plugin files live under the Claude config dir'
-        : 'detected: local checkout, the plugin files live outside the Claude config dir'
-    return [
-      'restart your agent process with:',
-      `  ${launchCommand(method)}`,
-      `    (${detectedVia})`,
-    ]
+        ? '  (detected: marketplace install, the plugin files live under the Claude config dir)'
+        : '  (detected: local checkout, the plugin files live outside the Claude config dir)',
+    )
   }
-  return [
-    'restart your agent process the way it normally starts. Known channel forms:',
-    '  claude --dangerously-load-development-channels plugin:hoai@hoai',
-    '    (packaged HOAI channel installed from the plugin marketplace)',
-    '  claude --dangerously-load-development-channels server:bgos',
-    '    (checkout-based host running server.ts directly, e.g. a multi-agent server)',
-  ]
+  lines.push(
+    '  hoai works out the right channel flag for this install every time it starts,',
+    '  so there is no command line to remember. Do NOT put a hoai alias in your',
+    '  shell profile: an alias freezes ONE channel spec into a string, and the wrong',
+    '  spec connects nothing and drops every inbound message in silence.',
+    '  If your shell cannot find hoai, run this once and open a new terminal:',
+    `    npx --yes --package ${PLUGIN_PACKAGE_REF} hoai install-cli`,
+  )
+  return lines
 }
 
 export const USAGE = `bgos-pair: pair this Claude Code session to HOAI with a one time code

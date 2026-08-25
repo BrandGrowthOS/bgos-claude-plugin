@@ -659,42 +659,60 @@ test('unbound pairing may overwrite an unbound placeholder legacy file, and neve
   }
 })
 
-// ── Defect 4 (revised by fix 02): with install-method evidence in hand the
-//    restart instruction names exactly ONE launch command (a marketplace
-//    install launched with the clone spec drops every inbound message
-//    silently, 2026-08-21); with no evidence it stays honest about both. ─────
+// ── Defect 4 (revised by fix 02, then superseded 2026-08-25): pairing used to
+//    print a raw claude launch line, choosing the channel spec from detection
+//    when it had one and offering BOTH forms when it did not. The spec is
+//    load-bearing (a marketplace install launched with the clone spec drops
+//    every inbound message silently, 2026-08-21), so the both-forms branch was
+//    a coin flip handed to an operator. `hoai` removes the choice instead of
+//    improving it: it re-detects on every launch, so the instruction is now
+//    one line, the same for every install shape. ─────────────────────────────
 
-test('restartInstructions with a detection names exactly ONE launch command plus how it was detected', () => {
+test('restartInstructions: the whole instruction is /exit then hoai, with NO channel spec to get wrong', () => {
   const marketplace = detectInstallMethod({
     env: { CLAUDE_PLUGIN_ROOT: '/home/kc/.claude/plugins/cache/hoai/hoai/0.34.0' },
     home: '/home/kc',
   })
   assert.equal(marketplace.method, 'marketplace')
-  const mText = restartInstructions(marketplace).join('\n')
-  assert.match(mText, /plugin:hoai@hoai/)
-  assert.doesNotMatch(mText, /server:bgos/)
-  assert.match(mText, /marketplace install/i)
-
   const clone = detectInstallMethod({
     env: { CLAUDE_PLUGIN_ROOT: '/home/kc/bgos-claude-plugin' },
     home: '/home/kc',
   })
   assert.equal(clone.method, 'clone')
-  const cText = restartInstructions(clone).join('\n')
-  assert.match(cText, /server:bgos/)
-  assert.doesNotMatch(cText, /plugin:hoai@hoai/)
-  assert.match(cText, /local checkout/i)
+
+  // Every shape, INCLUDING no detection at all, gets the same instruction. The
+  // old "known channel forms" coin flip is gone.
+  for (const detection of [marketplace, clone, null, undefined]) {
+    const text = restartInstructions(detection as never).join('\n')
+    assert.match(text, /type \/exit in its Claude Code session/i)
+    assert.match(text, /^ {2}hoai$/m, 'the command to type is exactly hoai')
+    // No raw launch line, and neither channel spec, is ever handed to a user.
+    assert.doesNotMatch(text, /--dangerously-load-development-channels/)
+    assert.doesNotMatch(text, /plugin:hoai@hoai/)
+    assert.doesNotMatch(text, /server:bgos/)
+    assert.doesNotMatch(text, /--channels/)
+    // And it warns off the alias that would freeze a spec back in.
+    assert.match(text, /Do NOT put a hoai alias/)
+    // The non-circular escape hatch for a machine with no hoai on PATH. It must
+    // be install-cli, never a launch: run under npx, install-method detection
+    // sees the npx temp dir and would hand a marketplace install the clone spec.
+    assert.match(text, /npx --yes --package \S+ hoai install-cli/)
+  }
 })
 
-test('restartInstructions with no detection keeps both channel forms and when each applies', () => {
-  for (const lines of [restartInstructions(), restartInstructions(null)]) {
-    const text = lines.join('\n')
-    assert.match(text, /restart your agent process the way it normally starts/i)
-    assert.match(text, /plugin:hoai@hoai/)
-    assert.match(text, /server:bgos/)
-    assert.match(text, /packaged/i)
-    assert.match(text, /checkout|multi-agent/i)
-  }
+test('restartInstructions: a detection still reports HOW it was detected, as a diagnostic', () => {
+  const marketplace = detectInstallMethod({
+    env: { CLAUDE_PLUGIN_ROOT: '/home/kc/.claude/plugins/cache/hoai/hoai/0.34.0' },
+    home: '/home/kc',
+  })
+  const clone = detectInstallMethod({
+    env: { CLAUDE_PLUGIN_ROOT: '/home/kc/bgos-claude-plugin' },
+    home: '/home/kc',
+  })
+  assert.match(restartInstructions(marketplace).join('\n'), /detected: marketplace install/i)
+  assert.match(restartInstructions(clone).join('\n'), /detected: local checkout/i)
+  // With no detection there is simply no such line, and nothing is guessed.
+  assert.doesNotMatch(restartInstructions(null).join('\n'), /detected:/i)
 })
 
 test('isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS)', async (t) => {
