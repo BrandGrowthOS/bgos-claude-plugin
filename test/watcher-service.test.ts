@@ -192,12 +192,12 @@ test('linux spec: no username means no linger command (never enable-linger for a
 
 // -- win32 -------------------------------------------------------------------------------
 
-test('win32 spec: run-hidden.vbs (WScript.Shell.Run node watcher run, 0, False) and the schtasks ladder', () => {
+test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven through the Task Scheduler API (never schtasks /SC ONLOGON)', () => {
   const spec = watcherServiceSpec({ platform: 'win32', ...WIN })
   assert.equal(spec.kind, 'schtasks')
   assert.equal(spec.label, 'HOAI Watcher')
   assert.deepEqual(spec.dirs, ['C:\\Users\\kc\\.bgos-agent\\watcher\\logs'])
-  assert.equal(spec.files.length, 1)
+  assert.equal(spec.files.length, 2)
   assert.equal(spec.files[0]!.path, 'C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs')
   assert.equal(spec.files[0]!.mode, null)
   assert.equal(
@@ -211,37 +211,25 @@ test('win32 spec: run-hidden.vbs (WScript.Shell.Run node watcher run, 0, False) 
       '',
     ].join('\r\n'),
   )
-  assert.deepEqual(spec.installCommands, [
-    {
-      file: 'schtasks',
-      args: [
-        '/Create',
-        '/F',
-        '/SC',
-        'ONLOGON',
-        '/RL',
-        'LIMITED',
-        '/TN',
-        'HOAI Watcher',
-        '/TR',
-        'wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs"',
-      ],
-      ignoreFailure: false,
-    },
-  ])
-  assert.deepEqual(spec.startCommands, [
-    { file: 'schtasks', args: ['/Run', '/TN', 'HOAI Watcher'], ignoreFailure: false },
-  ])
-  assert.deepEqual(spec.stopCommands, [
-    { file: 'schtasks', args: ['/End', '/TN', 'HOAI Watcher'], ignoreFailure: true },
-  ])
-  assert.deepEqual(spec.uninstallCommands, [
-    { file: 'schtasks', args: ['/End', '/TN', 'HOAI Watcher'], ignoreFailure: true },
-    { file: 'schtasks', args: ['/Delete', '/F', '/TN', 'HOAI Watcher'], ignoreFailure: true },
-  ])
-  assert.deepEqual(spec.statusCommands, [
-    { file: 'schtasks', args: ['/Query', '/TN', 'HOAI Watcher', '/FO', 'LIST'], ignoreFailure: true },
-  ])
+  const script = spec.files[1]!
+  assert.equal(script.path, 'C:\\Users\\kc\\.bgos-agent\\watcher\\install-task.ps1')
+  assert.match(script.content, /Register-ScheduledTask -TaskName \$name/)
+  assert.match(script.content, /New-ScheduledTaskTrigger -AtLogOn/)
+  assert.match(script.content, /-RunLevel Limited/)
+  assert.match(script.content, /ExecutionTimeLimit \(\[TimeSpan\]::Zero\)/)
+  assert.match(script.content, /HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run/)
+  assert.match(script.content, /\$vbs = 'C:\\Users\\kc\\\.bgos-agent\\watcher\\run-hidden\.vbs'/)
+  assert.ok(!/schtasks/.test(script.content), 'schtasks.exe is never used')
+  const ps = (action: string, ignoreFailure: boolean) => ({
+    file: 'powershell.exe',
+    args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Users\\kc\\.bgos-agent\\watcher\\install-task.ps1', '-Action', action],
+    ignoreFailure,
+  })
+  assert.deepEqual(spec.installCommands, [ps('install', false)])
+  assert.deepEqual(spec.startCommands, [ps('start', false)])
+  assert.deepEqual(spec.stopCommands, [ps('stop', true)])
+  assert.deepEqual(spec.uninstallCommands, [ps('uninstall', true)])
+  assert.deepEqual(spec.statusCommands, [ps('status', true)])
 })
 
 test('win32 spec: a double quote inside a path is refused (it would break the vbs string and the /TR line)', () => {
@@ -317,15 +305,17 @@ test('installWatcherService (linux): a failing START command is reported by name
   assert.deepEqual(result.ran.find((r) => r.file === 'loginctl'), { file: 'loginctl', args: ['enable-linger', 'kc'], code: 1, ignored: true })
 })
 
-test('installWatcherService (win32): writes the vbs, creates then runs the task; a failing /Create stops before /Run', async () => {
+test('installWatcherService (win32): writes the vbs + task script, registers then starts; a refused install stops before start', async () => {
   const spec = watcherServiceSpec({ platform: 'win32', ...WIN })
   const fs = memoryFs()
-  const { calls, exec } = recordingExec({ 'schtasks /Create': { code: 1, stderr: 'ERROR: Access is denied.' } })
+  // recordingExec keys on `<file> <first arg>`; install runs first, so the refusal lands on the install action and the ladder stops there.
+  const { calls, exec } = recordingExec({ 'powershell.exe -NoProfile': { code: 1, stdout: 'run key refused: Access is denied.' } })
   const result = await installWatcherService(spec, { exec, fs })
   assert.equal(result.ok, false)
-  assert.equal(result.message, 'schtasks /Create /F /SC ONLOGON /RL LIMITED /TN HOAI Watcher /TR wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs" failed (rc 1): ERROR: Access is denied.')
+  assert.match(result.message, /-Action install failed \(rc 1\): run key refused: Access is denied\./)
   assert.equal(calls.length, 1)
   assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\watcher\\run-hidden.vbs'), spec.files[0]!.content)
+  assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\watcher\\install-task.ps1'), spec.files[1]!.content)
   const ok = await installWatcherService(spec, { exec: recordingExec().exec, fs })
   assert.equal(ok.ok, true)
 })
