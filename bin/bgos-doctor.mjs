@@ -43,7 +43,7 @@ import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { resolveBunPath, bunInstallHint, executableNames, pathFlavor } from './bgos-launch.mjs'
-import { detectInstallMethod, launchCommand } from './bgos-install-method.mjs'
+import { detectInstallMethod, launchCommandFor } from './bgos-install-method.mjs'
 import { resolveReadCredentialsPath, normalizeApiBase, FOLDER_PIN_FILE_NAME } from './bgos-pair.mjs'
 
 export const DEFAULT_BACKEND_URL = 'https://api.brandgrowthos.ai/api/v1'
@@ -310,11 +310,27 @@ export function buildDoctorRows(probes) {
   }
 
   // install method
+  //
+  // UNDETERMINED is a FAIL row, not a PASS with a hedge. On 2026-08-24 a real
+  // user's doctor run printed "PASS Install method clone install, channel
+  // server:bgos" one line above "claude mcp list ... /.claude/plugins/cache/
+  // .../server.ts - Connected": the two lines contradicted each other and the
+  // green tick was the one that lied, because doctor had been reached through
+  // npx and the old detector read its temp directory as a checkout.
   const method = p.method ?? null
-  if (method) {
-    row('method', 'Install method', true, `${method.method} install, channel ${method.channelSpec}, root ${method.pluginRoot}`)
-  } else {
+  if (!method) {
     row('method', 'Install method', null, '')
+  } else if (method.method === 'unknown') {
+    row(
+      'method',
+      'Install method',
+      false,
+      String(method.reason ?? '').trim() ||
+        'the install method could not be determined, so no channel spec is known',
+      'run hoai from the folder the agent was set up in (not through npx), or run hoai setup <code from the HOAI app> to install the plugin properly',
+    )
+  } else {
+    row('method', 'Install method', true, `${method.method} install, channel ${method.channelSpec}, root ${method.pluginRoot}`)
   }
 
   // pairing credentials (path + assistant id only; never the token)
@@ -365,12 +381,19 @@ export function buildDoctorRows(probes) {
   } else if (mcpList.ok) {
     row('mcp-list', 'claude mcp list', true, mcpList.raw ?? 'Connected')
   } else {
+    // The fix line uses the spec DETECTION resolved (which carries this
+    // machine's real marketplace name), and when detection came back
+    // undetermined there is deliberately no command here: the old code fell
+    // back to `clone` on anything that was not literally 'marketplace', which
+    // is the fail-OPEN direction and would tell a marketplace user to launch
+    // the spec that made them deaf in the first place.
     row(
       'mcp-list',
       'claude mcp list',
       false,
       mcpList.raw ?? `state: ${mcpList.state ?? 'unknown'}`,
-      launchCommand(method?.method === 'marketplace' ? 'marketplace' : 'clone'),
+      launchCommandFor(method) ||
+        'fix the Install method row first: until the install method is known, no launch command can be given',
     )
   }
 
@@ -966,7 +989,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
 
   let handshake = null
   if (!args.skipHandshake) {
-    const launchArgv = [join(method.pluginRoot, 'bin', 'bgos-launch.mjs'), join(method.pluginRoot, 'server.ts')]
+    // The handshake proves the code CAN boot and speak MCP, so it runs the
+    // copy this doctor is executing (executionRoot) when detection could not
+    // name an installed root. It is not a statement about which install the
+    // channel loads; the Install method row is, and it fails loudly on its own
+    // when undetermined.
+    const handshakeRoot = String(method.pluginRoot ?? '').trim() || String(method.executionRoot ?? '').trim()
+    const launchArgv = [join(handshakeRoot, 'bin', 'bgos-launch.mjs'), join(handshakeRoot, 'server.ts')]
     const handshakeEnv = { ...process.env }
     if (assistantId) handshakeEnv.BGOS_ASSISTANT_ID = assistantId
     handshake = await probeHandshake({ launchArgv, env: handshakeEnv, cwd: workdir })

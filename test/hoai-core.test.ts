@@ -51,6 +51,8 @@ import {
   runSetup,
   HOAI_MARKETPLACE,
   HOAI_PLUGIN_REF,
+  launchArgsFor,
+  unresolvedChannelMessage,
 } from '../bin/hoai-core.mjs'
 
 const WIN_HOME = 'C:\\Users\\x'
@@ -1237,4 +1239,129 @@ test('logsAssistantId: keyed by what the folder declares, from either source', (
   const cwd = '/home/kc/BGOS'
   assert.equal(logsAssistantId({ cwd, env: {}, readFile: serveMcpOnly(cwd, '900') }), '900')
   assert.equal(logsAssistantId({ cwd, env: {}, readFile: () => null }), 'unknown')
+})
+
+// ── Reached through npx: no channel, no launch (2026-08-24) ──────────────────
+//
+// The app's connect screen hands every new user
+//   npx -y --package github:BrandGrowthOS/bgos-claude-plugin hoai setup <CODE>
+// and the manual restart advice is "run hoai". When `hoai` is reached through
+// npx, scriptDir is npm's throwaway unpack dir
+//   /Users/alex/.npm/_npx/<hash>/node_modules/claude-channel-bgos/bin
+// which is not under the plugins dir. Detection used to read that as a local
+// checkout and launch `server:bgos`; on a marketplace install that connects
+// nothing and drops every inbound message with no error anywhere. The folder
+// in that flow publishes no .mcp.json either (a marketplace bootstrap writes
+// none), so PR #90's workspace preference has nothing to prefer.
+
+/** npm's real npx unpack shape, off a user's own doctor output. */
+const NPX_SCRIPT_DIR = '/Users/alex/.npm/_npx/c00bcfc5e22688dd/node_modules/claude-channel-bgos/bin'
+const NPX_HOME = '/Users/alex'
+const NPX_CWD = '/Users/alex/my-agent'
+
+test('channel: hoai reached through npx with no install on disk resolves NO spec', () => {
+  const resolution = resolveChannelSpec({
+    cwd: NPX_CWD,
+    env: {},
+    home: NPX_HOME,
+    readFile: noFiles,
+    scriptDir: NPX_SCRIPT_DIR,
+  })
+  assert.equal(resolution.method, 'unknown')
+  assert.equal(resolution.spec, '', 'an npx run must not resolve a plausible spec')
+  assert.notEqual(resolution.spec, 'server:bgos')
+  assert.match(resolution.reason, /temporary package-runner directory/)
+  assert.match(channelNote(resolution), /UNDETERMINED/)
+})
+
+test('channel: a workspace .mcp.json still decides even under npx (nothing regresses for a claimed folder)', () => {
+  const resolution = resolveChannelSpec({
+    cwd: NPX_CWD,
+    env: {},
+    home: NPX_HOME,
+    readFile: mcpServing(NPX_CWD, hoaiWorkspace('bgos')),
+    scriptDir: NPX_SCRIPT_DIR,
+  })
+  assert.equal(resolution.spec, 'server:bgos')
+  assert.equal(resolution.source, 'workspace')
+})
+
+test('launchArgsFor THROWS on an unresolved channel rather than spelling an empty flag', () => {
+  assert.throws(() => launchArgsFor({ spec: '' } as never), /no channel spec/)
+  assert.deepEqual(launchArgsFor({ spec: 'server:bgos' } as never), [
+    '--dangerously-skip-permissions',
+    '--dangerously-load-development-channels',
+    'server:bgos',
+  ])
+})
+
+test('buildRunPlan: REFUSES to launch when the channel is undetermined, and says why', () => {
+  const plan = buildRunPlan({
+    cwd: NPX_CWD,
+    env: {},
+    home: NPX_HOME,
+    readFile: noFiles,
+    listDir: noDir,
+    scriptDir: NPX_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, false, 'a guessed channel must never be launched')
+  if (plan.ok) return
+  assert.match(plan.reason, /temporary package-runner directory/)
+  assert.match(plan.reason, /will not launch on a guessed channel/)
+  // And the refusal never leaks a spec the user might copy.
+  assert.doesNotMatch(plan.reason, /server:bgos/)
+  assert.doesNotMatch(plan.reason, /plugin:hoai@/)
+})
+
+test('relaunchClaudeArgs: returns null on an unresolved channel, never a bare flag pair', () => {
+  assert.equal(
+    relaunchClaudeArgs({
+      cwd: NPX_CWD,
+      env: {},
+      home: NPX_HOME,
+      readFile: noFiles,
+      scriptDir: NPX_SCRIPT_DIR,
+      sessionArgs: ['--resume', 'abc'],
+    }),
+    null,
+  )
+  // A resolvable folder relaunches exactly as before.
+  assert.deepEqual(
+    relaunchClaudeArgs({
+      cwd: AGENT_CWD,
+      env: {},
+      home: POSIX_HOME,
+      readFile: mcpServing(AGENT_CWD, hoaiWorkspace('bgos')),
+      scriptDir: POSIX_MARKETPLACE_SCRIPT_DIR,
+      sessionArgs: ['--resume', 'abc'],
+    }),
+    ['--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:bgos', '--resume', 'abc'],
+  )
+})
+
+test('unresolvedChannelMessage: names the reason and says nothing was launched', () => {
+  const message = unresolvedChannelMessage({ reason: 'no install recorded.' })
+  assert.match(message, /STOPPING rather than relaunching/)
+  assert.match(message, /no install recorded\./)
+  assert.doesNotMatch(message, /[\u2013\u2014]/)
+})
+
+test('resolveWrapperPluginRoot: never points the hoai shim at an npx dir that is about to be deleted', async () => {
+  const root = await resolveWrapperPluginRoot({
+    env: {},
+    home: NPX_HOME,
+    scriptDir: NPX_SCRIPT_DIR,
+    exists: () => false,
+    observe: async () => ({ installed: { installPath: null } }) as never,
+  })
+  assert.equal(root, '', 'a dead-on-arrival shim target is worse than no shim')
+  // A real clone checkout still yields its own root.
+  const cloneRoot = await resolveWrapperPluginRoot({
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    exists: () => false,
+    observe: async () => ({ installed: { installPath: null } }) as never,
+  })
+  assert.equal(cloneRoot, '/home/kc/bgos-claude-plugin')
 })

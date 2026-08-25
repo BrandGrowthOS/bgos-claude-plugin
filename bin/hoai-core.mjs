@@ -105,6 +105,21 @@ export const EXIT_NOT_FOUND = 127
  *  already running" from a claude failure. */
 export const EXIT_ALREADY_SUPERVISED = 3
 
+/** A launch or relaunch that refuses because no channel spec could be resolved
+ *  (the install method is undetermined and this folder publishes no .mcp.json).
+ *  Distinct so a wrapper can tell "would have been deaf" from a claude crash. */
+export const EXIT_CHANNEL_UNRESOLVED = 4
+
+/** The message printed instead of relaunching on an unresolved channel. */
+export function unresolvedChannelMessage(resolution) {
+  const reason = String(resolution?.reason ?? '').trim() || 'no evidence of an install was found'
+  return (
+    `[hoai] STOPPING rather than relaunching: no channel could be resolved for this folder. ` +
+    `${reason} Nothing was launched, because an agent on a guessed channel starts, reports ` +
+    'Connected, and never receives a message.'
+  )
+}
+
 // -- Small pure helpers -------------------------------------------------------
 
 /** Is this pid alive on THIS host? Mirror of lib/update-readiness.ts
@@ -294,10 +309,16 @@ export function resolveHoaiAction(argv) {
  * rather than picking one, because there is no single right answer and the
  * fallback is at least today's behavior.
  *
+ * A detection that comes back UNDETERMINED (running through npx on a machine
+ * with no readable install record) yields `spec: ''`. That is not a failure to
+ * paper over: launchArgsFor refuses it and buildRunPlan turns it into a
+ * refusal the user can read and act on, because a guessed spec launches an
+ * agent that reports Connected and hears nothing.
+ *
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, home?: string,
  *   readFile?: (path: string) => string | null, scriptDir?: string }} [opts]
  * @returns {{ spec: string, source: 'workspace' | 'install-method',
- *             method: string, serverName: string, conflict: boolean }}
+ *             method: string, serverName: string, conflict: boolean, reason: string }}
  */
 export function resolveChannelSpec({
   cwd = process.cwd(),
@@ -319,6 +340,7 @@ export function resolveChannelSpec({
       method: detection.method,
       serverName: declared,
       conflict: false,
+      reason: '',
     }
   }
   return {
@@ -327,23 +349,45 @@ export function resolveChannelSpec({
     method: detection.method,
     serverName: '',
     conflict: declared === 'conflict',
+    reason: String(detection.reason ?? ''),
   }
+}
+
+/** True when a resolution names a channel we can actually launch on. */
+export function isResolvedChannel(resolution) {
+  return Boolean(String(resolution?.spec ?? '').trim())
 }
 
 /** The full claude argv prefix for a launch from `cwd`: the permissions flag
  *  plus the channel flag pair for the resolved spec. One place, so the launch
- *  path and the relaunch path can never disagree about the spec. */
+ *  path and the relaunch path can never disagree about the spec.
+ *
+ *  Throws on an unresolved spec rather than emitting a flag with an empty
+ *  value: `--dangerously-load-development-channels ''` is precisely the silent
+ *  misconnection this whole module exists to prevent. Check isResolvedChannel
+ *  first and present the reason. */
 export function launchArgsFor(resolution) {
+  if (!isResolvedChannel(resolution)) {
+    throw new Error(
+      'launchArgsFor: no channel spec was resolved for this launch. Refuse the launch and show ' +
+        'the reason instead of spelling an empty channel flag.',
+    )
+  }
   return ['--dangerously-skip-permissions', ...channelFlagArgsForSpec(resolution.spec)]
 }
 
-/** The human line explaining WHICH channel was chosen and why. */
+/** The human line explaining WHICH channel was chosen and why, or WHY none
+ *  could be chosen. */
 export function channelNote(resolution) {
   if (resolution.source === 'workspace') {
     return (
       `[hoai] channel ${resolution.spec} (declared by this folder's ${MCP_CONFIG_FILE_NAME}; ` +
       `install method ${resolution.method})`
     )
+  }
+  if (!isResolvedChannel(resolution)) {
+    const reason = String(resolution?.reason ?? '').trim() || 'no evidence of an install was found'
+    return `[hoai] install method: UNDETERMINED, so no channel could be chosen. ${reason}`
   }
   const conflictNote = resolution.conflict
     ? ` (this folder's ${MCP_CONFIG_FILE_NAME} declares MORE than one HOAI server, so it was ` +
@@ -404,6 +448,21 @@ export function buildRunPlan({
   // third silent-drop vector, and a comment recommending it is how someone
   // re-introduces the bug while believing they follow the design.
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  // No channel, no launch. This is the loud half of the 2026-08-24 fix: when
+  // this folder publishes no .mcp.json AND the install method is undetermined
+  // (hoai reached through npx, whose temp directory is not an install), the
+  // only honest outcome is a refusal naming what to do. Launching on a guessed
+  // spec would start a session that reports Connected and hears nothing, which
+  // is the failure a user cannot see and cannot report.
+  if (!isResolvedChannel(resolution)) {
+    return {
+      ok: false,
+      reason:
+        `${String(resolution.reason ?? '').trim() || 'the install method could not be determined'} ` +
+        'hoai will not launch on a guessed channel: a wrong one starts an agent that looks ' +
+        'connected and never receives a message.',
+    }
+  }
   const detection = {
     method: resolution.method,
     channelSpec: resolution.spec,
@@ -826,9 +885,15 @@ export function buildGateAutoAcceptExpect({ claudePath, args }) {
  * session args (--resume <own-id> / --session-id <own-id>, or [] for a plain
  * fresh session). NEVER --continue: that resumes the newest session in a shared
  * cwd, which is another agent's (GAP 1).
+ *
+ * Returns null when the fresh resolution names no channel. The relaunch path is
+ * UNATTENDED, so this is the one place where "carry on with something" would
+ * cost the most: it would bring the agent back on an empty channel flag and
+ * nobody would be watching. The caller stops and prints instead.
  * @param {{ scriptDir?: string, env?: Record<string, string | undefined>,
  *   home?: string, cwd?: string, readFile?: (path: string) => string | null,
  *   sessionArgs?: readonly string[] }} [opts]
+ * @returns {string[] | null}
  */
 export function relaunchClaudeArgs({
   scriptDir = '',
@@ -843,6 +908,7 @@ export function relaunchClaudeArgs({
   // launch would bring the agent back deaf on a spec it was never listening on,
   // and the marker relaunch path is unattended, so nobody would see it happen.
   const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  if (!isResolvedChannel(resolution)) return null
   return [...launchArgsFor(resolution), ...sessionArgs]
 }
 
@@ -1147,7 +1213,7 @@ export async function superviseClaude(args, opts = {}) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
-        currentArgs = relaunchClaudeArgs({
+        const relaunchArgs = relaunchClaudeArgs({
           scriptDir,
           env,
           home,
@@ -1155,6 +1221,11 @@ export async function superviseClaude(args, opts = {}) {
           readFile,
           sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
+        if (!relaunchArgs) {
+          print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
+          return EXIT_CHANNEL_UNRESOLVED
+        }
+        currentArgs = relaunchArgs
         freshTried = false
         lastLaunchWasRelaunch = true
         recordRecipe(currentArgs)
@@ -1186,7 +1257,12 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
-        currentArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
+        const freshArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
+        if (!freshArgs) {
+          print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
+          return EXIT_CHANNEL_UNRESOLVED
+        }
+        currentArgs = freshArgs
         recordRecipe(currentArgs)
         print(
           '[hoai] the resumed session exited immediately (a rejected resume or a fast ' +
@@ -1440,7 +1516,15 @@ export async function runSetup(
  * github:BrandGrowthOS/bgos-claude-plugin hoai setup <CODE>` runs from a temp
  * npx directory that is deleted the moment setup returns, so a shim pointed
  * there would be dead on arrival.
- * @returns {Promise<string>} '' when neither source yields a root
+ *
+ * Which is why the fallback now REFUSES an ephemeral execution root outright
+ * rather than returning it. It used to hand back the npx directory whenever
+ * the marketplace observation came up empty, and installHoaiCli would write a
+ * `hoai` shim aimed at a directory npm was about to delete: a command on PATH
+ * that fails with "hoai-core.mjs not found" the next day. '' makes
+ * installHoaiCli say it could not work out where the plugin lives, which is
+ * both true and fixable.
+ * @returns {Promise<string>} '' when neither source yields a persistent root
  */
 export async function resolveWrapperPluginRoot({
   env = process.env,
@@ -1461,7 +1545,8 @@ export async function resolveWrapperPluginRoot({
     env,
     home,
   })
-  return String(detection?.pluginRoot ?? '').trim()
+  if (detection?.ephemeralExecution) return ''
+  return String(detection?.pluginRoot ?? '').trim() || String(detection?.executionRoot ?? '').trim()
 }
 
 /**
