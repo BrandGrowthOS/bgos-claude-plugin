@@ -222,7 +222,7 @@ test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven throug
   assert.ok(!/schtasks/.test(script.content), 'schtasks.exe is never used')
   // The stop action targets THIS bundle's node process by exact script path;
   // matching the bare file name killed any process that merely mentioned it.
-  assert.ok(script.content.includes(`$watcherScript = 'C:\Users\kc\.bgos-agent\watcher\bin\hoai-watcher.mjs'`), 'the exact script path is pinned')
+  assert.ok(script.content.includes("$watcherScript = 'C:\\Users\\kc\\.bgos-agent\\watcher\\bin\\hoai-watcher.mjs'"), 'the exact script path is pinned')
   assert.ok(script.content.includes('$_.Name -eq \"node.exe\" -and $_.ProcessId -ne $PID -and $_.CommandLine -like (\"*\" + $watcherScript + \"*\")'), 'stop matches node.exe by exact path, never itself')
   assert.ok(!script.content.includes('-match \"hoai-watcher.mjs\"'), 'never a bare file-name match')
   const ps = (action: string, ignoreFailure: boolean) => ({
