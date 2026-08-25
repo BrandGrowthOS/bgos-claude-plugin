@@ -19,6 +19,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 import {
   boundedFetch,
@@ -28,8 +31,11 @@ import {
   isDeadlineExceeded,
   isFetchTimeoutError,
   startupPhase,
+  UPLOAD_DEADLINE_MS,
   withDeadline,
 } from '../lib/bounded-fetch.ts'
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** Minimal stand-in for the parts of Response these tests touch. */
 function fakeResponse(body: unknown, init?: { status?: number }): Response {
@@ -322,4 +328,102 @@ test('a phase that hangs leaves a start with no ok, which is what names the hang
   void startupPhase('capability-canon warm-up', () => NEVER, { log })
   await new Promise((r) => setTimeout(r, 10))
   assert.deepEqual(lines, ['startup phase start: capability-canon warm-up'])
+})
+
+// ── The invariant, ENFORCED rather than asserted in a PR body ────────────────
+//
+// 2026-08-25 review: the first version of this work bounded the boards
+// transports but missed `defaultPutBytes` in lib/boards-tools.ts, and the
+// report then said "no bare await fetch remains". A reviewer found the one
+// remaining hit with a grep the report had implied would return nothing. The
+// claim was cheap to make and expensive to trust, so it is now a test: a
+// sentence a future reader might believe instead of re-checking has to be
+// something the suite re-checks for them.
+
+/**
+ * Strip comments so a `fetch (` inside prose cannot register as a call. Block
+ * comments first; line comments only when not part of a `://` scheme, so a url
+ * in a string cannot swallow code that follows it on the same line.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
+/**
+ * The ONE detector. The scan and its positive control both call this, so a
+ * change that blinds the scan also turns the control red. A control that
+ * carries its own copy of the rule is not a control: the first version of
+ * this file did exactly that, and a mutant that broke the scan survived.
+ */
+function callsBareFetch(line: string): boolean {
+  // A bare `fetch(` call: not `.fetch(`, not `fetchImpl(`, not `doFetch(`.
+  return /(^|[^.\w])fetch\s*\(/.test(line)
+}
+
+/** Every file the DAEMON runs: server.ts plus lib/*.ts. */
+function daemonSurfaceFiles(): string[] {
+  const libFiles = readdirSync(join(repoRoot, 'lib'))
+    .filter((n) => n.endsWith('.ts'))
+    .map((n) => join('lib', n))
+  return ['server.ts', ...libFiles]
+}
+
+test('no file the daemon runs calls fetch() outside the bounded helper', () => {
+  // lib/bounded-fetch.ts is the one place allowed to touch the global: it is
+  // what applies the deadline.
+  const offenders: string[] = []
+  for (const rel of daemonSurfaceFiles()) {
+    if (rel === join('lib', 'bounded-fetch.ts')) continue
+    const source = stripComments(readFileSync(join(repoRoot, rel), 'utf8'))
+    source.split('\n').forEach((line, i) => {
+      if (callsBareFetch(line)) {
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`)
+      }
+    })
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'an unbounded fetch is back on the daemon surface:\n' + offenders.join('\n'),
+  )
+})
+
+test('the scan can actually see an unbounded fetch (positive control)', () => {
+  // A checker that cannot fail proves nothing. This is the exact line shape
+  // that was missed in lib/boards-tools.ts.
+  const planted = stripComments(
+    ['async function put(url) {', "  const r = await fetch(url, { method: 'PUT' })", '}'].join('\n'),
+  )
+  const hits = planted.split('\n').filter(callsBareFetch)
+  assert.equal(hits.length, 1, 'the scan would not have caught the real offender')
+  // And prose must NOT register, or the scan would be permanently red.
+  const prose = stripComments('// the first poll stays a FULL fetch (the backlog heuristic)')
+  assert.equal(callsBareFetch(prose), false)
+})
+
+test('both presigned upload paths share one documented deadline', () => {
+  // The number in the docs and the number in the code cannot differ, because
+  // there is only one number. 10 minutes: a large upload legitimately takes
+  // minutes, a stalled socket does not get forever.
+  assert.equal(UPLOAD_DEADLINE_MS, 600_000)
+  const server = readFileSync(join(repoRoot, 'server.ts'), 'utf8')
+  const boards = readFileSync(join(repoRoot, 'lib', 'boards-tools.ts'), 'utf8')
+  assert.match(server, /const UPLOAD_TIMEOUT_MS = UPLOAD_DEADLINE_MS/)
+  assert.match(boards, /timeoutMs: UPLOAD_DEADLINE_MS/)
+  // The boards attachment PUT is the one that was missed the first time.
+  const putBody = boards.slice(
+    boards.indexOf('async function defaultPutBytes('),
+    boards.indexOf('// ── Dispatch'),
+  )
+  assert.ok(putBody.length > 0, 'defaultPutBytes moved: re-point this guard')
+  assert.match(putBody, /boundedFetch</)
+  assert.equal(
+    stripComments(putBody).split('\n').some(callsBareFetch),
+    false,
+    'the board attachment PUT is unbounded again',
+  )
+  // Its label must not carry the presigned url, which is a signed credential.
+  assert.match(putBody, /label: `PUT board attachment \(\$\{bytes\.length\} bytes\)`/)
 })

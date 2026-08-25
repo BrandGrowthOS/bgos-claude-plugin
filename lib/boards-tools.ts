@@ -28,7 +28,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 
 import { guessOutboundMime } from './message-text.js'
-import { boundedFetch } from './bounded-fetch.js'
+import { boundedFetch, UPLOAD_DEADLINE_MS } from './bounded-fetch.js'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1362,20 +1362,38 @@ async function resolveAttachmentBytes(
   return { ok: true, bytes, base64, name, mime }
 }
 
+/**
+ * The presigned attachment PUT. Bounded like every other call the daemon
+ * makes, and on the SAME shared deadline as the message-file upload in
+ * server.ts: this one was missed when the boards transports were bounded, and
+ * it was the last unbounded `await fetch` on the daemon surface.
+ *
+ * The label deliberately does not include the url: it is a presigned S3 link
+ * and carries a signature.
+ */
 async function defaultPutBytes(
   url: string,
   bytes: Uint8Array,
   mime: string,
 ): Promise<void> {
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': mime },
-    body: bytes as unknown as BodyInit,
-  })
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
-  }
+  await boundedFetch<void, BoardsResponse>(
+    {
+      url,
+      init: {
+        method: 'PUT',
+        headers: { 'Content-Type': mime },
+        body: bytes as unknown as BodyInit,
+      },
+      timeoutMs: UPLOAD_DEADLINE_MS,
+      label: `PUT board attachment (${bytes.length} bytes)`,
+    },
+    async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
+      }
+    },
+  )
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────

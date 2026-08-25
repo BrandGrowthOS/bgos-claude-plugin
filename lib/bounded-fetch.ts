@@ -229,6 +229,24 @@ export function createBoundedFetchImpl(
   }
 }
 
+/**
+ * The one upload deadline, shared by BOTH presigned PUT paths in this daemon:
+ * `uploadViaS3` in server.ts (outbound message files, up to 100 MB for video)
+ * and `defaultPutBytes` in lib/boards-tools.ts (board attachments, up to 25 MB).
+ *
+ * It lives here rather than once per file because the two paths drifted apart
+ * exactly once already: the message upload was bounded and documented at 600s
+ * while the boards attachment PUT stayed an unbounded `await fetch`, and the
+ * PR body then claimed a bound that covered only one of them. One exported
+ * constant means the documented number and the enforced number cannot differ.
+ *
+ * 10 minutes is deliberately generous: a large upload legitimately takes
+ * minutes (600s still completes a 100 MB PUT on an uplink as slow as about
+ * 1.4 Mbps, and a 25 MB attachment on one as slow as about 0.35 Mbps). What it
+ * refuses to do is wait forever on a socket that has stopped moving.
+ */
+export const UPLOAD_DEADLINE_MS = 600_000
+
 /** Returned by withDeadline when the work did not finish in time. */
 export const DEADLINE_EXCEEDED = Symbol('bgos.deadline-exceeded')
 

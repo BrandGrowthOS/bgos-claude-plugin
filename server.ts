@@ -65,6 +65,7 @@ import {
   isFetchTimeoutError,
   isDeadlineExceeded,
   startupPhase,
+  UPLOAD_DEADLINE_MS,
   withDeadline,
 } from './lib/bounded-fetch.js'
 import {
@@ -561,10 +562,11 @@ const STARTUP_WARMUP_TIMEOUT_MS = 8_000
 const PEER_HTTP_TIMEOUT_MS = 75_000
 //  - S3 uploads: the outbound video limit is 100 MB, which on a slow uplink is
 //    genuinely many minutes of PUT. Bounded, but generously, because the
-//    failure this guards is a stalled socket and not a slow one: 10 minutes
-//    still completes a 100 MB PUT on an uplink as slow as ~1.4 Mbps, while a
-//    connection that stopped moving no longer waits forever.
-const UPLOAD_TIMEOUT_MS = 600_000
+//    failure this guards is a stalled socket and not a slow one. The number
+//    and its rationale live in lib/bounded-fetch.ts because the BOARDS
+//    attachment PUT needs the same bound, and keeping two copies is how the
+//    two upload paths drifted apart the first time (one bounded, one not).
+const UPLOAD_TIMEOUT_MS = UPLOAD_DEADLINE_MS
 //  - the local slash-command catalog walk is not a network call, but it is
 //    awaited before delivery starts and it walks the filesystem, which can be
 //    a stalled network mount. Bounded so a slow disk cannot hold messages.
