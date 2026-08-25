@@ -7,9 +7,14 @@
  * bin/hoai.cmd are thin dispatchers that only find a JS runtime and hand over.
  *
  *   hoai              launch the agent from this folder with the CORRECT
- *                     channel flag. The flag is detected, never guessed: on
- *                     2026-08-21 a marketplace install launched with the clone
- *                     spec dropped every inbound message silently. The launch
+ *                     channel flag. The flag is resolved, never guessed: this
+ *                     folder's .mcp.json decides when it declares a HOAI
+ *                     server, else install-method detection does. Both
+ *                     directions of getting it wrong are silent: on 2026-08-21
+ *                     a marketplace install launched with the clone spec
+ *                     dropped every inbound message, and the mirror image
+ *                     (detection overruling a workspace that publishes its own
+ *                     server) did the same to .mcp.json agents. The launch
  *                     is SUPERVISED: while claude runs, hoai watches the
  *                     agent's state dir for a restart-requested.json marker
  *                     (written by the daemon's one-click update handler) and
@@ -70,9 +75,17 @@ import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { claudeConfigDir, detectInstallMethod, launchFlagArgs } from './bgos-install-method.mjs'
+import {
+  channelFlagArgsForSpec,
+  claudeConfigDir,
+  detectInstallMethod,
+} from './bgos-install-method.mjs'
 import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import {
+  MCP_CONFIG_FILE_NAME,
+  parseMcpChannelServerName,
+} from '../lib/service-supervision.mjs'
 import { WIN_PATH_HELPER_FILE, installWrapper } from '../lib/hoai-wrapper-install.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
@@ -245,6 +258,99 @@ export function resolveHoaiAction(argv) {
   return route('help', args)
 }
 
+// -- Which channel this folder's agent actually listens on --------------------
+
+/**
+ * The channel spec for a launch from `cwd`, and where it came from.
+ *
+ * Two sources, and the ORDER is the whole point:
+ *
+ *   1. The workspace itself. If <cwd>/.mcp.json declares an MCP server of ours,
+ *      Claude Code loads that entry's channel as `server:<entry name>`. That is
+ *      not a guess, it is what the folder publishes, so it wins.
+ *   2. Install-method detection, unchanged, for a folder that declares nothing.
+ *      That is the bootstrap-installed case: the marketplace branch of
+ *      hoai-bootstrap writes NO .mcp.json, so there is nothing to read and the
+ *      plugin's own location is the only evidence there is.
+ *
+ * Why the order had to change. Detection answers "where do the plugin FILES
+ * live", which is a PROXY for "how will the channel be loaded", and the proxy
+ * breaks on exactly the population this repo has: an agent whose identity and
+ * channel live only in its folder's .mcp.json, on a machine that ALSO has the
+ * marketplace plugin installed. Detection there says `marketplace`, hoai would
+ * launch `plugin:hoai@hoai`, and the workspace publishes `bgos`: the session
+ * comes up, `claude mcp list` says Connected, and not one inbound message is
+ * ever delivered. Silent deafness, which is the 2026-08-21 failure signature.
+ * It also made the restart advice ("/exit, then run hoai from the same folder")
+ * quietly wrong for every bgos-agent and bgos-claim workspace, which is worse
+ * than having no advice at all.
+ *
+ * Reading, not guessing, is also what makes a RENAMED server work: the spec is
+ * the entry's actual name, so a workspace whose server is `atlas` launches
+ * `server:atlas`.
+ *
+ * `conflict` (two of our servers in one .mcp.json) falls back to detection
+ * rather than picking one, because there is no single right answer and the
+ * fallback is at least today's behavior.
+ *
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, home?: string,
+ *   readFile?: (path: string) => string | null, scriptDir?: string }} [opts]
+ * @returns {{ spec: string, source: 'workspace' | 'install-method',
+ *             method: string, serverName: string, conflict: boolean }}
+ */
+export function resolveChannelSpec({
+  cwd = process.cwd(),
+  env = process.env,
+  home = homedir(),
+  readFile = defaultReadText,
+  scriptDir = '',
+} = {}) {
+  const detection = detectInstallMethod({
+    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+    env,
+    home,
+  })
+  const declared = parseMcpChannelServerName(readFile(joinDir(cwd, MCP_CONFIG_FILE_NAME)))
+  if (declared && declared !== 'conflict') {
+    return {
+      spec: `server:${declared}`,
+      source: 'workspace',
+      method: detection.method,
+      serverName: declared,
+      conflict: false,
+    }
+  }
+  return {
+    spec: detection.channelSpec,
+    source: 'install-method',
+    method: detection.method,
+    serverName: '',
+    conflict: declared === 'conflict',
+  }
+}
+
+/** The full claude argv prefix for a launch from `cwd`: the permissions flag
+ *  plus the channel flag pair for the resolved spec. One place, so the launch
+ *  path and the relaunch path can never disagree about the spec. */
+export function launchArgsFor(resolution) {
+  return ['--dangerously-skip-permissions', ...channelFlagArgsForSpec(resolution.spec)]
+}
+
+/** The human line explaining WHICH channel was chosen and why. */
+export function channelNote(resolution) {
+  if (resolution.source === 'workspace') {
+    return (
+      `[hoai] channel ${resolution.spec} (declared by this folder's ${MCP_CONFIG_FILE_NAME}; ` +
+      `install method ${resolution.method})`
+    )
+  }
+  const conflictNote = resolution.conflict
+    ? ` (this folder's ${MCP_CONFIG_FILE_NAME} declares MORE than one HOAI server, so it was ` +
+      'not used; name exactly one to make the choice explicit)'
+    : ''
+  return `[hoai] install method: ${resolution.method}; channel ${resolution.spec}${conflictNote}`
+}
+
 // -- The run plan -------------------------------------------------------------
 
 /**
@@ -284,24 +390,30 @@ export function buildRunPlan({
   scriptDir = '',
 } = {}) {
   void exists // reserved for future probes; kept so callers can inject it now
-  const detection = detectInstallMethod({
-    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
-    env,
-    home,
-  })
-  // Flag per method (see bgos-install-method.mjs launchFlagArgs): BOTH methods
-  // use --dangerously-load-development-channels, only the SPEC differs.
+  // The channel: what this FOLDER publishes if it publishes anything, else
+  // install-method detection. See resolveChannelSpec for why that order.
   //
-  // This comment used to say marketplace installs use the approved --channels
-  // flag and that only a clone needs the dangerous one. That was never what the
-  // line below does, and it is not true: verified live on 2.1.239, --channels
-  // loads a marketplace plugin's tools promptlessly, `claude mcp list` even
-  // reports Connected, and it wires NO inbound delivery for a channel that is
-  // not on Anthropic's allowlist (HOAI is not, yet). It is a third silent-drop
-  // vector, and a comment recommending it is how someone re-introduces the bug
-  // while believing they are following the design.
-  const args = ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method)]
-  const methodLine = `[hoai] install method: ${detection.method}; channel ${detection.channelSpec}`
+  // BOTH specs travel on --dangerously-load-development-channels; only the spec
+  // differs. A comment here once said marketplace installs use the approved
+  // --channels flag and only a clone needs the dangerous one. That was never
+  // what this code does, and it is not true: verified live on 2.1.239,
+  // --channels loads a marketplace plugin's tools promptlessly, `claude mcp
+  // list` even reports Connected, and it wires NO inbound delivery for a
+  // channel that is not on Anthropic's allowlist (HOAI is not, yet). It is a
+  // third silent-drop vector, and a comment recommending it is how someone
+  // re-introduces the bug while believing they follow the design.
+  const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  const detection = {
+    method: resolution.method,
+    channelSpec: resolution.spec,
+    pluginRoot: detectInstallMethod({
+      scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+      env,
+      home,
+    }).pluginRoot,
+  }
+  const args = launchArgsFor(resolution)
+  const methodLine = channelNote(resolution)
 
   const folderPin = readFolderPin(cwd, readFile)
   if (folderPin) {
@@ -657,25 +769,30 @@ export function buildGateAutoAcceptExpect({ claudePath, args }) {
 }
 
 /**
- * The args for a relaunch: FRESH install-method detection (an update can move a
- * marketplace cache dir, so the flag is re-detected, never reused blind) plus
- * the caller's identity-safe session args (--resume <own-id> / --session-id
- * <own-id>, or [] for a plain fresh session). NEVER --continue: that resumes
- * the newest session in a shared cwd, which is another agent's (GAP 1).
- * @param {{ scriptDir?: string, env?: Record<string, string | undefined>, home?: string, sessionArgs?: readonly string[] }} [opts]
+ * The args for a relaunch: the channel resolved FRESH (an update can move a
+ * marketplace cache dir, and a workspace can gain or lose an .mcp.json, so the
+ * spec is re-resolved and never reused blind) plus the caller's identity-safe
+ * session args (--resume <own-id> / --session-id <own-id>, or [] for a plain
+ * fresh session). NEVER --continue: that resumes the newest session in a shared
+ * cwd, which is another agent's (GAP 1).
+ * @param {{ scriptDir?: string, env?: Record<string, string | undefined>,
+ *   home?: string, cwd?: string, readFile?: (path: string) => string | null,
+ *   sessionArgs?: readonly string[] }} [opts]
  */
 export function relaunchClaudeArgs({
   scriptDir = '',
   env = process.env,
   home = homedir(),
+  cwd = process.cwd(),
+  readFile = defaultReadText,
   sessionArgs = [],
 } = {}) {
-  const detection = detectInstallMethod({
-    scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
-    env,
-    home,
-  })
-  return ['--dangerously-skip-permissions', ...launchFlagArgs(detection.method), ...sessionArgs]
+  // Resolved the SAME way as the first launch (workspace .mcp.json first, then
+  // detection). A relaunch that resolved the channel differently from the
+  // launch would bring the agent back deaf on a spec it was never listening on,
+  // and the marker relaunch path is unattended, so nobody would see it happen.
+  const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+  return [...launchArgsFor(resolution), ...sessionArgs]
 }
 
 /** The install method for a relaunch (fresh detection), used to decide whether
@@ -983,6 +1100,8 @@ export async function superviseClaude(args, opts = {}) {
           scriptDir,
           env,
           home,
+          cwd,
+          readFile,
           sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
         freshTried = false
@@ -1016,7 +1135,7 @@ export async function superviseClaude(args, opts = {}) {
         } else {
           freshSessionArgs = []
         }
-        currentArgs = relaunchClaudeArgs({ scriptDir, env, home, sessionArgs: freshSessionArgs })
+        currentArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
         recordRecipe(currentArgs)
         print(
           '[hoai] the resumed session exited immediately (a rejected resume or a fast ' +
@@ -1441,7 +1560,9 @@ Usage:
 
 To restart the agent by hand: type /exit, then run hoai from the same folder.
 There is no long claude command line to remember, and no channel flag to get
-wrong: hoai works out the right one for this machine every time it starts.
+wrong: hoai works out the right one for this FOLDER every time it starts. If
+the folder has an .mcp.json declaring a HOAI server, that is the channel it
+launches; otherwise it goes by how the plugin itself was installed.
 
 Run hoai from the agent's own folder: pairing bakes a ${FOLDER_PIN_FILE} pin
 there, and a bare hoai launch self-resolves that identity with no env vars.
