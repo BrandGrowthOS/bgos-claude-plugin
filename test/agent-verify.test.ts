@@ -168,3 +168,43 @@ test('verifyAgent: a probe write failure is logged, not fatal (the boot hello or
   assert.equal(result.ok, true)
   assert.equal(logs.some((l) => l.includes('probe write failed') && l.includes('EACCES')), true)
 })
+
+test('liveMarkerProves: a marker whose writer booted BEFORE the restart is never proof, however fresh its lastLiveAt; a later boot is; no bootedAt keeps the old rule', () => {
+  const stale = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 - 3_600_000).toISOString() })
+  assert.deepEqual(liveMarkerProves({ raw: stale, mtimeMs: T0 + 4000, restartedAtMs: T0 }), { proven: false, via: null, lastLiveAt: new Date(T0 + 4000).toISOString() })
+  const fresh = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 + 2000).toISOString() })
+  assert.deepEqual(liveMarkerProves({ raw: fresh, mtimeMs: 0, restartedAtMs: T0 }), { proven: true, via: 'lastLiveAt', lastLiveAt: new Date(T0 + 4000).toISOString() })
+  const legacy = JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString() })
+  assert.equal(liveMarkerProves({ raw: legacy, mtimeMs: 0, restartedAtMs: T0 }).proven, true)
+  assert.deepEqual(parseLiveMarker(stale), { firstLiveAt: 'x', lastLiveAt: new Date(T0 + 4000).toISOString(), bootedAt: new Date(T0 - 3_600_000).toISOString() })
+})
+
+test('verifyAgent: the OLD session answering the probe during its teardown (bootedAt before the restart) is not proof; the run times out honestly', async () => {
+  const fs = memoryFs()
+  const clock = fakeClock(T0, (nowMs, tick) => {
+    if (tick === 2) fs.writeFile(MARKER, JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(T0 - 60_000).toISOString() }))
+  })
+  const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep, timeoutMs: 30_000 })
+  assert.equal(result.ok, false)
+  assert.equal(result.message, 'agent_deaf_after_restart')
+  assert.equal(result.evidence.via, null)
+})
+
+test('verifyAgent: the probe is asked again the moment the launcher consumes the restart marker (no extra wait, no extra polls)', async () => {
+  const RESTART = '/home/kc/.bgos-agent/912/restart-requested.json'
+  const fs = memoryFs({ [RESTART]: '{}' })
+  const probeWrites: string[] = []
+  const inner = fs.writeFile
+  fs.writeFile = (p, text, opts) => {
+    if (p === PROBE) probeWrites.push(JSON.parse(text).requestedAt)
+    inner(p, text, opts)
+  }
+  const clock = fakeClock(T0, (nowMs, tick) => {
+    if (tick === 2) fs.files.delete(RESTART) // the launcher saw the marker
+    if (tick === 4) fs.writeFile(MARKER, JSON.stringify({ lastLiveAt: new Date(nowMs).toISOString(), bootedAt: new Date(T0 + 1000).toISOString() }))
+  })
+  const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs, now: clock.now, sleep: clock.sleep })
+  assert.equal(result.ok, true, result.message)
+  assert.deepEqual(probeWrites, [new Date(T0).toISOString(), new Date(T0 + 2 * 3000).toISOString()])
+  assert.deepEqual(clock.sleeps, [3000, 3000, 3000, 3000])
+})

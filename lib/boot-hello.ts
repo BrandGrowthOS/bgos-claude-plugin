@@ -24,7 +24,7 @@
  * hear anything.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { agentStateDir } from './update-readiness.js'
@@ -37,6 +37,13 @@ export interface LiveMarker {
   firstLiveAt: string
   /** ISO time of the most recent first-tool-call-of-a-boot. */
   lastLiveAt: string
+  /**
+   * ISO time the daemon that WROTE lastLiveAt booted. A verify after a
+   * restart accepts the marker only when this is later than the restart
+   * instant: the OLD session can still answer a probe during its own
+   * teardown, and lastLiveAt alone cannot tell the two apart.
+   */
+  bootedAt?: string
 }
 
 /** The marker path for a given state dir (the cursor file's directory). */
@@ -53,7 +60,8 @@ export function parseLiveMarker(raw: string | null): LiveMarker | null {
     const first = typeof parsed.firstLiveAt === 'string' ? parsed.firstLiveAt : ''
     const last = typeof parsed.lastLiveAt === 'string' ? parsed.lastLiveAt : ''
     if (!first && !last) return null
-    return { firstLiveAt: first || last, lastLiveAt: last || first }
+    const bootedAt = typeof parsed.bootedAt === 'string' && parsed.bootedAt ? parsed.bootedAt : undefined
+    return { firstLiveAt: first || last, lastLiveAt: last || first, ...(bootedAt ? { bootedAt } : {}) }
   } catch {
     return null
   }
@@ -63,10 +71,15 @@ export function parseLiveMarker(raw: string | null): LiveMarker | null {
 export function nextLiveMarker(
   previous: LiveMarker | null,
   nowIso: string,
+  bootedAtIso?: string,
 ): LiveMarker {
+  // The writer's own boot time always wins: the marker describes the daemon
+  // that is live NOW, not whichever one wrote it last.
+  const bootedAt = bootedAtIso || previous?.bootedAt
   return {
     firstLiveAt: previous?.firstLiveAt || nowIso,
     lastLiveAt: nowIso,
+    ...(bootedAt ? { bootedAt } : {}),
   }
 }
 
@@ -148,11 +161,15 @@ export function readLiveMarker(path: string): LiveMarker | null {
 }
 
 /** Effectful, best effort: persist the proven-live event. Never throws. */
-export function recordLiveMarker(path: string, nowIso: string): void {
+export function recordLiveMarker(path: string, nowIso: string, bootedAtIso?: string): void {
   try {
     mkdirSync(dirname(path), { recursive: true })
-    const next = nextLiveMarker(readLiveMarker(path), nowIso)
-    writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`)
+    const next = nextLiveMarker(readLiveMarker(path), nowIso, bootedAtIso)
+    // Write-then-rename: a verify poll must never read a torn marker with a
+    // fresh mtime and call that proof.
+    const tmp = `${path}.${process.pid}.tmp`
+    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`)
+    renameSync(tmp, path)
   } catch {
     // Telemetry only; the daemon must never crash over a marker write.
   }

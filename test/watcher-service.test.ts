@@ -226,7 +226,9 @@ test('win32 spec: run-hidden.vbs plus a generated install-task.ps1 driven throug
     ignoreFailure,
   })
   assert.deepEqual(spec.installCommands, [ps('install', false)])
-  assert.deepEqual(spec.startCommands, [ps('start', false)])
+  // Stop first (allowed to fail), then start: a re-install must not leave a
+  // second watcher running under the old token.
+  assert.deepEqual(spec.startCommands, [ps('stop', true), ps('start', false)])
   assert.deepEqual(spec.stopCommands, [ps('stop', true)])
   assert.deepEqual(spec.uninstallCommands, [ps('uninstall', true)])
   assert.deepEqual(spec.statusCommands, [ps('status', true)])

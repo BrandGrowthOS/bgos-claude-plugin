@@ -827,6 +827,11 @@ export async function superviseClaude(args, opts = {}) {
   // (the external keepalive restarted it); a fresh --session-id CREATE that dies
   // fast is never looped on.
   let freshTried = false
+  // A marker relaunch that dies fast gets the same one-shot fresh retry a
+  // rejected --resume gets: since 604e914 a transcript-less relaunch is
+  // --session-id <pinned>, and keying recovery on '--resume' alone left
+  // that (the normal) shape with no retry at all.
+  let lastLaunchWasRelaunch = false
   try {
     while (true) {
       /** @type {import('node:child_process').ChildProcess | null} */
@@ -872,6 +877,7 @@ export async function superviseClaude(args, opts = {}) {
           sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
         freshTried = false
+        lastLaunchWasRelaunch = true
         recordRecipe(currentArgs)
         print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
         continue
@@ -881,13 +887,14 @@ export async function superviseClaude(args, opts = {}) {
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
       const recovery = decideRelaunchRecovery({
-        isResumeAttempt: currentArgs.includes('--resume'),
+        isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
         exitCode: code,
         elapsedMs: now() - startedAt,
         freshTried,
       })
       if (recovery.action === 'retry-fresh') {
         freshTried = true
+        lastLaunchWasRelaunch = false
         const freshId = String(generateId()).trim()
         // Mint and pin a NEW id so future relaunches resume the healthy session.
         // If the re-pin write fails, launch a PLAIN fresh session (claude mints

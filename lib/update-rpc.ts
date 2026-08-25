@@ -219,7 +219,9 @@ export class UpdateRpcHandler {
       // Fail closed but never silent: whatever broke, the backend gets a
       // terminal error and intake is restored so the daemon keeps serving.
       this.deps.setDrainMode(false)
-      await this.progress(frame.rpcId, { stage: 'error', message: clipProgressMessage(errText(err)) })
+      // Tokenized like every other failure: a raw fs error carries the home
+      // path (and so the username) and this message leaves the machine.
+      await this.progress(frame.rpcId, { stage: 'error', message: clipProgressMessage(`update_failed:${failureToken(errText(err))}`) })
     }
   }
 

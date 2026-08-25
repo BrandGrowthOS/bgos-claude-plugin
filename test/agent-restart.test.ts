@@ -20,6 +20,7 @@ import {
   restartAgent,
   serviceRestartCommand,
   shellQuote,
+  envForRecipe,
 } from '../lib/agent-restart.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
@@ -316,4 +317,26 @@ test('restartAgent: no supervisor and no usable recipe is manual_restart_require
   const result = await restartAgent(agentRow({ recipe: null, cwd: null, notes: ['recipe_cwd_missing:/gone'] }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: recordingExec().exec, spawnDetached, hasTmux: true })
   assert.deepEqual(result, { ok: false, how: 'none', message: 'manual_restart_required: no live launcher, no service, no usable launch recipe (recipe_cwd_missing:/gone)' })
   assert.equal(spawns.length, 0)
+})
+
+test("envForRecipe: the relaunch carries the AGENT's claudeConfigDir, and drops the watcher's when the recipe has none", () => {
+  assert.deepEqual(envForRecipe({ CLAUDE_CONFIG_DIR: '/home/kc/.claude-a', PATH: 'x' }, { claudeConfigDir: '/home/kc/.claude-b' }), { CLAUDE_CONFIG_DIR: '/home/kc/.claude-b', PATH: 'x' })
+  assert.deepEqual(envForRecipe({ CLAUDE_CONFIG_DIR: '/home/kc/.claude-a', PATH: 'x' }, { claudeConfigDir: null }), { PATH: 'x' })
+  assert.deepEqual(envForRecipe({ PATH: 'x' }, null), { PATH: 'x' })
+})
+
+test("restartAgent: a recipe relaunch runs under the recipe's CLAUDE_CONFIG_DIR, never the watcher's", async () => {
+  const { spawns, spawnDetached } = recordingSpawn()
+  const agent = agentRow({ recipe: { ...agentRow().recipe, claudeConfigDir: '/home/kc/.claude-b' } })
+  const result = await restartAgent(agent, { ...BASE_DEPS, env: { CLAUDE_CONFIG_DIR: '/home/kc/.claude-a', PATH: '/usr/bin' }, platform: 'linux', fs: memoryFs(), exec: recordingExec().exec, spawnDetached, hasTmux: true, hasScript: true })
+  assert.equal(result.ok, true, result.message)
+  assert.equal(spawns[0]!.opts.env.CLAUDE_CONFIG_DIR, '/home/kc/.claude-b')
+  assert.equal(spawns[0]!.opts.env.PATH, '/usr/bin')
+})
+
+test('recipeLaunchCommand win32: a cmd.exe metacharacter anywhere in the embedded paths refuses the verbatim line (null), not only a quote', () => {
+  for (const cwd of ['C:\\Users\\kc\\R&D Agent', 'C:\\Users\\kc\\%TEMP%', 'C:\\Users\\kc\\a|b', 'C:\\Users\\kc\\a"b', 'C:\\Users\\kc\\a^b']) {
+    assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT }), null, cwd)
+  }
+  assert.notEqual(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\hoai agents (2)', nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT }), null)
 })

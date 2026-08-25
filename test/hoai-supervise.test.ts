@@ -421,6 +421,23 @@ test('superviseClaude: a marker relaunch of a session with NO transcript creates
   assert.equal(await done, 0)
 })
 
+test('superviseClaude: a marker relaunch by id (no transcript) that dies fast non-zero still gets the one-shot fresh retry (never-leave-dead)', async () => {
+  const h = loopHarness()
+  const done = h.run(BASE_ARGS)
+  await waitUntil(() => h.spawns.length === 1, 'first spawn')
+  h.files.set(MARKER_PATH, '{}')
+  await waitUntil(() => h.spawns.length === 2, 'relaunch after marker')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE_ARGS, '--session-id', UUIDS[0]])
+  // A broken relaunch: dies fast, non-zero. Before, only a --resume got the
+  // fresh retry; this shape returned the exit code and left the agent dead.
+  h.spawns[1]!.exit(1)
+  await waitUntil(() => h.spawns.length === 3, 'fresh fallback relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE_ARGS, '--session-id', UUIDS[1]])
+  assert.equal(h.files.get(SESSION_ID_PATH), UUIDS[1])
+  h.spawns[2]!.exit(0)
+  assert.equal(await done, 0)
+})
+
 test('superviseClaude: the relaunch budget stops the loop, the session runs on', async () => {
   const h = loopHarness()
   const done = h.run(BASE_ARGS)

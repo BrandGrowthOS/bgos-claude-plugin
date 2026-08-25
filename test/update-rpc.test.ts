@@ -691,7 +691,8 @@ describe('UpdateRpcHandler dedupe and failure posture', () => {
       }),
     })
     await h.handler.handle(FRAME)
-    expect(h.progress).toEqual([{ stage: 'error', message: 'unexpected explosion' }])
+    // Tokenized, never the raw text: an fs error would carry the home path.
+    expect(h.progress).toEqual([{ stage: 'error', message: 'update_failed:failed' }])
     expect(h.drainModes).toEqual([false])
   })
 })

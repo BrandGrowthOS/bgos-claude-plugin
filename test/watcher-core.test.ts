@@ -738,3 +738,43 @@ test('runWatcher create_agent: a folder pinned to another agent fails at folder;
   assert.deepEqual(b.steps.map((s: any) => [s.id, s.state]), [['folder', 'ok'], ['preseed', 'ok'], ['pair', 'failed'], ['launch', 'pending'], ['verify', 'pending']])
   assert.equal(fs.files.has(`${HOME}/.bgos-agent/56/launch.json`), false, 'no recipe without a pairing')
 })
+
+test('runWatcher reconcile: an agent whose recipe names another CLAUDE_CONFIG_DIR fails the job as config_dir_mismatch before any plan', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const recipe = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/912/launch.json`)!)
+  recipe.claudeConfigDir = '/home/kc/.claude-b'
+  fs.writeFile(`${HOME}/.bgos-agent/912/launch.json`, JSON.stringify(recipe))
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'update', targets: [] } } })
+  const clock = fakeClock()
+  let planned = 0
+  const { deps, logs } = baseDeps(fs, backend, clock, {
+    modules: stubModules({
+      plan: (state: any) => {
+        planned += 1
+        return updatePlan(state)
+      },
+    }),
+  })
+  await runWatcher(deps as any)
+  const terminal = backend.progress('j').at(-1)!
+  assert.equal(terminal.state, 'failed')
+  assert.equal(terminal.message, 'config_dir_mismatch:912')
+  assert.equal(planned, 0, 'never planned against the wrong install')
+  assert.ok(logs.some((l) => l.includes('config dir mismatch')))
+})
+
+test("runWatcher: the manifest's claudeConfigDir beats a disagreeing service env var, with a log line", async () => {
+  const fs = machineFs()
+  fs.writeFile(
+    `${HOME}/.bgos-agent/watcher/manifest.json`,
+    JSON.stringify({ version: '0.38.3', fingerprint: bundleFingerprint(ROOT, fs), installedAt: 'x', pluginRoot: ROOT, claudeConfigDir: CONFIG, files: [] }),
+  )
+  const backend = fakeBackend()
+  const clock = fakeClock()
+  const env: Record<string, string> = { USER, CLAUDE_CONFIG_DIR: '/tmp/somewhere-else' }
+  const { deps, logs } = baseDeps(fs, backend, clock, { env })
+  await runWatcher(deps as any)
+  assert.equal(env.CLAUDE_CONFIG_DIR, CONFIG)
+  assert.ok(logs.some((l) => l.includes('the manifest wins')))
+})

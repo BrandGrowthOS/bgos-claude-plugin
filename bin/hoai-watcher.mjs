@@ -189,7 +189,7 @@ async function commandInstall({ flags, home, env, platform, fs, exec, scriptPath
   }
   let bundle
   try {
-    bundle = await installWatcherBundle({ pluginRoot, home, fs })
+    bundle = await installWatcherBundle({ pluginRoot, home, fs, claudeConfigDir: env.CLAUDE_CONFIG_DIR ?? null })
   } catch (error) {
     err(`[hoai-watcher] bundle install failed: ${error?.message ?? error}`)
     return EXIT.FAILED
@@ -349,10 +349,14 @@ async function commandReconcile({ flags, home, env, platform, fs, exec, spawnDet
   const modules = await loadLifecycleModules()
   const intent = flags.intent || 'reconcile'
   const username = defaultUsername(env)
+  // The real pairing token is in the scrubber's denylist BEFORE the first
+  // line is written, exactly as the service loop does it.
+  const credentials = readWatcherCredentials(home, fs)
+  const secrets = credentials?.token ? [credentials.token] : []
   const log = createLogger({
     path: watcherLogPath(home),
     fs,
-    scrub: (line) => scrubLine(line, { home, username, secrets: [] }),
+    scrub: (line) => scrubLine(line, { home, username, secrets }),
     echo: flags.verbose ? (line) => err(line) : undefined,
   })
   if (flags.dryRun) {
@@ -361,7 +365,6 @@ async function commandReconcile({ flags, home, env, platform, fs, exec, spawnDet
     out(JSON.stringify({ state: observed.state, pluginRoot: observed.pluginRoot, configDir: observed.configDir, plan }, null, 2))
     return EXIT.OK
   }
-  const credentials = readWatcherCredentials(home, fs)
   const client = {
     progress: async (_rpcId, body) => {
       const steps = new StepLedger(body.steps ?? [])
@@ -385,7 +388,10 @@ async function commandReconcile({ flags, home, env, platform, fs, exec, spawnDet
     modules,
     manifest,
     credentials: credentials ?? { backendUrl: '', token: '', pairingId: 0, machineId: '' },
-    secrets: [],
+    secrets,
+    // A manual reconcile must never swap the service bundle or spawn a
+    // successor: two watchers would long-poll side by side.
+    noSelfRefresh: true,
     username,
     nodePath: process.execPath,
     uid: typeof process.getuid === 'function' ? process.getuid() : null,

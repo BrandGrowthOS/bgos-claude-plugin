@@ -266,6 +266,7 @@ import {
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
 import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
   applyWin32CredentialsAcl,
   installWatcherService,
@@ -2889,7 +2890,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // hear channel events, which the bootstrap's final wait watches for.
   if (!channelLiveness.live) {
     channelLiveness.markToolCall()
-    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
   }
   // channel_ack (zero-terminal lifecycle, design 7.2): the liveness probe's
   // answer. It refreshes the marker EVERY time (the watcher compares the
@@ -2898,7 +2899,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // tracked message operation, so it can never hold a drain open.
   if (req.params.name === 'channel_ack') {
     channelLiveness.markToolCall()
-    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
     return Promise.resolve({ content: [{ type: 'text' as const, text: 'ok' }] })
   }
   if (updateDrainMode) {
@@ -4301,6 +4302,9 @@ interface ChatHistoryResponse {
 // lib/cursor-store.ts). All writes go through advanceChatCursor below so
 // every advance marks the store dirty.
 const DAEMON_START_MS = Date.now()
+/** This daemon's boot instant, stamped into the live marker so a watcher's
+ *  post-restart verify can tell THIS session's ack from the old one's. */
+const DAEMON_BOOTED_AT_ISO = new Date(DAEMON_START_MS).toISOString()
 const CURSOR_FILE_PATH = resolveCursorFilePath({
   assistantId: ASSISTANT_ID,
   cwd: process.cwd(),
@@ -5605,12 +5609,21 @@ function updateReadinessSnapshot(): UpdateReadiness {
       readFile: readTextOrNull,
     }),
     autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
+    // A marketplace install has no git updater (and nothing that would ever
+    // clear the git updater's fail-closed latch), so its latch is the
+    // lenient read of auto-update.json the watcher uses; disagreeing
+    // readers would block updates forever on one side only.
     rollbackLatched:
-      selfUpdater?.isRollbackLatched() ??
-      (state.disabled ||
-        loadSharedUpdateSafety(
-          pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
-        ).disabled),
+      INSTALL_METHOD === 'marketplace'
+        ? readRollbackLatch(
+            pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)),
+            { readFile: readTextOrNull },
+          )
+        : (selfUpdater?.isRollbackLatched() ??
+          (state.disabled ||
+            loadSharedUpdateSafety(
+              pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
+            ).disabled)),
     pendingRestartVersion:
       selfUpdater?.pendingRestartVersion() ??
       pendingRestartVersionFrom(
@@ -7781,7 +7794,7 @@ async function main(): Promise<void> {
       hasPriorCursorState: bootHelloExistingPairing,
     })
   ) {
-    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString())
+    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
     log(
       `boot hello: existing pairing on upgrade (cursor file present, no marker) ` +
         `- backfilled live marker, staying quiet (no fleet-wide greeting)`,
