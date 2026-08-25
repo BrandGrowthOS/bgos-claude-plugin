@@ -1825,3 +1825,12 @@ describe('bounded drain for triggered updates (UPDATE_DRAIN_TIMEOUT_MS)', () => 
     expect(h.calls.some((c) => c.args[0] === 'merge')).toBe(true)
   })
 })
+
+test('server.ts never arms the git self-updater on a marketplace install (its root is Claude Code\'s cache clone)', () => {
+  const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const gate = src.indexOf("if (INSTALL_METHOD === 'marketplace') {\n    selfUpdater = null")
+  const init = src.indexOf('selfUpdater = await initializeSelfUpdater({')
+  expect(gate).toBeGreaterThan(0)
+  expect(init).toBeGreaterThan(gate)
+  expect(src.slice(gate, init)).toMatch(/\} else \{/)
+})

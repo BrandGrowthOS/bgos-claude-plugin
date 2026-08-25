@@ -7692,6 +7692,17 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  // The git self-updater is for CLONE installs only. A marketplace install's
+  // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
+  // clone pinned to the release tag: without this gate the updater would
+  // fast-forward that clone to origin/main behind Claude Code's back (files
+  // at one version, installed_plugins.json at another) and roll it back with
+  // git. Marketplace installs update through `claude plugin update`
+  // (lib/update-rpc.ts + lib/marketplace-update.mjs) and nothing else.
+  if (INSTALL_METHOD === 'marketplace') {
+    selfUpdater = null
+    log('git self-updater not armed: marketplace install (updates go through `claude plugin update`)')
+  } else {
   selfUpdater = await initializeSelfUpdater({
     rootDir: import.meta.dir,
     stateFilePath: resolveAutoUpdateStatePath(cursorStore.filePath),
@@ -7706,6 +7717,7 @@ async function main(): Promise<void> {
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
   })
+  }
 
   log('Starting BGOS channel plugin...')
   log(formatAuthResolution(AUTH, CREDENTIALS_PATH))
