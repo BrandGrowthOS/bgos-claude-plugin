@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { MCP_CONFIG_FILE_NAME } from '../lib/service-supervision.mjs'
 import {
   FOLDER_PIN_FILE,
   EXIT_NOT_FOUND,
@@ -35,6 +36,8 @@ import {
   resolveHoaiAction,
   buildRunPlan,
   readFolderPin,
+  readFolderDeclaredId,
+  superviseAssistantId,
   configuredAssistantId,
   listPairedAssistantIds,
   hoaiLogPath,
@@ -1055,4 +1058,183 @@ test('relaunchClaudeArgs: a restart resolves the channel the SAME way as the lau
   assert.deepEqual(relaunch, [...(launch.ok ? launch.args : []), '--resume', 'abc-123'])
   assert.ok(relaunch.includes('server:bgos'))
   assert.equal(relaunch.includes('plugin:hoai@hoai'), false)
+})
+
+// -- the launcher-side identity seam: .mcp.json is a source, not just the pin --
+
+/**
+ * The layout EVERY agent folder on the BGOS dev Mac actually has, and the one
+ * `bgos-agent install --key --user` and `bgos-claim` produce: the id lives in
+ * `.mcp.json` beside the API key, there is NO `.bgos-agent-id`, and there is
+ * no `credentials-<id>.json` for it either.
+ *
+ * The trap this pins: Claude Code injects an MCP entry's `env` block into the
+ * DAEMON's process environment, so the daemon finds BGOS_ASSISTANT_ID there.
+ * `hoai` runs OUTSIDE claude, so its own env never has it. A launcher-side
+ * reader that consults only the pin and the env therefore comes back empty for
+ * a whole supported class of agent.
+ */
+function mcpOnlyFolder(cwd: string, assistantId: string, sep = '/') {
+  return JSON.stringify({
+    mcpServers: {
+      bgos: {
+        command: 'bun',
+        args: [`${cwd}${sep}server.ts`],
+        env: {
+          BGOS_BACKEND_URL: 'https://api.brandgrowthos.ai/api/v1',
+          BGOS_API_KEY: 'sk-live-do-not-leak-me',
+          BGOS_ASSISTANT_ID: assistantId,
+        },
+      },
+    },
+  })
+}
+
+/** A host with MANY paired agents, so the sole-credentials fallback cannot fire. */
+const CROWDED_HOME_DIR = (home: string) => ({
+  [`${home}/.bgos-agent`]: [
+    'credentials-901.json',
+    'credentials-910.json',
+    'credentials-918.json',
+    'credentials-929.json',
+  ],
+})
+
+function crowdedListDir(home: string) {
+  const map = CROWDED_HOME_DIR(home)
+  return (p: string) => (p in map ? map[p]! : [])
+}
+
+function serveMcpOnly(cwd: string, assistantId: string) {
+  const mcpPath = `${cwd}/${MCP_CONFIG_FILE_NAME}`
+  const body = mcpOnlyFolder(cwd, assistantId)
+  return (p: string) => (p === mcpPath ? body : null)
+}
+
+test('superviseAssistantId: an agent declared only in .mcp.json IS supervised', () => {
+  const cwd = '/home/kc/BGOS'
+  // Before this, all three launcher readers came back empty here, so the agent
+  // ran with no supervisor.json and therefore no launcher restart authority.
+  assert.equal(
+    superviseAssistantId({
+      cwd,
+      env: {},
+      home: POSIX_HOME,
+      readFile: serveMcpOnly(cwd, '900'),
+      listDir: crowdedListDir(POSIX_HOME),
+    }),
+    '900',
+  )
+  // The pin still wins when both are present and agree, and an env pin still
+  // answers for a folder that declares nothing.
+  const pinPath = `${cwd}/${FOLDER_PIN_FILE}`
+  assert.equal(
+    superviseAssistantId({
+      cwd,
+      env: {},
+      home: POSIX_HOME,
+      readFile: (p: string) => (p === pinPath ? '900\n' : serveMcpOnly(cwd, '900')(p)),
+      listDir: crowdedListDir(POSIX_HOME),
+    }),
+    '900',
+  )
+  assert.equal(
+    superviseAssistantId({
+      cwd,
+      env: { BGOS_ASSISTANT_ID: '777' },
+      home: POSIX_HOME,
+      readFile: () => null,
+      listDir: crowdedListDir(POSIX_HOME),
+    }),
+    '777',
+  )
+  // A folder declaring nothing on a crowded host still supervises nothing.
+  assert.equal(
+    superviseAssistantId({
+      cwd,
+      env: {},
+      home: POSIX_HOME,
+      readFile: () => null,
+      listDir: crowdedListDir(POSIX_HOME),
+    }),
+    '',
+  )
+})
+
+test('superviseAssistantId: a folder declaring TWO different ids supervises neither', () => {
+  const cwd = '/home/kc/BGOS'
+  const pinPath = `${cwd}/${FOLDER_PIN_FILE}`
+  assert.equal(
+    superviseAssistantId({
+      cwd,
+      env: {},
+      home: POSIX_HOME,
+      readFile: (p: string) => (p === pinPath ? '777\n' : serveMcpOnly(cwd, '900')(p)),
+      listDir: crowdedListDir(POSIX_HOME),
+    }),
+    '',
+  )
+})
+
+test('buildRunPlan: launches an agent declared only in .mcp.json, and names that source', () => {
+  const cwd = '/home/kc/BGOS'
+  const plan = buildRunPlan({
+    cwd,
+    env: {},
+    home: POSIX_HOME,
+    readFile: serveMcpOnly(cwd, '900'),
+    listDir: crowdedListDir(POSIX_HOME),
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, true)
+  if (!plan.ok) return
+  assert.match(plan.note, /assistant 900/)
+  // Telling the user the folder "has no .bgos-agent-id pin" would send them
+  // looking for a file that was never supposed to exist here.
+  assert.match(plan.note, /\.mcp\.json/)
+  assert.equal(plan.note.includes('folder pin'), false)
+  // The secret sitting beside the id must never reach an operator-facing line.
+  assert.equal(plan.note.includes('sk-live-do-not-leak-me'), false)
+})
+
+test('buildRunPlan: a folder declaring two different ids is refused as a CONFLICT, not a missing pin', () => {
+  const cwd = '/home/kc/BGOS'
+  const pinPath = `${cwd}/${FOLDER_PIN_FILE}`
+  const plan = buildRunPlan({
+    cwd,
+    env: {},
+    home: POSIX_HOME,
+    readFile: (p: string) => (p === pinPath ? '777\n' : serveMcpOnly(cwd, '900')(p)),
+    listDir: crowdedListDir(POSIX_HOME),
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, false)
+  if (plan.ok) return
+  assert.match(plan.reason, /TWO different assistant ids/)
+  assert.match(plan.reason, /will not guess/)
+})
+
+test('buildRunPlan: the multi-agent refusal names BOTH folder sources, not only the pin', () => {
+  const cwd = '/home/kc/nowhere'
+  const plan = buildRunPlan({
+    cwd,
+    env: {},
+    home: POSIX_HOME,
+    readFile: () => null,
+    listDir: crowdedListDir(POSIX_HOME),
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, false)
+  if (plan.ok) return
+  assert.match(plan.reason, /4 paired agents/)
+  // The DIAGNOSIS has to name both sources, not just the pin file. Matching
+  // /\.mcp\.json/ alone cannot discriminate: the remedy sentence mentions it
+  // too, so a refusal that blamed only the missing pin would still pass.
+  assert.match(plan.reason, /declares no assistant \(no \.bgos-agent-id pin and no BGOS_ASSISTANT_ID in \.mcp\.json\)/)
+})
+
+test('logsAssistantId: keyed by what the folder declares, from either source', () => {
+  const cwd = '/home/kc/BGOS'
+  assert.equal(logsAssistantId({ cwd, env: {}, readFile: serveMcpOnly(cwd, '900') }), '900')
+  assert.equal(logsAssistantId({ cwd, env: {}, readFile: () => null }), 'unknown')
 })

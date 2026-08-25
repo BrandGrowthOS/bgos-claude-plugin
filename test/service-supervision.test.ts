@@ -39,6 +39,7 @@ import {
   buildServiceRecord,
   isSafeServiceHandle,
   launchAgentsDir,
+  listLoadedJobs,
   matchJobToAgent,
   parseLaunchctlList,
   parseLaunchdJobJson,
@@ -745,15 +746,15 @@ test('readFolderIdentity: either source is authoritative, disagreement is a conf
   const read = (files: Record<string, string>) => (p: string) => (p in files ? files[p]! : null)
   const PIN = `/x/${FOLDER_PIN_FILE_NAME}`
   // .mcp.json alone: the ONLY source the real fleet folders have.
-  assert.deepEqual(readFolderIdentity('/x', read(mcp)), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read(mcp)), { id: '910', conflict: false, source: 'mcp' })
   // The pin file alone: what bakeLaunchPin writes for a freshly paired folder.
-  assert.deepEqual(readFolderIdentity('/x', read({ [PIN]: '910\n' })), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({ [PIN]: '910\n' })), { id: '910', conflict: false, source: 'pin' })
   // Both, agreeing.
-  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '910\n' })), { id: '910', conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '910\n' })), { id: '910', conflict: false, source: 'pin' })
   // Both, disagreeing: no identity, and the caller must refuse the folder.
-  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '777\n' })), { id: null, conflict: true })
+  assert.deepEqual(readFolderIdentity('/x', read({ ...mcp, [PIN]: '777\n' })), { id: null, conflict: true, source: null })
   // Neither: a folder that declares nothing stays usable.
-  assert.deepEqual(readFolderIdentity('/x', read({})), { id: null, conflict: false })
+  assert.deepEqual(readFolderIdentity('/x', read({})), { id: null, conflict: false, source: null })
 })
 
 test('a REAL agent folder (no pin file, .mcp.json only) vetoes a job belonging to another agent', () => {
@@ -1023,4 +1024,108 @@ test('parseMcpChannelServerName: nothing but the name leaves the function', () =
   assert.equal(result, 'bgos')
   assert.equal(typeof result, 'string')
   assert.ok(!String(result).includes('sk-super-secret-value'))
+})
+
+// -- one sweep of the loaded jobs, shared by the resolver and by discovery ---------------
+
+test('listLoadedJobs: only jobs the service manager reports LOADED, with their own fields', () => {
+  const loadedPlist = `${AGENTS_DIR}/ai.bgos.session.910.plist`
+  const unrelatedPlist = `${AGENTS_DIR}/ai.bgos.session.911.plist`
+  // An UNLOADED job whose plist legitimately names a loaded one: launchd's own
+  // KeepAlive/OtherJobEnabled key does exactly this. The cheap text prefilter
+  // therefore cannot exclude it, which is the point: loadedness is decided by
+  // the job's own Label against launchctl, not by what its file mentions.
+  const referencingPlist = `${AGENTS_DIR}/ai.bgos.session.912.plist`
+  const host = fakeHost({
+    files: {
+      [loadedPlist]: SESSION_JOB,
+      [unrelatedPlist]: plistJson({ label: 'ai.bgos.session.911', workingDirectory: '/home/kc/nope' }),
+      [referencingPlist]: JSON.stringify({
+        Label: 'ai.bgos.session.912',
+        WorkingDirectory: '/home/kc/nope-either',
+        KeepAlive: { OtherJobEnabled: { 'ai.bgos.session.910': true } },
+      }),
+    },
+    loadedLaunchd: ['ai.bgos.session.910'],
+  })
+  const jobs = listLoadedJobs({
+    platform: 'darwin',
+    home: HOME,
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  })
+  assert.deepEqual(jobs.map((j) => j.handle), ['ai.bgos.session.910'])
+  assert.equal(jobs[0]!.kind, 'launchd')
+  assert.equal(jobs[0]!.job.workingDirectory, '/home/kc/Voxor/Vexa')
+  // The referencing plist WAS inspected (the prefilter let it through) and was
+  // still excluded, so the loaded check is doing the work, not the prefilter.
+  assert.equal(host.calls.some((c) => c.includes(referencingPlist)), true)
+  // A plist that mentions no loaded job at all costs no plutil call.
+  assert.equal(host.calls.some((c) => c.includes(unrelatedPlist)), false)
+  // Nothing loaded means nothing to enumerate.
+  const none = fakeHost({ files: { [loadedPlist]: SESSION_JOB }, loadedLaunchd: [] })
+  assert.deepEqual(
+    listLoadedJobs({ platform: 'darwin', home: HOME, listDir: none.listDir, readFile: none.readFile, execSync: none.execSync }),
+    [],
+  )
+  assert.deepEqual(
+    listLoadedJobs({ platform: 'win32', home: HOME, listDir: host.listDir, readFile: host.readFile, execSync: host.execSync }),
+    [],
+  )
+})
+
+test('listLoadedJobs: systemd reads the unit files directly, loaded ones only', () => {
+  const host = fakeHost({
+    files: { [UNIT_PATH]: UNIT_BODY, [`${UNITS_DIR}/other.service`]: '[Service]\nExecStart=/bin/true\n' },
+    loadedSystemd: ['vexa-agent.service'],
+  })
+  const jobs = listLoadedJobs({
+    platform: 'linux',
+    home: HOME,
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  })
+  assert.deepEqual(jobs.map((j) => j.handle), ['vexa-agent.service'])
+  assert.equal(jobs[0]!.job.workingDirectory, '/home/kc/Voxor/Vexa')
+})
+
+test('resolveSupervisingService: a pre-enumerated job list is matched WITHOUT re-enumerating', () => {
+  const host = fakeHost({ files: { [SESSION_PLIST]: SESSION_JOB }, loadedLaunchd: ['ai.bgos.session.910'] })
+  const jobs = listLoadedJobs({
+    platform: 'darwin',
+    home: HOME,
+    listDir: host.listDir,
+    readFile: host.readFile,
+    execSync: host.execSync,
+  })
+  const before = host.calls.length
+  const resolved = resolveSupervisingService({
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '910',
+    cwd: '/home/kc/Voxor/Vexa',
+    readFile: host.readFile,
+    execSync: host.execSync,
+    jobs,
+  })
+  assert.equal(resolved?.handle, 'ai.bgos.session.910')
+  assert.equal(resolved?.via, 'working-directory')
+  // A fleet sweep must cost one enumeration, not one per agent.
+  assert.equal(host.calls.length, before)
+  // The identity vetoes still apply to the pre-enumerated path.
+  const foreign: Record<string, string> = { ...host.files, '/home/kc/Voxor/Vexa/.mcp.json': JSON.stringify({ mcpServers: { bgos: { env: { BGOS_ASSISTANT_ID: '777' } } } }) }
+  assert.equal(
+    resolveSupervisingService({
+      platform: 'darwin',
+      home: HOME,
+      assistantId: '910',
+      cwd: '/home/kc/Voxor/Vexa',
+      readFile: (p: string) => (p in foreign ? foreign[p]! : null),
+      execSync: host.execSync,
+      jobs,
+    }),
+    null,
+  )
 })
