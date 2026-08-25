@@ -6,8 +6,18 @@
  *
  * Restart authorities, strongest first (path naming mirrors bin/bgos-agent's
  * label_for / unit_for / plist_for / unitfile_for / statedir_for):
- *   - an installed always-on service file for this assistant: launchd plist
- *     on macOS, systemd --user unit on Linux;
+ *   - an installed always-on service file for this assistant AT THE CANONICAL
+ *     NAME bin/bgos-agent installs: launchd plist on macOS, systemd --user
+ *     unit on Linux;
+ *   - a loaded service-manager job DISCOVERED by asking the platform, for the
+ *     agents some other launcher installed under a name of its own. See
+ *     lib/service-supervision.mjs: it enumerates the loaded launchd jobs /
+ *     systemd --user units and keeps the one whose own launch recipe names
+ *     this agent (its state dir, or its working directory), failing closed on
+ *     no match and on an ambiguous one. Without this tier, every agent not
+ *     installed by bin/bgos-agent reported 'none' and the app withheld the
+ *     one-click update button from a daemon its supervisor would have
+ *     restarted on request;
  *   - a live launcher supervisor: bin/hoai-core.mjs writes
  *     ~/.bgos-agent/<id>/supervisor.json while its supervise loop runs and
  *     relaunches claude when ~/.bgos-agent/<id>/restart-requested.json
@@ -16,10 +26,27 @@
  *   - none: the daemon must never exit (the kc-server invariant,
  *     lib/self-update.ts shouldExitAfterUpdate), it stages instead.
  *
+ * Whichever tier answers also carries the HANDLE it was resolved by (the
+ * launchd label / systemd unit), and the restart command is built from that
+ * handle, so a restart always goes back through the supervisor that is
+ * actually holding the agent. The supervisor then re-runs its own launch
+ * recipe, in its own working directory, reading its own .mcp.json, which is
+ * the property that keeps a restart from bleeding one agent's identity into
+ * another (docs/learnings, fleet-restart shared-folder identity bleed).
+ *
  * Pure and injectable throughout so every decision is unit-testable.
  */
 
 import { join } from 'node:path'
+
+import {
+  resolveSupervisingService,
+  serviceRestartCommandForHandle,
+  type ResolvedService,
+  type SyncExecResult,
+} from './service-supervision.mjs'
+
+export type { ResolvedService, SyncExecResult }
 
 /** Mirror of bin/hoai-core.mjs SUPERVISOR_FILE_NAME / RESTART_MARKER_FILE_NAME
  *  (pinned by test/update-readiness.test.ts, which imports both sides). */
@@ -149,15 +176,59 @@ export interface SupervisionProbe {
   exists: (path: string) => boolean
   readFile: (path: string) => string | null
   pidAlive?: (pid: number) => boolean
+  /** This daemon's working directory, the anchor a discovered job is matched
+   *  by (an agent's identity comes from the .mcp.json of the folder it runs
+   *  in, so a job that re-runs in that folder brings back THIS agent). */
+  cwd?: string | null
+  /** Discovery probes. Both must be supplied for the discovery tier to run at
+   *  all; without them detection falls back to the canonical name, which is
+   *  the pre-discovery behaviour and is fail-closed. */
+  listDir?: (path: string) => string[]
+  execSync?: (file: string, args: string[]) => SyncExecResult
 }
 
-/** What would restart this daemon right now, strongest evidence first. A
- *  supervisor.json only counts when its launcher pid is still alive AND it
- *  declared the relaunch capability; a stale file is 'none', never a lie. */
-export function detectSupervision(probe: SupervisionProbe): SupervisedKind {
-  const service = serviceFilePath(probe.platform, probe.home, probe.assistantId)
-  if (service && probe.exists(service)) {
-    return probe.platform === 'darwin' ? 'launchd' : 'systemd'
+export interface Supervision {
+  supervised: SupervisedKind
+  /** The job a restart must go through, when one was resolved. */
+  service: ResolvedService | null
+}
+
+/** The service authority installed under the canonical bin/bgos-agent name,
+ *  or null. Kept as its own tier so the discovery tier below is purely
+ *  additive: an agent that reported a service before still does, with the
+ *  same handle, without consulting the platform at all. */
+function canonicalService(probe: SupervisionProbe): ResolvedService | null {
+  const file = serviceFilePath(probe.platform, probe.home, probe.assistantId)
+  if (!file || !probe.exists(file)) return null
+  const id = validAssistantId(probe.assistantId)
+  if (!id) return null
+  return probe.platform === 'darwin'
+    ? { kind: 'launchd', handle: serviceLabel(id), via: 'canonical-file', file }
+    : { kind: 'systemd', handle: serviceUnit(id), via: 'canonical-file', file }
+}
+
+/** What would restart this daemon right now, strongest evidence first, WITH
+ *  the handle a restart must be addressed to. A supervisor.json only counts
+ *  when its launcher pid is still alive AND it declared the relaunch
+ *  capability; a stale file is 'none', never a lie. A discovered job only
+ *  counts when the platform reports it LOADED and exactly one loaded job
+ *  names this agent. */
+export function resolveSupervision(probe: SupervisionProbe): Supervision {
+  const canonical = canonicalService(probe)
+  if (canonical) {
+    return { supervised: canonical.kind === 'launchd' ? 'launchd' : 'systemd', service: canonical }
+  }
+  const discovered = resolveSupervisingService({
+    platform: probe.platform,
+    home: probe.home,
+    assistantId: probe.assistantId,
+    cwd: probe.cwd ?? null,
+    listDir: probe.listDir,
+    readFile: probe.readFile,
+    execSync: probe.execSync,
+  })
+  if (discovered) {
+    return { supervised: discovered.kind === 'launchd' ? 'launchd' : 'systemd', service: discovered }
   }
   const supervisorPath = supervisorFilePath(probe.home, probe.assistantId)
   if (supervisorPath) {
@@ -167,36 +238,61 @@ export function detectSupervision(probe: SupervisionProbe): SupervisedKind {
       supervisor.capabilities.includes('relaunch') &&
       (probe.pidAlive ?? defaultPidAlive)(supervisor.pid)
     ) {
-      return 'launcher'
+      return { supervised: 'launcher', service: null }
     }
   }
-  return 'none'
+  return { supervised: 'none', service: null }
 }
 
+/** The wire enum alone (heartbeat readiness). */
+export function detectSupervision(probe: SupervisionProbe): SupervisedKind {
+  return resolveSupervision(probe).supervised
+}
+
+/** Seconds the self-restart waits so the daemon's 'restarting' progress
+ *  report leaves the process before the restart kills it. */
+export const SELF_RESTART_DELAY_SECONDS = 2
+
 /** The detached command that restarts this assistant's always-on service
- *  AFTER a short delay, so the daemon's 'restarting' progress report leaves
- *  the process before the restart kills it. The id and uid are validated
- *  integers and the label/unit are built from the id, so the fixed strings
- *  below have no injection surface. */
+ *  AFTER a short delay. `service` names the job to address; without one the
+ *  canonical bin/bgos-agent label/unit for this id is used, which is what
+ *  every caller did before discovery existed. A discovered handle comes off
+ *  disk, so it is validated (SERVICE_HANDLE_RE) before it reaches a command
+ *  line; the uid is a validated integer; nothing else is interpolated. */
 export function serviceRestartCommand(opts: {
   platform: string
   assistantId: string | number | null | undefined
   uid: number | null
+  service?: ResolvedService | null
 }): { file: string; args: string[] } | null {
+  const service = opts.service ?? null
+  // serviceRestartCommandForHandle owns the handle-safety rule; a second copy
+  // of it here would mask the first, so neither could be proven by a test.
+  if (service) {
+    return serviceRestartCommandForHandle({
+      kind: service.kind,
+      handle: service.handle,
+      uid: opts.uid,
+      delaySeconds: SELF_RESTART_DELAY_SECONDS,
+    })
+  }
   const id = validAssistantId(opts.assistantId)
   if (!id) return null
   if (opts.platform === 'linux') {
-    return {
-      file: 'systemd-run',
-      args: ['--user', '--on-active=2', 'systemctl', '--user', 'restart', serviceUnit(id)],
-    }
+    return serviceRestartCommandForHandle({
+      kind: 'systemd',
+      handle: serviceUnit(id),
+      uid: opts.uid,
+      delaySeconds: SELF_RESTART_DELAY_SECONDS,
+    })
   }
   if (opts.platform === 'darwin') {
-    if (opts.uid === null || !Number.isInteger(opts.uid) || opts.uid < 0) return null
-    return {
-      file: '/bin/sh',
-      args: ['-c', `sleep 2 && launchctl kickstart -k gui/${opts.uid}/${serviceLabel(id)}`],
-    }
+    return serviceRestartCommandForHandle({
+      kind: 'launchd',
+      handle: serviceLabel(id),
+      uid: opts.uid,
+      delaySeconds: SELF_RESTART_DELAY_SECONDS,
+    })
   }
   return null
 }
@@ -207,18 +303,22 @@ export type RestartAuthority =
   | { kind: 'staged' }
 
 /** The restart ladder's selection (update_rpc, wire contract v1 section 3):
- *  an installed service beats the launcher beats staging. A service file
- *  with no runnable restart command (no uid on darwin) falls through to
- *  staged: staging is always safe, a bad restart never is. */
+ *  an installed service beats the launcher beats staging. The command is
+ *  addressed to the SAME job the detection resolved, so the restart goes
+ *  back through the supervisor that is holding this agent and that
+ *  supervisor re-runs its own launch recipe. A service with no runnable
+ *  restart command (no uid on darwin) falls through to staged: staging is
+ *  always safe, a bad restart never is. */
 export function chooseRestartAuthority(
   probe: SupervisionProbe & { uid: number | null },
 ): RestartAuthority {
-  const supervised = detectSupervision(probe)
+  const { supervised, service } = resolveSupervision(probe)
   if (supervised === 'systemd' || supervised === 'launchd') {
     const command = serviceRestartCommand({
       platform: probe.platform,
       assistantId: probe.assistantId,
       uid: probe.uid,
+      service,
     })
     if (command) return { kind: 'service', command }
   }

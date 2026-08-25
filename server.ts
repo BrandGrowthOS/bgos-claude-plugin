@@ -239,8 +239,11 @@ import {
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import {
+  agentStateDir,
   chooseRestartAuthority,
   detectSupervision,
+  resolveSupervision,
+  type ResolvedService,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
 import { join as joinPath } from 'node:path'
@@ -249,6 +252,11 @@ import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // identity, marketplace one-click updates, the watcher installer, and the
 // P3 failure-signature intake. Plain .mjs modules shared with the watcher.
 import { ensureMachineId } from './lib/machine-id.mjs'
+import {
+  SERVICE_RECORD_FILE_NAME,
+  buildServiceRecord,
+  defaultExecSync,
+} from './lib/service-supervision.mjs'
 import {
   createMarketplaceLatestTracker,
   observeMarketplaceLatest,
@@ -352,6 +360,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   unlinkSync,
   watch,
@@ -5593,21 +5602,77 @@ function readTextOrNull(path: string): string | null {
   }
 }
 
+function listDirOrEmpty(path: string): string[] {
+  try {
+    return readdirSync(path)
+  } catch {
+    return []
+  }
+}
+
+// The probe bag every restart-authority read shares. `cwd` is what makes a
+// bespoke supervisor findable at all: an agent takes its identity from the
+// .mcp.json of the folder it runs in, so a loaded job whose WorkingDirectory
+// is THIS folder is a job that brings back THIS agent (lib/service-supervision.mjs).
+function supervisionProbe() {
+  return {
+    platform: process.platform,
+    home: homedir(),
+    assistantId: ASSISTANT_ID,
+    cwd: process.cwd(),
+    exists: existsSync,
+    readFile: readTextOrNull,
+    listDir: listDirOrEmpty,
+    execSync: defaultExecSync,
+  }
+}
+
 // Heartbeat readiness snapshot (wire contract v1 section 1), computed at
 // send time because the launcher supervisor and the latch files can change
 // under a running daemon. Live SelfUpdater state wins; without an updater
 // (kill switch off, latch armed at boot, non-git install) the on-disk state
 // files answer, with their existing fail-closed parse semantics.
+// Publish (or clear) the supervising job this daemon resolved for ITSELF, at
+// ~/.bgos-agent/<id>/service.json. Only the daemon knows its own working
+// directory, and that is the anchor a bespoke supervisor is found by; the
+// per-machine watcher has one only for agents hoai launched. The watcher
+// re-verifies this record against the live job list before it counts
+// (lib/service-supervision.mjs verifyServiceRecord), so it is a hint, never an
+// authority. Best effort throughout: telemetry must never break a heartbeat.
+function publishServiceRecord(service: ResolvedService | null): void {
+  const dir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (!dir) return
+  const path = pathJoin(dir, SERVICE_RECORD_FILE_NAME)
+  try {
+    const record = service
+      ? buildServiceRecord({
+          assistantId: ASSISTANT_ID,
+          service,
+          cwd: process.cwd(),
+          resolvedAt: new Date().toISOString(),
+        })
+      : null
+    if (!record) {
+      // No authority now: a record left from a previous launch would be a lie
+      // the watcher has to disprove, so it goes.
+      try {
+        unlinkSync(path)
+      } catch {}
+      return
+    }
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`)
+  } catch {
+    // A daemon that cannot write its own state dir still reports readiness.
+  }
+}
+
 function updateReadinessSnapshot(): UpdateReadiness {
   const state = loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
+  const supervision = resolveSupervision(supervisionProbe())
+  publishServiceRecord(supervision.service)
   return {
-    supervised: detectSupervision({
-      platform: process.platform,
-      home: homedir(),
-      assistantId: ASSISTANT_ID,
-      exists: existsSync,
-      readFile: readTextOrNull,
-    }),
+    supervised: supervision.supervised,
     autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
     // A marketplace install has no git updater (and nothing that would ever
     // clear the git updater's fail-closed latch), so its latch is the
@@ -5699,13 +5764,7 @@ const updateRpc = new UpdateRpcHandler({
       runningVersion: RUNNING_VERSION,
       assistantId: String(ASSISTANT_ID),
       cwd: process.cwd(),
-      supervised: detectSupervision({
-        platform: process.platform,
-        home: homedir(),
-        assistantId: ASSISTANT_ID,
-        exists: existsSync,
-        readFile: readTextOrNull,
-      }),
+      supervised: detectSupervision(supervisionProbe()),
       autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
       rollbackLatched: updateReadinessSnapshot().rollbackLatched,
     })
@@ -5725,11 +5784,7 @@ const updateRpc = new UpdateRpcHandler({
   postFailureDiagnostics: (diagnostics) => postFailureDiagnostics(bgosPost, diagnostics),
   restartAuthority: () =>
     chooseRestartAuthority({
-      platform: process.platform,
-      home: homedir(),
-      assistantId: ASSISTANT_ID,
-      exists: existsSync,
-      readFile: readTextOrNull,
+      ...supervisionProbe(),
       uid: typeof process.getuid === 'function' ? process.getuid() : null,
     }),
   spawnDetached: (file, args) => {

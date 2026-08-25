@@ -8,6 +8,7 @@ import {
   chooseRestartAuthority,
   detectSupervision,
   parseSupervisorFile,
+  resolveSupervision,
   restartMarkerPath,
   serviceFilePath,
   serviceLabel,
@@ -216,5 +217,107 @@ describe('chooseRestartAuthority', () => {
         uid: null,
       }),
     ).toEqual({ kind: 'staged' })
+  })
+})
+
+describe('the discovery tier: a supervisor that did not install itself under our name', () => {
+  const PLIST = `${HOME}/Library/LaunchAgents/ai.bgos.session.871.plist`
+  const JOB = JSON.stringify({
+    Label: 'ai.bgos.session.871',
+    ProgramArguments: ['/bin/bash', `${HOME}/.bgos-session-871/keepalive.sh`],
+    WorkingDirectory: `${HOME}/Voxor/Vexa`,
+  })
+
+  function host(files: Record<string, string>, loaded: string[]) {
+    return {
+      exists: (p: string) => p in files,
+      readFile: (p: string) => (p in files ? files[p]! : null),
+      listDir: (dir: string) =>
+        Object.keys(files)
+          .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+          .map((p) => p.slice(dir.length + 1)),
+      execSync: (file: string, args: string[]) => {
+        if (file === 'launchctl' && args[0] === 'list') {
+          return { code: 0, stdout: ['PID\tStatus\tLabel', ...loaded.map((l) => `1\t0\t${l}`)].join('\n') }
+        }
+        if (file === 'plutil') {
+          const path = args[args.length - 1]!
+          return path in files ? { code: 0, stdout: files[path]! } : { code: 1, stdout: '' }
+        }
+        return { code: 127, stdout: '' }
+      },
+    }
+  }
+
+  const supervised = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '871',
+    cwd: `${HOME}/Voxor/Vexa`,
+    pidAlive: () => false,
+    ...host({ [PLIST]: JOB }, ['ai.bgos.session.871']),
+  }
+
+  test('an agent launchd holds under a bespoke label reports launchd, not none', () => {
+    // Before discovery this was 'none' and the app refused the one-click
+    // update button for a daemon launchd would have restarted on request.
+    expect(detectSupervision(supervised)).toBe('launchd')
+    const resolved = resolveSupervision(supervised)
+    expect(resolved.service?.handle).toBe('ai.bgos.session.871')
+    expect(resolved.service?.via).toBe('working-directory')
+  })
+
+  test('the restart is addressed to the DISCOVERED label, so it goes through that supervisor', () => {
+    // launchctl kickstart -k makes launchd re-run its own launch recipe, in
+    // its own WorkingDirectory, reading its own .mcp.json. That is what keeps
+    // a restart from starting the agent as somebody else.
+    expect(chooseRestartAuthority({ ...supervised, uid: 501 })).toEqual({
+      kind: 'service',
+      command: {
+        file: '/bin/sh',
+        args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.session.871'],
+      },
+    })
+  })
+
+  test('unsupervised stays none with every probe wired, and staged stays the fallback', () => {
+    const unsupervised = { ...supervised, cwd: `${HOME}/somewhere/else` }
+    expect(detectSupervision(unsupervised)).toBe('none')
+    expect(chooseRestartAuthority({ ...unsupervised, uid: 501 })).toEqual({ kind: 'staged' })
+    // A job that exists on disk but is not loaded cannot restart anything.
+    const dormant = { ...supervised, ...host({ [PLIST]: JOB }, ['com.apple.mdworker']) }
+    expect(detectSupervision(dormant)).toBe('none')
+  })
+
+  test('the canonical service still answers first, with no platform call at all', () => {
+    const plist = serviceFilePath('darwin', HOME, '871')!
+    let execCalls = 0
+    const resolved = resolveSupervision({
+      ...supervised,
+      exists: (p: string) => p === plist,
+      execSync: (file: string, args: string[]) => {
+        execCalls += 1
+        return { code: 127, stdout: '' }
+      },
+    })
+    expect(resolved.supervised).toBe('launchd')
+    expect(resolved.service?.handle).toBe('ai.bgos.agent.871')
+    expect(resolved.service?.via).toBe('canonical-file')
+    expect(execCalls).toBe(0)
+  })
+
+  test('a live launcher is still preferred over nothing when no service is found', () => {
+    const supPath = supervisorFilePath(HOME, '871')!
+    const files = { [supPath]: JSON.stringify({ pid: 4242, capabilities: ['relaunch'] }) }
+    const probe = {
+      ...supervised,
+      ...host(files, []),
+      pidAlive: () => true,
+    }
+    expect(detectSupervision(probe)).toBe('launcher')
+    expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({
+      kind: 'launcher',
+      markerPath: restartMarkerPath(HOME, '871')!,
+    })
   })
 })
