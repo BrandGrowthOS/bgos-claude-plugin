@@ -49,6 +49,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { detectInstallMethod, launchFlagArgs } from './bgos-install-method.mjs'
+import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
 
 /** Mirror of bgos-pair.mjs FOLDER_PIN_FILE_NAME / agent-credentials.ts
  *  FOLDER_PIN_FILE: the launch-folder pin whose number IS the assistant id. */
@@ -699,6 +700,37 @@ export async function superviseClaude(args, opts = {}) {
   if (exists(markerPath)) removeFile(markerPath)
   print(`[hoai] restart supervisor armed for assistant ${id}`)
 
+  // Launch recipe (design 1.7): what a per-machine watcher needs to relaunch
+  // THIS agent as itself in this folder when no supervisor is alive any more
+  // (lib/agent-inventory.mjs readLaunchRecipe). Written at arm time and on
+  // every relaunch; existence-only for others (contents are re-validated on
+  // read). It never carries a session id (buildLaunchRecipe strips the
+  // session args; hoai resumes its own pin itself) nor a token. Best effort:
+  // a failed write changes nothing about this launch.
+  const recordRecipe = (launchArgs) => {
+    const detection = detectInstallMethod({
+      scriptPath: joinDir(scriptDir, 'bgos-install-method.mjs'),
+      env,
+      home,
+    })
+    writeLaunchRecipe({
+      home,
+      assistantId: id,
+      writeFile,
+      recipe: buildLaunchRecipe({
+        assistantId: id,
+        cwd,
+        argv: launchArgs,
+        installMethod: detection.method,
+        pluginRoot: detection.pluginRoot,
+        node: process.execPath,
+        startedAt: new Date(now()).toISOString(),
+        pid: process.pid,
+      }),
+    })
+  }
+  recordRecipe(args)
+
   // GAP 1: pin a per-agent session id and resume THIS agent's OWN session on
   // every (re)launch, never --continue (newest-in-shared-cwd = identity bleed).
   const sessionIdPath = joinDir(stateDir, SESSION_ID_FILE_NAME)
@@ -766,6 +798,7 @@ export async function superviseClaude(args, opts = {}) {
           sessionArgs: sessionArgsFor(pinnedId, true),
         })
         freshTried = false
+        recordRecipe(currentArgs)
         print(`[hoai] relaunching: claude ${currentArgs.join(' ')}`)
         continue
       }
@@ -795,6 +828,7 @@ export async function superviseClaude(args, opts = {}) {
           freshSessionArgs = []
         }
         currentArgs = relaunchClaudeArgs({ scriptDir, env, home, sessionArgs: freshSessionArgs })
+        recordRecipe(currentArgs)
         print(
           '[hoai] the resumed session exited immediately (a rejected resume or a fast ' +
             'fault); relaunching a FRESH own session so the agent is not left down...',
