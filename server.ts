@@ -179,6 +179,7 @@ import {
   ChannelLiveness,
   deafSessionAction,
   deafSessionChatMessage,
+  inboundOwesReply,
 } from './lib/channel-liveness.js'
 import {
   liveMarkerPath,
@@ -4708,7 +4709,12 @@ function rememberPeerConvChat(convId: string | undefined, chatId: string | undef
   peerConvByChat.set(chatId, convId)
 }
 
-function recordInbound(chatId: string, messageId: number, turnState?: string): void {
+function recordInbound(
+  chatId: string,
+  messageId: number,
+  turnState?: string,
+  senderKind?: string | null,
+): void {
   if (!chatId) return
   // Authorize the chat for outbound dispatch even before the overdue-tracker
   // guards below short-circuit (meeting chats, malformed ids). Receiving an
@@ -4720,6 +4726,12 @@ function recordInbound(chatId: string, messageId: number, turnState?: string): v
   // overdue tracker for it (race-proof guard against a close that arrived
   // before this inbound, or a re-delivery after the close).
   if (closedPeerChats.has(chatId)) return
+  // A scheduler / system wake card owes no reply: its own body routinely ends
+  // by asking for silence ("tell KC only if blocked"), so arming a tracker
+  // means nudging the agent four minutes later to answer a notification that
+  // just told it not to. An hourly cron would produce 24 false nudges a day.
+  // See inboundOwesReply in lib/channel-liveness.ts.
+  if (!inboundOwesReply(senderKind)) return
   // A final-turn peer message IS the close: it owes no reply, and tracking it
   // would fire the false-positive overdue ~2 min later. Mark the thread closed
   // instead of arming a tracker.
@@ -5656,7 +5668,12 @@ async function pollChat(chatId: string): Promise<void> {
         rememberPeerConvChat(convId, chatId)
       }
       if (!isBacklog) {
-        recordInbound(chatId, msg.message.id, pollTurnState ?? undefined)
+        recordInbound(
+          chatId,
+          msg.message.id,
+          pollTurnState ?? undefined,
+          msg.message.sender,
+        )
       }
     }
 
@@ -6424,7 +6441,7 @@ async function forwardStreamInbound(
     forwardedMessageIds.delete(view.messageId)
     throw err
   }
-  recordInbound(chatId, view.messageId, view.turnState)
+  recordInbound(chatId, view.messageId, view.turnState, view.senderKind)
 }
 
 /**
@@ -7221,7 +7238,7 @@ function connectWebsocket(): void {
       // Track AFTER recording the conv↔chat association and turn_state so a
       // final inbound is recognized as a close (recordInbound short-circuits
       // it) and the closed-guard is consulted with the latest mapping.
-      recordInbound(chatId, messageId, wsTurnState)
+      recordInbound(chatId, messageId, wsTurnState, wsSenderType)
     } catch (err) {
       log(`WS inbound_message handler error: ${err}`)
     }
