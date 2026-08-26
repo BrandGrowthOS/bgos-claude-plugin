@@ -177,8 +177,8 @@ import {
 } from './lib/cursor-store.js'
 import {
   ChannelLiveness,
+  deafSessionAction,
   deafSessionChatMessage,
-  shouldEscalateDeafSession,
 } from './lib/channel-liveness.js'
 import {
   liveMarkerPath,
@@ -405,9 +405,12 @@ const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
 // process sees. A Claude Code session launched without the channel flag
 // accepts our notifications at the transport and silently discards them,
-// and such a session never calls a tool; zero tool calls since boot is the
-// deafness signal. Gates cursor persistence (flushChatCursors) and arms the
-// deaf-session escalation in checkReplyOverdue.
+// and such a session never calls a tool. Having spoken is therefore proof a
+// session HEARS us; having stayed quiet is NOT proof it cannot, because
+// silence is a legitimate outcome we ourselves invite. So this gates cursor
+// persistence (flushChatCursors), where a false negative costs one duplicate
+// batch, and it arms a channel_ack PROBE in checkReplyOverdue rather than
+// the chat warning directly.
 const channelLiveness = new ChannelLiveness()
 
 function log(msg: string): void {
@@ -4833,12 +4836,16 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
   return ctx.currentSpeakerId === me
 }
 
-// Deaf-session escalation fired this boot? The nudge below is itself a
-// channel notification, so a session launched without the channel flag
-// discards the rescue too (fix 04). When the nudge goes unacted for a second
-// full window on a session with zero tool calls since boot, we post the fix
-// into the chat over REST, the path that provably works, once per boot.
+// Deaf-session handling, once per boot. The nudge below is itself a channel
+// notification, so a session launched without the channel flag discards the
+// rescue too (fix 04). When the nudge goes unacted for a second full window
+// on a session with zero tool calls since boot we do NOT accuse it: silence
+// is a legitimate outcome (the nudge itself says so, and watch-style standing
+// orders tell agents to stand down quietly). We ask it a direct question
+// instead, and only an unanswered question earns the chat warning over REST.
+// See lib/channel-liveness.ts for the 2026-08-26 false-positive record.
 let deafEscalationDone = false
+let deafProbeSentAt: number | null = null
 
 // Fix 09: the one-per-boot latch for the first-ever-boot hello (see main()).
 let bootHelloSent = false
@@ -4847,20 +4854,39 @@ function checkReplyOverdue(): void {
   if (updateDrainMode) return
   const now = Date.now()
   for (const [chatId, p] of pendingInbounds.entries()) {
-    if (
-      shouldEscalateDeafSession({
-        live: channelLiveness.live,
-        pending: p,
-        now,
-        alreadyEscalated: deafEscalationDone,
-        windowMs: REPLY_OVERDUE_MS,
-      })
-    ) {
+    const deafAction = deafSessionAction({
+      live: channelLiveness.live,
+      pending: p,
+      now,
+      alreadyEscalated: deafEscalationDone,
+      probeSentAt: deafProbeSentAt,
+      windowMs: REPLY_OVERDUE_MS,
+    })
+    if (deafAction === 'probe') {
+      // Ask before accusing. A busy session, or one whose standing order is
+      // to stand down quietly, answers this and never reaches the warning;
+      // only a session that cannot hear the channel stays silent through a
+      // direct question. The ack flips channelLiveness, so one reply ends
+      // this for the whole boot.
+      deafProbeSentAt = now
+      log(
+        `deaf session suspected: nudge for chat ${chatId} message ${p.messageId} ` +
+          'went unacted and this session has made zero bgos tool calls since ' +
+          'boot; probing with channel_ack before saying anything to the user',
+      )
+      const probe = buildLivenessProbeNotification({ chatId })
+      void trackMessageOperation(() =>
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: { content: probe.content, meta: probe.meta },
+        }),
+      ).catch((err) => log(`deaf-session probe delivery failed: ${err}`))
+    } else if (deafAction === 'escalate') {
       deafEscalationDone = true
       log(
-        `WARN deaf session suspected: nudge for chat ${chatId} message ${p.messageId} ` +
-          'went unacted and this session has made zero bgos tool calls since ' +
-          'boot; posting launch guidance into the chat',
+        `WARN deaf session confirmed: chat ${chatId} message ${p.messageId} unacted, ` +
+          'zero bgos tool calls since boot, and the channel_ack probe went ' +
+          'unanswered; posting launch guidance into the chat',
       )
       // The fix line must never carry a GUESSED channel spec: this message
       // goes to a user whose agent is already deaf, and a wrong spec would
