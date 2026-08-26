@@ -31,7 +31,11 @@ import {
   deafSessionAction,
   deafSessionChatMessage,
   DEAF_PROBE_GRACE_WINDOWS,
+  inboundOwesReply,
 } from '../lib/channel-liveness.ts'
+import { readFileSync } from 'node:fs'
+
+const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
 // ── ChannelLiveness ──────────────────────────────────────────────────────────
 
@@ -225,4 +229,55 @@ test('deafSessionChatMessage leads with the diagnostic, not the restart', () => 
     msg.indexOf('hoai doctor') < msg.indexOf('quit the session'),
     'hoai doctor must appear before the instruction to quit',
   )
+})
+
+// ── inboundOwesReply ─────────────────────────────────────────────────────────
+//
+// 2026-08-26: two reply-overdue nudges landed on this agent's own hourly
+// board-check wakes, each about four minutes after the wake, on a wake whose
+// body says "Tell KC in 1048 only if blocked". The daemon asked for silence
+// and then chased it. Same shape as the deaf-session false positive above.
+
+test('a system wake card owes no reply', () => {
+  assert.equal(inboundOwesReply('system'), false)
+})
+
+test('a real message from a person or a peer still owes a reply', () => {
+  for (const kind of ['user', 'assistant', 'agent', 'unknown']) {
+    assert.equal(inboundOwesReply(kind), true, `${kind} must still arm the tracker`)
+  }
+})
+
+test('an ABSENT sender still owes a reply, so the guard can never silence a real message', () => {
+  // Fail OPEN. A missing senderKind means we do not know, and the cost of a
+  // spurious nudge is one message while the cost of suppressing a real one is
+  // a user waiting forever.
+  assert.equal(inboundOwesReply(undefined), true)
+  assert.equal(inboundOwesReply(null), true)
+  assert.equal(inboundOwesReply(''), true)
+})
+
+test('the system check is not defeated by case or padding', () => {
+  for (const kind of ['System', 'SYSTEM', ' system ']) {
+    assert.equal(inboundOwesReply(kind), false, `${JSON.stringify(kind)} is still a system card`)
+  }
+})
+
+test('recordInbound consults the guard, and every call site passes a sender', () => {
+  // The predicate is worthless if the wiring drops the argument, and there are
+  // three independent inbound paths (poll, stream forward, websocket).
+  const fn = /function recordInbound\([\s\S]*?\n\}/.exec(serverSource)
+  assert.ok(fn, 'recordInbound must still exist')
+  assert.match(fn[0], /if \(!inboundOwesReply\(senderKind\)\) return/)
+
+  const calls = serverSource.match(/recordInbound\(\s*chatId,[\s\S]*?\)/g) ?? []
+  assert.equal(calls.length, 3, `expected 3 recordInbound call sites, found ${calls.length}`)
+  for (const call of calls) {
+    // turnState is the 3rd arg, sender the 4th: four comma-separated args.
+    assert.equal(
+      call.split(',').length >= 4,
+      true,
+      `call site must pass a sender kind, got: ${call.replace(/\s+/g, ' ')}`,
+    )
+  }
 })

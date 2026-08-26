@@ -170,3 +170,39 @@ export function deafSessionChatMessage(launchCommand: string): string {
     `${launchCommand}`
   )
 }
+
+/**
+ * Does an inbound message OWE the agent's owner a reply?
+ *
+ * The reply-overdue tracker exists for messages a person is waiting on. A
+ * scheduler wake card is not one: it is a notification the backend writes to
+ * the agent's own chat (`sender='system'`, `message_type='event'`), and its
+ * body routinely ENDS by asking for silence. The hourly board-check wake says
+ * "Tell KC in 1048 only if blocked"; a watch-style standing order says the
+ * same. Arming an overdue tracker on it means that four minutes after every
+ * such wake the daemon tells the agent to reply to a notification that just
+ * told it not to.
+ *
+ * That is not a rare edge. An agent with an hourly cron generates 24 of these
+ * a day, every one of them false, and the fleet runs several such crons. The
+ * nudge is the boy who cried wolf: the more of it an agent sees, the less the
+ * real case (a genuine user message going unanswered) stands out.
+ *
+ * THE SAME MISTAKE AS THE DEAF-SESSION CHECK, one file over. There we read
+ * silence as a broken install while our own copy asked for silence; here we
+ * read a notification as a question while its own body says not to answer.
+ * Both come from measuring compliance and calling it failure. The comment on
+ * `isPendingEmptySystem` in server.ts already named this harm ("arm a
+ * premature reply-overdue") for the case where a system row is caught
+ * mid-write; the guard was simply never extended to system cards whose body
+ * HAS landed, which is all of them by the time an agent reads one.
+ *
+ * Deliberately narrow: this suppresses the TRACKER, not the message. The wake
+ * is still delivered, still read, still acted on. If a wake's instructions do
+ * call for a reply, the agent replies because the wake said so, which is the
+ * only reason it ever should have.
+ */
+export function inboundOwesReply(senderKind: string | null | undefined): boolean {
+  if (senderKind == null) return true
+  return String(senderKind).trim().toLowerCase() !== 'system'
+}
