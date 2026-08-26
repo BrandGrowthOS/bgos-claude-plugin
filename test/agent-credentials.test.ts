@@ -568,9 +568,14 @@ test('server logs the auth resolution for failed and complete startup', () => {
     ),
     true,
   )
-  assert.equal(
-    serverSource.includes('log(formatAuthResolution(AUTH, CREDENTIALS_PATH))'),
-    true,
+  // The startup path must report it too. Asserted as a CALL rather than an
+  // exact string: the intent of this test is that neither path silently stops
+  // reporting, not that the argument list never grows. It grew on 2026-08-27 to
+  // carry the resolution route and the cwd, which is pinned separately below.
+  assert.match(
+    serverSource,
+    /log\(\s*formatAuthResolution\(AUTH, CREDENTIALS_PATH/,
+    'the complete-startup path must still log the auth resolution',
   )
 })
 
@@ -770,4 +775,60 @@ test('resolveCredentialsPath keeps its string contract: the refuse case maps to 
   const host = stubHost({ agentDir: AGENT_DIR, perAssistantIds: [1013, 1017, 1019], hasLegacy: true })
   const path = resolveCredentialsPath({ env: {}, defaultPath: DEFAULT_PATH, cwd: '/work/nowhere', ...host })
   assert.equal(path, DEFAULT_PATH)
+})
+
+// 2026-08-27. A partner's agent would not start under Claude Code while
+// `hoai doctor` succeeded, on a Mac with seven paired agents. Doctor spawns
+// through the SAME shim, so the difference had to be the environment or the
+// working directory Claude Code hands the server. Neither was recoverable from
+// anything we log: the boot line named the credentials FILE and the assistant
+// id, which are the OUTPUTS, and nothing about the inputs that chose them.
+// Hours of inference followed, most of it wrong.
+test('the boot line names WHICH RULE resolved the identity, and from where', () => {
+  const auth = resolveAuth({
+    env: { BGOS_ASSISTANT_ID: '917' },
+    creds: {
+      backendUrl: 'https://example/api/v1',
+      pairingToken: 'pair_secret',
+      userId: 'user_file',
+      assistantId: 917,
+    },
+  })
+
+  const line = formatAuthResolution(auth, '/home/a/.bgos-agent/credentials-917.json', {
+    via: 'folder-pin',
+    cwd: '/home/a/harness',
+  })
+  assert.match(line, /assistantId: 917/)
+  assert.match(line, /via: folder-pin/)
+  assert.match(line, /cwd: \/home\/a\/harness/)
+})
+
+test('the boot line stays intact when the route and cwd are unknown', () => {
+  // The stderr path (server.ts:361) has no selection to hand it, so the extra
+  // fields must be optional rather than printing "undefined" at a user.
+  const auth = resolveAuth({
+    env: { BGOS_ASSISTANT_ID: '917' },
+    creds: {
+      backendUrl: 'https://example/api/v1',
+      pairingToken: 'pair_secret',
+      userId: 'user_file',
+      assistantId: 917,
+    },
+  })
+
+  const line = formatAuthResolution(auth, '/tmp/c.json')
+  assert.match(line, /assistantId: 917/)
+  assert.doesNotMatch(line, /undefined/)
+  assert.doesNotMatch(line, /via:/)
+  assert.doesNotMatch(line, /cwd:/)
+})
+
+test('boot passes the real route and cwd, not placeholders', () => {
+  const call = /log\(\s*formatAuthResolution\(AUTH, CREDENTIALS_PATH, \{[\s\S]*?\}\),?\s*\)/.exec(
+    serverSource,
+  )
+  assert.ok(call, 'the boot log must pass the selection through')
+  assert.match(call[0], /CREDENTIALS_SELECTION\.via/)
+  assert.match(call[0], /cwd: process\.cwd\(\)/)
 })

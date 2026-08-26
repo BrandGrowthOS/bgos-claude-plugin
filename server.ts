@@ -8128,7 +8128,12 @@ async function main(): Promise<void> {
   }
 
   log('Starting BGOS channel plugin...')
-  log(formatAuthResolution(AUTH, CREDENTIALS_PATH))
+  log(
+    formatAuthResolution(AUTH, CREDENTIALS_PATH, {
+      via: CREDENTIALS_SELECTION.kind === 'ok' ? CREDENTIALS_SELECTION.via : undefined,
+      cwd: process.cwd(),
+    }),
+  )
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)

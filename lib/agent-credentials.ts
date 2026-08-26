@@ -316,6 +316,7 @@ export function resolveAuth(opts: { env?: Env; creds?: CredentialsFile | null })
 export function formatAuthResolution(
   auth: ResolvedAuth,
   credentialsPath: string,
+  opts: { via?: string; cwd?: string } = {},
 ): string {
   const source =
     auth.source === 'pairing-file'
@@ -325,7 +326,23 @@ export function formatAuthResolution(
         : auth.source === 'apikey-env'
           ? 'env-apikey'
           : 'none'
-  return `Credential source: ${source}; assistantId: ${auth.assistantId || '<missing>'}`
+  // WHICH RULE picked this, and FROM WHERE. Both are free (the resolver already
+  // computes `via`, and cwd is a syscall) and on a multi-agent host they are the
+  // only two facts that matter.
+  //
+  // 2026-08-27: a partner's agent would not start under Claude Code while `hoai
+  // doctor` succeeded, on a Mac with seven paired agents. Doctor spawns through
+  // the same shim, so the difference had to be the environment or the working
+  // directory Claude Code hands the server, and NEITHER was recoverable from any
+  // log we write. The boot line named the credentials FILE and the assistant id,
+  // which are the outputs, and said nothing about the inputs that chose them.
+  // Hours of inference followed, most of it wrong. One line would have ended it.
+  const route = opts.via ? `; via: ${opts.via}` : ''
+  const where = opts.cwd ? `; cwd: ${opts.cwd}` : ''
+  return (
+    `Credential source: ${source}; assistantId: ${auth.assistantId || '<missing>'}` +
+    `${route}${where}`
+  )
 }
 
 /**
