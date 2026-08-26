@@ -509,6 +509,23 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   assert.equal(/creds: loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource), true)
 })
 
+// The auth recheck exists to notice when the credentials on disk stop matching
+// the identity we booted as. It resolved WITHOUT cwd, so it could not see a
+// <cwd>/.bgos-agent-id folder pin; on a host with several paired agents the
+// resolver's refuse case maps to the shared legacy file, and the recheck then
+// compared our booted identity against a DIFFERENT agent's credentials. Both
+// halves of a comparison have to resolve by the same rules or the comparison
+// means nothing. Found 2026-08-26 alongside the six-agent host above.
+test('the auth recheck resolves credentials by the SAME rules as boot (cwd included)', () => {
+  const recheck = /function runAuthRecheck\(\)[\s\S]*?const currentAuth =/.exec(serverSource)
+  assert.ok(recheck, 'runAuthRecheck must still resolve a path before resolving auth')
+  assert.match(
+    recheck[0],
+    /resolveCredentialsPath\(\{[\s\S]*?cwd: process\.cwd\(\),[\s\S]*?\}\)/,
+    'runAuthRecheck must pass cwd, or it silently ignores the folder pin boot honoured',
+  )
+})
+
 test('auth resolution log identifies the credential source and assistant id', () => {
   const envAuth = resolveAuth({
     env: {
@@ -699,9 +716,54 @@ test('formatCredentialsRefusal names the count, the ids, and both pin routes', (
   const msg = formatCredentialsRefusal(sel)
   assert.match(msg, /REFUSING to start/)
   assert.match(msg, /1013, 1017, 1019/)
-  assert.match(msg, /BGOS_ASSISTANT_ID=1013/)
-  assert.match(msg, /hoai-pair/)
+  // Both pin routes, as placeholders.
+  assert.match(msg, /\.bgos-agent-id/)
+  assert.match(msg, /BGOS_ASSISTANT_ID=<id>/)
   assert.doesNotMatch(msg, /[–—]/) // no en or em dashes
+})
+
+// Found in the field 2026-08-26 on a partner's Mac with six paired agents. The
+// message used to end 'set BGOS_ASSISTANT_ID=920', which was simply the FIRST
+// candidate id. The code cannot know which agent a folder is meant to be, but
+// the sentence reads as an instruction, so a user follows it: a one-in-six shot
+// at the right identity, and it would then START, silently satisfying the very
+// guard that had just correctly refused. Same class as the deaf-session
+// accusation in #95: never state an inferred value as a fact.
+test('formatCredentialsRefusal recommends NO specific id, it only lists the candidates', () => {
+  const sel = resolveCredentialsSelection({
+    env: {},
+    defaultPath: DEFAULT_PATH,
+    cwd: '/work/nowhere',
+    ...stubHost({ agentDir: AGENT_DIR, perAssistantIds: [920, 1013, 1015], hasLegacy: true }),
+  })
+  const msg = formatCredentialsRefusal(sel)
+  // The list is genuinely useful and stays.
+  assert.match(msg, /920, 1013, 1015/)
+  // The pick does not. No candidate may appear as the value of either pin.
+  for (const id of [920, 1013, 1015]) {
+    assert.doesNotMatch(
+      msg,
+      new RegExp(`BGOS_ASSISTANT_ID=${id}\\b`),
+      `refusal must not recommend id ${id}; it cannot know which one this folder is`,
+    )
+    assert.doesNotMatch(
+      msg,
+      new RegExp(`echo ${id} >`),
+      `refusal must not recommend id ${id} as the folder pin either`,
+    )
+  }
+})
+
+// The remedy has to be followable by the person actually hitting this, who may
+// well not have a pairing code to hand. The pin is just a file, so say so.
+test('formatCredentialsRefusal gives a route that needs no pairing code', () => {
+  const sel = resolveCredentialsSelection({
+    env: {},
+    defaultPath: DEFAULT_PATH,
+    cwd: '/work/nowhere',
+    ...stubHost({ agentDir: AGENT_DIR, perAssistantIds: [920, 1013], hasLegacy: true }),
+  })
+  assert.match(formatCredentialsRefusal(sel), /echo <id> > \.bgos-agent-id/)
 })
 
 test('resolveCredentialsPath keeps its string contract: the refuse case maps to the legacy path', () => {
