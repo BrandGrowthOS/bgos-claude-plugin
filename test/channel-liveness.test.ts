@@ -11,11 +11,13 @@
  *   2. gatePersistedCursors: what a session may persist. Live: everything.
  *      Not live: only the boot entries, each at its boot value; chats first
  *      seen after boot are omitted so a restart re-frames them as backlog.
- *   3. shouldEscalateDeafSession: post the in-chat warning only when the
- *      session is not live, a nudged pending inbound went unacted for a
- *      second full window, and the escalation has not fired this boot.
- *   4. deafSessionChatMessage: the user-facing warning, carrying the exact
- *      launch command verbatim and promising messages are queued, not lost.
+ *   3. deafSessionAction: three-way. Wait, then PROBE (ask the session to
+ *      call channel_ack), and only escalate to an in-chat warning when the
+ *      probe itself went unanswered. Silence alone never accuses anyone: see
+ *      the 2026-08-26 Observer false positive recorded in the lib.
+ *   4. deafSessionChatMessage: the user-facing warning, stating what was
+ *      observed rather than an unproven cause, leading with the harmless
+ *      diagnostic and carrying the launch command verbatim.
  *
  * Run with:  node --test test/channel-liveness.test.ts
  */
@@ -26,8 +28,9 @@ import assert from 'node:assert/strict'
 import {
   ChannelLiveness,
   gatePersistedCursors,
-  shouldEscalateDeafSession,
+  deafSessionAction,
   deafSessionChatMessage,
+  DEAF_PROBE_GRACE_WINDOWS,
 } from '../lib/channel-liveness.ts'
 
 // ── ChannelLiveness ──────────────────────────────────────────────────────────
@@ -81,57 +84,105 @@ test('gatePersistedCursors: never mutates inputs and never aliases boot', () => 
   assert.equal(boot['101'], 300)
 })
 
-// ── shouldEscalateDeafSession ────────────────────────────────────────────────
+// ── deafSessionAction ────────────────────────────────────────────────────────
 
 const WINDOW_MS = 1000
+// The earliest moment the old boolean returned true. It now buys a probe.
 const baseInput = {
   live: false,
   pending: { ts: 10_000, reminded: true },
   now: 10_000 + 2 * WINDOW_MS,
   alreadyEscalated: false,
+  probeSentAt: null as number | null,
   windowMs: WINDOW_MS,
 }
+/** Same input, advanced to just past the probe grace with the probe unanswered. */
+const afterProbe = {
+  ...baseInput,
+  probeSentAt: baseInput.now,
+  now: baseInput.now + DEAF_PROBE_GRACE_WINDOWS * WINDOW_MS,
+}
 
-test('shouldEscalateDeafSession: fires when every condition holds (boundary inclusive)', () => {
+test('deafSessionAction: probes (never accuses) at the old escalation moment', () => {
   // baseInput sits exactly at now - ts == 2 * windowMs, the earliest moment.
-  assert.equal(shouldEscalateDeafSession({ ...baseInput }), true)
-  // And any time after that.
+  assert.equal(deafSessionAction({ ...baseInput }), 'probe')
+  // And any time after that, as long as no probe has gone out yet.
   assert.equal(
-    shouldEscalateDeafSession({ ...baseInput, now: baseInput.now + 60_000 }),
-    true,
+    deafSessionAction({ ...baseInput, now: baseInput.now + 60_000 }),
+    'probe',
   )
 })
 
-test('shouldEscalateDeafSession: a live session never escalates', () => {
-  assert.equal(shouldEscalateDeafSession({ ...baseInput, live: true }), false)
+test('deafSessionAction: THE REGRESSION. a quiet session is asked, not accused', () => {
+  // Observer, 2026-08-26: heard its 00:30 wake, worked 7m37s, stood down
+  // silently because its standing order says to, and was told in its owner's
+  // chat that it could not receive messages and was launched without the
+  // channel flag. Both were false. However long such a session stays quiet,
+  // the FIRST thing it ever earns is a question.
+  for (const elapsed of [2, 5, 20, 500]) {
+    assert.equal(
+      deafSessionAction({ ...baseInput, now: 10_000 + elapsed * WINDOW_MS }),
+      'probe',
+      `silence alone must never escalate (${elapsed} windows)`,
+    )
+  }
 })
 
-test('shouldEscalateDeafSession: no pending inbound, no escalation', () => {
-  assert.equal(shouldEscalateDeafSession({ ...baseInput, pending: null }), false)
+test('deafSessionAction: answering the probe ends it for the boot', () => {
+  // channel_ack goes through the CallTool chokepoint and flips live, so the
+  // session that answers is never warned about, whatever the clock says.
+  assert.equal(deafSessionAction({ ...afterProbe, live: true }), 'wait')
 })
 
-test('shouldEscalateDeafSession: waits for the nudge to have fired first', () => {
+test('deafSessionAction: escalates only after an unanswered probe', () => {
+  assert.equal(deafSessionAction({ ...afterProbe }), 'escalate')
+})
+
+test('deafSessionAction: waits out the full probe grace before escalating', () => {
   assert.equal(
-    shouldEscalateDeafSession({
+    deafSessionAction({ ...afterProbe, now: afterProbe.now - 1 }),
+    'wait',
+  )
+})
+
+test('deafSessionAction: a live session never probes or escalates', () => {
+  assert.equal(deafSessionAction({ ...baseInput, live: true }), 'wait')
+})
+
+test('deafSessionAction: no pending inbound, nothing to do', () => {
+  assert.equal(deafSessionAction({ ...baseInput, pending: null }), 'wait')
+  assert.equal(deafSessionAction({ ...afterProbe, pending: null }), 'wait')
+})
+
+test('deafSessionAction: waits for the nudge to have fired first', () => {
+  assert.equal(
+    deafSessionAction({
       ...baseInput,
       pending: { ts: 10_000, reminded: false },
     }),
-    false,
+    'wait',
   )
 })
 
-test('shouldEscalateDeafSession: fires at most once per boot', () => {
+test('deafSessionAction: escalates at most once per boot', () => {
   assert.equal(
-    shouldEscalateDeafSession({ ...baseInput, alreadyEscalated: true }),
-    false,
+    deafSessionAction({ ...afterProbe, alreadyEscalated: true }),
+    'wait',
   )
 })
 
-test('shouldEscalateDeafSession: not before two full windows have passed', () => {
+test('deafSessionAction: not before two full windows have passed', () => {
   assert.equal(
-    shouldEscalateDeafSession({ ...baseInput, now: baseInput.now - 1 }),
-    false,
+    deafSessionAction({ ...baseInput, now: baseInput.now - 1 }),
+    'wait',
   )
+})
+
+test('deafSessionAction: the grace is a real wait, not zero', () => {
+  // A grace of 0 would collapse probe and escalate into the same tick and
+  // hand the session no chance to answer, which is the old bug wearing a
+  // new shape.
+  assert.ok(DEAF_PROBE_GRACE_WINDOWS >= 1, 'probe grace must be at least one window')
 })
 
 // ── deafSessionChatMessage ───────────────────────────────────────────────────
@@ -149,4 +200,29 @@ test('deafSessionChatMessage promises messages are queued and offers hoai doctor
   assert.ok(msg.includes('hoai doctor'), 'must offer hoai doctor as the alternative')
   // House style: no em or en dashes anywhere in user-facing copy.
   assert.ok(!/[\u2013\u2014]/.test(msg), 'no em or en dashes in the chat message')
+})
+
+test('deafSessionChatMessage states the observation, not an unproven cause', () => {
+  // It used to say "It was launched without the channel flag" as a fact. That
+  // was a diagnosis inferred from silence, and on 2026-08-26 it was flatly
+  // wrong about an agent whose argv carried the flag. Say what we saw.
+  const msg = deafSessionChatMessage('claude server:bgos')
+  assert.ok(
+    !/was launched without the channel flag/i.test(msg),
+    'must not assert a cause we have not established',
+  )
+  assert.ok(
+    /has not answered a direct check/i.test(msg),
+    'must report the observation that actually happened',
+  )
+})
+
+test('deafSessionChatMessage leads with the diagnostic, not the restart', () => {
+  // Quitting a Claude Code session throws away whatever it was mid-task on,
+  // so the harmless check has to come first in reading order.
+  const msg = deafSessionChatMessage('claude server:bgos')
+  assert.ok(
+    msg.indexOf('hoai doctor') < msg.indexOf('quit the session'),
+    'hoai doctor must appear before the instruction to quit',
+  )
 })
