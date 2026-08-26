@@ -182,6 +182,14 @@ import {
   inboundOwesReply,
 } from './lib/channel-liveness.js'
 import {
+  buildAuthRejectionNotification,
+  initialAuthRejectionState,
+  markAuthRejectionNotified,
+  observeAuthOutcome,
+  shouldReportAuthRejection,
+  type AuthRejectionState,
+} from './lib/auth-rejection.js'
+import {
   liveMarkerPath,
   readLiveMarker,
   recordLiveMarker,
@@ -598,11 +606,55 @@ const bgosEtagCache = new EtagCache()
 // site has to remember, and so a fired deadline is logged HERE, once, with the
 // path that stalled, instead of being swallowed or reported as a generic
 // network failure by whatever catch block happens to be above it.
+// Sustained credential rejection, observed HERE because this is the one place
+// every authenticated call passes through. A daemon the server refuses used to
+// poll on forever in silence (2026-08-26: ~29,000 401s in fifteen hours from
+// one agent, which surfaced only when the rejected traffic tripped a shared
+// rate limit and broke a DIFFERENT agent's write). See lib/auth-rejection.ts.
+let authRejection: AuthRejectionState = initialAuthRejectionState()
+
+function noteAuthOutcome(status: number): void {
+  const now = Date.now()
+  authRejection = observeAuthOutcome(authRejection, status, now)
+  if (!shouldReportAuthRejection(authRejection, now)) return
+  authRejection = markAuthRejectionNotified(authRejection)
+  const minutes = (now - (authRejection.firstAt ?? now)) / 60_000
+  const notice = buildAuthRejectionNotification({
+    consecutive: authRejection.consecutive,
+    minutes,
+  })
+  // The log first: it is unconditional and it is what `hoai logs` prints.
+  log(`WARN ${notice.content}`)
+  // Then the session, over local IPC. Not a chat post: that call is exactly the
+  // one being refused, and a rejected-from-boot daemon has no chat id anyway.
+  // This runs on EVERY response, so reaching `mcp` must never break the call in
+  // flight: it is a const declared ~900 lines below, and a call made during
+  // module evaluation would hit the temporal dead zone. A diagnostic that can
+  // fail a request is worse than no diagnostic.
+  try {
+    void mcp
+      .notification({
+        method: 'notifications/claude/channel',
+        params: { content: notice.content, meta: notice.meta },
+      })
+      .catch((err) => log(`Failed to deliver auth-rejection notice: ${err}`))
+  } catch (err) {
+    log(`auth-rejection notice could not be dispatched (ignored): ${err}`)
+  }
+}
+
 function bgosCall<T>(
   call: { url: string; init?: RequestInit; timeoutMs: number; label: string },
   consume: (response: Response) => Promise<T>,
 ): Promise<T> {
-  return boundedFetch(call, consume, { log })
+  return boundedFetch(
+    call,
+    async (response) => {
+      noteAuthOutcome(response.status)
+      return consume(response)
+    },
+    { log },
+  )
 }
 
 async function bgosGet(
