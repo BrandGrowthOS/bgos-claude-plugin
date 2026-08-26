@@ -492,7 +492,7 @@ test('server loads credentials from the folder-scoped selection and refuses the 
   // Phase two: boot resolves via the folder-scoped selection (with cwd), so a
   // <cwd>/.bgos-agent-id pin or a sole file self-resolves with no env var.
   assert.equal(
-    /const CREDENTIALS_SELECTION = resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: process\.cwd\(\),\s*\}\)/.test(
+    /const CREDENTIALS_SELECTION = resolveCredentialsSelection\(\{\s*env: process\.env,\s*defaultPath: DEFAULT_CREDENTIALS_FILE,\s*cwd: LAUNCH_CWD,\s*\}\)/.test(
       serverSource,
     ),
     true,
@@ -521,8 +521,8 @@ test('the auth recheck resolves credentials by the SAME rules as boot (cwd inclu
   assert.ok(recheck, 'runAuthRecheck must still resolve a path before resolving auth')
   assert.match(
     recheck[0],
-    /resolveCredentialsPath\(\{[\s\S]*?cwd: process\.cwd\(\),[\s\S]*?\}\)/,
-    'runAuthRecheck must pass cwd, or it silently ignores the folder pin boot honoured',
+    /resolveCredentialsPath\(\{[\s\S]*?cwd: LAUNCH_CWD,[\s\S]*?\}\)/,
+    'runAuthRecheck must resolve from the SAME directory as boot, or the two disagree',
   )
 })
 
@@ -830,5 +830,49 @@ test('boot passes the real route and cwd, not placeholders', () => {
   )
   assert.ok(call, 'the boot log must pass the selection through')
   assert.match(call[0], /CREDENTIALS_SELECTION\.via/)
-  assert.match(call[0], /cwd: process\.cwd\(\)/)
+  assert.match(call[0], /cwd: LAUNCH_CWD/)
+})
+
+// 2026-08-27, the bug that cost a partner an evening. bin/bgos-launch.mjs
+// relocates cwd to the plugin directory so bun can resolve the server's
+// dependencies. Claude Code launches us exactly that way, so process.cwd()
+// became the PLUGIN CACHE folder and the pin lookup read
+// <plugin>/.bgos-agent-id instead of the user's own directory. The folder pin
+// could NEVER be found on a marketplace install, and the refusal then told the
+// user to create the very file it had just made unreadable.
+test('identity resolves from the LAUNCH directory, not the relocated one', () => {
+  const decl = /const LAUNCH_CWD = [^\n]*/.exec(serverSource)
+  assert.ok(decl, 'LAUNCH_CWD must exist')
+  assert.match(decl[0], /BGOS_LAUNCH_CWD/, 'it must prefer the launcher-supplied directory')
+  assert.match(decl[0], /process\.cwd\(\)/, 'and fall back when launched directly')
+})
+
+test('boot, the auth recheck and the boot log all use the SAME directory', () => {
+  // Three call sites read the pin. If they diverge, one of them silently
+  // resolves a different agent, which is exactly the class of bug that made
+  // the auth recheck compare against another agent's credentials in #96.
+  const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
+  assert.equal(
+    uses.length,
+    3,
+    `expected boot, recheck and boot-log to share LAUNCH_CWD, found ${uses.length}`,
+  )
+  // Scoped to the identity paths ON PURPOSE. Other call sites still pass
+  // process.cwd() and should: the cursor-file path, the service record and the
+  // health report are describing where this PROCESS actually runs, and the
+  // supervision matcher compares that against a launchd job's working
+  // directory. Rewriting those would be a different change with a real risk of
+  // breaking agent-to-service matching.
+  for (const site of [
+    /resolveCredentialsSelection\(\{[\s\S]{0,200}?\}\)/,
+    /resolveCredentialsPath\(\{[\s\S]{0,200}?\}\)/,
+  ]) {
+    const found = site.exec(serverSource)
+    assert.ok(found, 'both identity resolvers must exist')
+    assert.doesNotMatch(
+      found[0],
+      /cwd: process\.cwd\(\)/,
+      'an identity resolver must never read the relocated cwd',
+    )
+  }
 })

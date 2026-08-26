@@ -191,9 +191,27 @@ export function main(argv = process.argv.slice(2), opts = {}) {
       return
     }
     const cwd = resolveLaunchCwd(argv, platform)
+    // Carry the ORIGINAL working directory across the relocation.
+    //
+    // 2026-08-27: relocating cwd (so bun can resolve the server's dependencies)
+    // silently broke the folder pin for every marketplace install. Claude Code
+    // launches us as `node bgos-launch.mjs <plugin>/server.ts`, so the server's
+    // process.cwd() became the PLUGIN CACHE directory, and the identity lookup
+    // read `<plugin>/.bgos-agent-id` instead of the user's own folder. The pin
+    // could never be found, and the refusal then told the user to create the
+    // very file it had just made unreadable. A partner did exactly that, twice,
+    // correctly, and lost an evening to it.
+    //
+    // We could not simply stop relocating: the relocation is what makes bun
+    // resolve dependencies. So the original directory travels in the
+    // environment, which survives the switch, and the server prefers it for
+    // the pin lookup only. Everything else still runs from the plugin dir.
     const child = spawnImpl(resolved.path, argv, {
       stdio: 'inherit',
       ...(cwd ? { cwd } : {}),
+      ...(cwd
+        ? { env: { ...env, BGOS_LAUNCH_CWD: env.BGOS_LAUNCH_CWD || process.cwd() } }
+        : {}),
     })
     // Forward termination to the child so a stopped shim never strands a bun
     // process holding the MCP stdio pipes. Signal listeners do not hold the
