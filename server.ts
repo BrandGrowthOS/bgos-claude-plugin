@@ -315,10 +315,17 @@ const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials
 // folder pin or a sole per-assistant file resolves this daemon's identity; a
 // host with several paired agents and NO pin REFUSES here rather than silently
 // falling back to the shared legacy file and answering as the wrong agent.
+// The directory the OPERATOR launched from, which is not necessarily the one
+// this process runs in. bin/bgos-launch.mjs relocates cwd to the plugin folder
+// so bun can resolve the server's dependencies, and it passes the original
+// through as BGOS_LAUNCH_CWD. Without that, the folder pin was looked up inside
+// the plugin cache and could never be found on a marketplace install.
+const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
+
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
   defaultPath: DEFAULT_CREDENTIALS_FILE,
-  cwd: process.cwd(),
+  cwd: LAUNCH_CWD,
 })
 if (CREDENTIALS_SELECTION.kind === 'refuse') {
   process.stderr.write(`[bgos] ${formatCredentialsRefusal(CREDENTIALS_SELECTION)}\n`)
@@ -463,7 +470,7 @@ function runAuthRecheck(): void {
     const currentPath = resolveCredentialsPath({
       env: process.env,
       defaultPath: DEFAULT_CREDENTIALS_FILE,
-      cwd: process.cwd(),
+      cwd: LAUNCH_CWD,
     })
     const currentAuth = resolveAuth({
       env: process.env,
@@ -8131,7 +8138,7 @@ async function main(): Promise<void> {
   log(
     formatAuthResolution(AUTH, CREDENTIALS_PATH, {
       via: CREDENTIALS_SELECTION.kind === 'ok' ? CREDENTIALS_SELECTION.via : undefined,
-      cwd: process.cwd(),
+      cwd: LAUNCH_CWD,
     }),
   )
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)

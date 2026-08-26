@@ -328,3 +328,80 @@ test('main: a spawn error surfaces the hint, not a bare stack, and exits 127', a
   assert.ok(err.includes(bunInstallHint('linux')), 'must still carry the install guidance')
   assert.ok(!err.includes('\n    at '), 'no stack frames in the user-visible error')
 })
+
+// 2026-08-27. Relocating cwd so bun can resolve the server's dependencies
+// silently broke the folder pin for every marketplace install: the server's
+// process.cwd() became the plugin cache directory, so the identity lookup read
+// <plugin>/.bgos-agent-id instead of the operator's own folder. The pin could
+// never be found, and the refusal then told the user to create the very file it
+// had just made unreadable. The original directory now travels in the
+// environment, which survives the relocation.
+test('main: carries the ORIGINAL cwd through as BGOS_LAUNCH_CWD when it relocates', async () => {
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  const done = main(['/opt/plugin/server.ts'], {
+    env: { PATH: '/usr/bin' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsIn(['/usr/bin/bun']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  // It still relocates, because that is what makes bun resolve dependencies...
+  assert.equal(calls[0].opts.cwd, '/opt/plugin')
+  // ...and the directory the operator was actually in travels alongside it.
+  const env = calls[0].opts.env as Record<string, string>
+  assert.equal(env.BGOS_LAUNCH_CWD, process.cwd())
+  assert.equal(env.PATH, '/usr/bin', 'the rest of the environment must survive')
+})
+
+test('main: an explicit BGOS_LAUNCH_CWD is respected, not overwritten', async () => {
+  // A supervisor or a wrapper may already know the operator's directory.
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  const done = main(['/opt/plugin/server.ts'], {
+    env: { PATH: '/usr/bin', BGOS_LAUNCH_CWD: '/home/kc/agents/vexa' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsIn(['/usr/bin/bun']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  const env = calls[0].opts.env as Record<string, string>
+  assert.equal(env.BGOS_LAUNCH_CWD, '/home/kc/agents/vexa')
+})
+
+test('main: a wrapper argv keeps the inherited cwd and needs no override', async () => {
+  // No relocation means process.cwd() is already the operator's directory, so
+  // injecting the variable would be noise.
+  const child = new FakeChild()
+  const calls: Array<{ opts: Record<string, unknown> }> = []
+  const done = main(['/opt/plugin/wrapper.mjs', '--plugin-dir', '/opt/plugin'], {
+    env: { PATH: '/usr/bin' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsIn(['/usr/bin/bun']),
+    spawnImpl: ((_f: string, _a: string[], opts: Record<string, unknown>) => {
+      calls.push({ opts })
+      return child
+    }) as never,
+    writeErr: () => {},
+    onSignal: () => {},
+  })
+  child.emit('exit', 0, null)
+  assert.equal(await done, 0)
+  assert.equal(calls[0].opts.cwd, undefined)
+  assert.equal(calls[0].opts.env, undefined)
+})
