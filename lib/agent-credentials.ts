@@ -228,7 +228,7 @@ export function formatCredentialsRefusal(selection: CredentialsSelection): strin
     `REFUSING to start: this host has ${selection.candidateIds.length} paired agents ` +
     `(ids: ${ids}) in ${selection.agentDir}, but this daemon has no identity pin, so it ` +
     `cannot tell which one it is. Pin it with whichever of those ids THIS folder is meant ` +
-    `to be, either way: write it into the folder, ` +
+    `to be, one of two ways: write it into the folder, ` +
     `\`echo <id> > ${FOLDER_PIN_FILE}\` here (this is what hoai pair bakes, and it needs no ` +
     `pairing code), or set BGOS_ASSISTANT_ID=<id> in this agent's environment. ` +
     `Refusing rather than answering as the wrong agent.`
