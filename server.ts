@@ -445,9 +445,16 @@ function credentialsMtimeMs(path: string): number | null {
 
 function runAuthRecheck(): void {
   try {
+    // cwd is load-bearing, not decoration. Without it the resolver cannot see
+    // the <cwd>/.bgos-agent-id folder pin, so on a host with several paired
+    // agents it falls through to the shared legacy file, and this recheck would
+    // compare the identity we BOOTED as against a DIFFERENT agent's
+    // credentials. Boot passes it (see CREDENTIALS_SELECTION); this call was
+    // simply never updated when the resolver learned about folder pins.
     const currentPath = resolveCredentialsPath({
       env: process.env,
       defaultPath: DEFAULT_CREDENTIALS_FILE,
+      cwd: process.cwd(),
     })
     const currentAuth = resolveAuth({
       env: process.env,
