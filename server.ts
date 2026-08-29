@@ -56,6 +56,10 @@ import {
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
+  describeShutdownCause,
+  type ShutdownCause,
+} from './lib/process-lifecycle.js'
+import {
   pickCapabilities,
   type ServedCapabilities,
 } from './lib/capabilities.js'
@@ -8309,13 +8313,46 @@ async function main(): Promise<void> {
   process.on('exit', () => {
     flushChatCursors()
   })
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => {
-      selfUpdater?.markGracefulStop()
-      flushChatCursors()
-      process.exit(signal === 'SIGINT' ? 130 : 143)
-    })
+
+  // One shutdown path, used by every cause, so a new cause cannot forget to flush.
+  // Idempotent because stdin fires 'end' and then 'close', and both mean the same thing.
+  let shuttingDown = false
+  const shutdown = (cause: ShutdownCause | string, code: number) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    log(describeShutdownCause(cause))
+    selfUpdater?.markGracefulStop()
+    flushChatCursors()
+    process.exit(code)
   }
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
+  }
+
+  // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
+  // about the process tree rather than an inference. Without this the daemon survives its session:
+  // four of our timers are not unref'd (the poll loop among them), so it keeps polling, keeps its
+  // claim on the agent, and can flush chat cursors past messages the LIVE daemon never delivered.
+  //
+  // The MCP stdio transport only ever registers 'data' and 'error' on stdin, and removes only those
+  // on close, so these two listeners are additive and survive for the life of the process.
+  //
+  // Deliberately NOT a parent-process-id watchdog: Anthropic shipped one for this exact problem in
+  // their Telegram channel plugin and removed it after it misfired on ordinary reparenting and
+  // killed the plugin five seconds after every launch. The source contract in
+  // test/process-lifecycle.test.ts fails if that approach is reintroduced.
+  process.stdin.on('end', () => shutdown('stdin-end', 0))
+  process.stdin.on('close', () => shutdown('stdin-close', 0))
+
+  // Neither of these existed. An unhandled rejection took the process down with no line in the log
+  // saying why, which is the same silence this whole block is about.
+  process.on('unhandledRejection', (reason) => {
+    log(`unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
+  })
+  process.on('uncaughtException', (err) => {
+    log(`uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+  })
 
   // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
   // the watcher restarts this agent nothing proves the new session HEARS the
