@@ -68,7 +68,7 @@ test('poll and WebSocket payload shapes reach the same actionable production rou
 test('structured slash fields dispatch even with empty redundant text', () => {
   const result = route({
     messageType: 'slash_command',
-    commandName: 'cost',
+    commandName: 'model',
     commandArgs: '',
     text: '',
   })
@@ -76,7 +76,7 @@ test('structured slash fields dispatch even with empty redundant text', () => {
   assert.equal(result.kind, 'directive')
   if (result.kind === 'directive') {
     assert.ok(result.delivery.content.length > 0)
-    assert.equal(result.delivery.registeredCommand?.command, '/cost')
+    assert.equal(result.delivery.registeredCommand?.command, '/model')
   }
 })
 

@@ -596,21 +596,160 @@ export function catalogForCapabilities(opts: {
     : [...BUILTIN_COMMANDS]
 }
 
+/**
+ * The built-in commands this daemon advertises.
+ *
+ * WHAT CHANGED AND WHY (2026-08-30). This list used to be the sixteen names from Claude Code's own
+ * terminal menu, forwarded unfiltered, none of them implemented. Each was handed to the model as a
+ * one-line label plus an instruction to "execute its registered behavior now" and not to tell the
+ * user to use the terminal. For a command that names a terminal screen the model cannot open, the
+ * only compliant move left is improvisation.
+ *
+ * Measured against what a session can actually do: 3 worked, 7 produced a confident answer that was
+ * not the command, 4 could not work at all, and 2 were hazards. They also held picker positions 0 to
+ * 15, so they were the first sixteen things a user saw after typing a slash.
+ *
+ * The failure was never that a command errored. It was that a good answer and a wrong one looked
+ * identical, so the feature could not be learned and the rational response was to stop trusting it.
+ * A user asked whether /clear would lose anything, was told it "fully wipes my context window",
+ * tapped it, received no reply at all, and was told thirteen minutes later that context "has now been
+ * cleared". It had not.
+ *
+ * Anthropic's own Telegram channel advertises three chat commands and implements all three. The rule
+ * taken from it, and pinned by test/slash-catalog.test.ts:
+ *   1. advertise only what we can perform, and
+ *   2. give whatever stays a real PROCEDURE rather than a noun.
+ *
+ * REMOVED, cannot work: /clear (no mechanism exists for a model to reset its own context), /cost
+ * (client-side accounting the model cannot read), /release-notes (not reachable), /login (a session
+ * is already authenticated).
+ * REMOVED, hazards: /logout (a model with shell access, told to execute and not to defer, ends the
+ * session and daemon serving this chat; recovery needs a person at that machine) and /bug (could file
+ * a real public issue on a stray tap).
+ */
 export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
-  { command: '/help',          description: 'Show usage and supported tools',          scope: 'all' },
-  { command: '/clear',         description: 'Reset the conversation context',          scope: 'all' },
-  { command: '/cost',          description: 'Show token usage and cost for this session', scope: 'all' },
-  { command: '/model',         description: 'Switch the active Claude model',          scope: 'all' },
-  { command: '/agents',        description: 'List and configure subagents',            scope: 'all' },
-  { command: '/permissions',   description: 'Review and manage tool permissions',      scope: 'all' },
-  { command: '/hooks',         description: 'Manage shell hooks for events',           scope: 'all' },
-  { command: '/mcp',           description: 'Manage MCP server connections',           scope: 'all' },
-  { command: '/memory',        description: 'View or edit project memory',             scope: 'all' },
-  { command: '/init',          description: 'Initialize CLAUDE.md for this project',   scope: 'all' },
-  { command: '/doctor',        description: 'Diagnose configuration issues',           scope: 'all' },
-  { command: '/status',        description: 'Show session status',                     scope: 'all' },
-  { command: '/release-notes', description: 'Show release notes for Claude Code',      scope: 'all' },
-  { command: '/bug',           description: 'Open a bug report',                       scope: 'all' },
-  { command: '/login',         description: 'Sign in to Claude',                       scope: 'all' },
-  { command: '/logout',        description: 'Sign out',                                scope: 'all' },
+  {
+    command: '/help',
+    description: 'What this agent can do here',
+    scope: 'all',
+    prompt: [
+      'List, briefly, what you can do for the user through this chat: answer questions, read and',
+      'edit files in your working directory, run commands, and send files back.',
+      'Then list the other slash commands available and one line on each.',
+      'Keep it under ten lines. Do not describe Claude Code terminal features the user cannot reach',
+      'from a chat message.',
+    ].join('\n'),
+  },
+  {
+    command: '/status',
+    description: 'Version, pairing and update state of this agent',
+    scope: 'all',
+    // Answered by the model from a real procedure, not a label. Anthropic's Telegram channel goes one
+    // step further and answers its /status in the bridge itself, from its own state file, which is
+    // strictly better because the numbers are then current and cannot be paraphrased. Doing that here
+    // means a new route kind handled at three call sites in server.ts, and those same lines are being
+    // edited by the auto-update and watcher work in this batch. Deferred deliberately to avoid a
+    // three-way collision, and tracked; lib/slash-status.ts already exists and is tested, so the
+    // remaining work is only the routing.
+    prompt: [
+      'Report your own operating state, and only facts you can verify right now:',
+      '1. your agent name and id,',
+      '2. your plugin version if you can read it,',
+      '3. your working directory.',
+      'If you cannot determine one of these, say that you cannot, rather than estimating it.',
+    ].join('\n'),
+  },
+  {
+    command: '/memory',
+    description: 'Show or edit this project memory',
+    scope: 'all',
+    prompt: [
+      'Read CLAUDE.md in the working directory, and any .claude/rules/*.md it points at.',
+      'Summarise what they instruct you to do, in plain terms.',
+      'If the user asked for a change, make the edit and say exactly which file and which lines',
+      'you changed.',
+    ].join('\n'),
+  },
+  {
+    command: '/init',
+    description: 'Create a CLAUDE.md for this project',
+    scope: 'all',
+    prompt: [
+      'Look at the working directory: the languages present, the package or build files, the test',
+      'command, and the directory layout.',
+      'Write a concise CLAUDE.md capturing how to build, test and run this project, plus any',
+      'convention a newcomer would otherwise get wrong.',
+      'If a CLAUDE.md already exists, do not overwrite it. Show what you would add and ask first.',
+    ].join('\n'),
+  },
+  {
+    command: '/model',
+    description: 'Which model this agent runs, and how to change it',
+    scope: 'all',
+    prompt: [
+      'Report which model you are currently running, if you can determine it.',
+      'If the user asked to change it, explain that you CANNOT change the model of the session that',
+      'is already running: a model switch takes effect when the session next starts.',
+      'If this agent has a launcher or configuration file that pins its model, you may edit that file',
+      'so the NEXT start uses the new model, and if you do, say plainly that the current session is',
+      'unchanged and which file you edited.',
+    ].join('\n'),
+  },
+  {
+    command: '/mcp',
+    description: 'Check the MCP servers this agent can reach',
+    scope: 'all',
+    prompt: [
+      'Report the MCP servers available to you and whether each one is responding, testing where you',
+      'can rather than listing configuration.',
+      'You CANNOT add, remove or reconnect an MCP server from here: that is a client-side action.',
+      'Say so plainly, and say which file the user would edit to change it.',
+    ].join('\n'),
+  },
+  {
+    command: '/agents',
+    description: 'List the subagents defined for this project',
+    scope: 'all',
+    prompt: [
+      'Read .claude/agents/*.md in the working directory and list the subagents defined there, with',
+      'one line each on what they are for.',
+      'You CANNOT configure or launch a subagent interactively from here. If the user wants a change,',
+      'edit the relevant file and say which one you changed.',
+    ].join('\n'),
+  },
+  {
+    command: '/permissions',
+    description: 'Show what this agent is allowed to do',
+    scope: 'all',
+    prompt: [
+      'Read .claude/settings.json and .claude/settings.local.json in the working directory and',
+      'summarise the permission rules in plain language: what is allowed, what is denied, what asks.',
+      'You CANNOT change the permissions of the session that is already running. If the user wants a',
+      'change, edit the settings file and say plainly that it takes effect on the next start.',
+    ].join('\n'),
+  },
+  {
+    command: '/hooks',
+    description: 'Show the hooks configured for this project',
+    scope: 'all',
+    prompt: [
+      'Read the hooks configured in .claude/settings.json and settings.local.json and describe when',
+      'each one fires and what it runs.',
+      'You CANNOT register or re-register a hook on the running session. An edit applies at the next',
+      'start, and you should say so.',
+    ].join('\n'),
+  },
+  {
+    command: '/doctor',
+    description: 'Check this agent for configuration problems',
+    scope: 'all',
+    prompt: [
+      'Check the things you can actually verify from here: that your working directory is what the',
+      'user expects, that CLAUDE.md and the settings files parse, that the MCP servers you depend on',
+      'respond, and that you can write to your own state directory.',
+      'Report each as a pass or a fail with the reason.',
+      'You CANNOT run the Claude Code terminal diagnostic from here, so do not claim to have run it;',
+      'say which check a person would need a terminal for.',
+    ].join('\n'),
+  },
 ]
