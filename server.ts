@@ -144,6 +144,7 @@ import {
   resolveAuth,
   resolveCredentialsPath,
   resolveCredentialsSelection,
+  describeEnvOnlyIdentityRisk,
   formatCredentialsRefusal,
   formatAuthResolution,
   formatPairingRejection,
@@ -332,6 +333,14 @@ if (CREDENTIALS_SELECTION.kind === 'refuse') {
   process.exit(1)
 }
 const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
+// Warn when this daemon boots ONLY because an env var is present. See
+// describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
+// degradation, so it has to be said out loud on a healthy boot.
+const ENV_ONLY_IDENTITY_WARN = describeEnvOnlyIdentityRisk({
+  env: process.env,
+  defaultPath: DEFAULT_CREDENTIALS_FILE,
+  cwd: LAUNCH_CWD,
+})
 const AUTH: ResolvedAuth = resolveAuth({
   env: process.env,
   creds: loadCredentialsFile(CREDENTIALS_PATH),
@@ -8141,6 +8150,7 @@ async function main(): Promise<void> {
       cwd: LAUNCH_CWD,
     }),
   )
+  if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)

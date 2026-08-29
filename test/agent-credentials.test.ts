@@ -20,6 +20,8 @@ import {
   resolveAuth,
   resolveCredentialsPath,
   resolveCredentialsSelection,
+  FOLDER_PIN_FILE,
+  describeEnvOnlyIdentityRisk,
   formatCredentialsRefusal,
   formatAuthResolution,
   formatPairingRejection,
@@ -847,15 +849,20 @@ test('identity resolves from the LAUNCH directory, not the relocated one', () =>
   assert.match(decl[0], /process\.cwd\(\)/, 'and fall back when launched directly')
 })
 
-test('boot, the auth recheck and the boot log all use the SAME directory', () => {
-  // Three call sites read the pin. If they diverge, one of them silently
+test('every identity call site uses the SAME directory', () => {
+  // Call sites that read the pin. If they diverge, one of them silently
   // resolves a different agent, which is exactly the class of bug that made
   // the auth recheck compare against another agent's credentials in #96.
+  //
+  // 2026-08-29: went from three to four. describeEnvOnlyIdentityRisk is the
+  // fourth, and it belongs under this guard more than any of them: it predicts
+  // whether boot would refuse WITHOUT the env pin, so if it resolved from a
+  // different directory it would confidently answer about another agent.
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    3,
-    `expected boot, recheck and boot-log to share LAUNCH_CWD, found ${uses.length}`,
+    4,
+    `expected boot, recheck, boot-log and the env-only risk check to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path, the service record and the
@@ -875,4 +882,59 @@ test('boot, the auth recheck and the boot log all use the SAME directory', () =>
       'an identity resolver must never read the relocated cwd',
     )
   }
+})
+
+// 2026-08-29. Mark (888) found a 12-agent Windows host where identity rested
+// entirely on BGOS_ASSISTANT_ID in each agent's .mcp.json: twelve credential
+// files, zero folder pins. It boots perfectly and its log is indistinguishable
+// from a robust host's. Strip the env pin and the resolver refuses, and the
+// caller exits 1, so twelve agents stop booting rather than degrade.
+test('env-only identity on a multi-credential host is WARNED about', () => {
+  const warn = describeEnvOnlyIdentityRisk({
+    env: { BGOS_ASSISTANT_ID: '888' },
+    defaultPath: '/agent/credentials.json',
+    cwd: '/agents/mark',
+    exists: (p) => p === '/agent/credentials-888.json',
+    readText: () => null, // no folder pin anywhere
+    listDir: () => ['credentials-888.json', 'credentials-972.json', 'credentials-909.json'],
+  })
+  assert.ok(warn, 'a host one env var away from refusing to boot must say so')
+  assert.match(warn!, /rests ENTIRELY on the environment/)
+  assert.match(warn!, /refuse to boot/)
+})
+
+test('a folder pin makes the same host safe, and silent', () => {
+  const warn = describeEnvOnlyIdentityRisk({
+    env: { BGOS_ASSISTANT_ID: '888' },
+    defaultPath: '/agent/credentials.json',
+    cwd: '/agents/mark',
+    exists: (p) => p === '/agent/credentials-888.json',
+    readText: (p) => (p.endsWith(FOLDER_PIN_FILE) ? '888' : null),
+    listDir: () => ['credentials-888.json', 'credentials-972.json'],
+  })
+  assert.equal(warn, null, 'the pin is exactly the remedy, so it must silence the warning')
+})
+
+test('a single-credential host is not warned, having nothing to be ambiguous about', () => {
+  const warn = describeEnvOnlyIdentityRisk({
+    env: { BGOS_ASSISTANT_ID: '888' },
+    defaultPath: '/agent/credentials.json',
+    cwd: '/agents/mark',
+    exists: (p) => p === '/agent/credentials-888.json',
+    readText: () => null,
+    listDir: () => ['credentials-888.json'],
+  })
+  assert.equal(warn, null)
+})
+
+test('an unpinned host is never warned, since it cannot lose a pin it does not have', () => {
+  const warn = describeEnvOnlyIdentityRisk({
+    env: {},
+    defaultPath: '/agent/credentials.json',
+    cwd: '/agents/mark',
+    exists: () => false,
+    readText: () => null,
+    listDir: () => ['credentials-888.json', 'credentials-972.json'],
+  })
+  assert.equal(warn, null, 'it is already refusing or resolving some other way; not this warning')
 })
