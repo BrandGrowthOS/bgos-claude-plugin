@@ -19,6 +19,7 @@ import {
   AUTH_REJECTION_MIN_MS,
   buildAuthRejectionNotification,
   heartbeatLastError,
+  type AuthRejectionState,
   initialAuthRejectionState,
   markAuthRejectionNotified,
   observeAuthOutcome,
@@ -197,7 +198,11 @@ test('a short blip is NOT reported: same thresholds that gate the local warning'
 
 test('recovery clears itself: one success returns consecutive to 0, so the next beat sends null', () => {
   const started = 1_000_000
-  let st = { consecutive: AUTH_REJECTION_MIN_COUNT, firstAt: started, notified: true }
+  let st: AuthRejectionState = {
+    consecutive: AUTH_REJECTION_MIN_COUNT,
+    firstAt: started,
+    notified: true,
+  }
   assert.ok(heartbeatLastError(st, started + AUTH_REJECTION_MIN_MS))
   st = observeAuthOutcome(st, 200, started + AUTH_REJECTION_MIN_MS)
   assert.equal(
