@@ -18,6 +18,8 @@ import {
   AUTH_REJECTION_MIN_COUNT,
   AUTH_REJECTION_MIN_MS,
   buildAuthRejectionNotification,
+  heartbeatLastError,
+  type AuthRejectionState,
   initialAuthRejectionState,
   markAuthRejectionNotified,
   observeAuthOutcome,
@@ -144,4 +146,102 @@ test('the observer can never break the call it is observing', () => {
   assert.ok(fn, 'noteAuthOutcome must exist')
   assert.match(fn[0], /try \{/, 'the observer must be wrapped')
   assert.match(fn[0], /catch \(/, 'and it must swallow, not rethrow')
+})
+
+// ── heartbeatLastError: the FLEET-visible half ───────────────────────────────
+// 2026-08-29. The backend has stored a heartbeat lastError since the columns
+// existed, and across 76 live pairings the number that had ever carried one was
+// zero, because nothing sent it. A blank error column read as health. These pin
+// that the daemon now reports the refusal it already detects locally.
+
+test('a healthy daemon reports null, so the backend CLEARS rather than keeps a stale error', () => {
+  assert.equal(heartbeatLastError(initialAuthRejectionState(), 1_000_000), null)
+})
+
+test('a sustained refusal is reported, with the observation and no guessed cause', () => {
+  const started = 1_000_000
+  const err = heartbeatLastError(
+    { consecutive: AUTH_REJECTION_MIN_COUNT, firstAt: started, notified: false },
+    started + AUTH_REJECTION_MIN_MS,
+  )
+  assert.ok(err, 'a refusal past both thresholds must reach the fleet')
+  assert.equal(err!.code, 'auth_rejected')
+  assert.equal(err!.at, new Date(started).toISOString())
+  assert.ok(err!.message.length <= 300, 'HeartbeatErrorDto caps message at 300')
+  assert.ok(err!.code.length <= 64, 'HeartbeatErrorDto caps code at 64')
+  assert.doesNotMatch(
+    err!.message,
+    /revoked|superseded|expired/i,
+    'it states the observation; the daemon does not know the cause (see #95)',
+  )
+})
+
+test('a short blip is NOT reported: same thresholds that gate the local warning', () => {
+  const started = 1_000_000
+  assert.equal(
+    heartbeatLastError(
+      { consecutive: AUTH_REJECTION_MIN_COUNT - 1, firstAt: started, notified: false },
+      started + AUTH_REJECTION_MIN_MS,
+    ),
+    null,
+    'too few calls',
+  )
+  assert.equal(
+    heartbeatLastError(
+      { consecutive: AUTH_REJECTION_MIN_COUNT, firstAt: started, notified: false },
+      started + AUTH_REJECTION_MIN_MS - 1,
+    ),
+    null,
+    'not long enough',
+  )
+})
+
+test('recovery clears itself: one success returns consecutive to 0, so the next beat sends null', () => {
+  const started = 1_000_000
+  let st: AuthRejectionState = {
+    consecutive: AUTH_REJECTION_MIN_COUNT,
+    firstAt: started,
+    notified: true,
+  }
+  assert.ok(heartbeatLastError(st, started + AUTH_REJECTION_MIN_MS))
+  st = observeAuthOutcome(st, 200, started + AUTH_REJECTION_MIN_MS)
+  assert.equal(
+    heartbeatLastError(st, started + AUTH_REJECTION_MIN_MS),
+    null,
+    'no separate clear call: the backend treats explicit null as clear',
+  )
+})
+
+test('reporting does NOT depend on `notified`, because the fleet wants CURRENT state', () => {
+  const started = 1_000_000
+  const st = { consecutive: AUTH_REJECTION_MIN_COUNT, firstAt: started, notified: true }
+  assert.ok(
+    heartbeatLastError(st, started + AUTH_REJECTION_MIN_MS),
+    'the owner is told once; the fleet is told while it is still true',
+  )
+})
+
+// The projection is worthless if nothing calls it, which is the exact failure
+// it exists to fix: the backend could store a lastError for months while no
+// daemon ever sent one. Pin the WIRING, not just the logic.
+test('the daemon actually SENDS it: heartbeat wired to the live rejection state', () => {
+  assert.match(
+    serverSource,
+    /lastError:\s*\(\)\s*=>\s*heartbeatLastError\(authRejection,\s*Date\.now\(\)\)/,
+    'startVersionHeartbeat must be passed the projection of the SAME state noteAuthOutcome updates',
+  )
+  const heartbeatSource = readFileSync(
+    new URL('../lib/version-heartbeat.ts', import.meta.url),
+    'utf8',
+  )
+  assert.match(
+    heartbeatSource,
+    /body\.lastError = deps\.lastError\(\)/,
+    'and the heartbeat body must actually carry it',
+  )
+  assert.match(
+    heartbeatSource,
+    /if \(deps\.lastError\) \{\s*try \{/,
+    'guarded like the update providers: telemetry must never fail a heartbeat',
+  )
 })

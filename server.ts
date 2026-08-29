@@ -184,6 +184,7 @@ import {
 } from './lib/channel-liveness.js'
 import {
   buildAuthRejectionNotification,
+  heartbeatLastError,
   initialAuthRejectionState,
   markAuthRejectionNotified,
   observeAuthOutcome,
@@ -8519,6 +8520,10 @@ async function main(): Promise<void> {
     rootDir: import.meta.dir,
     post: bgosPost,
     log,
+    // The fleet-visible half of the refusal that noteAuthOutcome already
+    // detects. Derived from that same state, so the two can never disagree,
+    // and null once any call succeeds, which the backend reads as "clear it".
+    lastError: () => heartbeatLastError(authRejection, Date.now()),
     // One-click update telemetry (wire contract v1): the newest version this
     // daemon found at its own pinned source (origin/main for a clone, the
     // local marketplace files for a marketplace install), and what would
