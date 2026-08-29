@@ -30,6 +30,7 @@ import {
   nextBackoff,
   normalizeApiBase,
   readRollbackLatch,
+  refreshWatcherIfStale,
   runWatcher,
   scrubLine,
 } from '../lib/watcher-core.mjs'
@@ -777,4 +778,49 @@ test("runWatcher: the manifest's claudeConfigDir beats a disagreeing service env
   await runWatcher(deps as any)
   assert.equal(env.CLAUDE_CONFIG_DIR, CONFIG)
   assert.ok(logs.some((l) => l.includes('the manifest wins')))
+})
+
+// --- a watcher that cannot see the plugin must not call itself healthy -------
+// refreshWatcherIfStale returned { needed: false, ok: true } when it could not locate the installed
+// plugin. Two things were wrong with that. It claimed health for a state that is really "I cannot
+// tell", and because the caller only records a ledger step when `needed` is true, the state did not
+// merely look green, it did not appear at all. A watcher permanently stuck on an old bundle
+// reported nothing, forever, which is the same class of silence this whole release is about.
+
+test('a watcher that cannot find the plugin reports that, instead of reporting itself current', async () => {
+  const fs = machineFs()
+  const result = await refreshWatcherIfStale({
+    home: HOME,
+    fs,
+    now: () => T0,
+    manifest: null,
+    pluginRoot: null,
+  })
+
+  assert.equal(result.message, 'watcher_bundle_source_unknown')
+  assert.equal(result.ok, false, 'not knowing whether a refresh is needed is not the same as being fine')
+  assert.equal(
+    result.needed,
+    true,
+    'must surface as a ledger step: the caller only records a step when needed is true, so false made this invisible',
+  )
+})
+
+test('a watcher whose bundle already matches the plugin still reports current and needs nothing', async () => {
+  // The control. If this ever flips, the test above would pass for the wrong reason.
+  const fs = machineFs()
+  manifestFor(fs)
+  const manifest = JSON.parse(fs.readFile(`${HOME}/.bgos-agent/watcher/manifest.json`) as string)
+
+  const result = await refreshWatcherIfStale({
+    home: HOME,
+    fs,
+    now: () => T0,
+    manifest,
+    pluginRoot: ROOT,
+  })
+
+  assert.equal(result.message, 'watcher_bundle_current')
+  assert.equal(result.needed, false)
+  assert.equal(result.ok, true)
 })

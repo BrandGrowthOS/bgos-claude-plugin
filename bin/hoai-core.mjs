@@ -1471,6 +1471,7 @@ export async function runSetup(
     spawnClaudeImpl = spawnClaude,
     installCliImpl = installHoaiCli,
     ensureAutoUpdateImpl = ensureMarketplaceAutoUpdate,
+    installWatcherImpl = installMachineWatcher,
     print = (text) => console.log(text),
     writeErr = (text) => process.stderr.write(text),
   } = {},
@@ -1525,7 +1526,54 @@ export async function runSetup(
   await installCliImpl({ platform, env, home, scriptDir, print })
 
   print('[hoai] 4/4 pairing this machine with the code from the app')
-  return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), pairArgs, spawnImpl)
+  const paired = await runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), pairArgs, spawnImpl)
+  if (paired !== 0) return paired
+
+  // Give this machine a watcher while we are here and the credentials are fresh.
+  //
+  // WHY AT SETUP. The watcher is how a machine updates and restarts its agents with no terminal
+  // open. Until now the only way to get one was a job addressed to a LIVE agent on that machine, so
+  // the machine that most needs a watcher, one whose agent is broken, is exactly the machine that
+  // cannot receive it. Setup is the one moment we are certain something is working here.
+  //
+  // BEST EFFORT, ALWAYS. Installing an OS service can fail for reasons that have nothing to do with
+  // the agent: permissions, a locked scheduler, an unusual login shell. A machine with a working
+  // paired agent and no watcher is a good outcome; a setup that aborts at the last step because a
+  // service manager said no is not. So this never changes the exit code, and it says out loud what
+  // happened either way.
+  try {
+    const watcher = await installWatcherImpl({ platform, env, home, scriptDir, spawnImpl })
+    if (watcher?.ok) {
+      print('[hoai] this machine can now update and restart its agents on its own')
+    } else {
+      print(
+        `[hoai] the per-machine watcher was not installed (${watcher?.message ?? 'unknown reason'}). ` +
+          'Your agent works; run `hoai-watcher install` later to add it.',
+      )
+    }
+  } catch (err) {
+    print(`[hoai] the per-machine watcher was not installed (${err}). Your agent works without it.`)
+  }
+
+  return paired
+}
+
+/**
+ * Install the per-machine watcher by running its own CLI, which already owns bundle staging, the
+ * platform service spec, and the load probe that stops a broken bundle being swapped in.
+ *
+ * Kept as a named export so runSetup can take it as an injectable option: the setup tests then prove
+ * the WIRING (that it runs after pairing, that a failure does not change the exit code) without any
+ * test installing a real launchd, systemd or Scheduled Task service.
+ *
+ * @returns {Promise<{ok: boolean, message: string}>}
+ */
+export async function installMachineWatcher({ platform, env, home, scriptDir, spawnImpl = spawn }) {
+  const script = joinDir(scriptDir, 'hoai-watcher.mjs')
+  const code = await runSiblingScript(script, ['install'], spawnImpl)
+  return code === 0
+    ? { ok: true, message: 'installed' }
+    : { ok: false, message: `hoai-watcher install exited ${code}` }
 }
 
 // -- Putting `hoai` itself on PATH -------------------------------------------
