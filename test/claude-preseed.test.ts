@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import {
   TRUST_ENTRY_DEFAULTS,
   alternateSlashSpelling,
+  ensureMarketplaceAutoUpdate,
   preseedClaudeTrust,
   seedProjectEntry,
 } from '../lib/claude-preseed.mjs'
@@ -155,4 +156,102 @@ test('preseedClaudeTrust: refuses an empty cwd or config dir instead of seeding 
   assert.throws(() => preseedClaudeTrust({ configDir: '/c', cwd: '', fs }), /cwd/)
   assert.throws(() => preseedClaudeTrust({ configDir: '', cwd: '/w', fs }), /configDir/)
   assert.equal(fs.files.size, 0)
+})
+
+// --- marketplace auto-update enrolment (2026-08-30) --------------------------
+// Claude Code updates a marketplace and its plugins on its own, but only when the settings entry
+// says so or the marketplace name is on Anthropic's first-party allowlist. Ours is not on that list,
+// so without this key every machine stays on whatever version it first installed. The cost is not
+// hypothetical: openai-codex, the most-used plugin on the author's own machine, sat four months
+// stale for exactly this reason, and nothing said a word.
+
+test('ensureMarketplaceAutoUpdate sets the key on an existing entry, and is idempotent', () => {
+  const fs = memFs({
+    '/cfg/settings.json': JSON.stringify({
+      extraKnownMarketplaces: {
+        hoai: { source: { source: 'github', repo: 'BrandGrowthOS/hoai-marketplace' } },
+      },
+    }),
+  })
+
+  const first = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(first.changed, true)
+  assert.equal(first.reason, 'set')
+  assert.equal(
+    JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate,
+    true,
+  )
+
+  const second = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(second.changed, false)
+  assert.equal(second.reason, 'already')
+})
+
+test('ensureMarketplaceAutoUpdate never fabricates a marketplace declaration', () => {
+  // Writing an entry that the user never added would silently register a marketplace on their
+  // machine. If it is not there, we are not the ones to put it there.
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: {} }) })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(r.changed, false)
+  assert.equal(r.reason, 'no_entry')
+  assert.deepEqual(JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces, {})
+})
+
+test('ensureMarketplaceAutoUpdate does nothing when settings has no marketplaces at all', () => {
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ model: 'opus' }) })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(r.changed, false)
+  assert.equal(r.reason, 'no_entry')
+  assert.equal(JSON.parse(fs.files.get('/cfg/settings.json')!).model, 'opus')
+})
+
+test('ensureMarketplaceAutoUpdate preserves every other setting and the entry source', () => {
+  // This is the user's own settings file. Losing an unrelated key here would be a far worse bug
+  // than the one being fixed.
+  const fs = memFs({
+    '/cfg/settings.json': JSON.stringify({
+      model: 'opus',
+      permissions: { allow: ['Bash(ls)'] },
+      extraKnownMarketplaces: {
+        hoai: { source: { source: 'github', repo: 'BrandGrowthOS/hoai-marketplace' } },
+        other: { source: { source: 'github', repo: 'someone/else' } },
+      },
+    }),
+  })
+
+  ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  const after = JSON.parse(fs.files.get('/cfg/settings.json')!)
+
+  assert.equal(after.model, 'opus')
+  assert.deepEqual(after.permissions, { allow: ['Bash(ls)'] })
+  assert.deepEqual(after.extraKnownMarketplaces.hoai.source, {
+    source: 'github',
+    repo: 'BrandGrowthOS/hoai-marketplace',
+  })
+  assert.equal(after.extraKnownMarketplaces.hoai.autoUpdate, true)
+  // A sibling marketplace is none of our business.
+  assert.equal(after.extraKnownMarketplaces.other.autoUpdate, undefined)
+})
+
+test('ensureMarketplaceAutoUpdate can turn enrolment off again', () => {
+  const fs = memFs({
+    '/cfg/settings.json': JSON.stringify({
+      extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: true } },
+    }),
+  })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', enabled: false, fs })
+  assert.equal(r.changed, true)
+  assert.equal(JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate, false)
+})
+
+test('ensureMarketplaceAutoUpdate treats a corrupt settings file as empty rather than throwing', () => {
+  // A daemon boot must never fail because settings.json was half-written by something else.
+  const fs = memFs({ '/cfg/settings.json': '{ not json' })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(r.changed, false)
+  assert.equal(r.reason, 'no_entry')
+})
+
+test('ensureMarketplaceAutoUpdate requires a config dir rather than guessing one', () => {
+  assert.throws(() => ensureMarketplaceAutoUpdate({ configDir: '', marketplace: 'hoai', fs: memFs() }))
 })

@@ -81,7 +81,11 @@ import {
   detectInstallMethod,
 } from './bgos-install-method.mjs'
 import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
-import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import {
+  HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
+  observeMarketplaceInstall,
+} from '../lib/plugin-cli.mjs'
+import { ensureMarketplaceAutoUpdate } from '../lib/claude-preseed.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -1466,6 +1470,7 @@ export async function runSetup(
     spawnImpl = spawn,
     spawnClaudeImpl = spawnClaude,
     installCliImpl = installHoaiCli,
+    ensureAutoUpdateImpl = ensureMarketplaceAutoUpdate,
     print = (text) => console.log(text),
     writeErr = (text) => process.stderr.write(text),
   } = {},
@@ -1482,6 +1487,26 @@ export async function runSetup(
     print(
       '[hoai] the marketplace was not added just now (most often it is already there). Continuing.',
     )
+  }
+
+  // Enrol this machine in Claude Code's own plugin auto-update, so a published release reaches it
+  // without anybody typing anything. Claude Code defaults that ON only for Anthropic's own
+  // marketplace names, so without this key the machine stays on today's version forever while every
+  // check reports success.
+  //
+  // AFTER the add, never before: `plugin marketplace add` rewrites the entry to just its source, on
+  // both the "added" and the "already on disk" branches, so an earlier write would be undone here.
+  try {
+    const enrolled = ensureAutoUpdateImpl({
+      configDir: claudeConfigDir({ env, home }),
+      marketplace: HOAI_MARKETPLACE_NAME,
+    })
+    if (enrolled.changed) {
+      print('[hoai] this machine will now update the HOAI plugin automatically')
+    }
+  } catch (err) {
+    // Never fail setup over a settings write. The agent still works; it just will not self-update.
+    print(`[hoai] could not enable automatic updates (${err}). Setup continues.`)
   }
 
   print(`[hoai] 2/4 installing the HOAI plugin (${HOAI_PLUGIN_REF})`)

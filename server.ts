@@ -59,6 +59,7 @@ import {
   describeShutdownCause,
   type ShutdownCause,
 } from './lib/process-lifecycle.js'
+import { ensureMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import {
   pickCapabilities,
   type ServedCapabilities,
@@ -8542,6 +8543,30 @@ async function main(): Promise<void> {
   // plugin-update prompt can see when this install is behind the floor.
   // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
   if (INSTALL_METHOD === 'marketplace') {
+    // Make sure this machine is enrolled in Claude Code's own plugin auto-update. Idempotent: after
+    // the first run it is a compare and no write. This is here as well as in setup because the
+    // fleet that already exists was set up before enrolment was a thing, and a daemon boot is the
+    // one moment we are guaranteed to reach every one of those machines.
+    //
+    // The marketplace NAME comes from install detection, never a hardcoded 'hoai': a machine that
+    // registered the marketplace under another name is a real case that has confused an external
+    // tester twice, and writing the wrong key would silently do nothing.
+    try {
+      const marketplaceName = INSTALL_DETECTION?.marketplace
+      if (marketplaceName) {
+        const enrolled = ensureMarketplaceAutoUpdate({
+          configDir: CLAUDE_CONFIG_DIR,
+          marketplace: marketplaceName,
+        })
+        if (enrolled.changed) {
+          log(`marketplace auto-update enabled for ${marketplaceName} (this machine now self-updates)`)
+        }
+      }
+    } catch (err) {
+      // Telemetry-grade: a settings write must never fail a boot.
+      log(`could not enable marketplace auto-update: ${err}`)
+    }
+
     // Seed the marketplace latest-version cache from the local files (no
     // network, a few file reads) so the boot heartbeat below already
     // carries it, then arm the delayed + periodic network refresh.
