@@ -60,6 +60,7 @@ import {
   type ShutdownCause,
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
+import { recordKnownGood } from './lib/known-good-store.mjs'
 import {
   pickCapabilities,
   type ServedCapabilities,
@@ -8509,6 +8510,18 @@ async function main(): Promise<void> {
   // signal to read back up the startup phases and find the one that started
   // and never finished.
   log('startup complete: polling armed, message delivery is live')
+
+  // This version started and reached live delivery, so it is the one to name if a later release has
+  // to be recalled. A few bytes, deliberately NOT a copy of the payload: one cache generation is
+  // 71 MB (67 MB of it node_modules, which the daemon needs to run), and a source-only copy cannot
+  // be restored without a network install, which is the very situation a local copy was meant to
+  // survive. What actually recovers a machine is reverting the marketplace ref, measured to apply
+  // as an update and re-fetch, so all this needs to hold is which version to revert to.
+  try {
+    recordKnownGood({ home: homedir(), version: RUNNING_VERSION })
+  } catch {
+    // Never let a bookkeeping write disturb a daemon that has just come up successfully.
+  }
 
   // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
   // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
