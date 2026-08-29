@@ -117,6 +117,13 @@ export function startVersionHeartbeat(deps: {
   updateStatus?: HeartbeatUpdateStatus
   /** lib/machine-id.mjs ensureMachineId, injected so tests never touch a home dir. */
   machineId?: () => string
+  /**
+   * Current daemon-level fault, or null when healthy. Sent on EVERY beat: the
+   * backend clears the stored columns on an explicit null, so recovery needs no
+   * separate call. Guarded like the update providers below, because telemetry
+   * must never be the reason a heartbeat fails.
+   */
+  lastError?: () => { code: string; message: string; at: string } | null
 }): { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null {
   const version = readOwnVersion(deps.rootDir)
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
@@ -136,6 +143,11 @@ export function startVersionHeartbeat(deps: {
         } catch {}
         try {
           body.updateReadiness = status.updateReadiness()
+        } catch {}
+      }
+      if (deps.lastError) {
+        try {
+          body.lastError = deps.lastError()
         } catch {}
       }
       await deps.post('integrations/heartbeat', body)

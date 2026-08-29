@@ -113,6 +113,53 @@ export function markAuthRejectionNotified(
 }
 
 /**
+ * The same refusal, projected for the FLEET rather than for this machine.
+ *
+ * 2026-08-29. The backend has accepted a `lastError` on the heartbeat since the
+ * columns existed (heartbeat.dto.ts, integration-pairing.repository.ts writes
+ * all three), and across 76 live pairings the number that had ever carried one
+ * was ZERO. Nothing sent it. So an operator reading the pairing table saw a
+ * uniformly blank error column and read it as health, which is worse than an
+ * absent column because it answers the question confidently.
+ *
+ * That gap matters most for exactly this failure. The notification above is
+ * local IPC and the log line is on the machine, both correct and both invisible
+ * to anyone not sitting at that machine. The 2026-08-26 incident ran ~29,000
+ * 401s over fifteen hours and surfaced only when the rejected traffic tripped a
+ * shared rate limit and broke a different agent's write.
+ *
+ * DERIVED, NOT RECORDED. This reads the state the daemon already keeps rather
+ * than introducing a second one that could disagree with it. It uses the very
+ * thresholds that decide a refusal is real, so it cannot fire on a blip, and
+ * because any success returns `consecutive` to 0 it goes back to null on its
+ * own. The backend treats an explicit null as "clear the columns", so recovery
+ * needs no separate call.
+ *
+ * Deliberately independent of `notified`: that flag stops the owner being told
+ * twice, but the fleet wants the CURRENT state on every heartbeat, and a
+ * refusal that is still happening should still be reported.
+ */
+export function heartbeatLastError(
+  state: AuthRejectionState,
+  now: number,
+): { code: string; message: string; at: string } | null {
+  if (state.consecutive < AUTH_REJECTION_MIN_COUNT) return null
+  if (state.firstAt == null) return null
+  if (now - state.firstAt < AUTH_REJECTION_MIN_MS) return null
+  const minutes = Math.floor((now - state.firstAt) / 60_000)
+  return {
+    code: 'auth_rejected',
+    // Under the DTO's 300-char cap with room to spare, and it states the
+    // observation only. What the daemon does not know, it does not claim.
+    message:
+      `The server has refused this agent's credentials on ` +
+      `${state.consecutive} consecutive calls over ${minutes} minute(s). ` +
+      `Re-pairing is the remedy under every known cause.`,
+    at: new Date(state.firstAt).toISOString(),
+  }
+}
+
+/**
  * The warning, as a LOCAL channel notification to the Claude Code session.
  *
  * IT CANNOT BE A CHAT MESSAGE, and that is the whole point. Posting to the
