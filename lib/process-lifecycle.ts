@@ -21,7 +21,7 @@
  */
 
 /** The causes that can end this daemon, all of which must be named in the log. */
-export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'SIGINT' | 'SIGTERM'
+export type ShutdownCause = 'stdin-end' | 'stdin-close' | 'stdout-epipe' | 'SIGINT' | 'SIGTERM'
 
 /**
  * Does this stdin event mean the parent is gone?
@@ -44,10 +44,42 @@ export function describeShutdownCause(cause: ShutdownCause | string): string {
     case 'stdin-end':
     case 'stdin-close':
       return 'the launching Claude Code session closed our input, so it is gone: shutting down'
+    case 'stdout-epipe':
+      return 'our output pipe broke, so whoever was reading it is gone: shutting down'
     case 'SIGINT':
     case 'SIGTERM':
       return `received ${cause}: shutting down`
     default:
       return `received ${cause}: shutting down`
   }
+}
+
+/**
+ * Is this error the reader going away?
+ *
+ * FOUND BY RUNNING IT, not by a test. The daemon was launched from a terminal that then went away.
+ * log() wrote to stderr WITHOUT a guard (only its file append was wrapped), so the write threw
+ * EPIPE. That surfaced as an uncaughtException, whose handler called log(), which threw again. An
+ * unbounded flood of identical exception lines into the agent's own log file.
+ *
+ * Two lessons are encoded here and in server.ts. A broken pipe is not a fault to report, it is the
+ * parent leaving, so it belongs on the shutdown path. And a fault handler must never be able to
+ * recurse through its own logging.
+ *
+ * Matching on the message as well as the code is deliberate: Bun surfaces this as
+ * "EPIPE: broken pipe, write" and the code is not always populated, which is exactly how the real
+ * loop escaped a code-only check.
+ */
+export function isBrokenPipe(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const code = (err as { code?: unknown }).code
+  if (
+    code === 'EPIPE' ||
+    code === 'ERR_STREAM_DESTROYED' ||
+    code === 'ERR_STREAM_WRITE_AFTER_END'
+  ) {
+    return true
+  }
+  const message = (err as { message?: unknown }).message
+  return typeof message === 'string' && /\bEPIPE\b/.test(message)
 }

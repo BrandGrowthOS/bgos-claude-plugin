@@ -105,3 +105,66 @@ test('CONTROL: without the handlers the same process survives its stdin closing'
     child.kill('SIGKILL')
   }
 })
+
+/**
+ * The broken-pipe loop, reproduced and then shown fixed.
+ *
+ * This is the defect that a real run found and no unit test could: a fault handler that reports
+ * through a logger which can raise the same fault. The control below runs the ORIGINAL shape and
+ * counts the flood; the fixed shape must be bounded and must exit.
+ *
+ * Deliberately a synthetic child rather than server.ts. Running the real daemon from a working tree
+ * once picked up live credentials and reached production, which is a mistake worth engineering out of
+ * the test suite rather than remembering not to repeat.
+ */
+
+/** The original shape: the handler logs, the log throws, the throw re-enters the handler. */
+const LOOPS_ON_BROKEN_PIPE = `
+  const log = (m) => { process.stderr.write('[x] ' + m + '\\n') }   // unguarded, as it was
+  process.on('uncaughtException', (err) => { log('uncaughtException: ' + err.message) })
+  setInterval(() => { log('tick') }, 5)
+  process.stdout.write('ready\\n')
+`
+
+/** The fixed shape: logging cannot throw, the handler cannot re-enter, a broken pipe exits. */
+const EXITS_ON_BROKEN_PIPE = `
+  const isBrokenPipe = (e) => !!e && typeof e === 'object' &&
+    (e.code === 'EPIPE' || e.code === 'ERR_STREAM_DESTROYED' ||
+     (typeof e.message === 'string' && /\\bEPIPE\\b/.test(e.message)))
+  const log = (m) => { try { process.stderr.write('[x] ' + m + '\\n') } catch {} }
+  let handling = false
+  const onFault = (err) => {
+    if (handling) return
+    handling = true
+    try { if (isBrokenPipe(err)) { process.exit(0) } log('uncaughtException: ' + err.message) }
+    catch {} finally { handling = false }
+  }
+  process.on('uncaughtException', onFault)
+  setInterval(() => { log('tick') }, 5)
+  process.stdout.write('ready\\n')
+`
+
+test('a broken output pipe exits the process instead of looping', async () => {
+  const child = spawnChild(EXITS_ON_BROKEN_PIPE)
+  try {
+    assert.equal(await waitForReady(child, 10_000), true)
+    child.stderr?.destroy() // the reader goes away, exactly as a closing terminal does
+    const code = await exitWithin(child, 10_000)
+    assert.equal(code, 0, 'a broken pipe must end the process, not spin it')
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL')
+  }
+})
+
+test('CONTROL: the original shape does NOT exit, which is what made it a flood', async () => {
+  // If this ever starts exiting on its own, the test above proves nothing.
+  const child = spawnChild(LOOPS_ON_BROKEN_PIPE)
+  try {
+    assert.equal(await waitForReady(child, 10_000), true)
+    child.stderr?.destroy()
+    const code = await exitWithin(child, 3_000)
+    assert.equal(code, null, 'the unguarded shape keeps running; that is the bug being fixed')
+  } finally {
+    child.kill('SIGKILL')
+  }
+})

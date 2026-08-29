@@ -57,6 +57,7 @@ import {
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
   describeShutdownCause,
+  isBrokenPipe,
   type ShutdownCause,
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
@@ -447,7 +448,13 @@ const channelLiveness = new ChannelLiveness()
 
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
-  process.stderr.write(line)
+  // The stderr write used to be unguarded while the file append below was wrapped, and that asymmetry
+  // was a real loop: when the launching terminal went away this threw EPIPE, which surfaced as an
+  // uncaughtException, whose handler called log() again, which threw again. Logging is the one thing
+  // that must never be able to fail into the code that reports failures.
+  try {
+    process.stderr.write(line)
+  } catch {}
   try {
     appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
   } catch {}
@@ -8349,12 +8356,29 @@ async function main(): Promise<void> {
 
   // Neither of these existed. An unhandled rejection took the process down with no line in the log
   // saying why, which is the same silence this whole block is about.
-  process.on('unhandledRejection', (reason) => {
-    log(`unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
-  })
-  process.on('uncaughtException', (err) => {
-    log(`uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
-  })
+  //
+  // Both guards below were added after the first version of this block looped in production: the
+  // handler logged, the log threw EPIPE, the throw re-entered the handler. So:
+  //   1. a broken pipe is the READER leaving, not a fault to report, so it goes to shutdown; and
+  //   2. handlingFault makes a throw inside a handler impossible to recurse through.
+  let handlingFault = false
+  const onFault = (kind: string, err: unknown) => {
+    if (handlingFault) return
+    handlingFault = true
+    try {
+      if (isBrokenPipe(err)) {
+        shutdown('stdout-epipe', 0)
+        return
+      }
+      log(`${kind}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+    } catch {
+      // Never let reporting a fault raise one.
+    } finally {
+      handlingFault = false
+    }
+  }
+  process.on('unhandledRejection', (reason) => onFault('unhandledRejection', reason))
+  process.on('uncaughtException', (err) => onFault('uncaughtException', err))
 
   // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
   // the watcher restarts this agent nothing proves the new session HEARS the
