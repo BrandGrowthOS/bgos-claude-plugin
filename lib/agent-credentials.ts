@@ -206,6 +206,56 @@ export function resolveCredentialsSelection(opts: {
  * so a string caller behaves exactly as before while the boot path
  * (resolveCredentialsSelection) is the one that can actually refuse.
  */
+/**
+ * Would this daemon still boot if the env pin were removed?
+ *
+ * 2026-08-29, found by Mark (888) on a 12-agent Windows host. Every agent there
+ * carries BGOS_ASSISTANT_ID in its own .mcp.json, `~/.bgos-agent/` holds twelve
+ * `credentials-<id>.json`, and there is not a single folder pin anywhere. That
+ * resolves via 'env-assistant' and works perfectly. But the env pin is the ONLY
+ * thing holding it up: strip it and the resolver reaches the several-candidates
+ * branch, returns `refuse`, and the caller calls process.exit(1). Twelve agents
+ * do not degrade, they stop booting.
+ *
+ * Nothing announced that. "Tidy up the .mcp.json env blocks" is an ordinary
+ * piece of housekeeping that would have taken the whole host down, and the
+ * healthy boot log looked identical to a robust one.
+ *
+ * So we ask the question directly instead of re-deriving the conditions: run
+ * the REAL resolver again with the pin removed and see what it says. A warning
+ * that re-implements the rule it is warning about drifts away from it; this one
+ * cannot, because it IS the rule.
+ *
+ * Returns null when there is nothing to say, which is the common case.
+ */
+export function describeEnvOnlyIdentityRisk(opts: {
+  env?: Env
+  defaultPath: string
+  cwd?: string
+} & FileProbes): string | null {
+  const env: Env = opts.env ?? {}
+
+  // Only env-pinned hosts can lose an env pin.
+  const pinned =
+    str(env.BGOS_CREDENTIALS_PATH).trim() !== '' || configuredAssistantId(env) !== ''
+  if (!pinned) return null
+
+  const withoutPin: Env = { ...env }
+  delete withoutPin.BGOS_CREDENTIALS_PATH
+  delete withoutPin.BGOS_ASSISTANT_ID
+
+  const counterfactual = resolveCredentialsSelection({ ...opts, env: withoutPin })
+  if (counterfactual.kind !== 'refuse') return null
+
+  const n = counterfactual.candidateIds.length
+  return (
+    `identity here rests ENTIRELY on the environment: ${n} credential files in ` +
+    `${counterfactual.agentDir} and no ${FOLDER_PIN_FILE} folder pin. ` +
+    `Removing the env pin would not degrade this agent, it would refuse to boot. ` +
+    `Write a ${FOLDER_PIN_FILE} containing the assistant id to make it survive that.`
+  )
+}
+
 export function resolveCredentialsPath(opts: {
   env?: Env
   defaultPath: string
