@@ -21,6 +21,7 @@ import {
   TRUST_ENTRY_DEFAULTS,
   alternateSlashSpelling,
   ensureMarketplaceAutoUpdate,
+  readMarketplaceAutoUpdate,
   preseedClaudeTrust,
   seedProjectEntry,
 } from '../lib/claude-preseed.mjs'
@@ -428,4 +429,57 @@ test('a retry never recreates an entry a competing writer deleted', () => {
   assert.equal(r.changed, false)
   const after = JSON.parse(fs.files.get('/cfg/settings.json')!)
   assert.deepEqual(after.extraKnownMarketplaces, {}, 'the entry must stay gone')
+})
+
+
+// --- reading the enrolment back, for /status --------------------------------
+//
+// Three-valued on purpose. A machine wrongly told it self-updates is the exact silent failure this
+// release exists to end, so "we could not tell" must survive all the way to the reply.
+
+test('an enrolled marketplace reads back as enrolled', () => {
+  const fs = memFs({
+    '/cfg/settings.json': JSON.stringify({
+      extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: true } },
+    }),
+  })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs }), true)
+})
+
+test('a present entry with no autoUpdate key reads as NOT enrolled, because that is what it means', () => {
+  // Claude Code defaults the flag off for every marketplace that is not one of its own, so an absent
+  // key here is a real answer and not an unknown: the machine does not self-update.
+  const fs = memFs({
+    '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {} } } }),
+  })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs }), false)
+  const off = memFs({
+    '/cfg/settings.json': JSON.stringify({
+      extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: false } },
+    }),
+  })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: off }), false)
+})
+
+test('an unreadable or corrupt settings file reads as UNKNOWN, never as an answer', () => {
+  // The distinction that matters: we never saw the file, so we know nothing. Reporting that as
+  // "not enrolled" would send someone to fix a machine that is fine; reporting it as "enrolled"
+  // would leave a machine stranded. Both are worse than saying so.
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: memFs() }), null)
+  const corrupt = memFs({ '/cfg/settings.json': '{ not json' })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: corrupt }), null)
+  const noBlock = memFs({ '/cfg/settings.json': JSON.stringify({}) })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: noBlock }), null)
+  const notOurs = memFs({
+    '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: { other: { autoUpdate: true } } }),
+  })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: notOurs }), null)
+})
+
+test('the reader uses the same own-property rule as the writer', () => {
+  // A reader and a writer that disagree about what counts as an entry would report a state nobody
+  // wrote. __proto__ is the case that separates them, and the name comes off the filesystem.
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: {} }) })
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: '__proto__', fs }), null)
+  assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'constructor', fs }), null)
 })

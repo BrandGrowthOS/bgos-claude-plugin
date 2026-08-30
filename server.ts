@@ -5628,6 +5628,11 @@ async function pollChat(chatId: string): Promise<void> {
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
+      // Recorded HERE, where the message is accepted, and not further down where it is handed to the
+      // model: the daemon-answered commands take a `continue` before that point, so /status was
+      // reporting "no messages yet" while answering a message the user had just sent. Caught by
+      // running the real daemon; every unit test around it passed either way.
+      lastInboundAtMs = Date.now()
       const isSlashCommand = isSlashCommandPayload(msg.message)
       // WS may arrive during the boot poll window where its cursor advance is
       // intentionally deferred. Text can tolerate that safety replay, but an
@@ -5814,7 +5819,6 @@ async function pollChat(chatId: string): Promise<void> {
       // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
       // Reused for the verdict-binding map AND the agent-delivered meta so a
       // shared assistant sees which human actually sent this message.
-      lastInboundAtMs = Date.now()
       lastInboundUserByChat.set(chatId, pollSenderUserId)
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
@@ -7307,6 +7311,9 @@ function connectWebsocket(): void {
       const text = (payload?.text as string | undefined) ?? ''
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
+      // Same reason as the poll path: recorded where the message is accepted, before the
+      // daemon-answered commands take their early return.
+      lastInboundAtMs = Date.now()
       const isWsSlashCommand = isSlashCommandPayload(payload ?? {})
       const wsAgentOrigin = (payload?.agentOrigin ?? payload?.agent_origin ?? null) as
         | AgentOriginLike
@@ -7327,10 +7334,7 @@ function connectWebsocket(): void {
         ? undefined
         : String(wsTurnStateRaw)
       const wsSenderUserId = senderUserIdOf(payload)
-      if (chatId) {
-        lastInboundAtMs = Date.now()
-        lastInboundUserByChat.set(chatId, wsSenderUserId)
-      }
+      if (chatId) lastInboundUserByChat.set(chatId, wsSenderUserId)
       const wsChannel = buildInboundChannel({
         chatId,
         messageId,

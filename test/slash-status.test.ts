@@ -12,6 +12,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { buildStatusAnswer, type StatusFacts } from '../lib/slash-status.ts'
 
@@ -71,4 +72,46 @@ test('the answer is short enough to read on a phone', () => {
   const out = buildStatusAnswer(BASE)
   assert.ok(out.split('\n').length <= 6, 'status must stay glanceable')
   assert.ok(out.length < 400, `status was ${out.length} chars, too long for a chat bubble`)
+})
+
+
+// --- wiring contracts, both found by RUNNING the daemon ---------------------
+
+const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+
+test('the inbound clock is stamped before the daemon-answered commands take their early return', () => {
+  // Found by driving the real daemon against a stub backend, not by a test: it answered a /status
+  // that the user had just sent with "No messages yet this session". The clock was being stamped
+  // where a message is handed to the MODEL, and /status never gets that far because it returns
+  // first. Every unit test around it passed either way, which is exactly why this one is here.
+  const pollLoopAt = serverSource.indexOf('const isSlashCommand = isSlashCommandPayload(msg.message)')
+  assert.notEqual(pollLoopAt, -1, 'the poll accept point must still be findable')
+  const stampAt = serverSource.lastIndexOf('lastInboundAtMs = Date.now()', pollLoopAt)
+  assert.notEqual(stampAt, -1, 'the poll path must stamp the clock')
+
+  const statusBranchAt = serverSource.indexOf("slashRoute.kind === 'status'", pollLoopAt)
+  assert.notEqual(statusBranchAt, -1)
+  assert.ok(
+    stampAt < statusBranchAt,
+    'the clock must be stamped BEFORE the status branch returns, or /status reports no messages',
+  )
+})
+
+test('the websocket path stamps the clock at its own accept point too', () => {
+  // The same defect, one rail over. Both paths deliver, so both have to record.
+  const wsAcceptAt = serverSource.indexOf('const isWsSlashCommand = isSlashCommandPayload(payload ?? {})')
+  assert.notEqual(wsAcceptAt, -1)
+  const stampAt = serverSource.lastIndexOf('lastInboundAtMs = Date.now()', wsAcceptAt)
+  assert.notEqual(stampAt, -1)
+  const statusBranchAt = serverSource.indexOf("slashRoute.kind === 'status'", wsAcceptAt)
+  assert.notEqual(statusBranchAt, -1)
+  assert.ok(stampAt < statusBranchAt, 'same ordering, websocket rail')
+})
+
+test('/status is answered by the daemon at both delivery rails, and deduped across them', () => {
+  // Poll and WebSocket both deliver the same message. Without the shared id set a user gets two
+  // identical status bubbles, which is the failure the compact path already solved this way.
+  const handled = serverSource.match(/alreadyHandledStatus\(/g) ?? []
+  assert.equal(handled.length, 3, 'the definition plus one call on each of the two delivery rails')
+  assert.match(serverSource, /handleStatusCommand\(chatId\)/)
 })
