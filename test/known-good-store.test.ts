@@ -22,6 +22,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   describeRollbackRecovery,
@@ -97,4 +100,74 @@ test('the recovery message is still useful when nothing was ever recorded', () =
   assert.ok(msg.length > 0)
   assert.match(msg, /ref/i, 'the lever is still the answer even without a recorded version')
   assert.doesNotMatch(msg, /undefined|null/)
+})
+
+
+// --- the real filesystem path, which had no coverage at all -----------------
+//
+// Every test above injects a memory fs, so defaultFs itself was never executed: a mutation harness
+// showed four separate breakages to it surviving the whole suite. These run it for real, in a temp
+// home, which is cheap and is the only thing that can catch them.
+
+test('the default fs really lands the record on disk and reads it back', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kg-'))
+  assert.equal(recordKnownGood({ home, version: '0.38.10' }).changed, true)
+  // Read through a FRESH default fs, not the one that wrote it, so a store that only ever existed
+  // in a closure would fail here.
+  assert.equal(readKnownGood({ home })?.version, '0.38.10')
+  assert.equal(recordKnownGood({ home, version: '0.38.10' }).reason, 'already')
+  assert.deepEqual(
+    readdirSync(join(home, '.bgos-agent')),
+    ['known-good.json'],
+    'the atomic write must leave no temp file behind',
+  )
+})
+
+test('the record is written owner-only, like every other file this repo puts in the home', () => {
+  // Skipped on win32, where chmod is a no-op: an unguarded assert here would only add to the
+  // known Windows-only baseline failures rather than catch anything.
+  if (process.platform === 'win32') return
+  const home = mkdtempSync(join(tmpdir(), 'kg-mode-'))
+  recordKnownGood({ home, version: '0.38.10' })
+  assert.equal(statSync(knownGoodPath(home)).mode & 0o777, 0o600)
+})
+
+test('a second version replaces the first, and the file stays a single record', () => {
+  const home = mkdtempSync(join(tmpdir(), 'kg-two-'))
+  recordKnownGood({ home, version: '0.38.10' })
+  recordKnownGood({ home, version: '0.38.11' })
+  assert.equal(readKnownGood({ home })?.version, '0.38.11')
+  const parsed = JSON.parse(readFileSync(knownGoodPath(home), 'utf8'))
+  assert.deepEqual(Object.keys(parsed).sort(), ['at', 'version'])
+})
+
+// --- the recovery line must not name a cause it cannot observe --------------
+
+test('the recovery line reports what was observed, not why, when the files are unreadable', () => {
+  // Driving the real executePlan twice, differing only in whether plugin.json was deleted or left
+  // in place with a throwing read, produced the same sentence blaming Claude Code's cache sweep.
+  // On a recovery path that sends someone to look in the wrong place.
+  const unreadable = describeRollbackRecovery({
+    knownGood: { version: '0.38.5', at: 'x' },
+    current: '0.38.9',
+    missing: false,
+    path: '/cache/hoai/0.38.9/.claude-plugin/plugin.json',
+  })
+  assert.match(unreadable, /could not be read/)
+  assert.match(unreadable, /permissions/i, 'and points at the thing worth checking')
+  assert.equal(/cache sweep/.test(unreadable), false, 'that cause was not observed here')
+  assert.ok(unreadable.includes('/cache/hoai/0.38.9/.claude-plugin/plugin.json'), 'names the path')
+})
+
+test('when the files really are gone the sweep is offered as the usual explanation, not as fact', () => {
+  const gone = describeRollbackRecovery({
+    knownGood: { version: '0.38.5', at: 'x' },
+    current: '0.38.9',
+    missing: true,
+  })
+  assert.match(gone, /are not on this disk/)
+  assert.match(gone, /Usually/, 'hedged, because the caller still has not proven the cause')
+  // The half that is cause-independent stays exactly as it was: it is the actionable half.
+  assert.match(gone, /revert plugins\[0\]\.source\.ref/)
+  assert.match(gone, /v0\.38\.5/)
 })
