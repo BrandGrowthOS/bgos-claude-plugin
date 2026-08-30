@@ -263,6 +263,21 @@ export class UpdateRpcHandler {
       return this.fail(rpcId, 'rollback_latched')
     }
 
+    // Pre-flight (one-click-update fix): a CLONE install we have no way to
+    // restart into is limbo, not a stage. `git pull` swaps the checkout on
+    // disk, but this long-lived process keeps the OLD code in memory until
+    // something restarts it, and for a bespoke-launched clone daemon whose
+    // supervisor never got declared, nothing will; the app then shows
+    // restart-pending forever. So abort BEFORE draining or pulling: keep
+    // serving the CURRENT version and report no_restart_authority, a loud,
+    // recoverable failure the operator can act on (declare the launcher's
+    // supervisor via BGOS_SUPERVISOR_*, or restart by hand). Marketplace
+    // installs stage into a versioned cache the next launch picks up on its
+    // own, so that path keeps its legitimate 'staged' outcome.
+    if (this.deps.restartAuthority().kind === 'staged') {
+      return this.fail(rpcId, 'no_restart_authority')
+    }
+
     let targetVersion = updater.pendingRestartVersion()
     if (targetVersion) {
       // An update is already installed and waiting for a restart; there is

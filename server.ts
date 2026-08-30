@@ -276,8 +276,10 @@ import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
+  decideSupervisorWrite,
   detectSupervision,
   resolveSupervision,
+  supervisorFilePath,
   type ResolvedService,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
@@ -6069,6 +6071,39 @@ function publishServiceRecord(service: ResolvedService | null): void {
   }
 }
 
+// Write ~/.bgos-agent/<id>/supervisor.json at boot, declaring what supervises
+// THIS daemon, so the one-click updater resolves a real restart authority
+// instead of an unreliable platform guess (which goes dark on the bespoke
+// per-machine labels the fleet actually uses). The declared handle comes from
+// the launcher's env (BGOS_SUPERVISOR_*) when it cooperates, else from a
+// CONFIDENT detection; when neither is confident it writes nothing rather than
+// a wrong guess (lib/update-readiness.ts decideSupervisorWrite). Best effort:
+// a daemon that cannot write its own state dir still serves.
+function writeSupervisorRecordAtBoot(): void {
+  const supPath = supervisorFilePath(homedir(), ASSISTANT_ID)
+  if (!supPath) return
+  try {
+    const decision = decideSupervisorWrite({
+      env: process.env,
+      existingRaw: readTextOrNull(supPath),
+      ownPid: process.pid,
+      startedAt: new Date().toISOString(),
+      detection: resolveSupervision(supervisionProbe()),
+    })
+    if (decision.action !== 'write') {
+      log(`supervisor.json not written at boot (${decision.reason})`)
+      return
+    }
+    const dir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (dir) mkdirSync(dir, { recursive: true })
+    writeFileSync(supPath, `${decision.body}\n`)
+    log(`supervisor.json written at boot (${decision.reason})`)
+  } catch {
+    // A daemon that cannot write its own state dir still serves; the updater
+    // falls back to detection, exactly as before.
+  }
+}
+
 function updateReadinessSnapshot(): UpdateReadiness {
   const state = loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
   const supervision = resolveSupervision(supervisionProbe())
@@ -8201,6 +8236,11 @@ async function main(): Promise<void> {
     exit: (code) => process.exit(code),
   })
   }
+
+  // Declare this daemon's restart authority as a fact on disk (one-click
+  // update fix): turn the platform guess into a written supervisor.json so a
+  // later update_rpc resolves a real authority instead of hanging.
+  writeSupervisorRecordAtBoot()
 
   log('Starting BGOS channel plugin...')
   log(
