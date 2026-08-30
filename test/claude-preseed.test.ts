@@ -255,3 +255,60 @@ test('ensureMarketplaceAutoUpdate treats a corrupt settings file as empty rather
 test('ensureMarketplaceAutoUpdate requires a config dir rather than guessing one', () => {
   assert.throws(() => ensureMarketplaceAutoUpdate({ configDir: '', marketplace: 'hoai', fs: memFs() }))
 })
+
+// --- the two ways enrolment could do harm rather than nothing ----------------
+//
+// Both of these came out of an adversarial pass over the enrolment change. Neither is exotic: the
+// first is reachable from a directory name, and the second happens to every user who has ever
+// switched auto-update off.
+
+test('an explicit autoUpdate:false is a decision, and a daemon boot must not overturn it', () => {
+  // ensureMarketplaceAutoUpdate runs on EVERY daemon boot. If a false were treated the same as a
+  // missing key, a user who deliberately opted out would be re-enrolled within minutes, silently,
+  // and would have no way to make the setting stick.
+  const before = JSON.stringify({
+    extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: false } },
+  })
+  const fs = memFs({ '/cfg/settings.json': before })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs })
+  assert.equal(r.changed, false)
+  assert.equal(r.reason, 'declined')
+  assert.equal(fs.files.get('/cfg/settings.json'), before, 'the file must not be rewritten at all')
+})
+
+test('a marketplace named __proto__ cannot reach Object.prototype', () => {
+  // The name is not ours: it comes off the filesystem, from a directory under the plugin cache. So
+  // a directory called __proto__ is an input, and an unguarded entries[name] would both READ a
+  // truthy object (Object.prototype) and then WRITE autoUpdate onto it, poisoning every plain
+  // object in the process for the rest of its life.
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: {} }) })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: '__proto__', fs })
+  assert.equal(r.reason, 'no_entry', 'the prototype is not an entry')
+  assert.equal(r.changed, false)
+  // The real assertion: nothing leaked onto the prototype.
+  assert.equal(({} as Record<string, unknown>).autoUpdate, undefined)
+  assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, 'autoUpdate'), false)
+})
+
+test('a marketplace named constructor is likewise not an entry', () => {
+  // Same class, different key. hasOwnProperty is what makes the whole family a non-issue.
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: {} }) })
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'constructor', fs })
+  assert.equal(r.reason, 'no_entry')
+  assert.equal(r.changed, false)
+})
+
+test('an inherited autoUpdate does not count as an existing entry', () => {
+  // A settings object whose PROTOTYPE carries the marketplace must still read as absent: the
+  // hasOwnProperty guard is on the entries map, and this pins that it is the map being guarded.
+  const proto = { hoai: { source: {}, autoUpdate: true } }
+  const entries = Object.create(proto) as Record<string, unknown>
+  const fs = memFs({ '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: {} }) })
+  // Feed the inherited shape in directly by rewriting the parsed file: JSON cannot express a
+  // prototype, so this is the only way to reach the branch.
+  const settings = { extraKnownMarketplaces: entries }
+  assert.equal(Object.prototype.hasOwnProperty.call(settings.extraKnownMarketplaces, 'hoai'), false)
+  assert.equal((settings.extraKnownMarketplaces as Record<string, unknown>).hoai, proto.hoai)
+  // And the function, given the same name against an empty own-map, reports no entry.
+  assert.equal(ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs }).reason, 'no_entry')
+})

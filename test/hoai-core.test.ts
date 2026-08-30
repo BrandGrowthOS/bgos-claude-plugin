@@ -488,7 +488,6 @@ function scriptedChild(code: number) {
 function setupHarness(claudeCodes: number[]) {
   const claudeCalls: string[][] = []
   const siblingCalls: { file: string; args: string[] }[] = []
-  const watcherCalls: unknown[] = []
   const prints: string[] = []
   const errs: string[] = []
   const order: string[] = []
@@ -496,7 +495,6 @@ function setupHarness(claudeCodes: number[]) {
   return {
     claudeCalls,
     siblingCalls,
-    watcherCalls,
     prints,
     errs,
     order,
@@ -514,11 +512,6 @@ function setupHarness(claudeCodes: number[]) {
         spawnClaudeImpl: (async (args: readonly string[]) => {
           claudeCalls.push([...args])
           return claudeCodes[claudeIdx++] ?? 0
-        }) as never,
-        installWatcherImpl: (async (opts: unknown) => {
-          order.push('watcher')
-          watcherCalls.push(opts)
-          return { ok: true, message: 'installed' }
         }) as never,
         installCliImpl: (async () => {
           order.push('install-cli')
@@ -544,8 +537,7 @@ test('runSetup: marketplace, install, PATH, pair, in that order and with no shel
   ])
   // The PATH step runs BEFORE pairing, so that pairing's own closing line
   // ("run hoai from this folder") is true by the time the user reads it.
-  // The watcher comes last, after pairing, because it needs the credentials pairing just wrote.
-  assert.deepEqual(h.order, ['install-cli', 'pair', 'watcher'])
+  assert.deepEqual(h.order, ['install-cli', 'pair'])
   // The last step runs bgos-pair under THIS node, with the pair argv untouched.
   assert.equal(h.siblingCalls.length, 1)
   assert.equal(h.siblingCalls[0]!.file, process.execPath)
@@ -1372,105 +1364,4 @@ test('resolveWrapperPluginRoot: never points the hoai shim at an npx dir that is
     observe: async () => ({ installed: { installPath: null } }) as never,
   })
   assert.equal(cloneRoot, '/home/kc/bgos-claude-plugin')
-})
-
-// --- the watcher is installed at setup, not behind a healthy agent ----------
-// Until now the only route to a watcher was a job addressed to a LIVE agent on that machine, so the
-// machine that most needs one, whose agent is broken, was exactly the one that could not receive it.
-// Setup is the moment we know something here works.
-
-test('setup installs the machine watcher after pairing succeeds', async () => {
-  const calls: unknown[] = []
-  const prints: string[] = []
-  const code = await runSetup(['BGOS-7F3A-2K'], {
-    platform: 'linux',
-    env: {},
-    home: POSIX_HOME,
-    scriptDir: CLONE_SCRIPT_DIR,
-    spawnImpl: (() => scriptedChild(0)) as never,
-    spawnClaudeImpl: (async () => 0) as never,
-    installCliImpl: (async () => ({ ok: true, binDir: '' })) as never,
-    ensureAutoUpdateImpl: (() => ({ changed: false, reason: 'no_entry' })) as never,
-    installWatcherImpl: (async (opts: unknown) => {
-      calls.push(opts)
-      return { ok: true, message: 'installed' }
-    }) as never,
-    print: (t: string) => prints.push(t),
-    writeErr: () => true,
-  })
-
-  assert.equal(code, 0)
-  assert.equal(calls.length, 1, 'the watcher install must run exactly once')
-  assert.ok(
-    prints.some((p) => /update and restart its agents on its own/.test(p)),
-    'the user should be told the machine gained a watcher',
-  )
-})
-
-test('a watcher that will not install does NOT fail setup', async () => {
-  // A machine with a working paired agent and no watcher is a good outcome. A setup that aborts at
-  // the last step because a service manager said no is not.
-  const prints: string[] = []
-  const code = await runSetup(['BGOS-7F3A-2K'], {
-    platform: 'linux',
-    env: {},
-    home: POSIX_HOME,
-    scriptDir: CLONE_SCRIPT_DIR,
-    spawnImpl: (() => scriptedChild(0)) as never,
-    spawnClaudeImpl: (async () => 0) as never,
-    installCliImpl: (async () => ({ ok: true, binDir: '' })) as never,
-    ensureAutoUpdateImpl: (() => ({ changed: false, reason: 'no_entry' })) as never,
-    installWatcherImpl: (async () => ({ ok: false, message: 'scheduler refused' })) as never,
-    print: (t: string) => prints.push(t),
-    writeErr: () => true,
-  })
-
-  assert.equal(code, 0, 'setup must still succeed')
-  assert.ok(
-    prints.some((p) => /scheduler refused/.test(p) && /hoai-watcher install/.test(p)),
-    'the failure must be stated, with the command to fix it later',
-  )
-})
-
-test('a watcher install that throws still does not fail setup', async () => {
-  const code = await runSetup(['BGOS-7F3A-2K'], {
-    platform: 'linux',
-    env: {},
-    home: POSIX_HOME,
-    scriptDir: CLONE_SCRIPT_DIR,
-    spawnImpl: (() => scriptedChild(0)) as never,
-    spawnClaudeImpl: (async () => 0) as never,
-    installCliImpl: (async () => ({ ok: true, binDir: '' })) as never,
-    ensureAutoUpdateImpl: (() => ({ changed: false, reason: 'no_entry' })) as never,
-    installWatcherImpl: (async () => {
-      throw new Error('ENOENT')
-    }) as never,
-    print: () => {},
-    writeErr: () => true,
-  })
-  assert.equal(code, 0)
-})
-
-test('setup does not attempt a watcher install when pairing failed', async () => {
-  // Enrolling a machine that never paired would leave a watcher with no credentials, polling
-  // nothing, forever.
-  let attempted = false
-  const code = await runSetup(['BGOS-7F3A-2K'], {
-    platform: 'linux',
-    env: {},
-    home: POSIX_HOME,
-    scriptDir: CLONE_SCRIPT_DIR,
-    spawnImpl: (() => scriptedChild(3)) as never,
-    spawnClaudeImpl: (async () => 0) as never,
-    installCliImpl: (async () => ({ ok: true, binDir: '' })) as never,
-    ensureAutoUpdateImpl: (() => ({ changed: false, reason: 'no_entry' })) as never,
-    installWatcherImpl: (async () => {
-      attempted = true
-      return { ok: true, message: 'installed' }
-    }) as never,
-    print: () => {},
-    writeErr: () => true,
-  })
-  assert.equal(code, 3, 'the pairing exit code must survive')
-  assert.equal(attempted, false, 'no watcher for a machine that never paired')
 })

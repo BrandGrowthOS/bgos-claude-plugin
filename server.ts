@@ -8362,7 +8362,34 @@ async function main(): Promise<void> {
   //   1. a broken pipe is the READER leaving, not a fault to report, so it goes to shutdown; and
   //   2. handlingFault makes a throw inside a handler impossible to recurse through.
   let handlingFault = false
-  const onFault = (kind: string, err: unknown) => {
+  const describeFault = (err: unknown) =>
+    err instanceof Error ? err.stack ?? err.message : String(err)
+
+  // A REJECTION is logged and survived. This file is full of deliberate floating promises
+  // (void syncSlashCommands(), void reportResting(), and so on), and killing the daemon because one
+  // of them settled badly would be a worse outcome than the silence this replaced.
+  process.on('unhandledRejection', (reason) => {
+    if (handlingFault) return
+    handlingFault = true
+    try {
+      if (isBrokenPipe(reason)) {
+        shutdown('stdout-epipe', 0)
+        return
+      }
+      log(`unhandledRejection: ${describeFault(reason)}`)
+    } catch {
+      // Never let reporting a fault raise one.
+    } finally {
+      handlingFault = false
+    }
+  })
+
+  // An UNCAUGHT EXCEPTION still ends the process. Registering a handler at all suppresses Node's
+  // default termination, and a daemon that continues past an unknown fault is in an undefined state
+  // while holding chat cursors: continuing risks writing them wrongly, which is worse than dying and
+  // being restarted by the supervisor. The handler exists ONLY so the reason reaches the log first,
+  // which is what was missing before.
+  process.on('uncaughtException', (err) => {
     if (handlingFault) return
     handlingFault = true
     try {
@@ -8370,15 +8397,15 @@ async function main(): Promise<void> {
         shutdown('stdout-epipe', 0)
         return
       }
-      log(`${kind}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+      log(`uncaughtException (fatal, exiting): ${describeFault(err)}`)
     } catch {
-      // Never let reporting a fault raise one.
-    } finally {
-      handlingFault = false
+      // fall through to the exit below regardless
     }
-  }
-  process.on('unhandledRejection', (reason) => onFault('unhandledRejection', reason))
-  process.on('uncaughtException', (err) => onFault('uncaughtException', err))
+    try {
+      flushChatCursors()
+    } catch {}
+    process.exit(1)
+  })
 
   // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
   // the watcher restarts this agent nothing proves the new session HEARS the
@@ -8589,8 +8616,19 @@ async function main(): Promise<void> {
     // registered the marketplace under another name is a real case that has confused an external
     // tester twice, and writing the wrong key would silently do nothing.
     try {
+      // Respect the brakes this daemon already honours everywhere else. Enrolling a machine into
+      // unattended updates while its own updates are switched off, or while a bad release has
+      // latched rollback on, would be the one path that ignores the stop switch.
+      // Same read as the status block above: the directory holding auto-update.json, and the same
+      // lenient reader. Two readers of one latch that disagree would enrol a machine the other half
+      // of the daemon considers stopped.
+      const updatesAllowed =
+        isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE) &&
+        !readRollbackLatch(pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)), {
+          readFile: readTextOrNull,
+        })
       const marketplaceName = INSTALL_DETECTION?.marketplace
-      if (marketplaceName) {
+      if (marketplaceName && updatesAllowed) {
         const enrolled = ensureMarketplaceAutoUpdate({
           configDir: CLAUDE_CONFIG_DIR,
           marketplace: marketplaceName,

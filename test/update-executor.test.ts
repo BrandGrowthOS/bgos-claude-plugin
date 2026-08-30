@@ -621,6 +621,34 @@ test('rollback is impossible when the snapshot install dir is gone; the run ends
   assert.equal(stepById(result, 's04-verify_installed').state, 'skipped')
 })
 
+test('the dead-end recovery line names the version still installed, never the one that just failed', async () => {
+  // The bug this pins is a one-word confusion with a real cost. When rollback is impossible, the
+  // ledger line is the only instruction a human or the server gets, and it originally read the
+  // TARGET version: it told whoever recovers the machine to reinstall the release they were trying
+  // to escape. Here 0.38.1 is what is installed and 0.38.3 is the update that failed.
+  const world = memWorld()
+  const plan = seededUpdate(world)
+  const logs: string[] = []
+  const script = realisticScript(world, '0.38.3', {
+    [KEY.update]: OUT.failure(1),
+    [KEY.install]: () => {
+      world.fs.rm(world.installPathFor('0.38.1'))
+      return OUT.failure(1, 'Failed to install plugin "hoai@hoai": simulated failure\n')
+    },
+  })
+  const { deps } = memDeps(world, script, { log: (m: string) => logs.push(m) })
+  await executePlan(plan, deps)
+
+  const line = logs.find((l) => l.includes('Local rollback is not possible'))
+  assert.ok(line, `no recovery line was logged; got: ${JSON.stringify(logs)}`)
+  assert.match(line!, /0\.38\.1/, 'the line must name the version that is actually installed')
+  assert.equal(
+    /0\.38\.3/.test(line!),
+    false,
+    'the line must NOT name the failed target: that is the release the machine is escaping',
+  )
+})
+
 test('rollback is impossible when the snapshot install dir holds a different plugin.json version', async () => {
   const world = memWorld()
   const plan = seededUpdate(world)

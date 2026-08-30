@@ -135,3 +135,40 @@ test('server.ts guards its exception handlers against re-entering themselves', (
     'the fault handlers need a re-entry guard; without one a throw inside a handler loops forever',
   )
 })
+
+test('an uncaught exception still ends the process, it is only logged on the way out', () => {
+  // Registering ANY uncaughtException handler suppresses Node's default termination. That is a real
+  // behaviour change hiding inside what looks like a logging improvement: a daemon that continues
+  // past an unknown fault holds chat cursors it may now write wrongly. The handler exists to get the
+  // reason into the log first, and then to die anyway.
+  const at = serverSource.indexOf("process.on('uncaughtException'")
+  assert.notEqual(at, -1, 'the handler must exist')
+  const handler = serverSource.slice(at, at + 900)
+  assert.match(
+    handler,
+    /process\.exit\(1\)/,
+    'the uncaughtException handler must exit; otherwise adding it turned a crash into a zombie',
+  )
+})
+
+test('the rejection handler does NOT exit, because floating promises are deliberate here', () => {
+  // The asymmetry is the point, so it is pinned. server.ts fires void syncSlashCommands() and
+  // friends on purpose; killing the daemon because one settled badly would be worse than the
+  // silence the handler replaced.
+  const at = serverSource.indexOf("process.on('unhandledRejection'")
+  assert.notEqual(at, -1)
+  const handler = serverSource.slice(at, serverSource.indexOf("process.on('uncaughtException'"))
+  assert.equal(/process\.exit\(/.test(handler), false, 'a rejection must be survivable')
+})
+
+test('boot enrolment into marketplace auto-update respects the same brakes as every other update path', () => {
+  // The one path that could ignore the stop switch. BGOS_AUTO_UPDATE=0 and a latched rollback both
+  // mean "this machine does not take updates right now"; enrolling it into unattended updates at
+  // boot would quietly undo a user's or a bad release's decision.
+  const at = serverSource.indexOf('ensureMarketplaceAutoUpdate({')
+  assert.notEqual(at, -1, 'the enrolment call must exist')
+  const before = serverSource.slice(Math.max(0, at - 1200), at)
+  assert.match(before, /isAutoUpdateEnabled\(process\.env\.BGOS_AUTO_UPDATE\)/, 'must honour the kill switch')
+  assert.match(before, /readRollbackLatch\(/, 'must honour a latched rollback')
+  assert.match(before, /updatesAllowed/, 'and the guard must actually gate the call')
+})
