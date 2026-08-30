@@ -483,3 +483,21 @@ test('the reader uses the same own-property rule as the writer', () => {
   assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: '__proto__', fs }), null)
   assert.equal(readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'constructor', fs }), null)
 })
+
+test('a truthy non-boolean autoUpdate is not read as enrolment', () => {
+  // The value comes from a user-editable file, so "yes" or 1 are shapes that can appear. Claude Code
+  // reads the key as a boolean, so anything else is not enrolment, and guessing generously here
+  // would tell a machine it self-updates when it does not.
+  for (const value of ['true', 1, {}, []] as unknown[]) {
+    const fs = memFs({
+      '/cfg/settings.json': JSON.stringify({
+        extraKnownMarketplaces: { hoai: { source: {}, autoUpdate: value } },
+      }),
+    })
+    assert.equal(
+      readMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs }),
+      false,
+      `${JSON.stringify(value)} must not read as enrolled`,
+    )
+  }
+})
