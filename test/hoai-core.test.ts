@@ -491,6 +491,7 @@ function setupHarness(claudeCodes: number[]) {
   const prints: string[] = []
   const errs: string[] = []
   const order: string[] = []
+  const enrolments: { configDir: string; marketplace: string }[] = []
   let claudeIdx = 0
   return {
     claudeCalls,
@@ -498,6 +499,7 @@ function setupHarness(claudeCodes: number[]) {
     prints,
     errs,
     order,
+    enrolments,
     run: (pairArgs: string[]) =>
       runSetup(pairArgs, {
         platform: 'linux',
@@ -511,7 +513,20 @@ function setupHarness(claudeCodes: number[]) {
         }) as never,
         spawnClaudeImpl: (async (args: readonly string[]) => {
           claudeCalls.push([...args])
+          // Recorded in `order` as well, so the position of the marketplace add is assertable
+          // against the enrolment below. Naming the subcommand keeps the sequence readable.
+          order.push(`claude:${args.slice(0, 3).join(' ')}`)
           return claudeCodes[claudeIdx++] ?? 0
+        }) as never,
+        // Stubbed for two reasons. It makes the ORDER assertable, which is the point: the enrolment
+        // must run after the marketplace add, because the add rewrites the entry to just its source
+        // and silently undoes an earlier write. And it stops this harness invoking the REAL
+        // ensureMarketplaceAutoUpdate against a fake home, which was harmless only because the
+        // no-entry guard happened to short-circuit before any write.
+        ensureAutoUpdateImpl: ((opts: { configDir: string; marketplace: string }) => {
+          order.push('autoupdate')
+          enrolments.push(opts)
+          return { changed: true, reason: 'set' }
         }) as never,
         installCliImpl: (async () => {
           order.push('install-cli')
@@ -537,7 +552,16 @@ test('runSetup: marketplace, install, PATH, pair, in that order and with no shel
   ])
   // The PATH step runs BEFORE pairing, so that pairing's own closing line
   // ("run hoai from this folder") is true by the time the user reads it.
-  assert.deepEqual(h.order, ['install-cli', 'pair'])
+  // The full sequence, not just the two sibling steps. The auto-update enrolment sits between the
+  // marketplace add and the install on purpose: the add erases the key it writes, so writing it
+  // earlier is a silent no-op, and that is the whole reason this feature can fail invisibly.
+  assert.deepEqual(h.order, [
+    'claude:plugin marketplace add',
+    'autoupdate',
+    'claude:plugin install hoai@hoai',
+    'install-cli',
+    'pair',
+  ])
   // The last step runs bgos-pair under THIS node, with the pair argv untouched.
   assert.equal(h.siblingCalls.length, 1)
   assert.equal(h.siblingCalls[0]!.file, process.execPath)
@@ -1364,4 +1388,29 @@ test('resolveWrapperPluginRoot: never points the hoai shim at an npx dir that is
     observe: async () => ({ installed: { installPath: null } }) as never,
   })
   assert.equal(cloneRoot, '/home/kc/bgos-claude-plugin')
+})
+
+
+test('setup enrols auto-update AFTER the marketplace add, never before', () => {
+  // The ordering the whole self-update feature turns on, and the last thing about it that was
+  // unpinned. `claude plugin marketplace add` rewrites the marketplace entry down to just its
+  // source, on the fresh branch and the already-registered branch alike, so a key written before the
+  // add is silently erased and the machine never updates itself while every step reports success.
+  //
+  // The code has always had the right order and a comment saying why. Nothing failed if someone
+  // moved it.
+  const h = setupHarness([0, 0])
+  return h.run([]).then(() => {
+    const addAt = h.order.findIndex((step) => step.startsWith('claude:plugin marketplace add'))
+    const enrolAt = h.order.indexOf('autoupdate')
+    assert.notEqual(addAt, -1, 'setup must add the marketplace')
+    assert.notEqual(enrolAt, -1, 'setup must enrol this machine in auto-update')
+    assert.ok(
+      addAt < enrolAt,
+      `the add erases the key, so enrolling first is a no-op; order was ${h.order.join(' -> ')}`,
+    )
+    // And it enrols the marketplace by NAME, not by the repo slug: a machine that registered under
+    // another name would otherwise get a key nothing reads.
+    assert.deepEqual(h.enrolments.map((e) => e.marketplace), ['hoai'])
+  })
 })

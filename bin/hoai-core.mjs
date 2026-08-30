@@ -81,7 +81,11 @@ import {
   detectInstallMethod,
 } from './bgos-install-method.mjs'
 import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
-import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import {
+  HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
+  observeMarketplaceInstall,
+} from '../lib/plugin-cli.mjs'
+import { ensureMarketplaceAutoUpdate } from '../lib/claude-preseed.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -1466,6 +1470,7 @@ export async function runSetup(
     spawnImpl = spawn,
     spawnClaudeImpl = spawnClaude,
     installCliImpl = installHoaiCli,
+    ensureAutoUpdateImpl = ensureMarketplaceAutoUpdate,
     print = (text) => console.log(text),
     writeErr = (text) => process.stderr.write(text),
   } = {},
@@ -1482,6 +1487,26 @@ export async function runSetup(
     print(
       '[hoai] the marketplace was not added just now (most often it is already there). Continuing.',
     )
+  }
+
+  // Enrol this machine in Claude Code's own plugin auto-update, so a published release reaches it
+  // without anybody typing anything. Claude Code defaults that ON only for Anthropic's own
+  // marketplace names, so without this key the machine stays on today's version forever while every
+  // check reports success.
+  //
+  // AFTER the add, never before: `plugin marketplace add` rewrites the entry to just its source, on
+  // both the "added" and the "already on disk" branches, so an earlier write would be undone here.
+  try {
+    const enrolled = ensureAutoUpdateImpl({
+      configDir: claudeConfigDir({ env, home }),
+      marketplace: HOAI_MARKETPLACE_NAME,
+    })
+    if (enrolled.changed) {
+      print('[hoai] this machine will now update the HOAI plugin automatically')
+    }
+  } catch (err) {
+    // Never fail setup over a settings write. The agent still works; it just will not self-update.
+    print(`[hoai] could not enable automatic updates (${err}). Setup continues.`)
   }
 
   print(`[hoai] 2/4 installing the HOAI plugin (${HOAI_PLUGIN_REF})`)
@@ -1502,6 +1527,19 @@ export async function runSetup(
   print('[hoai] 4/4 pairing this machine with the code from the app')
   return runSiblingScript(joinDir(scriptDir, 'bgos-pair.mjs'), pairArgs, spawnImpl)
 }
+
+// NOTE (2026-08-30): a watcher install ran here briefly and was removed before it shipped.
+// `hoai-watcher install` stages the bundle and registers the OS service but does NOT enrol
+// credentials: its own output says "no credentials yet: the daemon enrolls this machine". So
+// installing from setup, before any daemon has run, produced a service that starts, finds no
+// credentials, and retries every 30 seconds forever. It also resolved its script path from this
+// script's own directory, which under the `npx --package github:... hoai setup` line the app hands
+// out is a temp directory npm deletes on exit.
+//
+// The goal is still right and is recorded rather than dropped: a machine whose agent is broken
+// cannot receive a watcher today, because watcher_install_rpc is addressed to a live agent. Closing
+// that needs enrolment to be part of whatever installs it, which is a larger change than a setup
+// step and wants its own design.
 
 // -- Putting `hoai` itself on PATH -------------------------------------------
 

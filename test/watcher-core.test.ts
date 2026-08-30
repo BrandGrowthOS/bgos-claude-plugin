@@ -24,12 +24,15 @@ import {
   EXIT_NO_CREDENTIALS,
   EXIT_SELF_REFRESH,
   StepLedger,
+  WATCHER_LOG_MAX_BYTES,
   autoUpdateEnabledFrom,
   buildRpcClient,
+  createLogger,
   jobFolderName,
   nextBackoff,
   normalizeApiBase,
   readRollbackLatch,
+  refreshWatcherIfStale,
   runWatcher,
   scrubLine,
 } from '../lib/watcher-core.mjs'
@@ -777,4 +780,194 @@ test("runWatcher: the manifest's claudeConfigDir beats a disagreeing service env
   await runWatcher(deps as any)
   assert.equal(env.CLAUDE_CONFIG_DIR, CONFIG)
   assert.ok(logs.some((l) => l.includes('the manifest wins')))
+})
+
+// --- a watcher that cannot see the plugin must not call itself healthy -------
+// refreshWatcherIfStale returned { needed: false, ok: true } when it could not locate the installed
+// plugin. Two things were wrong with that. It claimed health for a state that is really "I cannot
+// tell", and because the caller only records a ledger step when `needed` is true, the state did not
+// merely look green, it did not appear at all. A watcher permanently stuck on an old bundle
+// reported nothing, forever, which is the same class of silence this whole release is about.
+
+test('a watcher that cannot find the plugin reports that, instead of reporting itself current', async () => {
+  const fs = machineFs()
+  const result = await refreshWatcherIfStale({
+    home: HOME,
+    fs,
+    now: () => T0,
+    manifest: null,
+    pluginRoot: null,
+  })
+
+  assert.equal(result.message, 'watcher_bundle_source_unknown')
+  assert.equal(result.ok, false, 'not knowing whether a refresh is needed is not the same as being fine')
+  assert.equal(
+    result.needed,
+    true,
+    'must surface as a ledger step: the caller only records a step when needed is true, so false made this invisible',
+  )
+})
+
+test('a watcher whose bundle already matches the plugin still reports current and needs nothing', async () => {
+  // The control. If this ever flips, the test above would pass for the wrong reason.
+  const fs = machineFs()
+  manifestFor(fs)
+  const manifest = JSON.parse(fs.readFile(`${HOME}/.bgos-agent/watcher/manifest.json`) as string)
+
+  const result = await refreshWatcherIfStale({
+    home: HOME,
+    fs,
+    now: () => T0,
+    manifest,
+    pluginRoot: ROOT,
+  })
+
+  assert.equal(result.message, 'watcher_bundle_current')
+  assert.equal(result.needed, false)
+  assert.equal(result.ok, true)
+})
+
+
+// --- three things the adversarial pass found in the watcher -----------------
+
+test('the logger appends, instead of reading the whole file back and rewriting it', () => {
+  // The old shape was O(n) per line, on a daemon that runs for the life of the machine and retries
+  // on a 30 second timer.
+  //
+  // Counting the CALLS, not just reading the file: both paths produce identical bytes, so content
+  // alone cannot tell whether the quadratic fallback is still being taken. Which call is made is the
+  // entire change.
+  const base = memoryFs()
+  let appends = 0
+  let wholeFileWrites = 0
+  const fs = {
+    ...base,
+    appendFile: (p: string, text: string) => {
+      appends++
+      base.appendFile(p, text)
+    },
+    writeFile: (p: string, text: string, opts?: { mode?: number }) => {
+      if (p === '/w/watcher.log') wholeFileWrites++
+      base.writeFile(p, text, opts)
+    },
+  }
+  const log = createLogger({ path: '/w/watcher.log', fs, now: () => 0, echo: undefined })
+  log('first')
+  log('second')
+
+  assert.equal(appends, 2, 'each line is exactly one append')
+  assert.equal(wholeFileWrites, 0, 'and the whole file is never rewritten just to add a line')
+  const text = base.readFile('/w/watcher.log') ?? ''
+  assert.equal(text.split('\n').filter(Boolean).length, 2)
+  assert.match(text, /first[\s\S]*second/, 'in order, and nothing lost')
+})
+
+test('the logger still works on a filesystem that cannot append', () => {
+  // Injected test filesystems and older bundles do not have appendFile, and a logger that threw
+  // there would take out the one thing that explains why a watcher is stuck.
+  const base = memoryFs()
+  const noAppend = { ...base, appendFile: undefined, size: undefined } as unknown as typeof base
+  const log = createLogger({ path: '/w/watcher.log', fs: noAppend, now: () => 0, echo: undefined })
+  log('only line')
+  assert.match(base.readFile('/w/watcher.log') ?? '', /only line/)
+})
+
+test('an oversized log is rolled over rather than grown forever', () => {
+  // There was no ceiling at all, on a file the watcher writes to on a timer, on the user's disk.
+  const fs = memoryFs()
+  const path = '/w/watcher.log'
+  fs.writeFile(path, 'x'.repeat(WATCHER_LOG_MAX_BYTES + 1))
+  const log = createLogger({ path, fs, now: () => 0, echo: undefined })
+  log('after the rollover')
+
+  const rolled = fs.readFile(`${path}.1`) ?? ''
+  assert.equal(rolled.length, WATCHER_LOG_MAX_BYTES + 1, 'the old content is kept, once')
+  const current = fs.readFile(path) ?? ''
+  assert.match(current, /after the rollover/)
+  assert.ok(current.length < 200, 'and the live file starts again small')
+})
+
+test('a log under the ceiling is never rolled over', () => {
+  const fs = memoryFs()
+  const path = '/w/watcher.log'
+  fs.writeFile(path, 'small')
+  createLogger({ path, fs, now: () => 0, echo: undefined })('another')
+  assert.equal(fs.readFile(`${path}.1`), null, 'nothing to roll')
+  assert.match(fs.readFile(path) ?? '', /small[\s\S]*another/)
+})
+
+
+// --- the watcher's own bundle is not the user's update ----------------------
+
+test('refreshWatcherIfStale surfaces an unresolvable plugin root instead of claiming to be current', async () => {
+  // It used to answer { needed: false, ok: true }, which was worse than wrong: runReconcileJob only
+  // records a ledger row when `needed` is true, so a watcher permanently stuck on an old bundle,
+  // unable to see the plugin it should refresh from, reported nothing at all, forever.
+  const fs = machineFs()
+  const answer = await refreshWatcherIfStale({
+    home: HOME,
+    fs,
+    now: () => 0,
+    manifest: { version: '0.38.3', fingerprint: 'abc', installedAt: 'x', pluginRoot: null, files: [] },
+    pluginRoot: null,
+  })
+  assert.equal(answer.needed, true, 'not knowing is not the same as being current')
+  assert.equal(answer.ok, false)
+  assert.equal(answer.message, 'watcher_bundle_source_unknown')
+  assert.equal(answer.fingerprint, null)
+})
+
+test('a job that succeeded keeps its own outcome even when the watcher cannot refresh itself', async () => {
+  // The other half, and the reason the flip needed a second look. Making the state visible is right;
+  // letting it rewrite the headline of a SUCCESSFUL update is not. Here the machine has no manifest
+  // and its recipes carry no plugin root, so the self-refresh cannot resolve a source, while the
+  // update the user asked for runs to completion.
+  const fs = machineFs()
+  // No manifestFor() call: without a manifest and without a recipe pluginRoot there is no source.
+  for (const id of ['912', '7']) {
+    const path = `${HOME}/.bgos-agent/${id}/launch.json`
+    const recipe = JSON.parse(fs.readFile(path)!)
+    delete recipe.pluginRoot
+    fs.writeFile(path, JSON.stringify(recipe))
+  }
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-x', op: 'reconcile' }],
+    jobs: { 'job-x': { op: 'reconcile', intent: 'update', targets: [{ pairingId: 1, assistantId: '912' }] } },
+  })
+  const clock = fakeClock()
+  clock.onSleep((_ms, nowMs) => {
+    const probe = `${HOME}/.bgos-agent/912/probe-requested.json`
+    if (fs.files.has(probe)) {
+      fs.writeFile(
+        `${HOME}/.bgos-plugin-state/912/channel-live.json`,
+        JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(nowMs).toISOString() }),
+      )
+    }
+  })
+  const { deps } = baseDeps(fs, backend, clock, {
+    modules: stubModules({
+      plan: updatePlan,
+      observe: () => ({
+        marketplaceRegistered: true,
+        marketplaceInstallLocation: null,
+        marketplaceLatest: { version: '0.38.4', ref: 'v0.38.4' },
+        // No install path either, so nothing can supply a root after the run.
+        installed: { present: true, version: '0.38.3', installPath: null },
+        enabled: true,
+      }),
+    }),
+  })
+  await runWatcher(deps as any)
+
+  const progress = backend.progress('job-x')
+  const terminal = progress.at(-1)!
+  const row = terminal.steps.find((x: any) => x.id === 'refresh_watcher')
+  assert.ok(row, 'the state must be visible at all: that was the original bug')
+  assert.equal(row.message, 'watcher_bundle_source_unknown')
+  assert.equal(row.state, 'skipped', 'a red row under a green headline reads as a failed update')
+  assert.notEqual(
+    terminal.message,
+    'watcher_bundle_source_unknown',
+    'a watcher-internal reason must never become the headline of a job with its own outcome',
+  )
 })
