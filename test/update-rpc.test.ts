@@ -145,7 +145,18 @@ function harness(overrides: HarnessOverrides = {}) {
     updater: overrides.updater ?? (() => fakeUpdater()),
     marketplaceUpdate: overrides.marketplaceUpdate ?? fakeMarketplace().fn,
     drainSnapshot: overrides.drainSnapshot ?? (() => IDLE),
-    restartAuthority: () => overrides.authority ?? { kind: 'staged' },
+    // Default authority differs by install method on purpose: a CLONE update
+    // now fails a pre-flight (no_restart_authority) when nothing can restart
+    // it, so a clone flow test that wants to exercise draining/installing must
+    // start from a real authority; a MARKETPLACE update still stages into a
+    // versioned cache the next launch picks up, so its default stays 'staged'.
+    // Tests that specifically exercise the no-authority abort set it to
+    // { kind: 'staged' } explicitly.
+    restartAuthority: () =>
+      overrides.authority ??
+      ((overrides.installMethod ?? 'clone') === 'clone'
+        ? { kind: 'launcher', markerPath: '/state/871/restart-requested.json' }
+        : { kind: 'staged' }),
     spawnDetached: (file, args) => spawned.push({ file, args }),
     writeMarker: (path) => {
       if (overrides.markerWriteOk === false) return false
@@ -237,10 +248,12 @@ describe('UpdateRpcHandler decision table (clone)', () => {
 
   test('the clone path never touches the marketplace runner', async () => {
     const market = fakeMarketplace()
+    // A real (launcher) authority so the pre-flight passes and the clone flow
+    // runs through to a restart; the point of the test is market.calls === 0.
     const h = harness({ marketplaceUpdate: market.fn })
     await h.handler.handle(FRAME)
     expect(market.calls).toBe(0)
-    expect(h.progress.map((p) => p.stage)).toEqual(['draining', 'installing', 'staged'])
+    expect(h.progress.map((p) => p.stage)).toEqual(['draining', 'installing', 'restarting'])
   })
 })
 
@@ -288,16 +301,19 @@ describe('UpdateRpcHandler restart ladder', () => {
     expect(h.heartbeats()).toBe(1)
   })
 
-  test('no authority: staged, un-drained, and an immediate heartbeat', async () => {
-    const h = harness()
+  test('clone with NO restart authority aborts no_restart_authority before draining or pulling', async () => {
+    // The core of the one-click-update fix: a clone update that cannot be
+    // restarted into is limbo, not a stage. It must fail LOUDLY and keep
+    // serving the CURRENT version, never drain, never pull, never install.
+    const updater = fakeUpdater()
+    const h = harness({ authority: { kind: 'staged' }, updater: () => updater })
     await h.handler.handle(FRAME)
-    expect(h.progress).toEqual([
-      { stage: 'draining', targetVersion: '0.39.0' },
-      { stage: 'installing', targetVersion: '0.39.0' },
-      { stage: 'staged', targetVersion: '0.39.0' },
-    ])
-    expect(h.drainModes).toEqual([false])
-    expect(h.heartbeats()).toBe(1)
+    expect(h.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(updater.updateNowCalls).toBe(0)
+    expect(h.drainModes).toEqual([])
+    expect(h.spawned).toEqual([])
+    expect(h.markers).toEqual([])
+    expect(h.heartbeats()).toBe(0)
   })
 
   test('a pending installed version skips the pull and goes straight to the ladder', async () => {
@@ -305,8 +321,11 @@ describe('UpdateRpcHandler restart ladder', () => {
     const h = harness({ updater: () => updater })
     await h.handler.handle(FRAME)
     expect(updater.updateNowCalls).toBe(0)
-    expect(h.progress).toEqual([{ stage: 'staged', targetVersion: '0.39.0' }])
-    expect(h.heartbeats()).toBe(1)
+    // A real (launcher) authority, so the pending install restarts rather than
+    // sitting in limbo: restart + marker, no pull.
+    expect(h.progress).toEqual([{ stage: 'restarting', targetVersion: '0.39.0' }])
+    expect(h.markers).toEqual(['/state/871/restart-requested.json'])
+    expect(h.heartbeats()).toBe(0)
   })
 })
 
@@ -619,10 +638,13 @@ describe('the never-mute invariant', () => {
     expect(launcher.drainModes).toEqual([true])
   })
 
-  test('clone: staged and thrown outcomes end un-drained; the ladder restart keeps it on', async () => {
-    const staged = harness()
-    await staged.handler.handle(FRAME)
-    expect(staged.drainModes[staged.drainModes.length - 1]).toBe(false)
+  test('clone: no-authority aborts un-drained, thrown ends un-drained, the ladder restart keeps it on', async () => {
+    // No authority never drains at all now (it aborts before the drain), which
+    // is the strongest form of never-muted: the daemon was never touched.
+    const noAuthority = harness({ authority: { kind: 'staged' } })
+    await noAuthority.handler.handle(FRAME)
+    expect(noAuthority.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(noAuthority.drainModes).toEqual([])
     const thrown = harness({
       updater: () => ({
         isRollbackLatched: () => false,
@@ -656,7 +678,7 @@ describe('UpdateRpcHandler dedupe and failure posture', () => {
     const h = harness({ updater: () => updater, ackError: true })
     await h.handler.handle(FRAME)
     expect(updater.updateNowCalls).toBe(1)
-    expect(h.progress.map((p) => p.stage)).toContain('staged')
+    expect(h.progress.map((p) => p.stage)).toContain('restarting')
     expect(h.logs.some((l) => l.includes('ack failed'))).toBe(true)
   })
 
@@ -664,9 +686,9 @@ describe('UpdateRpcHandler dedupe and failure posture', () => {
     const h = harness({ progressError: true })
     await h.handler.handle(FRAME)
     expect(h.progress).toEqual([])
-    // The staged path still restores intake and requests the heartbeat.
-    expect(h.drainModes).toEqual([false])
-    expect(h.heartbeats()).toBe(1)
+    // The flow still reaches the restart: the marker is written even though
+    // every progress POST threw.
+    expect(h.markers).toEqual(['/state/871/restart-requested.json'])
     expect(h.logs.filter((l) => l.includes('progress')).length).toBeGreaterThan(0)
   })
 

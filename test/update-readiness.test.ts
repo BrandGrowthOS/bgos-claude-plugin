@@ -3,10 +3,17 @@ import { join } from 'node:path'
 
 import {
   RESTART_MARKER_FILE,
+  SUPERVISOR_ENV_HANDLE,
+  SUPERVISOR_ENV_KIND,
+  SUPERVISOR_ENV_RESTART_CMD,
   SUPERVISOR_FILE,
   agentStateDir,
+  buildDeclaredSupervisorBody,
   chooseRestartAuthority,
+  decideSupervisorWrite,
+  delayedDeclaredCommand,
   detectSupervision,
+  parseDeclaredSupervisorEnv,
   parseSupervisorFile,
   resolveSupervision,
   restartMarkerPath,
@@ -16,6 +23,7 @@ import {
   serviceUnit,
   supervisorFilePath,
   validAssistantId,
+  type Supervision,
 } from '../lib/update-readiness'
 import {
   RESTART_MARKER_FILE_NAME,
@@ -319,5 +327,274 @@ describe('the discovery tier: a supervisor that did not install itself under our
       kind: 'launcher',
       markerPath: restartMarkerPath(HOME, '871')!,
     })
+  })
+})
+
+describe('the env contract: a launcher declares what supervises this session', () => {
+  test('launchd/systemd need a safe handle; launcher does not', () => {
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'launchd',
+        [SUPERVISOR_ENV_HANDLE]: 'ai.bgos.claude.session',
+      }),
+    ).toEqual({ kind: 'launchd', handle: 'ai.bgos.claude.session', restartCommand: null })
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'systemd',
+        [SUPERVISOR_ENV_HANDLE]: 'bgos-agent-871',
+      }),
+    ).toEqual({ kind: 'systemd', handle: 'bgos-agent-871', restartCommand: null })
+    expect(parseDeclaredSupervisorEnv({ [SUPERVISOR_ENV_KIND]: 'launcher' })).toEqual({
+      kind: 'launcher',
+      handle: null,
+      restartCommand: null,
+    })
+  })
+
+  test('an optional explicit relaunch command is parsed from JSON', () => {
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'launchd',
+        [SUPERVISOR_ENV_HANDLE]: 'ai.bgos.session.871',
+        [SUPERVISOR_ENV_RESTART_CMD]: JSON.stringify({ file: '/opt/keepalive.sh', args: ['--kick', '871'] }),
+      }),
+    ).toEqual({
+      kind: 'launchd',
+      handle: 'ai.bgos.session.871',
+      restartCommand: { file: '/opt/keepalive.sh', args: ['--kick', '871'] },
+    })
+  })
+
+  test('absent, unknown, unsafe, or malformed declarations are null (never a wrong authority)', () => {
+    expect(parseDeclaredSupervisorEnv({})).toBeNull()
+    expect(parseDeclaredSupervisorEnv({ [SUPERVISOR_ENV_KIND]: '  ' })).toBeNull()
+    expect(parseDeclaredSupervisorEnv({ [SUPERVISOR_ENV_KIND]: 'pm2' })).toBeNull()
+    // launchd/systemd with no handle, or an unsafe one, declares nothing.
+    expect(parseDeclaredSupervisorEnv({ [SUPERVISOR_ENV_KIND]: 'launchd' })).toBeNull()
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'launchd',
+        [SUPERVISOR_ENV_HANDLE]: 'ai.bgos; rm -rf /',
+      }),
+    ).toBeNull()
+    // A present-but-broken restart command fails the WHOLE declaration closed.
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'launchd',
+        [SUPERVISOR_ENV_HANDLE]: 'ai.bgos.session.871',
+        [SUPERVISOR_ENV_RESTART_CMD]: 'not json',
+      }),
+    ).toBeNull()
+    expect(
+      parseDeclaredSupervisorEnv({
+        [SUPERVISOR_ENV_KIND]: 'systemd',
+        [SUPERVISOR_ENV_HANDLE]: 'bgos-agent-871',
+        [SUPERVISOR_ENV_RESTART_CMD]: JSON.stringify({ args: ['no file'] }),
+      }),
+    ).toBeNull()
+  })
+})
+
+describe('buildDeclaredSupervisorBody: a declared service is not a marker launcher', () => {
+  test('a service declaration carries the handle and NO relaunch capability', () => {
+    const body = buildDeclaredSupervisorBody({
+      declared: { kind: 'launchd', handle: 'ai.bgos.session.871', restartCommand: null },
+      pid: 4242,
+      startedAt: '2026-08-30T00:00:00.000Z',
+    })
+    expect(JSON.parse(body)).toEqual({
+      pid: 4242,
+      capabilities: [],
+      startedAt: '2026-08-30T00:00:00.000Z',
+      supervisor: { kind: 'launchd', handle: 'ai.bgos.session.871' },
+    })
+    // And it round-trips through the parser into the declared block.
+    expect(parseSupervisorFile(body)).toEqual({
+      pid: 4242,
+      capabilities: [],
+      declared: { kind: 'launchd', handle: 'ai.bgos.session.871', restartCommand: null },
+    })
+  })
+
+  test('a launcher declaration DOES carry the relaunch capability (it watches the marker)', () => {
+    const body = buildDeclaredSupervisorBody({
+      declared: { kind: 'launcher', handle: null, restartCommand: null },
+      pid: 7,
+      startedAt: '2026-08-30T00:00:00.000Z',
+    })
+    expect(JSON.parse(body).capabilities).toEqual(['relaunch'])
+  })
+})
+
+describe('resolveSupervision consumes a declared service authority', () => {
+  const supPath = supervisorFilePath(HOME, '871')!
+  const base = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '871',
+    exists: () => false,
+    listDir: () => [],
+    execSync: () => ({ code: 127, stdout: '' }),
+    pidAlive: () => true,
+  }
+  const declaredBody = buildDeclaredSupervisorBody({
+    declared: { kind: 'launchd', handle: 'ai.bgos.claude.session', restartCommand: null },
+    pid: 4242,
+    startedAt: '2026-08-30T00:00:00.000Z',
+  })
+
+  test('a declared launchd label resolves to launchd via:declared, even with the platform blind', () => {
+    // The platform guess (exists/listDir/execSync) finds NOTHING here, exactly
+    // like the legacy bespoke-label case. The declaration alone resolves it.
+    const probe = { ...base, readFile: (p: string) => (p === supPath ? declaredBody : null) }
+    expect(detectSupervision(probe)).toBe('launchd')
+    const resolved = resolveSupervision(probe)
+    expect(resolved.service?.handle).toBe('ai.bgos.claude.session')
+    expect(resolved.service?.via).toBe('declared')
+    // The restart is addressed to the DECLARED label, through its supervisor.
+    expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({
+      kind: 'service',
+      command: { file: '/bin/sh', args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.claude.session'] },
+    })
+  })
+
+  test('a stale declaration (dead pid) is none, never a lie', () => {
+    const probe = {
+      ...base,
+      readFile: (p: string) => (p === supPath ? declaredBody : null),
+      pidAlive: () => false,
+    }
+    expect(detectSupervision(probe)).toBe('none')
+    expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({ kind: 'staged' })
+  })
+
+  test('an explicit declared relaunch command overrides the handle-built one, injection-safe', () => {
+    const body = buildDeclaredSupervisorBody({
+      declared: {
+        kind: 'launchd',
+        handle: 'ai.bgos.session.871',
+        restartCommand: { file: '/opt/keepalive.sh', args: ['--kick', '871'] },
+      },
+      pid: 4242,
+      startedAt: '2026-08-30T00:00:00.000Z',
+    })
+    const probe = { ...base, readFile: (p: string) => (p === supPath ? body : null) }
+    expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({
+      kind: 'service',
+      command: { file: '/bin/sh', args: ['-c', 'sleep 2 && exec "$0" "$@"', '/opt/keepalive.sh', '--kick', '871'] },
+    })
+  })
+
+  test('the canonical installed service still wins over a declaration', () => {
+    const plist = serviceFilePath('darwin', HOME, '871')!
+    const probe = {
+      ...base,
+      exists: (p: string) => p === plist,
+      readFile: (p: string) => (p === supPath ? declaredBody : null),
+    }
+    const resolved = resolveSupervision(probe)
+    expect(resolved.service?.handle).toBe('ai.bgos.agent.871')
+    expect(resolved.service?.via).toBe('canonical-file')
+  })
+})
+
+describe('delayedDeclaredCommand', () => {
+  test('wraps with a delayed sh that passes argv positionally, never spliced', () => {
+    expect(delayedDeclaredCommand({ file: '/x/y', args: ['a', 'b c'] }, 2)).toEqual({
+      file: '/bin/sh',
+      args: ['-c', 'sleep 2 && exec "$0" "$@"', '/x/y', 'a', 'b c'],
+    })
+  })
+  test('no delay runs verbatim; a bad command is null', () => {
+    expect(delayedDeclaredCommand({ file: '/x', args: ['a'] }, 0)).toEqual({ file: '/x', args: ['a'] })
+    expect(delayedDeclaredCommand(null, 2)).toBeNull()
+    expect(delayedDeclaredCommand({ file: '   ', args: [] }, 2)).toBeNull()
+  })
+})
+
+describe('decideSupervisorWrite: the boot writer decision', () => {
+  const NONE: Supervision = { supervised: 'none', service: null }
+  const startedAt = '2026-08-30T00:00:00.000Z'
+
+  test('env-declared writes the declared body', () => {
+    const decision = decideSupervisorWrite({
+      env: { [SUPERVISOR_ENV_KIND]: 'launchd', [SUPERVISOR_ENV_HANDLE]: 'ai.bgos.claude.session' },
+      existingRaw: null,
+      ownPid: 4242,
+      startedAt,
+      detection: NONE,
+    })
+    expect(decision.action).toBe('write')
+    if (decision.action !== 'write') throw new Error('unreachable')
+    expect(decision.reason).toBe('env-declared')
+    // And what it writes resolves right back to a launchd service.
+    const resolved = resolveSupervision({
+      platform: 'darwin',
+      home: HOME,
+      assistantId: '871',
+      exists: () => false,
+      listDir: () => [],
+      execSync: () => ({ code: 127, stdout: '' }),
+      pidAlive: () => true,
+      readFile: (p) => (p === supervisorFilePath(HOME, '871') ? decision.body : null),
+    })
+    expect(resolved.supervised).toBe('launchd')
+    expect(resolved.service?.handle).toBe('ai.bgos.claude.session')
+  })
+
+  test('a present-but-invalid env writes NOTHING (a wrong file is worse than none)', () => {
+    const decision = decideSupervisorWrite({
+      env: { [SUPERVISOR_ENV_KIND]: 'launchd' }, // no handle
+      existingRaw: null,
+      ownPid: 4242,
+      startedAt,
+      detection: NONE,
+    })
+    expect(decision).toEqual({ action: 'skip', reason: 'invalid-env' })
+  })
+
+  test('no env falls back to a CONFIDENT detection, and writes nothing otherwise', () => {
+    const detected: Supervision = {
+      supervised: 'launchd',
+      service: { kind: 'launchd', handle: 'ai.bgos.session.871', via: 'working-directory', file: null },
+    }
+    const write = decideSupervisorWrite({ env: {}, existingRaw: null, ownPid: 4242, startedAt, detection: detected })
+    expect(write.action).toBe('write')
+    if (write.action !== 'write') throw new Error('unreachable')
+    expect(write.reason).toBe('detected-launchd')
+    expect(JSON.parse(write.body).supervisor).toEqual({ kind: 'launchd', handle: 'ai.bgos.session.871' })
+    // No env and no confident authority: write nothing rather than a guess.
+    expect(decideSupervisorWrite({ env: {}, existingRaw: null, ownPid: 4242, startedAt, detection: NONE })).toEqual({
+      action: 'skip',
+      reason: 'no-confident-authority',
+    })
+  })
+
+  test('never clobbers a supervisor.json a DIFFERENT live supervisor owns', () => {
+    // A running hoai supervise loop wrote its own launcher pid; the daemon must
+    // not overwrite it with its own, which would break the marker/singleton.
+    const foreign = JSON.stringify({ pid: 9999, capabilities: ['relaunch'] })
+    const decision = decideSupervisorWrite({
+      env: { [SUPERVISOR_ENV_KIND]: 'launchd', [SUPERVISOR_ENV_HANDLE]: 'ai.bgos.claude.session' },
+      existingRaw: foreign,
+      ownPid: 4242,
+      startedAt,
+      detection: NONE,
+      pidAlive: (pid) => pid === 9999,
+    })
+    expect(decision).toEqual({ action: 'skip', reason: 'live-supervisor-owns' })
+  })
+
+  test('a stale file (dead owner) or our own pid does not block a refresh', () => {
+    const stale = JSON.stringify({ pid: 9999, capabilities: ['relaunch'] })
+    const decision = decideSupervisorWrite({
+      env: { [SUPERVISOR_ENV_KIND]: 'launcher' },
+      existingRaw: stale,
+      ownPid: 4242,
+      startedAt,
+      detection: NONE,
+      pidAlive: () => false, // the prior owner is gone
+    })
+    expect(decision.action).toBe('write')
   })
 })
