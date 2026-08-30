@@ -83,3 +83,72 @@ export function isBrokenPipe(err: unknown): boolean {
   const message = (err as { message?: unknown }).message
   return typeof message === 'string' && /\bEPIPE\b/.test(message)
 }
+
+/**
+ * The half of stdin we can pretend to be. Narrow on purpose: a test builds one from an EventEmitter
+ * plus three booleans, which is the whole point of moving the wiring out of server.ts.
+ */
+export type StdinLike = {
+  on(event: string, listener: (...args: any[]) => void): unknown
+  once(event: string, listener: (...args: any[]) => void): unknown
+  destroyed?: boolean
+  closed?: boolean
+  readableEnded?: boolean
+}
+
+/**
+ * Register the shutdown listeners.
+ *
+ * This exists so `shouldShutdownOnStdin` has a production caller. Before, the predicate was tested
+ * four ways and consumed by nothing: server.ts hard-coded 'end' and 'close' at the call site, so
+ * inverting the predicate broke no test and changed no behaviour. A guard that cannot fail is not a
+ * guard. Now the loop asks it, and inverting it registers nothing.
+ *
+ * Only 'end' and 'close' are candidates, and that list is deliberately not widened here: 'data' is
+ * every inbound message and 'error' competes with the transport's own handler. The predicate holds
+ * the reasoning; this holds the wiring.
+ */
+export function installStdinShutdown(
+  stdin: StdinLike,
+  onShutdown: (cause: ShutdownCause) => void,
+): void {
+  for (const event of ['end', 'close'] as const) {
+    if (!shouldShutdownOnStdin(event)) continue
+    stdin.on(event, () => onShutdown(event === 'end' ? 'stdin-end' : 'stdin-close'))
+  }
+}
+
+/**
+ * Latch an end-of-input that arrives BEFORE the real handlers exist.
+ *
+ * THE GAP THIS CLOSES. server.ts connects the MCP transport and then awaits three network phases
+ * (the slash-command registry, chat discovery, the boot sweep) before it registers the shutdown
+ * listeners. A parent that dies during those seconds delivers 'end' and 'close' to a process with
+ * nobody listening, and the events do not come back. The daemon then polls forever, exactly the
+ * orphan this module exists to prevent, only in the window where it is most likely: startup.
+ *
+ * The listeners here are `once` and do nothing but set a flag, so latching costs nothing and cannot
+ * interfere with the real handlers registered later.
+ */
+export function watchStdinEof(stdin: StdinLike): () => boolean {
+  let ended = false
+  const note = () => {
+    ended = true
+  }
+  stdin.once('end', note)
+  stdin.once('close', note)
+  return () => ended
+}
+
+/**
+ * Has stdin already finished, whether or not we saw the event?
+ *
+ * Checked as well as latched because a pipe can be closed before this process reaches its first
+ * line of code, so there may be no event to catch at all. The three flags are ORed because the
+ * runtimes disagree: node sets destroyed, closed and readableEnded together, while bun reports
+ * readableEnded false with destroyed and closed true. Requiring agreement would make this return
+ * false on bun, which is the runtime the daemon actually ships on.
+ */
+export function stdinHasEnded(stdin: StdinLike): boolean {
+  return Boolean(stdin.destroyed || stdin.closed || stdin.readableEnded)
+}

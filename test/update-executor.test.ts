@@ -286,6 +286,7 @@ function memDeps(world: World, script: CliScript, over: Partial<Deps> = {}) {
   const sleeps: number[] = []
   const restarts: Array<{ id: string; via: string | null; at: number }> = []
   const verifies: Array<{ id: string; since: number }> = []
+  const enrolments: Array<{ configDir: string; marketplace: string }> = []
   let clock = Date.UTC(2026, 7, 25, 1, 0, 0, 0)
   const now = () => (clock += 1000)
   const deps: Deps = {
@@ -317,9 +318,15 @@ function memDeps(world: World, script: CliScript, over: Partial<Deps> = {}) {
       return { ok: true, evidence: 'channel-live.json newer than restart' }
     },
     log: () => {},
+    // Recorded, and injected by DEFAULT, so no test in this file can reach the real ~/.claude. The
+    // production default is the real ensureMarketplaceAutoUpdate, which writes settings.json.
+    ensureAutoUpdate: (params: { configDir: string; marketplace: string }) => {
+      enrolments.push(params)
+      return { changed: true, reason: 'set' }
+    },
     ...over,
   }
-  return { deps, calls, sleeps, restarts, verifies }
+  return { deps, calls, sleeps, restarts, verifies, enrolments }
 }
 
 const agentState = (id: string, over: Record<string, unknown> = {}) => ({
@@ -1892,4 +1899,63 @@ test('sandbox: executeWithReobserve drives a real partial plan (marketplace.json
   } finally {
     sandbox.cleanup()
   }
+})
+
+
+// --- the marketplace add un-enrols us, so every add has to re-enrol ----------
+//
+// Verified live against claude 2.1.251 in an isolated config dir: `claude plugin marketplace add`
+// rewrites the marketplace's entry in settings.json down to just its source, on BOTH branches, the
+// fresh registration and the already-registered one. A sibling marketplace's own autoUpdate was
+// left untouched in the same run, so this is the add rewriting OUR entry rather than the CLI
+// normalising the block. Two of the three add call sites already re-enrolled afterwards. This was
+// the third, and without it a machine can converge onto a version and then never move again while
+// every step of every run reports success.
+
+const freshMachine = (world: ReturnType<typeof memWorld>) =>
+  planMachine(
+    updateState(world, {
+      runningVersion: null,
+      marketplace: { registered: false, latestVersion: null },
+      installed: { present: false, version: null, installPath: null },
+    }),
+  )
+
+test('register_marketplace re-enrols auto-update AFTER the add, because the add strips it', async () => {
+  const world = memWorld()
+  const { deps, enrolments } = memDeps(world, realisticScript(world, '0.38.3'))
+  const result = await executePlan(freshMachine(world), deps)
+
+  assert.equal(enrolments.length, 1, 'exactly one re-enrolment, on the register step')
+  assert.equal(enrolments[0]!.marketplace, 'hoai')
+  assert.equal(enrolments[0]!.configDir, world.configDir)
+  const step = stepById(result, 's01-register_marketplace')
+  assert.equal(step.state, 'ok')
+  assert.match(step.detail ?? '', /auto_update:set/, 'the ledger records what happened to the key')
+})
+
+test('a failed re-enrolment is recorded in the ledger and never fails the step', async () => {
+  // A settings write must not break an update run: the marketplace really was registered. But the
+  // ledger has to say the key did not land, because a machine that quietly stopped self-updating is
+  // the failure this whole change exists to prevent.
+  const world = memWorld()
+  const { deps } = memDeps(world, realisticScript(world, '0.38.3'), {
+    ensureAutoUpdate: () => {
+      throw new Error('EPERM: settings.json is locked')
+    },
+  })
+  const result = await executePlan(freshMachine(world), deps)
+  const step = stepById(result, 's01-register_marketplace')
+  assert.equal(step.state, 'ok', 'the step still succeeds')
+  assert.match(step.detail ?? '', /auto_update_failed/)
+  assert.match(step.detail ?? '', /EPERM/, 'and says why, so the machine can be found later')
+})
+
+test('a failed add does NOT re-enrol, because there is no entry to enrol', async () => {
+  const world = memWorld()
+  const { deps, enrolments } = memDeps(world, {
+    [KEY.add]: OUT.failure(2, 'Failed to add marketplace: network unreachable\n'),
+  })
+  await executePlan(freshMachine(world), deps)
+  assert.deepEqual(enrolments, [], 'writing a key for a marketplace that was never added is a lie')
 })

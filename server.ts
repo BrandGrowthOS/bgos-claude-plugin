@@ -57,7 +57,10 @@ import {
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
   describeShutdownCause,
+  installStdinShutdown,
   isBrokenPipe,
+  stdinHasEnded,
+  watchStdinEof,
   type ShutdownCause,
 } from './lib/process-lifecycle.js'
 import { ensureMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
@@ -8180,6 +8183,14 @@ async function main(): Promise<void> {
   )
 
   // Step 1: Connect MCP transport FIRST
+  // Latch an end-of-input BEFORE anything is awaited. The shutdown listeners cannot be registered
+  // here, because `shutdown` flushes chat cursors and flushing before the boot sweep finishes
+  // disarms the first-run backlog gate for every chat the sweep never reached. But the three awaited
+  // startup phases below take seconds, and a parent that dies inside that window delivers 'end' and
+  // 'close' to a process with nobody listening. Those events do not come back, so without this the
+  // daemon polls forever. Latching costs one boolean and cannot interfere with the real handlers.
+  const sawStdinEofDuringStartup = watchStdinEof(process.stdin)
+
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
   log('MCP server connected over stdio')
@@ -8351,8 +8362,16 @@ async function main(): Promise<void> {
   // their Telegram channel plugin and removed it after it misfired on ordinary reparenting and
   // killed the plugin five seconds after every launch. The source contract in
   // test/process-lifecycle.test.ts fails if that approach is reintroduced.
-  process.stdin.on('end', () => shutdown('stdin-end', 0))
-  process.stdin.on('close', () => shutdown('stdin-close', 0))
+  installStdinShutdown(process.stdin, (cause) => shutdown(cause, 0))
+
+  // And if the parent already left while we were starting up, act on it now. Both halves are needed:
+  // the latch catches an EOF that arrived during the awaited phases, and the flag check catches a
+  // pipe that was already closed before this process ran its first line, where there was never an
+  // event to catch. Nothing was delivered during startup, so the flush inside shutdown is a no-op
+  // here, and markGracefulStop still runs.
+  if (sawStdinEofDuringStartup() || stdinHasEnded(process.stdin)) {
+    shutdown('stdin-close', 0)
+  }
 
   // Neither of these existed. An unhandled rejection took the process down with no line in the log
   // saying why, which is the same silence this whole block is about.
@@ -8635,6 +8654,14 @@ async function main(): Promise<void> {
         })
         if (enrolled.changed) {
           log(`marketplace auto-update enabled for ${marketplaceName} (this machine now self-updates)`)
+        } else if (enrolled.reason === 'not_persisted') {
+          // A concurrent `claude` wrote its own snapshot of settings.json over ours and the retries
+          // never landed. Worth a line: this machine will NOT self-update, and the whole point of
+          // the read-back is that we no longer claim otherwise.
+          log(
+            `marketplace auto-update could not be written for ${marketplaceName}: another process ` +
+              'keeps overwriting ~/.claude/settings.json, so this machine will not self-update yet',
+          )
         }
       }
     } catch (err) {

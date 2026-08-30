@@ -84,6 +84,11 @@ export function slashCommandSyncPath(
 
 export const MAX_SLASH_COMMANDS = 200
 export const MAX_SLASH_COMMAND_NAME_LENGTH = 64
+/**
+ * The backend's own cap on a command description. Named rather than inlined because the plugin and
+ * the backend DTO have to agree on it, and a bare 100 in one file is not traceable to the other.
+ */
+export const MAX_SLASH_COMMAND_DESCRIPTION_LENGTH = 100
 export const MAX_SLASH_COMMAND_PROMPT_CHARS = 64_000
 const VALID_SLASH_COMMAND_NAME = /^[a-z0-9_]+(?:[-:][a-z0-9_]+)*$/
 
@@ -122,7 +127,7 @@ export function prepareSlashCommands(
       dropped++
       continue
     }
-    const description = (entry.description || wireName).slice(0, 100)
+    const description = (entry.description || wireName).slice(0, MAX_SLASH_COMMAND_DESCRIPTION_LENGTH)
     wireCommands.push({ command: wireName, description, scope: 'all' })
     registry.set(wireName, entry)
     const legacyName = legacyCommandName(wireName)
@@ -288,6 +293,22 @@ export function expandSlashCommandPrompt(input: {
  * includes local command instructions when available, and explicitly asks the
  * agent to perform the behavior and reply with the result.
  */
+/**
+ * One line per registered command, in the registry's own order, which is the picker's order.
+ *
+ * The KEY is rendered, not the entry's raw `command`. They differ: the key is the normalized wire
+ * name the backend and the picker both use, and a namespaced command reaches the user as that. A
+ * list the user cannot match against what they see is worse than no list.
+ */
+function renderCommandCatalog(registry: ReadonlyMap<string, SlashCommandEntry>): string[] {
+  const lines: string[] = []
+  for (const [wireName, entry] of registry) {
+    const description = entry.description?.trim() || ''
+    lines.push(description ? `/${wireName} - ${description}` : `/${wireName}`)
+  }
+  return lines
+}
+
 export function buildSlashCommandDelivery(input: {
   commandName: unknown
   commandArgs: unknown
@@ -371,6 +392,19 @@ export function buildSlashCommandDelivery(input: {
       'Claude Code client preprocessing did not run for this channel event. If the instructions contain a dynamic shell or file reference, gather that context with the tools available in this session and obey normal permission checks.',
     )
   }
+  // /help is the one command whose answer IS the catalog, and the model cannot see the catalog: the
+  // dispatch carries the command the user picked and nothing else. So it was being asked to list
+  // commands it had never been shown, which produced either just itself or plausible inventions.
+  // The registry is already here, at every call site, so hand it over.
+  if (canonicalCommand === '/help') {
+    lines.push(
+      'The commands registered in this chat right now, exactly as the user sees them in the picker:',
+      '<available_commands>',
+      ...renderCommandCatalog(input.registry),
+      '</available_commands>',
+    )
+  }
+
   lines.push(
     'Carry out the behavior with the capabilities available in this session, then reply through BGOS with the result. Do not tell the user to type the command in the terminal and do not stop at describing the command.',
   )
@@ -635,14 +669,15 @@ export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
     prompt: [
       'List, briefly, what you can do for the user through this chat: answer questions, read and',
       'edit files in your working directory, run commands, and send files back.',
-      'Then list the other slash commands available and one line on each.',
-      'Keep it under ten lines. Do not describe Claude Code terminal features the user cannot reach',
-      'from a chat message.',
+      'Then list the commands in <available_commands> below, exactly as written, one line each.',
+      'That block is the whole catalog this chat has. Do not add a command that is not in it, and do',
+      'not rename one: the names there are what the user sees in the picker.',
+      'Do not describe Claude Code terminal features the user cannot reach from a chat message.',
     ].join('\n'),
   },
   {
     command: '/status',
-    description: 'Version, pairing and update state of this agent',
+    description: 'Version, working directory and identity of this agent',
     scope: 'all',
     // Answered by the model from a real procedure, not a label. Anthropic's Telegram channel goes one
     // step further and answers its /status in the bridge itself, from its own state file, which is

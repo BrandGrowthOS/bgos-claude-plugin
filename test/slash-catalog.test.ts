@@ -19,6 +19,7 @@ import {
   BUILTIN_COMMANDS,
   LatestSerialRunner,
   MAX_SLASH_COMMANDS,
+  MAX_SLASH_COMMAND_DESCRIPTION_LENGTH,
   MAX_SLASH_COMMAND_PROMPT_CHARS,
   REMOTE_COMPACT_COMMAND,
   buildSlashCommandDelivery,
@@ -456,9 +457,108 @@ test('prompt bodies stay local and never reach the backend catalog', () => {
   assert.ok(wireCommands.length > 0, 'sanity: the catalog is not empty')
   for (const entry of wireCommands) {
     assert.ok(!('prompt' in entry), `${entry.command} leaked its prompt body onto the wire`)
-    assert.ok(
-      entry.description.length <= 100,
-      `${entry.command} description is ${entry.description.length} chars; the backend caps it at 100`,
-    )
+  }
+  // The cap assertion that used to sit in this loop was removed: it read the length of a WIRE
+  // description, which prepareSlashCommands had already sliced, so it was true by construction and
+  // stayed green when the slice was deleted. The real guard is the truncation test below, which
+  // feeds a description long enough that the cap has to do something.
+})
+
+
+// --- the three things the adversarial pass found in this file ---------------
+
+test('an oversized description is truncated to the backend cap before the wire', () => {
+  // This is the guard the removed loop line was meant to be. The backend caps a description at 100
+  // characters and 400s a sync that exceeds it, which would leave the agent with no catalog at all.
+  const long = 'Q'.repeat(3300)
+  const { wireCommands } = prepareSlashCommands([
+    { command: '/help', description: long, scope: 'all', prompt: 'x' },
+  ])
+  assert.equal(wireCommands[0]!.description.length, MAX_SLASH_COMMAND_DESCRIPTION_LENGTH)
+  assert.equal(wireCommands[0]!.description, long.slice(0, MAX_SLASH_COMMAND_DESCRIPTION_LENGTH))
+})
+
+test('/help carries the real catalog, so the model is not asked to list commands it cannot see', () => {
+  // The dispatch tells the model which command the user picked and nothing else. /help was asking it
+  // to "list the other slash commands available", which it had never been shown, so it answered with
+  // itself or with plausible inventions. Neither is a help screen.
+  const { registry, legacyAliases } = prepareSlashCommands([
+    { command: '/help', description: 'What this agent can do here', scope: 'all', prompt: 'List them.' },
+    { command: '/pair', description: 'Pair this machine', scope: 'all', prompt: 'p' },
+    { command: '/hoai:deploy', description: 'Ship it', scope: 'all', prompt: 'd' },
+  ])
+  const delivery = buildSlashCommandDelivery({
+    commandName: 'help',
+    commandArgs: '',
+    registry,
+    legacyAliases,
+  })
+
+  assert.match(delivery.content, /<available_commands>/)
+  const block = delivery.content.slice(
+    delivery.content.indexOf('<available_commands>'),
+    delivery.content.indexOf('</available_commands>'),
+  )
+  assert.ok(block.includes('Pair this machine'), 'each line carries its description')
+  // The registry KEY is what the picker shows, so that is what gets rendered. Rendering the raw
+  // entry.command would hand the user a name they cannot find.
+  for (const key of registry.keys()) {
+    assert.ok(block.includes(`/${key}`), `/${key} is a registry key and must appear`)
+  }
+})
+
+test('a command NOT in the registry never appears in the /help catalog', () => {
+  // The other half: the block must be the registry, not a wish list. A command dropped by a
+  // collision or by the cap must not be advertised, because the picker will not offer it.
+  const { registry, legacyAliases } = prepareSlashCommands([
+    { command: '/help', description: 'h', scope: 'all', prompt: 'List them.' },
+  ])
+  const delivery = buildSlashCommandDelivery({
+    commandName: 'help',
+    commandArgs: '',
+    registry,
+    legacyAliases,
+  })
+  assert.equal(delivery.content.includes('/pair'), false)
+})
+
+test('a command that is not /help gets no catalog block', () => {
+  // The block is a real cost in every dispatch, so it goes only where it is the answer.
+  const { registry, legacyAliases } = prepareSlashCommands([
+    { command: '/help', description: 'h', scope: 'all', prompt: 'h' },
+    { command: '/status', description: 's', scope: 'all', prompt: 's' },
+  ])
+  const delivery = buildSlashCommandDelivery({
+    commandName: 'status',
+    commandArgs: '',
+    registry,
+    legacyAliases,
+  })
+  assert.equal(delivery.content.includes('<available_commands>'), false)
+})
+
+test('every builtin description names only what its own procedure asks for', () => {
+  // /status shipped saying "Version, pairing and update state" while its procedure asked for name,
+  // id, version and working directory. The description is what the picker shows and what the
+  // dispatch quotes back as "Registered behavior", so a description promising more than the
+  // procedure delivers is a promise the model then has to improvise around.
+  const NOUNS: Array<{ noun: RegExp; inPrompt: RegExp; label: string }> = [
+    { noun: /pairing/i, inPrompt: /pair/i, label: 'pairing' },
+    { noun: /\bupdate\b/i, inPrompt: /update/i, label: 'update' },
+    // 'project memory' in Claude Code IS CLAUDE.md, so naming the file counts as asking for it.
+    // The guard is about a description promising a capability the procedure never performs, not
+    // about vocabulary matching.
+    { noun: /memor/i, inPrompt: /memor|CLAUDE\.md/i, label: 'memory' },
+    { noun: /\bcost\b/i, inPrompt: /cost|token|spend/i, label: 'cost' },
+  ]
+  for (const entry of BUILTIN_COMMANDS) {
+    const prompt = entry.prompt ?? ''
+    for (const { noun, inPrompt, label } of NOUNS) {
+      if (!noun.test(entry.description)) continue
+      assert.ok(
+        inPrompt.test(prompt),
+        `${entry.command} advertises "${label}" but its procedure never asks for it: ${entry.description}`,
+      )
+    }
   }
 })

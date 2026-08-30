@@ -107,6 +107,76 @@ test('CONTROL: without the handlers the same process survives its stdin closing'
 })
 
 /**
+ * The startup window, which the two tests above structurally cannot reach.
+ *
+ * Both of them wait for the child to say `ready` before closing its stdin, deliberately, so the
+ * handlers always exist first. The real daemon does the opposite: server.ts connects the MCP
+ * transport and then AWAITS three network phases (the slash-command registry, chat discovery, the
+ * boot sweep) before it registers the shutdown listeners. A parent that dies inside those seconds
+ * delivers end and close to a process with nobody listening, and the events never come again.
+ *
+ * These children model that ordering: print ready, sleep, and only then register. The child WITHOUT
+ * the latch must survive, which is the orphan; the child WITH it must exit.
+ */
+
+/** Registers late, and has no latch. This is what shipped before the fix. */
+const LATE_HANDLERS_NO_LATCH = `
+  setInterval(() => {}, 1000)
+  process.stdin.resume()
+  process.stdout.write('ready\\n')
+  setTimeout(() => {
+    let down = false
+    const shutdown = () => { if (down) return; down = true; process.exit(0) }
+    process.stdin.on('end', shutdown)
+    process.stdin.on('close', shutdown)
+  }, 700)
+`
+
+/** Registers just as late, but latches the EOF first and checks the flags after. */
+const LATE_HANDLERS_WITH_LATCH = `
+  setInterval(() => {}, 1000)
+  let sawEof = false
+  const note = () => { sawEof = true }
+  process.stdin.once('end', note)
+  process.stdin.once('close', note)
+  process.stdin.resume()
+  process.stdout.write('ready\\n')
+  setTimeout(() => {
+    let down = false
+    const shutdown = () => { if (down) return; down = true; process.exit(0) }
+    process.stdin.on('end', shutdown)
+    process.stdin.on('close', shutdown)
+    const ended = process.stdin.destroyed || process.stdin.closed || process.stdin.readableEnded
+    if (sawEof || ended) shutdown()
+  }, 700)
+`
+
+test('an end-of-input during startup still ends the daemon once the handlers arrive', async () => {
+  const child = spawnChild(LATE_HANDLERS_WITH_LATCH)
+  try {
+    assert.equal(await waitForReady(child, 10_000), true, 'child never reported ready')
+    child.stdin?.end() // the parent dies while the daemon is still in its awaited startup phases
+    const code = await exitWithin(child, 10_000)
+    assert.equal(code, 0, 'a startup EOF must not be lost; the daemon has to notice it afterwards')
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL')
+  }
+})
+
+test('CONTROL: without the latch the same startup EOF is lost and the daemon is orphaned', async () => {
+  // This is the defect, reproduced. If this ever starts exiting, the test above proves nothing.
+  const child = spawnChild(LATE_HANDLERS_NO_LATCH)
+  try {
+    assert.equal(await waitForReady(child, 10_000), true, 'child never reported ready')
+    child.stdin?.end()
+    const code = await exitWithin(child, 3_000)
+    assert.equal(code, null, 'the un-latched child polls forever, which is the orphan being fixed')
+  } finally {
+    child.kill('SIGKILL')
+  }
+})
+
+/**
  * The broken-pipe loop, reproduced and then shown fixed.
  *
  * This is the defect that a real run found and no unit test could: a fault handler that reports

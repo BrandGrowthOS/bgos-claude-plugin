@@ -18,8 +18,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { EventEmitter } from 'node:events'
 import {
   describeShutdownCause,
+  installStdinShutdown,
+  stdinHasEnded,
+  watchStdinEof,
   isBrokenPipe,
   shouldShutdownOnStdin,
   type ShutdownCause,
@@ -67,16 +71,106 @@ test('an unknown cause still produces a usable line rather than throwing', () =>
 // These assert on server.ts itself. They are cheap, and they are the only thing that catches a
 // well-meaning refactor removing the handlers or reintroducing the watchdog Anthropic removed.
 
-test('server.ts shuts down when stdin ends or closes', () => {
+/**
+ * A stand-in for process.stdin: an EventEmitter plus the three readable flags. Small enough to be
+ * obviously honest, which is the reason the wiring moved out of server.ts in the first place. The
+ * two tests it replaced grepped server.ts for the listener text, so they passed against an
+ * implementation whose callback did nothing.
+ */
+function fakeStdin(flags: { destroyed?: boolean; closed?: boolean; readableEnded?: boolean } = {}) {
+  const em = new EventEmitter()
+  return Object.assign(em, flags) as EventEmitter & typeof flags
+}
+
+test('an end or a close on stdin reaches the shutdown callback, with the cause named', () => {
+  const seen: string[] = []
+  const stdin = fakeStdin()
+  installStdinShutdown(stdin, (cause) => seen.push(cause))
+
+  stdin.emit('end')
+  assert.deepEqual(seen, ['stdin-end'])
+  stdin.emit('close')
+  assert.deepEqual(seen, ['stdin-end', 'stdin-close'])
+})
+
+test('a data or an error event does NOT shut the daemon down', () => {
+  // The two events most likely to be added by someone tidying up. 'data' is every inbound message,
+  // so shutting down on it exits on the first thing a user says; 'error' is a blip, and the MCP
+  // transport installs its own handler for it. This is a behavioural version of a contract that
+  // used to be a regex over server.ts.
+  const seen: string[] = []
+  const stdin = fakeStdin()
+  installStdinShutdown(stdin, (cause) => seen.push(cause))
+
+  // The transport owns the error listener in production, so model that: without one an
+  // EventEmitter rethrows, which would be testing node rather than testing us.
+  stdin.on('error', () => {})
+  stdin.emit('data', Buffer.from('{"jsonrpc":"2.0"}'))
+  stdin.emit('error', new Error('transient'))
+  assert.deepEqual(seen, [], 'neither event is proof the parent is gone')
+})
+
+test('installStdinShutdown asks the predicate, so inverting it registers nothing', () => {
+  // Before this, shouldShutdownOnStdin was tested four ways and consumed by nothing: server.ts
+  // hard-coded 'end' and 'close' at the call site. Asserting the listener count is what makes the
+  // predicate load-bearing, because a predicate that no production path consults cannot fail.
+  const stdin = fakeStdin()
+  installStdinShutdown(stdin, () => {})
+  assert.equal(stdin.listenerCount('end'), 1)
+  assert.equal(stdin.listenerCount('close'), 1)
+  assert.equal(stdin.listenerCount('data'), 0, 'a data listener would run on every inbound message')
+  assert.equal(stdin.listenerCount('error'), 0, 'an error listener would compete with the transport')
+})
+
+test('an end-of-input during startup is latched, so it is not lost before the handlers exist', () => {
+  // The real window: server.ts connects the transport and then awaits three network phases before
+  // registering the shutdown listeners. An EOF in those seconds fires into a process with nobody
+  // listening, and the event does not come back.
+  const stdin = fakeStdin()
+  const sawEof = watchStdinEof(stdin)
+  assert.equal(sawEof(), false)
+  stdin.emit('end')
+  assert.equal(sawEof(), true, 'an EOF before the handlers exist must still be visible after them')
+})
+
+test('the latch is once-only and cannot interfere with the real handlers', () => {
+  const stdin = fakeStdin()
+  watchStdinEof(stdin)
+  stdin.emit('end')
+  stdin.emit('close')
+  assert.equal(stdin.listenerCount('end'), 0, 'once listeners must remove themselves')
+  assert.equal(stdin.listenerCount('close'), 0)
+})
+
+test('stdinHasEnded ORs the three flags, because node and bun disagree about them', () => {
+  // node sets destroyed, closed and readableEnded together. bun reports readableEnded false with
+  // destroyed and closed true. Requiring agreement would return false on bun, which is the runtime
+  // the daemon actually ships on, so the OR is the whole point.
+  assert.equal(stdinHasEnded(fakeStdin()), false)
+  assert.equal(stdinHasEnded(fakeStdin({ destroyed: true, closed: true, readableEnded: false })), true, 'the bun shape')
+  assert.equal(stdinHasEnded(fakeStdin({ destroyed: true, closed: true, readableEnded: true })), true, 'the node shape')
+  assert.equal(stdinHasEnded(fakeStdin({ readableEnded: true })), true)
+})
+
+test('server.ts installs the shutdown through the module and acts on a startup EOF', () => {
+  // A source contract still earns its place, but pointed at the CALL SITE rather than at listener
+  // text: deleting the wiring is caught by the behavioural tests above only if server.ts actually
+  // calls it, and that is a fact about server.ts alone.
   assert.match(
     serverSource,
-    /process\.stdin\.on\(\s*'end'/,
-    'server.ts must shut down when stdin ends; without it an orphaned daemon polls forever',
+    /installStdinShutdown\(\s*process\.stdin/,
+    'server.ts must wire stdin shutdown through the tested helper, not by hand',
   )
   assert.match(
     serverSource,
-    /process\.stdin\.on\(\s*'close'/,
-    'server.ts must shut down when stdin closes',
+    /watchStdinEof\(\s*process\.stdin\s*\)/,
+    'the startup EOF latch must be armed',
+  )
+  const latchAt = serverSource.indexOf('watchStdinEof(process.stdin)')
+  const transportAt = serverSource.indexOf('new StdioServerTransport()')
+  assert.ok(
+    latchAt !== -1 && latchAt < transportAt,
+    'the latch must be armed BEFORE the transport and the awaited startup phases, or it misses them',
   )
 })
 

@@ -312,3 +312,120 @@ test('an inherited autoUpdate does not count as an existing entry', () => {
   // And the function, given the same name against an empty own-map, reports no entry.
   assert.equal(ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs }).reason, 'no_entry')
 })
+
+
+// --- durability: the write has to survive, and it has to leave nothing behind ---
+//
+// Two separate OS processes write ~/.claude/settings.json: this daemon and the `claude` binary.
+// Neither takes a lock, and the CLI will not start doing so, so the only honest options are to
+// verify the write or to stop claiming it happened. These pin both.
+
+/** A memFs that also models rename, so writeJsonAtomic takes its atomic branch. */
+function renamingFs(initial: Record<string, string> = {}) {
+  const base = memFs(initial)
+  const removed: string[] = []
+  return {
+    ...base,
+    removed,
+    rename: (from: string, to: string) => {
+      const text = base.files.get(from)
+      if (text === undefined) throw new Error(`rename: ${from} does not exist`)
+      base.files.delete(from)
+      base.files.set(to, text)
+    },
+    remove: (path: string) => {
+      removed.push(path)
+      base.files.delete(path)
+    },
+  }
+}
+
+test('a failed rename leaves no temp file behind in the user home', () => {
+  // This path runs on every daemon boot, in ~/.claude, beside the file Claude Code itself reads.
+  // A cross-device rename and a locked target are the two ways it fails in practice on Windows, and
+  // before this the residue simply accumulated.
+  const fs = renamingFs({
+    '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {} } } }),
+  })
+  const boom = {
+    ...fs,
+    rename: () => {
+      throw new Error('EXDEV: cross-device link not permitted')
+    },
+  }
+  assert.throws(() => ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: boom }))
+  const leftovers = [...fs.files.keys()].filter((k) => k.endsWith('.tmp'))
+  assert.deepEqual(leftovers, [], `a temp file survived: ${leftovers.join(', ')}`)
+  assert.equal(fs.removed.length, 1, 'the cleanup must have been attempted exactly once')
+})
+
+test('a write that does not stick is reported as not_persisted, never as success', () => {
+  // The real sequence: we read, claude reads, we write, claude writes its older snapshot back. The
+  // key is gone and the old code had already logged "this machine now self-updates".
+  const seed = JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {} } } })
+  const fs = renamingFs({ '/cfg/settings.json': seed })
+  const clobbering = {
+    ...fs,
+    rename: (from: string, to: string) => {
+      fs.files.delete(from)
+      // Whatever we wrote, the competing writer puts its own copy back.
+      fs.files.set(to, seed)
+    },
+  }
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: clobbering })
+  assert.equal(r.changed, false)
+  assert.equal(r.reason, 'not_persisted')
+  assert.equal(
+    JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate,
+    undefined,
+    'and the file really is unchanged, so the report matches the disk',
+  )
+})
+
+test('a write clobbered once is retried and then succeeds', () => {
+  // The windows are lopsided: ours is about 2.5 ms and claude's is 80 to 300 ms, so the second
+  // attempt usually lands after the writer that beat us. The retry is why this is worth doing at
+  // all rather than only reporting failure.
+  const seed = JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {} } } })
+  const fs = renamingFs({ '/cfg/settings.json': seed })
+  let clobbers = 1
+  const flaky = {
+    ...fs,
+    rename: (from: string, to: string) => {
+      const text = fs.files.get(from)!
+      fs.files.delete(from)
+      if (clobbers > 0) {
+        clobbers--
+        fs.files.set(to, seed)
+        return
+      }
+      fs.files.set(to, text)
+    },
+  }
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: flaky })
+  assert.equal(r.reason, 'set')
+  assert.equal(
+    JSON.parse(fs.files.get('/cfg/settings.json')!).extraKnownMarketplaces.hoai.autoUpdate,
+    true,
+  )
+})
+
+test('a retry never recreates an entry a competing writer deleted', () => {
+  // Between attempts the marketplace can be removed entirely, by `claude plugin marketplace remove`
+  // or by the add rewriting the block. Writing our key back then would invent a marketplace the CLI
+  // never registered, which is worse than doing nothing.
+  const fs = renamingFs({
+    '/cfg/settings.json': JSON.stringify({ extraKnownMarketplaces: { hoai: { source: {} } } }),
+  })
+  const vanishing = {
+    ...fs,
+    rename: (from: string, to: string) => {
+      fs.files.delete(from)
+      fs.files.set(to, JSON.stringify({ extraKnownMarketplaces: {} }))
+    },
+  }
+  const r = ensureMarketplaceAutoUpdate({ configDir: '/cfg', marketplace: 'hoai', fs: vanishing })
+  assert.equal(r.changed, false)
+  const after = JSON.parse(fs.files.get('/cfg/settings.json')!)
+  assert.deepEqual(after.extraKnownMarketplaces, {}, 'the entry must stay gone')
+})
