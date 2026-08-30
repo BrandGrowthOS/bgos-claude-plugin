@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 
 import {
   BUILTIN_COMMANDS,
+  DAEMON_STATUS_COMMAND,
   LatestSerialRunner,
   MAX_SLASH_COMMANDS,
   MAX_SLASH_COMMAND_DESCRIPTION_LENGTH,
@@ -25,11 +26,13 @@ import {
   buildSlashCommandDelivery,
   catalogForCapabilities,
   expandSlashCommandPrompt,
+  isDaemonAnsweredSlashCommand,
   isReservedHostSlashCommand,
   mergeSlashCommandCatalog,
   parseSlashCommandMarkdown,
   prepareSlashCommands,
   resolveRegisteredSlashCommand,
+  routeSlashCommand,
   slashCommandSyncPath,
   splitSlashCommandArguments,
 } from '../lib/slash-catalog.ts'
@@ -42,7 +45,11 @@ test('builtin catalog does NOT advertise /compact (host-only, dead over the chan
 })
 
 test('builtin catalog keeps its well-formed core entries', () => {
-  const names = BUILTIN_COMMANDS.map((c) => c.command)
+  // Checked against the ADVERTISED catalog, which is what the picker shows. /status is still there;
+  // it moved out of BUILTIN_COMMANDS because the daemon answers it, exactly as /compact does, and
+  // asserting on the list rather than on the catalog would have made that refactor look like a
+  // regression when it is the opposite.
+  const names = catalogForCapabilities({ remoteCompact: true }).map((c) => c.command)
   for (const expected of ['/help', '/model', '/status']) {
     assert.ok(names.includes(expected), `${expected} missing from catalog`)
   }
@@ -60,14 +67,14 @@ test('catalogForCapabilities: /compact advertised ONLY with the injection capabi
     !off.some((c) => c.command === '/compact'),
     'capability OFF must never advertise /compact (dead Compact button)',
   )
-  assert.deepEqual(off, BUILTIN_COMMANDS)
+  assert.deepEqual(off, [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND])
 
   const on = catalogForCapabilities({ remoteCompact: true })
   assert.ok(
     on.some((c) => c.command === '/compact'),
     'capability ON advertises /compact so the BGOS Compact button appears',
   )
-  assert.deepEqual(on, [...BUILTIN_COMMANDS, REMOTE_COMPACT_COMMAND])
+  assert.deepEqual(on, [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND, REMOTE_COMPACT_COMMAND])
   // The base list itself must stay compact-free regardless.
   assert.ok(!BUILTIN_COMMANDS.some((c) => c.command === '/compact'))
 })
@@ -408,7 +415,7 @@ test('the two hazards are no longer advertised', () => {
 })
 
 test('the commands we keep are ones a session can actually perform', () => {
-  const names = BUILTIN_COMMANDS.map((c) => c.command)
+  const names = catalogForCapabilities({ remoteCompact: true }).map((c) => c.command)
   for (const kept of ['/help', '/memory', '/init', '/status', '/model', '/mcp']) {
     assert.ok(names.includes(kept), `${kept} must stay: it is answerable`)
   }
@@ -560,5 +567,77 @@ test('every builtin description names only what its own procedure asks for', () 
         `${entry.command} advertises "${label}" but its procedure never asks for it: ${entry.description}`,
       )
     }
+  }
+})
+
+
+// --- /status is answered by the daemon, not described to a model ------------
+
+test('/status routes to the daemon, like /compact, and never becomes a directive', () => {
+  // It used to be a builtin with a procedure, which is the best a prompt can do and is not good
+  // enough for this command: a model asked for its own version has to go and find one and can be
+  // vague or wrong. The point of /status is to be the answer you can trust when everything else
+  // looks ambiguous, so the process that KNOWS has to be the one that answers.
+  const { registry, legacyAliases } = prepareSlashCommands(
+    catalogForCapabilities({ remoteCompact: true }),
+  )
+  const route = routeSlashCommand({
+    payload: { messageType: 'slash_command', commandName: 'status', commandArgs: '' },
+    registry,
+    legacyAliases,
+  })
+  assert.equal(route.kind, 'status')
+})
+
+test('a user command called /status cannot shadow the daemon answer', () => {
+  // The route is decided before the registry lookup on purpose. A project command that took over
+  // /status would silently replace the one reply in this connector that is guaranteed not to be a
+  // paraphrase, which is exactly what a user reaching for /status is trying to escape.
+  const { registry, legacyAliases } = prepareSlashCommands([
+    { command: '/status', description: 'my own status', scope: 'all', prompt: 'do something else' },
+  ])
+  const route = routeSlashCommand({
+    payload: { messageType: 'slash_command', commandName: 'status', commandArgs: '' },
+    registry,
+    legacyAliases,
+  })
+  assert.equal(route.kind, 'status')
+})
+
+test('/status is advertised whether or not remote compact is available', () => {
+  // /compact is conditional on a real capability probe, because advertising it without the injection
+  // capability recreated a dead button. /status has no such dependency: the daemon can always answer
+  // it, so it must always be offered.
+  for (const remoteCompact of [true, false]) {
+    const names = catalogForCapabilities({ remoteCompact }).map((c) => c.command)
+    assert.ok(names.includes('/status'), `missing with remoteCompact=${remoteCompact}`)
+    assert.equal(names.includes('/compact'), remoteCompact)
+  }
+})
+
+test('the daemon-answered commands carry no prompt, because nothing about them reaches a model', () => {
+  // The invariant that keeps the two halves honest: anything in the catalog with a prompt is model
+  // work, anything without one is daemon work. A /status that kept a prompt would be an invitation
+  // to route it back to the model later and quietly undo this.
+  const daemonAnswered = catalogForCapabilities({ remoteCompact: true }).filter((c) =>
+    ['/status', '/compact'].includes(c.command),
+  )
+  assert.equal(daemonAnswered.length, 2)
+  for (const entry of daemonAnswered) {
+    assert.equal(entry.prompt, undefined, `${entry.command} must not carry a prompt`)
+  }
+})
+
+test('every OTHER advertised command still carries a procedure', () => {
+  // The complement, so removing a prompt from a model-answered command is still caught. This is the
+  // existing invariant, restated against the full catalog rather than against BUILTIN_COMMANDS, so
+  // the two daemon-answered entries are excluded by their route and not by their list membership.
+  for (const entry of catalogForCapabilities({ remoteCompact: true })) {
+    if (isReservedHostSlashCommand(entry.command.replace(/^\//, ''))) continue
+    if (isDaemonAnsweredSlashCommand(entry.command.replace(/^\//, ''))) continue
+    assert.ok(
+      typeof entry.prompt === 'string' && entry.prompt.trim().length > 0,
+      `${entry.command} is advertised with no procedure, so it is a label`,
+    )
   }
 })

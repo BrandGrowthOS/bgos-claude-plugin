@@ -63,7 +63,7 @@ import {
   watchStdinEof,
   type ShutdownCause,
 } from './lib/process-lifecycle.js'
-import { ensureMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
+import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
 import {
   pickCapabilities,
@@ -268,6 +268,7 @@ import {
   type SelfUpdater,
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
+import { buildStatusAnswer } from './lib/slash-status.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
@@ -1126,6 +1127,25 @@ async function tmuxTargetAlive(t: TmuxTarget): Promise<boolean> {
 // WS and poll can both deliver the same slash_command message; injecting
 // twice would compact twice. Dedupe on message id (bounded).
 const handledCompactMsgIds = new Set<string>()
+/**
+ * Message ids this process has already answered a /status for.
+ *
+ * Needed because the poll and the WebSocket both deliver the same message: without it a user gets
+ * two identical status bubbles. Same bounded shape as the compact set, and the failure mode is
+ * deliberately the same too, a possible duplicate rather than a possible silence.
+ */
+const handledStatusMsgIds = new Set<string>()
+
+function alreadyHandledStatus(messageId: string): boolean {
+  if (handledStatusMsgIds.has(messageId)) return true
+  handledStatusMsgIds.add(messageId)
+  if (handledStatusMsgIds.size > 200) {
+    const first = handledStatusMsgIds.values().next().value
+    if (first !== undefined) handledStatusMsgIds.delete(first)
+  }
+  return false
+}
+
 function alreadyHandledCompact(messageId: string): boolean {
   if (handledCompactMsgIds.has(messageId)) return true
   handledCompactMsgIds.add(messageId)
@@ -1134,6 +1154,62 @@ function alreadyHandledCompact(messageId: string): boolean {
     if (first !== undefined) handledCompactMsgIds.delete(first)
   }
   return false
+}
+
+/**
+ * When the last inbound message arrived, for /status. Set at the same three places that record the
+ * inbound sender, so it cannot drift from what the daemon actually received.
+ */
+let lastInboundAtMs: number | null = null
+
+/**
+ * Answer /status from what this daemon holds, and send it. Never forwarded to a model.
+ *
+ * The command was previously a prompt: "report your own operating state, and only facts you can
+ * verify right now". That is the best a prompt can do, and it is not good enough here, because a
+ * model asked for its own version has to go and find one and can be vague or wrong about the result.
+ * The point of /status is to be the answer you can trust when everything else looks ambiguous, which
+ * means the process that knows has to be the one that answers. Anthropic's Telegram channel does
+ * exactly this from its own bridge state, which is why theirs cannot be wrong.
+ *
+ * Every field here is a fact this process already holds. Anything it cannot determine is reported as
+ * undetermined rather than estimated.
+ */
+async function handleStatusCommand(chatId: string): Promise<void> {
+  let autoUpdateEnrolled: boolean | null = null
+  try {
+    // Only meaningful for a marketplace install: a clone has no marketplace entry to enrol, so the
+    // question does not apply and null keeps the line off the reply entirely.
+    if (INSTALL_METHOD === 'marketplace' && INSTALL_DETECTION?.marketplace) {
+      autoUpdateEnrolled = readMarketplaceAutoUpdate({
+        configDir: CLAUDE_CONFIG_DIR,
+        marketplace: INSTALL_DETECTION.marketplace,
+      })
+    }
+  } catch {
+    // Undetermined, which is a reportable answer.
+  }
+
+  let supervised = 'none'
+  try {
+    supervised = detectSupervision(supervisionProbe())
+  } catch {
+    // Undetermined reads as unsupervised, which is the conservative half: it tells the user restarts
+    // are manual, and being told to do something by hand that turns out to be automatic is a much
+    // smaller harm than being told the opposite.
+  }
+
+  const text = buildStatusAnswer({
+    assistantId: ASSISTANT_ID ? String(ASSISTANT_ID) : null,
+    assistantName: null,
+    version: RUNNING_VERSION ?? null,
+    installMethod: INSTALL_METHOD ?? 'unknown',
+    supervised,
+    autoUpdateEnrolled,
+    lastInboundAgoMs: lastInboundAtMs === null ? null : Math.max(0, Date.now() - lastInboundAtMs),
+  })
+
+  await sendDaemonText(chatId, text)
 }
 
 async function handleRemoteCompact(chatId: string): Promise<void> {
@@ -5699,6 +5775,20 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
+      // /status is answered by this process, from its own state, and never reaches the model. A
+      // backlog copy is answered too, unlike /compact: the reply is built at send time from current
+      // facts, so a late answer is a correct answer, and staying silent on a question the user
+      // definitely asked is the worse failure.
+      if (slashRoute.kind === 'status') {
+        if (!alreadyHandledStatus(String(msg.message.id))) {
+          log(`status requested via poll (chat ${chatId})`)
+          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+            log(`Status reply failed: ${err}`)
+          })
+        }
+        continue
+      }
+
       const slashDelivery = slashRoute.kind === 'directive'
         ? slashRoute.delivery
         : null
@@ -5724,6 +5814,7 @@ async function pollChat(chatId: string): Promise<void> {
       // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
       // Reused for the verdict-binding map AND the agent-delivered meta so a
       // shared assistant sees which human actually sent this message.
+      lastInboundAtMs = Date.now()
       lastInboundUserByChat.set(chatId, pollSenderUserId)
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
@@ -6482,6 +6573,12 @@ async function forwardStreamInbound(
     log(`remote compact via stream replay ignored (chat ${chatId})`)
     return
   }
+  if (slashRoute.kind === 'status') {
+    // The replay is a second copy of a message the poll or the WebSocket path already answered, and
+    // the id dedupe below lives on those paths. Answering here would double the reply.
+    log(`status via stream replay ignored (chat ${chatId})`)
+    return
+  }
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
@@ -6490,6 +6587,7 @@ async function forwardStreamInbound(
   const streamEventMeta = !isSlash
     ? buildEventMeta(view.messageType, view.eventMetaRaw)
     : null
+  lastInboundAtMs = Date.now()
   lastInboundUserByChat.set(chatId, senderUserId)
   // Map the conversation before the awaited handoff. A close event can arrive
   // during that await; it must already be able to resolve this chat so the
@@ -7229,7 +7327,10 @@ function connectWebsocket(): void {
         ? undefined
         : String(wsTurnStateRaw)
       const wsSenderUserId = senderUserIdOf(payload)
-      if (chatId) lastInboundUserByChat.set(chatId, wsSenderUserId)
+      if (chatId) {
+        lastInboundAtMs = Date.now()
+        lastInboundUserByChat.set(chatId, wsSenderUserId)
+      }
       const wsChannel = buildInboundChannel({
         chatId,
         messageId,
@@ -7273,6 +7374,15 @@ function connectWebsocket(): void {
           log(`remote compact requested via ws (chat ${chatId})`)
           void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
             log(`Remote compact failed: ${err}`)
+          })
+        }
+        return
+      }
+      if (slashRoute.kind === 'status') {
+        if (chatId && !alreadyHandledStatus(String(messageId))) {
+          log(`status requested via ws (chat ${chatId})`)
+          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+            log(`Status reply failed: ${err}`)
           })
         }
         return

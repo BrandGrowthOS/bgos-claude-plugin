@@ -70,6 +70,7 @@ export interface SlashCommandPayload {
 export type SlashCommandRoute =
   | { kind: 'not_slash' }
   | { kind: 'compact'; commandName: string; commandArgs: string }
+  | { kind: 'status'; commandName: string; commandArgs: string }
   | { kind: 'directive'; delivery: SlashCommandDelivery }
 
 export function slashCommandSyncPath(
@@ -168,6 +169,17 @@ function commandToken(raw: unknown): string {
 
 export function isReservedHostSlashCommand(raw: unknown): boolean {
   return commandToken(raw).toLowerCase() === 'compact'
+}
+
+/**
+ * Commands the daemon answers from its own state instead of forwarding.
+ *
+ * Kept separate from the reserved-host check above even though both end up daemon-handled: /compact
+ * manipulates the model's context and /status does not touch it at all, so a call site that treated
+ * them as one thing would be one edit away from injecting a compaction on a status request.
+ */
+export function isDaemonAnsweredSlashCommand(raw: unknown): boolean {
+  return commandToken(raw).toLowerCase() === 'status'
 }
 
 function slashTextParts(raw: string | undefined): {
@@ -477,6 +489,12 @@ export function routeSlashCommand(input: {
     return { kind: 'compact', commandName, commandArgs: resolvedArgs }
   }
 
+  // Checked BEFORE the registry lookup, so a project or user command called /status cannot shadow
+  // the one answer in this connector that is guaranteed not to be a paraphrase.
+  if (isDaemonAnsweredSlashCommand(commandName)) {
+    return { kind: 'status', commandName, commandArgs: resolvedArgs }
+  }
+
   return {
     kind: 'directive',
     delivery: buildSlashCommandDelivery({
@@ -617,6 +635,25 @@ export const REMOTE_COMPACT_COMMAND: SlashCommandEntry = {
 }
 
 /**
+ * The other command the daemon answers itself, rather than describing to a model.
+ *
+ * It used to be a builtin with a procedure: "report your own operating state, and only facts you can
+ * verify right now". That is the best a prompt can do, and it is not good enough for this particular
+ * command, because a model reporting its own version has to go and read something and can be wrong
+ * or vague about the result. The whole point of /status is to be the answer you can trust when
+ * everything else looks ambiguous.
+ *
+ * Anthropic's Telegram channel answers its own /status from its bridge state, which is why theirs
+ * cannot be wrong. This does the same. Carries no `prompt`, like /compact, because nothing about it
+ * reaches a model.
+ */
+export const DAEMON_STATUS_COMMAND: SlashCommandEntry = {
+  command: '/status',
+  description: 'Version, install and connection state of this agent',
+  scope: 'all',
+}
+
+/**
  * The built-in catalog this daemon should advertise. `remoteCompact` MUST be
  * the boot-time capability detection result (resolveTmuxTarget(...) != null):
  * advertising /compact without the injection capability recreates the dead
@@ -626,8 +663,8 @@ export function catalogForCapabilities(opts: {
   remoteCompact: boolean
 }): SlashCommandEntry[] {
   return opts.remoteCompact
-    ? [...BUILTIN_COMMANDS, REMOTE_COMPACT_COMMAND]
-    : [...BUILTIN_COMMANDS]
+    ? [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND, REMOTE_COMPACT_COMMAND]
+    : [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND]
 }
 
 /**
@@ -673,25 +710,6 @@ export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
       'That block is the whole catalog this chat has. Do not add a command that is not in it, and do',
       'not rename one: the names there are what the user sees in the picker.',
       'Do not describe Claude Code terminal features the user cannot reach from a chat message.',
-    ].join('\n'),
-  },
-  {
-    command: '/status',
-    description: 'Version, working directory and identity of this agent',
-    scope: 'all',
-    // Answered by the model from a real procedure, not a label. Anthropic's Telegram channel goes one
-    // step further and answers its /status in the bridge itself, from its own state file, which is
-    // strictly better because the numbers are then current and cannot be paraphrased. Doing that here
-    // means a new route kind handled at three call sites in server.ts, and those same lines are being
-    // edited by the auto-update and watcher work in this batch. Deferred deliberately to avoid a
-    // three-way collision, and tracked; lib/slash-status.ts already exists and is tested, so the
-    // remaining work is only the routing.
-    prompt: [
-      'Report your own operating state, and only facts you can verify right now:',
-      '1. your agent name and id,',
-      '2. your plugin version if you can read it,',
-      '3. your working directory.',
-      'If you cannot determine one of these, say that you cannot, rather than estimating it.',
     ].join('\n'),
   },
   {
