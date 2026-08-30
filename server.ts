@@ -203,6 +203,17 @@ import {
   probeRequestPath,
   LIVENESS_PROBE_POLL_MS,
 } from './lib/boot-hello.js'
+import {
+  LOCK_HEARTBEAT_INTERVAL_MS,
+  acquirePairingLock,
+  refreshPairingLock,
+  releasePairingLock,
+  touchBeaconHeartbeat,
+  shouldHeartbeatNow,
+  pairingLockPath,
+  formatPassiveBanner,
+  BEACON_HEARTBEAT_FILE,
+} from './lib/pairing-lock.js'
 import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
 import {
   UpdateStreamConsumer,
@@ -4624,6 +4635,17 @@ const CURSOR_FILE_PATH = resolveCursorFilePath({
 // triggers the one-time boot hello below and what the bootstrap's final
 // wait watches for.
 const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
+// Single-instance pairing lock (0.38.6, board 01a05185): a reclaimable
+// heartbeat lock keyed to the RESOLVED credentials file. Exactly one daemon
+// per pairing holds it and connects the pairing WebSocket; the rest stay
+// passive so several daemons can no longer join one Socket.IO room and drop
+// each other's messages. See lib/pairing-lock.ts for the full story.
+const PAIRING_LOCK_PATH = pairingLockPath(CREDENTIALS_PATH)
+// Beacon heartbeat: a sibling of channel-live.json whose mtime updates on every
+// successful beacon, so an external supervisor can tell a dead channel from a
+// live process (channel-live.json is edge-triggered on connect/boot only and
+// its mtime is therefore NOT a liveness signal).
+const BEACON_HEARTBEAT_PATH = pathJoin(pathDirname(CURSOR_FILE_PATH), BEACON_HEARTBEAT_FILE)
 const cursorStore = new CursorStore(CURSOR_FILE_PATH)
 const cursorBoot = cursorStore.load()
 const chatLastSeen = cursorBoot.cursors
@@ -8219,338 +8241,436 @@ async function main(): Promise<void> {
     isDeadlineExceeded(initialSlashCommands) ? undefined : initialSlashCommands,
   )
 
-  // Step 2: Discover and baseline chats.
-  //
-  // AWAITED, and it stays awaited: this is not a warm-up. It is what decides
-  // WHICH chats exist to poll, so starting the poll without it polls nothing.
-  // It is now bounded (one authenticated GET peers/inbox), it already logs its
-  // own failure, and a boot that discovers nothing self-heals: the poll
-  // scheduler re-runs discoverChats on every full cycle (10s while the WS is
-  // down, 5 min while it is healthy).
-  await phase('discover chats', () => discoverChats())
-  log(`Monitoring ${monitoredChatIds.length} chat(s)`)
-  // The boot sweep stays awaited too, and deliberately so: cursor persistence
-  // below must NOT begin until it finishes. A partial sweep flushed to disk
-  // would leave the next boot with a cursor file and the first-run backlog
-  // gate disarmed for every chat this sweep never reached. pollChat swallows
-  // its own errors, so this cannot throw, and every call inside it is now
-  // bounded, so it cannot stall forever either.
-  await phase('boot poll sweep', () => pollAllChats())
+  // ── Single-instance pairing lock (0.38.6, board 01a05185) ──────────────────
+  // Everything below (discovery, the boot sweep, cursor persistence, the boot
+  // hello, the liveness probe, the update stream, the pairing WebSocket, the
+  // poll loop, and every recurring pairing/host loop) is the DELIVERY
+  // machinery, and it must run in exactly ONE daemon per pairing. On a
+  // shared-credentials host, KC's plain sessions and default-config subagents
+  // all resolve to the same credentials file and, before this lock, each
+  // connected its own pairing WebSocket: several daemons joined one Socket.IO
+  // room, dispatch broadcast to all, and a rival dropped the user's message
+  // ("Rejected dispatch to unauthorized chat_id") while the real agent sat
+  // healthy and unreachable. So delivery is armed only while holding a
+  // reclaimable heartbeat lock keyed to the credentials file; a daemon that
+  // cannot take the lock stays PASSIVE (its MCP tools, warmed above, stay
+  // usable) and takes over automatically if the holder exits. Only the MCP
+  // transport, the capability warm-up, and the one-time local slash registry
+  // above are unconditional.
+  let lastDeliveryHeartbeatAt: number | null = null
+  const armDelivery = async (): Promise<void> => {
+    // Step 2: Discover and baseline chats.
+    //
+    // AWAITED, and it stays awaited: this is not a warm-up. It is what decides
+    // WHICH chats exist to poll, so starting the poll without it polls nothing.
+    // It is now bounded (one authenticated GET peers/inbox), it already logs its
+    // own failure, and a boot that discovers nothing self-heals: the poll
+    // scheduler re-runs discoverChats on every full cycle (10s while the WS is
+    // down, 5 min while it is healthy).
+    await phase('discover chats', () => discoverChats())
+    log(`Monitoring ${monitoredChatIds.length} chat(s)`)
+    // The boot sweep stays awaited too, and deliberately so: cursor persistence
+    // below must NOT begin until it finishes. A partial sweep flushed to disk
+    // would leave the next boot with a cursor file and the first-run backlog
+    // gate disarmed for every chat this sweep never reached. pollChat swallows
+    // its own errors, so this cannot throw, and every call inside it is now
+    // bounded, so it cannot stall forever either.
+    await phase('boot poll sweep', () => pollAllChats())
 
-  // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
-  // on disk), ask the session to greet its owner via the reply tool. The
-  // greeting is the user-visible "your agent is alive" moment AND the
-  // positive proof the channel is wired: the tool call it triggers flips
-  // liveness and writes the marker the bootstrap's final wait watches for.
-  // Connected in `claude mcp list` cannot prove hearing (Vulcan E2E,
-  // 2026-08-22: a wrong flag loads tools, says Connected, wires nothing).
-  // BGOS_BOOT_HELLO=off is the kill switch; later boots stay quiet.
-  // An already-paired agent (cursor file existed at boot, the same signal the
-  // first-run gate uses) has processed channel messages before, so it has
-  // ALREADY proven it can hear. The marker is new in this version, so every
-  // existing pairing lacks it; without this guard the WHOLE FLEET would greet
-  // its owners once when daemons restart onto the new build. Suppress the hello
-  // for such agents and backfill the marker silently so the doctor reports them
-  // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
-  // file) still greets, which is the onboarding channel proof.
-  const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
-  const bootHelloExistingPairing = cursorBoot.fileExisted
-  if (
-    shouldBackfillLiveMarker({
-      markerExists: bootHelloMarkerExists,
-      hasPriorCursorState: bootHelloExistingPairing,
-    })
-  ) {
-    recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
-    log(
-      `boot hello: existing pairing on upgrade (cursor file present, no marker) ` +
-        `- backfilled live marker, staying quiet (no fleet-wide greeting)`,
-    )
-  }
-  if (
-    shouldSendBootHello({
-      markerExists: bootHelloMarkerExists,
-      sentThisBoot: bootHelloSent,
-      hasPriorCursorState: bootHelloExistingPairing,
-      killSwitch: process.env.BGOS_BOOT_HELLO,
-    })
-  ) {
-    const helloChat = monitoredChatIds[0]
-    if (helloChat) {
-      bootHelloSent = true
-      const hello = buildBootHelloNotification({ chatId: helloChat })
+    // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
+    // on disk), ask the session to greet its owner via the reply tool. The
+    // greeting is the user-visible "your agent is alive" moment AND the
+    // positive proof the channel is wired: the tool call it triggers flips
+    // liveness and writes the marker the bootstrap's final wait watches for.
+    // Connected in `claude mcp list` cannot prove hearing (Vulcan E2E,
+    // 2026-08-22: a wrong flag loads tools, says Connected, wires nothing).
+    // BGOS_BOOT_HELLO=off is the kill switch; later boots stay quiet.
+    // An already-paired agent (cursor file existed at boot, the same signal the
+    // first-run gate uses) has processed channel messages before, so it has
+    // ALREADY proven it can hear. The marker is new in this version, so every
+    // existing pairing lacks it; without this guard the WHOLE FLEET would greet
+    // its owners once when daemons restart onto the new build. Suppress the hello
+    // for such agents and backfill the marker silently so the doctor reports them
+    // live and no later boot re-evaluates them. A genuinely-new pairing (no cursor
+    // file) still greets, which is the onboarding channel proof.
+    const bootHelloMarkerExists = readLiveMarker(LIVE_MARKER_PATH) != null
+    const bootHelloExistingPairing = cursorBoot.fileExisted
+    if (
+      shouldBackfillLiveMarker({
+        markerExists: bootHelloMarkerExists,
+        hasPriorCursorState: bootHelloExistingPairing,
+      })
+    ) {
+      recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
       log(
-        `boot hello: first-ever boot for this pairing, asking the session to ` +
-          `greet the user in chat ${helloChat} (the reply is the channel proof)`,
+        `boot hello: existing pairing on upgrade (cursor file present, no marker) ` +
+          `- backfilled live marker, staying quiet (no fleet-wide greeting)`,
       )
-      void trackMessageOperation(() =>
-        mcp.notification({
-          method: 'notifications/claude/channel',
-          params: { content: hello.content, meta: hello.meta },
-        }),
-      ).catch((err) => log(`boot hello delivery failed: ${err}`))
     }
-  }
+    if (
+      shouldSendBootHello({
+        markerExists: bootHelloMarkerExists,
+        sentThisBoot: bootHelloSent,
+        hasPriorCursorState: bootHelloExistingPairing,
+        killSwitch: process.env.BGOS_BOOT_HELLO,
+      })
+    ) {
+      const helloChat = monitoredChatIds[0]
+      if (helloChat) {
+        bootHelloSent = true
+        const hello = buildBootHelloNotification({ chatId: helloChat })
+        log(
+          `boot hello: first-ever boot for this pairing, asking the session to ` +
+            `greet the user in chat ${helloChat} (the reply is the channel proof)`,
+        )
+        void trackMessageOperation(() =>
+          mcp.notification({
+            method: 'notifications/claude/channel',
+            params: { content: hello.content, meta: hello.meta },
+          }),
+        ).catch((err) => log(`boot hello delivery failed: ${err}`))
+      }
+    }
 
-  // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
-  // fix). The store was loaded synchronously at module init, before any
-  // poll; persistence deliberately starts only AFTER the boot sweep above
-  // completes. On a genuine first install, a partial sweep flushed to disk
-  // would make the NEXT boot see a cursor file and disarm the first-run
-  // gate for every chat the interrupted sweep never reached; until the
-  // sweep finishes, a kill leaves no file (or the previous one) and the
-  // next boot starts over with the gate intact. Writes coalesce behind the
-  // dirty flag: one flush per interval however many cursors advanced.
-  // Losing the last few seconds on a hard crash is fine (the poll filter
-  // dedups a short replay); the signal/exit hooks cover normal shutdowns.
-  // Every site goes through flushChatCursors, the deaf-session cursor gate.
-  flushChatCursors()
-  setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS).unref()
-  process.on('exit', () => {
+    // Step 2.5: Cursor persistence flush loop + exit hooks (restart-replay
+    // fix). The store was loaded synchronously at module init, before any
+    // poll; persistence deliberately starts only AFTER the boot sweep above
+    // completes. On a genuine first install, a partial sweep flushed to disk
+    // would make the NEXT boot see a cursor file and disarm the first-run
+    // gate for every chat the interrupted sweep never reached; until the
+    // sweep finishes, a kill leaves no file (or the previous one) and the
+    // next boot starts over with the gate intact. Writes coalesce behind the
+    // dirty flag: one flush per interval however many cursors advanced.
+    // Losing the last few seconds on a hard crash is fine (the poll filter
+    // dedups a short replay); the signal/exit hooks cover normal shutdowns.
+    // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
-  })
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => {
-      selfUpdater?.markGracefulStop()
+    setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS).unref()
+    process.on('exit', () => {
       flushChatCursors()
-      process.exit(signal === 'SIGINT' ? 130 : 143)
+      // Release the pairing lock so a waiter reclaims instantly instead of
+      // waiting out the staleness window. No-op unless we still own it.
+      releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     })
-  }
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      process.once(signal, () => {
+        selfUpdater?.markGracefulStop()
+        flushChatCursors()
+        releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+        process.exit(signal === 'SIGINT' ? 130 : 143)
+      })
+    }
 
-  // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
-  // the watcher restarts this agent nothing proves the new session HEARS the
-  // channel until the user speaks (the marker only refreshes on the first
-  // tool call of a boot; the hello fires once per pairing). So the watcher
-  // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
-  // silent channel notification asking for the channel_ack tool; that call
-  // goes through the CallTool chokepoint and touches channel-live.json,
-  // which the watcher reads (newer than its restart timestamp) as proof.
-  // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
-  // often the file reappears. The file is unlinked BEFORE the push so a
-  // failed push cannot loop on the same file (the watcher rewrites it every
-  // 30s while it waits anyway).
-  const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
-  let lastLivenessProbeAt: number | null = null
-  if (PROBE_REQUEST_PATH) {
-    setInterval(() => {
-      let markerExists = false
-      try {
-        markerExists = existsSync(PROBE_REQUEST_PATH)
-      } catch {
-        markerExists = false
-      }
-      if (
-        !shouldSendLivenessProbe({
-          markerExists,
-          lastSentAt: lastLivenessProbeAt,
-          now: Date.now(),
-        })
-      ) {
-        return
-      }
-      try {
-        unlinkSync(PROBE_REQUEST_PATH)
-      } catch {
-        // Already gone or unremovable: the rate limit still bounds us.
-      }
-      lastLivenessProbeAt = Date.now()
-      const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0] })
-      log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
-      void trackMessageOperation(() =>
-        mcp.notification({
-          method: 'notifications/claude/channel',
-          params: { content: probe.content, meta: probe.meta },
-        }),
-      ).catch((err) => log(`liveness probe delivery failed: ${err}`))
-    }, LIVENESS_PROBE_POLL_MS).unref()
-  }
+    // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
+    // the watcher restarts this agent nothing proves the new session HEARS the
+    // channel until the user speaks (the marker only refreshes on the first
+    // tool call of a boot; the hello fires once per pairing). So the watcher
+    // drops ~/.bgos-agent/<id>/probe-requested.json and we answer it with ONE
+    // silent channel notification asking for the channel_ack tool; that call
+    // goes through the CallTool chokepoint and touches channel-live.json,
+    // which the watcher reads (newer than its restart timestamp) as proof.
+    // Cheap stat every 3s, unref'd, rate-limited to one probe per 30s however
+    // often the file reappears. The file is unlinked BEFORE the push so a
+    // failed push cannot loop on the same file (the watcher rewrites it every
+    // 30s while it waits anyway).
+    const PROBE_REQUEST_PATH = probeRequestPath(homedir(), ASSISTANT_ID)
+    let lastLivenessProbeAt: number | null = null
+    if (PROBE_REQUEST_PATH) {
+      setInterval(() => {
+        let markerExists = false
+        try {
+          markerExists = existsSync(PROBE_REQUEST_PATH)
+        } catch {
+          markerExists = false
+        }
+        if (
+          !shouldSendLivenessProbe({
+            markerExists,
+            lastSentAt: lastLivenessProbeAt,
+            now: Date.now(),
+          })
+        ) {
+          return
+        }
+        try {
+          unlinkSync(PROBE_REQUEST_PATH)
+        } catch {
+          // Already gone or unremovable: the rate limit still bounds us.
+        }
+        lastLivenessProbeAt = Date.now()
+        const probe = buildLivenessProbeNotification({ chatId: monitoredChatIds[0] })
+        log('liveness probe: probe-requested.json seen, asking the session to call channel_ack')
+        void trackMessageOperation(() =>
+          mcp.notification({
+            method: 'notifications/claude/channel',
+            params: { content: probe.content, meta: probe.meta },
+          }),
+        ).catch((err) => log(`liveness probe delivery failed: ${err}`))
+      }, LIVENESS_PROBE_POLL_MS).unref()
+    }
 
-  // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
-  // session and build the consumer; on 404 or any failure the stream stays
-  // inactive and every legacy path below runs unchanged. Runs AFTER the
-  // boot sweep so a fresh cursor adoption starts from a current state.
-  // Narrated and bounded for the same reason as the phases above: this one
-  // mints a session over HTTP and it, too, sits between the daemon booting
-  // and the daemon polling.
-  await phase('update stream init', () => initUpdateStream())
+    // Step 2.7: Agent Update Stream (flag-gated; STRICT default OFF). Mint a
+    // session and build the consumer; on 404 or any failure the stream stays
+    // inactive and every legacy path below runs unchanged. Runs AFTER the
+    // boot sweep so a fresh cursor adoption starts from a current state.
+    // Narrated and bounded for the same reason as the phases above: this one
+    // mints a session over HTTP and it, too, sits between the daemon booting
+    // and the daemon polling.
+    await phase('update stream init', () => initUpdateStream())
 
-  // Step 3: Open the WS subscription. Failure here is non-fatal, polling
-  // keeps the plugin functional even if the WS path is unavailable.
-  try {
-    log('startup phase start: websocket connect')
-    connectWebsocket()
-    log('startup phase ok: websocket connect (handshake continues async)')
-  } catch (err) {
-    log(`WS connect failed: ${err}; falling back to polling only`)
-  }
-
-  // Step 4: Start adaptive polling loop (SERVERPERF P6d: scoped fast mode).
-  // One scheduler tick every POLL_INTERVAL_MS (2s); each tick either runs a
-  // FULL cycle (chat discovery + every monitored chat), a FAST cycle (ONLY
-  // the chats that need 2s reactivity: open-meeting chats and chats with a
-  // pending permission awaiting a user click), or nothing.
-  //  - WS healthy: full cycle every HEALTHY_FULL_SWEEP_INTERVAL_MS (5 min,
-  //    raised from 60s in the 2026-07-26 egress audit). Delivery rides the WS;
-  //    this sweep is only the recovery guarantee, and a reconnect does not
-  //    wait for it (the `connect` handler fires an immediate catch-up poll).
-  //  - WS down: poll IS the delivery path, full cycle every
-  //    WS_DOWN_FULL_SWEEP_INTERVAL_MS (10s). NOT 2s: fast-sweeping the whole
-  //    600+ chat list at 2s was the polling storm this replaces, and a
-  //    sequential sweep that size cannot finish in 2s anyway. 10s bounds
-  //    worst-case delivery latency during a WS outage; see lib/poll-core.ts.
-  //  - A meeting or pending permission fast-polls THAT chat at 2s, never the
-  //    whole list.
-  log(
-    `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
-      `WS-healthy full cycle=${globalIntervalMs(POLL_INTERVAL_MS, true)}ms, ` +
-      `WS-down full cycle=${globalIntervalMs(POLL_INTERVAL_MS, false)}ms, ` +
-      `fast mode scoped to meeting/permission chats`,
-  )
-  let lastFullCycleAt = 0
-  const tick = async (): Promise<void> => {
+    // Step 3: Open the WS subscription. Failure here is non-fatal, polling
+    // keeps the plugin functional even if the WS path is unavailable.
     try {
-      // Agent Update Stream housekeeping on the existing 2s tick: consumer
-      // gap deadlines + the beacon watchdog. No-op with the flag off.
-      streamSchedulerTick(Date.now())
-      const fastIds = fastScopeChatIds({
-        meetingChatIds,
-        pendingPermissionChatIds: [...pendingPermissions.values()].map(
-          (p) => p.chatId,
-        ),
-      })
-      let plan = planPollCycle({
-        now: Date.now(),
-        lastFullCycleAt,
-        wsHealthy: isWsHealthy(),
-        baseIntervalMs: POLL_INTERVAL_MS,
-        fastChatIds: fastIds,
-      })
-      // While stream mode is active (authority + a beacon on this
-      // connection), the healthy full sweep stretches to a daily
-      // reconciliation (spec 5.9). The moment authority or beacons lapse,
-      // streamModeActive() goes false and the legacy 5 minute cadence
-      // resumes with no other change. Fast-scope chats keep their 2s
-      // reactivity either way.
-      if (
-        plan.kind === 'full' &&
-        isWsHealthy() &&
-        streamModeActive() &&
-        lastFullCycleAt !== 0 &&
-        Date.now() - lastFullCycleAt < STREAM_RECONCILE_INTERVAL_MS
-      ) {
-        plan = fastIds.length > 0 ? { kind: 'fast', chatIds: fastIds } : { kind: 'idle' }
-      }
-      if (plan.kind === 'full') {
-        lastFullCycleAt = Date.now()
-        if (!isWsHealthy() && streamWsDownPollPreferred()) {
-          // WS down with the stream feature detected: one getDifference
-          // call per 10s cycle replaces the full sweep (spec 5.4). The
-          // legacy sweep remains the fallback whenever the stream is not
-          // usable (flag off, 404, revoked).
-          await streamWsDownCatchup()
-        } else {
-          await discoverChats()
-          await pollAllChats()
-          // Session controls: heartbeat refresh of the context-window gauge,
-          // once per full cycle (fire-and-forget, deduped on the rounded
-          // percent inside).
-          reportContextPct()
-        }
-      } else if (plan.kind === 'fast') {
-        for (const fastChatId of plan.chatIds) {
-          await pollChat(fastChatId)
-        }
-      }
+      log('startup phase start: websocket connect')
+      connectWebsocket()
+      log('startup phase ok: websocket connect (handshake continues async)')
     } catch (err) {
-      log(`Poll cycle error: ${err}`)
+      log(`WS connect failed: ${err}; falling back to polling only`)
+    }
+
+    // Step 4: Start adaptive polling loop (SERVERPERF P6d: scoped fast mode).
+    // One scheduler tick every POLL_INTERVAL_MS (2s); each tick either runs a
+    // FULL cycle (chat discovery + every monitored chat), a FAST cycle (ONLY
+    // the chats that need 2s reactivity: open-meeting chats and chats with a
+    // pending permission awaiting a user click), or nothing.
+    //  - WS healthy: full cycle every HEALTHY_FULL_SWEEP_INTERVAL_MS (5 min,
+    //    raised from 60s in the 2026-07-26 egress audit). Delivery rides the WS;
+    //    this sweep is only the recovery guarantee, and a reconnect does not
+    //    wait for it (the `connect` handler fires an immediate catch-up poll).
+    //  - WS down: poll IS the delivery path, full cycle every
+    //    WS_DOWN_FULL_SWEEP_INTERVAL_MS (10s). NOT 2s: fast-sweeping the whole
+    //    600+ chat list at 2s was the polling storm this replaces, and a
+    //    sequential sweep that size cannot finish in 2s anyway. 10s bounds
+    //    worst-case delivery latency during a WS outage; see lib/poll-core.ts.
+    //  - A meeting or pending permission fast-polls THAT chat at 2s, never the
+    //    whole list.
+    log(
+      `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
+        `WS-healthy full cycle=${globalIntervalMs(POLL_INTERVAL_MS, true)}ms, ` +
+        `WS-down full cycle=${globalIntervalMs(POLL_INTERVAL_MS, false)}ms, ` +
+        `fast mode scoped to meeting/permission chats`,
+    )
+    let lastFullCycleAt = 0
+    const tick = async (): Promise<void> => {
+      try {
+        // Agent Update Stream housekeeping on the existing 2s tick: consumer
+        // gap deadlines + the beacon watchdog. No-op with the flag off.
+        streamSchedulerTick(Date.now())
+        const fastIds = fastScopeChatIds({
+          meetingChatIds,
+          pendingPermissionChatIds: [...pendingPermissions.values()].map(
+            (p) => p.chatId,
+          ),
+        })
+        let plan = planPollCycle({
+          now: Date.now(),
+          lastFullCycleAt,
+          wsHealthy: isWsHealthy(),
+          baseIntervalMs: POLL_INTERVAL_MS,
+          fastChatIds: fastIds,
+        })
+        // While stream mode is active (authority + a beacon on this
+        // connection), the healthy full sweep stretches to a daily
+        // reconciliation (spec 5.9). The moment authority or beacons lapse,
+        // streamModeActive() goes false and the legacy 5 minute cadence
+        // resumes with no other change. Fast-scope chats keep their 2s
+        // reactivity either way.
+        if (
+          plan.kind === 'full' &&
+          isWsHealthy() &&
+          streamModeActive() &&
+          lastFullCycleAt !== 0 &&
+          Date.now() - lastFullCycleAt < STREAM_RECONCILE_INTERVAL_MS
+        ) {
+          plan = fastIds.length > 0 ? { kind: 'fast', chatIds: fastIds } : { kind: 'idle' }
+        }
+        if (plan.kind === 'full') {
+          lastFullCycleAt = Date.now()
+          if (!isWsHealthy() && streamWsDownPollPreferred()) {
+            // WS down with the stream feature detected: one getDifference
+            // call per 10s cycle replaces the full sweep (spec 5.4). The
+            // legacy sweep remains the fallback whenever the stream is not
+            // usable (flag off, 404, revoked).
+            await streamWsDownCatchup()
+          } else {
+            await discoverChats()
+            await pollAllChats()
+            // Session controls: heartbeat refresh of the context-window gauge,
+            // once per full cycle (fire-and-forget, deduped on the rounded
+            // percent inside).
+            reportContextPct()
+          }
+        } else if (plan.kind === 'fast') {
+          for (const fastChatId of plan.chatIds) {
+            await pollChat(fastChatId)
+          }
+        }
+        // Single-instance heartbeat (0.38.6): keep the pairing lock fresh so a
+        // rival never reclaims a live holder, and, when the channel is actually
+        // delivering (WS up, or a poll cycle ran this tick), touch the beacon
+        // heartbeat whose mtime an external supervisor watches to catch a dead
+        // channel behind a live process. Both throttled to
+        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick.
+        const hbNow = Date.now()
+        if (
+          shouldHeartbeatNow({
+            lastAt: lastDeliveryHeartbeatAt,
+            now: hbNow,
+            intervalMs: LOCK_HEARTBEAT_INTERVAL_MS,
+          })
+        ) {
+          lastDeliveryHeartbeatAt = hbNow
+          if (
+            !refreshPairingLock({
+              lockPath: PAIRING_LOCK_PATH,
+              selfPid: process.pid,
+              now: hbNow,
+              bootedAt: DAEMON_START_MS,
+            })
+          ) {
+            log(
+              'WARN pairing lock was reclaimed by another daemon while this one ' +
+                'holds the channel; investigate duplicate daemons for this pairing',
+            )
+          }
+          if (isWsHealthy() || plan.kind === 'full' || plan.kind === 'fast') {
+            touchBeaconHeartbeat({
+              path: BEACON_HEARTBEAT_PATH,
+              now: hbNow,
+              pid: process.pid,
+            })
+          }
+        }
+      } catch (err) {
+        log(`Poll cycle error: ${err}`)
+      }
+      setTimeout(tick, POLL_INTERVAL_MS)
     }
     setTimeout(tick, POLL_INTERVAL_MS)
+    // The single line that says delivery is live. Its ABSENCE in a log is the
+    // signal to read back up the startup phases and find the one that started
+    // and never finished.
+    log('startup complete: polling armed, message delivery is live')
+
+    // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
+    // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
+    // (default 2 minutes). Deterministic backstop for the reply-tool-not-called
+    // failure mode.
+    setInterval(checkReplyOverdue, 30_000)
+    log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
+
+    // Step 6: Refresh and publish every 5 minutes to catch newly installed
+    // plugins and added or edited command files. Initial discovery and publish
+    // were started before the boot poll above.
+    setInterval(() => void syncSlashCommands(), 5 * 60_000).unref()
+
+    // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or
+    // removes the bgos-agent supervisor to match the assistant's alwaysOn flag.
+    // Checked on boot + every 15 min (SERVERPERF P6e; was 2 min): the flag almost
+    // never changes, the boot check covers restarts, and the recurring fetch is
+    // usually a 304 now. A toggle flip may take up to 15 min to reconcile on a
+    // running daemon; the supervisor swap only matters at session end anyway.
+    void reconcileAlwaysOn()
+    setInterval(() => void reconcileAlwaysOn(), RECONCILE_ALWAYS_ON_INTERVAL_MS).unref()
+
+    // Step 8: Honest Limits sweep. Every 30s, tail the session transcript for a
+    // usage/session-cap record and self-declare { status: 'resting', resetAt }
+    // so the owner's chat never shows a silently dead agent. Cheap (reads only
+    // appended bytes) and deduped per rest episode inside reportResting.
+    setInterval(reportResting, 30_000).unref()
+    log('Honest Limits resting self-report enabled (30s transcript sweep)')
+
+    // Step 9: version heartbeat. Pairing-mode daemons report their plugin
+    // version (POST integrations/heartbeat) at boot and every 6h so the app's
+    // plugin-update prompt can see when this install is behind the floor.
+    // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
+    if (INSTALL_METHOD === 'marketplace') {
+      // Seed the marketplace latest-version cache from the local files (no
+      // network, a few file reads) so the boot heartbeat below already
+      // carries it, then arm the delayed + periodic network refresh.
+      await marketplaceLatest.observeNow()
+      marketplaceLatest.start()
+      log(
+        `marketplace latest-version refresh armed (local now: ${marketplaceLatest.current() ?? 'unknown'}; ` +
+          `network refresh ${MARKETPLACE_LATEST_INITIAL_DELAY_MS / 1000}s after boot, then every 6h)`,
+      )
+    }
+    versionHeartbeat = startVersionHeartbeat({
+      authMode: AUTH.mode,
+      rootDir: import.meta.dir,
+      post: bgosPost,
+      log,
+      // The fleet-visible half of the refusal that noteAuthOutcome already
+      // detects. Derived from that same state, so the two can never disagree,
+      // and null once any call succeeds, which the backend reads as "clear it".
+      lastError: () => heartbeatLastError(authRejection, Date.now()),
+      // One-click update telemetry (wire contract v1): the newest version this
+      // daemon found at its own pinned source (origin/main for a clone, the
+      // local marketplace files for a marketplace install), and what would
+      // restart it.
+      updateStatus: {
+        latestKnownVersion: () =>
+          INSTALL_METHOD === 'marketplace'
+            ? marketplaceLatest.current()
+            : selfUpdater?.latestKnownVersion ?? null,
+        updateReadiness: updateReadinessSnapshot,
+      },
+      // Machine identity (design 2.1): ~/.bgos-agent/machine-id, minted once,
+      // shared by every agent and the watcher on this host.
+      machineId: () => ensureMachineId({ home: homedir() }),
+    })
+
+    // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
+    // re-resolution (default 10 min + credentials-file watch) WARNs once per
+    // distinct divergence when the credential resolution changes underneath
+    // the process, so the boot log line can no longer masquerade as current
+    // truth. Visibility only; running auth is never changed.
+    startAuthRecheck()
+
+    // Step 10: opt-in checkout updates. The updater checked rollback state at
+    // the start of main; the remote check starts only after message transport,
+    // cursors, polling, and shutdown hooks are ready.
+    selfUpdater?.start()
   }
-  setTimeout(tick, POLL_INTERVAL_MS)
-  // The single line that says delivery is live. Its ABSENCE in a log is the
-  // signal to read back up the startup phases and find the one that started
-  // and never finished.
-  log('startup complete: polling armed, message delivery is live')
 
-  // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
-  // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
-  // (default 2 minutes). Deterministic backstop for the reply-tool-not-called
-  // failure mode.
-  setInterval(checkReplyOverdue, 30_000)
-  log(`Reply-overdue enforcement enabled (threshold ${REPLY_OVERDUE_MS / 1000}s)`)
-
-  // Step 6: Refresh and publish every 5 minutes to catch newly installed
-  // plugins and added or edited command files. Initial discovery and publish
-  // were started before the boot poll above.
-  setInterval(() => void syncSlashCommands(), 5 * 60_000).unref()
-
-  // Step 7: Reconcile the "always-on" toggle (BGOS app → this host). Installs or
-  // removes the bgos-agent supervisor to match the assistant's alwaysOn flag.
-  // Checked on boot + every 15 min (SERVERPERF P6e; was 2 min): the flag almost
-  // never changes, the boot check covers restarts, and the recurring fetch is
-  // usually a 304 now. A toggle flip may take up to 15 min to reconcile on a
-  // running daemon; the supervisor swap only matters at session end anyway.
-  void reconcileAlwaysOn()
-  setInterval(() => void reconcileAlwaysOn(), RECONCILE_ALWAYS_ON_INTERVAL_MS).unref()
-
-  // Step 8: Honest Limits sweep. Every 30s, tail the session transcript for a
-  // usage/session-cap record and self-declare { status: 'resting', resetAt }
-  // so the owner's chat never shows a silently dead agent. Cheap (reads only
-  // appended bytes) and deduped per rest episode inside reportResting.
-  setInterval(reportResting, 30_000).unref()
-  log('Honest Limits resting self-report enabled (30s transcript sweep)')
-
-  // Step 9: version heartbeat. Pairing-mode daemons report their plugin
-  // version (POST integrations/heartbeat) at boot and every 6h so the app's
-  // plugin-update prompt can see when this install is behind the floor.
-  // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
-  if (INSTALL_METHOD === 'marketplace') {
-    // Seed the marketplace latest-version cache from the local files (no
-    // network, a few file reads) so the boot heartbeat below already
-    // carries it, then arm the delayed + periodic network refresh.
-    await marketplaceLatest.observeNow()
-    marketplaceLatest.start()
-    log(
-      `marketplace latest-version refresh armed (local now: ${marketplaceLatest.current() ?? 'unknown'}; ` +
-        `network refresh ${MARKETPLACE_LATEST_INITIAL_DELAY_MS / 1000}s after boot, then every 6h)`,
-    )
-  }
-  versionHeartbeat = startVersionHeartbeat({
-    authMode: AUTH.mode,
-    rootDir: import.meta.dir,
-    post: bgosPost,
-    log,
-    // The fleet-visible half of the refusal that noteAuthOutcome already
-    // detects. Derived from that same state, so the two can never disagree,
-    // and null once any call succeeds, which the backend reads as "clear it".
-    lastError: () => heartbeatLastError(authRejection, Date.now()),
-    // One-click update telemetry (wire contract v1): the newest version this
-    // daemon found at its own pinned source (origin/main for a clone, the
-    // local marketplace files for a marketplace install), and what would
-    // restart it.
-    updateStatus: {
-      latestKnownVersion: () =>
-        INSTALL_METHOD === 'marketplace'
-          ? marketplaceLatest.current()
-          : selfUpdater?.latestKnownVersion ?? null,
-      updateReadiness: updateReadinessSnapshot,
-    },
-    // Machine identity (design 2.1): ~/.bgos-agent/machine-id, minted once,
-    // shared by every agent and the watcher on this host.
-    machineId: () => ensureMachineId({ home: homedir() }),
+  const lockAtBoot = acquirePairingLock({
+    lockPath: PAIRING_LOCK_PATH,
+    selfPid: process.pid,
+    now: Date.now(),
+    bootedAt: DAEMON_START_MS,
   })
-
-  // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
-  // re-resolution (default 10 min + credentials-file watch) WARNs once per
-  // distinct divergence when the credential resolution changes underneath
-  // the process, so the boot log line can no longer masquerade as current
-  // truth. Visibility only; running auth is never changed.
-  startAuthRecheck()
-
-  // Step 10: opt-in checkout updates. The updater checked rollback state at
-  // the start of main; the remote check starts only after message transport,
-  // cursors, polling, and shutdown hooks are ready.
-  selfUpdater?.start()
+  if (lockAtBoot.acquired) {
+    log(
+      `pairing lock acquired (${lockAtBoot.reason}) at ${PAIRING_LOCK_PATH}; ` +
+        `this daemon owns the channel for this pairing`,
+    )
+    await armDelivery()
+  } else {
+    log(formatPassiveBanner(lockAtBoot.holderPid))
+    // Recheck on the heartbeat cadence: if the holder exits (its lock is
+    // released, its pid dies, or its heartbeat goes stale) this passive daemon
+    // reclaims and arms delivery exactly once. Unref'd; the MCP stdio transport
+    // keeps the process alive meanwhile, so the session's tools stay usable.
+    let promotedFromPassive = false
+    const lockRecheck = setInterval(() => {
+      if (promotedFromPassive) return
+      const res = acquirePairingLock({
+        lockPath: PAIRING_LOCK_PATH,
+        selfPid: process.pid,
+        now: Date.now(),
+        bootedAt: DAEMON_START_MS,
+      })
+      if (!res.acquired) return
+      promotedFromPassive = true
+      clearInterval(lockRecheck)
+      log(
+        `pairing lock reclaimed on recheck (${res.reason}); promoting from ` +
+          `passive to active and arming delivery`,
+      )
+      void armDelivery().catch((err) => log(`delivery arm after promotion failed: ${err}`))
+    }, LOCK_HEARTBEAT_INTERVAL_MS)
+    lockRecheck.unref?.()
+  }
 }
 
 main().catch((err) => {

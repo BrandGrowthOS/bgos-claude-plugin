@@ -2,6 +2,33 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.6 (2026-08-30)
+
+Single-instance pairing lock (board 01a05185): a confirmed fleet bug where, on
+a host whose clone holds the sole credentials file, ANY session (KC's plain
+sessions, default-config subagents) resolved to that agent's pairing via
+"sole-per-assistant" and connected a rival daemon. Several daemons then joined
+one Socket.IO pairing room, the server broadcast dispatch to all of them, and
+the wrong one dropped the message ("Rejected dispatch to unauthorized
+chat_id"), leaving the real agent unreachable while its process stayed healthy.
+
+- **Reclaimable single-instance lock.** Before a daemon connects its pairing
+  WebSocket it must hold an exclusive, heartbeat-based lock keyed to the
+  resolved credentials file (`<credentials>.lock`). Exactly one daemon per
+  pairing holds it and arms delivery; the rest stay PASSIVE, keeping their MCP
+  tool surface up (the session is still usable) but never joining the pairing
+  room and never touching the pairing. The holder stamps its pid plus a
+  heartbeat and refreshes it on the existing poll tick; a rival RECLAIMS a lock
+  whose holder is plainly gone (dead pid, or a heartbeat older than 3 intervals)
+  rather than being locked out first-come by a short-lived transient subagent.
+  A passive daemon rechecks on the heartbeat cadence and takes over
+  automatically if the holder exits.
+- **Beacon heartbeat.** On each successful beacon the active daemon touches a
+  new `channel-beacon.json` (a sibling of `channel-live.json`) whose mtime an
+  external supervisor can watch to detect a dead channel behind a live process.
+  `channel-live.json` is edge-triggered on connect/boot only, so its mtime was
+  never a liveness signal; this one is.
+
 ## 0.38.3 (2026-08-24)
 
 One-click update robustness (#84): the update dirty-tree check now ignores

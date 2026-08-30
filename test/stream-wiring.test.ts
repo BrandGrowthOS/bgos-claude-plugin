@@ -286,8 +286,14 @@ test('the stream boots after the boot sweep and before the WS connects', () => {
   )
   const bootSweep = mainSource.indexOf("phase('boot poll sweep'")
   const streamInit = mainSource.indexOf("phase('update stream init'")
-  // The CALL in main (the definition line also contains the bare string).
-  const wsConnect = mainSource.indexOf('\n    connectWebsocket()')
+  // The CALL in main. Anchored on the call sitting alone on its line
+  // (`connectWebsocket()` then a newline) rather than a fixed indentation: as
+  // of 0.38.6 the whole delivery block (sweep, stream, WS, poll) nests one
+  // level deeper inside main's `armDelivery` closure, gated on the
+  // single-instance pairing lock, so the old 4-space anchor no longer matched.
+  // The definition line reads `connectWebsocket(): void`, so `()` + newline
+  // still uniquely picks the call, and the definition is above main() anyway.
+  const wsConnect = mainSource.indexOf('connectWebsocket()\n')
   assert.ok(bootSweep !== -1 && streamInit !== -1 && wsConnect !== -1)
   assert.ok(streamInit > bootSweep, 'cursor adoption needs a current state')
   assert.ok(streamInit < wsConnect, 'the consumer must exist before handlers can feed it')
