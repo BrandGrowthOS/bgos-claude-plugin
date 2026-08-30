@@ -19,6 +19,7 @@ import {
   BUILTIN_COMMANDS,
   DAEMON_STATUS_COMMAND,
   LatestSerialRunner,
+  MAX_HELP_CATALOG_LINES,
   MAX_SLASH_COMMANDS,
   MAX_SLASH_COMMAND_DESCRIPTION_LENGTH,
   MAX_SLASH_COMMAND_PROMPT_CHARS,
@@ -640,4 +641,53 @@ test('every OTHER advertised command still carries a procedure', () => {
       `${entry.command} is advertised with no procedure, so it is a label`,
     )
   }
+})
+
+test('a large catalog is bounded in /help, and the truncation says so', () => {
+  // The catalog holds up to MAX_SLASH_COMMANDS entries. Making /help complete without a bound turned
+  // it into a hundred-line wall on a phone, which is a regression introduced by the fix for the
+  // opposite problem. The bound is announced rather than silent: a cut nobody is told about reads as
+  // "that is all of them", which is the one thing a help screen must not get wrong.
+  const many = Array.from({ length: 90 }, (_, i) => ({
+    command: `/cmd${i}`,
+    description: `does thing ${i}`,
+    scope: 'all' as const,
+    prompt: 'x',
+  }))
+  const { registry, legacyAliases } = prepareSlashCommands([
+    { command: '/help', description: 'h', scope: 'all', prompt: 'List them.' },
+    ...many,
+  ])
+  const delivery = buildSlashCommandDelivery({
+    commandName: 'help',
+    commandArgs: '',
+    registry,
+    legacyAliases,
+  })
+  const block = delivery.content.slice(
+    delivery.content.indexOf('<available_commands>'),
+    delivery.content.indexOf('</available_commands>'),
+  )
+  const lines = block.split('\n').filter((l) => l.startsWith('/') || l.startsWith('...'))
+  assert.equal(lines.length, MAX_HELP_CATALOG_LINES + 1, 'the cap plus the line that admits it')
+  assert.match(lines.at(-1)!, /and 51 more/, 'the exact remainder, not a vague hint')
+  assert.match(lines.at(-1)!, /typing \//, 'and how to see them')
+})
+
+test('a catalog at the cap is NOT annotated, because nothing was dropped', () => {
+  const exact = Array.from({ length: MAX_HELP_CATALOG_LINES }, (_, i) => ({
+    command: `/c${i}`,
+    description: `d${i}`,
+    scope: 'all' as const,
+    prompt: 'x',
+  }))
+  const { registry, legacyAliases } = prepareSlashCommands(exact)
+  const delivery = buildSlashCommandDelivery({
+    commandName: 'c0',
+    commandArgs: '',
+    registry,
+    legacyAliases,
+  })
+  // c0 is not /help, so no block at all; the point is the renderer never invents a remainder.
+  assert.equal(delivery.content.includes('and 0 more'), false)
 })

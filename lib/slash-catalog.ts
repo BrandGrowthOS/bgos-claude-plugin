@@ -312,9 +312,20 @@ export function expandSlashCommandPrompt(input: {
  * name the backend and the picker both use, and a namespaced command reaches the user as that. A
  * list the user cannot match against what they see is worse than no list.
  */
+export const MAX_HELP_CATALOG_LINES = 40
+
 function renderCommandCatalog(registry: ReadonlyMap<string, SlashCommandEntry>): string[] {
   const lines: string[] = []
   for (const [wireName, entry] of registry) {
+    if (lines.length >= MAX_HELP_CATALOG_LINES) {
+      // Bounded, and SAID rather than silently cut. The catalog holds up to MAX_SLASH_COMMANDS
+      // entries, and a machine with a large project catalog would otherwise turn /help into a
+      // hundred-line wall on a phone. A truncation nobody is told about reads as "that is all of
+      // them", which is the one thing a help screen must not get wrong.
+      const remaining = registry.size - lines.length
+      lines.push(`... and ${remaining} more, which you can see by typing / in the composer.`)
+      break
+    }
     const description = entry.description?.trim() || ''
     lines.push(description ? `/${wireName} - ${description}` : `/${wireName}`)
   }
@@ -709,6 +720,8 @@ export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
       'Then list the commands in <available_commands> below, exactly as written, one line each.',
       'That block is the whole catalog this chat has. Do not add a command that is not in it, and do',
       'not rename one: the names there are what the user sees in the picker.',
+      'Keep everything OUTSIDE that list to four lines or fewer: the list is the answer, the rest is',
+      'preamble, and this is read on a phone.',
       'Do not describe Claude Code terminal features the user cannot reach from a chat message.',
     ].join('\n'),
   },
