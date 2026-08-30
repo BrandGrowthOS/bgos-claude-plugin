@@ -70,6 +70,7 @@ export interface SlashCommandPayload {
 export type SlashCommandRoute =
   | { kind: 'not_slash' }
   | { kind: 'compact'; commandName: string; commandArgs: string }
+  | { kind: 'status'; commandName: string; commandArgs: string }
   | { kind: 'directive'; delivery: SlashCommandDelivery }
 
 export function slashCommandSyncPath(
@@ -84,6 +85,11 @@ export function slashCommandSyncPath(
 
 export const MAX_SLASH_COMMANDS = 200
 export const MAX_SLASH_COMMAND_NAME_LENGTH = 64
+/**
+ * The backend's own cap on a command description. Named rather than inlined because the plugin and
+ * the backend DTO have to agree on it, and a bare 100 in one file is not traceable to the other.
+ */
+export const MAX_SLASH_COMMAND_DESCRIPTION_LENGTH = 100
 export const MAX_SLASH_COMMAND_PROMPT_CHARS = 64_000
 const VALID_SLASH_COMMAND_NAME = /^[a-z0-9_]+(?:[-:][a-z0-9_]+)*$/
 
@@ -122,7 +128,7 @@ export function prepareSlashCommands(
       dropped++
       continue
     }
-    const description = (entry.description || wireName).slice(0, 100)
+    const description = (entry.description || wireName).slice(0, MAX_SLASH_COMMAND_DESCRIPTION_LENGTH)
     wireCommands.push({ command: wireName, description, scope: 'all' })
     registry.set(wireName, entry)
     const legacyName = legacyCommandName(wireName)
@@ -163,6 +169,17 @@ function commandToken(raw: unknown): string {
 
 export function isReservedHostSlashCommand(raw: unknown): boolean {
   return commandToken(raw).toLowerCase() === 'compact'
+}
+
+/**
+ * Commands the daemon answers from its own state instead of forwarding.
+ *
+ * Kept separate from the reserved-host check above even though both end up daemon-handled: /compact
+ * manipulates the model's context and /status does not touch it at all, so a call site that treated
+ * them as one thing would be one edit away from injecting a compaction on a status request.
+ */
+export function isDaemonAnsweredSlashCommand(raw: unknown): boolean {
+  return commandToken(raw).toLowerCase() === 'status'
 }
 
 function slashTextParts(raw: string | undefined): {
@@ -288,6 +305,33 @@ export function expandSlashCommandPrompt(input: {
  * includes local command instructions when available, and explicitly asks the
  * agent to perform the behavior and reply with the result.
  */
+/**
+ * One line per registered command, in the registry's own order, which is the picker's order.
+ *
+ * The KEY is rendered, not the entry's raw `command`. They differ: the key is the normalized wire
+ * name the backend and the picker both use, and a namespaced command reaches the user as that. A
+ * list the user cannot match against what they see is worse than no list.
+ */
+export const MAX_HELP_CATALOG_LINES = 40
+
+function renderCommandCatalog(registry: ReadonlyMap<string, SlashCommandEntry>): string[] {
+  const lines: string[] = []
+  for (const [wireName, entry] of registry) {
+    if (lines.length >= MAX_HELP_CATALOG_LINES) {
+      // Bounded, and SAID rather than silently cut. The catalog holds up to MAX_SLASH_COMMANDS
+      // entries, and a machine with a large project catalog would otherwise turn /help into a
+      // hundred-line wall on a phone. A truncation nobody is told about reads as "that is all of
+      // them", which is the one thing a help screen must not get wrong.
+      const remaining = registry.size - lines.length
+      lines.push(`... and ${remaining} more, which you can see by typing / in the composer.`)
+      break
+    }
+    const description = entry.description?.trim() || ''
+    lines.push(description ? `/${wireName} - ${description}` : `/${wireName}`)
+  }
+  return lines
+}
+
 export function buildSlashCommandDelivery(input: {
   commandName: unknown
   commandArgs: unknown
@@ -371,6 +415,19 @@ export function buildSlashCommandDelivery(input: {
       'Claude Code client preprocessing did not run for this channel event. If the instructions contain a dynamic shell or file reference, gather that context with the tools available in this session and obey normal permission checks.',
     )
   }
+  // /help is the one command whose answer IS the catalog, and the model cannot see the catalog: the
+  // dispatch carries the command the user picked and nothing else. So it was being asked to list
+  // commands it had never been shown, which produced either just itself or plausible inventions.
+  // The registry is already here, at every call site, so hand it over.
+  if (canonicalCommand === '/help') {
+    lines.push(
+      'The commands registered in this chat right now, exactly as the user sees them in the picker:',
+      '<available_commands>',
+      ...renderCommandCatalog(input.registry),
+      '</available_commands>',
+    )
+  }
+
   lines.push(
     'Carry out the behavior with the capabilities available in this session, then reply through BGOS with the result. Do not tell the user to type the command in the terminal and do not stop at describing the command.',
   )
@@ -441,6 +498,12 @@ export function routeSlashCommand(input: {
 
   if (isReservedHostSlashCommand(commandName)) {
     return { kind: 'compact', commandName, commandArgs: resolvedArgs }
+  }
+
+  // Checked BEFORE the registry lookup, so a project or user command called /status cannot shadow
+  // the one answer in this connector that is guaranteed not to be a paraphrase.
+  if (isDaemonAnsweredSlashCommand(commandName)) {
+    return { kind: 'status', commandName, commandArgs: resolvedArgs }
   }
 
   return {
@@ -583,6 +646,25 @@ export const REMOTE_COMPACT_COMMAND: SlashCommandEntry = {
 }
 
 /**
+ * The other command the daemon answers itself, rather than describing to a model.
+ *
+ * It used to be a builtin with a procedure: "report your own operating state, and only facts you can
+ * verify right now". That is the best a prompt can do, and it is not good enough for this particular
+ * command, because a model reporting its own version has to go and read something and can be wrong
+ * or vague about the result. The whole point of /status is to be the answer you can trust when
+ * everything else looks ambiguous.
+ *
+ * Anthropic's Telegram channel answers its own /status from its bridge state, which is why theirs
+ * cannot be wrong. This does the same. Carries no `prompt`, like /compact, because nothing about it
+ * reaches a model.
+ */
+export const DAEMON_STATUS_COMMAND: SlashCommandEntry = {
+  command: '/status',
+  description: 'Version, install and connection state of this agent',
+  scope: 'all',
+}
+
+/**
  * The built-in catalog this daemon should advertise. `remoteCompact` MUST be
  * the boot-time capability detection result (resolveTmuxTarget(...) != null):
  * advertising /compact without the injection capability recreates the dead
@@ -592,25 +674,148 @@ export function catalogForCapabilities(opts: {
   remoteCompact: boolean
 }): SlashCommandEntry[] {
   return opts.remoteCompact
-    ? [...BUILTIN_COMMANDS, REMOTE_COMPACT_COMMAND]
-    : [...BUILTIN_COMMANDS]
+    ? [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND, REMOTE_COMPACT_COMMAND]
+    : [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND]
 }
 
+/**
+ * The built-in commands this daemon advertises.
+ *
+ * WHAT CHANGED AND WHY (2026-08-30). This list used to be the sixteen names from Claude Code's own
+ * terminal menu, forwarded unfiltered, none of them implemented. Each was handed to the model as a
+ * one-line label plus an instruction to "execute its registered behavior now" and not to tell the
+ * user to use the terminal. For a command that names a terminal screen the model cannot open, the
+ * only compliant move left is improvisation.
+ *
+ * Measured against what a session can actually do: 3 worked, 7 produced a confident answer that was
+ * not the command, 4 could not work at all, and 2 were hazards. They also held picker positions 0 to
+ * 15, so they were the first sixteen things a user saw after typing a slash.
+ *
+ * The failure was never that a command errored. It was that a good answer and a wrong one looked
+ * identical, so the feature could not be learned and the rational response was to stop trusting it.
+ * A user asked whether /clear would lose anything, was told it "fully wipes my context window",
+ * tapped it, received no reply at all, and was told thirteen minutes later that context "has now been
+ * cleared". It had not.
+ *
+ * Anthropic's own Telegram channel advertises three chat commands and implements all three. The rule
+ * taken from it, and pinned by test/slash-catalog.test.ts:
+ *   1. advertise only what we can perform, and
+ *   2. give whatever stays a real PROCEDURE rather than a noun.
+ *
+ * REMOVED, cannot work: /clear (no mechanism exists for a model to reset its own context), /cost
+ * (client-side accounting the model cannot read), /release-notes (not reachable), /login (a session
+ * is already authenticated).
+ * REMOVED, hazards: /logout (a model with shell access, told to execute and not to defer, ends the
+ * session and daemon serving this chat; recovery needs a person at that machine) and /bug (could file
+ * a real public issue on a stray tap).
+ */
 export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
-  { command: '/help',          description: 'Show usage and supported tools',          scope: 'all' },
-  { command: '/clear',         description: 'Reset the conversation context',          scope: 'all' },
-  { command: '/cost',          description: 'Show token usage and cost for this session', scope: 'all' },
-  { command: '/model',         description: 'Switch the active Claude model',          scope: 'all' },
-  { command: '/agents',        description: 'List and configure subagents',            scope: 'all' },
-  { command: '/permissions',   description: 'Review and manage tool permissions',      scope: 'all' },
-  { command: '/hooks',         description: 'Manage shell hooks for events',           scope: 'all' },
-  { command: '/mcp',           description: 'Manage MCP server connections',           scope: 'all' },
-  { command: '/memory',        description: 'View or edit project memory',             scope: 'all' },
-  { command: '/init',          description: 'Initialize CLAUDE.md for this project',   scope: 'all' },
-  { command: '/doctor',        description: 'Diagnose configuration issues',           scope: 'all' },
-  { command: '/status',        description: 'Show session status',                     scope: 'all' },
-  { command: '/release-notes', description: 'Show release notes for Claude Code',      scope: 'all' },
-  { command: '/bug',           description: 'Open a bug report',                       scope: 'all' },
-  { command: '/login',         description: 'Sign in to Claude',                       scope: 'all' },
-  { command: '/logout',        description: 'Sign out',                                scope: 'all' },
+  {
+    command: '/help',
+    description: 'What this agent can do here',
+    scope: 'all',
+    prompt: [
+      'List, briefly, what you can do for the user through this chat: answer questions, read and',
+      'edit files in your working directory, run commands, and send files back.',
+      'Then list the commands in <available_commands> below, exactly as written, one line each.',
+      'That block is the whole catalog this chat has. Do not add a command that is not in it, and do',
+      'not rename one: the names there are what the user sees in the picker.',
+      'Keep everything OUTSIDE that list to four lines or fewer: the list is the answer, the rest is',
+      'preamble, and this is read on a phone.',
+      'Do not describe Claude Code terminal features the user cannot reach from a chat message.',
+    ].join('\n'),
+  },
+  {
+    command: '/memory',
+    description: 'Show or edit this project memory',
+    scope: 'all',
+    prompt: [
+      'Read CLAUDE.md in the working directory, and any .claude/rules/*.md it points at.',
+      'Summarise what they instruct you to do, in plain terms.',
+      'If the user asked for a change, make the edit and say exactly which file and which lines',
+      'you changed.',
+    ].join('\n'),
+  },
+  {
+    command: '/init',
+    description: 'Create a CLAUDE.md for this project',
+    scope: 'all',
+    prompt: [
+      'Look at the working directory: the languages present, the package or build files, the test',
+      'command, and the directory layout.',
+      'Write a concise CLAUDE.md capturing how to build, test and run this project, plus any',
+      'convention a newcomer would otherwise get wrong.',
+      'If a CLAUDE.md already exists, do not overwrite it. Show what you would add and ask first.',
+    ].join('\n'),
+  },
+  {
+    command: '/model',
+    description: 'Which model this agent runs, and how to change it',
+    scope: 'all',
+    prompt: [
+      'Report which model you are currently running, if you can determine it.',
+      'If the user asked to change it, explain that you CANNOT change the model of the session that',
+      'is already running: a model switch takes effect when the session next starts.',
+      'If this agent has a launcher or configuration file that pins its model, you may edit that file',
+      'so the NEXT start uses the new model, and if you do, say plainly that the current session is',
+      'unchanged and which file you edited.',
+    ].join('\n'),
+  },
+  {
+    command: '/mcp',
+    description: 'Check the MCP servers this agent can reach',
+    scope: 'all',
+    prompt: [
+      'Report the MCP servers available to you and whether each one is responding, testing where you',
+      'can rather than listing configuration.',
+      'You CANNOT add, remove or reconnect an MCP server from here: that is a client-side action.',
+      'Say so plainly, and say which file the user would edit to change it.',
+    ].join('\n'),
+  },
+  {
+    command: '/agents',
+    description: 'List the subagents defined for this project',
+    scope: 'all',
+    prompt: [
+      'Read .claude/agents/*.md in the working directory and list the subagents defined there, with',
+      'one line each on what they are for.',
+      'You CANNOT configure or launch a subagent interactively from here. If the user wants a change,',
+      'edit the relevant file and say which one you changed.',
+    ].join('\n'),
+  },
+  {
+    command: '/permissions',
+    description: 'Show what this agent is allowed to do',
+    scope: 'all',
+    prompt: [
+      'Read .claude/settings.json and .claude/settings.local.json in the working directory and',
+      'summarise the permission rules in plain language: what is allowed, what is denied, what asks.',
+      'You CANNOT change the permissions of the session that is already running. If the user wants a',
+      'change, edit the settings file and say plainly that it takes effect on the next start.',
+    ].join('\n'),
+  },
+  {
+    command: '/hooks',
+    description: 'Show the hooks configured for this project',
+    scope: 'all',
+    prompt: [
+      'Read the hooks configured in .claude/settings.json and settings.local.json and describe when',
+      'each one fires and what it runs.',
+      'You CANNOT register or re-register a hook on the running session. An edit applies at the next',
+      'start, and you should say so.',
+    ].join('\n'),
+  },
+  {
+    command: '/doctor',
+    description: 'Check this agent for configuration problems',
+    scope: 'all',
+    prompt: [
+      'Check the things you can actually verify from here: that your working directory is what the',
+      'user expects, that CLAUDE.md and the settings files parse, that the MCP servers you depend on',
+      'respond, and that you can write to your own state directory.',
+      'Report each as a pass or a fail with the reason.',
+      'You CANNOT run the Claude Code terminal diagnostic from here, so do not claim to have run it;',
+      'say which check a person would need a terminal for.',
+    ].join('\n'),
+  },
 ]

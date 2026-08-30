@@ -60,6 +60,16 @@ import {
   summarizeReachableChats,
 } from './lib/reachable-chats.js'
 import {
+  describeShutdownCause,
+  installStdinShutdown,
+  isBrokenPipe,
+  stdinHasEnded,
+  watchStdinEof,
+  type ShutdownCause,
+} from './lib/process-lifecycle.js'
+import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
+import { recordKnownGood } from './lib/known-good-store.mjs'
+import {
   pickCapabilities,
   type ServedCapabilities,
 } from './lib/capabilities.js'
@@ -273,6 +283,7 @@ import {
   type SelfUpdater,
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
+import { buildStatusAnswer } from './lib/slash-status.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
@@ -458,7 +469,13 @@ const channelLiveness = new ChannelLiveness()
 
 function log(msg: string): void {
   const line = `[bgos] ${msg}\n`
-  process.stderr.write(line)
+  // The stderr write used to be unguarded while the file append below was wrapped, and that asymmetry
+  // was a real loop: when the launching terminal went away this threw EPIPE, which surfaced as an
+  // uncaughtException, whose handler called log() again, which threw again. Logging is the one thing
+  // that must never be able to fail into the code that reports failures.
+  try {
+    process.stderr.write(line)
+  } catch {}
   try {
     appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}`)
   } catch {}
@@ -1127,6 +1144,25 @@ async function tmuxTargetAlive(t: TmuxTarget): Promise<boolean> {
 // WS and poll can both deliver the same slash_command message; injecting
 // twice would compact twice. Dedupe on message id (bounded).
 const handledCompactMsgIds = new Set<string>()
+/**
+ * Message ids this process has already answered a /status for.
+ *
+ * Needed because the poll and the WebSocket both deliver the same message: without it a user gets
+ * two identical status bubbles. Same bounded shape as the compact set, and the failure mode is
+ * deliberately the same too, a possible duplicate rather than a possible silence.
+ */
+const handledStatusMsgIds = new Set<string>()
+
+function alreadyHandledStatus(messageId: string): boolean {
+  if (handledStatusMsgIds.has(messageId)) return true
+  handledStatusMsgIds.add(messageId)
+  if (handledStatusMsgIds.size > 200) {
+    const first = handledStatusMsgIds.values().next().value
+    if (first !== undefined) handledStatusMsgIds.delete(first)
+  }
+  return false
+}
+
 function alreadyHandledCompact(messageId: string): boolean {
   if (handledCompactMsgIds.has(messageId)) return true
   handledCompactMsgIds.add(messageId)
@@ -1135,6 +1171,62 @@ function alreadyHandledCompact(messageId: string): boolean {
     if (first !== undefined) handledCompactMsgIds.delete(first)
   }
   return false
+}
+
+/**
+ * When the last inbound message arrived, for /status. Set at the same three places that record the
+ * inbound sender, so it cannot drift from what the daemon actually received.
+ */
+let lastInboundAtMs: number | null = null
+
+/**
+ * Answer /status from what this daemon holds, and send it. Never forwarded to a model.
+ *
+ * The command was previously a prompt: "report your own operating state, and only facts you can
+ * verify right now". That is the best a prompt can do, and it is not good enough here, because a
+ * model asked for its own version has to go and find one and can be vague or wrong about the result.
+ * The point of /status is to be the answer you can trust when everything else looks ambiguous, which
+ * means the process that knows has to be the one that answers. Anthropic's Telegram channel does
+ * exactly this from its own bridge state, which is why theirs cannot be wrong.
+ *
+ * Every field here is a fact this process already holds. Anything it cannot determine is reported as
+ * undetermined rather than estimated.
+ */
+async function handleStatusCommand(chatId: string): Promise<void> {
+  let autoUpdateEnrolled: boolean | null = null
+  try {
+    // Only meaningful for a marketplace install: a clone has no marketplace entry to enrol, so the
+    // question does not apply and null keeps the line off the reply entirely.
+    if (INSTALL_METHOD === 'marketplace' && INSTALL_DETECTION?.marketplace) {
+      autoUpdateEnrolled = readMarketplaceAutoUpdate({
+        configDir: CLAUDE_CONFIG_DIR,
+        marketplace: INSTALL_DETECTION.marketplace,
+      })
+    }
+  } catch {
+    // Undetermined, which is a reportable answer.
+  }
+
+  let supervised = 'none'
+  try {
+    supervised = detectSupervision(supervisionProbe())
+  } catch {
+    // Undetermined reads as unsupervised, which is the conservative half: it tells the user restarts
+    // are manual, and being told to do something by hand that turns out to be automatic is a much
+    // smaller harm than being told the opposite.
+  }
+
+  const text = buildStatusAnswer({
+    assistantId: ASSISTANT_ID ? String(ASSISTANT_ID) : null,
+    assistantName: null,
+    version: RUNNING_VERSION ?? null,
+    installMethod: INSTALL_METHOD ?? 'unknown',
+    supervised,
+    autoUpdateEnrolled,
+    lastInboundAgoMs: lastInboundAtMs === null ? null : Math.max(0, Date.now() - lastInboundAtMs),
+  })
+
+  await sendDaemonText(chatId, text)
 }
 
 async function handleRemoteCompact(chatId: string): Promise<void> {
@@ -5596,6 +5688,11 @@ async function pollChat(chatId: string): Promise<void> {
 
     for (const msg of newUserMessages) {
       const text = msg.message.text ?? ''
+      // Recorded HERE, where the message is accepted, and not further down where it is handed to the
+      // model: the daemon-answered commands take a `continue` before that point, so /status was
+      // reporting "no messages yet" while answering a message the user had just sent. Caught by
+      // running the real daemon; every unit test around it passed either way.
+      lastInboundAtMs = Date.now()
       const isSlashCommand = isSlashCommandPayload(msg.message)
       // WS may arrive during the boot poll window where its cursor advance is
       // intentionally deferred. Text can tolerate that safety replay, but an
@@ -5738,6 +5835,20 @@ async function pollChat(chatId: string): Promise<void> {
           log(`remote compact requested via poll (chat ${chatId})`)
           void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
             log(`Remote compact failed: ${err}`)
+          })
+        }
+        continue
+      }
+
+      // /status is answered by this process, from its own state, and never reaches the model. A
+      // backlog copy is answered too, unlike /compact: the reply is built at send time from current
+      // facts, so a late answer is a correct answer, and staying silent on a question the user
+      // definitely asked is the worse failure.
+      if (slashRoute.kind === 'status') {
+        if (!alreadyHandledStatus(String(msg.message.id))) {
+          log(`status requested via poll (chat ${chatId})`)
+          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+            log(`Status reply failed: ${err}`)
           })
         }
         continue
@@ -6559,6 +6670,27 @@ async function forwardStreamInbound(
     log(`remote compact via stream replay ignored (chat ${chatId})`)
     return
   }
+  if (slashRoute.kind === 'status') {
+    // ANSWERED here, unlike /compact directly above, and the difference is not a style choice.
+    //
+    // forwardStreamInbound claims the message id before anything else, deliberately, "so the WS and
+    // poll transports dedup against it". So when the stream sees a message first, it is the ONLY
+    // rail that will ever offer it: both other paths then skip it. Copying the /compact precedent
+    // here meant a /status delivered over the stream was claimed, ignored, and never answered, and
+    // the user simply got silence.
+    //
+    // The precedent is right for /compact, whose reasoning does not transfer: a replayed compact
+    // targets a session state that no longer exists, so acting on it would be wrong. A status reply
+    // is built from current facts at send time, so a late one is a correct one. The shared id set
+    // keeps it to a single answer across all three rails.
+    if (!alreadyHandledStatus(String(view.messageId))) {
+      log(`status requested via stream (chat ${chatId})`)
+      void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+        log(`Status reply failed: ${err}`)
+      })
+    }
+    return
+  }
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
@@ -6567,6 +6699,7 @@ async function forwardStreamInbound(
   const streamEventMeta = !isSlash
     ? buildEventMeta(view.messageType, view.eventMetaRaw)
     : null
+  lastInboundAtMs = Date.now()
   lastInboundUserByChat.set(chatId, senderUserId)
   // Map the conversation before the awaited handoff. A close event can arrive
   // during that await; it must already be able to resolve this chat so the
@@ -7286,6 +7419,9 @@ function connectWebsocket(): void {
       const text = (payload?.text as string | undefined) ?? ''
       const wsFiles = Array.isArray(payload?.files) ? payload.files : []
       const wsMessageType = String(payload?.messageType ?? payload?.message_type ?? '')
+      // Same reason as the poll path: recorded where the message is accepted, before the
+      // daemon-answered commands take their early return.
+      lastInboundAtMs = Date.now()
       const isWsSlashCommand = isSlashCommandPayload(payload ?? {})
       const wsAgentOrigin = (payload?.agentOrigin ?? payload?.agent_origin ?? null) as
         | AgentOriginLike
@@ -7350,6 +7486,15 @@ function connectWebsocket(): void {
           log(`remote compact requested via ws (chat ${chatId})`)
           void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
             log(`Remote compact failed: ${err}`)
+          })
+        }
+        return
+      }
+      if (slashRoute.kind === 'status') {
+        if (chatId && !alreadyHandledStatus(String(messageId))) {
+          log(`status requested via ws (chat ${chatId})`)
+          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+            log(`Status reply failed: ${err}`)
           })
         }
         return
@@ -8265,6 +8410,14 @@ async function main(): Promise<void> {
   )
 
   // Step 1: Connect MCP transport FIRST
+  // Latch an end-of-input BEFORE anything is awaited. The shutdown listeners cannot be registered
+  // here, because `shutdown` flushes chat cursors and flushing before the boot sweep finishes
+  // disarms the first-run backlog gate for every chat the sweep never reached. But the three awaited
+  // startup phases below take seconds, and a parent that dies inside that window delivers 'end' and
+  // 'close' to a process with nobody listening. Those events do not come back, so without this the
+  // daemon polls forever. Latching costs one boolean and cannot interfere with the real handlers.
+  const sawStdinEofDuringStartup = watchStdinEof(process.stdin)
+
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
   log('MCP server connected over stdio')
@@ -8316,6 +8469,123 @@ async function main(): Promise<void> {
   void syncSlashCommands(
     isDeadlineExceeded(initialSlashCommands) ? undefined : initialSlashCommands,
   )
+
+  // ── Session-death shutdown (0.38.6 stdin-EOF + 0.38.8 lock release) ─────────
+  // Registered ONCE at PROCESS level, before the pairing-lock branch below, so
+  // BOTH the active daemon and a PASSIVE one exit when their launching Claude
+  // Code session dies. A passive daemon that outlived its session would keep its
+  // lock-recheck alive and could reclaim the channel after the session that
+  // owned it was gone: exactly the "daemon outlived its session" failure this
+  // guards. flushChatCursors is gated by channelLiveness.live (a no-op until a
+  // tool call proves the session live, which is after the boot sweep inside
+  // armDelivery), so a shutdown at any point here cannot write a partial cursor
+  // file or disarm the first-run backlog gate.
+  //
+  // One shutdown path, used by every cause, so a new cause cannot forget to
+  // flush the cursors or release the pairing lock. markGracefulStop tells the
+  // self-updater this was a clean stop (0.38.7 restart authority), the flush
+  // persists cursors, and releasePairingLock (0.38.6) lets a waiter reclaim
+  // instantly instead of waiting out the staleness window. Idempotent because
+  // stdin fires 'end' and then 'close', and both mean the same thing.
+  let shuttingDown = false
+  const shutdown = (cause: ShutdownCause | string, code: number): void => {
+    if (shuttingDown) return
+    shuttingDown = true
+    log(describeShutdownCause(cause))
+    selfUpdater?.markGracefulStop()
+    flushChatCursors()
+    // No-op unless this daemon still owns the lock.
+    releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    process.exit(code)
+  }
+  // Sync backstop for any exit that did NOT route through shutdown() (a natural
+  // exit, or the uncaughtException handler's process.exit(1) below): flush the
+  // cursors and release the lock. Both are idempotent, so double-firing after
+  // shutdown() already ran is harmless.
+  process.on('exit', () => {
+    flushChatCursors()
+    releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+  })
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
+  }
+
+  // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
+  // about the process tree rather than an inference. Without this the daemon survives its session:
+  // four of our timers are not unref'd (the poll loop among them), so it keeps polling, keeps its
+  // claim on the agent, and can flush chat cursors past messages the LIVE daemon never delivered.
+  //
+  // The MCP stdio transport only ever registers 'data' and 'error' on stdin, and removes only those
+  // on close, so these two listeners are additive and survive for the life of the process.
+  //
+  // Deliberately NOT a parent-process-id watchdog: Anthropic shipped one for this exact problem in
+  // their Telegram channel plugin and removed it after it misfired on ordinary reparenting and
+  // killed the plugin five seconds after every launch. The source contract in
+  // test/process-lifecycle.test.ts fails if that approach is reintroduced.
+  installStdinShutdown(process.stdin, (cause) => shutdown(cause, 0))
+
+  // And if the parent already left while we were starting up, act on it now. Both halves are needed:
+  // the latch catches an EOF that arrived during the awaited phases, and the flag check catches a
+  // pipe that was already closed before this process ran its first line, where there was never an
+  // event to catch. Nothing was delivered during startup, so the flush inside shutdown is a no-op
+  // here, and markGracefulStop still runs.
+  if (sawStdinEofDuringStartup() || stdinHasEnded(process.stdin)) {
+    shutdown('stdin-close', 0)
+  }
+
+  // Neither of these existed. An unhandled rejection took the process down with no line in the log
+  // saying why, which is the same silence this whole block is about.
+  //
+  // Both guards below were added after the first version of this block looped in production: the
+  // handler logged, the log threw EPIPE, the throw re-entered the handler. So:
+  //   1. a broken pipe is the READER leaving, not a fault to report, so it goes to shutdown; and
+  //   2. handlingFault makes a throw inside a handler impossible to recurse through.
+  let handlingFault = false
+  const describeFault = (err: unknown) =>
+    err instanceof Error ? err.stack ?? err.message : String(err)
+
+  // A REJECTION is logged and survived. This file is full of deliberate floating promises
+  // (void syncSlashCommands(), void reportResting(), and so on), and killing the daemon because one
+  // of them settled badly would be a worse outcome than the silence this replaced.
+  process.on('unhandledRejection', (reason) => {
+    if (handlingFault) return
+    handlingFault = true
+    try {
+      if (isBrokenPipe(reason)) {
+        shutdown('stdout-epipe', 0)
+        return
+      }
+      log(`unhandledRejection: ${describeFault(reason)}`)
+    } catch {
+      // Never let reporting a fault raise one.
+    } finally {
+      handlingFault = false
+    }
+  })
+
+  // An UNCAUGHT EXCEPTION still ends the process. Registering a handler at all suppresses Node's
+  // default termination, and a daemon that continues past an unknown fault is in an undefined state
+  // while holding chat cursors: continuing risks writing them wrongly, which is worse than dying and
+  // being restarted by the supervisor. The handler exists ONLY so the reason reaches the log first,
+  // which is what was missing before. The pairing lock is released by the process 'exit' hook above.
+  process.on('uncaughtException', (err) => {
+    if (handlingFault) return
+    handlingFault = true
+    try {
+      if (isBrokenPipe(err)) {
+        shutdown('stdout-epipe', 0)
+        return
+      }
+      log(`uncaughtException (fatal, exiting): ${describeFault(err)}`)
+    } catch {
+      // fall through to the exit below regardless
+    }
+    try {
+      flushChatCursors()
+    } catch {}
+    process.exit(1)
+  })
 
   // ── Single-instance pairing lock (0.38.6, board 01a05185) ──────────────────
   // Everything below (discovery, the boot sweep, cursor persistence, the boot
@@ -8422,20 +8692,12 @@ async function main(): Promise<void> {
     // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
     setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS).unref()
-    process.on('exit', () => {
-      flushChatCursors()
-      // Release the pairing lock so a waiter reclaims instantly instead of
-      // waiting out the staleness window. No-op unless we still own it.
-      releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
-    })
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-      process.once(signal, () => {
-        selfUpdater?.markGracefulStop()
-        flushChatCursors()
-        releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
-        process.exit(signal === 'SIGINT' ? 130 : 143)
-      })
-    }
+    // The signal / exit / stdin shutdown hooks that flush cursors and release
+    // the pairing lock are registered ONCE at PROCESS level in main() (below the
+    // pairing-lock section), not here: a PASSIVE daemon never runs this delivery
+    // block, yet it too must die when its launching session closes stdin and
+    // must release any lock it later reclaimed. flushChatCursors is gated by
+    // channelLiveness.live, so a shutdown before this block ran writes nothing.
 
     // Step 2.6: liveness probe (zero-terminal lifecycle, design 7.2). After
     // the watcher restarts this agent nothing proves the new session HEARS the
@@ -8628,6 +8890,18 @@ async function main(): Promise<void> {
     // and never finished.
     log('startup complete: polling armed, message delivery is live')
 
+    // This version started and reached live delivery, so it is the one to name if a later release has
+    // to be recalled. A few bytes, deliberately NOT a copy of the payload: one cache generation is
+    // 71 MB (67 MB of it node_modules, which the daemon needs to run), and a source-only copy cannot
+    // be restored without a network install, which is the very situation a local copy was meant to
+    // survive. What actually recovers a machine is reverting the marketplace ref, measured to apply
+    // as an update and re-fetch, so all this needs to hold is which version to revert to.
+    try {
+      recordKnownGood({ home: homedir(), version: RUNNING_VERSION })
+    } catch {
+      // Never let a bookkeeping write disturb a daemon that has just come up successfully.
+    }
+
     // Step 5: Reply-overdue enforcement loop. Scans pendingInbounds every 30s
     // and fires a one-shot reminder for any inbound older than REPLY_OVERDUE_MS
     // (default 2 minutes). Deterministic backstop for the reply-tool-not-called
@@ -8661,6 +8935,49 @@ async function main(): Promise<void> {
     // plugin-update prompt can see when this install is behind the floor.
     // Telemetry only: never throws, unref'd, skipped entirely in apikey mode.
     if (INSTALL_METHOD === 'marketplace') {
+      // Make sure this machine is enrolled in Claude Code's own plugin auto-update. Idempotent: after
+      // the first run it is a compare and no write. This is here as well as in setup because the
+      // fleet that already exists was set up before enrolment was a thing, and a daemon boot is the
+      // one moment we are guaranteed to reach every one of those machines.
+      //
+      // The marketplace NAME comes from install detection, never a hardcoded 'hoai': a machine that
+      // registered the marketplace under another name is a real case that has confused an external
+      // tester twice, and writing the wrong key would silently do nothing.
+      try {
+        // Respect the brakes this daemon already honours everywhere else. Enrolling a machine into
+        // unattended updates while its own updates are switched off, or while a bad release has
+        // latched rollback on, would be the one path that ignores the stop switch.
+        // Same read as the status block above: the directory holding auto-update.json, and the same
+        // lenient reader. Two readers of one latch that disagree would enrol a machine the other half
+        // of the daemon considers stopped.
+        const updatesAllowed =
+          isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE) &&
+          !readRollbackLatch(pathDirname(resolveAutoUpdateStatePath(cursorStore.filePath)), {
+            readFile: readTextOrNull,
+          })
+        const marketplaceName = INSTALL_DETECTION?.marketplace
+        if (marketplaceName && updatesAllowed) {
+          const enrolled = ensureMarketplaceAutoUpdate({
+            configDir: CLAUDE_CONFIG_DIR,
+            marketplace: marketplaceName,
+          })
+          if (enrolled.changed) {
+            log(`marketplace auto-update enabled for ${marketplaceName} (this machine now self-updates)`)
+          } else if (enrolled.reason === 'not_persisted') {
+            // A concurrent `claude` wrote its own snapshot of settings.json over ours and the retries
+            // never landed. Worth a line: this machine will NOT self-update, and the whole point of
+            // the read-back is that we no longer claim otherwise.
+            log(
+              `marketplace auto-update could not be written for ${marketplaceName}: another process ` +
+                'keeps overwriting ~/.claude/settings.json, so this machine will not self-update yet',
+            )
+          }
+        }
+      } catch (err) {
+        // Telemetry-grade: a settings write must never fail a boot.
+        log(`could not enable marketplace auto-update: ${err}`)
+      }
+
       // Seed the marketplace latest-version cache from the local files (no
       // network, a few file reads) so the boot heartbeat below already
       // carries it, then arm the delayed + periodic network refresh.

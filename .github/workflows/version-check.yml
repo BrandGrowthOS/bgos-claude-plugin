@@ -33,3 +33,42 @@ jobs:
             .claude-plugin/plugin.json > /dev/null \
             || { echo "::error file=.claude-plugin/plugin.json::channels[0].server must match an mcpServers key"; exit 1; }
           echo "manifest ok: channels[0].server resolves to an mcpServers entry"
+
+  # The half the job above was missing. Pinning package.json to plugin.json stops the two
+  # disagreeing; it does not stop a release shipping code under a version that never moved.
+  #
+  # That second failure is the dangerous one once marketplace auto-update is enabled: Claude Code
+  # resolves plugin identity from the declared version, so a version that does not advance means the
+  # marketplace refreshes, the update runs, the CLI reports success, and every machine keeps the old
+  # code. Silently, and on the whole fleet at once. Two plugins in Anthropic's own auto-updating
+  # marketplace have been frozen that way for six and seven months.
+  version-advances:
+    name: version advances against base
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Does this pull request advance the version?
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          # core.quotePath=false is load bearing. By default git escapes any path
+          # holding a non-ASCII byte into a C-quoted form, so an accented
+          # docs/cafe.md arrives as "docs/caf\303\251.md", starting with a quote
+          # character. That matches none of the non-shipping patterns, so the gate
+          # reads a documentation-only pull request as a code change and fails it.
+          # Verified: a docs-only diff over one accented filename goes from exit 1
+          # to exit 0 with this flag, and an ASCII-only diff is unaffected.
+          changed=$(git -c core.quotePath=false diff --name-only "$base"...HEAD)
+          echo "changed files:"; echo "$changed" | sed 's/^/  /'
+          node scripts/check-version-bump.mjs \
+            --head-pkg "$(jq -r .version package.json)" \
+            --head-manifest "$(jq -r .version .claude-plugin/plugin.json)" \
+            --base-pkg "$(git show "$base":package.json | jq -r .version)" \
+            --changed "$changed"

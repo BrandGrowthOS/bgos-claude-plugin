@@ -12,6 +12,10 @@ export type MemoryFs = {
   exists: (path: string) => boolean
   readFile: (path: string) => string | null
   writeFile: (path: string, text: string, opts?: { mode?: number }) => void
+  // Present so this fs matches the production adapter. The logger prefers appendFile and falls back
+  // to read-then-write; both paths need a home somewhere, so one test strips these off again.
+  appendFile: (path: string, text: string) => void
+  size: (path: string) => number | null
   mkdir: (path: string) => void
   listDir: (path: string) => string[]
   stat: (path: string) => { mtimeMs: number; isDirectory: boolean } | null
@@ -53,6 +57,14 @@ export function memoryFs(initial: Record<string, string> = {}, dirs: string[] = 
       files.set(norm(p), text)
       if (opts?.mode != null) modes.set(norm(p), opts.mode)
       mtimes.set(norm(p), Date.now())
+    },
+    appendFile: (p, text) => {
+      files.set(norm(p), (files.get(norm(p)) ?? '') + text)
+      mtimes.set(norm(p), Date.now())
+    },
+    size: (p) => {
+      const text = files.get(norm(p))
+      return text === undefined ? null : Buffer.byteLength(text, 'utf8')
     },
     mkdir: (p) => {
       dirSet.add(norm(p))
