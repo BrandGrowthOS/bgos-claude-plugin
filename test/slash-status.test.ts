@@ -112,6 +112,40 @@ test('/status is answered by the daemon at both delivery rails, and deduped acro
   // Poll and WebSocket both deliver the same message. Without the shared id set a user gets two
   // identical status bubbles, which is the failure the compact path already solved this way.
   const handled = serverSource.match(/alreadyHandledStatus\(/g) ?? []
-  assert.equal(handled.length, 3, 'the definition plus one call on each of the two delivery rails')
+  assert.equal(handled.length, 4, 'the definition plus one call on each of the THREE delivery rails')
   assert.match(serverSource, /handleStatusCommand\(chatId\)/)
+})
+
+
+test('the stream rail ANSWERS /status, because it can be the only rail that sees the message', () => {
+  // Not a style choice, and the reason is easy to get wrong: forwardStreamInbound claims the message
+  // id before anything else, deliberately, "so the WS and poll transports dedup against it". When the
+  // stream sees a message first it is therefore the ONLY rail that will ever offer it, because both
+  // others then skip it.
+  //
+  // The first version of this change copied the /compact precedent one line above and returned
+  // silently, so a /status delivered over the stream was claimed, ignored, and never answered. The
+  // precedent is correct for /compact and does not transfer: a replayed compact targets a session
+  // state that no longer exists, while a status reply is built from current facts at send time, so a
+  // late one is still a correct one.
+  const at = serverSource.indexOf('async function forwardStreamInbound(')
+  assert.notEqual(at, -1)
+  const end = serverSource.indexOf('\nasync function ', at + 10)
+  const body = serverSource.slice(at, end === -1 ? at + 12000 : end)
+
+  const statusAt = body.indexOf("slashRoute.kind === 'status'")
+  assert.notEqual(statusAt, -1, 'the stream rail must route status at all')
+  const branch = body.slice(statusAt, statusAt + 2200)
+  assert.match(branch, /handleStatusCommand\(chatId\)/, 'and must actually answer it')
+  assert.match(branch, /alreadyHandledStatus/, 'guarded by the same shared id set as the other rails')
+
+  // The contrast that makes the reasoning legible: /compact on this same rail must NOT act.
+  const compactAt = body.indexOf("slashRoute.kind === 'compact'")
+  assert.notEqual(compactAt, -1)
+  const compactBranch = body.slice(compactAt, statusAt)
+  assert.equal(
+    /handleRemoteCompact\(/.test(compactBranch),
+    false,
+    'a replayed compact targets a dead session state and must stay ignored here',
+  )
 })

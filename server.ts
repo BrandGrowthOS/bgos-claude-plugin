@@ -6578,9 +6578,24 @@ async function forwardStreamInbound(
     return
   }
   if (slashRoute.kind === 'status') {
-    // The replay is a second copy of a message the poll or the WebSocket path already answered, and
-    // the id dedupe below lives on those paths. Answering here would double the reply.
-    log(`status via stream replay ignored (chat ${chatId})`)
+    // ANSWERED here, unlike /compact directly above, and the difference is not a style choice.
+    //
+    // forwardStreamInbound claims the message id before anything else, deliberately, "so the WS and
+    // poll transports dedup against it". So when the stream sees a message first, it is the ONLY
+    // rail that will ever offer it: both other paths then skip it. Copying the /compact precedent
+    // here meant a /status delivered over the stream was claimed, ignored, and never answered, and
+    // the user simply got silence.
+    //
+    // The precedent is right for /compact, whose reasoning does not transfer: a replayed compact
+    // targets a session state that no longer exists, so acting on it would be wrong. A status reply
+    // is built from current facts at send time, so a late one is a correct one. The shared id set
+    // keeps it to a single answer across all three rails.
+    if (!alreadyHandledStatus(String(view.messageId))) {
+      log(`status requested via stream (chat ${chatId})`)
+      void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+        log(`Status reply failed: ${err}`)
+      })
+    }
     return
   }
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
