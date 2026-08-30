@@ -5,3 +5,4 @@ dist/
 # Internal dev context — not for public distribution
 CLAUDE.md
 *.backup
+node_modules

@@ -56,6 +56,10 @@ import {
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
+  buildReachableChatsPath,
+  summarizeReachableChats,
+} from './lib/reachable-chats.js'
+import {
   pickCapabilities,
   type ServedCapabilities,
 } from './lib/capabilities.js'
@@ -2433,6 +2437,23 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'list_chats',
+      description:
+        'Enumerate every chat YOU can reach, including CLOSED peer-bridged side ' +
+        'conversations that the poll inbox hides. Each `a2a` entry carries a ' +
+        '`binding` with `status` ("open" or "closed"), the `peerAssistantId`, ' +
+        'why/when it closed, and `revivable`. Use it to tell a DEAD binding ' +
+        '(outbound reply path closed) from a chat that is merely quiet. A ' +
+        'closed-but-revivable bridged chat is re-opened automatically when you ' +
+        'reply into it (send_to_peer / reply), because being a participant IS ' +
+        'the permission; a binding closed as revoked or promoted is not ' +
+        'revivable that way. No arguments.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {},
+      },
+    },
+    {
       name: 'send_to_peer',
       description:
         "Send a message into another BGOS assistant's side-thread. The peer receives " +
@@ -3780,6 +3801,21 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `list_peers failed: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'list_chats': {
+      try {
+        const result = await bgosPeerGet(buildReachableChatsPath())
+        const summary = summarizeReachableChats(result)
+        return {
+          content: [
+            { type: 'text', text: `${summary}\n\n${JSON.stringify(result, null, 2)}` },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `list_chats failed: ${errMsg}` }], isError: true }
       }
     }
 
