@@ -58,7 +58,14 @@ jobs:
       - name: Does this pull request advance the version?
         run: |
           base="${{ github.event.pull_request.base.sha }}"
-          changed=$(git diff --name-only "$base"...HEAD)
+          # core.quotePath=false is load bearing. By default git escapes any path
+          # holding a non-ASCII byte into a C-quoted form, so an accented
+          # docs/cafe.md arrives as "docs/caf\303\251.md", starting with a quote
+          # character. That matches none of the non-shipping patterns, so the gate
+          # reads a documentation-only pull request as a code change and fails it.
+          # Verified: a docs-only diff over one accented filename goes from exit 1
+          # to exit 0 with this flag, and an ASCII-only diff is unaffected.
+          changed=$(git -c core.quotePath=false diff --name-only "$base"...HEAD)
           echo "changed files:"; echo "$changed" | sed 's/^/  /'
           node scripts/check-version-bump.mjs \
             --head-pkg "$(jq -r .version package.json)" \

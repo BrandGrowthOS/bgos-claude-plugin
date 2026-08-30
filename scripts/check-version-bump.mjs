@@ -46,10 +46,24 @@ export function isShippingPath(path) {
   return !NON_SHIPPING_PATTERNS.some((re) => re.test(p))
 }
 
-/** Leading MAJOR.MINOR.PATCH, tolerant of a v prefix and any pre-release suffix. */
+/**
+ * Strict three part semver, the SAME shape lib/self-update.ts, lib/update-planner.mjs and
+ * bin/bgos-daemon-wrapper.mjs enforce: no leading v, no pre-release or build suffix, no leading
+ * zeros, no surrounding whitespace, and integers small enough to stay exact.
+ *
+ * Parity with the runtime is the whole point, and it is asserted directly in the test rather than
+ * described here. A version the gate waves through but the machines cannot parse is the worst
+ * outcome on offer: the release merges, every daemon's planner skips it as invalid-version, and the
+ * fleet stays on the old code, which is the exact silent freeze this gate exists to prevent. The
+ * earlier /^v?(\d+)\.(\d+)\.(\d+)/ was unanchored at the end and ran on a trimmed string, so it
+ * accepted eight shapes the runtime rejects, '0.38.6-rc.1' among them.
+ */
 export function parseSemver(value) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value ?? '').trim())
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+  if (typeof value !== 'string') return null
+  const m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value)
+  if (!m) return null
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])]
+  return parts.every(Number.isSafeInteger) ? parts : null
 }
 
 /**
@@ -151,5 +165,16 @@ if (invokedDirectly) {
     // GitHub renders this as an inline annotation on the offending file.
     console.log(`::error file=package.json::${line}`)
   }
-  process.exit(code)
+  // process.exitCode, not process.exit(). Two reasons, both learned here.
+  // First, process.exit() can truncate a buffered stdout write when stdout is a
+  // pipe, and a pipe is exactly what a CI runner hands us, so the annotation
+  // this gate exists to print is the thing most at risk of being cut off.
+  // Second, exit() kills whatever process imported this file. When the argv
+  // guard above was mutated to prove these tests bite, the test file's own
+  // import exited the runner mid-load and node reported "tests 1, pass 1,
+  // fail 0" with a zero status, having run not one test in this file. A gate
+  // whose own suite can be emptied that quietly is the failure it was built to
+  // prevent. Setting the code and falling off the end gives CI the same status
+  // with neither hazard.
+  process.exitCode = code
 }
