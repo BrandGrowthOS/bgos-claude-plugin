@@ -336,6 +336,15 @@ function loopHarness(opts: { markerBudgetUsed?: number[] } = {}) {
       pollMs: 5,
       print: (line: string) => prints.push(line),
       // Deterministic pins; hasExpect:false keeps the direct claude spawn so the
+      // The deferred fresh-retry pin (0.38.13) commits only after the fresh
+      // session outlives the health window; this harness fires that timer at
+      // once, so the never-leave-dead tests below observe the pin as before.
+      // The window itself is covered in test/hoai-core.test.ts.
+      setTimer: ((fn: () => void) => {
+        fn()
+        return 0
+      }) as never,
+      clearTimer: () => {},
       // tests can assert claude args (the expect wrapper has its own test).
       generateId: () => UUIDS[idIdx++] ?? UUIDS[UUIDS.length - 1]!,
       hasExpect: false,
@@ -759,7 +768,7 @@ test('superviseClaude: a cross-process initial --resume that dies fast falls bac
   assert.equal(await done, 0)
 })
 
-test('superviseClaude: if the fresh re-pin write fails, it launches a PLAIN fresh session (never --session-id an existing id)', async () => {
+test('superviseClaude: if the deferred re-pin write fails, the fresh session still launches by its own id and the previous pin stands', async () => {
   const files = new Map<string, string>()
   const spawns: FakeChild[] = []
   let sessionWrites = 0
@@ -793,6 +802,12 @@ test('superviseClaude: if the fresh re-pin write fails, it launches a PLAIN fres
     print: () => {},
     generateId: () => UUIDS[sessionWrites]!,
     hasExpect: false,
+    // Commit the deferred pin at once (see loopHarness); here the write FAILS.
+    setTimer: ((fn: () => void) => {
+      fn()
+      return 0
+    }) as never,
+    clearTimer: () => {},
   })
   await waitUntil(() => spawns.length === 1, 'first spawn')
   // The session wrote its transcript, so the marker relaunch resumes it.
@@ -801,11 +816,13 @@ test('superviseClaude: if the fresh re-pin write fails, it launches a PLAIN fres
   await waitUntil(() => spawns.length === 2, 'marker relaunch')
   spawns[1]!.exit(1) // resumed relaunch dies fast non-zero -> fresh fallback
   await waitUntil(() => spawns.length === 3, 'fresh fallback')
-  // Re-pin failed, so no --session-id (would collide) and no --resume: a plain
-  // fresh session where claude mints its own id.
-  assert.deepEqual(spawns[2]!.args, BASE_ARGS)
-  assert.equal(spawns[2]!.args.includes('--session-id'), false)
+  // 0.38.13: a failed pin write no longer changes what is LAUNCHED, only what
+  // is RECORDED. The fresh session runs by its own new id (a fresh uuid cannot
+  // collide), never --resume; and because the pin could not be written, the
+  // previous pin stands, so the next hoai resumes the agent's real session.
+  assert.deepEqual(spawns[2]!.args, [...BASE_ARGS, '--session-id', UUIDS[1]])
   assert.equal(spawns[2]!.args.includes('--resume'), false)
+  assert.equal(files.get(SESSION_ID_PATH), UUIDS[0])
   spawns[2]!.exit(0)
   assert.equal(await done, 0)
 })

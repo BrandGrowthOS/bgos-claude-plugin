@@ -1045,6 +1045,9 @@ export async function superviseClaude(args, opts = {}) {
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? defaultHasExpect(platform)
   const freshSession = opts.freshSession === true
+  const healthyMs = opts.healthyMs ?? RELAUNCH_HEALTHY_MS
+  const setTimer = opts.setTimer ?? setTimeout
+  const clearTimer = opts.clearTimer ?? clearTimeout
 
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
@@ -1179,6 +1182,9 @@ export async function superviseClaude(args, opts = {}) {
   // --session-id <pinned>, and keying recovery on '--resume' alone left
   // that (the normal) shape with no retry at all.
   let lastLaunchWasRelaunch = false
+  // A fresh-retry id waiting to be pinned: committed to the session-id file
+  // only once that session has outlived the health window (see retry-fresh).
+  let pendingPin = null
   try {
     while (true) {
       /** @type {import('node:child_process').ChildProcess | null} */
@@ -1188,6 +1194,28 @@ export async function superviseClaude(args, opts = {}) {
       const exited = spawnSupervised(currentArgs, (child) => {
         childRef = child
       })
+      // Deferred pin commit. A fresh session that dies inside the health
+      // window (like the resume before it) is an environment fault, not a
+      // rejected resume; the pin must still name the previous session so the
+      // next hoai resumes the agent's real context (zaid, 2026-09-02: a
+      // redirected console put claude in print mode and the old rule burned
+      // the pin on the retry). Committed only if the child is still up.
+      let pinTimer = null
+      if (pendingPin) {
+        const candidate = pendingPin
+        pendingPin = null
+        pinTimer = setTimer(() => {
+          pinTimer = null
+          if (writeFile(sessionIdPath, candidate)) {
+            pinnedId = candidate
+            print('[hoai] the fresh session stayed up; it is now this agent\'s pinned session')
+          } else {
+            print('[hoai] warning: the fresh session stayed up but its pin could not be written; the previous pin stands')
+          }
+        }, healthyMs)
+        // Never let the pending pin hold the process open past the child.
+        if (pinTimer && typeof pinTimer === 'object' && typeof pinTimer.unref === 'function') pinTimer.unref()
+      }
       const poller = setInterval(() => {
         if (exhausted || restartRequested || !childRef) return
         if (!exists(markerPath)) return
@@ -1213,6 +1241,10 @@ export async function superviseClaude(args, opts = {}) {
       }, pollMs)
       const code = await exited
       clearInterval(poller)
+      if (pinTimer) {
+        clearTimer(pinTimer)
+        pinTimer = null
+      }
       if (restartRequested) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
@@ -1245,18 +1277,19 @@ export async function superviseClaude(args, opts = {}) {
         exitCode: code,
         elapsedMs: now() - startedAt,
         freshTried,
+        healthyMs,
       })
       if (recovery.action === 'retry-fresh') {
         freshTried = true
         lastLaunchWasRelaunch = false
         const freshId = String(generateId()).trim()
-        // Mint and pin a NEW id so future relaunches resume the healthy session.
-        // If the re-pin write fails, launch a PLAIN fresh session (claude mints
-        // its own id): never --session-id an id that already exists (it errors),
-        // and never --resume the session we just fled.
+        // Mint a NEW id for the retry, but do NOT pin it yet: the pin is
+        // committed at the spawn site only once the fresh session has outlived
+        // the health window. Never --resume the session we just fled, and never
+        // --session-id an id that already exists (it errors).
         let freshSessionArgs
-        if (freshId && writeFile(sessionIdPath, freshId)) {
-          pinnedId = freshId
+        if (freshId && isSessionIdLike(freshId)) {
+          pendingPin = freshId
           freshSessionArgs = sessionArgsFor(freshId, false)
         } else {
           freshSessionArgs = []
@@ -1767,6 +1800,10 @@ function defaultScriptDir() {
  *   readFile?: (path: string) => string | null,
  *   listDir?: (path: string) => string[],
  *   spawnImpl?: typeof spawn,
+ *   print?: (line: string) => void,
+ *   healthyMs?: number,
+ *   setTimer?: (fn: () => void, ms: number) => unknown,
+ *   clearTimer?: (handle: unknown) => void,
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -1852,6 +1889,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     listDir,
     spawnImpl,
     freshSession: fresh,
+      print: opts.print,
+    healthyMs: opts.healthyMs,
+    setTimer: opts.setTimer,
+    clearTimer: opts.clearTimer,
   })
 }
 
