@@ -1022,6 +1022,9 @@ function defaultHasExpect(platform) {
  *   pidAlive?: (pid: number) => boolean,
  *   generateId?: () => string, hasExpect?: boolean,
  *   freshSession?: boolean,
+ *   healthyMs?: number,
+ *   setTimer?: (fn: () => void, ms: number) => unknown,
+ *   clearTimer?: (handle: unknown) => void,
  * }} [opts]
  * @returns {Promise<number>}
  */
