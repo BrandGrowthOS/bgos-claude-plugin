@@ -882,3 +882,18 @@ test('server.ts reconciles always-on every RECONCILE_ALWAYS_ON_INTERVAL_MS', () 
     'the old 2 minute reconcile cadence must be gone',
   )
 })
+
+// Capability parity (board row 019fc653): the backend has accepted an
+// agent-driven "add this agent to the meeting" since the meetings work landed,
+// and no channel surfaced it. This pins the plugin half: the tool is DEFINED,
+// its handler EXISTS, it posts to the participants route, and it attributes
+// the add to this agent (the caller header is what makes the backend check
+// that we are an active participant, rather than treating it as the user's).
+test('server.ts wires add_to_meeting: defined, handled, agent-attributed', () => {
+  assert.ok(serverSource.includes("name: 'add_to_meeting'"), 'tool must be defined')
+  const start = serverSource.indexOf("case 'add_to_meeting':")
+  assert.ok(start >= 0, 'handler must exist')
+  const body = serverSource.slice(start, serverSource.indexOf("case 'call_owner':", start))
+  assert.ok(body.includes('/participants'), 'must post to the participants route')
+  assert.ok(body.includes('X-Caller-Assistant-Id'), 'must attribute the add to this agent')
+})
