@@ -58,6 +58,7 @@ function healthyProbes(overrides: Record<string, unknown> = {}) {
     bun: { found: true, path: 'C:\\Users\\x\\.bun\\bin\\bun.exe', via: 'home' },
     bunx: { found: true, path: 'C:\\Users\\x\\.bun\\bin\\bunx.exe' },
     method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: 'C:\\plug' },
+    route: { spec: 'plugin:hoai@hoai', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' },
     credentials: {
       path: 'C:\\Users\\x\\.bgos-agent\\credentials-871.json',
       exists: true,
@@ -84,7 +85,7 @@ test('buildDoctorRows: healthy probes produce all-pass rows in the documented or
   const rows = buildDoctorRows(healthyProbes())
   assert.deepEqual(
     rows.map((r: { id: string }) => r.id),
-    ['claude', 'auth', 'node', 'bun', 'bunx', 'method', 'credentials', 'handshake', 'mcp-list', 'backend', 'log'],
+    ['claude', 'auth', 'node', 'bun', 'bunx', 'method', 'route', 'credentials', 'handshake', 'mcp-list', 'backend', 'log'],
   )
   for (const row of rows) {
     assert.equal(row.ok, true, `row ${row.id} should pass, got ${row.ok} (${row.detail})`)
