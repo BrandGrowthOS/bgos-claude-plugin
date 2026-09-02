@@ -1129,3 +1129,22 @@ test('resolveSupervisingService: a pre-enumerated job list is matched WITHOUT re
     null,
   )
 })
+
+test('mcpServerEntries: a UTF-8 BOM before the JSON does not hide the file (Minerva 972, 2026-09-02)', () => {
+  const mcpWith = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+  const ours = { command: 'bun', env: { BGOS_BACKEND_URL: 'https://api', BGOS_ASSISTANT_ID: '972' } }
+  const plain = mcpWith({ bgos: ours })
+  const bom = '﻿' + plain
+  // Positive control: the same file without a BOM resolves both ways.
+  assert.equal(parseMcpAssistantId(plain), '972')
+  assert.equal(parseMcpChannelServerName(plain), 'bgos')
+  // The defect: readFileSync(path, 'utf8') keeps a leading U+FEFF and JSON.parse
+  // throws on it, so a BOM'd .mcp.json read as "no server of ours". The agent
+  // still boots (Claude Code hands BGOS_ASSISTANT_ID through process.env) but the
+  // plugin's own supervision, inventory and self-update readers lose her.
+  assert.equal(parseMcpAssistantId(bom), '972')
+  assert.equal(parseMcpChannelServerName(bom), 'bgos')
+  // A BOM with nothing after it is still "no file", not a crash.
+  assert.equal(parseMcpAssistantId('﻿'), null)
+  assert.equal(parseMcpChannelServerName('﻿'), null)
+})
