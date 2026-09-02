@@ -1022,12 +1022,116 @@ function defaultHasExpect(platform) {
  *   pidAlive?: (pid: number) => boolean,
  *   generateId?: () => string, hasExpect?: boolean,
  *   freshSession?: boolean,
+ *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
+ *   sleep?: (ms: number) => Promise<void>,
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
  * }} [opts]
  * @returns {Promise<number>}
  */
+/** Basename of a comm/path, lowercased, without a trailing .exe. */
+function commBase(comm) {
+  const base = String(comm ?? '').split(/[\\/]/).pop() ?? ''
+  return base.toLowerCase().replace(/\.exe$/, '')
+}
+
+/** Normalise a cwd for comparison: forward slashes, no trailing slash,
+ *  case-insensitive for win32-style paths (drive letter or backslashes). */
+function normalizeCwd(p) {
+  const s = String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-zA-Z]:\//.test(s) || /\\/.test(String(p ?? '')) ? s.toLowerCase() : s
+}
+
+/**
+ * The incumbent check the singleton guard never had (board row 01a06223,
+ * Poseidon 2026-09-02). decideSupervisorArming keys on supervisor.json, a
+ * live LAUNCHER; a claude started by hand in the same folder was invisible to
+ * it, so a KeepAlive around hoai beside such a session spawned a second claude
+ * on the same pinned id. Three rules, each learned by hitting it:
+ *   - the process list comes from ps, never pgrep (macOS pgrep omits the
+ *     caller's own ancestors, so a session screening its own folder never
+ *     sees itself);
+ *   - only our own uid is in scope (only that uid can resume the pin), so
+ *     another user's agent in an identical path is not ours to wait for;
+ *   - within our uid an UNREADABLE cwd counts as occupied: fail toward
+ *     waiting, never toward a double launch.
+ * @param {{ processes: Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
+ *   cwd: string, uid?: number | null, ownPid: number }} input
+ * @returns {{ pid: number, reason: 'same-cwd' | 'unreadable-cwd' } | null}
+ */
+export function findIncumbentClaude({ processes, cwd, uid, ownPid }) {
+  const target = normalizeCwd(cwd)
+  for (const p of Array.isArray(processes) ? processes : []) {
+    if (!p || p.pid === ownPid) continue
+    if (commBase(p.comm) !== 'claude') continue
+    if (uid != null && p.uid != null && p.uid !== uid) continue
+    if (p.cwd == null) return { pid: p.pid, reason: 'unreadable-cwd' }
+    if (normalizeCwd(p.cwd) === target) return { pid: p.pid, reason: 'same-cwd' }
+  }
+  return null
+}
+
+/**
+ * Wait until no incumbent claude owns `cwd` (see findIncumbentClaude). Prints
+ * once at the start and then about every thirty seconds, so an operator at
+ * the terminal knows why hoai is not launching; returns how it went so the
+ * caller can log it. Timers and the process list are injected for tests.
+ */
+export async function waitForIncumbent({ cwd, uid, ownPid, listProcesses, sleep, print, pollMs = 1000 }) {
+  let polls = 0
+  let lastPid = null
+  let lastPrintPoll = -Infinity
+  const printEvery = Math.max(1, Math.round(30_000 / Math.max(1, pollMs)))
+  while (true) {
+    polls += 1
+    const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid })
+    if (!hit) return { waited: polls > 1, polls, lastPid }
+    lastPid = hit.pid
+    if (polls - lastPrintPoll >= printEvery) {
+      lastPrintPoll = polls
+      print(
+        `[hoai] waiting for an incumbent claude (pid ${hit.pid}${hit.reason === 'unreadable-cwd' ? ', cwd unreadable' : ''}) ` +
+          `in ${cwd} to exit before taking over; a pinned session can only be resumed once`,
+      )
+    }
+    await sleep(pollMs)
+  }
+}
+
+/** Posix process list for the incumbent check: `ps -Axo pid=,uid=,comm=`,
+ *  then the cwd of every claude through lsof (null when unreadable). win32
+ *  returns an empty list in this phase: the fleet's Windows switch script
+ *  kills the tmux claude before starting hoai, and a cwd probe for another
+ *  process there is a different tool (documented on board row 01a06223). */
+export function defaultListProcesses(platform = process.platform) {
+  if (platform === 'win32') return []
+  try {
+    const ps = spawnSync('ps', ['-Axo', 'pid=,uid=,comm='], { encoding: 'utf8' })
+    if (ps.status !== 0 || !ps.stdout) return []
+    const out = []
+    for (const line of ps.stdout.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+      if (!m) continue
+      const comm = m[3].trim()
+      if (commBase(comm) !== 'claude') continue
+      const pid = Number(m[1])
+      let cwd = null
+      try {
+        const lsof = spawnSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' })
+        const n = String(lsof.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
+        if (n) cwd = n.slice(1)
+      } catch {
+        cwd = null
+      }
+      out.push({ pid, uid: Number(m[2]), comm, cwd })
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
 export async function superviseClaude(args, opts = {}) {
   const platform = opts.platform ?? process.platform
   const env = opts.env ?? process.env
@@ -1051,6 +1155,8 @@ export async function superviseClaude(args, opts = {}) {
   const healthyMs = opts.healthyMs ?? RELAUNCH_HEALTHY_MS
   const setTimer = opts.setTimer ?? setTimeout
   const clearTimer = opts.clearTimer ?? clearTimeout
+  const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimer(resolve, ms)))
 
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
@@ -1094,6 +1200,21 @@ export async function superviseClaude(args, opts = {}) {
   const stateDir = joinDir(agentDir(home), id)
   const supervisorPath = joinDir(stateDir, SUPERVISOR_FILE_NAME)
   const markerPath = joinDir(stateDir, RESTART_MARKER_FILE_NAME)
+  // Incumbent wait: never start a second session beside a claude that already
+  // owns this folder, supervised or not (a hand-started one is invisible to the
+  // supervisor.json guard below). See findIncumbentClaude for the rules.
+  const incumbent = await waitForIncumbent({
+    cwd,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    ownPid: process.pid,
+    listProcesses,
+    sleep,
+    print,
+    pollMs: Math.max(pollMs, 250),
+  })
+  if (incumbent.waited) {
+    print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
+  }
   // Singleton guard: never start a second session behind a live supervisor.
   const arming = decideSupervisorArming({
     existingRaw: readFile(supervisorPath),
@@ -1804,6 +1925,9 @@ function defaultScriptDir() {
  *   listDir?: (path: string) => string[],
  *   spawnImpl?: typeof spawn,
  *   print?: (line: string) => void,
+ *   pollMs?: number,
+ *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
+ *   sleep?: (ms: number) => Promise<void>,
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
@@ -1893,6 +2017,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     spawnImpl,
     freshSession: fresh,
       print: opts.print,
+    pollMs: opts.pollMs,
+    listProcesses: opts.listProcesses,
+    sleep: opts.sleep,
     healthyMs: opts.healthyMs,
     setTimer: opts.setTimer,
     clearTimer: opts.clearTimer,

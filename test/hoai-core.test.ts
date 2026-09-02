@@ -27,6 +27,8 @@ import {
   channelNote,
   classifyRunFlag,
   freshPinnedSessionId,
+  findIncumbentClaude,
+  waitForIncumbent,
   relaunchClaudeArgs,
   resolveChannelSpec,
   installHoaiCli,
@@ -1497,6 +1499,102 @@ test('a fresh retry that stays up past the health window becomes the pinned sess
     const freshId = fresh[fresh.indexOf('--session-id') + 1]
     assert.ok(freshId && freshId !== original, 'a new id was created')
     assert.equal(readFileSync(sessionIdPath, 'utf8').trim(), freshId, `the pin moved to the session that stayed up\n${lines.join('\n')}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Incumbent wait (board row 01a06223, Poseidon 2026-09-02). hoai's singleton
+// guard keyed only on supervisor.json, i.e. a live LAUNCHER; a hand-started
+// claude in the same folder was invisible to it, so a KeepAlive around hoai
+// spawned a second session on the same pinned id. The launcher now waits for
+// an incumbent claude in its cwd, by the three rules learned the hard way:
+// never pgrep (macOS omits the caller's ancestors), own uid only (only that uid
+// can resume the pin), and an unreadable cwd within the uid counts as occupied.
+
+test('findIncumbentClaude: same cwd, same uid, not our own pid', () => {
+  const procs = [
+    { pid: 10, uid: 501, comm: 'claude', cwd: '/agents/a' },
+    { pid: 11, uid: 501, comm: 'node', cwd: '/agents/a' },
+    { pid: 12, uid: 502, comm: 'claude', cwd: '/agents/a' },
+    { pid: 13, uid: 501, comm: 'claude', cwd: '/agents/b' },
+  ]
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid: 99 }), { pid: 10, reason: 'same-cwd' })
+  assert.equal(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid: 10 }), null)
+  assert.equal(findIncumbentClaude({ processes: procs, cwd: '/agents/c', uid: 501, ownPid: 99 }), null)
+})
+
+test('findIncumbentClaude: an unreadable cwd within our uid counts as occupied; another uid never does', () => {
+  const procs = [
+    { pid: 20, uid: 502, comm: 'claude', cwd: null },
+    { pid: 21, uid: 501, comm: 'claude', cwd: null },
+  ]
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid: 99 }), { pid: 21, reason: 'unreadable-cwd' })
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 502, ownPid: 99 }), { pid: 20, reason: 'unreadable-cwd' })
+  assert.equal(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 503, ownPid: 99 }), null, 'another uid is never in scope')
+})
+
+test('findIncumbentClaude: claude.exe and a full-path comm both count; a windows-style cwd matches case-insensitively', () => {
+  const procs = [
+    { pid: 30, uid: 1, comm: 'C:\\Users\\k\\claude.exe', cwd: 'C:\\Users\\k\\agents\\zaid' },
+  ]
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: 'c:\\users\\k\\agents\\zaid', uid: 1, ownPid: 99 }), { pid: 30, reason: 'same-cwd' })
+})
+
+test('waitForIncumbent: returns at once when the folder is clear, otherwise polls until it is and says so', async () => {
+  const lines: string[] = []
+  let polls = 0
+  const lists = [
+    [{ pid: 10, uid: 501, comm: 'claude', cwd: '/agents/a' }],
+    [{ pid: 10, uid: 501, comm: 'claude', cwd: '/agents/a' }],
+    [],
+  ]
+  const sleeps: number[] = []
+  const waited = await waitForIncumbent({
+    cwd: '/agents/a',
+    uid: 501,
+    ownPid: 99,
+    listProcesses: () => lists[Math.min(polls++, lists.length - 1)]!,
+    sleep: async (ms: number) => {
+      sleeps.push(ms)
+    },
+    print: (l: string) => lines.push(l),
+    pollMs: 250,
+  })
+  assert.deepEqual(waited, { waited: true, polls: 3, lastPid: 10 })
+  assert.deepEqual(sleeps, [250, 250])
+  assert.ok(lines.some((l) => /waiting for an incumbent claude \(pid 10\)/.test(l)), lines.join('\n'))
+  const clear = await waitForIncumbent({ cwd: '/agents/a', uid: 501, ownPid: 99, listProcesses: () => [], sleep: async () => {}, print: () => {}, pollMs: 250 })
+  assert.deepEqual(clear, { waited: false, polls: 1, lastPid: null })
+})
+
+test('superviseClaude does not spawn while a hand-started claude owns the folder, and spawns once it exits', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    let polls = 0
+    const spawns: { file: string; args: string[] }[] = []
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 5,
+      listProcesses: () => {
+        polls += 1
+        return polls <= 2 ? [{ pid: 4242, uid: process.getuid?.() ?? 0, comm: 'claude', cwd }] : []
+      },
+      sleep: async () => {},
+      spawnImpl: ((file: string, args: readonly string[]) => {
+        spawns.push({ file, args: [...args] })
+        return scriptedChild(0)
+      }) as never,
+    })
+    assert.equal(code, 0)
+    assert.equal(spawns.length, 1, 'exactly one launch, after the incumbent left')
+    assert.ok(polls >= 3, `the incumbent was polled until it left (polls=${polls})`)
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })
