@@ -39,11 +39,12 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { resolveBunPath, bunInstallHint, executableNames, pathFlavor } from './bgos-launch.mjs'
 import { detectInstallMethod, launchCommandFor } from './bgos-install-method.mjs'
+import { resolveChannelSpec } from './hoai-core.mjs'
 import { resolveReadCredentialsPath, normalizeApiBase, FOLDER_PIN_FILE_NAME } from './bgos-pair.mjs'
 
 export const DEFAULT_BACKEND_URL = 'https://api.brandgrowthos.ai/api/v1'
@@ -333,6 +334,50 @@ export function buildDoctorRows(probes) {
     row('method', 'Install method', true, `${method.method} install, channel ${method.channelSpec}, root ${method.pluginRoot}`)
   }
 
+  // channel route
+  //
+  // The Install method row names ONE install. The launcher does not launch on
+  // the install method when the workspace .mcp.json declares a server named
+  // bgos: that route wins (hoai-core resolveChannelSpec). A host with a folder
+  // clone AND a marketplace install therefore has two registered routes, one
+  // live and one deaf, and a doctor that printed only the install method could
+  // name the deaf one. This row names both and says which carries traffic.
+  const route = p.route ?? null
+  const installKnown = Boolean(method && method.method !== 'unknown')
+  const installSpec = installKnown ? String(method.channelSpec ?? '').trim() : ''
+  if (!route) {
+    row('route', 'Channel route', null, '')
+  } else if (route.conflict) {
+    row(
+      'route',
+      'Channel route',
+      false,
+      'the .mcp.json in this folder declares more than one HOAI server, so the launcher cannot tell which route is meant',
+      'keep exactly one HOAI server entry in .mcp.json (the one named bgos) and remove the others',
+    )
+  } else if (route.source === 'workspace') {
+    const ws = `workspace .mcp.json server ${route.serverName} (${route.spec})`
+    if (!installSpec) {
+      row('route', 'Channel route', true, `${ws} is the route; the install method is undetermined, so no second route is known`)
+    } else if (installSpec === route.spec) {
+      row('route', 'Channel route', true, `${ws}; the ${method.method} install publishes the same route`)
+    } else {
+      row(
+        'route',
+        'Channel route',
+        false,
+        `TWO routes on this host: the agent launches through the ${ws}, while the ${method.method} install publishes ${installSpec}, which carries no traffic for this agent`,
+        `leave .mcp.json alone, it is the live route; the ${installSpec} entry is the duplicate, so a failing ${installSpec} line in claude mcp list is not this agent, and removing that ${method.method} install (never the .mcp.json) is what clears it`,
+      )
+    }
+  } else if (!String(route.spec ?? '').trim()) {
+    // Undetermined detection and no workspace server: the Install method row
+    // already fails loudly for this; a second red row would say nothing new.
+    row('route', 'Channel route', null, '')
+  } else {
+    row('route', 'Channel route', true, `${route.method} install route ${route.spec} (no workspace .mcp.json server declares one)`)
+  }
+
   // pairing credentials (path + assistant id only; never the token)
   const creds = p.credentials ?? { exists: false }
   const expected = String(creds.expectedAssistantId ?? '').trim()
@@ -616,6 +661,27 @@ export function probeBunAndBunx({ env = process.env, home = homedir(), platform 
 /** Where and how this plugin is installed (decides the channel spec). */
 export function probeMethod({ scriptPath = fileURLToPath(import.meta.url), env = process.env } = {}) {
   return detectInstallMethod({ scriptPath, env })
+}
+
+/**
+ * The channel route the RUNNER (hoai) would launch through from `cwd`, from
+ * the same resolver the launcher uses: a workspace .mcp.json server named bgos
+ * wins, the install method is only the fallback. Not re-derived here, so the
+ * doctor and the launcher cannot disagree about which route is live. On a host
+ * carrying BOTH a folder clone and a marketplace install, the Install method
+ * row alone named the deaf one (Alex's Mac, 2026-08-30; KC and Alex again,
+ * 2026-09-02); this probe is what lets the route row name both.
+ */
+export function probeChannelRoute({
+  cwd = process.cwd(),
+  env = process.env,
+  scriptDir = dirname(fileURLToPath(import.meta.url)),
+} = {}) {
+  try {
+    return resolveChannelSpec({ cwd, env, scriptDir })
+  } catch (err) {
+    return { spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: String(err?.message ?? err) }
+  }
 }
 
 /**
@@ -979,6 +1045,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const node = probeNode()
   const { bun, bunx } = probeBunAndBunx({ env, home, platform })
   const method = probeMethod()
+  const route = probeChannelRoute({ cwd: workdir, env })
 
   // Identity, strongest evidence first: the explicit flag, the env var, the
   // launch-folder pin. It scopes the credentials row, the handshake env, and
@@ -1030,6 +1097,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     bun,
     bunx,
     method,
+    route,
     credentials,
     handshake,
     mcpList,

@@ -58,6 +58,7 @@ function healthyProbes(overrides: Record<string, unknown> = {}) {
     bun: { found: true, path: 'C:\\Users\\x\\.bun\\bin\\bun.exe', via: 'home' },
     bunx: { found: true, path: 'C:\\Users\\x\\.bun\\bin\\bunx.exe' },
     method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: 'C:\\plug' },
+    route: { spec: 'plugin:hoai@hoai', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' },
     credentials: {
       path: 'C:\\Users\\x\\.bgos-agent\\credentials-871.json',
       exists: true,
@@ -84,7 +85,7 @@ test('buildDoctorRows: healthy probes produce all-pass rows in the documented or
   const rows = buildDoctorRows(healthyProbes())
   assert.deepEqual(
     rows.map((r: { id: string }) => r.id),
-    ['claude', 'auth', 'node', 'bun', 'bunx', 'method', 'credentials', 'handshake', 'mcp-list', 'backend', 'log'],
+    ['claude', 'auth', 'node', 'bun', 'bunx', 'method', 'route', 'credentials', 'handshake', 'mcp-list', 'backend', 'log'],
   )
   for (const row of rows) {
     assert.equal(row.ok, true, `row ${row.id} should pass, got ${row.ok} (${row.detail})`)
@@ -640,4 +641,81 @@ test('parseDoctorArgs: wait-live flags parse and validate', () => {
   assert.equal(ok.args.waitLiveTimeoutS, 90)
   const bad = parseDoctorArgs(['--wait-live-since', 'soon'])
   assert.ok(bad.errors.length > 0)
+})
+
+// ---------------------------------------------------------------------------
+// Channel route row (board row 01a0404b, third field instance 2026-09-02).
+// The runner (hoai) resolves the channel WORKSPACE-FIRST: a .mcp.json server
+// named bgos wins and the install method is only the fallback. The doctor used
+// to print the install method alone, so on a host that has BOTH a folder clone
+// (live, carrying traffic) and a marketplace install (deaf, unpaired) it named
+// the deaf route and never said a second one existed. These tests pin the row
+// that names both routes and which one the agent actually launches through.
+
+test('doctor route row: two routes on one host, workspace wins, the other is named as the duplicate', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: '/home/alex/.claude/plugins/cache/hoai/hoai/0.38.4' },
+      route: { spec: 'server:bgos', source: 'workspace', method: 'marketplace', serverName: 'bgos', conflict: false, reason: '' },
+    }),
+  )
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r, 'a Channel route row exists')
+  assert.strictEqual(r.ok, false)
+  assert.match(r.detail, /two routes/i)
+  assert.match(r.detail, /server:bgos/)
+  assert.match(r.detail, /plugin:hoai@hoai/)
+  assert.match(r.detail, /\.mcp\.json/)
+  assert.match(r.fix, /\.mcp\.json/)
+  assert.match(r.fix, /duplicate/i)
+})
+
+test('doctor route row: workspace and a clone install agree on one spec, PASS naming the workspace route', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: { method: 'clone', channelSpec: 'server:bgos', pluginRoot: '/Users/kc/bgos-claude-plugin' },
+      route: { spec: 'server:bgos', source: 'workspace', method: 'clone', serverName: 'bgos', conflict: false, reason: '' },
+    }),
+  )
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r)
+  assert.strictEqual(r.ok, true)
+  assert.match(r.detail, /\.mcp\.json/)
+  assert.match(r.detail, /server:bgos/)
+  assert.doesNotMatch(r.detail, /two routes/i)
+})
+
+test('doctor route row: no workspace server, the install method is the only route, PASS', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: '/home/u/.claude/plugins/cache/hoai/hoai/0.38.8' },
+      route: { spec: 'plugin:hoai@hoai', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' },
+    }),
+  )
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r)
+  assert.strictEqual(r.ok, true)
+  assert.match(r.detail, /plugin:hoai@hoai/)
+  assert.match(r.detail, /no workspace/i)
+})
+
+test('doctor route row: a .mcp.json that declares more than one HOAI server is a FAIL with a fix', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: { method: 'clone', channelSpec: 'server:bgos', pluginRoot: '/Users/kc/bgos-claude-plugin' },
+      route: { spec: 'server:bgos', source: 'install-method', method: 'clone', serverName: '', conflict: true, reason: '' },
+    }),
+  )
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r)
+  assert.strictEqual(r.ok, false)
+  assert.match(r.detail, /more than one/i)
+  assert.match(r.fix, /\.mcp\.json/)
+})
+
+test('doctor route row: without a route probe the row is SKIP, never a guess', () => {
+  const rows = buildDoctorRows(healthyProbes({ route: null }))
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r)
+  assert.strictEqual(r.ok, null)
 })

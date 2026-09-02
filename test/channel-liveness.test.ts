@@ -30,6 +30,7 @@ import {
   gatePersistedCursors,
   deafSessionAction,
   deafSessionChatMessage,
+  deafFixCommand,
   DEAF_PROBE_GRACE_WINDOWS,
   inboundOwesReply,
 } from '../lib/channel-liveness.ts'
@@ -280,4 +281,46 @@ test('recordInbound consults the guard, and every call site passes a sender', ()
       `call site must pass a sender kind, got: ${call.replace(/\s+/g, ' ')}`,
     )
   }
+})
+
+// ── deafFixCommand ───────────────────────────────────────────────────────────
+// The fix line in the deaf-session notice used to come from install-method
+// detection alone. The launcher resolves the channel WORKSPACE-FIRST (a
+// .mcp.json server named bgos wins), so on a host with a clone pinned by
+// .mcp.json and a marketplace install also registered, the notice told the
+// user to relaunch on the marketplace route, the deaf one. Seen live twice on
+// 2026-09-02 (agent 1040's notice named plugin:hoai@hoai for a server:bgos
+// workspace). The command must follow the route the runner would take.
+
+test('deafFixCommand: a workspace route wins over the install-method command', () => {
+  const cmd = deafFixCommand({
+    resolution: { spec: 'server:bgos', source: 'workspace', conflict: false },
+    installCommand: 'claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
+    commandForSpec: (spec) => `claude --dangerously-skip-permissions --dangerously-load-development-channels ${spec}`,
+  })
+  assert.match(cmd, /server:bgos$/)
+  assert.doesNotMatch(cmd, /plugin:hoai@hoai/)
+})
+
+test('deafFixCommand: without a workspace server the install-method command stands', () => {
+  const cmd = deafFixCommand({
+    resolution: { spec: 'plugin:hoai@hoai', source: 'install-method', conflict: false },
+    installCommand: 'claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
+    commandForSpec: (spec) => `claude ${spec}`,
+  })
+  assert.match(cmd, /plugin:hoai@hoai$/)
+})
+
+test('deafFixCommand: a conflicting .mcp.json never yields a guessed workspace spec', () => {
+  const cmd = deafFixCommand({
+    resolution: { spec: 'server:bgos', source: 'install-method', conflict: true },
+    installCommand: 'claude x plugin:hoai@hoai',
+    commandForSpec: (spec) => `claude ${spec}`,
+  })
+  assert.strictEqual(cmd, 'claude x plugin:hoai@hoai')
+})
+
+test('deafFixCommand: nothing resolvable falls back to hoai, which refuses out loud', () => {
+  const cmd = deafFixCommand({ resolution: null, installCommand: '', commandForSpec: (spec) => `claude ${spec}` })
+  assert.strictEqual(cmd, 'hoai')
 })

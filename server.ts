@@ -194,6 +194,7 @@ import {
   ChannelLiveness,
   deafSessionAction,
   deafSessionChatMessage,
+  deafFixCommand,
   inboundOwesReply,
 } from './lib/channel-liveness.js'
 import {
@@ -229,6 +230,7 @@ import {
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
 import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
+import { resolveChannelSpec } from './bin/hoai-core.mjs'
 import {
   UpdateStreamConsumer,
   beaconWatchdog,
@@ -5133,12 +5135,29 @@ function checkReplyOverdue(): void {
       // send them round the same loop. When detection cannot name the install
       // (launchCommandFor returns ''), tell them to run `hoai`, which works
       // the channel out on the spot and refuses out loud if it cannot.
+      //
+      // And it must follow the route the RUNNER takes: a workspace .mcp.json
+      // server named bgos wins over the install method (resolveChannelSpec,
+      // the same call hoai makes). Detection alone named the marketplace route
+      // on a host whose .mcp.json pinned the clone, the deaf one, and sent the
+      // reader round the loop (agent 1040's notice, 2026-09-02).
       let fixCommand: string
       try {
-        fixCommand =
-          launchCommandFor(
-            detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) }),
-          ) || 'hoai'
+        const detection = detectInstallMethod({ scriptPath: fileURLToPath(import.meta.url) })
+        let resolution: { spec?: string; source?: string; conflict?: boolean } | null = null
+        try {
+          resolution = resolveChannelSpec({
+            cwd: LAUNCH_CWD,
+            scriptDir: pathJoin(pathDirname(fileURLToPath(import.meta.url)), 'bin'),
+          })
+        } catch {
+          resolution = null
+        }
+        fixCommand = deafFixCommand({
+          resolution,
+          installCommand: launchCommandFor(detection),
+          commandForSpec: (spec) => launchCommandFor({ method: 'clone', channelSpec: spec }),
+        })
       } catch {
         fixCommand = 'hoai'
       }

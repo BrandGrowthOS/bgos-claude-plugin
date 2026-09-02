@@ -172,6 +172,35 @@ export function deafSessionChatMessage(launchCommand: string): string {
 }
 
 /**
+ * The launch command the deaf-session notice tells the user to run.
+ *
+ * It must follow the route the RUNNER (hoai) takes, not what install-method
+ * detection alone would say: a workspace .mcp.json server named bgos wins,
+ * the install method is the fallback (hoai-core resolveChannelSpec). On a
+ * host carrying a clone pinned by .mcp.json AND a marketplace install, the
+ * detection-only line named the marketplace route, the deaf one, and sent
+ * the reader round the loop (agent 1040's notice, 2026-09-02, named
+ * plugin:hoai@hoai for a server:bgos workspace). A conflicting .mcp.json
+ * (more than one HOAI server) never yields a guessed workspace spec.
+ * Nothing resolvable falls back to `hoai`, which works the route out on the
+ * spot and refuses out loud if it cannot. Formatting is injected so this
+ * module stays free of bin/ imports.
+ */
+export function deafFixCommand(input: {
+  resolution: { spec?: string; source?: string; conflict?: boolean } | null | undefined
+  installCommand: string
+  commandForSpec: (spec: string) => string
+}): string {
+  const r = input.resolution
+  const spec = String(r?.spec ?? '').trim()
+  if (r && r.source === 'workspace' && spec && !r.conflict) {
+    const cmd = String(input.commandForSpec(spec) ?? '').trim()
+    if (cmd) return cmd
+  }
+  return String(input.installCommand ?? '').trim() || 'hoai'
+}
+
+/**
  * Does an inbound message OWE the agent's owner a reply?
  *
  * The reply-overdue tracker exists for messages a person is waiting on. A
