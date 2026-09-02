@@ -858,11 +858,18 @@ test('every identity call site uses the SAME directory', () => {
   // fourth, and it belongs under this guard more than any of them: it predicts
   // whether boot would refuse WITHOUT the env pin, so if it resolved from a
   // different directory it would confidently answer about another agent.
+  //
+  // 2026-09-02: four to five. The deaf-session notice now resolves its fix
+  // line through resolveChannelSpec, which reads the workspace .mcp.json. That
+  // file lives where the agent LAUNCHED, next to the folder pin, so a relocated
+  // process.cwd() would miss it and the notice would fall back to the
+  // install-method guess this change exists to remove. Same directory, same
+  // reason as the identity sites.
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    4,
-    `expected boot, recheck, boot-log and the env-only risk check to share LAUNCH_CWD, found ${uses.length}`,
+    5,
+    `expected boot, recheck, boot-log, the env-only risk check and the deaf-notice route resolver to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path, the service record and the
