@@ -93,6 +93,11 @@ export function shouldSendVersionHeartbeat(authMode: string, version: string | n
 }
 
 export const VERSION_HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** How often the readiness snapshot is re-read for CHANGE; a changed snapshot
+ *  is re-sent at once, an unchanged one costs nothing on the wire. Without
+ *  this the block rode only the 6h beat and a lifted latch stayed on the
+ *  app's badge for hours (board row 01a061fb, 2026-09-02). */
+export const READINESS_POLL_MS = 60 * 1000
 
 /** One-click update telemetry providers (wire contract v1 section 1),
  *  evaluated per send because the launcher supervisor and the latch files
@@ -124,9 +129,19 @@ export function startVersionHeartbeat(deps: {
    * must never be the reason a heartbeat fails.
    */
   lastError?: () => { code: string; message: string; at: string } | null
-}): { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null {
+  /** Test seam for the readiness change poll (default READINESS_POLL_MS). */
+  readinessPollMs?: number
+}): {
+  timer: ReturnType<typeof setInterval>
+  readinessTimer: ReturnType<typeof setInterval>
+  sendNow: () => void
+  pollReadiness: () => Promise<void>
+} | null {
   const version = readOwnVersion(deps.rootDir)
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
+  // The readiness block as last SENT, so the poll below can tell a change
+  // from a repeat without keeping the object itself around.
+  let lastSentReadiness: string | null = null
   const send = async () => {
     try {
       const body: Record<string, unknown> = {
@@ -143,6 +158,7 @@ export function startVersionHeartbeat(deps: {
         } catch {}
         try {
           body.updateReadiness = status.updateReadiness()
+          lastSentReadiness = JSON.stringify(body.updateReadiness)
         } catch {}
       }
       if (deps.lastError) {
@@ -155,9 +171,26 @@ export function startVersionHeartbeat(deps: {
       // Telemetry only: never let a heartbeat failure surface.
     }
   }
+  // Change-driven readiness resend: re-read the snapshot cheaply and post
+  // only when it differs from what the backend last received. Guarded like
+  // the providers themselves: a throwing probe means "no change seen".
+  const pollReadiness = async (): Promise<void> => {
+    const status = deps.updateStatus
+    if (!status) return
+    let current: string
+    try {
+      current = JSON.stringify(status.updateReadiness())
+    } catch {
+      return
+    }
+    if (lastSentReadiness !== null && current === lastSentReadiness) return
+    await send()
+  }
   void send()
-  deps.log(`version heartbeat armed (v${version}, every 6h)`)
+  deps.log(`version heartbeat armed (v${version}, every 6h; readiness re-sent within a minute of a change)`)
   const timer = setInterval(send, VERSION_HEARTBEAT_INTERVAL_MS)
   timer.unref?.()
-  return { timer, sendNow: () => void send() }
+  const readinessTimer = setInterval(() => void pollReadiness(), deps.readinessPollMs ?? READINESS_POLL_MS)
+  readinessTimer.unref?.()
+  return { timer, readinessTimer, sendNow: () => void send(), pollReadiness }
 }

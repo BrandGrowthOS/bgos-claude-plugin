@@ -287,3 +287,59 @@ describe('heartbeatEnv machine identity (zero-terminal lifecycle)', () => {
     clearInterval(handle!.timer)
   })
 })
+
+// Board row 01a061fb (2026-09-02): the readiness block rode ONLY the 6h version
+// heartbeat (plus the update path's explicit sendNow), so a latch cleared under
+// a running daemon reached the app's "updates paused" badge up to six hours
+// later; ten Windows daemons showed it for an afternoon. Readiness is now
+// polled cheaply and re-sent only when it changes.
+describe('readiness resend on change', () => {
+  test('a changed readiness snapshot is re-sent on the next poll; an unchanged one is not', async () => {
+    const calls: { path: string; body: Record<string, unknown> }[] = []
+    const readiness = { supervised: 'launcher' as const, autoUpdateEnabled: true, rollbackLatched: true, pendingRestartVersion: null }
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.22.0'),
+      post: async (path, body) => {
+        calls.push({ path, body })
+        return {}
+      },
+      log: () => {},
+      updateStatus: { latestKnownVersion: () => null, updateReadiness: () => ({ ...readiness }) },
+      machineId: () => 'm',
+      readinessPollMs: 60_000,
+    })
+    expect(handle).not.toBeNull()
+    await new Promise((r) => setImmediate(r))
+    expect(calls.length).toBe(1)
+    await handle!.pollReadiness()
+    expect(calls.length).toBe(1)
+    readiness.rollbackLatched = false
+    await handle!.pollReadiness()
+    expect(calls.length).toBe(2)
+    expect((calls[1]!.body.updateReadiness as { rollbackLatched: boolean }).rollbackLatched).toBe(false)
+    await handle!.pollReadiness()
+    expect(calls.length).toBe(2)
+    clearInterval(handle!.timer)
+    clearInterval(handle!.readinessTimer)
+  })
+
+  test('a readiness provider that throws never breaks the poll', async () => {
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.22.0'),
+      post: async () => ({}),
+      log: () => {},
+      updateStatus: {
+        latestKnownVersion: () => null,
+        updateReadiness: () => {
+          throw new Error('probe down')
+        },
+      },
+      machineId: () => 'm',
+    })
+    await expect(handle!.pollReadiness()).resolves.toBeUndefined()
+    clearInterval(handle!.timer)
+    clearInterval(handle!.readinessTimer)
+  })
+})
