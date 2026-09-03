@@ -150,6 +150,46 @@ test('normalizeCallOwnerReason: a decimal or a domain is not a sentence end', ()
   )
 })
 
+test('normalizeCallOwnerReason: a period after a title or an abbreviation is not a sentence end', () => {
+  assert.equal(
+    normalizeCallOwnerReason('Dr. Smith at 3 p.m. is waiting on the deck. Call me back when free.'),
+    'Dr. Smith at 3 p.m. is waiting on the deck. Call me back when free.',
+  )
+  assert.equal(
+    normalizeCallOwnerReason('Ticket No. 5 vs. ticket No. 7 collide. Which one first? Third.'),
+    'Ticket No. 5 vs. ticket No. 7 collide. Which one first?',
+  )
+  assert.equal(
+    normalizeCallOwnerReason('Deploy is green, e.g. the login flow works. Want to talk? Third.'),
+    'Deploy is green, e.g. the login flow works. Want to talk?',
+  )
+})
+
+test('normalizeCallOwnerReason: initials and single-letter abbreviations do not count as sentence ends', () => {
+  assert.equal(
+    normalizeCallOwnerReason(
+      'Mr. J. K. Rowling called about the contract. She needs an answer today. Third.',
+    ),
+    'Mr. J. K. Rowling called about the contract. She needs an answer today.',
+  )
+  assert.equal(
+    normalizeCallOwnerReason('The U.S. deal closed. Call me? Third.'),
+    'The U.S. deal closed. Call me?',
+  )
+})
+
+test('normalizeCallOwnerReason: a hard cut never splits an emoji into a lone surrogate', () => {
+  // 'a' shifts every surrogate pair to an odd offset, so a naive cut at 140
+  // code units would end on the high half of the 70th emoji.
+  const party = String.fromCodePoint(0x1f389)
+  const out = normalizeCallOwnerReason('a' + party.repeat(100))
+  assert.ok(out)
+  assert.ok(out.length <= CALL_OWNER_REASON_MAX)
+  const last = out.charCodeAt(out.length - 1)
+  assert.equal(last >= 0xd800 && last <= 0xdbff, false)
+  assert.equal(out, 'a' + party.repeat(69))
+})
+
 test('normalizeCallOwnerReason: null for empty and non-string input', () => {
   assert.equal(normalizeCallOwnerReason(''), null)
   assert.equal(normalizeCallOwnerReason('  \n '), null)
