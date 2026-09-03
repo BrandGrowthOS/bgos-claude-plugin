@@ -1414,3 +1414,91 @@ test('setup enrols auto-update AFTER the marketplace add, never before', () => {
     assert.deepEqual(h.enrolments.map((e) => e.marketplace), ['hoai'])
   })
 })
+
+// A fast fault on the fresh retry must not cost the agent its session.
+// Windows fleet migration, zaid, 2026-09-02: a redirected console put claude
+// in print mode; the resume died fast, hoai minted a fresh id, wrote it to the
+// pin at once, and that session died fast too. The agent was left pinned to a
+// dead fresh identity and its real context had to be restored by hand. The pin
+// is now committed only once the fresh session has outlived the health window.
+
+async function runSupervisedFastFaults(home: string, cwd: string, exitDelaysMs: number[], healthyMs: number) {
+  const spawns: { file: string; args: string[] }[] = []
+  const lines: string[] = []
+  const t0 = Date.now()
+  let n = 0
+  const code = await main([], {
+    print: (line: string) => {
+      lines.push(`${Date.now() - t0}ms ${line}`)
+    },
+    platform: 'linux',
+    env: {},
+    home,
+    cwd,
+    scriptDir: CLONE_SCRIPT_DIR,
+    healthyMs,
+    spawnImpl: ((file: string, args: readonly string[]) => {
+      spawns.push({ file, args: [...args] })
+      const delay = exitDelaysMs[n] ?? 0
+      n += 1
+      lines.push(`${Date.now() - t0}ms SPAWN#${n} ${file} (exits in ${delay}ms)`)
+      const child = new EventEmitter() as EventEmitter & { pid: number; kill: () => void; stdin: null; stdout: null; stderr: null }
+      child.pid = 4242 + n
+      child.kill = () => child.emit('exit', 1, null)
+      child.stdin = null
+      child.stdout = null
+      child.stderr = null
+      setTimeout(() => child.emit('exit', 1, null), delay)
+      return child
+    }) as never,
+  })
+  return { code, spawns, lines }
+}
+
+test('a fresh retry that dies inside the health window leaves the pin on the previous session', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const sessionIdPath = join(home, '.bgos-agent', '871', 'session-id')
+  try {
+    // Seed a pinned session with a transcript, so the first launch is a --resume.
+    const original = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    mkdirSync(join(home, '.bgos-agent', '871'), { recursive: true })
+    writeFileSync(sessionIdPath, original)
+    const projects = join(home, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(projects, { recursive: true })
+    writeFileSync(join(projects, `${original}.jsonl`), '{}\n')
+
+    // Resume dies fast, the fresh retry dies fast too (an environment fault).
+    const { spawns } = await runSupervisedFastFaults(home, cwd, [5, 5], 200)
+    assert.equal(spawns.length, 2, 'resume, then exactly one fresh retry')
+    assert.deepEqual(claudeArgsFrom(spawns[0]!).slice(-2), ['--resume', original])
+    assert.equal(claudeArgsFrom(spawns[1]!).includes('--session-id'), true, 'the retry is a fresh create')
+    assert.equal(readFileSync(sessionIdPath, 'utf8').trim(), original, 'the pin still names the real session')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('a fresh retry that stays up past the health window becomes the pinned session', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const sessionIdPath = join(home, '.bgos-agent', '871', 'session-id')
+  try {
+    const original = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    mkdirSync(join(home, '.bgos-agent', '871'), { recursive: true })
+    writeFileSync(sessionIdPath, original)
+    const projects = join(home, '.claude', 'projects', cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    mkdirSync(projects, { recursive: true })
+    writeFileSync(join(projects, `${original}.jsonl`), '{}\n')
+
+    // Resume dies fast; the fresh retry lives well past the 50 ms window.
+    const { spawns, lines } = await runSupervisedFastFaults(home, cwd, [5, 300], 50)
+    assert.equal(spawns.length, 2, lines.join('\n'))
+    const fresh = claudeArgsFrom(spawns[1]!)
+    const freshId = fresh[fresh.indexOf('--session-id') + 1]
+    assert.ok(freshId && freshId !== original, 'a new id was created')
+    assert.equal(readFileSync(sessionIdPath, 'utf8').trim(), freshId, `the pin moved to the session that stayed up\n${lines.join('\n')}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
