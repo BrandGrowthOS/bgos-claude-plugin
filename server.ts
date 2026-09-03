@@ -886,14 +886,18 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
   }
 }
 
-async function bgosPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function bgosPost(
+  path: string,
+  body: Record<string, unknown>,
+  opts: { headers?: Record<string, string> } = {},
+): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
       url,
       init: {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH), ...(opts.headers ?? {}) },
         body: JSON.stringify(body),
       },
       timeoutMs: HTTP_TIMEOUT_MS,
@@ -1707,6 +1711,12 @@ const mcp = new Server(
       'the full URL before opening, so prefer bare URLs when transparency',
       'matters. URLs inside code spans/fences never linkify, use code when',
       'the user should copy a URL rather than open it.',
+      '',
+      '## Adding an agent to a meeting (add_to_meeting)',
+      'Use `add_to_meeting` to seat another agent (by assistantId, see',
+      '`list_peers`) in an open meeting you are an active participant of. The',
+      'backend refuses with 403 if you are not in that meeting and 409 if it is',
+      'closed or full. The added agent joins the roster, not the floor.',
       '',
       '## Calling the User (call_owner)',
       '',
@@ -2722,6 +2732,31 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['meeting_id'],
+      },
+    },
+    {
+      name: 'add_to_meeting',
+      description:
+        'Seat another agent in an active Command Center meeting you are in. ' +
+        'You must be an ACTIVE PARTICIPANT of that meeting (the backend refuses ' +
+        'with 403 otherwise), the meeting must be open (409 if closed) and the ' +
+        'room has an agent cap (409 when full). The added agent joins the ' +
+        'roster and starts receiving turn events; the floor does not change. ' +
+        'Use it when the discussion needs an agent who is not in the room; ' +
+        'find ids with list_peers.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          meeting_id: {
+            type: 'number',
+            description: 'Meeting room id from the channel notification meta. Required.',
+          },
+          assistant_id: {
+            type: 'number',
+            description: 'The assistantId of the agent to add (see list_peers). Required.',
+          },
+        },
+        required: ['meeting_id', 'assistant_id'],
       },
     },
     {
@@ -4079,6 +4114,42 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
     }
 
+    case 'add_to_meeting': {
+      const meeting_id = rawArgs.meeting_id as number | undefined
+      const assistant_id = rawArgs.assistant_id as number | undefined
+      if (!meeting_id) {
+        return { content: [{ type: 'text', text: 'Error: meeting_id is required.' }], isError: true }
+      }
+      if (!assistant_id) {
+        return { content: [{ type: 'text', text: 'Error: assistant_id is required.' }], isError: true }
+      }
+      try {
+        // The caller header is what makes this an AGENT-driven add on the
+        // backend: it checks that we are an active participant of this meeting
+        // and attributes the seat to us. Without it the add reads as the user's.
+        await bgosPost(
+          `meetings/${meeting_id}/participants`,
+          { assistantId: Number(assistant_id) },
+          { headers: { 'X-Caller-Assistant-Id': String(ASSISTANT_ID) } },
+        )
+        return {
+          content: [{
+            type: 'text',
+            text: `Added assistant ${assistant_id} to meeting ${meeting_id}. They join the roster and receive turn events; the floor is unchanged.`,
+          }],
+        }
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err)
+        const hint = msg.includes('403')
+          ? ' You must be an active participant of this meeting to add someone.'
+          : msg.includes('409')
+            ? ' The meeting is closed or the room is full.'
+            : msg.includes('404')
+              ? ' No such meeting.'
+              : ''
+        return { content: [{ type: 'text', text: `Error adding to meeting: ${msg}.${hint}` }], isError: true }
+      }
+    }
     case 'call_owner': {
       const reason = rawArgs.reason as string | undefined
       const chatIdArg = rawArgs.chat_id as string | undefined
