@@ -2,6 +2,38 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.18 (2026-09-04)
+
+The daemon half of the 'unresponsive' presence tier. Backend #1278 gave presence
+a third state, connected but not answering, so a deaf or credit-drained session
+stops reading as a confident green 'online'. It arrives on the heartbeat's
+existing `lastError` under one reserved code, and its fail-safe is that no
+report means 'ok'.
+
+That fail-safe is correct, and it is exactly why the feature shipped DARK:
+backend and app were both live and NOTHING SENT THE CODE, so every agent read
+'ok' and the quiet field looked like a healthy fleet.
+
+- **The verdict the daemon already reached is now reported.** No new detection:
+  this projects the same 'escalate' decision that already posts launch guidance
+  into the chat, which by then means roughly twenty minutes of silence AND an
+  ignored direct liveness probe. It cannot fire on a busy session.
+- **Recovery needs no second call.** The escalation latch is once-per-boot and
+  never un-latches, so recovery comes from LIVENESS: any bgos tool call makes
+  the session live, the report goes null, and the backend reads an explicit
+  null as "clear". A session that comes back is not left marked.
+- **One field, two producers, explicit precedence.** A refused credential wins
+  over an unresponsive session, because the two are not independent: a daemon
+  whose calls are refused cannot reach its session, so that session goes quiet
+  and LOOKS deaf. Reporting the deafness would name the symptom and bury the
+  cause, and they have different remedies.
+- **The wiring guard is widened, because this failure already happened once.**
+  The auth-rejection guard existed precisely because a lastError could sit
+  unsent for months; the same thing then happened one field over. It now pins
+  both producers and the combiner, so neither can be unwired without a red
+  test. Verified by mutation: removing the new producer still COMPILES and
+  turns the guard red.
+
 ## 0.38.17 (2026-09-04)
 
 Home-folder identity binding (board 01a068f7). The 0.38.6 pairing lock below

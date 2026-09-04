@@ -199,6 +199,8 @@ import {
 import {
   ChannelLiveness,
   deafSessionAction,
+  heartbeatUnresponsiveError,
+  pickHeartbeatLastError,
   deafSessionChatMessage,
   deafFixCommand,
   inboundOwesReply,
@@ -5268,6 +5270,10 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
 // See lib/channel-liveness.ts for the 2026-08-26 false-positive record.
 let deafEscalationDone = false
 let deafProbeSentAt: number | null = null
+// When the deaf verdict was reached, so the heartbeat report can say how long
+// rather than just that it happened. Set beside the latch, read by
+// heartbeatUnresponsiveError; never a second source of truth for WHETHER.
+let deafEscalatedAt: number | null = null
 
 // Fix 09: the one-per-boot latch for the first-ever-boot hello (see main()).
 let bootHelloSent = false
@@ -5305,6 +5311,7 @@ function checkReplyOverdue(): void {
       ).catch((err) => log(`deaf-session probe delivery failed: ${err}`))
     } else if (deafAction === 'escalate') {
       deafEscalationDone = true
+      deafEscalatedAt = now
       log(
         `WARN deaf session confirmed: chat ${chatId} message ${p.messageId} unacted, ` +
           'zero bgos tool calls since boot, and the channel_ack probe went ' +
@@ -9425,7 +9432,20 @@ async function main(): Promise<void> {
       // The fleet-visible half of the refusal that noteAuthOutcome already
       // detects. Derived from that same state, so the two can never disagree,
       // and null once any call succeeds, which the backend reads as "clear it".
-      lastError: () => heartbeatLastError(authRejection, Date.now()),
+      // TWO producers, one field. See pickHeartbeatLastError: a refused
+      // credential wins, because it explains a session that then looks deaf.
+      lastError: () => {
+        const now = Date.now()
+        return pickHeartbeatLastError(
+          heartbeatLastError(authRejection, now),
+          heartbeatUnresponsiveError({
+            escalated: deafEscalationDone,
+            live: channelLiveness.live,
+            since: deafEscalatedAt,
+            now,
+          }),
+        )
+      },
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would
