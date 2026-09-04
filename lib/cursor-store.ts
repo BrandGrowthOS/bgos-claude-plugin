@@ -145,6 +145,39 @@ export function saveCursorFile(
 }
 
 /**
+ * Merge a cursor FILE into the live map, taking the higher id per chat.
+ *
+ * Why this exists: several daemons can be alive for one pairing and only the
+ * pairing-lock holder delivers. A daemon that was passive or stood down still
+ * carries the map it loaded at boot, while the holder kept advancing the shared
+ * file. On reclaim, without this merge, the first poll re-forwards every
+ * message the holder already delivered (the forwarded-id set is per process)
+ * and the first flush REWINDS the file to boot-era values, which is how a
+ * cursor goes backwards on a host with rival daemons.
+ *
+ * Pure: no clock, no disk, no daemon. Advances are applied through the caller's
+ * own monotonic write path (`advance`), so the store's dirty flag and the
+ * never-rewind rule stay in one place. Junk on disk is skipped entry by entry,
+ * matching loadCursorFile's tolerance. Returns how many chats advanced.
+ */
+export function mergeCursorMaps(
+  live: ReadonlyMap<string, number>,
+  disk: ReadonlyMap<string, number>,
+  advance: (chatId: string, id: number) => void,
+): number {
+  let advanced = 0
+  for (const [chatId, id] of disk) {
+    if (!chatId) continue
+    if (typeof id !== 'number') continue
+    if (!Number.isFinite(id) || !Number.isInteger(id) || id <= 0) continue
+    if (id <= (live.get(chatId) ?? 0)) continue
+    advance(chatId, id)
+    advanced += 1
+  }
+  return advanced
+}
+
+/**
  * The live store: loads once at boot, hands the caller the live Map (server.ts
  * keeps using it directly for reads), and coalesces writes behind a dirty
  * flag. The caller marks dirty on every cursor advance and flushes on its own
