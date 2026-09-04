@@ -28,6 +28,7 @@ import {
   pairingLockPath,
   acquirePairingLock,
   refreshPairingLock,
+  refreshPairingLockDetailed,
   releasePairingLock,
   touchBeaconHeartbeat,
   BEACON_HEARTBEAT_FILE,
@@ -308,6 +309,26 @@ test('refresh on an absent lock re-creates it as ours (self-heal after an errant
   const io = makeIo({ alive: [100] })
   assert.equal(refreshPairingLock({ lockPath: LOCK, selfPid: 100, now: 6000, io }), true)
   assert.equal(parseLockRecord(io.files.get(LOCK) ?? null)?.pid, 100)
+})
+
+test('refreshPairingLockDetailed reports WHO holds the lock when we have been reclaimed', () => {
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 51164, heartbeatAt: 1_000, bootedAt: 1 }) },
+  })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 30220, now: 2_000, io })
+  assert.deepEqual(out, { held: false, holderPid: 51164 })
+  // The rival's record must be left exactly as it was: re-stamping here would
+  // recreate the dual-holder bug this module exists to prevent.
+  assert.equal(
+    io.files.get(LOCK),
+    serializeLockRecord({ pid: 51164, heartbeatAt: 1_000, bootedAt: 1 }),
+  )
+})
+
+test('refreshPairingLockDetailed still reports held when the record is ours', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 30220, heartbeatAt: 1_000 }) } })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 30220, now: 2_000, io })
+  assert.deepEqual(out, { held: true })
 })
 
 // ── Effectful: HOLDER EXIT LETS A WAITER RECLAIM (DoD) ─────────────────────────

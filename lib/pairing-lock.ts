@@ -297,30 +297,39 @@ export function acquirePairingLock(input: {
   }
 }
 
+/** What a heartbeat refresh discovered. `held:false` carries the rival's pid so
+ *  the caller can name it in a log line and stand down against it. */
+export type RefreshOutcome = { held: true } | { held: false; holderPid: number | undefined }
+
 /**
- * Refresh our heartbeat. Returns true when we still own the lock (record is
- * ours or absent, and we re-stamped it), false when a DIFFERENT pid now holds
- * it, meaning we were reclaimed against expectation.
+ * Refresh our heartbeat and report what we found.
  *
- * In steady state false is unreachable: a live holder refreshes every interval
- * and the staleness window is three intervals, so a healthy holder never goes
- * stale and never gets reclaimed. The only way to observe false is the boot
- * race window, which converges before delivery is armed. The caller treats a
- * false as a loud warning rather than silently re-stamping (which would
- * recreate the very dual-holder bug this module exists to prevent). Never
- * throws.
+ * `held:false` means a DIFFERENT pid holds the lock, so this daemon has been
+ * reclaimed and must stop acting as the channel owner. We deliberately do NOT
+ * re-stamp the file in that case: last-writer-wins here would let two daemons
+ * ping-pong the lock forever, each believing it owns the channel, which is the
+ * exact dual-holder bug this module exists to prevent.
+ *
+ * This USED to be documented as unreachable in steady state. It is not. On
+ * 2026-09-04 a live host ran three daemons for one pairing and logged this
+ * condition every six seconds for hours, because the caller treated it as a
+ * warning and kept polling. See the plan's evidence section.
+ *
+ * Never throws.
  */
-export function refreshPairingLock(input: {
+export function refreshPairingLockDetailed(input: {
   lockPath: string
   selfPid: number
   now: number
   bootedAt?: number
   io?: LockIo
-}): boolean {
+}): RefreshOutcome {
   const io = input.io ?? defaultLockIo
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
-    if (existing && existing.pid !== input.selfPid) return false
+    if (existing && existing.pid !== input.selfPid) {
+      return { held: false, holderPid: existing.pid }
+    }
     io.writeFile(
       input.lockPath,
       serializeLockRecord({
@@ -329,10 +338,24 @@ export function refreshPairingLock(input: {
         ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
       }),
     )
-    return true
+    return { held: true }
   } catch {
-    return false
+    // A filesystem hiccup is not proof we were reclaimed. Claim we still hold
+    // it: a false stand-down costs a live channel, a delayed stand-down costs
+    // one duplicated poll cycle. The next refresh re-checks.
+    return { held: true }
   }
+}
+
+/** Boolean form, kept so existing callers and tests are unaffected. */
+export function refreshPairingLock(input: {
+  lockPath: string
+  selfPid: number
+  now: number
+  bootedAt?: number
+  io?: LockIo
+}): boolean {
+  return refreshPairingLockDetailed(input).held
 }
 
 /**
