@@ -32,11 +32,12 @@
  *             expected and degrades to a graceful spoken "still working"
  *             line app-side; a late voice_consult_reply is told to send the
  *             answer as a normal chat reply instead.
- *   dispatch → NOT expected on this lane (the backend delivers dispatches
- *             to pairingless agents as `voice_task_dispatch` events, plugin
- *             v0.13.0). Answered with a descriptive error, never silence —
- *             the G2 silent-drop lesson: every wire shape gets an explicit
- *             outcome.
+ *   dispatch → the PAIRED lane. The backend routes a delegated task to a
+ *             paired daemon as voice_rpc op='dispatch' and waits up to 10 s
+ *             for {accepted:true}; the pairingless lane is the separate
+ *             voice_task_dispatch WS event handled in server.ts. Accepted
+ *             with the same [voice_dispatch] card the WS lane already
+ *             builds, then results {accepted:true, taskId}.
  *   stop_turn → the user pressed Stop for ONE chat (session controls).
  *             Cooperative cancel: deliver a channel notification telling
  *             the live agent to stop working on that chatId now, post a
@@ -309,6 +310,7 @@ export interface VoiceRpcConfig {
   persona: string
   assistantId: string
   chatIdFallback?: string | null
+  userId?: string
 }
 
 export interface VoiceRpcDeps {
@@ -669,15 +671,15 @@ export class VoiceRpcHandler {
         payload = await this.consult(frame)
       } else if (frame.op === 'stop_turn') {
         payload = await this.stopTurn(frame)
+      } else if (frame.op === 'dispatch') {
+        payload = await this.dispatch(frame)
       } else {
-        // The backend delivers dispatches to pairingless agents as
-        // voice_task_dispatch events, not voice_rpc frames — answer
-        // loudly so a future backend change fails fast, never silently.
+        // Answer loudly so a future backend change fails fast, never silently.
         throw new VoiceRpcError(
           'UNSUPPORTED_OP',
           `unsupported voice_rpc op for the Claude Code channel: ${String(
             frame.op,
-          )} (dispatch arrives as voice_task_dispatch)`,
+          )}`,
         )
       }
       await this.postResult(frame.rpcId, { ok: true, payload })
@@ -899,6 +901,34 @@ export class VoiceRpcHandler {
       )
     }
     return { stopped: true, mode: 'cooperative' }
+  }
+
+  // ── dispatch ──────────────────────────────────────────────────────────────
+  //
+  // The PAIRED lane. The backend routes a delegated task to a paired daemon as
+  // voice_rpc op='dispatch' and waits up to 10 s for {accepted:true}; the
+  // pairingless lane is the voice_task_dispatch WS event handled in server.ts.
+  // This handler used to REFUSE the op on the belief that dispatch never
+  // arrives here, and every paired Claude Code agent's delegated task failed
+  // by construction (voice_tasks: 84 pairingless Claude Code tasks done, one
+  // paired one ever, timed out). Hermes, OpenClaw and Gobot all accept this
+  // frame; now so do we, with the same card the WS lane already builds.
+  private async dispatch(frame: VoiceRpcFrame): Promise<Record<string, unknown>> {
+    const p = (frame.payload ?? {}) as Record<string, unknown>
+    const taskId = String(p.taskId ?? p.task_id ?? '').trim()
+    if (!taskId) throw new VoiceRpcError('BAD_DISPATCH', 'dispatch frame carries no taskId')
+    const question = String(p.question ?? '')
+    const context = p.context ? String(p.context) : ''
+    const chatId = frame.chatId != null ? String(frame.chatId) : String(this.deps.config.chatIdFallback ?? '')
+    await this.deps.notify(buildVoiceTaskDispatchText({ taskId, question, context }), {
+      event_type: 'voice_task_dispatch',
+      task_id: taskId,
+      chat_id: chatId,
+      user_id: String(this.deps.config.userId ?? ''),
+      assistant_id: String(this.deps.config.assistantId),
+      transport: 'rpc',
+    })
+    return { accepted: true, taskId }
   }
 
   // ── consult ───────────────────────────────────────────────────────────────

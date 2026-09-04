@@ -654,15 +654,27 @@ test('duplicate frames for the same rpcId are ignored while in flight', async ()
   assert.equal(rec.results.length, 1)
 })
 
-test('an op the Claude lane does not serve gets a descriptive error, not silence', async () => {
+test('a paired dispatch is ACCEPTED and the task card reaches the live session', async () => {
   const { deps, rec } = makeDeps({})
   await new VoiceRpcHandler(deps).handle(
-    frame({ op: 'dispatch', rpcId: 'rpc-d1', payload: { taskId: 't1' } }),
+    frame({ op: 'dispatch', rpcId: 'rpc-d1', chatId: '4465', payload: { taskId: 't1', question: 'book the table', context: 'for 8pm' } }),
   )
   assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.deepEqual(rec.results[0]!.body.payload, { accepted: true, taskId: 't1' })
+  assert.equal(rec.notifications.length, 1)
+  assert.match(rec.notifications[0]!.content, /\[voice_dispatch\] .*task #t1/)
+  assert.match(rec.notifications[0]!.content, /complete_voice_task tool with task_id="t1"/)
+  assert.equal(rec.notifications[0]!.meta.event_type, 'voice_task_dispatch')
+  assert.equal(rec.notifications[0]!.meta.task_id, 't1')
+  for (const v of Object.values(rec.notifications[0]!.meta)) assert.equal(typeof v, 'string')
+})
+
+test('a dispatch with no taskId is refused loudly, never silently', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(frame({ op: 'dispatch', rpcId: 'rpc-d2', payload: {} }))
   assert.equal(rec.results[0]!.body.ok, false)
-  assert.equal(rec.results[0]!.body.error!.code, 'UNSUPPORTED_OP')
-  assert.match(rec.results[0]!.body.error!.message, /voice_task_dispatch/)
+  assert.equal(rec.results[0]!.body.error!.code, 'BAD_DISPATCH')
 })
 
 // ── instruction/notification builders ────────────────────────────────────────
