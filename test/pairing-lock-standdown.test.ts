@@ -225,6 +225,49 @@ test('an arm that lost the lock while it ran does not arm anyway', () => {
   const arms = [...body.matchAll(/channelArmed = true/g)].length
   assert.equal(arms, 2, 'the re-arm path and the end of the first arm')
   assert.equal(gates, arms, 'every channelArmed = true in armDelivery must sit behind a lockHeld gate')
+  // And each gate must ASK the lock file, not just read the flag. lockHeld is
+  // only ever cleared by the poll tick, so it is stale-true for an arm that ran
+  // before the tick existed: a boot-passive daemon promoted into the full first
+  // arm can be reclaimed on staleness with nothing left to notice, and the flag
+  // alone would wave it through.
+  assert.equal(
+    [...body.matchAll(/gateRefresh = refreshPairingLockDetailed\(/g)].length,
+    arms,
+    'each arm gate refreshes the lock synchronously before arming',
+  )
+  assert.equal(
+    [...body.matchAll(/lastDeliveryHeartbeatAt = gateNow/g)].length,
+    arms,
+    'a gate refresh must spend the throttle slot, or the next tick spends a second one',
+  )
+})
+
+test('the delivery-loops latch is only undone when the loops were never built', () => {
+  // deliveryLoopsStarted latches BEFORE the loops are built, which is what stops
+  // a concurrent armDelivery from starting a second poll chain. That makes it a
+  // lie if the arm throws before the poll kick: the promotion catch retries, the
+  // retry takes the short re-arm path, and the daemon arms with no tick, no WS
+  // and no flush interval. Undoing it unconditionally is the opposite bug: an
+  // arm that threw AFTER the kick would run the full path again and leave two
+  // interleaved poll chains forever. So the undo is conditional on the second
+  // flag, which is set at the kick itself.
+  assert.match(server, /let pollLoopKicked = false/)
+  assert.match(server, /setTimeout\(tick, POLL_INTERVAL_MS\)\n\s*pollLoopKicked = true/)
+  assert.match(server, /if \(!pollLoopKicked\) deliveryLoopsStarted = false/)
+  const start = server.indexOf('void armDelivery().catch(')
+  const block = server.slice(start, start + 1200)
+  assert.match(block, /if \(!pollLoopKicked\) deliveryLoopsStarted = false/)
+})
+
+test('a stand-down clears the heartbeat-write warning latch', () => {
+  // Otherwise the sequence error, stand down, reclaim, error again is silent the
+  // second time: the daemon looks healthy while its heartbeat writes keep
+  // failing, which is exactly what the warning exists to catch.
+  const clears = [...server.matchAll(/lockIoErrorWarned = false/g)].length
+  assert.ok(clears >= 4, `expected a clear on a healthy refresh and on each stand-down, saw ${clears}`)
+  const standDown = server.indexOf('if (!refreshed.held)')
+  const armed = server.indexOf('if (!channelArmed) return', standDown)
+  assert.match(server.slice(standDown, armed), /lockIoErrorWarned = false/)
 })
 
 test('the once-per-spell ignore log is cleared on both edges of a passive spell', () => {
@@ -233,8 +276,8 @@ test('the once-per-spell ignore log is cleared on both edges of a passive spell'
   // would log nothing and look like it was never deaf.
   assert.equal(
     [...server.matchAll(/standDownIgnoredFrames\.clear\(\)/g)].length,
-    2,
-    'once on stand-down, once on re-arm',
+    4,
+    'the three stand-down sites (the tick and the two arm gates) plus the re-arm',
   )
   const rearm = server.indexOf('if (deliveryLoopsStarted) {')
   const armedAgain = server.indexOf('channelArmed = true', rearm)

@@ -8798,6 +8798,15 @@ async function main(): Promise<void> {
   // daemon was passive) and flip the flag back on. The already-running loops
   // then resume delivering, because each of them is gated on channelArmed.
   let deliveryLoopsStarted = false
+  // Whether the poll scheduler was actually kicked. deliveryLoopsStarted latches
+  // BEFORE the loops are built, on purpose: it is what stops a second, concurrent
+  // armDelivery from starting a second poll chain. But that makes it a lie if the
+  // arm then throws before the kick, because the promotion catch retries and the
+  // retry takes the SHORT re-arm path: a daemon armed with no tick, no WS and no
+  // flush interval, which is a zombie that looks healthy. This second flag is the
+  // truth about the loops, so the catch can undo the latch in exactly the case
+  // where undoing it is safe.
+  let pollLoopKicked = false
   const armDelivery = async (): Promise<void> => {
     if (deliveryLoopsStarted) {
       await phase('re-discover chats', () => discoverChats())
@@ -8817,6 +8826,39 @@ async function main(): Promise<void> {
       if (merged > 0) {
         log(`cursor catch-up on re-arm: ${merged} chat cursor(s) advanced from the shared file`)
       }
+      // Gate refresh. lockHeld can be STALE TRUE here: the only place that
+      // clears it is the poll tick, and an arm that ran while the tick was not
+      // yet scheduled (a boot-passive daemon promoted into the full first arm)
+      // can have been reclaimed by a rival on staleness without anything
+      // noticing. So ask the lock file itself before arming, once, synchronously,
+      // and treat a lost lock exactly as the tick does.
+      const gateNow = Date.now()
+      const gateRefresh = refreshPairingLockDetailed({
+        lockPath: PAIRING_LOCK_PATH,
+        selfPid: process.pid,
+        now: gateNow,
+        bootedAt: DAEMON_START_MS,
+      })
+      if (!gateRefresh.held) {
+        channelArmed = false
+        lockHeld = false
+        lockIoErrorWarned = false
+        standDownIgnoredFrames.clear()
+        log(
+          `pid ${process.pid}: pairing lock now held by pid ` +
+            `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
+            `staying passive and watching for reclaim`,
+        )
+        resumeLockRecheck()
+        return
+      }
+      // The refresh landed, so spend the throttle slot here rather than letting
+      // the next tick spend a second one five seconds later.
+      lastDeliveryHeartbeatAt = gateNow
+      // held:true with lockHeld false is possible and benign: the rival took the
+      // lock and then released it on exit, so the refresh above re-created the
+      // file as ours. We still stay passive here, and the recheck loop promotes
+      // us properly on its next pass (it will read that record as our own).
       if (!lockHeld) {
         log('re-arm finished without the pairing lock; staying passive (see the arm-end note)')
         return
@@ -9063,8 +9105,10 @@ async function main(): Promise<void> {
             channelArmed = false
             lockHeld = false
             // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
-            // gets to say it once more.
+            // gets to say it once more, and a heartbeat-write failure in a LATER
+            // spell warns again instead of being swallowed by this one's latch.
             standDownIgnoredFrames.clear()
+            lockIoErrorWarned = false
             log(
               `pid ${process.pid}: pairing lock now held by pid ` +
                 `${refreshed.holderPid ?? 'unknown'}; ` +
@@ -9193,6 +9237,7 @@ async function main(): Promise<void> {
       }
     }
     setTimeout(tick, POLL_INTERVAL_MS)
+    pollLoopKicked = true
     // The single line that says delivery is live. Its ABSENCE in a log is the
     // signal to read back up the startup phases and find the one that started
     // and never finished.
@@ -9346,6 +9391,35 @@ async function main(): Promise<void> {
     // dual-armed daemon this whole change exists to remove. The stand-down
     // already started the recheck loop, so this daemon comes back the moment
     // the lock is genuinely free again.
+    // Gate refresh. lockHeld can be STALE TRUE here: the only place that
+    // clears it is the poll tick, and an arm that ran while the tick was not
+    // yet scheduled (a boot-passive daemon promoted into the full first arm)
+    // can have been reclaimed by a rival on staleness without anything
+    // noticing. So ask the lock file itself before arming, once, synchronously,
+    // and treat a lost lock exactly as the tick does.
+    const gateNow = Date.now()
+    const gateRefresh = refreshPairingLockDetailed({
+      lockPath: PAIRING_LOCK_PATH,
+      selfPid: process.pid,
+      now: gateNow,
+      bootedAt: DAEMON_START_MS,
+    })
+    if (!gateRefresh.held) {
+      channelArmed = false
+      lockHeld = false
+      lockIoErrorWarned = false
+      standDownIgnoredFrames.clear()
+      log(
+        `pid ${process.pid}: pairing lock now held by pid ` +
+          `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
+          `staying passive and watching for reclaim`,
+      )
+      resumeLockRecheck()
+      return
+    }
+    // The refresh landed, so spend the throttle slot here rather than letting
+    // the next tick spend a second one five seconds later.
+    lastDeliveryHeartbeatAt = gateNow
     if (!lockHeld) {
       log(
         'arm finished but the pairing lock was lost while it ran; staying passive ' +
@@ -9394,6 +9468,10 @@ async function main(): Promise<void> {
           // go back to watching.
           channelArmed = false
           lockHeld = false
+          // Only when the loops were never built. Undoing the latch after the
+          // tick was kicked would let the next promotion run the full arm again
+          // and leave two interleaved poll chains for the life of the process.
+          if (!pollLoopKicked) deliveryLoopsStarted = false
           resumeLockRecheck()
           log(`delivery arm after promotion failed: ${err}; released and back to passive`)
         })
