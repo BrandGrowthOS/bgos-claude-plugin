@@ -226,3 +226,18 @@ test('an arm that lost the lock while it ran does not arm anyway', () => {
   assert.equal(arms, 2, 'the re-arm path and the end of the first arm')
   assert.equal(gates, arms, 'every channelArmed = true in armDelivery must sit behind a lockHeld gate')
 })
+
+test('the once-per-spell ignore log is cleared on both edges of a passive spell', () => {
+  // Cleared only on stand-down, the set would still hold the previous spell's
+  // frame kinds when the daemon stands down a second time, so the second spell
+  // would log nothing and look like it was never deaf.
+  assert.equal(
+    [...server.matchAll(/standDownIgnoredFrames\.clear\(\)/g)].length,
+    2,
+    'once on stand-down, once on re-arm',
+  )
+  const rearm = server.indexOf('if (deliveryLoopsStarted) {')
+  const armedAgain = server.indexOf('channelArmed = true', rearm)
+  const cleared = server.indexOf('standDownIgnoredFrames.clear()', rearm)
+  assert.ok(cleared !== -1 && cleared < armedAgain, 'the re-arm must clear it before arming')
+})

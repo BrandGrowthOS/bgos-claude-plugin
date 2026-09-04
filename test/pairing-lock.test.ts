@@ -16,6 +16,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
@@ -35,6 +37,7 @@ import {
   serializeBeaconHeartbeat,
   formatPassiveBanner,
   processAlive,
+  defaultLockIo,
   type LockIo,
   type LockRecord,
 } from '../lib/pairing-lock.ts'
@@ -383,6 +386,40 @@ test('a refresh that cannot write stays held but names the io error', () => {
   const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
   assert.equal(out.held, true)
   assert.match(String((out as { ioError?: string }).ioError ?? ''), /boom write/)
+})
+
+test('an unreadable lock file is NOT treated as an unlocked pairing', () => {
+  // readText used to swallow every read error and return null, which
+  // decideLockAction reads as "no lock on disk": a lock file we merely cannot
+  // read (EACCES, a lock directory, a transient share violation on Windows)
+  // would have been overwritten as ours, which is the dual-holder bug arriving
+  // through the back door. A read that fails for any reason other than
+  // "the file is not there" must reach the callers' catch instead.
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 999, heartbeatAt: 1_000 }) },
+    failRead: true,
+  })
+  const acquired = acquirePairingLock({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(acquired.acquired, false, 'an unreadable lock must never be acquired')
+  assert.equal(io.writes, 0, 'and must never be overwritten')
+
+  const refreshed = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(refreshed.held, true, 'a read hiccup is not proof we were reclaimed')
+  assert.match(String((refreshed as { ioError?: string }).ioError ?? ''), /boom read/)
+})
+
+test('defaultLockIo.readText: null for a missing file, throws for anything else', () => {
+  // The narrowing is in the real IO shell, so it needs the real filesystem.
+  // A directory stands in for the unreadable-but-present case: readFileSync
+  // gives EISDIR on every platform this daemon runs on, and permission-based
+  // failures are not reproducible as an unprivileged user on Windows.
+  const missing = join(tmpdir(), `bgos-lock-missing-${process.pid}-${Date.now()}.lock`)
+  assert.equal(defaultLockIo.readText(missing), null, 'ENOENT stays the unlocked path')
+  assert.throws(
+    () => defaultLockIo.readText(tmpdir()),
+    (err: NodeJS.ErrnoException) => err.code !== 'ENOENT',
+    'a present-but-unreadable lock must throw, not read as unlocked',
+  )
 })
 
 test('a healthy refresh carries no ioError, so the warning cannot latch on', () => {

@@ -225,8 +225,18 @@ export const defaultLockIo: LockIo = {
   readText(path: string): string | null {
     try {
       return readFileSync(path, 'utf8')
-    } catch {
-      return null
+    } catch (err) {
+      // ONLY a missing file reads as null, because null means "no lock on
+      // disk" to decideLockAction, which then hands the pairing to whoever
+      // asked. Swallowing every read error meant a lock file we merely could
+      // not read (EACCES, an EISDIR from a stray directory at that path, a
+      // transient share violation on Windows) was overwritten as ours while a
+      // live holder kept using it: the dual-holder bug through the back door.
+      // Everything else throws on to the callers, whose try/catch already turn
+      // it into { acquired: false } or { held: true, ioError }, so the daemon
+      // still never dies over a lock read.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw err
     }
   },
   writeFile(path: string, data: string): void {

@@ -7488,6 +7488,19 @@ function connectWebsocket(): void {
   // the moment an update starts could never be retried or observed. Also not
   // wrapped in trackMessageOperation: a tracked update would hold
   // activeOperations above zero and deadlock its own drain wait.
+  //
+  // It IS gated on channelArmed, so the "never goes deaf" claim above is about
+  // the drain only. A stood-down daemon ignores update_rpc exactly as a daemon
+  // that was passive from boot does, and for the same reason: a passive daemon
+  // never joins the pairing room, so it never receives the frame at all. The
+  // lock holder is the one daemon that answers for this pairing, updates
+  // included.
+  //
+  // Rollout caveat that follows from it: when the holder updates and releases
+  // the lock on shutdown, a stood-down OLD daemon can reclaim within one
+  // recheck (5s) while the NEW one is still booting, and it boots passive. So
+  // ownership can land back on the old version and stay there. A rollout should
+  // update or stop the passive daemons first, then the holder.
   realtimeSocket.on('update_rpc', whenArmed('update_rpc', (payload: any) => {
     try {
       const frame = normalizeUpdateRpc(payload)
@@ -8808,6 +8821,17 @@ async function main(): Promise<void> {
         log('re-arm finished without the pairing lock; staying passive (see the arm-end note)')
         return
       }
+      // Fresh spell in the other direction too: the next stand-down gets to
+      // report each ignored frame kind once again, instead of inheriting the
+      // "already said it" set from the previous passive spell.
+      standDownIgnoredFrames.clear()
+      // A re-armed daemon never receives meeting_state_resync: the socket never
+      // reconnected (it stayed up throughout the passive spell), and the resync
+      // rides a connect. So a meeting floor this daemon held before it stood
+      // down is not restored here; it recovers through the idle cron on the
+      // backend. Acceptable, and documented rather than fixed, because forcing
+      // a reconnect to chase it would cost the cheap re-arm this design is
+      // built on.
       channelArmed = true
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
