@@ -4859,6 +4859,34 @@ const PAIRING_LOCK_PATH = pairingLockPath(CREDENTIALS_PATH)
 // forward a message have to read it: the poll tick inside main, and the
 // WebSocket inbound chokepoint in connectWebsocket.
 let channelArmed = false
+// Frame kinds already reported as ignored during the CURRENT stand-down.
+// Cleared when the daemon stands down, so each passive spell says each kind
+// once instead of once every few seconds for hours.
+const standDownIgnoredFrames = new Set<string>()
+// Every realtimeSocket handler that acts on the pairing's behalf is registered
+// through this, so a stood-down daemon behaves like a daemon that was passive
+// from boot: a passive daemon never joins the pairing room, so it never sees
+// these frames at all, and one that keeps its socket must not act on them
+// either. Without it, three daemons on one pairing each handled every
+// voice_rpc frame, which is where the duplicate consult cards and the
+// "late/unknown voice_rpc result" warnings came from. The socket deliberately
+// stays CONNECTED while stood down: re-arming must stay cheap, and the
+// re-arm path relies on the connection still being there.
+// connect / disconnect / connect_error are NOT wrapped: they are transport
+// bookkeeping, not work done for the pairing, and a passive daemon still needs
+// its own connection state to be correct.
+const whenArmed =
+  <T>(frame: string, handle: (payload: T) => void) =>
+  (payload: T): void => {
+    if (!channelArmed) {
+      if (!standDownIgnoredFrames.has(frame)) {
+        standDownIgnoredFrames.add(frame)
+        log(`${frame} ignored: standing down, another daemon holds the pairing lock`)
+      }
+      return
+    }
+    handle(payload)
+  }
 // Beacon heartbeat: a sibling of channel-live.json whose mtime updates on every
 // successful beacon, so an external supervisor can tell a dead channel from a
 // live process (channel-live.json is edge-triggered on connect/boot only and
@@ -7339,7 +7367,7 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
-  realtimeSocket.on('voice_rpc', (payload: any) => {
+  realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeVoiceRpc(payload)
@@ -7351,14 +7379,14 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
     }
-  })
+  }))
 
   // Agent Packs (Type 3 "Full handoff"): the backend asks this host to
   // package the agent workspace into a pack zip and upload it. Frames are
   // validated in normalizeExportPack (frames without an rpcId drop; anything
   // with an rpcId ALWAYS gets a result or descriptive error, the voice_rpc
   // G2 lesson). Duplicate re-emits are deduped by rpcId inside the handler.
-  realtimeSocket.on('export_pack', (payload: any) => {
+  realtimeSocket.on('export_pack', whenArmed('export_pack', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeExportPack(payload)
@@ -7373,11 +7401,11 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`export_pack handler error: ${err}`)
     }
-  })
+  }))
 
   // Dry run for the handoff wizard's per-file memory opt-in: list candidate
   // files (kind body | memory) without building or uploading anything.
-  realtimeSocket.on('export_pack_manifest', (payload: any) => {
+  realtimeSocket.on('export_pack_manifest', whenArmed('export_pack_manifest', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeExportPackManifest(payload)
@@ -7389,12 +7417,12 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`export_pack_manifest handler error: ${err}`)
     }
-  })
+  }))
 
   // Voice dispatch (BGOS voice revamp): the user, on a live voice call,
   // dispatched background work to THIS agent. Surface it to the live session
   // with the task id + brief; the agent reports back via complete_voice_task.
-  realtimeSocket.on('voice_task_dispatch', (payload: any) => {
+  realtimeSocket.on('voice_task_dispatch', whenArmed('voice_task_dispatch', (payload: any) => {
     if (updateDrainMode) return
     try {
       const parsed = normalizeVoiceTaskDispatch(payload, {
@@ -7425,7 +7453,7 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
-  })
+  }))
 
   // One-click updates: the backend asks THIS daemon to update itself now.
   // Deliberately NOT gated by updateDrainMode (every other handler here is):
@@ -7433,7 +7461,7 @@ function connectWebsocket(): void {
   // the moment an update starts could never be retried or observed. Also not
   // wrapped in trackMessageOperation: a tracked update would hold
   // activeOperations above zero and deadlock its own drain wait.
-  realtimeSocket.on('update_rpc', (payload: any) => {
+  realtimeSocket.on('update_rpc', whenArmed('update_rpc', (payload: any) => {
     try {
       const frame = normalizeUpdateRpc(payload)
       if (!frame) return
@@ -7444,13 +7472,13 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`update_rpc handler error: ${err}`)
     }
-  })
+  }))
 
   // Watcher install (design 7.6): the backend asks THIS agent to install the
   // machine's watcher. Same posture as update_rpc: a control rail, so not
   // drain-gated and not a tracked operation; the handler acks, reports the
   // steps, and fails closed.
-  realtimeSocket.on('watcher_install_rpc', (payload: any) => {
+  realtimeSocket.on('watcher_install_rpc', whenArmed('watcher_install_rpc', (payload: any) => {
     try {
       const frame = normalizeWatcherInstallRpc(payload)
       if (!frame) return
@@ -7461,9 +7489,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`watcher_install_rpc handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('inbound_message', (payload: any) => {
+  realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
     // Agent Update Stream (flag-gated): a stamped event routes through the
     // consumer's seq arithmetic; the apply callback is the EXACT legacy
@@ -7471,7 +7499,7 @@ function connectWebsocket(): void {
     // unstamped payload: the legacy path runs untouched.
     if (routeStampedInbound(payload, deliverWsInbound)) return
     deliverWsInbound(payload)
-  })
+  }))
 
   // The legacy inbound delivery body, shared verbatim by the direct path
   // above and the stream-stamped apply. Hoisted declaration so the handler
@@ -7662,7 +7690,7 @@ function connectWebsocket(): void {
     }
   }
 
-  realtimeSocket.on('peer_conversation_closed', (payload: any) => {
+  realtimeSocket.on('peer_conversation_closed', whenArmed('peer_conversation_closed', (payload: any) => {
     if (updateDrainMode) return
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
@@ -7695,14 +7723,14 @@ function connectWebsocket(): void {
         },
       },
     })).catch(() => {})
-  })
+  }))
 
-  realtimeSocket.on('peer_turn_yielded', (payload: any) => {
+  realtimeSocket.on('peer_turn_yielded', whenArmed('peer_turn_yielded', (payload: any) => {
     if (updateDrainMode) return
     log(
       `peer_turn_yielded conv=${payload?.conversation_id} → ${payload?.turn_holder_id}`,
     )
-  })
+  }))
 
   // ── Command Center meetings (V3) ──────────────────────────────────────
   // The user dragged this assistant into an N-party meeting. We forward
@@ -7711,7 +7739,7 @@ function connectWebsocket(): void {
   // the `meeting_reply` MCP tool only when your_turn=YES; the backend
   // enforces the turn protocol with HTTP 409 if it tries otherwise.
 
-  realtimeSocket.on('meeting_invitation', (payload: any) => {
+  realtimeSocket.on('meeting_invitation', whenArmed('meeting_invitation', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -7794,9 +7822,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_invitation handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_message', (payload: any) => {
+  realtimeSocket.on('meeting_message', whenArmed('meeting_message', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -7918,9 +7946,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_turn_changed', (payload: any) => {
+  realtimeSocket.on('meeting_turn_changed', whenArmed('meeting_turn_changed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -7957,7 +7985,7 @@ function connectWebsocket(): void {
         },
       })).catch(() => {})
     }
-  })
+  }))
 
   // Reconnect catch-up for the turn protocol. A meeting_turn_changed is a
   // fire-and-forget emit; if we were disconnected when the floor passed to us
@@ -7966,7 +7994,7 @@ function connectWebsocket(): void {
   // every open meeting where we hold or are queued for the floor. It is
   // authority-safe (only re-sends DB state, never grants a turn) and carries
   // lastMessageId so we can ignore a stale signal we already acted on.
-  realtimeSocket.on('meeting_state_resync', (payload: any) => {
+  realtimeSocket.on('meeting_state_resync', whenArmed('meeting_state_resync', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -8033,9 +8061,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_closed', (payload: any) => {
+  realtimeSocket.on('meeting_closed', whenArmed('meeting_closed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8056,9 +8084,9 @@ function connectWebsocket(): void {
         },
       },
     })).catch(() => {})
-  })
+  }))
 
-  realtimeSocket.on('meeting_participant_left', (payload: any) => {
+  realtimeSocket.on('meeting_participant_left', whenArmed('meeting_participant_left', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8076,9 +8104,9 @@ function connectWebsocket(): void {
         (p) => Number(p.assistantId) !== leaverId,
       )
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_participant_added', (payload: any) => {
+  realtimeSocket.on('meeting_participant_added', whenArmed('meeting_participant_added', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8093,9 +8121,9 @@ function connectWebsocket(): void {
     if (!ctx.participants.some((p) => p.assistantId === added.assistantId)) {
       ctx.participants.push(added)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_policy_changed', (payload: any) => {
+  realtimeSocket.on('meeting_policy_changed', whenArmed('meeting_policy_changed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8109,7 +8137,7 @@ function connectWebsocket(): void {
         : Number.isFinite(Number(currentRaw))
           ? Number(currentRaw)
           : null
-  })
+  }))
 
   // ── Agent Update Stream events (flag-gated, additive) ──────────────────────
   // Registered beside the existing handlers, drain-guarded like every
@@ -8119,7 +8147,7 @@ function connectWebsocket(): void {
     // stream_authority rides a fresh socket auth: {assistantId, enabled,
     // seq, streamEpoch}. Authority alone never demotes sweeps; a beacon on
     // the CURRENT connection is also required (sweepMode, spec 8).
-    realtimeSocket.on('stream_authority', (payload: any) => {
+    realtimeSocket.on('stream_authority', whenArmed('stream_authority', (payload: any) => {
       if (updateDrainMode) return
       try {
         if (
@@ -8141,12 +8169,12 @@ function connectWebsocket(): void {
       } catch (err) {
         log(`stream_authority handler error: ${err}`)
       }
-    })
+    }))
 
     // update_state is the 60s beacon: {assistantId, seq, streamEpoch}. A
     // beacon at the cursor is zero requests; ahead of it, the consumer runs
     // one jittered getDifference chain; a new epoch forces the full resync.
-    realtimeSocket.on('update_state', (payload: any) => {
+    realtimeSocket.on('update_state', whenArmed('update_state', (payload: any) => {
       if (updateDrainMode) return
       try {
         if (
@@ -8169,7 +8197,7 @@ function connectWebsocket(): void {
       } catch (err) {
         log(`update_state handler error: ${err}`)
       }
-    })
+    }))
   }
 }
 
@@ -8955,6 +8983,9 @@ async function main(): Promise<void> {
           })
           if (!refreshed.held) {
             channelArmed = false
+            // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
+            // gets to say it once more.
+            standDownIgnoredFrames.clear()
             log(
               `pairing lock now held by pid ${refreshed.holderPid ?? 'unknown'}; ` +
                 `standing down to passive (this daemon stops polling and forwarding ` +
