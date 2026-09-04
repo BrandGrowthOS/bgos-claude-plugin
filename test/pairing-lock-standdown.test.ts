@@ -68,8 +68,13 @@ test('the stand-down gate wraps every socket handler that acts for the pairing',
 test('the wrapped set is exactly the handlers minus the transport ones', () => {
   // Counting, not just spot-checking, so a NEW handler added later cannot slip
   // in unwrapped and unnoticed: this fails the moment the two lists disagree.
-  const registered = [...server.matchAll(/realtimeSocket\.on\('([a-z_]+)'/g)].map((m) => m[1])
-  const wrapped = [...server.matchAll(/whenArmed\('([a-z_]+)'/g)].map((m) => m[1])
+  // The character class must stay WIDER than the frame names in use today. It
+  // was [a-z_]+, and a future realtimeSocket.on('meeting_v2', ...) would have
+  // matched neither pattern (the closing quote has to follow the class
+  // directly), so it would never enter `registered`, both assertions below
+  // would still pass, and the handler would ship ungated with the suite green.
+  const registered = [...server.matchAll(/realtimeSocket\.on\('([A-Za-z0-9_]+)'/g)].map((m) => m[1])
+  const wrapped = [...server.matchAll(/whenArmed\('([A-Za-z0-9_]+)'/g)].map((m) => m[1])
   assert.deepEqual(
     [...new Set(registered)].sort(),
     [...PAIRING_FRAMES, ...TRANSPORT_FRAMES].sort(),

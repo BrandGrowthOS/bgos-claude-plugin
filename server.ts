@@ -9080,6 +9080,20 @@ async function main(): Promise<void> {
         // would have no tick left to notice: armed forever beside the new
         // holder, with no recovery path. It would also silence the beacon
         // heartbeat, the stream gap deadlines and the WS-down catch-up sweep.
+        //
+        // The reschedule MUST stay HERE, in the finally. Do not "fix" a future
+        // version of this by starting a fresh scheduler from armDelivery's
+        // re-arm path instead. Two reasons. First, that reintroduces the
+        // second-poll-loop hazard deliveryLoopsStarted exists to prevent: an
+        // arm that is not the first would leave two interleaved tick chains
+        // running forever. Second, this tick spends its throttle slot BEFORE
+        // knowing the refresh answer (lastDeliveryHeartbeatAt is assigned above
+        // the refresh call), which is harmless while the loop survives the
+        // stand-down, because after a passive spell shouldHeartbeatNow is
+        // already true and the first tick after re-arming refreshes the lock
+        // immediately. Behind a COLD scheduler it stops being harmless: the
+        // first refresh would be deferred a full LOCK_HEARTBEAT_INTERVAL_MS,
+        // which is precisely the window in which a rival reclaims.
         setTimeout(tick, POLL_INTERVAL_MS)
       }
     }
