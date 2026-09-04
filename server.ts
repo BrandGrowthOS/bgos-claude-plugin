@@ -6245,6 +6245,10 @@ const voiceRpc = new VoiceRpcHandler({
       return monitoredChatIds[0] ?? null
     },
     userId: USER_ID,
+    // The WS voice_task_dispatch lane already gates on this belt (see
+    // normalizeVoiceTaskDispatch below); the paired RPC dispatch() lane must
+    // apply the identical gate, not silently bypass it.
+    requireConfirmedDispatch: REQUIRE_CONFIRMED_DISPATCH,
   },
   postAck: (rpcId) =>
     bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),

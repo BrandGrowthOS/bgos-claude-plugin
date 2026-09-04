@@ -311,6 +311,10 @@ export interface VoiceRpcConfig {
   assistantId: string
   chatIdFallback?: string | null
   userId?: string
+  /** BGOS_REQUIRE_CONFIRMED_DISPATCH: when true, the paired dispatch() lane
+   *  applies the same gate the WS voice_task_dispatch lane already applies
+   *  via normalizeVoiceTaskDispatch. The two lanes must not diverge. */
+  requireConfirmedDispatch?: boolean
 }
 
 /** The envelope every voice channel card carries. One function so the consult
@@ -926,17 +930,21 @@ export class VoiceRpcHandler {
   // frame; now so do we, with the same card the WS lane already builds.
   private async dispatch(frame: VoiceRpcFrame): Promise<Record<string, unknown>> {
     const p = (frame.payload ?? {}) as Record<string, unknown>
-    const taskId = String(p.taskId ?? p.task_id ?? '').trim()
-    if (!taskId) throw new VoiceRpcError('BAD_DISPATCH', 'dispatch frame carries no taskId')
-    const question = String(p.question ?? '')
-    const context = p.context ? String(p.context) : ''
     const chatId = frame.chatId != null ? String(frame.chatId) : String(this.deps.config.chatIdFallback ?? '')
+    // Coalesce to the WS lane's snake_case wire shape so ONE normalizer gates
+    // both lanes (the requireConfirmed belt must not diverge between them).
+    const coalesced = { ...p, task_id: p.taskId ?? p.task_id, chat_id: chatId }
+    const parsed = normalizeVoiceTaskDispatch(coalesced, {
+      requireConfirmed: this.deps.config.requireConfirmedDispatch === true,
+    })
+    if (!parsed.ok) throw new VoiceRpcError('BAD_DISPATCH', parsed.reason)
+    const { taskId, question, context } = parsed.task
     await this.deps.notify(
       buildVoiceTaskDispatchText({ taskId, question, context }),
       channelMeta(
         {
           event_type: 'voice_task_dispatch',
-          chat_id: chatId,
+          chat_id: parsed.task.chatId,
           user_id: String(this.deps.config.userId ?? ''),
           assistant_id: String(this.deps.config.assistantId),
           transport: 'rpc',

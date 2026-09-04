@@ -10,6 +10,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 import {
   VoiceRpcHandler,
@@ -688,6 +691,54 @@ test('every voice card carries the canonical envelope, all strings', async () =>
   }
   // chatId null on the frame, so the fallback must have filled it.
   assert.equal(rec.notifications[0]!.meta.chat_id, '4465')
+})
+
+// ── dispatch() must apply the same requireConfirmed gate as the WS lane ─────
+
+test('dispatch() rejects an unconfirmed task when requireConfirmedDispatch is on', async () => {
+  const { deps, rec } = makeDeps({ config: { requireConfirmedDispatch: true } })
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g1', chatId: '4465', payload: { taskId: 't1', question: 'book the table' } }),
+  )
+  assert.equal(rec.results.length, 1)
+  const { body } = rec.results[0]!
+  assert.equal(body.ok, false)
+  assert.equal(body.error?.code, 'BAD_DISPATCH')
+  assert.match(body.error?.message ?? '', /unconfirmed/)
+  assert.equal(rec.notifications.length, 0, 'an unconfirmed dispatch must never reach the live session')
+})
+
+test('dispatch() accepts a confirmed task when requireConfirmedDispatch is on', async () => {
+  const { deps, rec } = makeDeps({ config: { requireConfirmedDispatch: true } })
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g2', chatId: '4465', payload: { taskId: 't1', question: 'book the table', confirmed: true } }),
+  )
+  assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.equal(rec.notifications.length, 1)
+})
+
+test('dispatch() accepts an unconfirmed task when requireConfirmedDispatch is off (default)', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g3', chatId: '4465', payload: { taskId: 't1', question: 'book the table' } }),
+  )
+  assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.equal(rec.notifications.length, 1)
+})
+
+// ── server.ts config wiring: chatIdFallback must stay lazy ─────────────────
+
+test('server.ts VoiceRpcHandler config declares chatIdFallback as a getter, not a snapshot', () => {
+  // A plain `chatIdFallback: monitoredChatIds[0] ?? null` field would freeze
+  // on the empty startup array (monitoredChatIds is populated after this
+  // config object is built at module load). This source-scan makes a revert
+  // to a plain field fail a test instead of silently shipping an
+  // always-empty chat_id fallback.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const serverSrc = readFileSync(join(here, '..', 'server.ts'), 'utf8')
+  assert.match(serverSrc, /get\s+chatIdFallback\s*\(/, 'chatIdFallback must stay a getter on the voiceRpc config literal')
 })
 
 test('a dispatch with no taskId is refused loudly, never silently', async () => {
