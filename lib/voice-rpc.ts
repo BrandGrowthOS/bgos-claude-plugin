@@ -121,6 +121,12 @@ export const CLIENT_SECRETS_URL =
  *  (agent_dispatch / get_task_status / check_agent_status / roundtable_*):
  *  the app's tool router relays every OTHER name to the consult endpoint. */
 export const CONSULT_TOOL_NAME = 'claude_agent_consult'
+/** OpenAI deprecated gpt-4o-mini-transcribe on 2026-08-26, with shutdown
+ *  2027-02-26. The transcript that reaches the agent's brain is built
+ *  entirely from this model's transcription events, so leaving the old
+ *  pin in place would silently empty every call once OpenAI turns it off.
+ *  The client may still override this per agent via session.update. */
+export const TRANSCRIPTION_MODEL_DEFAULT = 'gpt-live-transcribe'
 
 export interface AgentIdentity {
   name: string
@@ -779,7 +785,7 @@ export class VoiceRpcHandler {
           // transcript (posted back into the chat) from realtime
           // transcription events. Server VAD gives natural turn-taking.
           input: {
-            transcription: { model: 'gpt-4o-mini-transcribe' },
+            transcription: { model: TRANSCRIPTION_MODEL_DEFAULT },
             turn_detection: { type: 'server_vad' },
           },
           output: {

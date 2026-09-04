@@ -198,6 +198,15 @@ test('mint maps the OpenAI client_secrets response to the wire contract', async 
   assert.match(sent.session.instructions, /KC: hello/)
 })
 
+test('mint no longer requests a transcription model OpenAI has deprecated', async () => {
+  const { fetchImpl, calls } = okMintFetch()
+  const { deps } = makeDeps({ fetchImpl })
+  await new VoiceRpcHandler(deps).handle(frame())
+
+  const sent = JSON.parse(String(calls[0]!.init.body)) as any
+  assert.equal(sent.session.audio.input.transcription.model, 'gpt-live-transcribe')
+})
+
 test('normalizeVoiceConfig sanitizes the wire (junk voice dropped, speed clamped, instructions capped)', () => {
   assert.deepEqual(normalizeVoiceConfig(undefined), {})
   assert.deepEqual(normalizeVoiceConfig('cedar'), {})
