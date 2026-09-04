@@ -1724,8 +1724,10 @@ const mcp = new Server(
       'call (not a text message). Reach for it when the user explicitly asks',
       'the agent to call them RIGHT NOW ("call me", "give me a ring", "let\'s',
       'hop on voice") or when a scheduled call fires and tells you to place',
-      'it. Pass a short `reason`',
-      '(<=200 chars) shown on the ring; `chat_id` is optional and defaults to',
+      'it. Pass a short `reason`: one or two plain sentences, 140 characters',
+      'max, no markdown or line breaks. It is shown under your name on the',
+      'ring screen, and longer text is trimmed at a word boundary, so write it',
+      'for a phone screen, not a paragraph. `chat_id` is optional and defaults to',
       'the current/most-recent chat. If voice is not configured on this agent,',
       'the tool returns a human setup-guidance string (NOT an error), relay that',
       'guidance to the user verbatim via `reply` so they know exactly how to',
@@ -2775,9 +2777,12 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           reason: {
             type: 'string',
             description:
-              'Short reason shown on the ring so the owner knows why you are ' +
-              'calling (<=200 chars, e.g. "Daily standup" or "Your build ' +
-              'finished"). Optional but recommended.',
+              'Short reason shown under your name on the ring screen so the ' +
+              'owner knows why you are calling. One or two plain sentences, ' +
+              '140 characters max, no markdown or line breaks (e.g. "Daily ' +
+              'standup" or "Your build finished. Want to review it now?"). ' +
+              'Longer text is trimmed at a word boundary. Optional but ' +
+              'recommended.',
           },
           chat_id: {
             type: 'string',
