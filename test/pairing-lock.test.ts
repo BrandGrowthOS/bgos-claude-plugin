@@ -369,6 +369,28 @@ test('refreshPairingLockDetailed still reports held when the record is ours', ()
   assert.deepEqual(out, { held: true })
 })
 
+test('a refresh that cannot write stays held but names the io error', () => {
+  // A filesystem hiccup is not proof of reclaim, so the daemon keeps the
+  // channel. It must not keep it SILENTLY though: a holder whose writes fail
+  // never re-stamps its heartbeat, goes stale after three intervals, and is
+  // reclaimed by a rival while it still believes it is the holder. The string
+  // is what the daemon warns with, so an operator can see the failing holder
+  // instead of a healthy looking log.
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 7, heartbeatAt: 1_000 }) },
+    failWrite: true,
+  })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(out.held, true)
+  assert.match(String((out as { ioError?: string }).ioError ?? ''), /boom write/)
+})
+
+test('a healthy refresh carries no ioError, so the warning cannot latch on', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 7, heartbeatAt: 1_000 }) } })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal((out as { ioError?: string }).ioError, undefined)
+})
+
 // ── Effectful: HOLDER EXIT LETS A WAITER RECLAIM (DoD) ─────────────────────────
 
 test('holder exit via release lets a waiter reclaim immediately', () => {

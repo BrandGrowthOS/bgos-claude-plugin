@@ -327,8 +327,14 @@ export function acquirePairingLock(input: {
 }
 
 /** What a heartbeat refresh discovered. `held:false` carries the rival's pid so
- *  the caller can name it in a log line and stand down against it. */
-export type RefreshOutcome = { held: true } | { held: false; holderPid: number | undefined }
+ *  the caller can name it in a log line and stand down against it. `held:true`
+ *  carries an `ioError` when the heartbeat could not actually be written: we
+ *  keep the channel (a hiccup is not proof of reclaim) but the caller must be
+ *  able to SAY so, because a holder whose writes keep failing goes stale after
+ *  three intervals and is reclaimed while still believing it is the holder. */
+export type RefreshOutcome =
+  | { held: true; ioError?: string }
+  | { held: false; holderPid: number | undefined }
 
 /**
  * Refresh our heartbeat and report what we found.
@@ -368,11 +374,12 @@ export function refreshPairingLockDetailed(input: {
       }),
     )
     return { held: true }
-  } catch {
+  } catch (err) {
     // A filesystem hiccup is not proof we were reclaimed. Claim we still hold
     // it: a false stand-down costs a live channel, a delayed stand-down costs
-    // one duplicated poll cycle. The next refresh re-checks.
-    return { held: true }
+    // one duplicated poll cycle. The next refresh re-checks. The error rides
+    // along so the caller can warn once instead of looking healthy forever.
+    return { held: true, ioError: err instanceof Error ? err.message : String(err) }
   }
 }
 
