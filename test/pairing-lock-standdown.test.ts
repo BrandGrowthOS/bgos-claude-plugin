@@ -99,9 +99,35 @@ test('the poll tick reschedules itself from a finally, so standing down cannot k
   // so this cannot be satisfied by some unrelated finally elsewhere in the file
   // that merely happens to precede the scheduler.
   assert.match(server, /finally\s*\{(?:\s|\/\/[^\n]*\n)*setTimeout\(tick,/)
-  // And the reschedule must not ALSO sit bare after the catch, which would
-  // double the scheduler on every tick.
-  assert.doesNotMatch(server, /\}\s*catch\s*\(err\)\s*\{[^}]*\}\s*setTimeout\(tick,/)
+  // And the scheduler must exist EXACTLY twice: the initial kick that starts
+  // the chain, plus the one reschedule in the finally. The previous form of
+  // this assertion was a negative regex over "} catch (err) { ... } setTimeout",
+  // which was vacuous: a mutant that KEPT the finally reschedule and added a
+  // bare one after the block matched neither the catch shape nor anything else,
+  // passed, and doubled the tick chain on every cycle for the life of the
+  // process. Counting cannot be fooled that way.
+  assert.equal(
+    [...server.matchAll(/setTimeout\(tick,/g)].length,
+    2,
+    'exactly two: the initial kick and the finally reschedule; a third doubles the poll loop',
+  )
+})
+
+test('the stand-down early return sits INSIDE the tick try, ahead of the finally', () => {
+  // Placement is the whole point and no regex over the file can see it: the
+  // guard must return from inside the try so the finally still reschedules.
+  // Moved below the finally it would be dead code (the tick already returned or
+  // fell through); moved out of the try it would skip the reschedule, and the
+  // stand-down tick would be the last tick the process ever ran.
+  const tickStart = server.indexOf('const tick = async (): Promise<void> => {')
+  assert.ok(tickStart !== -1, 'the poll tick must be findable')
+  const tryStart = server.indexOf('try {', tickStart)
+  const finallyStart = server.indexOf('} finally {', tickStart)
+  const guard = server.indexOf('if (!channelArmed) return', tryStart)
+  assert.ok(tryStart !== -1 && finallyStart !== -1, "the tick's try/finally must be findable")
+  assert.ok(guard !== -1, 'the stand-down guard must be findable')
+  assert.ok(guard > tryStart, 'the guard must be inside the try, not before it')
+  assert.ok(guard < finallyStart, 'the guard must return before the finally, not after it')
 })
 
 test('standing down does not disconnect the socket, so re-arming stays cheap', () => {
@@ -117,4 +143,86 @@ test('standing down does not disconnect the socket, so re-arming stays cheap', (
   const standDown = server.slice(start, end)
   assert.doesNotMatch(standDown, /realtimeSocket\?\.(disconnect|close)\(/)
   assert.doesNotMatch(standDown, /process\.exit\(/)
+})
+
+test('the heartbeat is gated on lock OWNERSHIP, not on being armed', () => {
+  // channelArmed is set at the END of the arm, and arming runs discoverChats
+  // (up to tens of seconds). Gating the heartbeat on it left the lock owned and
+  // unrefreshed for that whole window, so it went stale (15s), a rival reclaimed
+  // and armed, and this daemon then set channelArmed anyway: two armed daemons
+  // on one pairing until the next tick noticed.
+  assert.match(server, /let lockHeld = false/)
+  // Both acquisition sites must claim ownership immediately, which is the point
+  // of the separate flag.
+  assert.match(server, /lockAtBoot\.acquired\)\s*\{[\s\S]{0,600}?lockHeld = true/)
+  assert.match(server, /res\.acquired\)[\s\S]{0,600}?lockHeld = true/)
+  // And the heartbeat predicate must read it.
+  assert.match(server, /const heartbeatThisTick =\s*\n\s*lockHeld &&/)
+  // Losing the lock drops both flags.
+  assert.match(server, /if \(!refreshed\.held\)\s*\{[\s\S]{0,200}?lockHeld = false/)
+})
+
+test('a failed re-arm gives the lock back instead of holding it deaf', () => {
+  // Without this the daemon keeps the pairing lock (its heartbeat is on
+  // lockHeld, so the lock stays alive), never reaches channelArmed, and has
+  // already cleared its recheck interval: nothing delivers for that pairing
+  // again and no rival can take over.
+  const start = server.indexOf('void armDelivery().catch(')
+  assert.ok(start !== -1, 'the promotion arm must be findable')
+  const block = server.slice(start, start + 1200)
+  assert.match(block, /channelArmed = false/)
+  assert.match(block, /lockHeld = false/)
+  assert.match(block, /resumeLockRecheck\(\)/)
+})
+
+test('the re-arm catches the shared cursor file up before it polls again', () => {
+  // A stood-down daemon's chatLastSeen is frozen at boot-era values while the
+  // holder advances the shared file. Without a merge the first poll after
+  // reclaiming re-forwards the holder's deliveries and the first flush rewinds
+  // the file.
+  const rearm = server.indexOf('if (deliveryLoopsStarted) {')
+  const merge = server.indexOf('mergeCursorMaps(', rearm)
+  const armedAgain = server.indexOf('channelArmed = true', rearm)
+  assert.ok(rearm !== -1, 'the re-arm path must be findable')
+  assert.ok(merge !== -1, 'the re-arm must merge the cursor file')
+  assert.ok(armedAgain !== -1)
+  assert.ok(merge < armedAgain, 'the merge must happen before delivery is re-armed')
+  // And the flush must merge too, so the exit hooks and the flush timer cannot
+  // rewind a concurrent holder's cursors either.
+  const flush = server.indexOf('function flushChatCursors(): void {')
+  assert.ok(flush !== -1)
+  const flushBody = server.slice(flush, server.indexOf('\n}', flush))
+  assert.match(flushBody, /mergeCursorMaps\(/)
+})
+
+test('the four lock lifecycle lines name this daemon pid', () => {
+  // Every rival daemon for a pairing appends to the SAME per-assistant log
+  // file and log() carries no pid, so without this an operator reading the log
+  // cannot tell which process owns the channel. Only these four lines carry it:
+  // a global prefix would rewrite every line a log parser already reads.
+  for (const re of [
+    /pid \$\{process\.pid\}: pairing lock acquired/,
+    /pid \$\{process\.pid\}: \$\{formatPassiveBanner/,
+    /pid \$\{process\.pid\}: pairing lock reclaimed on recheck/,
+    /pid \$\{process\.pid\}: pairing lock now held by pid/,
+  ]) {
+    assert.match(server, re)
+  }
+})
+
+test('an arm that lost the lock while it ran does not arm anyway', () => {
+  // The poll tick starts partway through the arm, so it can stand this daemon
+  // down (rival holds the lock) while chat discovery and the boot sweep are
+  // still running. Both arm paths must re-check ownership before flipping
+  // delivery on, or the daemon re-arms itself straight after a correct stand
+  // down and is armed without the lock: the exact bug, one layer down.
+  const armStart = server.indexOf('const armDelivery = async (): Promise<void> => {')
+  assert.ok(armStart !== -1, 'armDelivery must be findable')
+  const arm = server.slice(armStart)
+  const armEnd = arm.indexOf('\n  }\n')
+  const body = arm.slice(0, armEnd === -1 ? arm.length : armEnd)
+  const gates = [...body.matchAll(/if \(!lockHeld\) \{/g)].length
+  const arms = [...body.matchAll(/channelArmed = true/g)].length
+  assert.equal(arms, 2, 'the re-arm path and the end of the first arm')
+  assert.equal(gates, arms, 'every channelArmed = true in armDelivery must sit behind a lockHeld gate')
 })

@@ -187,6 +187,8 @@ import {
 } from './lib/poll-core.js'
 import {
   CursorStore,
+  loadCursorFile,
+  mergeCursorMaps,
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
@@ -4859,6 +4861,20 @@ const PAIRING_LOCK_PATH = pairingLockPath(CREDENTIALS_PATH)
 // forward a message have to read it: the poll tick inside main, and the
 // WebSocket inbound chokepoint in connectWebsocket.
 let channelArmed = false
+// True while this daemon OWNS the pairing lock, which is a different question
+// from whether it may deliver yet. Set the instant the lock is acquired (boot,
+// or a promotion on recheck), cleared when a refresh finds a rival holding it
+// or when the arm that followed an acquisition failed.
+//
+// The two flags must stay separate because arming is SLOW: it observes the
+// marketplace and runs discoverChats, up to tens of seconds. Gating the
+// heartbeat on channelArmed (which is only set at the END of the arm) meant the
+// lock was owned and never refreshed for the whole arm, went stale after 15s,
+// and was legitimately reclaimed by a rival that then armed itself; the first
+// daemon finished arming and set channelArmed anyway, so two daemons were armed
+// until the next tick's refresh noticed. Heartbeat on lockHeld, delivery on
+// channelArmed: the lock stays fresh from the moment it is ours.
+let lockHeld = false
 // Frame kinds already reported as ignored during the CURRENT stand-down.
 // Cleared when the daemon stands down, so each passive spell says each kind
 // once instead of once every few seconds for hours.
@@ -4942,6 +4958,17 @@ function advanceChatCursor(chatId: string, id: number): void {
  */
 function flushChatCursors(): void {
   if (!channelLiveness.live) return
+  // Nothing to write means nothing to clobber, and this is the hot path (every
+  // CURSOR_FLUSH_INTERVAL_MS), so the file read below only happens when a write
+  // is actually about to.
+  if (!cursorStore.isDirty) return
+  // Merge-max against whatever is on disk before writing it. saveCursorFile
+  // writes the WHOLE live map, so a daemon that was stood down while a rival
+  // holder advanced the shared file would otherwise rewind it to this process's
+  // values. Making the flush itself idempotent covers every caller for free,
+  // including the exit hooks, which stay ungated on purpose: a clean shutdown
+  // must still persist the advances it really made.
+  mergeCursorMaps(chatLastSeen, loadCursorFile(cursorStore.filePath).cursors, advanceChatCursor)
   cursorStore.flushIfDirty()
 }
 
@@ -8743,6 +8770,10 @@ async function main(): Promise<void> {
   // transport, the capability warm-up, and the one-time local slash registry
   // above are unconditional.
   let lastDeliveryHeartbeatAt: number | null = null
+  // Latch for the heartbeat-write warning above: set when a refresh reports an
+  // io error, cleared the next time one succeeds, so each failing spell says it
+  // once rather than every five seconds into a log every rival daemon shares.
+  let lockIoErrorWarned = false
   // armDelivery may run more than once per process (a passive daemon promoted
   // on recheck, or a stood-down daemon that reclaimed the lock). Everything it
   // starts below the discovery/sweep phases is PROCESS-scoped and one-shot: the
@@ -8757,6 +8788,26 @@ async function main(): Promise<void> {
   const armDelivery = async (): Promise<void> => {
     if (deliveryLoopsStarted) {
       await phase('re-discover chats', () => discoverChats())
+      // Catch the cursor file up BEFORE the first poll of the new spell. While
+      // this daemon was stood down the lock holder kept advancing the shared
+      // file; our in-memory map is frozen at whatever it held when we lost the
+      // lock. Polling from it would re-forward everything the holder already
+      // delivered (forwardedMessageIds is per process, so it cannot dedupe
+      // another daemon's work) and the first flush would rewind the file.
+      // Monotonic by construction: advanceChatCursor never moves a cursor back,
+      // so a chat WE advanced past the file keeps our higher value.
+      const merged = mergeCursorMaps(
+        chatLastSeen,
+        loadCursorFile(cursorStore.filePath).cursors,
+        advanceChatCursor,
+      )
+      if (merged > 0) {
+        log(`cursor catch-up on re-arm: ${merged} chat cursor(s) advanced from the shared file`)
+      }
+      if (!lockHeld) {
+        log('re-arm finished without the pairing lock; staying passive (see the arm-end note)')
+        return
+      }
       channelArmed = true
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
@@ -8962,12 +9013,15 @@ async function main(): Promise<void> {
         // anything that forwards a message or advances a cursor: keep the
         // pairing lock fresh so a rival never reclaims a live holder, and stand
         // down the moment a rival genuinely holds it. Throttled to
-        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick. Skipped entirely while
-        // stood down, because a passive daemon has no lock to refresh; the
-        // recheck interval below is what brings it back.
+        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick. Gated on lockHeld, NOT
+        // on channelArmed: a daemon that has just acquired the lock is still
+        // arming (discoverChats and friends take seconds), and a lock nobody
+        // refreshes during that window goes stale and is reclaimed underneath
+        // us. Skipped while we hold no lock at all, because a passive daemon has
+        // nothing to refresh; the recheck interval below is what brings it back.
         const hbNow = Date.now()
         const heartbeatThisTick =
-          channelArmed &&
+          lockHeld &&
           shouldHeartbeatNow({
             lastAt: lastDeliveryHeartbeatAt,
             now: hbNow,
@@ -8983,15 +9037,32 @@ async function main(): Promise<void> {
           })
           if (!refreshed.held) {
             channelArmed = false
+            lockHeld = false
             // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
             // gets to say it once more.
             standDownIgnoredFrames.clear()
             log(
-              `pairing lock now held by pid ${refreshed.holderPid ?? 'unknown'}; ` +
+              `pid ${process.pid}: pairing lock now held by pid ` +
+                `${refreshed.holderPid ?? 'unknown'}; ` +
                 `standing down to passive (this daemon stops polling and forwarding ` +
                 `so it cannot eat the holder's messages) and watching for reclaim`,
             )
             resumeLockRecheck()
+          } else if (refreshed.ioError) {
+            // We keep the channel (a write hiccup is not proof of reclaim) but
+            // we did NOT re-stamp the heartbeat, so this daemon is drifting
+            // towards a staleness reclaim while looking perfectly healthy. Once
+            // per spell, so a failing disk cannot flood the shared log.
+            if (!lockIoErrorWarned) {
+              lockIoErrorWarned = true
+              log(
+                `WARN pid ${process.pid}: pairing lock heartbeat could not be written ` +
+                  `(${refreshed.ioError}); still holding the channel, but a rival will ` +
+                  `reclaim it if this keeps failing`,
+              )
+            }
+          } else {
+            lockIoErrorWarned = false
           }
         }
         // The stand-down consequence. Everything past this line either forwards
@@ -9242,6 +9313,22 @@ async function main(): Promise<void> {
     // writes, and the heartbeat refreshes the lock. Deliberately after every
     // loop above has been started, so a tick that fires mid-arm cannot deliver
     // against half-built state.
+    //
+    // And only if the lock is still OURS. Arming is slow (chat discovery plus
+    // the boot sweep), the poll tick starts partway through it, and that tick
+    // can find a rival holding the lock and stand this daemon down while the
+    // rest of the arm is still running. Setting the flag unconditionally here
+    // would re-arm a daemon that had just correctly stood down, which is the
+    // dual-armed daemon this whole change exists to remove. The stand-down
+    // already started the recheck loop, so this daemon comes back the moment
+    // the lock is genuinely free again.
+    if (!lockHeld) {
+      log(
+        'arm finished but the pairing lock was lost while it ran; staying passive ' +
+          'and waiting for the recheck loop to reclaim',
+      )
+      return
+    }
     channelArmed = true
   }
 
@@ -9267,11 +9354,25 @@ async function main(): Promise<void> {
         if (!res.acquired) return
         if (lockRecheck) clearInterval(lockRecheck)
         lockRecheck = null
+        // Same rule as the boot path: we own the lock now, so the heartbeat has
+        // to start refreshing it immediately, not when the arm finishes.
+        lockHeld = true
         log(
-          `pairing lock reclaimed on recheck (${res.reason}); promoting from ` +
-            `passive to active and arming delivery`,
+          `pid ${process.pid}: pairing lock reclaimed on recheck (${res.reason}); ` +
+            `promoting from passive to active and arming delivery`,
         )
-        void armDelivery().catch((err) => log(`delivery arm after promotion failed: ${err}`))
+        void armDelivery().catch((err) => {
+          // The arm failed after we took the lock. Without this the daemon
+          // would sit holding the pairing lock, deaf (channelArmed never
+          // reached true), with the recheck interval already cleared: nothing
+          // would ever deliver for this pairing again, and no rival could take
+          // over while our heartbeat kept the lock alive. Drop everything and
+          // go back to watching.
+          channelArmed = false
+          lockHeld = false
+          resumeLockRecheck()
+          log(`delivery arm after promotion failed: ${err}; released and back to passive`)
+        })
       } catch (err) {
         // A lock operation must never kill the daemon: an unreadable or
         // half-written lock file just means we stay passive and try again on
@@ -9289,13 +9390,17 @@ async function main(): Promise<void> {
     bootedAt: DAEMON_START_MS,
   })
   if (lockAtBoot.acquired) {
+    // Ownership is true from HERE, not from the end of the arm below: the poll
+    // tick's heartbeat is gated on lockHeld precisely so the lock stays fresh
+    // while the (slow) arm runs.
+    lockHeld = true
     log(
-      `pairing lock acquired (${lockAtBoot.reason}) at ${PAIRING_LOCK_PATH}; ` +
-        `this daemon owns the channel for this pairing`,
+      `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
+        `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
     )
     await armDelivery()
   } else {
-    log(formatPassiveBanner(lockAtBoot.holderPid))
+    log(`pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid)}`)
     // Recheck on the heartbeat cadence: if the holder exits (its lock is
     // released, its pid dies, or its heartbeat goes stale) this passive daemon
     // reclaims and arms delivery.
