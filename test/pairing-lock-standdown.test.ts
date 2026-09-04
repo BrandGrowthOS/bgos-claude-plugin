@@ -5,7 +5,15 @@ import { readFileSync } from 'node:fs'
 // The repo idiom for a source scan: an import.meta.url URL resolves identically
 // under bun and under the tsx runner the canonical `npm test` orchestrator uses,
 // where import.meta.dir does not exist.
-const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+// Normalised to LF the moment it is read. Every assertion below is either a
+// regex anchored on a newline or index arithmetic over offsets, and a checkout
+// with git autocrlf hands us CRLF: the same source then fails patterns that
+// pass here, which is a property of the CHECKOUT, not of the daemon. Normalise
+// once, so the scans describe the code rather than the line endings.
+const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 test('losing the pairing lock stands the daemon down, it does not merely warn', () => {
   // The detailed form must be what the poll tick calls: the boolean form

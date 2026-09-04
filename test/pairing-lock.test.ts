@@ -42,7 +42,12 @@ import {
   type LockRecord,
 } from '../lib/pairing-lock.ts'
 
-const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+// LF-normalised for the same reason as test/pairing-lock-standdown.test.ts:
+// these are source scans, and a CRLF checkout must not change their verdict.
+const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 const STALE = lockStalenessMs() // 15_000 at the default interval
 
