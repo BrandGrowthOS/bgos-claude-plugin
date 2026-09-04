@@ -9069,8 +9069,19 @@ async function main(): Promise<void> {
         }
       } catch (err) {
         log(`Poll cycle error: ${err}`)
+      } finally {
+        // The reschedule MUST be in a finally, not after the try/catch. The
+        // stand-down guard above returns from inside the try, and a return
+        // skips everything after the block: without this, the tick that stood
+        // the daemon down would be the last tick the process ever ran. That is
+        // worse than the bug it was added to fix, because the lock heartbeat
+        // lives in this tick, so a daemon that later reclaimed the lock would
+        // never refresh it, would go stale, would be reclaimed by a rival, and
+        // would have no tick left to notice: armed forever beside the new
+        // holder, with no recovery path. It would also silence the beacon
+        // heartbeat, the stream gap deadlines and the WS-down catch-up sweep.
+        setTimeout(tick, POLL_INTERVAL_MS)
       }
-      setTimeout(tick, POLL_INTERVAL_MS)
     }
     setTimeout(tick, POLL_INTERVAL_MS)
     // The single line that says delivery is live. Its ABSENCE in a log is the

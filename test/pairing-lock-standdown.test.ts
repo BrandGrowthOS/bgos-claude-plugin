@@ -81,6 +81,24 @@ test('the wrapped set is exactly the handlers minus the transport ones', () => {
   }
 })
 
+test('the poll tick reschedules itself from a finally, so standing down cannot kill the loop', () => {
+  // The stand-down guard returns from INSIDE the tick's try block, and a return
+  // skips everything after a try/catch. If the reschedule sits after the block
+  // rather than in a finally, the tick that stands the daemon down is the last
+  // tick the process ever runs: no lock heartbeat (so a reclaim later goes
+  // stale and is taken by a rival with nothing left to notice), no beacon
+  // heartbeat, no stream gap deadlines, no WS-down catch-up. The daemon looks
+  // healthy for hours. Nothing else in this file can see that, because the
+  // guard's PLACEMENT is right and only its control flow is wrong.
+  // Whitespace and comment lines only between the finally and the reschedule,
+  // so this cannot be satisfied by some unrelated finally elsewhere in the file
+  // that merely happens to precede the scheduler.
+  assert.match(server, /finally\s*\{(?:\s|\/\/[^\n]*\n)*setTimeout\(tick,/)
+  // And the reschedule must not ALSO sit bare after the catch, which would
+  // double the scheduler on every tick.
+  assert.doesNotMatch(server, /\}\s*catch\s*\(err\)\s*\{[^}]*\}\s*setTimeout\(tick,/)
+})
+
 test('standing down does not disconnect the socket, so re-arming stays cheap', () => {
   // The stand-down block itself must not tear the transport down: the re-arm
   // path relies on the connection still being there, and connectWebsocket is
