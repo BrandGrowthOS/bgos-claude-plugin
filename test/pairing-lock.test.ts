@@ -78,6 +78,13 @@ function makeIo(opts?: {
     isProcessAlive(pid: number): boolean {
       return alive.has(pid)
     },
+    tryCreateExclusive(path: string, data: string): boolean {
+      if (opts?.failWrite) throw new Error('boom write')
+      if (files.has(path)) return false
+      files.set(path, data)
+      writes++
+      return true
+    },
   }
   return io
 }
@@ -263,6 +270,37 @@ test('acquire never throws on an IO failure; it just fails to acquire', () => {
   assert.equal(acquirePairingLock({ lockPath: LOCK, selfPid: 100, now: 1, io: ioRead }).acquired, false)
   const ioWrite = makeIo({ failWrite: true })
   assert.equal(acquirePairingLock({ lockPath: LOCK, selfPid: 100, now: 1, io: ioWrite }).acquired, false)
+})
+
+test('two daemons racing an unlocked file: exactly one acquires', () => {
+  const io = makeIo({ alive: [111, 222] })
+  let created = 0
+  io.tryCreateExclusive = (p, d) => {
+    if (io.files.has(p)) return false
+    io.files.set(p, d)
+    created += 1
+    return true
+  }
+  const a = acquirePairingLock({ lockPath: LOCK, selfPid: 111, now: 1_000, io })
+  const b = acquirePairingLock({ lockPath: LOCK, selfPid: 222, now: 1_000, io })
+  assert.equal(created, 1)
+  assert.equal(a.acquired, true)
+  assert.equal(b.acquired, false)
+  assert.equal(b.holderPid, 111)
+})
+
+test('a stale lock is still reclaimable through the exclusive path', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 111, heartbeatAt: 0 }) } })
+  io.tryCreateExclusive = (p, d) => {
+    if (io.files.has(p)) return false
+    io.files.set(p, d)
+    return true
+  }
+  // heartbeat 0, now well past the staleness window: reclaim must still work,
+  // otherwise a dead holder locks the pairing out forever.
+  const res = acquirePairingLock({ lockPath: LOCK, selfPid: 222, now: 999_999, io })
+  assert.equal(res.acquired, true)
+  assert.equal(res.reason, 'stale')
 })
 
 // ── Effectful: HEARTBEAT REFRESH KEEPS A LOCK FRESH (DoD) ──────────────────────

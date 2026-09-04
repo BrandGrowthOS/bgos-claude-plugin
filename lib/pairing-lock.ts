@@ -202,6 +202,10 @@ export interface LockIo {
   writeFile(path: string, data: string): void
   unlink(path: string): void
   isProcessAlive(pid: number): boolean
+  /** Create the file ONLY if it does not exist. True when this call created it.
+   *  This is what makes an unlocked-file race first-writer-wins rather than
+   *  last-writer-wins; read-then-write cannot decide a simultaneous race. */
+  tryCreateExclusive(path: string, data: string): boolean
 }
 
 /** True when a signal-0 to `pid` finds a live process. EPERM counts as alive
@@ -236,6 +240,15 @@ export const defaultLockIo: LockIo = {
     }
   },
   isProcessAlive: processAlive,
+  tryCreateExclusive(path: string, data: string): boolean {
+    try {
+      // 'wx' fails with EEXIST rather than truncating an existing file.
+      writeFileSync(path, data, { flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  },
 }
 
 export interface AcquireResult {
@@ -277,6 +290,22 @@ export function acquirePairingLock(input: {
     if (decision.action === 'passive') {
       return { acquired: false, holderPid: decision.holderPid }
     }
+    if (decision.reason === 'unlocked') {
+      // Nothing on disk: whoever creates the file first owns the pairing.
+      const record = serializeLockRecord({
+        pid: input.selfPid,
+        heartbeatAt: input.now,
+        ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
+      })
+      if (io.tryCreateExclusive(input.lockPath, record)) {
+        return { acquired: true, reason: decision.reason }
+      }
+      // A rival created it in the same instant. Yield to whoever won.
+      return { acquired: false, holderPid: parseLockRecord(io.readText(input.lockPath))?.pid }
+    }
+    // A reclaim (own / stale / holder-dead) overwrites deliberately: the file
+    // exists and an exclusive create would always fail. The read-back below is
+    // what decides a simultaneous reclaim.
     io.writeFile(
       input.lockPath,
       serializeLockRecord({
