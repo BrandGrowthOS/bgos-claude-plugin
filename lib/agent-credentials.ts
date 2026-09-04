@@ -23,7 +23,7 @@
  * never logs or echoes any credential.
  */
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export type AuthMode = 'pairing' | 'apikey'
@@ -35,6 +35,12 @@ export interface CredentialsFile {
   userId?: string
   assistantId?: number | string | null
   pairedAt?: string
+  /**
+   * The folder this agent actually lives in, recorded once (see
+   * decideHomeBinding). Its presence is what lets a daemon tell the real agent
+   * apart from a stray session that resolved to the same file by elimination.
+   */
+  homeDir?: string
 }
 
 export interface PairingFileRejection {
@@ -90,11 +96,20 @@ export const FOLDER_PIN_FILE = '.bgos-agent-id'
  *             so it CANNOT tell which one it is; refusing beats answering as
  *             the wrong agent (the multi-agent-per-host collision).
  */
+/** How a credentials file was chosen. The first three carry a per-process
+ *  identity signal; the last two resolve by elimination from host state. */
+export type CredentialsVia =
+  | 'env-path'
+  | 'env-assistant'
+  | 'folder-pin'
+  | 'sole-per-assistant'
+  | 'legacy'
+
 export type CredentialsSelection =
   | {
       kind: 'ok'
       path: string
-      via: 'env-path' | 'env-assistant' | 'folder-pin' | 'sole-per-assistant' | 'legacy'
+      via: CredentialsVia
     }
   | { kind: 'refuse'; candidateIds: string[]; agentDir: string }
 
@@ -462,5 +477,178 @@ export function loadCredentialsFile(path: string): CredentialsFile | null {
     return parsed && typeof parsed === 'object' ? (parsed as CredentialsFile) : null
   } catch {
     return null
+  }
+}
+
+// ── Home-folder identity binding (the impostor guard) ────────────────────────
+//
+// THE DEFECT THIS CLOSES (board 01a068f7, recurred 2026-09-04). The resolver
+// above answers "which credentials file is on this HOST", and on a host with
+// exactly one paired agent that question has a single answer for EVERY process
+// under that OS user. So `claude` started in any folder at all resolves via
+// 'sole-per-assistant' (or 'legacy'), boots a daemon on that agent's pairing,
+// and SPEAKS AS THAT AGENT. Nothing is misconfigured and nothing looks wrong:
+// the stray session is indistinguishable from the real one at the credential
+// layer, because identity was never a property of the session.
+//
+// The 0.38.6 pairing lock does NOT close this. The lock guarantees exactly one
+// daemon per pairing; it says nothing about WHICH one. When the real agent is
+// between restarts, a stray acquires the lock legitimately and becomes the
+// agent. Mutual exclusion without identity just picks a winner.
+//
+// THE BINDING. An agent's real home folder is recorded once, in its own
+// credentials file, and afterwards a session resolving by ELIMINATION from a
+// different folder refuses to start rather than answering as someone else.
+//
+// Three properties make it safe to roll to a live fleet:
+//   1. It only constrains the ELIMINATION routes ('sole-per-assistant' and
+//      'legacy'). An explicit per-process pin (BGOS_CREDENTIALS_PATH,
+//      BGOS_ASSISTANT_ID, a folder pin) is already a positive identity signal
+//      and is never second-guessed, so the 12-agent env-pinned Windows hosts
+//      keep booting from wherever they like.
+//   2. It SELF-MIGRATES. An agent with nothing recorded yet records its folder
+//      and proceeds, so no operator has to do anything and no existing agent
+//      stops working on upgrade.
+//   3. There is an env kill-switch (BGOS_ALLOW_ANY_FOLDER=1) so a wedge is one
+//      variable away from cleared, without editing a credentials file.
+//
+// THE ONE RESIDUAL RACE, stated plainly rather than buried: if a stray session
+// is the FIRST to boot after the upgrade on a host whose agent is down, the
+// stray records ITS folder and the real agent then refuses. That is a worse
+// day than today only if it goes unnoticed, and it cannot: the refusal names
+// the recorded folder and the fix is one line. Today's failure mode is silent
+// and produces confident wrong answers in the user's chat, which is worse.
+// Recording is therefore also deliberately driven from a SUCCESSFUL connect
+// (see server.ts), not merely from resolution, to shrink that window.
+
+/** Kill-switch: set to '1'/'true' to skip the binding entirely for one boot. */
+export const ALLOW_ANY_FOLDER_ENV = 'BGOS_ALLOW_ANY_FOLDER'
+
+/** Routes that carry a per-process identity signal and are never constrained. */
+const EXPLICIT_PIN_ROUTES = new Set(['env-path', 'env-assistant', 'folder-pin'])
+
+/**
+ * Normalize a folder for comparison: resolve it, drop any trailing separator,
+ * and case-fold on the platforms whose filesystems are case-insensitive
+ * (Windows and macOS). Comparing raw strings would refuse a real agent over a
+ * trailing slash or a drive-letter case, which is exactly the kind of false
+ * refusal that makes a safety feature get disabled.
+ */
+export function normalizeHomeDir(
+  dir: string,
+  opts: { platform?: string } = {},
+): string {
+  const raw = str(dir).trim()
+  if (!raw) return ''
+  const platform = opts.platform ?? process.platform
+  const caseInsensitive = platform === 'win32' || platform === 'darwin'
+  let out = raw.replace(/[\\/]+$/, '')
+  if (!out) out = raw.slice(0, 1)
+  return caseInsensitive ? out.toLowerCase() : out
+}
+
+export type HomeBindingDecision =
+  /** Start normally; nothing to write. */
+  | { action: 'allow'; reason: 'explicit-pin' | 'match' | 'override' | 'no-cwd' }
+  /** Start normally, and record this folder as the agent's home. */
+  | { action: 'record'; homeDir: string }
+  /** Do not start: this folder is not this agent's home. */
+  | { action: 'refuse'; recordedHomeDir: string; cwd: string; assistantId: string }
+
+/**
+ * THE PURE DECISION. Given how the credentials file was chosen, where this
+ * process was launched, and what home folder (if any) the file records,
+ * decide whether this daemon is the agent it resolved to.
+ */
+export function decideHomeBinding(input: {
+  via: CredentialsVia
+  cwd: string
+  recordedHomeDir?: string | null
+  assistantId?: string
+  env?: Env
+  platform?: string
+}): HomeBindingDecision {
+  const env: Env = input.env ?? {}
+  const override = str(env[ALLOW_ANY_FOLDER_ENV]).trim().toLowerCase()
+  if (override === '1' || override === 'true') {
+    return { action: 'allow', reason: 'override' }
+  }
+  if (EXPLICIT_PIN_ROUTES.has(input.via)) {
+    return { action: 'allow', reason: 'explicit-pin' }
+  }
+  const cwd = normalizeHomeDir(input.cwd, { platform: input.platform })
+  // No usable launch folder means nothing to compare and nothing to record.
+  // Allowing is the only honest answer; refusing here would fail closed on a
+  // condition that says nothing about identity.
+  if (!cwd) return { action: 'allow', reason: 'no-cwd' }
+  const recorded = normalizeHomeDir(str(input.recordedHomeDir), {
+    platform: input.platform,
+  })
+  if (!recorded) return { action: 'record', homeDir: str(input.cwd).trim() }
+  if (recorded === cwd) return { action: 'allow', reason: 'match' }
+  return {
+    action: 'refuse',
+    recordedHomeDir: str(input.recordedHomeDir).trim(),
+    cwd: str(input.cwd).trim(),
+    assistantId: str(input.assistantId),
+  }
+}
+
+/**
+ * The refusal banner. Names the agent, both folders, and BOTH escapes (move to
+ * the home folder, or pin this one explicitly) so an operator can clear it
+ * without reading this source. Secret-free: folders and an assistant id only.
+ */
+export function formatHomeBindingRefusal(decision: HomeBindingDecision): string {
+  if (decision.action !== 'refuse') return ''
+  const who = decision.assistantId ? `agent ${decision.assistantId}` : 'this agent'
+  return (
+    `REFUSING to start: this folder is not ${who}'s home. That agent is bound to ` +
+    `${decision.recordedHomeDir}, and this session was launched from ${decision.cwd}. ` +
+    `A session started outside an agent's own folder used to resolve to it anyway and ` +
+    `answer in its name, which is the impostor bug this check exists to stop. ` +
+    `If this folder IS meant to be that agent, clear the binding by editing homeDir in ` +
+    `its credentials file. If this session is meant to be a DIFFERENT agent, pin it with ` +
+    `\`echo <id> > ${FOLDER_PIN_FILE}\` here or set BGOS_ASSISTANT_ID. To bypass this ` +
+    `check for one boot, set ${ALLOW_ANY_FOLDER_ENV}=1.`
+  )
+}
+
+/**
+ * Record this folder as the agent's home, in place, preserving every other
+ * field. Read-modify-write on the file we already resolved, so the token is
+ * carried through untouched and never passes through a log line.
+ *
+ * Deliberately a NO-OP when the file already records a home: recording is a
+ * one-time migration, not something a later boot can quietly move. Returns
+ * true only when a home was actually written.
+ *
+ * Never throws. A read-only credentials file (or any other IO failure) leaves
+ * the agent exactly as it is today, unbound and working, which is the correct
+ * degradation for a guard: failing to write must not fail the boot.
+ */
+export function recordHomeDir(input: {
+  path: string
+  homeDir: string
+  io?: { readText(path: string): string | null; writeFile(path: string, data: string): void }
+}): boolean {
+  const readText =
+    input.io?.readText ?? ((p: string) => defaultReadText(p))
+  const writeFile =
+    input.io?.writeFile ?? ((p: string, data: string) => writeFileSync(p, data, { mode: 0o600 }))
+  const home = str(input.homeDir).trim()
+  if (!home) return false
+  try {
+    const raw = readText(input.path)
+    if (raw == null) return false
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return false
+    const creds = parsed as CredentialsFile
+    if (str(creds.homeDir).trim()) return false
+    creds.homeDir = home
+    writeFile(input.path, `${JSON.stringify(creds, null, 2)}\n`)
+    return true
+  } catch {
+    return false
   }
 }

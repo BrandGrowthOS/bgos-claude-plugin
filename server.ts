@@ -161,6 +161,9 @@ import {
   resolveCredentialsSelection,
   describeEnvOnlyIdentityRisk,
   formatCredentialsRefusal,
+  decideHomeBinding,
+  formatHomeBindingRefusal,
+  recordHomeDir,
   formatAuthResolution,
   formatPairingRejection,
   authHeaders,
@@ -367,6 +370,29 @@ if (CREDENTIALS_SELECTION.kind === 'refuse') {
   process.exit(1)
 }
 const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
+const CREDENTIALS_FILE = loadCredentialsFile(CREDENTIALS_PATH)
+
+// Home-folder identity binding (see decideHomeBinding). The resolver above
+// answered "which agent is on this HOST"; this answers "is this session that
+// agent". Without it, any session started anywhere on a single-agent host
+// resolves by elimination and speaks in that agent's name, and the pairing
+// lock cannot help because it picks a winner without knowing who is who.
+const HOME_BINDING = decideHomeBinding({
+  via: CREDENTIALS_SELECTION.via,
+  cwd: LAUNCH_CWD,
+  recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
+  assistantId: String(CREDENTIALS_FILE?.assistantId ?? ''),
+  env: process.env,
+})
+if (HOME_BINDING.action === 'refuse') {
+  process.stderr.write(`[bgos] ${formatHomeBindingRefusal(HOME_BINDING)}\n`)
+  process.exit(1)
+}
+// A folder to claim, claimed LATER (see HOME_BINDING_RECORD_DELAY_MS): a
+// transient stray must not be able to claim a folder just by booting once.
+const HOME_DIR_TO_RECORD =
+  HOME_BINDING.action === 'record' ? HOME_BINDING.homeDir : ''
+
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
 // degradation, so it has to be said out loud on a healthy boot.
@@ -377,7 +403,7 @@ const ENV_ONLY_IDENTITY_WARN = describeEnvOnlyIdentityRisk({
 })
 const AUTH: ResolvedAuth = resolveAuth({
   env: process.env,
-  creds: loadCredentialsFile(CREDENTIALS_PATH),
+  creds: CREDENTIALS_FILE,
 })
 const BACKEND_URL = AUTH.backendUrl
 // API_KEY stays defined for the legacy path and log lines; it is '' in pairing
@@ -4904,6 +4930,18 @@ const whenArmed =
     }
     handle(payload)
   }
+
+/**
+ * How long a daemon must hold the channel before it may claim a folder as its
+ * agent's home. The residual race in the home binding is a stray session
+ * recording a folder that is not its own; a stray is almost always TRANSIENT
+ * (a subagent, a one-shot `claude -p`, a stray shell), so requiring a minute of
+ * continuous delivery filters it while the real long-lived agent crosses it
+ * without noticing. It is not a proof of identity, it is a cheap filter on the
+ * one population that would otherwise get the binding wrong.
+ */
+const HOME_BINDING_RECORD_DELAY_MS = 60_000
+let homeDirRecorded = false
 // Beacon heartbeat: a sibling of channel-live.json whose mtime updates on every
 // successful beacon, so an external supervisor can tell a dead channel from a
 // live process (channel-live.json is edge-triggered on connect/boot only and
@@ -9223,6 +9261,26 @@ async function main(): Promise<void> {
             now: hbNow,
             pid: process.pid,
           })
+        }
+        // Claim the home folder once this daemon has plainly stayed up holding
+        // the channel. Reached only past the `if (!channelArmed) return` above,
+        // so a passive daemon never records, and on the same heartbeat throttle
+        // as the beacon rather than inside it: recording is about how long the
+        // channel has been HELD, not about whether a poll ran this tick.
+        if (
+          heartbeatThisTick &&
+          !homeDirRecorded &&
+          HOME_DIR_TO_RECORD &&
+          hbNow - DAEMON_START_MS >= HOME_BINDING_RECORD_DELAY_MS
+        ) {
+          homeDirRecorded = true
+          if (recordHomeDir({ path: CREDENTIALS_PATH, homeDir: HOME_DIR_TO_RECORD })) {
+            log(
+              `home folder recorded for this agent: ${HOME_DIR_TO_RECORD}. ` +
+                'A session launched from anywhere else will now refuse to start ' +
+                'as this agent rather than answer in its name.',
+            )
+          }
         }
       } catch (err) {
         log(`Poll cycle error: ${err}`)
