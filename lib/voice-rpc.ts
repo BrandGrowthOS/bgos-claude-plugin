@@ -313,6 +313,17 @@ export interface VoiceRpcConfig {
   userId?: string
 }
 
+/** The envelope every voice channel card carries. One function so the consult
+ *  card and the dispatch card cannot drift apart again: the harness drops a
+ *  card with a non-string meta value, and a card missing the fields the
+ *  polling path carries is at least suspect. */
+export function channelMeta(
+  base: { event_type: string; chat_id: string; assistant_id: string; user_id: string; transport: string },
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return { ...base, ...extra, ts: new Date().toISOString() }
+}
+
 export interface VoiceRpcDeps {
   config: VoiceRpcConfig
   /** POST integrations/voice-rpc/:rpcId/ack (X-API-Key). */
@@ -920,14 +931,19 @@ export class VoiceRpcHandler {
     const question = String(p.question ?? '')
     const context = p.context ? String(p.context) : ''
     const chatId = frame.chatId != null ? String(frame.chatId) : String(this.deps.config.chatIdFallback ?? '')
-    await this.deps.notify(buildVoiceTaskDispatchText({ taskId, question, context }), {
-      event_type: 'voice_task_dispatch',
-      task_id: taskId,
-      chat_id: chatId,
-      user_id: String(this.deps.config.userId ?? ''),
-      assistant_id: String(this.deps.config.assistantId),
-      transport: 'rpc',
-    })
+    await this.deps.notify(
+      buildVoiceTaskDispatchText({ taskId, question, context }),
+      channelMeta(
+        {
+          event_type: 'voice_task_dispatch',
+          chat_id: chatId,
+          user_id: String(this.deps.config.userId ?? ''),
+          assistant_id: String(this.deps.config.assistantId),
+          transport: 'rpc',
+        },
+        { task_id: taskId },
+      ),
+    )
     return { accepted: true, taskId }
   }
 
@@ -997,17 +1013,22 @@ export class VoiceRpcHandler {
       // the WS inbound meta made every live card vanish). Guarded by
       // test/voice-rpc.test.ts "consult meta is all-string valued".
       this.deps
-        .notify(content, {
-          event_type: 'voice_consult',
-          consult_id: String(consultId),
-          call_id: String(callId),
-          chat_id:
-            frame.chatId != null
-              ? String(frame.chatId)
-              : String(this.deps.config.chatIdFallback ?? ''),
-          assistant_id: String(this.deps.config.assistantId),
-          transport: 'ws',
-        })
+        .notify(
+          content,
+          channelMeta(
+            {
+              event_type: 'voice_consult',
+              chat_id:
+                frame.chatId != null
+                  ? String(frame.chatId)
+                  : String(this.deps.config.chatIdFallback ?? ''),
+              assistant_id: String(this.deps.config.assistantId),
+              user_id: String(this.deps.config.userId ?? ''),
+              transport: 'ws',
+            },
+            { consult_id: String(consultId), call_id: String(callId) },
+          ),
+        )
         .catch((err) => {
           // If the live session is unreachable the consult can never
           // resolve — fail fast with a descriptive error instead of

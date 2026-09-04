@@ -63,6 +63,7 @@ function makeDeps(over: {
   notifyFails?: boolean
   sendFails?: boolean
   identity?: { name: string; subtitle: string } | null
+  config?: Partial<VoiceRpcDeps['config']>
 }): { deps: VoiceRpcDeps; rec: Recorded } {
   const rec: Recorded = { acks: [], results: [], notifications: [], sends: [] }
   const deps: VoiceRpcDeps = {
@@ -72,6 +73,7 @@ function makeDeps(over: {
       voice: 'marin',
       persona: 'Speak like a calm pilot.',
       assistantId: '901',
+      ...over.config,
     },
     postAck: async (rpcId) => {
       rec.acks.push(rpcId)
@@ -668,6 +670,24 @@ test('a paired dispatch is ACCEPTED and the task card reaches the live session',
   assert.equal(rec.notifications[0]!.meta.event_type, 'voice_task_dispatch')
   assert.equal(rec.notifications[0]!.meta.task_id, 't1')
   for (const v of Object.values(rec.notifications[0]!.meta)) assert.equal(typeof v, 'string')
+})
+
+test('every voice card carries the canonical envelope, all strings', async () => {
+  const { deps, rec } = makeDeps({ config: { chatIdFallback: '4465', userId: 'user_x' } })
+  const h = new VoiceRpcHandler(deps)
+  const consult = h.handle(frame({ op: 'consult', rpcId: 'rpc-e1', chatId: null, payload: { callId: 'c', name: 'claude_agent_consult', args: {} } }))
+  await new Promise((r) => setTimeout(r, 10))
+  h.resolveConsult('rpc-e1', 'ok')
+  await consult
+  await h.handle(frame({ op: 'dispatch', rpcId: 'rpc-e2', chatId: null, payload: { taskId: 't' } }))
+  for (const n of rec.notifications) {
+    for (const k of ['event_type', 'chat_id', 'assistant_id', 'user_id', 'transport', 'ts']) {
+      assert.equal(typeof n.meta[k], 'string', `${n.meta.event_type} missing ${k}`)
+      assert.notEqual(n.meta[k], '', `${n.meta.event_type} has empty ${k}`)
+    }
+  }
+  // chatId null on the frame, so the fallback must have filled it.
+  assert.equal(rec.notifications[0]!.meta.chat_id, '4465')
 })
 
 test('a dispatch with no taskId is refused loudly, never silently', async () => {
