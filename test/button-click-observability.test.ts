@@ -29,15 +29,21 @@ describe('button_clicked observability', () => {
     const body = applyStreamButtonsAnsweredBody()
     // A bare `return` on its own line with nothing logged above it in the same
     // block is the shape that made this bug undiagnosable.
-    const bare = body.match(/^\s*if \([^)]*\) return$/gm) ?? []
+    // `[^)]*` stopped at the FIRST ')', so a condition containing a call, e.g.
+    // `if (announcedClickIds.has(view.messageId)) return`, slipped past and the
+    // pin stayed green under that mutation (Data, 2026-09-05). Match greedily.
+    const bare = body.match(/^\s*if \(.*\)\s*return\s*$/gm) ?? []
     expect(bare).toEqual([])
   })
 
-  test('each of the three drop paths logs a distinct reason', () => {
+  test('each of the four drop paths logs a distinct reason', () => {
     const body = applyStreamButtonsAnsweredBody()
     expect(body).toContain('button_clicked DROPPED at view')
     expect(body).toContain('button_clicked DROPPED at payload')
     expect(body).toContain('button_clicked SKIPPED')
+    // The fourth: decideButtonsAnswered said 'permission' but the callback
+    // would not re-parse. Silent here hung a permission prompt with no trace.
+    expect(body).toContain('button_clicked DROPPED at permission parse')
   })
 
   test('receipt is stamped and stream authority is recorded, not assumed', () => {
