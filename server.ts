@@ -7029,18 +7029,54 @@ async function forwardStreamInbound(
  * baseline keeps selectClickTransitions silent forever after.
  */
 function applyStreamButtonsAnswered(update: StreamUpdate): void {
+  // OBSERVABILITY (2026-09-05). A tap of Kc's reached his agent ~5.5 minutes
+  // after the backend stamped it, and NOBODY could tell whether it was
+  // delivered late or delivered on time and queued behind a busy turn: this
+  // function had three unlogged early returns, and ws-delivered inbound was
+  // never logged at all, so "late" and "lost" produced identical evidence
+  // (namely none). Every exit below now says what it dropped and why, and the
+  // receipt is stamped so the next real tap carries its own timeline.
+  const receivedAtMs = Date.now()
+  const authorityAtReceipt = streamAuthority !== null
   const view = viewStreamMessage(update)
-  if (!view || !view.chatId) return
+  if (!view || !view.chatId) {
+    log(
+      `button_clicked DROPPED at view: ${!view ? 'unresolvable message id' : 'no chatId'} ` +
+        `(streamAuthority=${authorityAtReceipt})`,
+    )
+    return
+  }
   const chatId = view.chatId
   const answer = view.answerPayload
-  if (!answer) return
+  if (!answer) {
+    // answerPayloadOf() returned null: neither callbackData nor buttonText nor
+    // customText survived normalisation. A wire-shape change lands HERE.
+    log(
+      `button_clicked DROPPED at payload: no callbackData/buttonText/customText ` +
+        `on message ${view.messageId} in chat ${chatId} (streamAuthority=${authorityAtReceipt})`,
+    )
+    return
+  }
   const decision = decideButtonsAnswered({
     messageType: view.messageType,
     callbackData: answer.callbackData,
     alreadyAnnounced: announcedClickIds.has(view.messageId),
     permissionRe: PERMISSION_CALLBACK_RE,
   })
-  if (decision === 'skip') return
+  if (decision === 'skip') {
+    const why = announcedClickIds.has(view.messageId)
+      ? 'already announced by the other transport'
+      : `messageType=${view.messageType}`
+    log(
+      `button_clicked SKIPPED for message ${view.messageId} in chat ${chatId}: ${why} ` +
+        `(streamAuthority=${authorityAtReceipt})`,
+    )
+    return
+  }
+  log(
+    `button_clicked RECEIVED on the stream for message ${view.messageId} in chat ${chatId} ` +
+      `(streamAuthority=${authorityAtReceipt})`,
+  )
   // Mark + consume BEFORE acting, atomically on the event loop: the poll's
   // prevUnanswered can never contain the id again and its announce path
   // consults the same shared set.
@@ -7049,7 +7085,17 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
 
   if (decision === 'permission') {
     const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
-    if (!permMatch) return
+    if (!permMatch) {
+      // decideButtonsAnswered said 'permission' but the callback will not
+      // re-parse: the two regexes have drifted apart. Silent here means a
+      // permission prompt hangs forever with no trace.
+      log(
+        `button_clicked DROPPED at permission parse: callbackData did not match ` +
+          `PERMISSION_CALLBACK_RE on message ${view.messageId} ` +
+          `(streamAuthority=${authorityAtReceipt})`,
+      )
+      return
+    }
     const [, choice, requestId] = permMatch
     const pending = pendingPermissions.get(requestId!)
     if (!pending) {
@@ -7107,7 +7153,18 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         }),
       },
     }),
-  ).catch((err) => log(`Failed to deliver stream button_clicked: ${err}`))
+  )
+    .then(() =>
+      // Handoff to the MCP transport, NOT the moment the agent's turn applies
+      // it: the plugin cannot observe that. This measures delivery inside the
+      // daemon; a long silence between this line and the agent acting is the
+      // busy-turn bucket, and that is now visible as a gap between two logs.
+      log(
+        `button_clicked handed to transport for message ${view.messageId} ` +
+          `after ${Date.now() - receivedAtMs}ms in-daemon`,
+      ),
+    )
+    .catch((err) => log(`Failed to deliver stream button_clicked: ${err}`))
 }
 
 /** message_new / message_finalized from the stream, per the 5.7 contract. */

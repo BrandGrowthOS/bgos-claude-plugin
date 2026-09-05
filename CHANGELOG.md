@@ -2,6 +2,41 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.24 (2026-09-05)
+
+Every `button_clicked` outcome is now observable. A tap of the owner's reached
+his agent about five and a half minutes after the backend stamped it, and
+nobody could say whether the click was DELIVERED LATE or delivered on time and
+QUEUED BEHIND A BUSY AGENT TURN, because from the outside those are the same
+picture: `applyStreamButtonsAnswered` had four unlogged early returns and
+ws-delivered inbound was never logged at all. "Late" and "lost" both produced
+no evidence, which is why this reached the owner as a regression instead of a
+test catching it.
+
+This does NOT fix the latency. It makes the next real tap self-diagnosing.
+
+- **Every exit says what it dropped and why.** View unresolvable or no chatId;
+  `answerPayloadOf` returning null, which is exactly where a wire-shape change
+  lands; the skip decision, with "already announced by the other transport"
+  distinguished from the messageType; and the permission branch's callbackData
+  failing to re-parse, which silently hung a permission prompt with no trace.
+  That fourth path was found by the new guard, not by reading the code.
+- **Stream authority is recorded at receipt, not assumed.** Whether the stream
+  held authority when a click arrived changes which bug you are looking at, so
+  it is stamped on every outcome line rather than inferred afterwards.
+- **A delivered click reports its time inside the daemon**, named "handed to
+  transport" rather than "applied": the plugin cannot observe when the agent's
+  turn picks a notification up, and a proxy under the wrong name would have
+  poisoned the reading. The gap between that log and the agent acting is the
+  busy-turn bucket, now two timestamps instead of an inference.
+- **Guarded** by `test/button-click-observability.test.ts`, which pins that no
+  bare early return survives in that function. Two of its own pins were
+  vacuous when first written and were only found by running the mutations: a
+  `>= 4` threshold that survived a removed stamp, and a `[^)]*` regex that
+  could not see a condition containing a call. The source scan normalises line
+  endings, because this checkout is CRLF and a scan matching a literal newline
+  finds nothing and passes forever.
+
 ## 0.38.23 (2026-09-05)
 
 Consult continuation: answer now, finish later. On an iPhone call the agent
