@@ -615,11 +615,15 @@ export function normalizeVoiceTaskDispatch(
         'BGOS_REQUIRE_CONFIRMED_DISPATCH is on and the payload lacks confirmed:true',
     }
   }
+  const question = String(p.question ?? '').trim()
+  if (!question) {
+    return { ok: false, reason: `empty brief (task=${taskId}): the dispatch carried no question text` }
+  }
   return {
     ok: true,
     task: {
       taskId,
-      question: String(p.question ?? ''),
+      question,
       context: p.context ? String(p.context) : '',
       chatId: String(p.chat_id ?? ''),
     },
@@ -939,7 +943,19 @@ export class VoiceRpcHandler {
     const chatId = frame.chatId != null ? String(frame.chatId) : String(this.deps.config.chatIdFallback ?? '')
     // Coalesce to the WS lane's snake_case wire shape so ONE normalizer gates
     // both lanes (the requireConfirmed belt must not diverge between them).
-    const coalesced = { ...p, task_id: p.taskId ?? p.task_id, chat_id: chatId }
+    // The backend nests the tool call's arguments under `args` (the same frame
+    // Gobot reads as args.question); the WS lane sends question/context at the
+    // top level. Accept both, top level first. Production 2026-09-05: three
+    // dispatches in a row reached the agent with an empty brief because only
+    // the top-level key was read.
+    const args = (p.args ?? {}) as Record<string, unknown>
+    const coalesced = {
+      ...p,
+      task_id: p.taskId ?? p.task_id,
+      chat_id: chatId,
+      question: p.question ?? args.question,
+      context: p.context ?? args.context,
+    }
     const parsed = normalizeVoiceTaskDispatch(coalesced, {
       requireConfirmed: this.deps.config.requireConfirmedDispatch === true,
     })

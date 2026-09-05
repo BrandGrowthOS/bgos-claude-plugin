@@ -691,7 +691,7 @@ test('every voice card carries the canonical envelope, all strings', async () =>
   await new Promise((r) => setTimeout(r, 10))
   h.resolveConsult('rpc-e1', 'ok')
   await consult
-  await h.handle(frame({ op: 'dispatch', rpcId: 'rpc-e2', chatId: null, payload: { taskId: 't' } }))
+  await h.handle(frame({ op: 'dispatch', rpcId: 'rpc-e2', chatId: null, payload: { taskId: 't', args: { question: 'envelope check' } } }))
   for (const n of rec.notifications) {
     for (const k of ['event_type', 'chat_id', 'assistant_id', 'user_id', 'transport', 'ts']) {
       assert.equal(typeof n.meta[k], 'string', `${n.meta.event_type} missing ${k}`)
@@ -1062,4 +1062,28 @@ test('G4 context trim keeps the MOST RECENT turns (tail), not the oldest', () =>
   })
   assert.ok(text.includes('NEWEST'), 'the most recent turn must survive the trim')
   assert.ok(!text.includes('OLDEST'), 'the oldest turn is dropped first')
+})
+
+// ── the backend nests the brief under args; an empty brief is refused ────────
+
+test('a dispatch whose brief is nested under args carries the question into the card', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-n1', chatId: '4465', payload: { taskId: 't9', args: { question: 'check the weather in Dubai', context: 'live source' } } }),
+  )
+  assert.deepEqual(rec.results[0]!.body.payload, { accepted: true, taskId: 't9' })
+  assert.equal(rec.notifications.length, 1)
+  assert.match(rec.notifications[0]!.content, /check the weather in Dubai/)
+  assert.match(rec.notifications[0]!.content, /live source/)
+})
+
+test('a dispatch with no brief anywhere is refused as BAD_DISPATCH, never delivered blank', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-n2', chatId: '4465', payload: { taskId: 't10', args: {} } }),
+  )
+  assert.equal(rec.notifications.length, 0, 'no card for an empty brief')
+  assert.equal(rec.results[0]!.body.ok, false)
+  assert.equal(rec.results[0]!.body.error!.code, 'BAD_DISPATCH')
+  assert.match(String(rec.results[0]!.body.error!.message ?? ''), /empty brief/)
 })
