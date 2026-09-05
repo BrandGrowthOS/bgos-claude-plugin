@@ -5928,6 +5928,17 @@ async function pollChat(chatId: string): Promise<void> {
         const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
         contentLines.push(`Original question: ${quoted}`)
       }
+      // WHICH LANE DELIVERED THIS. The stream path logs its own receipt; this
+      // one logged nothing on success, so a click arriving here produced
+      // silence indistinguishable from a click that never arrived at all.
+      // That gap is the whole question: a missed WS push followed by the
+      // WS-healthy full poll cycle explains the observed 4.5 and 5.5 minute
+      // delays exactly, and only a positive line from THIS path can show the
+      // poll rescued it rather than the stream simply arriving late.
+      log(
+        `button_clicked ANNOUNCED via POLL for message ${mm.id} in chat ${chatId} ` +
+          `(answeredAt=${mm.answeredAt}); the stream lane did not deliver it first`,
+      )
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
