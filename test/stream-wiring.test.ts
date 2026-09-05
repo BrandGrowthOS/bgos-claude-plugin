@@ -306,3 +306,10 @@ test('a failed or absent mint leaves every legacy path running', () => {
   assert.ok(body.includes('mintSession()'))
   assert.ok(body.includes('stream inactive, legacy paths run'))
 })
+
+test('the stream-off exit says so in the log instead of returning silently', () => {
+  // This exit was silent until 2026-09-05: a daemon with the stream off looked
+  // identical in its log to one with the stream on and quiet, and a day went
+  // into asking why taps took five minutes.
+  assert.ok(serverSource.includes('stream off, clicks arrive on the legacy sweep'))
+})

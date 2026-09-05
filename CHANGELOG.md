@@ -2,6 +2,32 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.26 (2026-09-05)
+
+A tap on an inline button reaches the agent in seconds again instead of up to
+five minutes. Why it was five minutes: the Agent Update Stream is off unless
+`BGOS_UPDATE_STREAM=true`, and on every daemon we read on 2026-09-05 it was off
+(mine, Data's, and the marketplace route sets no such env), so a click could
+only arrive on the chat sweep, whose WS-healthy cycle has been five minutes
+since 0.34.0. Text rides the WS at once, which is why replies were instant and
+taps were late, and why a click stamped 26 seconds BEFORE a text message
+reached the agent four minutes AFTER it. Nothing was dropped; the fast lane
+was never switched on.
+
+- **A chat with a fresh inline-button prompt joins the 2s fast scope**, the
+  same scope meeting and pending-permission chats already use, until the tap
+  lands (either lane), the prompt is ten minutes old, a later prompt replaces
+  it, or this daemon replies TO the prompt in words (an unrelated progress
+  update leaves the chips live; the agent is the chatty one). At most eight
+  such chats at once, newest first. Bounded on purpose: an abandoned prompt
+  must not pin a busy chat at 2s forever. The edge, stated so the next late
+  tap is not read as a regression: a tap more than ten minutes after the
+  prompt still lands on the five minute sweep.
+- **The stream-off exit now says so in the log.** It returned silently, so a
+  daemon with the stream off looked identical to one with it on and quiet.
+- Guarded by `test/poll-core.test.ts` (the pure scope helper, edge and cap,
+  and a source pin that both lanes drop the chat) and `test/stream-wiring.test.ts`.
+
 ## 0.38.25 (2026-09-05)
 
 The poll lane now says when it is the one that delivered a click. 0.38.23 made

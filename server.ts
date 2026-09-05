@@ -181,6 +181,8 @@ import {
   shouldForwardPollMessage,
   rememberReturnedMessageId,
   fastScopeChatIds,
+  activeButtonPromptChatIds,
+  type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
   sentDateToMs,
@@ -3585,6 +3587,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // (message_id: N)...") verbatim into THIS session's transcript, so
         // the minted id is positive proof of which transcript is ours.
         if (msgId != null) sessionBinder.recordReplyMessageId(msgId)
+        // Fast-poll scope for the tap (0.38.26). Without the Agent Update
+        // Stream a click reaches this daemon only on the chat sweep, and the
+        // WS-healthy sweep is five minutes; a fresh prompt puts its chat on the
+        // 2s tick instead. A later prompt replaces it; a reply ANCHORED to the
+        // prompt (reply_to_id) clears it, the question was answered in words
+        // and the chips are moot. An unrelated send leaves it live: the agent
+        // is the chatty one (progress updates while the user is away), and
+        // "any send supersedes" would have emptied the window in minutes
+        // (Ares, reviewing #129).
+        if (options.length > 0 && typeof msgId === 'number') {
+          recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
+        } else if (
+          reply_to_id !== undefined &&
+          Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
+        ) {
+          recentButtonPrompts.delete(String(resolvedChatId))
+        }
         const parts: string[] = []
         if (msgId) parts.push(`message_id: ${msgId}`)
         if (resolvedFiles.length) parts.push(`${resolvedFiles.length} file(s)`)
@@ -5443,6 +5462,12 @@ function checkReplyOverdue(): void {
  * handles its own polling/blocking.
  */
 const chatUnansweredButtons = new Map<string, Set<number>>()
+/**
+ * Latest inline-button prompt this daemon sent, per chat, so the chat earns
+ * 2s polling until the tap lands, the window lapses, or the daemon sends
+ * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
+ */
+const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
 let monitoredChatIds: string[] = []
 
 // ── Chat membership authority ────────────────────────────────────────────────
@@ -5861,6 +5886,10 @@ async function pollChat(chatId: string): Promise<void> {
     // the shared dedup set so a stream buttons_answered replay of the same
     // tap stays silent (see rememberAnnouncedClick).
     for (const id of announced) rememberAnnouncedClick(id)
+    // The prompt this chat was fast-polled for has been answered: drop the
+    // chat from the 2s scope (both lanes do this; see applyStreamButtonsAnswered).
+    const promptHere = recentButtonPrompts.get(chatId)
+    if (promptHere && announced.has(promptHere.messageId)) recentButtonPrompts.delete(chatId)
     for (const m of data.messages) {
       const mm = m.message
       if (!announced.has(mm.id)) continue
@@ -7093,6 +7122,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   // consults the same shared set.
   rememberAnnouncedClick(view.messageId)
   chatUnansweredButtons.get(chatId)?.delete(view.messageId)
+  if (recentButtonPrompts.get(chatId)?.messageId === view.messageId) recentButtonPrompts.delete(chatId)
 
   if (decision === 'permission') {
     const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
@@ -7454,7 +7484,13 @@ async function streamWsDownCatchup(): Promise<void> {
  * legacy path runs unchanged (feature detect, never version sniff).
  */
 async function initUpdateStream(): Promise<void> {
-  if (!UPDATE_STREAM_ENABLED) return
+  if (!UPDATE_STREAM_ENABLED) {
+    // Say so. This exit was silent, so a daemon with the stream OFF looked
+    // identical in its log to one with the stream on and quiet, and a day
+    // went into asking why taps took five minutes (2026-09-05).
+    log('update stream: BGOS_UPDATE_STREAM is not "true"; stream off, clicks arrive on the legacy sweep')
+    return
+  }
   if (AUTH.mode !== 'pairing' || !streamTokenFingerprint) {
     log('update stream: flag on but auth is not pairing mode; staying on legacy paths')
     return
@@ -9260,7 +9296,7 @@ async function main(): Promise<void> {
       `Adaptive polling, base=${POLL_INTERVAL_MS}ms, ` +
         `WS-healthy full cycle=${globalIntervalMs(POLL_INTERVAL_MS, true)}ms, ` +
         `WS-down full cycle=${globalIntervalMs(POLL_INTERVAL_MS, false)}ms, ` +
-        `fast mode scoped to meeting/permission chats`,
+        `fast mode scoped to meeting/permission/button-prompt chats`,
     )
     let lastFullCycleAt = 0
     const tick = async (): Promise<void> => {
@@ -9338,6 +9374,7 @@ async function main(): Promise<void> {
           pendingPermissionChatIds: [...pendingPermissions.values()].map(
             (p) => p.chatId,
           ),
+          buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now()),
         })
         let plan = planPollCycle({
           now: Date.now(),

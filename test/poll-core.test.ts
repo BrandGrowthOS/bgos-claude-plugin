@@ -39,6 +39,10 @@ import {
   shouldForwardPollMessage,
   rememberReturnedMessageId,
   fastScopeChatIds,
+  activeButtonPromptChatIds,
+  BUTTON_PROMPT_FAST_WINDOW_MS,
+  BUTTON_PROMPT_FAST_CAP,
+  type ButtonPromptRecord,
   planPollCycle,
   globalIntervalMs,
   HEALTHY_FULL_SWEEP_INTERVAL_MS,
@@ -896,4 +900,58 @@ test('server.ts wires add_to_meeting: defined, handled, agent-attributed', () =>
   const body = serverSource.slice(start, serverSource.indexOf("case 'call_owner':", start))
   assert.ok(body.includes('/participants'), 'must post to the participants route')
   assert.ok(body.includes('X-Caller-Assistant-Id'), 'must attribute the add to this agent')
+})
+
+// ---------------------------------------------------------------------------
+// Inline-button prompts earn 2s polling (0.38.26). Without the Agent Update
+// Stream (off unless BGOS_UPDATE_STREAM=true) a tap reaches the daemon only on
+// the chat sweep, and the WS-healthy sweep is five minutes; Kc saw 4.5 and 5.5
+// minute taps on 2026-09-05 while text arrived at once over the WS.
+// ---------------------------------------------------------------------------
+
+test('activeButtonPromptChatIds: fresh prompts earn fast polling, newest first, stale ones and a backwards clock do not, and the set is capped', () => {
+  const prompts = new Map<string, ButtonPromptRecord>([
+    ['a', { messageId: 1, sentAtMs: 1_000 }],
+    ['b', { messageId: 2, sentAtMs: 5_000 }],
+    ['c', { messageId: 3, sentAtMs: 9_000 }],
+  ])
+  assert.deepEqual(activeButtonPromptChatIds(prompts, 10_000, { windowMs: 8_000 }), ['c', 'b'])
+  assert.deepEqual(activeButtonPromptChatIds(prompts, 10_000, { windowMs: 8_000, cap: 1 }), ['c'])
+  assert.equal(BUTTON_PROMPT_FAST_WINDOW_MS, 10 * 60_000)
+  assert.equal(BUTTON_PROMPT_FAST_CAP, 8)
+  // exactly at the window edge is OUT: a prompt ten minutes old has lapsed
+  assert.deepEqual(activeButtonPromptChatIds(prompts, 1_000 + BUTTON_PROMPT_FAST_WINDOW_MS), ['c', 'b'])
+  assert.deepEqual(activeButtonPromptChatIds(prompts, 0), [])
+  assert.deepEqual(activeButtonPromptChatIds(new Map(), 10_000), [])
+})
+
+test('fastScopeChatIds unions button-prompt chats with meeting and permission chats, deduplicated', () => {
+  assert.deepEqual(
+    fastScopeChatIds({ meetingChatIds: ['m'], pendingPermissionChatIds: ['p'], buttonPromptChatIds: ['b', 'm'] }),
+    ['m', 'p', 'b'],
+  )
+  assert.deepEqual(fastScopeChatIds({ meetingChatIds: [], pendingPermissionChatIds: [] }), [])
+})
+
+test('server.ts fast-polls a chat with a fresh inline-button prompt and stops when the tap lands in either lane or the daemon moves on', () => {
+  assert.ok(
+    serverSource.includes('recentButtonPrompts.set(String(resolvedChatId)'),
+    'a reply that carries buttons registers the prompt at send time',
+  )
+  assert.ok(
+    serverSource.includes(
+      'Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId',
+    ),
+    'only a reply ANCHORED to the prompt supersedes it; an unrelated progress update must leave the chips live',
+  )
+  assert.ok(
+    serverSource.includes('recentButtonPrompts.delete(String(resolvedChatId))'),
+    'the anchored reply drops the chat from the fast scope',
+  )
+  assert.ok(
+    serverSource.includes('buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now())'),
+    'the 2s tick feeds the bounded prompt set into the fast scope',
+  )
+  const drops = serverSource.match(/recentButtonPrompts\.delete\(chatId\)/g) ?? []
+  assert.equal(drops.length, 2, 'both lanes (poll announce and stream apply) drop the chat once the tap lands')
 })
