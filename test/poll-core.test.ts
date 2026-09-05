@@ -939,8 +939,14 @@ test('server.ts fast-polls a chat with a fresh inline-button prompt and stops wh
     'a reply that carries buttons registers the prompt at send time',
   )
   assert.ok(
+    serverSource.includes(
+      'Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId',
+    ),
+    'only a reply ANCHORED to the prompt supersedes it; an unrelated progress update must leave the chips live',
+  )
+  assert.ok(
     serverSource.includes('recentButtonPrompts.delete(String(resolvedChatId))'),
-    'a reply without buttons supersedes the prompt (answered in words, chips are moot)',
+    'the anchored reply drops the chat from the fast scope',
   )
   assert.ok(
     serverSource.includes('buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now())'),

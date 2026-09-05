@@ -435,8 +435,9 @@ export function fastScopeChatIds(opts: {
 
 /**
  * The latest inline-button prompt this daemon sent in a chat. One record per
- * chat on purpose: a later prompt replaces it, and a later reply WITHOUT
- * buttons deletes it (the agent answered in words, the chips are moot).
+ * chat on purpose: a later prompt replaces it, and a reply anchored to it
+ * deletes it (the agent answered in words, the chips are moot). An unrelated
+ * send does not touch it; the agent is the chatty one, not the user.
  */
 export type ButtonPromptRecord = { messageId: number; sentAtMs: number }
 

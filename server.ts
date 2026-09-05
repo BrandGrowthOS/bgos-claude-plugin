@@ -3590,11 +3590,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // Fast-poll scope for the tap (0.38.26). Without the Agent Update
         // Stream a click reaches this daemon only on the chat sweep, and the
         // WS-healthy sweep is five minutes; a fresh prompt puts its chat on the
-        // 2s tick instead. A reply WITHOUT buttons clears it: the agent moved
-        // on, or answered the question in words, and the chips are moot.
+        // 2s tick instead. A later prompt replaces it; a reply ANCHORED to the
+        // prompt (reply_to_id) clears it, the question was answered in words
+        // and the chips are moot. An unrelated send leaves it live: the agent
+        // is the chatty one (progress updates while the user is away), and
+        // "any send supersedes" would have emptied the window in minutes
+        // (Ares, reviewing #129).
         if (options.length > 0 && typeof msgId === 'number') {
           recentButtonPrompts.set(String(resolvedChatId), { messageId: msgId, sentAtMs: Date.now() })
-        } else {
+        } else if (
+          reply_to_id !== undefined &&
+          Number(reply_to_id) === recentButtonPrompts.get(String(resolvedChatId))?.messageId
+        ) {
           recentButtonPrompts.delete(String(resolvedChatId))
         }
         const parts: string[] = []

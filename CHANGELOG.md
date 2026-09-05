@@ -16,10 +16,13 @@ was never switched on.
 
 - **A chat with a fresh inline-button prompt joins the 2s fast scope**, the
   same scope meeting and pending-permission chats already use, until the tap
-  lands (either lane), the prompt is ten minutes old, or this daemon sends
-  anything else in that chat (an answer in words supersedes the chips). At
-  most eight such chats at once, newest first. Bounded on purpose: an
-  abandoned prompt must not pin a busy chat at 2s forever.
+  lands (either lane), the prompt is ten minutes old, a later prompt replaces
+  it, or this daemon replies TO the prompt in words (an unrelated progress
+  update leaves the chips live; the agent is the chatty one). At most eight
+  such chats at once, newest first. Bounded on purpose: an abandoned prompt
+  must not pin a busy chat at 2s forever. The edge, stated so the next late
+  tap is not read as a regression: a tap more than ten minutes after the
+  prompt still lands on the five minute sweep.
 - **The stream-off exit now says so in the log.** It returned silently, so a
   daemon with the stream off looked identical to one with it on and quiet.
 - Guarded by `test/poll-core.test.ts` (the pure scope helper, edge and cap,
