@@ -105,6 +105,16 @@ export function gatePersistedCursors(input: {
  * is a later warning, the cost of waiting too little is telling someone to
  * kill a session that is doing their work.
  */
+/**
+ * The reserved heartbeat `lastError.code` that flips a session's presence
+ * health to 'unresponsive' on the backend. It is a CONTRACT with
+ * backend/src/dto/integrations/heartbeat.dto.ts, which owns the constant and
+ * treats every other code, and a cleared error, as 'ok'. Spelled out here
+ * rather than imported because the plugin does not depend on the backend
+ * source; the string is the interface, and it is pinned by a test.
+ */
+export const SESSION_UNRESPONSIVE_CODE = 'session_unresponsive'
+
 export const DEAF_PROBE_GRACE_WINDOWS = 3
 
 /** What the daemon should do about a session that has not spoken yet. */
@@ -234,4 +244,77 @@ export function deafFixCommand(input: {
 export function inboundOwesReply(senderKind: string | null | undefined): boolean {
   if (senderKind == null) return true
   return String(senderKind).trim().toLowerCase() !== 'system'
+}
+
+/**
+ * The deaf verdict, projected onto the HEARTBEAT so the fleet can see it.
+ *
+ * THE GAP THIS CLOSES. Backend #1278 added a third presence tier: a session
+ * that is connected but cannot answer reads 'unresponsive' instead of a
+ * confident green 'online'. It arrives through the heartbeat's existing
+ * `lastError` channel under one reserved code, and its fail-safe is that no
+ * report means 'ok'. That fail-safe is correct and it is also why the feature
+ * shipped DARK: the backend and the app were both live and NOTHING SENT IT.
+ * A quiet field looked exactly like a healthy fleet.
+ *
+ * This is the daemon half. It sends nothing new: it projects the verdict the
+ * daemon has already reached and already acted on, the same one that posts the
+ * launch guidance into the chat.
+ *
+ * DERIVED, NOT RECORDED, following heartbeatLastError next door. Two pieces of
+ * state the daemon already keeps decide it, so there is no third state to fall
+ * out of step with them:
+ *   - `escalated`, the once-per-boot latch set when deafSessionAction returned
+ *     'escalate', which by then means ~20 minutes of silence AND an ignored
+ *     direct question. It cannot fire on a busy session or a blip.
+ *   - `live`, true the moment the session makes any bgos tool call.
+ * A session that speaks again is live, so this returns null, the backend reads
+ * an explicit null as "clear", and health goes back to 'ok' with no separate
+ * recovery call. The latch never has to be un-latched.
+ *
+ * It states the OBSERVATION and no cause, for the same reason the auth
+ * rejection does: the daemon knows the session stopped answering, and does not
+ * know whether it is out of credits, wedged, or waiting on something.
+ */
+export function heartbeatUnresponsiveError(input: {
+  escalated: boolean
+  live: boolean
+  since: number | null
+  now: number
+}): { code: string; message: string; at: string } | null {
+  if (!input.escalated) return null
+  // Speaking again IS recovery. Checked after the latch so a session that was
+  // never deaf never reaches here at all.
+  if (input.live) return null
+  const at = input.since ?? input.now
+  const minutes = Math.max(0, Math.floor((input.now - at) / 60_000))
+  return {
+    code: SESSION_UNRESPONSIVE_CODE,
+    // Well under the DTO's 300-char cap. Says what was observed and what was
+    // tried, and claims nothing about why.
+    message:
+      `This agent's session has not answered for ${minutes} minute(s): an ` +
+      `inbound message went unacted, the reply reminder went unacted, and a ` +
+      `direct liveness probe went unanswered. The daemon is connected; the ` +
+      `session behind it is not responding.`,
+    at: new Date(at).toISOString(),
+  }
+}
+
+/**
+ * The ONE `lastError` a heartbeat carries, when two producers could speak.
+ *
+ * A refused credential WINS over an unresponsive session, and the order is not
+ * arbitrary. The two are not independent: a daemon whose calls are being
+ * refused cannot deliver messages to its session, so that session goes quiet
+ * and looks deaf. Reporting the deafness would name the symptom and bury the
+ * cause, and the two have different remedies (re-pair, versus look at the
+ * session). When both are true the operator needs the one that explains the
+ * other.
+ */
+export function pickHeartbeatLastError(
+  authError: { code: string; message: string; at: string } | null,
+  unresponsiveError: { code: string; message: string; at: string } | null,
+): { code: string; message: string; at: string } | null {
+  return authError ?? unresponsiveError
 }

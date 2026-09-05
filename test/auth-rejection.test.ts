@@ -224,11 +224,33 @@ test('reporting does NOT depend on `notified`, because the fleet wants CURRENT s
 // The projection is worthless if nothing calls it, which is the exact failure
 // it exists to fix: the backend could store a lastError for months while no
 // daemon ever sent one. Pin the WIRING, not just the logic.
+//
+// 2026-09-04: widened, because the same failure happened AGAIN one field over.
+// Backend #1278 added an 'unresponsive' presence tier fed by this very
+// heartbeat, shipped it to the whole fleet, and nothing sent the code, so every
+// agent read 'ok' and the quiet field looked like health. This guard now
+// covers BOTH producers and the combiner between them, so neither can be
+// unwired without a red test.
 test('the daemon actually SENDS it: heartbeat wired to the live rejection state', () => {
   assert.match(
     serverSource,
-    /lastError:\s*\(\)\s*=>\s*heartbeatLastError\(authRejection,\s*Date\.now\(\)\)/,
-    'startVersionHeartbeat must be passed the projection of the SAME state noteAuthOutcome updates',
+    /lastError:\s*\(\)\s*=>\s*\{/,
+    'startVersionHeartbeat must be passed a live projection, not a snapshot',
+  )
+  assert.match(
+    serverSource,
+    /heartbeatLastError\(authRejection,\s*now\)/,
+    'the auth projection must read the SAME state noteAuthOutcome updates',
+  )
+  assert.match(
+    serverSource,
+    /heartbeatUnresponsiveError\(\{[\s\S]{0,200}?escalated: deafEscalationDone,[\s\S]{0,200}?live: channelLiveness\.live,/,
+    'the deaf projection must read the SAME latch the escalation sets and the SAME liveness that clears it',
+  )
+  assert.match(
+    serverSource,
+    /pickHeartbeatLastError\(/,
+    'two producers share one field, so the precedence must be explicit',
   )
   const heartbeatSource = readFileSync(
     new URL('../lib/version-heartbeat.ts', import.meta.url),
