@@ -2,6 +2,19 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.23 (2026-09-05)
+
+Consult continuation: answer now, finish later. On an iPhone call the agent
+answered a weather consult from a five hour old reading, then fetched a fresh
+one and posted it to the chat, and the call never heard it because the consult
+had already closed. `voice_consult_reply` now takes `final` (default true).
+`final:false` delivers the provisional answer and keeps the consult open as a
+running task on the backend (`pending:true, consultId` on the consult result);
+a second `voice_consult_reply` with the same consult id posts the fresh answer
+to `POST /api/v1/integrations/voice-consults/:consultId/result`, which the
+backend announces in the call, flips the Work Stream card and settles the chat
+card. The consult notification tells the agent about the path.
+
 ## 0.38.18 (2026-09-04)
 
 The daemon half of the 'unresponsive' presence tier. Backend #1278 gave presence

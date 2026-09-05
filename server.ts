@@ -2538,10 +2538,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'call this tool FIRST — before any other tool — with the consult_id ' +
         'from the notification and a short, SPEAKABLE answer (1-3 ' +
         'sentences; it is spoken aloud on the call). You have roughly 30 ' +
-        'seconds from the notification. If you reply too late the call has ' +
-        'moved on: the tool tells you so — then send the answer as a ' +
-        'normal chat message with the reply tool instead, so nothing is ' +
-        'lost.',
+        'seconds from the notification. If the real answer needs a fetch ' +
+        'or tool work, reply at once with what you have and final=false ' +
+        '(the call hears it as provisional and a task stays open), keep ' +
+        'working, then call this tool AGAIN with the same consult_id and ' +
+        'the fresh answer: it is announced in the call when it lands. If ' +
+        'you reply too late the call has moved on: the tool tells you so, ' +
+        'then send the answer as a normal chat message with the reply tool ' +
+        'instead, so nothing is lost.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -2555,6 +2559,14 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'The answer, written to be SPOKEN: lead with the answer, ' +
               '1-3 short sentences, no markdown.',
+          },
+          final: {
+            type: 'boolean',
+            description:
+              'Default true. Set false when this is a provisional answer ' +
+              '(what you know now) and you are still fetching the real ' +
+              'one; then reply again with the same consult_id when it is ' +
+              'ready. Omit or true for a complete answer.',
           },
         },
         required: ['consult_id', 'answer'],
@@ -3920,7 +3932,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           isError: true,
         }
       }
-      const status = voiceRpc.resolveConsult(consultId, answer)
+      const final = rawArgs.final !== false
+      const status = voiceRpc.resolveConsult(consultId, answer, { final })
       if (status === 'resolved') {
         return {
           content: [
@@ -3929,6 +3942,52 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
               text: 'Answer delivered to the live call — it is being spoken to your user now.',
             },
           ],
+        }
+      }
+      if (status === 'partial') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                'Provisional answer delivered to the live call; a task stays ' +
+                'open for the fresh one. Keep working, then call ' +
+                `voice_consult_reply again with consult_id="${consultId}" ` +
+                'and the final answer so it is announced in the call.',
+            },
+          ],
+        }
+      }
+      if (status === 'continued') {
+        // Consult continuation: the fresh answer rides the backend's
+        // task-result path (Work Stream card, in-call announce, chat card).
+        try {
+          const res = (await bgosPost(
+            `integrations/voice-consults/${encodeURIComponent(consultId)}/result`,
+            { ok: true, payload: { text: answer } },
+          )) as { taskId?: string | null } | undefined
+          const landed = res && typeof res === 'object' && res.taskId
+          return {
+            content: [
+              {
+                type: 'text',
+                text: landed
+                  ? `Final answer delivered (task ${String(res!.taskId)}). It is announced in the call if it is still live, and on the Work Stream and chat card either way.`
+                  : 'The follow-up task for this consult is already settled or the call has ended. Send the answer as a normal chat message with the reply tool so it is not lost.',
+              },
+            ],
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Could not deliver the final answer (${errMsg}). Send it as a normal chat message with the reply tool instead.`,
+              },
+            ],
+            isError: true,
+          }
         }
       }
       if (status === 'late') {
