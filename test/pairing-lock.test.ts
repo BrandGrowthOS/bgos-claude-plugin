@@ -16,6 +16,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
@@ -28,17 +30,24 @@ import {
   pairingLockPath,
   acquirePairingLock,
   refreshPairingLock,
+  refreshPairingLockDetailed,
   releasePairingLock,
   touchBeaconHeartbeat,
   BEACON_HEARTBEAT_FILE,
   serializeBeaconHeartbeat,
   formatPassiveBanner,
   processAlive,
+  defaultLockIo,
   type LockIo,
   type LockRecord,
 } from '../lib/pairing-lock.ts'
 
-const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+// LF-normalised for the same reason as test/pairing-lock-standdown.test.ts:
+// these are source scans, and a CRLF checkout must not change their verdict.
+const serverSource = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 const STALE = lockStalenessMs() // 15_000 at the default interval
 
@@ -76,6 +85,13 @@ function makeIo(opts?: {
     },
     isProcessAlive(pid: number): boolean {
       return alive.has(pid)
+    },
+    tryCreateExclusive(path: string, data: string): boolean {
+      if (opts?.failWrite) throw new Error('boom write')
+      if (files.has(path)) return false
+      files.set(path, data)
+      writes++
+      return true
     },
   }
   return io
@@ -264,6 +280,37 @@ test('acquire never throws on an IO failure; it just fails to acquire', () => {
   assert.equal(acquirePairingLock({ lockPath: LOCK, selfPid: 100, now: 1, io: ioWrite }).acquired, false)
 })
 
+test('two daemons racing an unlocked file: exactly one acquires', () => {
+  const io = makeIo({ alive: [111, 222] })
+  let created = 0
+  io.tryCreateExclusive = (p, d) => {
+    if (io.files.has(p)) return false
+    io.files.set(p, d)
+    created += 1
+    return true
+  }
+  const a = acquirePairingLock({ lockPath: LOCK, selfPid: 111, now: 1_000, io })
+  const b = acquirePairingLock({ lockPath: LOCK, selfPid: 222, now: 1_000, io })
+  assert.equal(created, 1)
+  assert.equal(a.acquired, true)
+  assert.equal(b.acquired, false)
+  assert.equal(b.holderPid, 111)
+})
+
+test('a stale lock is still reclaimable through the exclusive path', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 111, heartbeatAt: 0 }) } })
+  io.tryCreateExclusive = (p, d) => {
+    if (io.files.has(p)) return false
+    io.files.set(p, d)
+    return true
+  }
+  // heartbeat 0, now well past the staleness window: reclaim must still work,
+  // otherwise a dead holder locks the pairing out forever.
+  const res = acquirePairingLock({ lockPath: LOCK, selfPid: 222, now: 999_999, io })
+  assert.equal(res.acquired, true)
+  assert.equal(res.reason, 'stale')
+})
+
 // ── Effectful: HEARTBEAT REFRESH KEEPS A LOCK FRESH (DoD) ──────────────────────
 
 test('heartbeat refresh keeps a lock fresh: a rival that would otherwise reclaim stays passive', () => {
@@ -308,6 +355,82 @@ test('refresh on an absent lock re-creates it as ours (self-heal after an errant
   const io = makeIo({ alive: [100] })
   assert.equal(refreshPairingLock({ lockPath: LOCK, selfPid: 100, now: 6000, io }), true)
   assert.equal(parseLockRecord(io.files.get(LOCK) ?? null)?.pid, 100)
+})
+
+test('refreshPairingLockDetailed reports WHO holds the lock when we have been reclaimed', () => {
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 51164, heartbeatAt: 1_000, bootedAt: 1 }) },
+  })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 30220, now: 2_000, io })
+  assert.deepEqual(out, { held: false, holderPid: 51164 })
+  // The rival's record must be left exactly as it was: re-stamping here would
+  // recreate the dual-holder bug this module exists to prevent.
+  assert.equal(
+    io.files.get(LOCK),
+    serializeLockRecord({ pid: 51164, heartbeatAt: 1_000, bootedAt: 1 }),
+  )
+})
+
+test('refreshPairingLockDetailed still reports held when the record is ours', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 30220, heartbeatAt: 1_000 }) } })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 30220, now: 2_000, io })
+  assert.deepEqual(out, { held: true })
+})
+
+test('a refresh that cannot write stays held but names the io error', () => {
+  // A filesystem hiccup is not proof of reclaim, so the daemon keeps the
+  // channel. It must not keep it SILENTLY though: a holder whose writes fail
+  // never re-stamps its heartbeat, goes stale after three intervals, and is
+  // reclaimed by a rival while it still believes it is the holder. The string
+  // is what the daemon warns with, so an operator can see the failing holder
+  // instead of a healthy looking log.
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 7, heartbeatAt: 1_000 }) },
+    failWrite: true,
+  })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(out.held, true)
+  assert.match(String((out as { ioError?: string }).ioError ?? ''), /boom write/)
+})
+
+test('an unreadable lock file is NOT treated as an unlocked pairing', () => {
+  // readText used to swallow every read error and return null, which
+  // decideLockAction reads as "no lock on disk": a lock file we merely cannot
+  // read (EACCES, a lock directory, a transient share violation on Windows)
+  // would have been overwritten as ours, which is the dual-holder bug arriving
+  // through the back door. A read that fails for any reason other than
+  // "the file is not there" must reach the callers' catch instead.
+  const io = makeIo({
+    files: { [LOCK]: serializeLockRecord({ pid: 999, heartbeatAt: 1_000 }) },
+    failRead: true,
+  })
+  const acquired = acquirePairingLock({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(acquired.acquired, false, 'an unreadable lock must never be acquired')
+  assert.equal(io.writes, 0, 'and must never be overwritten')
+
+  const refreshed = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal(refreshed.held, true, 'a read hiccup is not proof we were reclaimed')
+  assert.match(String((refreshed as { ioError?: string }).ioError ?? ''), /boom read/)
+})
+
+test('defaultLockIo.readText: null for a missing file, throws for anything else', () => {
+  // The narrowing is in the real IO shell, so it needs the real filesystem.
+  // A directory stands in for the unreadable-but-present case: readFileSync
+  // gives EISDIR on every platform this daemon runs on, and permission-based
+  // failures are not reproducible as an unprivileged user on Windows.
+  const missing = join(tmpdir(), `bgos-lock-missing-${process.pid}-${Date.now()}.lock`)
+  assert.equal(defaultLockIo.readText(missing), null, 'ENOENT stays the unlocked path')
+  assert.throws(
+    () => defaultLockIo.readText(tmpdir()),
+    (err: NodeJS.ErrnoException) => err.code !== 'ENOENT',
+    'a present-but-unreadable lock must throw, not read as unlocked',
+  )
+})
+
+test('a healthy refresh carries no ioError, so the warning cannot latch on', () => {
+  const io = makeIo({ files: { [LOCK]: serializeLockRecord({ pid: 7, heartbeatAt: 1_000 }) } })
+  const out = refreshPairingLockDetailed({ lockPath: LOCK, selfPid: 7, now: 2_000, io })
+  assert.equal((out as { ioError?: string }).ioError, undefined)
 })
 
 // ── Effectful: HOLDER EXIT LETS A WAITER RECLAIM (DoD) ─────────────────────────

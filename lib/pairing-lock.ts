@@ -202,6 +202,10 @@ export interface LockIo {
   writeFile(path: string, data: string): void
   unlink(path: string): void
   isProcessAlive(pid: number): boolean
+  /** Create the file ONLY if it does not exist. True when this call created it.
+   *  This is what makes an unlocked-file race first-writer-wins rather than
+   *  last-writer-wins; read-then-write cannot decide a simultaneous race. */
+  tryCreateExclusive(path: string, data: string): boolean
 }
 
 /** True when a signal-0 to `pid` finds a live process. EPERM counts as alive
@@ -221,8 +225,18 @@ export const defaultLockIo: LockIo = {
   readText(path: string): string | null {
     try {
       return readFileSync(path, 'utf8')
-    } catch {
-      return null
+    } catch (err) {
+      // ONLY a missing file reads as null, because null means "no lock on
+      // disk" to decideLockAction, which then hands the pairing to whoever
+      // asked. Swallowing every read error meant a lock file we merely could
+      // not read (EACCES, an EISDIR from a stray directory at that path, a
+      // transient share violation on Windows) was overwritten as ours while a
+      // live holder kept using it: the dual-holder bug through the back door.
+      // Everything else throws on to the callers, whose try/catch already turn
+      // it into { acquired: false } or { held: true, ioError }, so the daemon
+      // still never dies over a lock read.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
+      throw err
     }
   },
   writeFile(path: string, data: string): void {
@@ -236,6 +250,15 @@ export const defaultLockIo: LockIo = {
     }
   },
   isProcessAlive: processAlive,
+  tryCreateExclusive(path: string, data: string): boolean {
+    try {
+      // 'wx' fails with EEXIST rather than truncating an existing file.
+      writeFileSync(path, data, { flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  },
 }
 
 export interface AcquireResult {
@@ -277,6 +300,22 @@ export function acquirePairingLock(input: {
     if (decision.action === 'passive') {
       return { acquired: false, holderPid: decision.holderPid }
     }
+    if (decision.reason === 'unlocked') {
+      // Nothing on disk: whoever creates the file first owns the pairing.
+      const record = serializeLockRecord({
+        pid: input.selfPid,
+        heartbeatAt: input.now,
+        ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
+      })
+      if (io.tryCreateExclusive(input.lockPath, record)) {
+        return { acquired: true, reason: decision.reason }
+      }
+      // A rival created it in the same instant. Yield to whoever won.
+      return { acquired: false, holderPid: parseLockRecord(io.readText(input.lockPath))?.pid }
+    }
+    // A reclaim (own / stale / holder-dead) overwrites deliberately: the file
+    // exists and an exclusive create would always fail. The read-back below is
+    // what decides a simultaneous reclaim.
     io.writeFile(
       input.lockPath,
       serializeLockRecord({
@@ -297,30 +336,45 @@ export function acquirePairingLock(input: {
   }
 }
 
+/** What a heartbeat refresh discovered. `held:false` carries the rival's pid so
+ *  the caller can name it in a log line and stand down against it. `held:true`
+ *  carries an `ioError` when the heartbeat could not actually be written: we
+ *  keep the channel (a hiccup is not proof of reclaim) but the caller must be
+ *  able to SAY so, because a holder whose writes keep failing goes stale after
+ *  three intervals and is reclaimed while still believing it is the holder. */
+export type RefreshOutcome =
+  | { held: true; ioError?: string }
+  | { held: false; holderPid: number | undefined }
+
 /**
- * Refresh our heartbeat. Returns true when we still own the lock (record is
- * ours or absent, and we re-stamped it), false when a DIFFERENT pid now holds
- * it, meaning we were reclaimed against expectation.
+ * Refresh our heartbeat and report what we found.
  *
- * In steady state false is unreachable: a live holder refreshes every interval
- * and the staleness window is three intervals, so a healthy holder never goes
- * stale and never gets reclaimed. The only way to observe false is the boot
- * race window, which converges before delivery is armed. The caller treats a
- * false as a loud warning rather than silently re-stamping (which would
- * recreate the very dual-holder bug this module exists to prevent). Never
- * throws.
+ * `held:false` means a DIFFERENT pid holds the lock, so this daemon has been
+ * reclaimed and must stop acting as the channel owner. We deliberately do NOT
+ * re-stamp the file in that case: last-writer-wins here would let two daemons
+ * ping-pong the lock forever, each believing it owns the channel, which is the
+ * exact dual-holder bug this module exists to prevent.
+ *
+ * This USED to be documented as unreachable in steady state. It is not. On
+ * 2026-09-04 a live host ran three daemons for one pairing and logged this
+ * condition every six seconds for hours, because the caller treated it as a
+ * warning and kept polling. See the plan's evidence section.
+ *
+ * Never throws.
  */
-export function refreshPairingLock(input: {
+export function refreshPairingLockDetailed(input: {
   lockPath: string
   selfPid: number
   now: number
   bootedAt?: number
   io?: LockIo
-}): boolean {
+}): RefreshOutcome {
   const io = input.io ?? defaultLockIo
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
-    if (existing && existing.pid !== input.selfPid) return false
+    if (existing && existing.pid !== input.selfPid) {
+      return { held: false, holderPid: existing.pid }
+    }
     io.writeFile(
       input.lockPath,
       serializeLockRecord({
@@ -329,10 +383,25 @@ export function refreshPairingLock(input: {
         ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
       }),
     )
-    return true
-  } catch {
-    return false
+    return { held: true }
+  } catch (err) {
+    // A filesystem hiccup is not proof we were reclaimed. Claim we still hold
+    // it: a false stand-down costs a live channel, a delayed stand-down costs
+    // one duplicated poll cycle. The next refresh re-checks. The error rides
+    // along so the caller can warn once instead of looking healthy forever.
+    return { held: true, ioError: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** Boolean form, kept so existing callers and tests are unaffected. */
+export function refreshPairingLock(input: {
+  lockPath: string
+  selfPid: number
+  now: number
+  bootedAt?: number
+  io?: LockIo
+}): boolean {
+  return refreshPairingLockDetailed(input).held
 }
 
 /**

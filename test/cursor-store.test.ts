@@ -45,6 +45,7 @@ import {
   loadCursorFile,
   saveCursorFile,
   resolveCursorFilePath,
+  mergeCursorMaps,
   CURSOR_FILE_NAME,
 } from '../lib/cursor-store.ts'
 import { buildChatPollRequest } from '../lib/poll-core.ts'
@@ -285,4 +286,59 @@ test('flushIfDirty failure keeps the store dirty so a later flush retries', () =
   }
   assert.equal(store.flushIfDirty(), true)
   assert.equal(loadCursorFile(file).cursors.get('1'), 5)
+})
+
+// ── 6. Merge-max against a concurrent writer ─────────────────────────────────
+//
+// Several daemons can be alive for one pairing; only the pairing-lock holder
+// delivers, but a daemon that stood down and later reclaimed the lock still
+// holds the cursor map it loaded at boot. The holder advanced the shared file
+// meanwhile. Without a merge the reclaiming daemon re-forwards everything the
+// holder already delivered (its forwarded-id set is per process) and its first
+// flush REWINDS the file to the boot-era values. mergeCursorMaps is the pure
+// half of the repair: no clock, no disk, no daemon.
+
+test('merge-max lifts the live map to the file and reports how many advanced', () => {
+  const live = new Map<string, number>([['a', 10], ['b', 50], ['c', 7]])
+  const disk = new Map<string, number>([['a', 99], ['b', 20], ['d', 3]])
+  const advanced: Array<[string, number]> = []
+  const count = mergeCursorMaps(live, disk, (chatId, id) => {
+    advanced.push([chatId, id])
+    live.set(chatId, id)
+  })
+  assert.equal(count, 2, 'a rose to 99 and d appeared; b and c were already ahead')
+  assert.deepEqual(advanced.sort(), [['a', 99], ['d', 3]])
+  assert.deepEqual(
+    [...live.entries()].sort(),
+    [['a', 99], ['b', 50], ['c', 7], ['d', 3]],
+    'a live cursor must never be rewound by an older file',
+  )
+})
+
+test('merge-max is idempotent and a no-op when the file is behind or empty', () => {
+  const live = new Map<string, number>([['a', 10]])
+  const apply = (chatId: string, id: number): void => {
+    live.set(chatId, id)
+  }
+  assert.equal(mergeCursorMaps(live, new Map(), apply), 0)
+  assert.equal(mergeCursorMaps(live, new Map([['a', 4]]), apply), 0)
+  assert.equal(mergeCursorMaps(live, new Map([['a', 11]]), apply), 1)
+  assert.equal(mergeCursorMaps(live, new Map([['a', 11]]), apply), 0, 'second merge advances nothing')
+  assert.equal(live.get('a'), 11)
+})
+
+test('merge-max skips junk values rather than writing them into the live map', () => {
+  const live = new Map<string, number>([['a', 10]])
+  const disk = new Map<string, number>([
+    ['a', Number.NaN],
+    ['b', -1],
+    ['c', 0],
+    ['d', 4.5],
+    ['e', 12],
+  ])
+  const count = mergeCursorMaps(live, disk, (chatId, id) => {
+    live.set(chatId, id)
+  })
+  assert.equal(count, 1)
+  assert.deepEqual([...live.entries()].sort(), [['a', 10], ['e', 12]])
 })

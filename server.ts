@@ -187,6 +187,8 @@ import {
 } from './lib/poll-core.js'
 import {
   CursorStore,
+  loadCursorFile,
+  mergeCursorMaps,
   resolveCursorFilePath,
   CURSOR_FLUSH_INTERVAL_MS,
 } from './lib/cursor-store.js'
@@ -221,7 +223,7 @@ import {
 import {
   LOCK_HEARTBEAT_INTERVAL_MS,
   acquirePairingLock,
-  refreshPairingLock,
+  refreshPairingLockDetailed,
   releasePairingLock,
   touchBeaconHeartbeat,
   shouldHeartbeatNow,
@@ -4849,6 +4851,58 @@ const LIVE_MARKER_PATH = liveMarkerPath(pathDirname(CURSOR_FILE_PATH))
 // passive so several daemons can no longer join one Socket.IO room and drop
 // each other's messages. See lib/pairing-lock.ts for the full story.
 const PAIRING_LOCK_PATH = pairingLockPath(CREDENTIALS_PATH)
+// True while this daemon owns the pairing and may poll, forward and advance
+// the shared chat cursor. Set when the lock is acquired, cleared the moment a
+// heartbeat refresh finds a different pid holding it. Before this flag, losing
+// the lock only logged a warning and the daemon kept forwarding, so two armed
+// daemons raced one cursor and each ate the other's messages (2026-09-04:
+// three daemons on one pairing, three call transcripts written and never
+// delivered). Module scope rather than main scope because BOTH paths that
+// forward a message have to read it: the poll tick inside main, and the
+// WebSocket inbound chokepoint in connectWebsocket.
+let channelArmed = false
+// True while this daemon OWNS the pairing lock, which is a different question
+// from whether it may deliver yet. Set the instant the lock is acquired (boot,
+// or a promotion on recheck), cleared when a refresh finds a rival holding it
+// or when the arm that followed an acquisition failed.
+//
+// The two flags must stay separate because arming is SLOW: it observes the
+// marketplace and runs discoverChats, up to tens of seconds. Gating the
+// heartbeat on channelArmed (which is only set at the END of the arm) meant the
+// lock was owned and never refreshed for the whole arm, went stale after 15s,
+// and was legitimately reclaimed by a rival that then armed itself; the first
+// daemon finished arming and set channelArmed anyway, so two daemons were armed
+// until the next tick's refresh noticed. Heartbeat on lockHeld, delivery on
+// channelArmed: the lock stays fresh from the moment it is ours.
+let lockHeld = false
+// Frame kinds already reported as ignored during the CURRENT stand-down.
+// Cleared when the daemon stands down, so each passive spell says each kind
+// once instead of once every few seconds for hours.
+const standDownIgnoredFrames = new Set<string>()
+// Every realtimeSocket handler that acts on the pairing's behalf is registered
+// through this, so a stood-down daemon behaves like a daemon that was passive
+// from boot: a passive daemon never joins the pairing room, so it never sees
+// these frames at all, and one that keeps its socket must not act on them
+// either. Without it, three daemons on one pairing each handled every
+// voice_rpc frame, which is where the duplicate consult cards and the
+// "late/unknown voice_rpc result" warnings came from. The socket deliberately
+// stays CONNECTED while stood down: re-arming must stay cheap, and the
+// re-arm path relies on the connection still being there.
+// connect / disconnect / connect_error are NOT wrapped: they are transport
+// bookkeeping, not work done for the pairing, and a passive daemon still needs
+// its own connection state to be correct.
+const whenArmed =
+  <T>(frame: string, handle: (payload: T) => void) =>
+  (payload: T): void => {
+    if (!channelArmed) {
+      if (!standDownIgnoredFrames.has(frame)) {
+        standDownIgnoredFrames.add(frame)
+        log(`${frame} ignored: standing down, another daemon holds the pairing lock`)
+      }
+      return
+    }
+    handle(payload)
+  }
 // Beacon heartbeat: a sibling of channel-live.json whose mtime updates on every
 // successful beacon, so an external supervisor can tell a dead channel from a
 // live process (channel-live.json is edge-triggered on connect/boot only and
@@ -4904,6 +4958,17 @@ function advanceChatCursor(chatId: string, id: number): void {
  */
 function flushChatCursors(): void {
   if (!channelLiveness.live) return
+  // Nothing to write means nothing to clobber, and this is the hot path (every
+  // CURSOR_FLUSH_INTERVAL_MS), so the file read below only happens when a write
+  // is actually about to.
+  if (!cursorStore.isDirty) return
+  // Merge-max against whatever is on disk before writing it. saveCursorFile
+  // writes the WHOLE live map, so a daemon that was stood down while a rival
+  // holder advanced the shared file would otherwise rewind it to this process's
+  // values. Making the flush itself idempotent covers every caller for free,
+  // including the exit hooks, which stay ungated on purpose: a clean shutdown
+  // must still persist the advances it really made.
+  mergeCursorMaps(chatLastSeen, loadCursorFile(cursorStore.filePath).cursors, advanceChatCursor)
   cursorStore.flushIfDirty()
 }
 
@@ -7329,7 +7394,7 @@ function connectWebsocket(): void {
   // normalizeVoiceRpc (malformed frames drop; well-formed frames ALWAYS get
   // a result or descriptive error — the G2 silent-drop lesson). Duplicate
   // re-emits are deduped by rpcId inside the handler.
-  realtimeSocket.on('voice_rpc', (payload: any) => {
+  realtimeSocket.on('voice_rpc', whenArmed('voice_rpc', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeVoiceRpc(payload)
@@ -7341,14 +7406,14 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
     }
-  })
+  }))
 
   // Agent Packs (Type 3 "Full handoff"): the backend asks this host to
   // package the agent workspace into a pack zip and upload it. Frames are
   // validated in normalizeExportPack (frames without an rpcId drop; anything
   // with an rpcId ALWAYS gets a result or descriptive error, the voice_rpc
   // G2 lesson). Duplicate re-emits are deduped by rpcId inside the handler.
-  realtimeSocket.on('export_pack', (payload: any) => {
+  realtimeSocket.on('export_pack', whenArmed('export_pack', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeExportPack(payload)
@@ -7363,11 +7428,11 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`export_pack handler error: ${err}`)
     }
-  })
+  }))
 
   // Dry run for the handoff wizard's per-file memory opt-in: list candidate
   // files (kind body | memory) without building or uploading anything.
-  realtimeSocket.on('export_pack_manifest', (payload: any) => {
+  realtimeSocket.on('export_pack_manifest', whenArmed('export_pack_manifest', (payload: any) => {
     if (updateDrainMode) return
     try {
       const frame = normalizeExportPackManifest(payload)
@@ -7379,12 +7444,12 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`export_pack_manifest handler error: ${err}`)
     }
-  })
+  }))
 
   // Voice dispatch (BGOS voice revamp): the user, on a live voice call,
   // dispatched background work to THIS agent. Surface it to the live session
   // with the task id + brief; the agent reports back via complete_voice_task.
-  realtimeSocket.on('voice_task_dispatch', (payload: any) => {
+  realtimeSocket.on('voice_task_dispatch', whenArmed('voice_task_dispatch', (payload: any) => {
     if (updateDrainMode) return
     try {
       const parsed = normalizeVoiceTaskDispatch(payload, {
@@ -7415,7 +7480,7 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`voice_task_dispatch handler error: ${err}`)
     }
-  })
+  }))
 
   // One-click updates: the backend asks THIS daemon to update itself now.
   // Deliberately NOT gated by updateDrainMode (every other handler here is):
@@ -7423,7 +7488,20 @@ function connectWebsocket(): void {
   // the moment an update starts could never be retried or observed. Also not
   // wrapped in trackMessageOperation: a tracked update would hold
   // activeOperations above zero and deadlock its own drain wait.
-  realtimeSocket.on('update_rpc', (payload: any) => {
+  //
+  // It IS gated on channelArmed, so the "never goes deaf" claim above is about
+  // the drain only. A stood-down daemon ignores update_rpc exactly as a daemon
+  // that was passive from boot does, and for the same reason: a passive daemon
+  // never joins the pairing room, so it never receives the frame at all. The
+  // lock holder is the one daemon that answers for this pairing, updates
+  // included.
+  //
+  // Rollout caveat that follows from it: when the holder updates and releases
+  // the lock on shutdown, a stood-down OLD daemon can reclaim within one
+  // recheck (5s) while the NEW one is still booting, and it boots passive. So
+  // ownership can land back on the old version and stay there. A rollout should
+  // update or stop the passive daemons first, then the holder.
+  realtimeSocket.on('update_rpc', whenArmed('update_rpc', (payload: any) => {
     try {
       const frame = normalizeUpdateRpc(payload)
       if (!frame) return
@@ -7434,13 +7512,13 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`update_rpc handler error: ${err}`)
     }
-  })
+  }))
 
   // Watcher install (design 7.6): the backend asks THIS agent to install the
   // machine's watcher. Same posture as update_rpc: a control rail, so not
   // drain-gated and not a tracked operation; the handler acks, reports the
   // steps, and fails closed.
-  realtimeSocket.on('watcher_install_rpc', (payload: any) => {
+  realtimeSocket.on('watcher_install_rpc', whenArmed('watcher_install_rpc', (payload: any) => {
     try {
       const frame = normalizeWatcherInstallRpc(payload)
       if (!frame) return
@@ -7451,9 +7529,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`watcher_install_rpc handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('inbound_message', (payload: any) => {
+  realtimeSocket.on('inbound_message', whenArmed('inbound_message', (payload: any) => {
     if (updateDrainMode) return
     // Agent Update Stream (flag-gated): a stamped event routes through the
     // consumer's seq arithmetic; the apply callback is the EXACT legacy
@@ -7461,12 +7539,18 @@ function connectWebsocket(): void {
     // unstamped payload: the legacy path runs untouched.
     if (routeStampedInbound(payload, deliverWsInbound)) return
     deliverWsInbound(payload)
-  })
+  }))
 
   // The legacy inbound delivery body, shared verbatim by the direct path
   // above and the stream-stamped apply. Hoisted declaration so the handler
   // registration can precede it.
   function deliverWsInbound(payload: any): void {
+    // The other half of the stand-down. The poll tick is gated in main(), but
+    // the WebSocket is the primary delivery path while it is healthy and it
+    // bumps the same shared cursor, so a daemon that has lost the pairing lock
+    // must refuse here too. Both the direct handler and the stream-stamped
+    // apply funnel through this function, so one gate covers both.
+    if (!channelArmed) return
     try {
       const messageId = Number(payload?.messageId ?? payload?.message_id)
       if (!Number.isFinite(messageId)) return
@@ -7646,7 +7730,7 @@ function connectWebsocket(): void {
     }
   }
 
-  realtimeSocket.on('peer_conversation_closed', (payload: any) => {
+  realtimeSocket.on('peer_conversation_closed', whenArmed('peer_conversation_closed', (payload: any) => {
     if (updateDrainMode) return
     log(
       `peer_conversation_closed conv=${payload?.conversation_id} reason=${payload?.reason}`,
@@ -7679,14 +7763,14 @@ function connectWebsocket(): void {
         },
       },
     })).catch(() => {})
-  })
+  }))
 
-  realtimeSocket.on('peer_turn_yielded', (payload: any) => {
+  realtimeSocket.on('peer_turn_yielded', whenArmed('peer_turn_yielded', (payload: any) => {
     if (updateDrainMode) return
     log(
       `peer_turn_yielded conv=${payload?.conversation_id} → ${payload?.turn_holder_id}`,
     )
-  })
+  }))
 
   // ── Command Center meetings (V3) ──────────────────────────────────────
   // The user dragged this assistant into an N-party meeting. We forward
@@ -7695,7 +7779,7 @@ function connectWebsocket(): void {
   // the `meeting_reply` MCP tool only when your_turn=YES; the backend
   // enforces the turn protocol with HTTP 409 if it tries otherwise.
 
-  realtimeSocket.on('meeting_invitation', (payload: any) => {
+  realtimeSocket.on('meeting_invitation', whenArmed('meeting_invitation', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -7778,9 +7862,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_invitation handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_message', (payload: any) => {
+  realtimeSocket.on('meeting_message', whenArmed('meeting_message', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -7902,9 +7986,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_turn_changed', (payload: any) => {
+  realtimeSocket.on('meeting_turn_changed', whenArmed('meeting_turn_changed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -7941,7 +8025,7 @@ function connectWebsocket(): void {
         },
       })).catch(() => {})
     }
-  })
+  }))
 
   // Reconnect catch-up for the turn protocol. A meeting_turn_changed is a
   // fire-and-forget emit; if we were disconnected when the floor passed to us
@@ -7950,7 +8034,7 @@ function connectWebsocket(): void {
   // every open meeting where we hold or are queued for the floor. It is
   // authority-safe (only re-sends DB state, never grants a turn) and carries
   // lastMessageId so we can ignore a stale signal we already acted on.
-  realtimeSocket.on('meeting_state_resync', (payload: any) => {
+  realtimeSocket.on('meeting_state_resync', whenArmed('meeting_state_resync', (payload: any) => {
     if (updateDrainMode) return
     try {
       const meetingId = Number(payload?.meetingId)
@@ -8017,9 +8101,9 @@ function connectWebsocket(): void {
     } catch (err) {
       log(`meeting_state_resync handler error: ${err}`)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_closed', (payload: any) => {
+  realtimeSocket.on('meeting_closed', whenArmed('meeting_closed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8040,9 +8124,9 @@ function connectWebsocket(): void {
         },
       },
     })).catch(() => {})
-  })
+  }))
 
-  realtimeSocket.on('meeting_participant_left', (payload: any) => {
+  realtimeSocket.on('meeting_participant_left', whenArmed('meeting_participant_left', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8060,9 +8144,9 @@ function connectWebsocket(): void {
         (p) => Number(p.assistantId) !== leaverId,
       )
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_participant_added', (payload: any) => {
+  realtimeSocket.on('meeting_participant_added', whenArmed('meeting_participant_added', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8077,9 +8161,9 @@ function connectWebsocket(): void {
     if (!ctx.participants.some((p) => p.assistantId === added.assistantId)) {
       ctx.participants.push(added)
     }
-  })
+  }))
 
-  realtimeSocket.on('meeting_policy_changed', (payload: any) => {
+  realtimeSocket.on('meeting_policy_changed', whenArmed('meeting_policy_changed', (payload: any) => {
     if (updateDrainMode) return
     const meetingId = Number(payload?.meetingId)
     if (!Number.isFinite(meetingId)) return
@@ -8093,7 +8177,7 @@ function connectWebsocket(): void {
         : Number.isFinite(Number(currentRaw))
           ? Number(currentRaw)
           : null
-  })
+  }))
 
   // ── Agent Update Stream events (flag-gated, additive) ──────────────────────
   // Registered beside the existing handlers, drain-guarded like every
@@ -8103,7 +8187,7 @@ function connectWebsocket(): void {
     // stream_authority rides a fresh socket auth: {assistantId, enabled,
     // seq, streamEpoch}. Authority alone never demotes sweeps; a beacon on
     // the CURRENT connection is also required (sweepMode, spec 8).
-    realtimeSocket.on('stream_authority', (payload: any) => {
+    realtimeSocket.on('stream_authority', whenArmed('stream_authority', (payload: any) => {
       if (updateDrainMode) return
       try {
         if (
@@ -8125,12 +8209,12 @@ function connectWebsocket(): void {
       } catch (err) {
         log(`stream_authority handler error: ${err}`)
       }
-    })
+    }))
 
     // update_state is the 60s beacon: {assistantId, seq, streamEpoch}. A
     // beacon at the cursor is zero requests; ahead of it, the consumer runs
     // one jittered getDifference chain; a new epoch forces the full resync.
-    realtimeSocket.on('update_state', (payload: any) => {
+    realtimeSocket.on('update_state', whenArmed('update_state', (payload: any) => {
       if (updateDrainMode) return
       try {
         if (
@@ -8153,7 +8237,7 @@ function connectWebsocket(): void {
       } catch (err) {
         log(`update_state handler error: ${err}`)
       }
-    })
+    }))
   }
 }
 
@@ -8699,7 +8783,105 @@ async function main(): Promise<void> {
   // transport, the capability warm-up, and the one-time local slash registry
   // above are unconditional.
   let lastDeliveryHeartbeatAt: number | null = null
+  // Latch for the heartbeat-write warning above: set when a refresh reports an
+  // io error, cleared the next time one succeeds, so each failing spell says it
+  // once rather than every five seconds into a log every rival daemon shares.
+  let lockIoErrorWarned = false
+  // armDelivery may run more than once per process (a passive daemon promoted
+  // on recheck, or a stood-down daemon that reclaimed the lock). Everything it
+  // starts below the discovery/sweep phases is PROCESS-scoped and one-shot: the
+  // cursor flush interval, the liveness probe interval, the update-stream
+  // consumer, the WebSocket connection and the poll scheduler. Starting a second
+  // copy of any of them would double every poll cycle and every flush for the
+  // life of the process, so the second and later calls take the short re-arm
+  // path instead: refresh chat discovery (the roster may have changed while this
+  // daemon was passive) and flip the flag back on. The already-running loops
+  // then resume delivering, because each of them is gated on channelArmed.
+  let deliveryLoopsStarted = false
+  // Whether the poll scheduler was actually kicked. deliveryLoopsStarted latches
+  // BEFORE the loops are built, on purpose: it is what stops a second, concurrent
+  // armDelivery from starting a second poll chain. But that makes it a lie if the
+  // arm then throws before the kick, because the promotion catch retries and the
+  // retry takes the SHORT re-arm path: a daemon armed with no tick, no WS and no
+  // flush interval, which is a zombie that looks healthy. This second flag is the
+  // truth about the loops, so the catch can undo the latch in exactly the case
+  // where undoing it is safe.
+  let pollLoopKicked = false
   const armDelivery = async (): Promise<void> => {
+    if (deliveryLoopsStarted) {
+      await phase('re-discover chats', () => discoverChats())
+      // Catch the cursor file up BEFORE the first poll of the new spell. While
+      // this daemon was stood down the lock holder kept advancing the shared
+      // file; our in-memory map is frozen at whatever it held when we lost the
+      // lock. Polling from it would re-forward everything the holder already
+      // delivered (forwardedMessageIds is per process, so it cannot dedupe
+      // another daemon's work) and the first flush would rewind the file.
+      // Monotonic by construction: advanceChatCursor never moves a cursor back,
+      // so a chat WE advanced past the file keeps our higher value.
+      const merged = mergeCursorMaps(
+        chatLastSeen,
+        loadCursorFile(cursorStore.filePath).cursors,
+        advanceChatCursor,
+      )
+      if (merged > 0) {
+        log(`cursor catch-up on re-arm: ${merged} chat cursor(s) advanced from the shared file`)
+      }
+      // Gate refresh. lockHeld can be STALE TRUE here: the only place that
+      // clears it is the poll tick, and an arm that ran while the tick was not
+      // yet scheduled (a boot-passive daemon promoted into the full first arm)
+      // can have been reclaimed by a rival on staleness without anything
+      // noticing. So ask the lock file itself before arming, once, synchronously,
+      // and treat a lost lock exactly as the tick does.
+      const gateNow = Date.now()
+      const gateRefresh = refreshPairingLockDetailed({
+        lockPath: PAIRING_LOCK_PATH,
+        selfPid: process.pid,
+        now: gateNow,
+        bootedAt: DAEMON_START_MS,
+      })
+      if (!gateRefresh.held) {
+        channelArmed = false
+        lockHeld = false
+        lockIoErrorWarned = false
+        standDownIgnoredFrames.clear()
+        log(
+          `pid ${process.pid}: pairing lock now held by pid ` +
+            `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
+            `staying passive and watching for reclaim`,
+        )
+        resumeLockRecheck()
+        return
+      }
+      // The refresh landed, so spend the throttle slot here rather than letting
+      // the next tick spend a second one five seconds later.
+      lastDeliveryHeartbeatAt = gateNow
+      // held:true with lockHeld false is possible and benign: the rival took the
+      // lock and then released it on exit, so the refresh above re-created the
+      // file as ours. We still stay passive here, and the recheck loop promotes
+      // us properly on its next pass (it will read that record as our own).
+      if (!lockHeld) {
+        log('re-arm finished without the pairing lock; staying passive (see the arm-end note)')
+        return
+      }
+      // Fresh spell in the other direction too: the next stand-down gets to
+      // report each ignored frame kind once again, instead of inheriting the
+      // "already said it" set from the previous passive spell.
+      standDownIgnoredFrames.clear()
+      // A re-armed daemon never receives meeting_state_resync: the socket never
+      // reconnected (it stayed up throughout the passive spell), and the resync
+      // rides a connect. So a meeting floor this daemon held before it stood
+      // down is not restored here; it recovers through the idle cron on the
+      // backend. Acceptable, and documented rather than fixed, because forcing
+      // a reconnect to chase it would cost the cheap re-arm this design is
+      // built on.
+      channelArmed = true
+      log(
+        `delivery re-armed after reclaiming the pairing lock; ` +
+          `monitoring ${monitoredChatIds.length} chat(s)`,
+      )
+      return
+    }
+    deliveryLoopsStarted = true
     // Step 2: Discover and baseline chats.
     //
     // AWAITED, and it stays awaited: this is not a warm-up. It is what decides
@@ -8786,6 +8968,13 @@ async function main(): Promise<void> {
     // dedups a short replay); the signal/exit hooks cover normal shutdowns.
     // Every site goes through flushChatCursors, the deaf-session cursor gate.
     flushChatCursors()
+    // Deliberately NOT gated on channelArmed, unlike the two delivery paths:
+    // the store only goes dirty when a cursor advances, and both routes that
+    // advance one (the poll tick, deliverWsInbound) refuse while stood down, so
+    // a passive daemon's timer finds nothing to write and cannot clobber the
+    // holder's positions. Two existing guards in test/first-poll-gate.test.ts
+    // also pin this exact line as the proof that persistence starts only after
+    // the boot sweep.
     setInterval(() => flushChatCursors(), CURSOR_FLUSH_INTERVAL_MS).unref()
     // The signal / exit / stdin shutdown hooks that flush cursors and release
     // the pairing lock are registered ONCE at PROCESS level in main() (below the
@@ -8886,6 +9075,71 @@ async function main(): Promise<void> {
     let lastFullCycleAt = 0
     const tick = async (): Promise<void> => {
       try {
+        // Single-instance heartbeat (0.38.6), FIRST in the tick and ahead of
+        // anything that forwards a message or advances a cursor: keep the
+        // pairing lock fresh so a rival never reclaims a live holder, and stand
+        // down the moment a rival genuinely holds it. Throttled to
+        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick. Gated on lockHeld, NOT
+        // on channelArmed: a daemon that has just acquired the lock is still
+        // arming (discoverChats and friends take seconds), and a lock nobody
+        // refreshes during that window goes stale and is reclaimed underneath
+        // us. Skipped while we hold no lock at all, because a passive daemon has
+        // nothing to refresh; the recheck interval below is what brings it back.
+        const hbNow = Date.now()
+        const heartbeatThisTick =
+          lockHeld &&
+          shouldHeartbeatNow({
+            lastAt: lastDeliveryHeartbeatAt,
+            now: hbNow,
+            intervalMs: LOCK_HEARTBEAT_INTERVAL_MS,
+          })
+        if (heartbeatThisTick) {
+          lastDeliveryHeartbeatAt = hbNow
+          const refreshed = refreshPairingLockDetailed({
+            lockPath: PAIRING_LOCK_PATH,
+            selfPid: process.pid,
+            now: hbNow,
+            bootedAt: DAEMON_START_MS,
+          })
+          if (!refreshed.held) {
+            channelArmed = false
+            lockHeld = false
+            // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
+            // gets to say it once more, and a heartbeat-write failure in a LATER
+            // spell warns again instead of being swallowed by this one's latch.
+            standDownIgnoredFrames.clear()
+            lockIoErrorWarned = false
+            log(
+              `pid ${process.pid}: pairing lock now held by pid ` +
+                `${refreshed.holderPid ?? 'unknown'}; ` +
+                `standing down to passive (this daemon stops polling and forwarding ` +
+                `so it cannot eat the holder's messages) and watching for reclaim`,
+            )
+            resumeLockRecheck()
+          } else if (refreshed.ioError) {
+            // We keep the channel (a write hiccup is not proof of reclaim) but
+            // we did NOT re-stamp the heartbeat, so this daemon is drifting
+            // towards a staleness reclaim while looking perfectly healthy. Once
+            // per spell, so a failing disk cannot flood the shared log.
+            if (!lockIoErrorWarned) {
+              lockIoErrorWarned = true
+              log(
+                `WARN pid ${process.pid}: pairing lock heartbeat could not be written ` +
+                  `(${refreshed.ioError}); still holding the channel, but a rival will ` +
+                  `reclaim it if this keeps failing`,
+              )
+            }
+          } else {
+            lockIoErrorWarned = false
+          }
+        }
+        // The stand-down consequence. Everything past this line either forwards
+        // a message or moves the shared cursor, so a daemon that does not hold
+        // the lock does none of it. The tick itself keeps running (cheap, 2s)
+        // and the recheck interval keeps trying the lock, so this daemon
+        // resumes automatically if the holder dies. The MCP tool surface is
+        // untouched: standing down is not exiting.
+        if (!channelArmed) return
         // Agent Update Stream housekeeping on the existing 2s tick: consumer
         // gap deadlines + the beacon watchdog. No-op with the flag off.
         streamSchedulerTick(Date.now())
@@ -8938,48 +9192,52 @@ async function main(): Promise<void> {
             await pollChat(fastChatId)
           }
         }
-        // Single-instance heartbeat (0.38.6): keep the pairing lock fresh so a
-        // rival never reclaims a live holder, and, when the channel is actually
-        // delivering (WS up, or a poll cycle ran this tick), touch the beacon
-        // heartbeat whose mtime an external supervisor watches to catch a dead
-        // channel behind a live process. Both throttled to
-        // LOCK_HEARTBEAT_INTERVAL_MS off this 2s tick.
-        const hbNow = Date.now()
-        if (
-          shouldHeartbeatNow({
-            lastAt: lastDeliveryHeartbeatAt,
+        // Beacon heartbeat, on the same throttle as the lock refresh at the top
+        // of this tick: when the channel is actually delivering (WS up, or a
+        // poll cycle ran this tick), touch the file whose mtime an external
+        // supervisor watches to catch a dead channel behind a live process. It
+        // sits here rather than beside the lock refresh because it needs the
+        // cycle plan, and it is unreachable while stood down, which is right:
+        // a passive daemon is not delivering and must not claim it is.
+        if (heartbeatThisTick && (isWsHealthy() || plan.kind === 'full' || plan.kind === 'fast')) {
+          touchBeaconHeartbeat({
+            path: BEACON_HEARTBEAT_PATH,
             now: hbNow,
-            intervalMs: LOCK_HEARTBEAT_INTERVAL_MS,
+            pid: process.pid,
           })
-        ) {
-          lastDeliveryHeartbeatAt = hbNow
-          if (
-            !refreshPairingLock({
-              lockPath: PAIRING_LOCK_PATH,
-              selfPid: process.pid,
-              now: hbNow,
-              bootedAt: DAEMON_START_MS,
-            })
-          ) {
-            log(
-              'WARN pairing lock was reclaimed by another daemon while this one ' +
-                'holds the channel; investigate duplicate daemons for this pairing',
-            )
-          }
-          if (isWsHealthy() || plan.kind === 'full' || plan.kind === 'fast') {
-            touchBeaconHeartbeat({
-              path: BEACON_HEARTBEAT_PATH,
-              now: hbNow,
-              pid: process.pid,
-            })
-          }
         }
       } catch (err) {
         log(`Poll cycle error: ${err}`)
+      } finally {
+        // The reschedule MUST be in a finally, not after the try/catch. The
+        // stand-down guard above returns from inside the try, and a return
+        // skips everything after the block: without this, the tick that stood
+        // the daemon down would be the last tick the process ever ran. That is
+        // worse than the bug it was added to fix, because the lock heartbeat
+        // lives in this tick, so a daemon that later reclaimed the lock would
+        // never refresh it, would go stale, would be reclaimed by a rival, and
+        // would have no tick left to notice: armed forever beside the new
+        // holder, with no recovery path. It would also silence the beacon
+        // heartbeat, the stream gap deadlines and the WS-down catch-up sweep.
+        //
+        // The reschedule MUST stay HERE, in the finally. Do not "fix" a future
+        // version of this by starting a fresh scheduler from armDelivery's
+        // re-arm path instead. Two reasons. First, that reintroduces the
+        // second-poll-loop hazard deliveryLoopsStarted exists to prevent: an
+        // arm that is not the first would leave two interleaved tick chains
+        // running forever. Second, this tick spends its throttle slot BEFORE
+        // knowing the refresh answer (lastDeliveryHeartbeatAt is assigned above
+        // the refresh call), which is harmless while the loop survives the
+        // stand-down, because after a passive spell shouldHeartbeatNow is
+        // already true and the first tick after re-arming refreshes the lock
+        // immediately. Behind a COLD scheduler it stops being harmless: the
+        // first refresh would be deferred a full LOCK_HEARTBEAT_INTERVAL_MS,
+        // which is precisely the window in which a rival reclaims.
+        setTimeout(tick, POLL_INTERVAL_MS)
       }
-      setTimeout(tick, POLL_INTERVAL_MS)
     }
     setTimeout(tick, POLL_INTERVAL_MS)
+    pollLoopKicked = true
     // The single line that says delivery is live. Its ABSENCE in a log is the
     // signal to read back up the startup phases and find the one that started
     // and never finished.
@@ -9119,6 +9377,112 @@ async function main(): Promise<void> {
     // the start of main; the remote check starts only after message transport,
     // cursors, polling, and shutdown hooks are ready.
     selfUpdater?.start()
+
+    // Last line of the arm: from here the poll tick forwards, the cursor flush
+    // writes, and the heartbeat refreshes the lock. Deliberately after every
+    // loop above has been started, so a tick that fires mid-arm cannot deliver
+    // against half-built state.
+    //
+    // And only if the lock is still OURS. Arming is slow (chat discovery plus
+    // the boot sweep), the poll tick starts partway through it, and that tick
+    // can find a rival holding the lock and stand this daemon down while the
+    // rest of the arm is still running. Setting the flag unconditionally here
+    // would re-arm a daemon that had just correctly stood down, which is the
+    // dual-armed daemon this whole change exists to remove. The stand-down
+    // already started the recheck loop, so this daemon comes back the moment
+    // the lock is genuinely free again.
+    // Gate refresh. lockHeld can be STALE TRUE here: the only place that
+    // clears it is the poll tick, and an arm that ran while the tick was not
+    // yet scheduled (a boot-passive daemon promoted into the full first arm)
+    // can have been reclaimed by a rival on staleness without anything
+    // noticing. So ask the lock file itself before arming, once, synchronously,
+    // and treat a lost lock exactly as the tick does.
+    const gateNow = Date.now()
+    const gateRefresh = refreshPairingLockDetailed({
+      lockPath: PAIRING_LOCK_PATH,
+      selfPid: process.pid,
+      now: gateNow,
+      bootedAt: DAEMON_START_MS,
+    })
+    if (!gateRefresh.held) {
+      channelArmed = false
+      lockHeld = false
+      lockIoErrorWarned = false
+      standDownIgnoredFrames.clear()
+      log(
+        `pid ${process.pid}: pairing lock now held by pid ` +
+          `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
+          `staying passive and watching for reclaim`,
+      )
+      resumeLockRecheck()
+      return
+    }
+    // The refresh landed, so spend the throttle slot here rather than letting
+    // the next tick spend a second one five seconds later.
+    lastDeliveryHeartbeatAt = gateNow
+    if (!lockHeld) {
+      log(
+        'arm finished but the pairing lock was lost while it ran; staying passive ' +
+          'and waiting for the recheck loop to reclaim',
+      )
+      return
+    }
+    channelArmed = true
+  }
+
+  // The passive watch loop, shared by the two ways a daemon can find itself
+  // without the lock: it never got it at boot, or it held it and stood down.
+  // Idempotent, because the stand-down path can be reached repeatedly and a
+  // second interval would race the first for the lock. It clears itself the
+  // moment it promotes, and re-arms delivery through armDelivery, which is safe
+  // to call again (see the re-entry note there). Unref'd: the MCP stdio
+  // transport keeps the process alive meanwhile, so the session's tools stay
+  // usable throughout.
+  let lockRecheck: ReturnType<typeof setInterval> | null = null
+  const resumeLockRecheck = (): void => {
+    if (lockRecheck) return
+    lockRecheck = setInterval(() => {
+      try {
+        const res = acquirePairingLock({
+          lockPath: PAIRING_LOCK_PATH,
+          selfPid: process.pid,
+          now: Date.now(),
+          bootedAt: DAEMON_START_MS,
+        })
+        if (!res.acquired) return
+        if (lockRecheck) clearInterval(lockRecheck)
+        lockRecheck = null
+        // Same rule as the boot path: we own the lock now, so the heartbeat has
+        // to start refreshing it immediately, not when the arm finishes.
+        lockHeld = true
+        log(
+          `pid ${process.pid}: pairing lock reclaimed on recheck (${res.reason}); ` +
+            `promoting from passive to active and arming delivery`,
+        )
+        void armDelivery().catch((err) => {
+          // The arm failed after we took the lock. Without this the daemon
+          // would sit holding the pairing lock, deaf (channelArmed never
+          // reached true), with the recheck interval already cleared: nothing
+          // would ever deliver for this pairing again, and no rival could take
+          // over while our heartbeat kept the lock alive. Drop everything and
+          // go back to watching.
+          channelArmed = false
+          lockHeld = false
+          // Only when the loops were never built. Undoing the latch after the
+          // tick was kicked would let the next promotion run the full arm again
+          // and leave two interleaved poll chains for the life of the process.
+          if (!pollLoopKicked) deliveryLoopsStarted = false
+          resumeLockRecheck()
+          log(`delivery arm after promotion failed: ${err}; released and back to passive`)
+        })
+      } catch (err) {
+        // A lock operation must never kill the daemon: an unreadable or
+        // half-written lock file just means we stay passive and try again on
+        // the next tick.
+        log(`pairing lock recheck failed: ${err}`)
+      }
+    }, LOCK_HEARTBEAT_INTERVAL_MS)
+    lockRecheck.unref?.()
   }
 
   const lockAtBoot = acquirePairingLock({
@@ -9128,36 +9492,21 @@ async function main(): Promise<void> {
     bootedAt: DAEMON_START_MS,
   })
   if (lockAtBoot.acquired) {
+    // Ownership is true from HERE, not from the end of the arm below: the poll
+    // tick's heartbeat is gated on lockHeld precisely so the lock stays fresh
+    // while the (slow) arm runs.
+    lockHeld = true
     log(
-      `pairing lock acquired (${lockAtBoot.reason}) at ${PAIRING_LOCK_PATH}; ` +
-        `this daemon owns the channel for this pairing`,
+      `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
+        `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
     )
     await armDelivery()
   } else {
-    log(formatPassiveBanner(lockAtBoot.holderPid))
+    log(`pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid)}`)
     // Recheck on the heartbeat cadence: if the holder exits (its lock is
     // released, its pid dies, or its heartbeat goes stale) this passive daemon
-    // reclaims and arms delivery exactly once. Unref'd; the MCP stdio transport
-    // keeps the process alive meanwhile, so the session's tools stay usable.
-    let promotedFromPassive = false
-    const lockRecheck = setInterval(() => {
-      if (promotedFromPassive) return
-      const res = acquirePairingLock({
-        lockPath: PAIRING_LOCK_PATH,
-        selfPid: process.pid,
-        now: Date.now(),
-        bootedAt: DAEMON_START_MS,
-      })
-      if (!res.acquired) return
-      promotedFromPassive = true
-      clearInterval(lockRecheck)
-      log(
-        `pairing lock reclaimed on recheck (${res.reason}); promoting from ` +
-          `passive to active and arming delivery`,
-      )
-      void armDelivery().catch((err) => log(`delivery arm after promotion failed: ${err}`))
-    }, LOCK_HEARTBEAT_INTERVAL_MS)
-    lockRecheck.unref?.()
+    // reclaims and arms delivery.
+    resumeLockRecheck()
   }
 }
 
