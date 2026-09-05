@@ -487,6 +487,63 @@ test('consult notifies the live session and resolves on voice_consult_reply', as
   assert.equal(handler.pendingConsultCount, 0)
 })
 
+test('consult continuation: final:false settles the consult as PROVISIONAL and the next reply is CONTINUED', async () => {
+  const { deps, rec } = makeDeps({ timing: { consultTimeoutMs: 2_000 } })
+  const handler = new VoiceRpcHandler(deps)
+  const done = handler.handle(consultFrame())
+  await new Promise((r) => setTimeout(r, 20))
+
+  // The notification teaches the agent the path.
+  assert.match(rec.notifications[0]!.content, /final=false/)
+
+  // 1. Provisional answer: the consult settles NOW with pending:true and the
+  //    consult id, so the backend can open the follow-up task.
+  const first = handler.resolveConsult('rpc-c1', 'Last reading: 33 degrees.', {
+    final: false,
+  })
+  assert.equal(first, 'partial')
+  await done
+  assert.equal(rec.results.length, 1)
+  assert.deepEqual(rec.results[0]!.body, {
+    ok: true,
+    payload: { text: 'Last reading: 33 degrees.', pending: true, consultId: 'rpc-c1' },
+  })
+  assert.equal(handler.pendingConsultCount, 0)
+  assert.equal(handler.openContinuationCount, 1)
+
+  // 2. The fresh answer on the same id is the final word: the caller posts it.
+  const second = handler.resolveConsult('rpc-c1', 'Fresh: 35 degrees.')
+  assert.equal(second, 'continued')
+  assert.equal(handler.openContinuationCount, 0)
+  // 3. A third reply has nothing to land on.
+  assert.equal(handler.resolveConsult('rpc-c1', 'again'), 'unknown')
+})
+
+test('consult continuation: a final reply (default) is still a plain resolve with no pending flag', async () => {
+  const { deps, rec } = makeDeps({ timing: { consultTimeoutMs: 2_000 } })
+  const handler = new VoiceRpcHandler(deps)
+  const done = handler.handle(consultFrame())
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(handler.resolveConsult('rpc-c1', 'done', { final: true }), 'resolved')
+  await done
+  assert.deepEqual(rec.results[0]!.body, { ok: true, payload: { text: 'done' } })
+  assert.equal(handler.openContinuationCount, 0)
+})
+
+test('consult continuation: a continuation expires with the same TTL as a late consult', async () => {
+  const { deps } = makeDeps({
+    timing: { consultTimeoutMs: 2_000, expiredConsultTtlMs: 30 },
+  })
+  const handler = new VoiceRpcHandler(deps)
+  const done = handler.handle(consultFrame())
+  await new Promise((r) => setTimeout(r, 20))
+  handler.resolveConsult('rpc-c1', 'now', { final: false })
+  await done
+  await new Promise((r) => setTimeout(r, 40))
+  assert.equal(handler.openContinuationCount, 0)
+  assert.equal(handler.resolveConsult('rpc-c1', 'too late'), 'unknown')
+})
+
 test('consult meta is all-string valued (harness drops cards with non-string meta)', async () => {
   // Regression guard mirroring test/ws-inbound-meta.test.ts (plugin PR #19):
   // the Claude Code harness silently drops notifications/claude/channel

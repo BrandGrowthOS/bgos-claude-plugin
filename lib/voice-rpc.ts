@@ -560,8 +560,12 @@ export function buildConsultNotification(args: {
     `voice_consult_reply tool FIRST — before any other tool — with ` +
     `consult_id="${args.consultId}" and a short, SPEAKABLE answer (1-3 ` +
     `sentences). Do NOT run other tools unless the question strictly ` +
-    `requires it. If you cannot answer fully in time, reply with what you ` +
-    `know and say the rest is coming — you can follow up in the chat.`
+    `requires it. If the full answer needs a fetch or tool work that will ` +
+    `not fit the budget, reply IMMEDIATELY with what you know and ` +
+    `final=false (say it is your last known reading), keep working, then ` +
+    `call voice_consult_reply AGAIN with the same consult_id and the fresh ` +
+    `answer: it is announced in the call when it lands. Never leave a ` +
+    `final=false consult without a second reply.`
   )
 }
 
@@ -647,10 +651,22 @@ export function buildStopTurnNotification(args: { chatId: string }): string {
   )
 }
 
-export type ConsultReplyStatus = 'resolved' | 'late' | 'unknown'
+/** 'resolved'  the answer settled a live consult (final)
+ *  'partial'   the answer settled a live consult as PROVISIONAL (final:false);
+ *              the consult id now names a continuation the agent must finish
+ *  'continued' the answer is the FINAL word on a continuation: the caller
+ *              posts it to the backend's voice-consults result route
+ *  'late'      the consult timed out before any answer
+ *  'unknown'   no such consult id */
+export type ConsultReplyStatus =
+  | 'resolved'
+  | 'partial'
+  | 'continued'
+  | 'late'
+  | 'unknown'
 
 interface PendingConsult {
-  settle: (text: string) => void
+  settle: (payload: { text: string; pending?: boolean }) => void
   fail: (err: VoiceRpcError) => void
 }
 
@@ -664,6 +680,12 @@ export class VoiceRpcHandler {
   /** consultId → expiry ts, so a LATE voice_consult_reply gets "send it to
    *  the chat instead" rather than "unknown id". Bounded + TTL'd. */
   private readonly expiredConsults = new Map<string, number>()
+  /** Consult continuation (2026-09-05): consultId → expiry ts for consults
+   *  answered with final:false. The consult itself is settled (the call
+   *  keeps moving); the agent's next voice_consult_reply with the same id
+   *  is the fresh answer and rides the backend's task-result path so it is
+   *  spoken in the call. Same TTL and bound as expiredConsults. */
+  private readonly continuations = new Map<string, number>()
 
   constructor(deps: VoiceRpcDeps) {
     this.deps = deps
@@ -1014,7 +1036,7 @@ export class VoiceRpcHandler {
       ),
     })
 
-    const text = await new Promise<string>((resolve, reject) => {
+    const settled = await new Promise<{ text: string; pending?: boolean }>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingConsults.delete(consultId)
         this.rememberExpired(consultId)
@@ -1026,10 +1048,10 @@ export class VoiceRpcHandler {
         )
       }, this.timing.consultTimeoutMs)
       this.pendingConsults.set(consultId, {
-        settle: (answer) => {
+        settle: (payload) => {
           clearTimeout(timer)
           this.pendingConsults.delete(consultId)
-          resolve(answer)
+          resolve(payload)
         },
         fail: (err) => {
           clearTimeout(timer)
@@ -1075,7 +1097,12 @@ export class VoiceRpcHandler {
             )
         })
     })
-    return { text }
+    if (settled.pending === true) {
+      // The backend opens a running task for the follow-up, keyed by this
+      // consult id; the consultId in the payload is how it correlates.
+      return { text: settled.text, pending: true, consultId }
+    }
+    return { text: settled.text }
   }
 
   /**
@@ -1085,15 +1112,47 @@ export class VoiceRpcHandler {
    *   late     — consult already timed out; send the answer as a chat reply
    *   unknown  — no such consult id (typo, or a restart dropped it)
    */
-  resolveConsult(consultId: string, answer: string): ConsultReplyStatus {
+  resolveConsult(
+    consultId: string,
+    answer: string,
+    opts: { final?: boolean } = {},
+  ): ConsultReplyStatus {
     const pending = this.pendingConsults.get(consultId)
     if (pending) {
-      pending.settle(answer)
+      if (opts.final === false) {
+        pending.settle({ text: answer, pending: true })
+        this.rememberContinuation(consultId)
+        return 'partial'
+      }
+      pending.settle({ text: answer })
       return 'resolved'
     }
     this.pruneExpired()
+    if (this.continuations.has(consultId)) {
+      // Any reply on a continuation is the final word; the daemon posts it.
+      this.continuations.delete(consultId)
+      return 'continued'
+    }
     if (this.expiredConsults.has(consultId)) return 'late'
     return 'unknown'
+  }
+
+  /** Number of consults answered provisionally and still awaiting their
+   *  final answer. */
+  get openContinuationCount(): number {
+    this.pruneExpired()
+    return this.continuations.size
+  }
+
+  private rememberContinuation(consultId: string): void {
+    this.continuations.set(
+      consultId,
+      Date.now() + this.timing.expiredConsultTtlMs,
+    )
+    if (this.continuations.size > 200) {
+      const first = this.continuations.keys().next().value
+      if (first !== undefined) this.continuations.delete(first)
+    }
   }
 
   /** Number of consults currently awaiting a voice_consult_reply. */
@@ -1116,6 +1175,9 @@ export class VoiceRpcHandler {
 
   private pruneExpired(): void {
     const now = Date.now()
+    for (const [id, expiry] of this.continuations) {
+      if (expiry <= now) this.continuations.delete(id)
+    }
     for (const [id, expiry] of this.expiredConsults) {
       if (expiry <= now) this.expiredConsults.delete(id)
     }
