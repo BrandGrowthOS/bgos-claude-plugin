@@ -423,11 +423,51 @@ export function globalIntervalMs(
 export function fastScopeChatIds(opts: {
   meetingChatIds: Iterable<string>
   pendingPermissionChatIds: Iterable<string>
+  /** Chats with a fresh inline-button prompt (see activeButtonPromptChatIds). */
+  buttonPromptChatIds?: Iterable<string>
 }): string[] {
   const out = new Set<string>()
   for (const id of opts.meetingChatIds) out.add(String(id))
   for (const id of opts.pendingPermissionChatIds) out.add(String(id))
+  for (const id of opts.buttonPromptChatIds ?? []) out.add(String(id))
   return [...out]
+}
+
+/**
+ * The latest inline-button prompt this daemon sent in a chat. One record per
+ * chat on purpose: a later prompt replaces it, and a later reply WITHOUT
+ * buttons deletes it (the agent answered in words, the chips are moot).
+ */
+export type ButtonPromptRecord = { messageId: number; sentAtMs: number }
+
+/** A prompt older than this no longer earns 2s polling: someone who has not
+ *  tapped in ten minutes is not about to, and the healthy sweep still catches
+ *  a late tap. Without a bound an abandoned prompt pins its chat at 2s forever
+ *  (Ares, 2026-09-05: a busy chat accumulates them faster than they resolve). */
+export const BUTTON_PROMPT_FAST_WINDOW_MS = 10 * 60_000
+/** Upper bound on chats fast-polled for prompts at once, newest first. */
+export const BUTTON_PROMPT_FAST_CAP = 8
+
+/**
+ * Which chats currently earn 2s polling because this daemon sent an inline
+ * button prompt there and has not seen the tap yet. Why this exists: without
+ * the Agent Update Stream (off unless BGOS_UPDATE_STREAM=true) a click can
+ * only reach the daemon on the chat sweep, and the WS-healthy sweep is a five
+ * minute cycle (globalIntervalMs). Text rides the WS at once; a tap waited
+ * up to five minutes. Kc saw 4.5 and 5.5 minutes on 2026-09-05.
+ */
+export function activeButtonPromptChatIds(
+  prompts: ReadonlyMap<string, ButtonPromptRecord>,
+  nowMs: number,
+  opts: { windowMs?: number; cap?: number } = {},
+): string[] {
+  const windowMs = opts.windowMs ?? BUTTON_PROMPT_FAST_WINDOW_MS
+  const cap = opts.cap ?? BUTTON_PROMPT_FAST_CAP
+  return [...prompts.entries()]
+    .filter(([, p]) => nowMs - p.sentAtMs >= 0 && nowMs - p.sentAtMs < windowMs)
+    .sort((a, b) => b[1].sentAtMs - a[1].sentAtMs)
+    .slice(0, Math.max(0, cap))
+    .map(([chatId]) => chatId)
 }
 
 export type PollCyclePlan =
