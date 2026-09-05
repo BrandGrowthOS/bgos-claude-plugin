@@ -52,6 +52,7 @@ import {
   normalizeVoiceRpc,
   normalizeVoiceTaskDispatch,
   buildVoiceTaskDispatchText,
+  channelMeta,
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
@@ -6233,6 +6234,21 @@ const voiceRpc = new VoiceRpcHandler({
     voice: VOICE_VOICE,
     persona: VOICE_PERSONA,
     assistantId: ASSISTANT_ID,
+    // The daemon's own main chat (monitoredChatIds[0], same fallback used
+    // elsewhere for a chatless notification, e.g. the permission-prompt
+    // path above) and the configured account owner, so a pairingless voice
+    // card never ships an empty chat_id or user_id (see server.ts:7409 for
+    // the WS lane's own USER_ID use). A getter, not a snapshot: this config
+    // object is built once at module load, before monitoredChatIds is
+    // populated, so a plain field would freeze on the empty startup array.
+    get chatIdFallback() {
+      return monitoredChatIds[0] ?? null
+    },
+    userId: USER_ID,
+    // The WS voice_task_dispatch lane already gates on this belt (see
+    // normalizeVoiceTaskDispatch below); the paired RPC dispatch() lane must
+    // apply the identical gate, not silently bypass it.
+    requireConfirmedDispatch: REQUIRE_CONFIRMED_DISPATCH,
   },
   postAck: (rpcId) =>
     bgosPost(`integrations/voice-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
@@ -7467,14 +7483,16 @@ function connectWebsocket(): void {
         method: 'notifications/claude/channel',
         params: {
           content: buildVoiceTaskDispatchText({ taskId, question, context }),
-          meta: {
-            event_type: 'voice_task_dispatch',
-            task_id: taskId,
-            chat_id: chatId,
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
-            transport: 'ws',
-          },
+          meta: channelMeta(
+            {
+              event_type: 'voice_task_dispatch',
+              chat_id: chatId,
+              user_id: USER_ID,
+              assistant_id: ASSISTANT_ID,
+              transport: 'ws',
+            },
+            { task_id: taskId },
+          ),
         },
       })).catch((err) => log(`voice_task_dispatch mcp.notification error: ${err}`))
     } catch (err) {

@@ -10,6 +10,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 import {
   VoiceRpcHandler,
@@ -63,6 +66,7 @@ function makeDeps(over: {
   notifyFails?: boolean
   sendFails?: boolean
   identity?: { name: string; subtitle: string } | null
+  config?: Partial<VoiceRpcDeps['config']>
 }): { deps: VoiceRpcDeps; rec: Recorded } {
   const rec: Recorded = { acks: [], results: [], notifications: [], sends: [] }
   const deps: VoiceRpcDeps = {
@@ -72,6 +76,7 @@ function makeDeps(over: {
       voice: 'marin',
       persona: 'Speak like a calm pilot.',
       assistantId: '901',
+      ...over.config,
     },
     postAck: async (rpcId) => {
       rec.acks.push(rpcId)
@@ -654,15 +659,93 @@ test('duplicate frames for the same rpcId are ignored while in flight', async ()
   assert.equal(rec.results.length, 1)
 })
 
-test('an op the Claude lane does not serve gets a descriptive error, not silence', async () => {
+test('a paired dispatch is ACCEPTED and the task card reaches the live session', async () => {
   const { deps, rec } = makeDeps({})
   await new VoiceRpcHandler(deps).handle(
-    frame({ op: 'dispatch', rpcId: 'rpc-d1', payload: { taskId: 't1' } }),
+    frame({ op: 'dispatch', rpcId: 'rpc-d1', chatId: '4465', payload: { taskId: 't1', question: 'book the table', context: 'for 8pm' } }),
   )
   assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.deepEqual(rec.results[0]!.body.payload, { accepted: true, taskId: 't1' })
+  assert.equal(rec.notifications.length, 1)
+  assert.match(rec.notifications[0]!.content, /\[voice_dispatch\] .*task #t1/)
+  assert.match(rec.notifications[0]!.content, /complete_voice_task tool with task_id="t1"/)
+  assert.equal(rec.notifications[0]!.meta.event_type, 'voice_task_dispatch')
+  assert.equal(rec.notifications[0]!.meta.task_id, 't1')
+  for (const v of Object.values(rec.notifications[0]!.meta)) assert.equal(typeof v, 'string')
+})
+
+test('every voice card carries the canonical envelope, all strings', async () => {
+  const { deps, rec } = makeDeps({ config: { chatIdFallback: '4465', userId: 'user_x' } })
+  const h = new VoiceRpcHandler(deps)
+  const consult = h.handle(frame({ op: 'consult', rpcId: 'rpc-e1', chatId: null, payload: { callId: 'c', name: 'claude_agent_consult', args: {} } }))
+  await new Promise((r) => setTimeout(r, 10))
+  h.resolveConsult('rpc-e1', 'ok')
+  await consult
+  await h.handle(frame({ op: 'dispatch', rpcId: 'rpc-e2', chatId: null, payload: { taskId: 't' } }))
+  for (const n of rec.notifications) {
+    for (const k of ['event_type', 'chat_id', 'assistant_id', 'user_id', 'transport', 'ts']) {
+      assert.equal(typeof n.meta[k], 'string', `${n.meta.event_type} missing ${k}`)
+      assert.notEqual(n.meta[k], '', `${n.meta.event_type} has empty ${k}`)
+    }
+  }
+  // chatId null on the frame, so the fallback must have filled it.
+  assert.equal(rec.notifications[0]!.meta.chat_id, '4465')
+})
+
+// ── dispatch() must apply the same requireConfirmed gate as the WS lane ─────
+
+test('dispatch() rejects an unconfirmed task when requireConfirmedDispatch is on', async () => {
+  const { deps, rec } = makeDeps({ config: { requireConfirmedDispatch: true } })
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g1', chatId: '4465', payload: { taskId: 't1', question: 'book the table' } }),
+  )
+  assert.equal(rec.results.length, 1)
+  const { body } = rec.results[0]!
+  assert.equal(body.ok, false)
+  assert.equal(body.error?.code, 'BAD_DISPATCH')
+  assert.match(body.error?.message ?? '', /unconfirmed/)
+  assert.equal(rec.notifications.length, 0, 'an unconfirmed dispatch must never reach the live session')
+})
+
+test('dispatch() accepts a confirmed task when requireConfirmedDispatch is on', async () => {
+  const { deps, rec } = makeDeps({ config: { requireConfirmedDispatch: true } })
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g2', chatId: '4465', payload: { taskId: 't1', question: 'book the table', confirmed: true } }),
+  )
+  assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.equal(rec.notifications.length, 1)
+})
+
+test('dispatch() accepts an unconfirmed task when requireConfirmedDispatch is off (default)', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(
+    frame({ op: 'dispatch', rpcId: 'rpc-g3', chatId: '4465', payload: { taskId: 't1', question: 'book the table' } }),
+  )
+  assert.equal(rec.results.length, 1)
+  assert.equal(rec.results[0]!.body.ok, true)
+  assert.equal(rec.notifications.length, 1)
+})
+
+// ── server.ts config wiring: chatIdFallback must stay lazy ─────────────────
+
+test('server.ts VoiceRpcHandler config declares chatIdFallback as a getter, not a snapshot', () => {
+  // A plain `chatIdFallback: monitoredChatIds[0] ?? null` field would freeze
+  // on the empty startup array (monitoredChatIds is populated after this
+  // config object is built at module load). This source-scan makes a revert
+  // to a plain field fail a test instead of silently shipping an
+  // always-empty chat_id fallback.
+  const here = dirname(fileURLToPath(import.meta.url))
+  const serverSrc = readFileSync(join(here, '..', 'server.ts'), 'utf8')
+  assert.match(serverSrc, /get\s+chatIdFallback\s*\(/, 'chatIdFallback must stay a getter on the voiceRpc config literal')
+})
+
+test('a dispatch with no taskId is refused loudly, never silently', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(frame({ op: 'dispatch', rpcId: 'rpc-d2', payload: {} }))
   assert.equal(rec.results[0]!.body.ok, false)
-  assert.equal(rec.results[0]!.body.error!.code, 'UNSUPPORTED_OP')
-  assert.match(rec.results[0]!.body.error!.message, /voice_task_dispatch/)
+  assert.equal(rec.results[0]!.body.error!.code, 'BAD_DISPATCH')
 })
 
 // ── instruction/notification builders ────────────────────────────────────────

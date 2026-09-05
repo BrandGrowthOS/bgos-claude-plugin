@@ -32,11 +32,12 @@
  *             expected and degrades to a graceful spoken "still working"
  *             line app-side; a late voice_consult_reply is told to send the
  *             answer as a normal chat reply instead.
- *   dispatch → NOT expected on this lane (the backend delivers dispatches
- *             to pairingless agents as `voice_task_dispatch` events, plugin
- *             v0.13.0). Answered with a descriptive error, never silence —
- *             the G2 silent-drop lesson: every wire shape gets an explicit
- *             outcome.
+ *   dispatch → the PAIRED lane. The backend routes a delegated task to a
+ *             paired daemon as voice_rpc op='dispatch' and waits up to 10 s
+ *             for {accepted:true}; the pairingless lane is the separate
+ *             voice_task_dispatch WS event handled in server.ts. Accepted
+ *             with the same [voice_dispatch] card the WS lane already
+ *             builds, then results {accepted:true, taskId}.
  *   stop_turn → the user pressed Stop for ONE chat (session controls).
  *             Cooperative cancel: deliver a channel notification telling
  *             the live agent to stop working on that chatId now, post a
@@ -309,6 +310,22 @@ export interface VoiceRpcConfig {
   persona: string
   assistantId: string
   chatIdFallback?: string | null
+  userId?: string
+  /** BGOS_REQUIRE_CONFIRMED_DISPATCH: when true, the paired dispatch() lane
+   *  applies the same gate the WS voice_task_dispatch lane already applies
+   *  via normalizeVoiceTaskDispatch. The two lanes must not diverge. */
+  requireConfirmedDispatch?: boolean
+}
+
+/** The envelope every voice channel card carries. One function so the consult
+ *  card and the dispatch card cannot drift apart again: the harness drops a
+ *  card with a non-string meta value, and a card missing the fields the
+ *  polling path carries is at least suspect. */
+export function channelMeta(
+  base: { event_type: string; chat_id: string; assistant_id: string; user_id: string; transport: string },
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  return { ...base, ...extra, ts: new Date().toISOString() }
 }
 
 export interface VoiceRpcDeps {
@@ -669,15 +686,15 @@ export class VoiceRpcHandler {
         payload = await this.consult(frame)
       } else if (frame.op === 'stop_turn') {
         payload = await this.stopTurn(frame)
+      } else if (frame.op === 'dispatch') {
+        payload = await this.dispatch(frame)
       } else {
-        // The backend delivers dispatches to pairingless agents as
-        // voice_task_dispatch events, not voice_rpc frames — answer
-        // loudly so a future backend change fails fast, never silently.
+        // Answer loudly so a future backend change fails fast, never silently.
         throw new VoiceRpcError(
           'UNSUPPORTED_OP',
           `unsupported voice_rpc op for the Claude Code channel: ${String(
             frame.op,
-          )} (dispatch arrives as voice_task_dispatch)`,
+          )}`,
         )
       }
       await this.postResult(frame.rpcId, { ok: true, payload })
@@ -901,6 +918,43 @@ export class VoiceRpcHandler {
     return { stopped: true, mode: 'cooperative' }
   }
 
+  // ── dispatch ──────────────────────────────────────────────────────────────
+  //
+  // The PAIRED lane. The backend routes a delegated task to a paired daemon as
+  // voice_rpc op='dispatch' and waits up to 10 s for {accepted:true}; the
+  // pairingless lane is the voice_task_dispatch WS event handled in server.ts.
+  // This handler used to REFUSE the op on the belief that dispatch never
+  // arrives here, and every paired Claude Code agent's delegated task failed
+  // by construction (voice_tasks: 84 pairingless Claude Code tasks done, one
+  // paired one ever, timed out). Hermes, OpenClaw and Gobot all accept this
+  // frame; now so do we, with the same card the WS lane already builds.
+  private async dispatch(frame: VoiceRpcFrame): Promise<Record<string, unknown>> {
+    const p = (frame.payload ?? {}) as Record<string, unknown>
+    const chatId = frame.chatId != null ? String(frame.chatId) : String(this.deps.config.chatIdFallback ?? '')
+    // Coalesce to the WS lane's snake_case wire shape so ONE normalizer gates
+    // both lanes (the requireConfirmed belt must not diverge between them).
+    const coalesced = { ...p, task_id: p.taskId ?? p.task_id, chat_id: chatId }
+    const parsed = normalizeVoiceTaskDispatch(coalesced, {
+      requireConfirmed: this.deps.config.requireConfirmedDispatch === true,
+    })
+    if (!parsed.ok) throw new VoiceRpcError('BAD_DISPATCH', parsed.reason)
+    const { taskId, question, context } = parsed.task
+    await this.deps.notify(
+      buildVoiceTaskDispatchText({ taskId, question, context }),
+      channelMeta(
+        {
+          event_type: 'voice_task_dispatch',
+          chat_id: parsed.task.chatId,
+          user_id: String(this.deps.config.userId ?? ''),
+          assistant_id: String(this.deps.config.assistantId),
+          transport: 'rpc',
+        },
+        { task_id: taskId },
+      ),
+    )
+    return { accepted: true, taskId }
+  }
+
   // ── consult ───────────────────────────────────────────────────────────────
 
   private async consult(
@@ -967,17 +1021,22 @@ export class VoiceRpcHandler {
       // the WS inbound meta made every live card vanish). Guarded by
       // test/voice-rpc.test.ts "consult meta is all-string valued".
       this.deps
-        .notify(content, {
-          event_type: 'voice_consult',
-          consult_id: String(consultId),
-          call_id: String(callId),
-          chat_id:
-            frame.chatId != null
-              ? String(frame.chatId)
-              : String(this.deps.config.chatIdFallback ?? ''),
-          assistant_id: String(this.deps.config.assistantId),
-          transport: 'ws',
-        })
+        .notify(
+          content,
+          channelMeta(
+            {
+              event_type: 'voice_consult',
+              chat_id:
+                frame.chatId != null
+                  ? String(frame.chatId)
+                  : String(this.deps.config.chatIdFallback ?? ''),
+              assistant_id: String(this.deps.config.assistantId),
+              user_id: String(this.deps.config.userId ?? ''),
+              transport: 'ws',
+            },
+            { consult_id: String(consultId), call_id: String(callId) },
+          ),
+        )
         .catch((err) => {
           // If the live session is unreachable the consult can never
           // resolve — fail fast with a descriptive error instead of
