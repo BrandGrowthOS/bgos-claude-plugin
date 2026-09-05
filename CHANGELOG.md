@@ -2,6 +2,39 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.17 (2026-09-04)
+
+Home-folder identity binding (board 01a068f7). The 0.38.6 pairing lock below
+guarantees exactly ONE daemon per pairing. It does not guarantee the RIGHT one,
+and that gap recurred on 2026-09-04: a session started in a folder that is not
+an agent's own resolved to that agent by elimination, took the lock while the
+real agent was between restarts, and answered users in its name. Nothing was
+misconfigured. At the credential layer a stray session and the real one are
+indistinguishable, because identity was a property of the HOST and never of the
+session.
+
+- **An agent's home folder is now recorded and enforced.** A daemon that
+  resolved its credentials by ELIMINATION (`sole-per-assistant` or `legacy`)
+  from a folder that is not the one recorded for that agent REFUSES to start,
+  naming both folders and every way to clear it, instead of speaking as
+  someone else.
+- **Explicit pins are never constrained.** `BGOS_CREDENTIALS_PATH`,
+  `BGOS_ASSISTANT_ID` and a `.bgos-agent-id` folder pin are already
+  per-process identity signals, so env-pinned hosts keep launching from
+  wherever they like. Only the routes that guess are constrained.
+- **It self-migrates, so nothing stops working on upgrade.** Every existing
+  agent has no home recorded on the day this ships; the first one to hold the
+  channel records its own folder and proceeds. No operator action.
+- **A folder is claimed only after a minute of holding the channel.** The
+  residual race is a stray recording a folder that is not its own, and strays
+  are overwhelmingly transient (a subagent, a one-shot `claude -p`, a stray
+  shell). A minute of continuous delivery filters those; the real long-lived
+  agent crosses it without noticing.
+- **Kill-switch:** `BGOS_ALLOW_ANY_FOLDER=1` skips the check for one boot, so a
+  wedge is one variable away from cleared rather than a file edit.
+- Failing to WRITE the binding never fails a boot: a read-only credentials file
+  leaves the agent unbound and working, exactly as today.
+
 ## 0.38.6 (2026-08-30)
 
 Single-instance pairing lock (board 01a05185): a confirmed fleet bug where, on

@@ -508,7 +508,29 @@ test('server loads credentials from the folder-scoped selection and refuses the 
     true,
   )
   assert.equal(/const CREDENTIALS_PATH = CREDENTIALS_SELECTION\.path/.test(serverSource), true)
-  assert.equal(/creds: loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource), true)
+  // The credentials file is loaded ONCE from the selected path and that single
+  // object feeds both auth and the home-folder binding. What matters here is
+  // not the shape of the call but that neither consumer can end up reading a
+  // DIFFERENT file than the selection chose, which is the whole point of the
+  // selection. Two separate loads would be two chances to diverge.
+  assert.equal(
+    /const CREDENTIALS_FILE = loadCredentialsFile\(CREDENTIALS_PATH\)/.test(serverSource),
+    true,
+  )
+  assert.equal(/creds: CREDENTIALS_FILE/.test(serverSource), true)
+  assert.equal(
+    /recordedHomeDir: CREDENTIALS_FILE\?\.homeDir/.test(serverSource),
+    true,
+    'the home binding must read the home from the same file auth was resolved from',
+  )
+  // The binding refuses and EXITS; a warn-only version would leave the stray
+  // speaking, which is the behaviour it exists to stop.
+  assert.equal(
+    /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?formatHomeBindingRefusal\(HOME_BINDING\)[\s\S]*?process\.exit\(1\)/.test(
+      serverSource,
+    ),
+    true,
+  )
 })
 
 // The auth recheck exists to notice when the credentials on disk stop matching
@@ -865,11 +887,17 @@ test('every identity call site uses the SAME directory', () => {
   // process.cwd() would miss it and the notice would fall back to the
   // install-method guess this change exists to remove. Same directory, same
   // reason as the identity sites.
+  //
+  // 2026-09-04: five to six. The home-folder identity binding is the sixth and
+  // it is the most literal member of the set: it COMPARES the launch folder
+  // against the folder recorded for this agent, so a relocated cwd would not
+  // degrade it, it would make it refuse the real agent and admit the stray,
+  // inverting the guard. Same directory, same reason.
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    5,
-    `expected boot, recheck, boot-log, the env-only risk check and the deaf-notice route resolver to share LAUNCH_CWD, found ${uses.length}`,
+    6,
+    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver and the home-folder binding to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path, the service record and the
