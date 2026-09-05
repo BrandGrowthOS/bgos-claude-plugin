@@ -2,6 +2,26 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.38.25 (2026-09-05)
+
+The poll lane now says when it is the one that delivered a click. 0.38.23 made
+every outcome in the STREAM path observable and left the other half silent: the
+poll path logged nothing on success, so a click that arrived there produced
+silence indistinguishable from a click that never arrived at all. Half an
+instrument answers half a question.
+
+- **`button_clicked ANNOUNCED via POLL`** on the poll announce path, naming the
+  message, the chat and the backend's `answeredAt`. Two independent samples put
+  a click roughly 4.5 and 5.5 minutes behind its own timestamp, and the
+  WS-healthy full poll cycle is 300000 ms: a missed WS push plus one fallback
+  sweep fits both numbers. Only a positive line from this path distinguishes
+  "the poll rescued it" from "the stream arrived late", and neither log existed.
+- **What the pair now settles.** A stream line and no poll line means the stream
+  delivered it, with its own in-daemon duration. A poll line and no stream line
+  means the WS push was missed and the sweep recovered it. Neither line, and the
+  click never reached the daemon at all. Before this, all three cases looked the
+  same from the log: empty.
+
 ## 0.38.24 (2026-09-05)
 
 Every `button_clicked` outcome is now observable. A tap of the owner's reached

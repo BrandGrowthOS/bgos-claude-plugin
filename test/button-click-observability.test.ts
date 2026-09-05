@@ -60,6 +60,15 @@ describe('button_clicked observability', () => {
     expect(stamps.length).toBe(outcomes.length)
   })
 
+  test('the POLL lane names itself when it is the one that delivered', () => {
+    // Without this the instrument is half-built: the stream path logs its
+    // outcomes and the poll path logged nothing on success, so a click the
+    // poll delivered looked exactly like a click that never arrived. Under the
+    // leading hypothesis (a missed WS push recovered by the 300000 ms sweep)
+    // that is precisely the case the stream logs cannot see.
+    expect(SRC).toContain('button_clicked ANNOUNCED via POLL')
+  })
+
   test('a delivered click reports how long it spent inside the daemon', () => {
     const body = applyStreamButtonsAnsweredBody()
     expect(body).toContain('button_clicked RECEIVED on the stream')
