@@ -5,6 +5,8 @@ import {
   DRAIN_TIMEOUT_PROCEEDING,
   INSTALLING_STEP_KINDS,
   PROGRESS_MESSAGE_MAX_CHARS,
+  RESTART_DID_NOT_ARRIVE,
+  RESTART_WATCHDOG_MS,
   UpdateRpcHandler,
   clipProgressMessage,
   normalizeUpdateRpc,
@@ -12,7 +14,8 @@ import {
   type MarketplaceUpdateOutcome,
   type UpdateRpcDeps,
 } from '../lib/update-rpc'
-import type { RestartAuthority } from '../lib/update-readiness'
+import type { RestartAuthority, ServiceOwnershipReading } from '../lib/update-readiness'
+import { failureToken } from '../lib/update-diagnostics.mjs'
 
 describe('normalizeUpdateRpc', () => {
   test('accepts exactly {rpcId, op: update_now} and drops everything else', () => {
@@ -55,6 +58,30 @@ interface HarnessOverrides {
   markerWriteOk?: boolean
   diagnosticsError?: boolean
   now?: () => number
+  /** Ownership readings for a service authority; the default says the job
+   *  holds this process (the healthy case), so every pre-existing service
+   *  test keeps its meaning. */
+  ownership?: ServiceOwnershipReading
+}
+
+/** Live control taken on the dev Mac on 2026-09-12: argus's daemon (pid 240)
+ *  chains 240 > 99845 > 99827 > 99136 > 1, and 99136 is the main pid of the
+ *  launchd job ai.bgos.agent.1050, so that job OWNS the daemon. */
+const LAUNCHD_JOB = { kind: 'launchd' as const, handle: 'ai.bgos.agent.1050' }
+const SYSTEMD_UNIT = { kind: 'systemd' as const, handle: 'bgos-agent-871' }
+const OWNED: ServiceOwnershipReading = {
+  ownPid: 240,
+  ancestorPids: [240, 99845, 99827, 99136, 1],
+  servicePid: 99136,
+}
+/** The muted nine (2026-09-11): the daemon runs under a detached tmux server
+ *  (pid 798, reparented to launchd) while the declared job is the keepalive
+ *  SCRIPT (pid 97998), which is nowhere in the chain. A kickstart at that job
+ *  kills nothing; the daemon drains and stays deaf. */
+const UNOWNED: ServiceOwnershipReading = {
+  ownPid: 52214,
+  ancestorPids: [52214, 52034, 52030, 798, 1],
+  servicePid: 97998,
 }
 
 function fakeUpdater(overrides?: {
@@ -127,6 +154,8 @@ function harness(overrides: HarnessOverrides = {}) {
   const markers: string[] = []
   const drainModes: boolean[] = []
   const diagnostics: Array<Record<string, unknown>> = []
+  const ownershipCalls: Array<{ kind: string; handle: string }> = []
+  const timers: Array<{ ms: number; fn: () => void; cancelled: boolean }> = []
   let heartbeats = 0
   const handler = new UpdateRpcHandler({
     postAck: async (rpcId) => {
@@ -167,6 +196,17 @@ function harness(overrides: HarnessOverrides = {}) {
     requestHeartbeat: () => {
       heartbeats += 1
     },
+    serviceOwnership: (service) => {
+      ownershipCalls.push({ kind: service.kind, handle: service.handle })
+      return overrides.ownership ?? OWNED
+    },
+    setTimer: (fn, ms) => {
+      const timer = { ms, fn, cancelled: false }
+      timers.push(timer)
+      return () => {
+        timer.cancelled = true
+      }
+    },
     postFailureDiagnostics: async (bundle) => {
       if (overrides.diagnosticsError) throw new Error('intake 500')
       diagnostics.push(bundle)
@@ -185,6 +225,14 @@ function harness(overrides: HarnessOverrides = {}) {
     drainModes,
     diagnostics,
     heartbeats: () => heartbeats,
+    ownershipCalls,
+    timers,
+    /** Fire every live watchdog, as the clock would, and let its async
+     *  recovery settle. */
+    fireWatchdog: async () => {
+      for (const timer of timers) if (!timer.cancelled) timer.fn()
+      await Bun.sleep(0)
+    },
   }
 }
 
@@ -263,7 +311,7 @@ describe('UpdateRpcHandler restart ladder', () => {
       file: 'systemd-run',
       args: ['--user', '--on-active=2', 'systemctl', '--user', 'restart', 'bgos-agent-871'],
     }
-    const h = harness({ authority: { kind: 'service', command } })
+    const h = harness({ authority: { kind: 'service', service: SYSTEMD_UNIT, command } })
     await h.handler.handle(FRAME)
     expect(h.progress).toEqual([
       { stage: 'draining', targetVersion: '0.39.0' },
@@ -329,6 +377,176 @@ describe('UpdateRpcHandler restart ladder', () => {
   })
 })
 
+describe('restart authority ownership: a job that does not hold this process is no authority', () => {
+  // Measured 2026-09-11: after a forced update_now, 9 of 21 daemons reported
+  // 'restarting', drained, and stayed deaf for 50 minutes. Their declared
+  // launchd job was the keepalive SCRIPT, whose singleton guard saw the
+  // claude session alive and waited; the daemon was never its child, so the
+  // kickstart killed nothing. The check that separates the two cases is pid
+  // ancestry: the job's main pid must be an ancestor of this process.
+  const KEEPALIVE = { kind: 'launchd' as const, handle: 'ai.bgos.session.930' }
+  const KICKSTART = { file: '/bin/sh', args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.session.930'] }
+
+  test('clone: a service whose pid is not an ancestor fails no_restart_authority before draining or pulling', async () => {
+    const updater = fakeUpdater()
+    const h = harness({
+      authority: { kind: 'service', service: KEEPALIVE, command: KICKSTART },
+      ownership: UNOWNED,
+      updater: () => updater,
+    })
+    await h.handler.handle(FRAME)
+    expect(h.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(updater.updateNowCalls).toBe(0)
+    expect(h.drainModes).toEqual([])
+    expect(h.spawned).toEqual([])
+    expect(h.timers).toEqual([])
+    expect(h.heartbeats()).toBe(0)
+    expect(h.ownershipCalls).toEqual([{ kind: 'launchd', handle: 'ai.bgos.session.930' }])
+    // The log names the handle and BOTH pids, so an operator can see which
+    // job was declared and what actually holds the process.
+    const line = h.logs.find((l) => l.includes('does not own this process'))
+    expect(line).toBeDefined()
+    expect(line).toContain('ai.bgos.session.930')
+    expect(line).toContain('97998')
+    expect(line).toContain('52214')
+  })
+
+  test('clone: a service whose pid IS an ancestor restarts as today (restarting, then the detached spawn)', async () => {
+    const command = { file: '/bin/sh', args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.agent.1050'] }
+    const h = harness({ authority: { kind: 'service', service: LAUNCHD_JOB, command }, ownership: OWNED })
+    await h.handler.handle(FRAME)
+    expect(h.progress.map((p) => p.stage)).toEqual(['draining', 'installing', 'restarting'])
+    expect(h.spawned).toEqual([command])
+    expect(h.drainModes).toEqual([])
+    expect(h.heartbeats()).toBe(0)
+  })
+
+  test('the pending-version shortcut runs AFTER the ownership pre-flight: an unowned job never spawns', async () => {
+    const updater = fakeUpdater({ pending: '0.39.1' })
+    const h = harness({
+      authority: { kind: 'service', service: KEEPALIVE, command: KICKSTART },
+      ownership: UNOWNED,
+      updater: () => updater,
+    })
+    await h.handler.handle(FRAME)
+    expect(h.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(h.spawned).toEqual([])
+    expect(h.drainModes).toEqual([])
+  })
+
+  test('a job that is not running (no main pid) does not own us either', async () => {
+    const h = harness({
+      authority: { kind: 'service', service: LAUNCHD_JOB, command: KICKSTART },
+      ownership: { ...OWNED, servicePid: null },
+    })
+    await h.handler.handle(FRAME)
+    expect(h.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(h.spawned).toEqual([])
+  })
+
+  test('marketplace: an unowned service stages instead of restarting through it (un-drained, heartbeat)', async () => {
+    // The marketplace install lands in a versioned cache the next launch picks
+    // up, so 'staged' is its legitimate outcome; what must never happen is a
+    // kickstart at a job that does not hold us, followed by a drain nobody lifts.
+    const h = harness({
+      installMethod: 'marketplace',
+      authority: { kind: 'service', service: KEEPALIVE, command: KICKSTART },
+      ownership: UNOWNED,
+    })
+    await h.handler.handle(FRAME)
+    expect(h.progress[h.progress.length - 1]).toEqual({ stage: 'staged', targetVersion: '0.39.0' })
+    expect(h.progress.some((p) => p.stage === 'restarting')).toBe(false)
+    expect(h.spawned).toEqual([])
+    expect(h.drainModes).toEqual([true, false])
+    expect(h.heartbeats()).toBe(1)
+    expect(h.timers).toEqual([])
+    expect(h.logs.some((l) => l.includes('does not own this process'))).toBe(true)
+  })
+})
+
+describe('the un-drain watchdog: a restart that never arrives must not leave the daemon deaf', () => {
+  const OWNED_SERVICE: RestartAuthority = {
+    kind: 'service',
+    service: LAUNCHD_JOB,
+    command: { file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.agent.1050'] },
+  }
+
+  test('armed for RESTART_WATCHDOG_MS (3 minutes) once the service restart is spawned', async () => {
+    const h = harness({ authority: OWNED_SERVICE })
+    await h.handler.handle(FRAME)
+    expect(RESTART_WATCHDOG_MS).toBe(3 * 60 * 1000)
+    expect(h.timers.map((t) => t.ms)).toEqual([RESTART_WATCHDOG_MS])
+    expect(h.timers[0]!.cancelled).toBe(false)
+  })
+
+  test('service path: restarting, then the watchdog fires: drain off, error restart_did_not_arrive, heartbeat', async () => {
+    const h = harness({ authority: OWNED_SERVICE })
+    await h.handler.handle(FRAME)
+    expect(h.progress.map((p) => p.stage)).toEqual(['draining', 'installing', 'restarting'])
+    expect(h.drainModes).toEqual([])
+    expect(h.heartbeats()).toBe(0)
+    await h.fireWatchdog()
+    expect(h.drainModes).toEqual([false])
+    expect(h.progress[h.progress.length - 1]).toEqual({ stage: 'error', message: RESTART_DID_NOT_ARRIVE })
+    expect(h.heartbeats()).toBe(1)
+    expect(h.logs.some((l) => l.includes('RESTART DID NOT ARRIVE'))).toBe(true)
+  })
+
+  test('launcher path: the same watchdog, the same recovery', async () => {
+    const h = harness({ authority: { kind: 'launcher', markerPath: '/state/871/restart-requested.json' } })
+    await h.handler.handle(FRAME)
+    expect(h.markers).toEqual(['/state/871/restart-requested.json'])
+    expect(h.timers.map((t) => t.ms)).toEqual([RESTART_WATCHDOG_MS])
+    await h.fireWatchdog()
+    expect(h.drainModes).toEqual([false])
+    expect(h.progress[h.progress.length - 1]).toEqual({ stage: 'error', message: RESTART_DID_NOT_ARRIVE })
+    expect(h.heartbeats()).toBe(1)
+  })
+
+  test('marketplace path: both restart rungs arm it too', async () => {
+    const service = harness({ installMethod: 'marketplace', authority: OWNED_SERVICE })
+    await service.handler.handle(FRAME)
+    expect(service.timers.map((t) => t.ms)).toEqual([RESTART_WATCHDOG_MS])
+    await service.fireWatchdog()
+    expect(service.drainModes).toEqual([true, false])
+    expect(service.progress[service.progress.length - 1]).toEqual({ stage: 'error', message: RESTART_DID_NOT_ARRIVE })
+    const launcher = harness({ installMethod: 'marketplace', authority: { kind: 'launcher', markerPath: '/m' } })
+    await launcher.handler.handle(FRAME)
+    expect(launcher.timers.map((t) => t.ms)).toEqual([RESTART_WATCHDOG_MS])
+  })
+
+  test('no watchdog without a restart: a degraded marker, a refusal, and a failed pull arm nothing', async () => {
+    const staged = harness({ authority: { kind: 'launcher', markerPath: '/m' }, markerWriteOk: false })
+    await staged.handler.handle(FRAME)
+    expect(staged.timers).toEqual([])
+    const refused = harness({ authority: { kind: 'staged' } })
+    await refused.handler.handle(FRAME)
+    expect(refused.timers).toEqual([])
+    const failed = harness({ updater: () => fakeUpdater({ outcome: { kind: 'dirty-tree' } }) })
+    await failed.handler.handle(FRAME)
+    expect(failed.timers).toEqual([])
+  })
+
+  test('a second restart re-arms: the earlier watchdog is cancelled, only the latest can fire', async () => {
+    const h = harness({ updater: () => fakeUpdater({ pending: '0.39.1' }) })
+    await h.handler.handle(FRAME)
+    await h.handler.handle({ ...FRAME, rpcId: 'rpc-2' })
+    expect(h.timers.map((t) => t.cancelled)).toEqual([true, false])
+    await h.fireWatchdog()
+    // One recovery, for the live rpc only.
+    expect(h.drainModes).toEqual([false])
+    expect(h.progress.filter((p) => p.stage === 'error')).toEqual([
+      { stage: 'error', message: RESTART_DID_NOT_ARRIVE },
+    ])
+  })
+
+  test('the token is a machine word the failure classifier passes through unchanged', () => {
+    expect(RESTART_DID_NOT_ARRIVE).toBe('restart_did_not_arrive')
+    expect(failureToken(RESTART_DID_NOT_ARRIVE)).toBe('restart_did_not_arrive')
+    expect(failureToken('restart did not arrive within 180s')).toBe('restart_did_not_arrive')
+  })
+})
+
 describe('UpdateRpcHandler marketplace path', () => {
   test('happy path: draining, one installing per install step kind (with the target), then the ladder', async () => {
     const market = fakeMarketplace()
@@ -389,7 +607,10 @@ describe('UpdateRpcHandler marketplace path', () => {
 
   test('service authority after a marketplace install: restarting, detached restart, drain stays on', async () => {
     const command = { file: '/bin/sh', args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.agent.871'] }
-    const h = harness({ installMethod: 'marketplace', authority: { kind: 'service', command } })
+    const h = harness({
+      installMethod: 'marketplace',
+      authority: { kind: 'service', service: { kind: 'launchd', handle: 'ai.bgos.agent.871' }, command },
+    })
     await h.handler.handle(FRAME)
     expect(h.progress[h.progress.length - 1]).toEqual({ stage: 'restarting', targetVersion: '0.39.0' })
     expect(h.spawned).toEqual([command])
@@ -626,7 +847,7 @@ describe('the never-mute invariant', () => {
   test('marketplace: a real restart is the one outcome that keeps the drain on', async () => {
     const service = harness({
       installMethod: 'marketplace',
-      authority: { kind: 'service', command: { file: 'systemd-run', args: ['x'] } },
+      authority: { kind: 'service', service: SYSTEMD_UNIT, command: { file: 'systemd-run', args: ['x'] } },
     })
     await service.handler.handle(FRAME)
     expect(service.drainModes).toEqual([true])
@@ -636,6 +857,17 @@ describe('the never-mute invariant', () => {
     })
     await launcher.handler.handle(FRAME)
     expect(launcher.drainModes).toEqual([true])
+  })
+
+  test('the watchdog: a restart that never arrives ends un-drained too', async () => {
+    const h = harness({
+      authority: { kind: 'service', service: LAUNCHD_JOB, command: { file: 'launchctl', args: ['x'] } },
+    })
+    await h.handler.handle(FRAME)
+    expect(h.drainModes).toEqual([])
+    await h.fireWatchdog()
+    expect(h.drainModes.length).toBeGreaterThan(0)
+    expect(h.drainModes[h.drainModes.length - 1]).toBe(false)
   })
 
   test('clone: no-authority aborts un-drained, thrown ends un-drained, the ladder restart keeps it on', async () => {

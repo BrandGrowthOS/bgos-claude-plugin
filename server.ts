@@ -301,6 +301,7 @@ import {
   chooseRestartAuthority,
   decideSupervisorWrite,
   detectSupervision,
+  probeServiceOwnership,
   resolveSupervision,
   supervisorFilePath,
   type ResolvedService,
@@ -6682,6 +6683,17 @@ const updateRpc = new UpdateRpcHandler({
   },
   setDrainMode: setUpdateDrainMode,
   requestHeartbeat: () => versionHeartbeat?.sendNow(),
+  // Ownership readings for a service authority (the 2026-09-11 mute): this
+  // process's pid ancestry via ps, and the job's main pid via launchctl print
+  // / systemctl show. Raw; the handler decides with serviceOwnsProcess and
+  // refuses a job that does not hold this process before draining.
+  serviceOwnership: (service) =>
+    probeServiceOwnership({
+      ownPid: process.pid,
+      service,
+      uid: typeof process.getuid === 'function' ? process.getuid() : null,
+      execSync: defaultExecSync,
+    }),
 })
 
 // ── Watcher install (watcher_install_rpc) ────────────────────────────────────

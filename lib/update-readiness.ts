@@ -34,6 +34,14 @@
  * the property that keeps a restart from bleeding one agent's identity into
  * another (docs/learnings, fleet-restart shared-folder identity bleed).
  *
+ * A service tier is only an authority when the job it names HOLDS this
+ * process: its main pid must be an ancestor of ours. The 2026-09-11 forced
+ * update muted 9 of 21 daemons because their declared launchd job was a
+ * keepalive SCRIPT that had started a detached tmux; the job's pid was nowhere
+ * in the daemon's ancestry, the kickstart killed nothing, and the drained
+ * daemon sat deaf. serviceOwnsProcess / probeServiceOwnership below are that
+ * check; lib/update-rpc.ts refuses such a job before draining.
+ *
  * Pure and injectable throughout so every decision is unit-testable.
  */
 
@@ -400,8 +408,16 @@ export function serviceRestartCommand(opts: {
   return null
 }
 
+/** The service-manager job a service authority was resolved by: what the
+ *  restart command is addressed to, and what the ownership check is asked
+ *  about (probeServiceOwnership). */
+export interface RestartAuthorityService {
+  kind: 'launchd' | 'systemd'
+  handle: string
+}
+
 export type RestartAuthority =
-  | { kind: 'service'; command: { file: string; args: string[] } }
+  | { kind: 'service'; service: RestartAuthorityService; command: { file: string; args: string[] } }
   | { kind: 'launcher'; markerPath: string }
   | { kind: 'staged' }
 
@@ -440,13 +456,17 @@ export function chooseRestartAuthority(
   probe: SupervisionProbe & { uid: number | null },
 ): RestartAuthority {
   const { supervised, service } = resolveSupervision(probe)
-  if (supervised === 'systemd' || supervised === 'launchd') {
+  // Every service tier resolves WITH the job it found (canonical, declared,
+  // discovered). Without one there is no handle to address a restart to or to
+  // verify ownership against, so it is no authority: staged.
+  if ((supervised === 'systemd' || supervised === 'launchd') && service) {
+    const resolved: RestartAuthorityService = { kind: service.kind, handle: service.handle }
     // A launcher-declared explicit command wins: it is how a supervisor that a
     // standard `launchctl kickstart` / `systemctl restart` cannot address says
     // exactly how to bring the session back.
-    if (service?.restartCommand) {
+    if (service.restartCommand) {
       const declared = delayedDeclaredCommand(service.restartCommand, SELF_RESTART_DELAY_SECONDS)
-      if (declared) return { kind: 'service', command: declared }
+      if (declared) return { kind: 'service', service: resolved, command: declared }
     }
     const command = serviceRestartCommand({
       platform: probe.platform,
@@ -454,13 +474,142 @@ export function chooseRestartAuthority(
       uid: probe.uid,
       service,
     })
-    if (command) return { kind: 'service', command }
+    if (command) return { kind: 'service', service: resolved, command }
   }
   if (supervised === 'launcher') {
     const markerPath = restartMarkerPath(probe.home, probe.assistantId)
     if (markerPath) return { kind: 'launcher', markerPath }
   }
   return { kind: 'staged' }
+}
+
+// -- Ownership: does the resolved job actually hold this process? ------------
+//
+// A service authority is addressed to a launchd label / systemd unit, and the
+// restart is `launchctl kickstart -k` / `systemctl --user restart` on it. That
+// only replaces THIS process when this process is inside that job. On the
+// 2026-09-11 forced update, nine daemons' declared job was a keepalive SCRIPT
+// that had started a detached tmux server: the job's main pid was nowhere in
+// the daemon's ancestry, the kickstart re-ran a script whose singleton guard
+// saw the session alive and waited, nothing died, and the daemon (already
+// drained, 'restarting' already reported) sat deaf for 50 minutes. Two raw
+// readings decide it, both pure to parse and injectable to take: this
+// process's pid ancestry (ps -o ppid= walked to 1) and the job's main pid
+// (launchctl print's `pid = N` / systemctl show's `MainPID=N`).
+
+/** A ppid walk never needs more than a handful of hops; the bound is against
+ *  a ps that lies (a cycle is caught separately). */
+export const ANCESTRY_MAX_DEPTH = 64
+
+/** Does the service-manager job with main pid `servicePid` own this process,
+ *  i.e. is that pid in `ancestorPids` (self first, then parents up to 1)?
+ *  Fail-closed on every non-answer: no pid (the job is not running), an
+ *  empty ancestry (ps could not be read), or pid 1 (init is everyone's
+ *  ancestor and restarts no one). */
+export function serviceOwnsProcess(ancestorPids: number[], servicePid: number | null): boolean {
+  if (servicePid === null || !Number.isInteger(servicePid) || servicePid <= 1) return false
+  if (!Array.isArray(ancestorPids)) return false
+  return ancestorPids.some((pid) => pid === servicePid)
+}
+
+/** `ps -o ppid= -p <pid>` prints one integer (leading spaces on some ps
+ *  builds); anything else is null. */
+export function parsePpidOutput(stdout: string): number | null {
+  const match = /^\s*(\d+)\s*$/.exec(String(stdout ?? ''))
+  if (!match) return null
+  const ppid = Number(match[1])
+  return Number.isSafeInteger(ppid) ? ppid : null
+}
+
+/** This process's pid ancestry, self first, up to pid 1 or the first link ps
+ *  cannot read (a ppid of 0 is the kernel, also the end). Bounded and
+ *  cycle-safe, because a reading that gates an update must not hang it. */
+export function readProcessAncestry(
+  ownPid: number,
+  execSync: (file: string, args: string[]) => SyncExecResult,
+  maxDepth: number = ANCESTRY_MAX_DEPTH,
+): number[] {
+  const chain: number[] = []
+  const seen = new Set<number>()
+  let pid = ownPid
+  while (chain.length < maxDepth) {
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) break
+    seen.add(pid)
+    chain.push(pid)
+    if (pid === 1) break
+    const result = execSync('ps', ['-o', 'ppid=', '-p', String(pid)])
+    if (result.code !== 0) break
+    const ppid = parsePpidOutput(result.stdout)
+    if (ppid === null || ppid === 0) break
+    pid = ppid
+  }
+  return chain
+}
+
+/** The `pid = N` line of `launchctl print gui/<uid>/<label>`. A loaded job
+ *  that is not running prints no pid line; an unknown label prints an error;
+ *  both are null. */
+export function parseLaunchctlPrintPid(stdout: string): number | null {
+  const match = /^\s*pid = (\d+)\s*$/m.exec(String(stdout ?? ''))
+  if (!match) return null
+  const pid = Number(match[1])
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+}
+
+/** `MainPID=N` from `systemctl --user show -p MainPID <unit>`; 0 is what an
+ *  inactive unit reports, so it is null. */
+export function parseSystemctlMainPid(stdout: string): number | null {
+  const match = /^MainPID=(\d+)\s*$/m.exec(String(stdout ?? ''))
+  if (!match) return null
+  const pid = Number(match[1])
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+}
+
+/** The main pid of the job `handle`, or null when it is not running, unknown,
+ *  unaddressable (no uid for a launchd gui domain) or unsafe to put on a
+ *  command line. Null always reads as "does not own us". */
+export function readServiceMainPid(opts: {
+  kind: 'launchd' | 'systemd'
+  handle: string
+  uid: number | null
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): number | null {
+  if (!isSafeServiceHandle(opts.handle)) return null
+  if (opts.kind === 'launchd') {
+    const uid = opts.uid
+    if (uid === null || !Number.isInteger(uid) || uid < 0) return null
+    const result = opts.execSync('launchctl', ['print', `gui/${uid}/${opts.handle}`])
+    return result.code === 0 ? parseLaunchctlPrintPid(result.stdout) : null
+  }
+  const result = opts.execSync('systemctl', ['--user', 'show', '-p', 'MainPID', opts.handle])
+  return result.code === 0 ? parseSystemctlMainPid(result.stdout) : null
+}
+
+/** The two raw readings the ownership decision is made from. Raw on purpose:
+ *  the handler decides with serviceOwnsProcess and logs both pids, so a
+ *  refusal names what was declared and what actually holds the process. */
+export interface ServiceOwnershipReading {
+  ownPid: number
+  ancestorPids: number[]
+  servicePid: number | null
+}
+
+export function probeServiceOwnership(opts: {
+  ownPid: number
+  service: RestartAuthorityService
+  uid: number | null
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): ServiceOwnershipReading {
+  return {
+    ownPid: opts.ownPid,
+    ancestorPids: readProcessAncestry(opts.ownPid, opts.execSync),
+    servicePid: readServiceMainPid({
+      kind: opts.service.kind,
+      handle: opts.service.handle,
+      uid: opts.uid,
+      execSync: opts.execSync,
+    }),
+  }
 }
 
 // -- The boot writer: declare the supervisor as a fact -------------------------

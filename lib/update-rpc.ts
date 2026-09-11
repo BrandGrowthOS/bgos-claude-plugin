@@ -44,6 +44,18 @@
  * Either way the daemon is never left muted: after every terminal outcome
  * except a real `restarting`, the last drain call is setDrainMode(false).
  *
+ * Two guards added after the 2026-09-11 forced update muted 9 of 21 daemons
+ * (each reported 'restarting', drained, and sat deaf for 50 minutes because
+ * its declared launchd job was a keepalive SCRIPT that did not hold the
+ * daemon's process, so the kickstart killed nothing):
+ *   - ownership pre-flight: a service authority counts only when the job's
+ *     main pid is an ancestor of this process (serviceOwnsProcess); otherwise
+ *     it is `no_restart_authority` before any drain or pull, and the ladder
+ *     stages rather than restarting through it;
+ *   - un-drain watchdog: RESTART_WATCHDOG_MS after 'restarting', if this
+ *     process is still running the restart did not arrive: drain off, error
+ *     `restart_did_not_arrive` (terminal), heartbeat, loud log.
+ *
  * Completion truth stays with the backend: only a heartbeat from this same
  * pairing carrying the new daemonVersion flips 'done'. This handler never
  * fakes success, and the daemon NEVER exits itself: restart is always an
@@ -57,7 +69,12 @@ import {
   type DrainSnapshot,
   type UpdateNowOutcome,
 } from './self-update.js'
-import type { RestartAuthority } from './update-readiness.js'
+import {
+  serviceOwnsProcess,
+  type RestartAuthority,
+  type RestartAuthorityService,
+  type ServiceOwnershipReading,
+} from './update-readiness.js'
 import { failureToken } from './update-diagnostics.mjs'
 
 export interface UpdateRpcFrame {
@@ -141,6 +158,16 @@ export const INSTALLING_STEP_KINDS: ReadonlySet<string> = new Set([
 /** Progress message when a marketplace update proceeds past the drain deadline. */
 export const DRAIN_TIMEOUT_PROCEEDING = 'drain_timeout_proceeding'
 
+/** How long after 'restarting' this process may still be alive before the
+ *  restart is declared missing. A real restart kills the process, and the
+ *  timer with it; a service restart is delayed SELF_RESTART_DELAY_SECONDS and
+ *  a marker relaunch is one supervisor poll away, so three minutes is
+ *  generous, and a daemon deaf for three minutes beats one deaf for fifty. */
+export const RESTART_WATCHDOG_MS = 3 * 60 * 1000
+
+/** The terminal error the watchdog reports (wire contract v1.1 machine token). */
+export const RESTART_DID_NOT_ARRIVE = 'restart_did_not_arrive'
+
 /** The backend caps progress messages at 300 chars (design 2.2). */
 export const PROGRESS_MESSAGE_MAX_CHARS = 300
 
@@ -171,6 +198,13 @@ export interface UpdateRpcDeps {
   writeMarker: (path: string) => boolean
   setDrainMode: (enabled: boolean) => void
   requestHeartbeat: () => void
+  /** Ownership readings for a SERVICE authority: this process's pid ancestry
+   *  and the job's main pid, raw (lib/update-readiness.ts
+   *  probeServiceOwnership); the handler decides with serviceOwnsProcess. */
+  serviceOwnership: (service: RestartAuthorityService) => ServiceOwnershipReading
+  /** Watchdog timer: run `fn` after `ms`, return a cancel. Injectable so the
+   *  suite fires it by hand; the default is an unref'd setTimeout. */
+  setTimer?: (fn: () => void, ms: number) => () => void
   /** P3 intake (lib/update-diagnostics.mjs postFailureDiagnostics); fire-and-forget. */
   postFailureDiagnostics?: (diagnostics: Record<string, unknown>) => Promise<unknown>
   now?: () => number
@@ -188,12 +222,22 @@ function defaultSleep(ms: number): Promise<void> {
   })
 }
 
+/** Unref'd: the watchdog must never be what keeps a dying process alive. */
+function defaultSetTimer(fn: () => void, ms: number): () => void {
+  const timer = setTimeout(fn, ms)
+  timer.unref?.()
+  return () => clearTimeout(timer)
+}
+
 export class UpdateRpcHandler {
   private readonly deps: UpdateRpcDeps
   /** rpcId dedupe. Unlike voice_rpc's in-flight set, entries SURVIVE
    *  completion: a re-emitted frame arriving after 'restarting' must never
    *  start a second update of the same request. */
   private readonly handled = new Set<string>()
+  /** Cancel for the armed un-drain watchdog, if any (one at a time: a later
+   *  restart supersedes an earlier one). */
+  private cancelWatchdog: (() => void) | null = null
 
   constructor(deps: UpdateRpcDeps) {
     this.deps = deps
@@ -274,7 +318,16 @@ export class UpdateRpcHandler {
     // supervisor via BGOS_SUPERVISOR_*, or restart by hand). Marketplace
     // installs stage into a versioned cache the next launch picks up on its
     // own, so that path keeps its legitimate 'staged' outcome.
-    if (this.deps.restartAuthority().kind === 'staged') {
+    const authority = this.deps.restartAuthority()
+    if (authority.kind === 'staged') {
+      return this.fail(rpcId, 'no_restart_authority')
+    }
+    // A service authority is only an authority when the job HOLDS this
+    // process. Nine daemons were muted on 2026-09-11 by a kickstart at a
+    // keepalive script that had never been their parent: the restart went
+    // through, nothing died, and the drained daemon sat deaf. Refuse it here,
+    // before any drain or pull, exactly like 'staged'.
+    if (authority.kind === 'service' && !this.serviceOwnsUs(authority.service)) {
       return this.fail(rpcId, 'no_restart_authority')
     }
 
@@ -402,7 +455,7 @@ export class UpdateRpcHandler {
   private async restartLadder(rpcId: string, targetVersion: string | null): Promise<void> {
     const versionField = targetVersion ? { targetVersion } : {}
     const authority = this.deps.restartAuthority()
-    if (authority.kind === 'service') {
+    if (authority.kind === 'service' && this.serviceOwnsUs(authority.service)) {
       // Progress FIRST: the detached restart kills this very process, and a
       // 'restarting' the backend never received would read as unreachable.
       await this.progress(rpcId, { stage: 'restarting', ...versionField })
@@ -410,8 +463,16 @@ export class UpdateRpcHandler {
         `update_rpc: triggering detached service restart (${authority.command.file} ${authority.command.args.join(' ')})`,
       )
       this.deps.spawnDetached(authority.command.file, authority.command.args)
-      // Drain stays on: no new work between now and the restart.
+      // Drain stays on: no new work between now and the restart. The
+      // watchdog lifts it if the restart never comes.
+      this.armRestartWatchdog(rpcId)
       return
+    }
+    if (authority.kind === 'service') {
+      // Re-resolved after the drain and the install: a job that does not hold
+      // this process must never be kicked (the mute of 2026-09-11). Staging is
+      // the safe outcome; the update is on disk for the next real restart.
+      this.deps.log('update_rpc: staging instead of restarting through a job that does not own this process')
     }
     if (authority.kind === 'launcher') {
       await this.progress(rpcId, { stage: 'restarting', ...versionField })
@@ -419,6 +480,7 @@ export class UpdateRpcHandler {
         this.deps.log(
           `update_rpc: restart marker written for the hoai launcher (${authority.markerPath})`,
         )
+        this.armRestartWatchdog(rpcId)
         return
       }
       this.deps.log('update_rpc: could not write the restart marker; staging instead')
@@ -428,6 +490,47 @@ export class UpdateRpcHandler {
     // pendingRestartVersion so the app can show restart_pending.
     this.deps.setDrainMode(false)
     await this.progress(rpcId, { stage: 'staged', ...versionField })
+    this.deps.requestHeartbeat()
+  }
+
+  /** Is the job a service authority names actually holding this process?
+   *  Pure decision over raw readings; a refusal logs the handle and both
+   *  pids so the operator sees what was declared and what really holds us. */
+  private serviceOwnsUs(service: RestartAuthorityService): boolean {
+    const reading = this.deps.serviceOwnership(service)
+    if (serviceOwnsProcess(reading.ancestorPids, reading.servicePid)) return true
+    this.deps.log(
+      `update_rpc: ${service.kind} job ${service.handle} does not own this process ` +
+        `(job pid ${reading.servicePid ?? 'none'}, our pid ${reading.ownPid}, ` +
+        `ancestry ${reading.ancestorPids.join(' > ') || 'unreadable'}); ` +
+        'a restart addressed to it would not reach us, so it is no restart authority',
+    )
+    return false
+  }
+
+  /** Arm the un-drain watchdog after 'restarting'. A real restart kills this
+   *  process, and the timer with it; if the timer fires we are still here. */
+  private armRestartWatchdog(rpcId: string): void {
+    this.cancelWatchdog?.()
+    const setTimer = this.deps.setTimer ?? defaultSetTimer
+    this.cancelWatchdog = setTimer(() => {
+      this.cancelWatchdog = null
+      void this.restartDidNotArrive(rpcId)
+    }, RESTART_WATCHDOG_MS)
+  }
+
+  /** The restart never came: this process is still running the old code,
+   *  drained. Lift the drain (the daemon must never be left deaf), report the
+   *  terminal error, and heartbeat so the app shows restart_pending from
+   *  pendingRestartVersion rather than a restart that is not happening. */
+  private async restartDidNotArrive(rpcId: string): Promise<void> {
+    this.deps.log(
+      `update_rpc: RESTART DID NOT ARRIVE within ${RESTART_WATCHDOG_MS / 1000}s of 'restarting' (rpc=${rpcId}); ` +
+        'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
+        'the update stays on disk as pendingRestartVersion until something really restarts this process',
+    )
+    this.deps.setDrainMode(false)
+    await this.progress(rpcId, { stage: 'error', message: RESTART_DID_NOT_ARRIVE })
     this.deps.requestHeartbeat()
   }
 }

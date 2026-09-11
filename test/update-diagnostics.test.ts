@@ -194,6 +194,8 @@ test('failureToken: a short machine word, never free text', () => {
     ['version_mismatch: expected 0.39.0 got 0.38.3', 'version_mismatch'],
     ['rollback_impossible', 'rollback_impossible'],
     ['agent_deaf_after_update (871)', 'agent_deaf_after_update'],
+    ['restart_did_not_arrive', 'restart_did_not_arrive'],
+    ['restart did not arrive within 180s of restarting', 'restart_did_not_arrive'],
     ['command timed out after 120000ms', 'timeout'],
     ['ETIMEDOUT', 'timeout'],
     ['claude exited with code 1: Plugin "nope" not found', 'exit_1'],

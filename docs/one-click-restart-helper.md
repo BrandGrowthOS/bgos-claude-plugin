@@ -58,6 +58,21 @@ with the app side in BGOS #1157/#1158. Binding wire contract:
    before the record counts. A stale, repointed or tampered record therefore
    resolves to nothing rather than restarting something else. See
    `docs/learnings/restart-authority-detected-not-guessed.md`.
+
+   A resolved job is only an authority when it OWNS this process (0.39.1).
+   Before the clone path drains or pulls, the daemon reads its own pid
+   ancestry (`ps -o ppid=` walked to 1) and the job's main pid (`launchctl
+   print gui/<uid>/<label>`, the `pid = N` line; `systemctl --user show -p
+   MainPID <unit>`); a job whose pid is not an ancestor fails
+   `no_restart_authority` at once, logging the handle and both pids, and the
+   ladder never kicks it (a marketplace install stages instead). Measured
+   2026-09-11: 9 of 21 daemons were muted for 50 minutes because their
+   declared launchd job was a keepalive SCRIPT that had started a detached
+   tmux, so the kickstart re-ran a script whose singleton guard waited and
+   nothing died. A second guard covers whatever this misses: three minutes
+   after `restarting` (either rung), if the process is still running, drain
+   comes off, the rpc ends `error restart_did_not_arrive`, and a heartbeat
+   carries `pendingRestartVersion`.
 5. Completion truth stays server-side: a heartbeat with `daemonVersion >=
    targetVersion` flips `done`; silence times out to `unknown`, never faked.
 
