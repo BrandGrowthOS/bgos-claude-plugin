@@ -1752,6 +1752,7 @@ const mcp = new Server(
       'closed or full. The added agent joins the roster, not the floor.',
       '',
       '## Calling the User (call_owner)',
+      'With OpenAI native GPT-Live selected, HOAI always adds the last 12 chat messages. Add optional context and opening_message to call_owner for private background and a suggested first spoken sentence after answer. ElevenLabs settings and startup are unchanged.',
       '',
       'Use the `call_owner` tool to ring the owner with a LIVE, in-app voice',
       'call (not a text message). Reach for it when the user explicitly asks',
@@ -2819,6 +2820,8 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object' as const,
         properties: {
+          context: { type: 'string', maxLength: 4000, description: 'GPT-Live only: private call background. HOAI always adds the last 12 chat messages; this adds to them. Does not change ElevenLabs.' },
+          opening_message: { type: 'string', maxLength: 400, description: 'GPT-Live only: suggested first sentence after the owner answers. May be paraphrased. Omit to use the call reason. Does not change ElevenLabs.' },
           reason: {
             type: 'string',
             description:
@@ -4293,6 +4296,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         assistantId: Number(ASSISTANT_ID),
         chatId: resolvedChatId,
         reason,
+        context: rawArgs.context as string | undefined,
+        openingMessage: rawArgs.opening_message as string | undefined,
       })
 
       // We POST directly here (not via bgosPost) because on a setup/availability

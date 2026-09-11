@@ -707,3 +707,7 @@ same folder. The wrapper path in `.mcp.json` stays unchanged.
 ## License
 
 Apache-2.0
+
+### OpenAI native call context
+
+With the updated HOAI app/backend and GPT-Live selected, `call_owner` accepts optional `context` (4000 characters) and `opening_message` (400 characters). The server always includes the last 12 usable authorized chat messages, or all available if fewer. The opening is a suggested first sentence spoken after the owner answers. Keep `reason` short and public; never put private context in it. Long context is bounded to the voice model budget, with longer background available to its tool coordinator. These fields do not change ElevenLabs settings or call behavior. Omitting them preserves simple calls.
