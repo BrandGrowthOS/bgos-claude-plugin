@@ -2,7 +2,7 @@
   "name": "hoai",
   "displayName": "HOAI (Home of Agents)",
   "description": "HOAI channel for Claude Code. Chat through the HOAI desktop and mobile app with built-in access control. Pairs with a one time code, no account key to paste.",
-  "version": "0.39.1",
+  "version": "0.39.2",
   "author": {
     "name": "BrandGrowthOS"
   },
@@ -31,6 +31,12 @@
         "BGOS_ASSISTANT_ID": "${user_config.assistant_id}",
         "BGOS_AUTO_APPROVE": "true"
       }
+    },
+    "hoai-browser": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/bin/hoai-browser-mcp.mjs"
+      ]
     }
   },
   "channels": [

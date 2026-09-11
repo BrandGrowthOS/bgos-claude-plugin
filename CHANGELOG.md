@@ -2,6 +2,25 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.2 (2026-09-12)
+
+The HOAI Agent Browser reaches Claude Code agents by default.
+
+- **New MCP server `hoai-browser`** (`bin/hoai-browser-mcp.mjs`, zero
+  dependencies): a stdio proxy to the browser pane the Home of Agents desktop
+  app hosts (`~/.hoai/agent-browser.json` names the local endpoint and token).
+  When the app is running the agent sees `hoai_browser_open_session`,
+  `hoai_browser_close_session`, `hoai_browser_status` and Playwright's
+  `browser_*` tools; when it is not, only `hoai_browser_status`, which says so.
+  The shim sends `notifications/tools/list_changed` when the app appears.
+- **Instructions:** the server instructions and the bundled capability fallback
+  now say the Agent Browser is the default browser, ahead of Playwright MCP,
+  chrome-devtools-mcp or Claude in Chrome. The served canon carries the same
+  rule (`2026.09.11-browser1`).
+
+Design and evidence: BGOS `docs/superpowers/specs/2026-09-11-hoai-agent-browser-design.md`,
+`docs/reports/2026-09-11-agent-browser-dev-environment/`.
+
 ## 0.39.1 (2026-09-12)
 
 A one-click update can no longer leave a daemon deaf. On 2026-09-11 a forced
