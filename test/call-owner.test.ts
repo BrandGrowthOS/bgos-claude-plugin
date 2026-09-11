@@ -204,3 +204,12 @@ test('buildCallOwnerBody: full body with every field', () => {
     { assistantId: 900, chatId: 1050, reason: 'daily standup' },
   )
 })
+
+test('private Live context and opening survive JSON, Unicode and Windows paths without changing reason', () => {
+  const context = 'Owner said "ship it".\nPath: C:\\Work\\notes.md 🙂';
+  const body = buildCallOwnerBody({ assistantId: 7, reason: 'Build ready.', context, openingMessage: 'Your build is ready.' });
+  assert.deepEqual(JSON.parse(JSON.stringify(body)), { assistantId: 7, reason: 'Build ready.', context, openingMessage: 'Your build is ready.' });
+  assert.throws(() => buildCallOwnerBody({ assistantId: 7, context: 'x'.repeat(4001) }), /4000/);
+  assert.throws(() => buildCallOwnerBody({ assistantId: 7, openingMessage: 'x'.repeat(401) }), /400/);
+  assert.deepEqual(buildCallOwnerBody({ assistantId: 7, context: ' ', openingMessage: '' }), { assistantId: 7 });
+});
