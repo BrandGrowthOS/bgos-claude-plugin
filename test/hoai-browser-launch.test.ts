@@ -13,6 +13,13 @@
  * except that last case, which runs bun for real and is skipped with a reason
  * when bun is not installed on the machine running the suite.
  *
+ * Two cases are marked "THE INVARIANT": this plugin never produces a pairing
+ * env without an assistant id, checked at the pure map, at resolveRelayEnv, and
+ * at the env the shim is actually spawned with. The shim will send whatever env
+ * it is handed (see test/hoai-browser-mcp.relay.test.ts, which pins that
+ * framework-neutral contract for an operator or another host); the guarantee
+ * that the plugin's own lane is never in that shape is here.
+ *
  * Run: npm test
  */
 
@@ -102,6 +109,71 @@ test('relayEnvFromResolution: incomplete, empty and unknown results add no relay
     assert.ok(reason && reason.length > 10, 'a reason a human can read')
     assert.ok(!/pair-abc|key-123/.test(reason as string), 'the reason never quotes a credential')
   }
+})
+
+// THE INVARIANT this launcher exists to hold, pinned on its own rather than as
+// a side effect of the happy path. The relay DTO requires assistantId on BOTH
+// lanes, so a pairing env without one is answered 400 by the real backend and
+// the agent is told the owner's desktop app is offline. The shim itself stays
+// framework neutral and will happily send a frame with no assistant id if an
+// operator (or another host, such as Codex) configures that env by hand: that
+// env-only contract is pinned in test/hoai-browser-mcp.relay.test.ts. What THIS
+// plugin must never do is produce such an env itself. Both doors are covered:
+// the pure map, and resolveRelayEnv with the resolver stubbed. The third door,
+// the env the shim is actually spawned with, is in the main section below.
+test('THE INVARIANT. no pairing env is ever produced without an assistant id', () => {
+  const lanes = [
+    { assistantId: undefined },
+    { assistantId: null },
+    { assistantId: '' },
+    { assistantId: '   ' },
+    { assistantId: '7' },
+    { assistantId: 7 },
+  ]
+  let produced = 0
+  for (const lane of lanes) {
+    const { env, reason } = relayEnvFromResolution({
+      backendUrl: 'https://api.brandgrowthos.ai',
+      pairingToken: 'pair-abc',
+      apiKey: '',
+      mode: 'pairing',
+      complete: true,
+      ...lane,
+    } as any)
+    if (env) {
+      produced += 1
+      assert.ok(
+        String(env.HOAI_RELAY_ASSISTANT_ID ?? '').trim() !== '',
+        `a pairing env was produced with no assistant id for ${JSON.stringify(lane)}`,
+      )
+      assert.equal(env.HOAI_RELAY_ASSISTANT_ID, '7')
+    } else {
+      assert.match(reason as string, /assistant/i, 'and the reason says which piece was missing')
+      assert.ok(!/pair-abc/.test(reason as string), 'without quoting the token')
+    }
+  }
+  assert.equal(produced, 2, 'only the two shapes that name an assistant get a relay env')
+
+  // The same through the real resolution path: a resolver line that names no
+  // assistant leaves the relay OFF rather than configuring a guaranteed 400.
+  const r = resolveRelayEnv({
+    env: { PATH: '/usr/bin' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsAll,
+    dir: BIN,
+    spawnSyncImpl: resolverPrinting({
+      backendUrl: 'https://api.brandgrowthos.ai',
+      pairingToken: 'pair-abc',
+      apiKey: '',
+      assistantId: '',
+      mode: 'pairing',
+      complete: true,
+    }),
+  })
+  assert.equal(r.env, null)
+  assert.equal(r.via, 'incomplete')
+  assert.match(r.reason as string, /assistant/i)
 })
 
 test('relayOffMessage: one attributable line that says local still works and holds no secret', () => {
@@ -273,6 +345,45 @@ test('main: an incomplete agent still gets the shim, with no relay env and one s
   }
   assert.equal(errs.length, 1)
   assert.match(errs[0], /browser relay off/)
+  calls[0].child.emit('exit', 0, null)
+  assert.equal(await pending, 0)
+})
+
+// The third door of the invariant above, and the one that decides what the
+// backend actually receives: a pairing daemon whose credentials name no
+// assistant must reach the shim with NO relay env at all, not with a half
+// configured pairing lane that relays into a 400.
+test('THE INVARIANT. a pairing agent with no assistant id spawns the shim with no relay env at all', async () => {
+  const { calls, impl } = spawnRecorder()
+  const errs: string[] = []
+  const pending = main([], {
+    env: { PATH: '/usr/bin' },
+    home: '/home/kc',
+    platform: 'linux',
+    exists: existsAll,
+    dir: BIN,
+    nodePath: '/usr/bin/node',
+    spawnImpl: impl,
+    writeErr: (t: string) => errs.push(t),
+    onSignal: () => {},
+    spawnSyncImpl: resolverPrinting({
+      backendUrl: 'https://api.brandgrowthos.ai',
+      pairingToken: 'pair-abc',
+      apiKey: '',
+      assistantId: '',
+      mode: 'pairing',
+      complete: true,
+    }),
+  })
+  assert.equal(calls.length, 1, 'local mode must still work')
+  const childEnv = calls[0].opts.env
+  assert.ok(!('HOAI_RELAY_BACKEND_URL' in childEnv), 'no relay lane is configured at all')
+  assert.ok(!('HOAI_RELAY_PAIRING_TOKEN' in childEnv), 'and the token is not handed over on its own')
+  assert.ok(!('HOAI_RELAY_ASSISTANT_ID' in childEnv))
+  assert.equal(errs.length, 1)
+  assert.match(errs[0], /relay off/)
+  assert.match(errs[0], /assistant/i)
+  assert.ok(!/pair-abc/.test(errs[0]), 'the line never quotes the token')
   calls[0].child.emit('exit', 0, null)
   assert.equal(await pending, 0)
 })

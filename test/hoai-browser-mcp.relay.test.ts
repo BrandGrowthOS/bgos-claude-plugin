@@ -283,6 +283,16 @@ test('relay: initialize, list and call travel through the backend with the pairi
       mcp.map((s) => s.method),
       ['initialize', 'notifications/initialized', 'tools/list', 'tools/call'],
     )
+    // This env (url + token, no assistant id) is an OPERATOR or another host
+    // configuring the shim by hand, not anything this plugin produces: the
+    // shim is framework neutral and sends exactly what it is given, which is
+    // the contract pinned here. The REAL backend answers such a frame 400,
+    // because RelayMcpDto requires assistantId on both lanes, and this fake
+    // relay does not model that. The plugin's own lane can never be in this
+    // shape: bin/hoai-browser-launch.mjs leaves the relay off rather than
+    // configure a pairing env with no assistant id, pinned by "THE INVARIANT"
+    // in test/hoai-browser-launch.test.ts. The env that DOES name one is the
+    // "the pairing lane names the assistant too" case below.
     assert.ok(
       mcp.every((s) => s.assistantId === null),
       'no HOAI_RELAY_ASSISTANT_ID in this env, so none is sent',

@@ -56,6 +56,26 @@ and from any other one.
   over relay) and
   `test/hoai-browser-launch.test.ts` (the env mapping, the operator override,
   every failure path, and the bun resolver printing one JSON line).
+- **The vendored shim is pinned by hash, not by a sentence.**
+  `bin/hoai-browser-mcp.mjs` is a byte-identical copy of the BGOS shim, and for
+  one round that claim lived only in a commit message: the BGOS source then
+  moved twice and this repo shipped a stale copy whose relay lane was dead.
+  `bin/hoai-browser-mcp.vendor.json` now holds the expected sha256
+  (`e749abf800fb53cc1afce7ee20ead271610c3d0eaec69e071791ade027000d97`) and
+  `test/hoai-browser-mcp.vendor.test.ts` checks it on every run, so a re-vendor
+  cannot land without the hash moving with it. It also pins the LF rule and the
+  `.gitattributes` line behind it, and it compares against the BGOS tree itself
+  when `HOAI_BROWSER_SHIM_SOURCE` names it (skipped with a reason otherwise:
+  BGOS is a separate repo and is not on this runner). Procedure:
+  `docs/vendoring-the-hoai-browser-shim.md`; the drift and what is still not
+  guarded: `docs/learnings/a-vendored-copy-is-only-as-good-as-its-hash-check.md`.
+- **The launcher can never half-configure the pairing lane.** Two cases marked
+  "THE INVARIANT" in `test/hoai-browser-launch.test.ts` pin it at the pure map,
+  at the resolver path and at the env the shim is actually spawned with: a
+  pairing result naming no assistant leaves the relay OFF rather than relaying
+  into a guaranteed 400. The shim's own env-only contract (it sends whatever it
+  is handed, which is what an operator or another host may configure) stays
+  pinned in the relay test, which now says which of the two it is covering.
 
 Design and evidence: BGOS `docs/superpowers/specs/2026-09-11-hoai-agent-browser-design.md`,
 `docs/superpowers/plans/2026-09-12-agent-browser-relay.md`,
