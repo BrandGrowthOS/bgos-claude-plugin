@@ -50,6 +50,10 @@ interface RelayState {
   seen: any[]
   polled: number
   held: Map<string, any>
+  /** The HTTP code the relay POST answers with; see the default below. */
+  postStatus: number
+  /** The HTTP code a held (pending) relay POST answers with. */
+  pendingStatus: number
 }
 
 /** A fake BGOS backend that speaks the relay contract of the plan (section 3.2). */
@@ -62,6 +66,12 @@ async function fakeRelay(overrides: Partial<RelayState> = {}) {
     seen: [],
     polled: 0,
     held: new Map(),
+    // postStatus mirrors the REAL backend: the relay route is @Post('mcp')
+    // with no @HttpCode, so NestJS answers 201, not the 200 / 202 the plan
+    // writes for the SHAPES. A test can ask for the documented codes instead,
+    // and the shim must read both.
+    postStatus: 201,
+    pendingStatus: 201,
     ...overrides,
   }
   let rpcSeq = 0
@@ -106,7 +116,7 @@ async function fakeRelay(overrides: Partial<RelayState> = {}) {
         return json(409, { code: 'host_offline', message: 'no desktop app online for this account' })
       }
       const rpcId = `r${++rpcSeq}`
-      if (msg.id === undefined) return json(200, { status: 'done', rpcId, message: {} })
+      if (msg.id === undefined) return json(state.postStatus, { status: 'done', rpcId, message: {} })
       let result: any
       if (msg.method === 'initialize') {
         result = {
@@ -125,15 +135,15 @@ async function fakeRelay(overrides: Partial<RelayState> = {}) {
       } else if (msg.method === 'tools/call') {
         result = { content: [{ type: 'text', text: `called ${msg.params?.name}` }], isError: false }
       } else {
-        return json(200, { status: 'done', rpcId, message: { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'nope' } } })
+        return json(state.postStatus, { status: 'done', rpcId, message: { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'nope' } } })
       }
       const message = { jsonrpc: '2.0', id: msg.id, result }
       if (msg.method === 'tools/call' && state.pendingOnce) {
         state.pendingOnce = false
         state.held.set(rpcId, message)
-        return json(202, { status: 'pending', rpcId, pollAfterMs: 20 })
+        return json(state.pendingStatus, { status: 'pending', rpcId, pollAfterMs: 20 })
       }
-      return json(200, { status: 'done', rpcId, message })
+      return json(state.postStatus, { status: 'done', rpcId, message })
     }
     json(404, { message: 'unknown route' })
   })
@@ -275,12 +285,63 @@ test('relay: initialize, list and call travel through the backend with the pairi
     )
     assert.ok(
       mcp.every((s) => s.assistantId === null),
-      'the pairing lane never sends assistantId',
+      'no HOAI_RELAY_ASSISTANT_ID in this env, so none is sent',
     )
     const status = await c.request('tools/call', { name: 'hoai_browser_status', arguments: {} })
     assert.match(
       status.result.content.map((x: any) => x.text).join(' '),
       /Kc's MacBook Pro/,
+    )
+  } finally {
+    c.close()
+    await relay.close()
+  }
+})
+
+// Regression, found by the end-to-end run on 2026-09-12, when the whole relay
+// lane was dead: the real backend is NestJS, whose POST answers 201, and the
+// shim used to accept only a literal 200 / 202, so every successful relayed
+// message was thrown away as relay_error and the agent was told the owner's
+// desktop app was offline. Every other test in this file now runs against 201;
+// this one pins the documented 200 / 202 codes so a backend that later adds
+// @HttpCode(200) does not break the shim either.
+test('relay: done and pending are read from the body status, under the documented 200 / 202 codes too', async () => {
+  const relay = await fakeRelay({ pendingOnce: true, postStatus: 200, pendingStatus: 202 })
+  const c = client({ HOAI_HOME: tempHome(), HOAI_RELAY_BACKEND_URL: relay.url, HOAI_RELAY_PAIRING_TOKEN: PAIRING })
+  try {
+    const init = await c.init('codex')
+    assert.match(init.result.instructions, /Relay: this is your DEFAULT browser/)
+    const call = await c.request('tools/call', { name: 'browser_navigate', arguments: { url: 'http://127.0.0.1/' } })
+    assert.equal(call.result.content[0].text, 'called browser_navigate')
+    assert.equal(relay.state.polled, 1, 'the pending answer was collected once')
+  } finally {
+    c.close()
+    await relay.close()
+  }
+})
+
+// The backend's RelayMcpDto requires assistantId whichever header is used (a
+// pairing can back several assistants, and the owner's rail shows the agent's
+// name), so a pairing daemon that leaves it out is answered 400 and never
+// reaches the desktop app. This is why bin/hoai-browser-launch.mjs sets
+// HOAI_RELAY_ASSISTANT_ID on the pairing lane too.
+test('relay: the pairing lane names the assistant too when the env does', async () => {
+  const relay = await fakeRelay()
+  const c = client({
+    HOAI_HOME: tempHome(),
+    HOAI_RELAY_BACKEND_URL: relay.url,
+    HOAI_RELAY_PAIRING_TOKEN: PAIRING,
+    HOAI_RELAY_ASSISTANT_ID: '7',
+  })
+  try {
+    await c.init()
+    const list = await c.request('tools/list')
+    assert.equal(list.result.tools.length, 2)
+    const mcp = relay.state.seen.filter((s) => s.route === 'mcp')
+    assert.ok(mcp.length >= 2)
+    assert.ok(
+      mcp.every((s) => s.auth.pairing === PAIRING && s.auth.apiKey === null && s.assistantId === '7'),
+      'every relayed request carries the pairing header AND the assistant id',
     )
   } finally {
     c.close()
