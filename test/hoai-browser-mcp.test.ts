@@ -14,7 +14,19 @@ import { join } from 'node:path'
 const SHIM = join(process.cwd(), 'bin', 'hoai-browser-mcp.mjs')
 
 function client(home: string) {
-  const child = spawn(process.execPath, [SHIM], { env: { ...process.env, HOAI_HOME: home }, stdio: ['pipe', 'pipe', 'ignore'] })
+  // Blank every relay variable: these two cases are about the LOCAL and
+  // OFFLINE doors, and a developer whose own shell carries real HOAI_RELAY_*
+  // values would otherwise put the shim in relay mode and change what they
+  // assert (the relay door has its own file, hoai-browser-mcp.relay.test.ts).
+  const env = {
+    ...process.env,
+    HOAI_HOME: home,
+    HOAI_RELAY_BACKEND_URL: '',
+    HOAI_RELAY_PAIRING_TOKEN: '',
+    HOAI_RELAY_API_KEY: '',
+    HOAI_RELAY_ASSISTANT_ID: '',
+  }
+  const child = spawn(process.execPath, [SHIM], { env, stdio: ['pipe', 'pipe', 'ignore'] })
   let buf = ''
   const pending = new Map<string | number, (msg: any) => void>()
   const notifications: any[] = []
