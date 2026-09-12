@@ -81,7 +81,13 @@ export function hasOperatorRelayEnv(env = {}) {
  *
  * Pure. Returns { env } with the variables to add, or { reason } with a
  * secret-free sentence for stderr. The pairing lane is the default and sends
- * X-BGOS-Pairing; the api-key lane is legacy and needs the assistant id too.
+ * X-BGOS-Pairing, the api-key lane is legacy and sends X-API-Key, and BOTH
+ * name the assistant: the backend's relay DTO requires assistantId whichever
+ * header is used (a pairing can back several assistants, and the owner's rail
+ * shows which agent is browsing), so a pairing lane without it is answered 400
+ * and never reaches the desktop app. resolveAuth only reports complete when an
+ * assistant id is present, so a complete result always carries one; when it
+ * somehow does not, the relay stays off rather than relaying into a 400.
  * @param {{ backendUrl?: string, pairingToken?: string, apiKey?: string, assistantId?: string, mode?: string, complete?: boolean } | null} resolution
  * @returns {{ env: Record<string, string> | null, reason: string | null }}
  */
@@ -100,7 +106,18 @@ export function relayEnvFromResolution(resolution) {
   if (mode === 'pairing') {
     const pairingToken = str(resolution.pairingToken).trim()
     if (!pairingToken) return { env: null, reason: 'the resolved pairing credentials carry no pairing token' }
-    return { env: { HOAI_RELAY_BACKEND_URL: backendUrl, HOAI_RELAY_PAIRING_TOKEN: pairingToken }, reason: null }
+    const pairingAssistantId = str(resolution.assistantId).trim()
+    if (!pairingAssistantId) {
+      return { env: null, reason: 'the resolved pairing credentials name no assistant, which the relay requires' }
+    }
+    return {
+      env: {
+        HOAI_RELAY_BACKEND_URL: backendUrl,
+        HOAI_RELAY_PAIRING_TOKEN: pairingToken,
+        HOAI_RELAY_ASSISTANT_ID: pairingAssistantId,
+      },
+      reason: null,
+    }
   }
   if (mode === 'apikey') {
     const apiKey = str(resolution.apiKey).trim()

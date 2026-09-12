@@ -5,7 +5,9 @@
  * The launcher is what turns "this folder's HOAI agent" into the HOAI_RELAY_*
  * environment the browser shim reads, so the things worth pinning are: a
  * pairing result maps to the pairing lane and an api-key result to the legacy
- * lane; an incomplete result adds NOTHING (local mode must keep working); an
+ * lane, BOTH naming the assistant (the backend's relay DTO requires
+ * assistantId whichever header is used, so a lane without it is answered 400);
+ * an incomplete result adds NOTHING (local mode must keep working); an
  * operator's own HOAI_RELAY_* wins untouched; and the bun-side resolver prints
  * exactly one JSON line for a real credentials file. Every IO is injected
  * except that last case, which runs bun for real and is skipped with a reason
@@ -56,9 +58,15 @@ test('relayEnvFromResolution: a complete pairing result becomes the pairing lane
     complete: true,
   })
   assert.equal(reason, null)
-  assert.deepEqual(env, { HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai', HOAI_RELAY_PAIRING_TOKEN: 'pair-abc' })
+  // The assistant id rides the pairing lane too: the backend's relay DTO
+  // requires it whichever header is used, so without it every relayed frame is
+  // answered 400 and the agent is told the owner's desktop app is offline.
+  assert.deepEqual(env, {
+    HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai',
+    HOAI_RELAY_PAIRING_TOKEN: 'pair-abc',
+    HOAI_RELAY_ASSISTANT_ID: '7',
+  })
   assert.ok(!('HOAI_RELAY_API_KEY' in (env as any)), 'the pairing lane never carries an api key')
-  assert.ok(!('HOAI_RELAY_ASSISTANT_ID' in (env as any)), 'the pairing lane never needs the assistant id')
 })
 
 test('relayEnvFromResolution: a complete api-key result becomes the legacy lane, assistant id included', () => {
@@ -84,6 +92,7 @@ test('relayEnvFromResolution: incomplete, empty and unknown results add no relay
     { backendUrl: 'https://api.brandgrowthos.ai', pairingToken: 'pair-abc', mode: 'pairing', complete: false },
     { backendUrl: '', pairingToken: 'pair-abc', mode: 'pairing', complete: true },
     { backendUrl: 'https://api.brandgrowthos.ai', pairingToken: '', mode: 'pairing', complete: true },
+    { backendUrl: 'https://api.brandgrowthos.ai', pairingToken: 'pair-abc', assistantId: '', mode: 'pairing', complete: true },
     { backendUrl: 'https://api.brandgrowthos.ai', apiKey: 'key-123', assistantId: '', mode: 'apikey', complete: true },
     { backendUrl: 'https://api.brandgrowthos.ai', mode: 'something-else', complete: true },
     null,
@@ -158,7 +167,11 @@ test('resolveRelayEnv: a pairing credentials line becomes the pairing lane, and 
       return { status: 0, signal: null, stdout: JSON.stringify({ backendUrl: 'https://api.brandgrowthos.ai', pairingToken: 'pair-abc', apiKey: '', assistantId: '7', mode: 'pairing', complete: true }) + '\n', stderr: '' }
     }) as any,
   })
-  assert.deepEqual(r.env, { HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai', HOAI_RELAY_PAIRING_TOKEN: 'pair-abc' })
+  assert.deepEqual(r.env, {
+    HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai',
+    HOAI_RELAY_PAIRING_TOKEN: 'pair-abc',
+    HOAI_RELAY_ASSISTANT_ID: '7',
+  })
   assert.equal(r.via, 'resolved')
   assert.equal(calls.length, 1)
   assert.match(calls[0].cmd, /bun(\.exe)?$/)
@@ -232,6 +245,7 @@ test('main: the shim is spawned with node, the relay env, inherited stdio, and t
   assert.equal(calls[0].opts.stdio, 'inherit')
   assert.equal(calls[0].opts.env.HOAI_RELAY_BACKEND_URL, 'https://api.brandgrowthos.ai')
   assert.equal(calls[0].opts.env.HOAI_RELAY_PAIRING_TOKEN, 'pair-abc')
+  assert.equal(calls[0].opts.env.HOAI_RELAY_ASSISTANT_ID, '7', 'the relay DTO requires it on the pairing lane too')
   assert.equal(calls[0].opts.env.EXISTING, 'keep-me', 'the inherited env survives')
   assert.deepEqual(errs, [], 'a working relay says nothing at all')
   calls[0].child.emit('exit', 3, null)
@@ -378,6 +392,7 @@ test(
     assert.deepEqual(relayEnvFromResolution(parsed).env, {
       HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai',
       HOAI_RELAY_PAIRING_TOKEN: 'pair-from-file',
+      HOAI_RELAY_ASSISTANT_ID: '77',
     })
   },
 )

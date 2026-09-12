@@ -26,11 +26,14 @@ and from any other one.
   resolves this folder's agent exactly as the MCP server does (the same
   `resolveCredentialsSelection` / `loadCredentialsFile` / `resolveAuth`, run
   through `bin/hoai-browser-creds.ts` under bun because that resolver is
-  TypeScript) and spawns the shim with `HOAI_RELAY_BACKEND_URL` plus either
-  `HOAI_RELAY_PAIRING_TOKEN` or, for legacy api-key agents,
-  `HOAI_RELAY_API_KEY` and `HOAI_RELAY_ASSISTANT_ID`. The shim itself stays
-  framework neutral and reads nothing but its environment. A pre-set
-  `HOAI_RELAY_*` is an operator override and passes through untouched.
+  TypeScript) and spawns the shim with `HOAI_RELAY_BACKEND_URL`,
+  `HOAI_RELAY_ASSISTANT_ID` and then either `HOAI_RELAY_PAIRING_TOKEN` or, for
+  legacy api-key agents, `HOAI_RELAY_API_KEY`. The assistant id rides BOTH
+  lanes: the relay endpoint requires it whichever header is used, because one
+  pairing can back several assistants and the owner's pane shows which agent is
+  browsing. The shim itself stays framework neutral and reads nothing but its
+  environment. A pre-set `HOAI_RELAY_*` is an operator override and passes
+  through untouched.
 - **Nothing about it is fatal and nothing is logged.** No bun, a resolver that
   fails, an agent that is not paired yet: the shim starts anyway without relay
   env (local mode keeps working) and one plain stderr line says the relay is
@@ -47,8 +50,10 @@ and from any other one.
   another machine. The served canon carries the same rule.
 - Guarded by `test/hoai-browser-mcp.test.ts` (the local and offline doors),
   `test/hoai-browser-mcp.relay.test.ts` (the relay door against a fake backend
-  on loopback: the pairing header, the api-key lane, a polled `202 pending`,
-  `host_offline`, local winning over relay) and
+  on loopback: the pairing header, the assistant id on both lanes, the api-key
+  lane, a pending answer polled to done under both the 201 the relay endpoint
+  really answers and the documented 200 / 202, `host_offline`, local winning
+  over relay) and
   `test/hoai-browser-launch.test.ts` (the env mapping, the operator override,
   every failure path, and the bun resolver printing one JSON line).
 
