@@ -2,6 +2,33 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.1 (2026-09-12)
+
+A one-click update can no longer leave a daemon deaf. On 2026-09-11 a forced
+`update_now` across 21 pairings muted 9 daemons for 50 minutes: each reported
+`restarting`, drained, and sat alive and heartbeating while answering nothing.
+Their declared restart authority was a launchd job whose program is a
+keepalive SCRIPT; that script had started a detached tmux server, so the job's
+pid was nowhere in the daemon's ancestry, `launchctl kickstart -k` re-ran a
+script whose singleton guard saw the session alive and waited, and nothing
+died. The pre-flight only ever refused `staged`.
+
+- **A service authority must OWN the process.** Before draining or pulling,
+  the daemon reads its own pid ancestry (`ps -o ppid=` walked to 1) and the
+  job's main pid (`launchctl print` `pid = N` / `systemctl show -p MainPID`).
+  A job whose pid is not an ancestor fails `no_restart_authority` at once,
+  with a log line naming the handle and both pids; the ladder never kicks
+  such a job (a marketplace install stages instead). A job that does hold the
+  process restarts exactly as before.
+- **An un-drain watchdog after `restarting`.** Three minutes after either
+  restart rung (service or launcher marker), if this process is still
+  running, the restart did not arrive: drain off, terminal
+  `error restart_did_not_arrive`, heartbeat, loud log. A real restart kills
+  the timer with the process.
+- Guarded by `test/update-rpc.test.ts` (ownership pre-flight, both paths,
+  the watchdog on both rungs, re-arm) and `test/update-readiness.test.ts`
+  (`serviceOwnsProcess` table, the three parsers, the probe).
+
 ## 0.38.26 (2026-09-05)
 
 A tap on an inline button reaches the agent in seconds again instead of up to

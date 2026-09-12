@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { join } from 'node:path'
 
 import {
+  ANCESTRY_MAX_DEPTH,
   RESTART_MARKER_FILE,
   SUPERVISOR_ENV_HANDLE,
   SUPERVISOR_ENV_KIND,
@@ -14,11 +15,18 @@ import {
   delayedDeclaredCommand,
   detectSupervision,
   parseDeclaredSupervisorEnv,
+  parseLaunchctlPrintPid,
+  parsePpidOutput,
   parseSupervisorFile,
+  parseSystemctlMainPid,
+  probeServiceOwnership,
+  readProcessAncestry,
+  readServiceMainPid,
   resolveSupervision,
   restartMarkerPath,
   serviceFilePath,
   serviceLabel,
+  serviceOwnsProcess,
   serviceRestartCommand,
   serviceUnit,
   supervisorFilePath,
@@ -198,6 +206,7 @@ describe('chooseRestartAuthority', () => {
       chooseRestartAuthority({ ...base, platform: 'linux', exists: (p) => p === unit }),
     ).toEqual({
       kind: 'service',
+      service: { kind: 'systemd', handle: 'bgos-agent-871' },
       command: {
         file: 'systemd-run',
         args: ['--user', '--on-active=2', 'systemctl', '--user', 'restart', 'bgos-agent-871'],
@@ -281,6 +290,7 @@ describe('the discovery tier: a supervisor that did not install itself under our
     // a restart from starting the agent as somebody else.
     expect(chooseRestartAuthority({ ...supervised, uid: 501 })).toEqual({
       kind: 'service',
+      service: { kind: 'launchd', handle: 'ai.bgos.session.871' },
       command: {
         file: '/bin/sh',
         args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.session.871'],
@@ -454,6 +464,7 @@ describe('resolveSupervision consumes a declared service authority', () => {
     // The restart is addressed to the DECLARED label, through its supervisor.
     expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({
       kind: 'service',
+      service: { kind: 'launchd', handle: 'ai.bgos.claude.session' },
       command: { file: '/bin/sh', args: ['-c', 'sleep 2 && launchctl kickstart -k gui/501/ai.bgos.claude.session'] },
     })
   })
@@ -481,6 +492,7 @@ describe('resolveSupervision consumes a declared service authority', () => {
     const probe = { ...base, readFile: (p: string) => (p === supPath ? body : null) }
     expect(chooseRestartAuthority({ ...probe, uid: 501 })).toEqual({
       kind: 'service',
+      service: { kind: 'launchd', handle: 'ai.bgos.session.871' },
       command: { file: '/bin/sh', args: ['-c', 'sleep 2 && exec "$0" "$@"', '/opt/keepalive.sh', '--kick', '871'] },
     })
   })
@@ -495,6 +507,166 @@ describe('resolveSupervision consumes a declared service authority', () => {
     const resolved = resolveSupervision(probe)
     expect(resolved.service?.handle).toBe('ai.bgos.agent.871')
     expect(resolved.service?.via).toBe('canonical-file')
+  })
+})
+
+describe('service ownership: a job is a restart authority only when it holds this process', () => {
+  // Pids are the live control taken on the dev Mac on 2026-09-12: argus's
+  // daemon (240) chains to 99136, the main pid of ai.bgos.agent.1050, so that
+  // job owns it; the BGOS daemon (52214) chains through a detached tmux (798)
+  // to launchd, and the keepalive job it declared (97998) is nowhere in it.
+  test('serviceOwnsProcess: the job pid must be in the ancestry; nothing else counts', () => {
+    const cases: Array<[number[], number | null, boolean]> = [
+      [[240, 99845, 99827, 99136, 1], 99136, true],
+      [[4242], 4242, true],
+      [[52214, 52034, 52030, 798, 1], 97998, false],
+      [[4242, 1], null, false],
+      [[], 4242, false],
+      [[4242, 1], 1, false],
+      [[4242, 1], 0, false],
+      [[4242, 1], -5, false],
+      [[4242, 1], 4242.5, false],
+    ]
+    for (const [ancestry, servicePid, expected] of cases) {
+      expect(serviceOwnsProcess(ancestry, servicePid)).toBe(expected)
+    }
+  })
+
+  test('parsePpidOutput: the one integer ps prints, whitespace tolerated, anything else null', () => {
+    expect(parsePpidOutput(' 52034\n')).toBe(52034)
+    expect(parsePpidOutput('1')).toBe(1)
+    expect(parsePpidOutput('0\n')).toBe(0)
+    expect(parsePpidOutput('')).toBeNull()
+    expect(parsePpidOutput('ps: illegal option')).toBeNull()
+    expect(parsePpidOutput('12 34')).toBeNull()
+  })
+
+  test('readProcessAncestry: walks ppid to 1, self first, stopping at the first unreadable link', () => {
+    const tree: Record<number, number> = { 240: 99845, 99845: 99827, 99827: 99136, 99136: 1 }
+    const calls: string[][] = []
+    const execSync = (file: string, args: string[]) => {
+      calls.push([file, ...args])
+      const pid = Number(args[args.length - 1])
+      return pid in tree ? { code: 0, stdout: ` ${tree[pid]}\n` } : { code: 1, stdout: '' }
+    }
+    expect(readProcessAncestry(240, execSync)).toEqual([240, 99845, 99827, 99136, 1])
+    expect(calls[0]).toEqual(['ps', '-o', 'ppid=', '-p', '240'])
+    // pid 1 is the end of every chain and is never queried.
+    expect(calls.some((c) => c[c.length - 1] === '1')).toBe(false)
+    // A link ps cannot read ends the walk with what was read so far.
+    expect(readProcessAncestry(7, execSync)).toEqual([7])
+    // A ppid of 0 (a kernel-owned parent) ends the walk too.
+    expect(readProcessAncestry(9, () => ({ code: 0, stdout: '0\n' }))).toEqual([9])
+  })
+
+  test('readProcessAncestry: bounded and cycle-safe', () => {
+    // A ps that claims every pid's parent is 2 would loop forever unbounded.
+    expect(readProcessAncestry(5, () => ({ code: 0, stdout: '2\n' }))).toEqual([5, 2])
+    let n = 1000
+    const deep = readProcessAncestry(n, () => ({ code: 0, stdout: `${++n}\n` }))
+    expect(deep.length).toBe(ANCESTRY_MAX_DEPTH)
+  })
+
+  test('parseLaunchctlPrintPid: the top-level pid line of a running job; not running or unknown is null', () => {
+    // Shape of a real `launchctl print gui/501/ai.bgos.agent.1050` on 2026-09-12.
+    const running = [
+      'gui/501/ai.bgos.agent.1050 = {',
+      '\tactive count = 1',
+      '\tpath = /Users/kc/Library/LaunchAgents/ai.bgos.agent.1050.plist',
+      '\tstate = running',
+      '',
+      '\tprogram = /bin/bash',
+      '\tpid = 99136',
+      '\tendpoints = {',
+      '\t\t"ai.bgos.agent.1050" = {',
+      '\t\t\tstate = active',
+      '\t\t}',
+      '\t}',
+      '}',
+    ].join('\n')
+    expect(parseLaunchctlPrintPid(running)).toBe(99136)
+    const notRunning = running
+      .split('\n')
+      .filter((l) => !l.includes('pid = '))
+      .join('\n')
+      .replace('state = running', 'state = not running')
+    expect(parseLaunchctlPrintPid(notRunning)).toBeNull()
+    expect(
+      parseLaunchctlPrintPid('Bad request.\nCould not find service "x" in domain for user gui: 501\n'),
+    ).toBeNull()
+    expect(parseLaunchctlPrintPid('')).toBeNull()
+    // Neither a pid inside another word nor an exit-code line matches.
+    expect(parseLaunchctlPrintPid('\tlast exit code = 0\n\tspid = 3\n')).toBeNull()
+  })
+
+  test('parseSystemctlMainPid: MainPID=N; 0 (inactive) and junk are null', () => {
+    expect(parseSystemctlMainPid('MainPID=12345\n')).toBe(12345)
+    expect(parseSystemctlMainPid('MainPID=0\n')).toBeNull()
+    expect(parseSystemctlMainPid('')).toBeNull()
+    expect(parseSystemctlMainPid('Unit x.service could not be found.\n')).toBeNull()
+  })
+
+  test('readServiceMainPid: the exact platform query, fail-closed without a uid or with an unsafe handle', () => {
+    const calls: string[][] = []
+    const execSync = (file: string, args: string[]) => {
+      calls.push([file, ...args])
+      if (file === 'launchctl') return { code: 0, stdout: '\tstate = running\n\tpid = 99136\n' }
+      if (file === 'systemctl') return { code: 0, stdout: 'MainPID=4242\n' }
+      return { code: 127, stdout: '' }
+    }
+    expect(readServiceMainPid({ kind: 'launchd', handle: 'ai.bgos.agent.1050', uid: 501, execSync })).toBe(99136)
+    expect(calls[0]).toEqual(['launchctl', 'print', 'gui/501/ai.bgos.agent.1050'])
+    expect(readServiceMainPid({ kind: 'systemd', handle: 'bgos-agent-871', uid: null, execSync })).toBe(4242)
+    expect(calls[1]).toEqual(['systemctl', '--user', 'show', '-p', 'MainPID', 'bgos-agent-871'])
+    calls.length = 0
+    expect(readServiceMainPid({ kind: 'launchd', handle: 'ai.bgos.agent.1050', uid: null, execSync })).toBeNull()
+    expect(readServiceMainPid({ kind: 'launchd', handle: 'ai.bgos; rm -rf /', uid: 501, execSync })).toBeNull()
+    expect(calls).toEqual([])
+    // A failing command is null, never a guess.
+    expect(
+      readServiceMainPid({
+        kind: 'launchd',
+        handle: 'ai.bgos.agent.1050',
+        uid: 501,
+        execSync: () => ({ code: 113, stdout: '' }),
+      }),
+    ).toBeNull()
+  })
+
+  test('probeServiceOwnership: both readings, raw, for the handler to decide with serviceOwnsProcess', () => {
+    const tree: Record<number, number> = { 240: 99845, 99845: 99827, 99827: 99136, 99136: 1 }
+    const execSync = (file: string, args: string[]) => {
+      if (file === 'ps') {
+        const pid = Number(args[args.length - 1])
+        return pid in tree ? { code: 0, stdout: `${tree[pid]}\n` } : { code: 1, stdout: '' }
+      }
+      if (file === 'launchctl') return { code: 0, stdout: '\tpid = 99136\n' }
+      return { code: 127, stdout: '' }
+    }
+    const reading = probeServiceOwnership({
+      ownPid: 240,
+      service: { kind: 'launchd', handle: 'ai.bgos.agent.1050' },
+      uid: 501,
+      execSync,
+    })
+    expect(reading).toEqual({ ownPid: 240, ancestorPids: [240, 99845, 99827, 99136, 1], servicePid: 99136 })
+    expect(serviceOwnsProcess(reading.ancestorPids, reading.servicePid)).toBe(true)
+  })
+
+  test('chooseRestartAuthority carries the job it resolved, so the handler can verify ownership', () => {
+    const unit = serviceFilePath('linux', HOME, '871')!
+    const authority = chooseRestartAuthority({
+      platform: 'linux',
+      home: HOME,
+      assistantId: '871',
+      exists: (p) => p === unit,
+      readFile: () => null,
+      pidAlive: () => true,
+      uid: null,
+    })
+    expect(authority.kind).toBe('service')
+    if (authority.kind !== 'service') throw new Error('unreachable')
+    expect(authority.service).toEqual({ kind: 'systemd', handle: 'bgos-agent-871' })
   })
 })
 
