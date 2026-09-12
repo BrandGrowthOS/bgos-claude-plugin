@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.39.9 (2026-09-20)
 
 - **A daemon-handled slash command now checks who sent it.** `/compact` and
   `/status` are acted on by the daemon and never reach the model, and neither
@@ -119,6 +119,55 @@ the sessions it launches.
   The shim now strips a trailing `/api/v1` before composing relay paths; a
   relay test pins it. Versions 0.39.3 and 0.39.4 are taken by open branches
   (liveness recency, keepalive restart authority).
+
+A session that was live and then stopped is now seen. On 2026-09-12 the Data
+agent's session (assistant 900) was wedged by a queued `/exit` from 07:49Z to
+20:36Z. The daemon stayed connected and heartbeating; 13 hourly wakes and 2
+owner messages queued unanswered; the log for the window holds one
+reply-overdue line (19:54:36Z) and no probe or escalate line. The deaf-session
+detector returned 'wait' whenever `live` was true, and `live` was the
+ever-live latch, "any bgos tool call since boot", which had flipped at 07:49
+and could never flip back. A session that had ever spoken was never probed
+and never named to its owner.
+
+- **Liveness for the deaf-session decision is recency-based.**
+  `ChannelLiveness` records the time of every bgos tool call and answers
+  `recentlyLive(now, windowMs)`: a call within `LIVE_RECENCY_WINDOWS` (3)
+  reply-overdue windows, twelve minutes at the default. `checkReplyOverdue`
+  passes that instead of `.live`. The ladder is unchanged: nudge at 4 minutes,
+  a `channel_ack` probe once the nudge has sat two windows, the chat warning
+  only after the probe has sat `DEAF_PROBE_GRACE_WINDOWS` more, once per
+  boot. For 900 that is a probe at about 19:58Z and the warning at about
+  20:10Z, instead of never.
+- **`.live` keeps its ever-live meaning.** Cursor persistence, the on-disk
+  channel-live marker and the shutdown flush still gate on the latch: a
+  session that once heard the channel did receive the deliveries behind its
+  cursor advances, and a quiet one must not start withholding them.
+- **The heartbeat's unresponsive report reads the same recency**, so the
+  backend's `session_unresponsive` tier can see a wedge on a session that had
+  spoken (the latch hid it there too), and a tool call after the verdict
+  clears it for the rest of the boot rather than letting a recovered session
+  flap back to unresponsive on its next quiet quarter hour. Known limit, not
+  new: `lastError` rides the version heartbeat, every 6h or on a readiness
+  change, and nothing sends one at the verdict, so the backend learns late.
+- **An answered probe is spent.** Under the latch an ack was permanent (it
+  flipped `live` for the boot). Under a clock, recency can lapse again while
+  the same inbound is still unanswered, so `checkReplyOverdue` now clears a
+  probe the session has answered before the ladder runs, and the next lapse
+  asks again instead of escalating on a probe that was answered. Every chat
+  warning still rides on a probe that went unanswered for the full grace,
+  which is what its copy says.
+- **The probe and escalate log lines say what was observed** ("last bgos tool
+  call 720 minute(s) ago", or "no bgos tool call since boot") instead of
+  asserting "zero bgos tool calls since boot", which was false for 900.
+- Guarded by `test/liveness-recency.test.ts`: the 900 case earns a probe, a
+  recent call waits, the grace escalates, the boundary flips at exactly three
+  windows, the never-live ladder is unchanged, the heartbeat reports the
+  wedge and stays clear after a recovery, and the `server.ts` wiring at the
+  chokepoint, the decision and the heartbeat is pinned. Mutant: `recentlyLive`
+  returning `this.live` compiles and fails 8 of its 21 tests, the 900 case
+  among them. `test/channel-liveness.test.ts` and
+  `test/unresponsive-heartbeat.test.ts` pass unchanged.
 
 ## 0.39.2 (2026-09-12)
 
