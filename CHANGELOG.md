@@ -4,7 +4,8 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## 0.39.2 (2026-09-12)
 
-The HOAI Agent Browser reaches Claude Code agents by default.
+The HOAI Agent Browser reaches Claude Code agents by default, on this machine
+and from any other one.
 
 - **New MCP server `hoai-browser`** (`bin/hoai-browser-mcp.mjs`, zero
   dependencies): a stdio proxy to the browser pane the Home of Agents desktop
@@ -13,12 +14,46 @@ The HOAI Agent Browser reaches Claude Code agents by default.
   `hoai_browser_close_session`, `hoai_browser_status` and Playwright's
   `browser_*` tools; when it is not, only `hoai_browser_status`, which says so.
   The shim sends `notifications/tools/list_changed` when the app appears.
+- **The browser reaches the owner's desktop app from another machine.** The shim
+  gained a second door: when the desktop app is not on THIS machine, every MCP
+  message travels through the owner's HOAI account to the computer that runs it,
+  and comes back the same way (`POST /api/v1/integrations/browser/mcp`, long
+  poll, then `GET .../mcp/:rpcId` for a slow answer). The local loopback door
+  still wins whenever it answers, so nothing changes for an agent that sits on
+  the owner's own computer. The owner sees the agent's name in the pane.
+- **The launcher hands the daemon credentials to the shim as env.** The
+  `hoai-browser` server now starts `bin/hoai-browser-launch.mjs`, which
+  resolves this folder's agent exactly as the MCP server does (the same
+  `resolveCredentialsSelection` / `loadCredentialsFile` / `resolveAuth`, run
+  through `bin/hoai-browser-creds.ts` under bun because that resolver is
+  TypeScript) and spawns the shim with `HOAI_RELAY_BACKEND_URL` plus either
+  `HOAI_RELAY_PAIRING_TOKEN` or, for legacy api-key agents,
+  `HOAI_RELAY_API_KEY` and `HOAI_RELAY_ASSISTANT_ID`. The shim itself stays
+  framework neutral and reads nothing but its environment. A pre-set
+  `HOAI_RELAY_*` is an operator override and passes through untouched.
+- **Nothing about it is fatal and nothing is logged.** No bun, a resolver that
+  fails, an agent that is not paired yet: the shim starts anyway without relay
+  env (local mode keeps working) and one plain stderr line says the relay is
+  off and why. No credential is ever written to a log, a stderr line or a tool
+  result.
+- **Honest wording when the owner app is down.** `host_offline` now reads as
+  "your owner's Home of Agents desktop app is not running or not signed in"
+  rather than the local "not running on this computer", and while relay
+  credentials exist the shim probes every 20 s so the browser tools appear by
+  themselves the moment the owner opens the app.
 - **Instructions:** the server instructions and the bundled capability fallback
   now say the Agent Browser is the default browser, ahead of Playwright MCP,
-  chrome-devtools-mcp or Claude in Chrome. The served canon carries the same
-  rule (`2026.09.11-browser1`).
+  chrome-devtools-mcp or Claude in Chrome, and that it works the same from
+  another machine. The served canon carries the same rule.
+- Guarded by `test/hoai-browser-mcp.test.ts` (the local and offline doors),
+  `test/hoai-browser-mcp.relay.test.ts` (the relay door against a fake backend
+  on loopback: the pairing header, the api-key lane, a polled `202 pending`,
+  `host_offline`, local winning over relay) and
+  `test/hoai-browser-launch.test.ts` (the env mapping, the operator override,
+  every failure path, and the bun resolver printing one JSON line).
 
 Design and evidence: BGOS `docs/superpowers/specs/2026-09-11-hoai-agent-browser-design.md`,
+`docs/superpowers/plans/2026-09-12-agent-browser-relay.md`,
 `docs/reports/2026-09-11-agent-browser-dev-environment/`.
 
 ## 0.39.1 (2026-09-12)
