@@ -1,3 +1,7 @@
 bin/bgos-agent text eol=lf
 bin/hoai text eol=lf
+# The browser shim is a byte-identical copy of the BGOS source of truth
+# (frontend/electron-app/agent-browser/shim/), verified by sha256, so it must
+# not pick up CRLF on a Windows checkout.
+bin/hoai-browser-mcp.mjs text eol=lf
 *.sh text eol=lf

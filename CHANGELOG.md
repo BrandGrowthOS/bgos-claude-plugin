@@ -2,6 +2,85 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.2 (2026-09-12)
+
+The HOAI Agent Browser reaches Claude Code agents by default, on this machine
+and from any other one.
+
+- **New MCP server `hoai-browser`** (`bin/hoai-browser-mcp.mjs`, zero
+  dependencies): a stdio proxy to the browser pane the Home of Agents desktop
+  app hosts (`~/.hoai/agent-browser.json` names the local endpoint and token).
+  When the app is running the agent sees `hoai_browser_open_session`,
+  `hoai_browser_close_session`, `hoai_browser_status` and Playwright's
+  `browser_*` tools; when it is not, only `hoai_browser_status`, which says so.
+  The shim sends `notifications/tools/list_changed` when the app appears.
+- **The browser reaches the owner's desktop app from another machine.** The shim
+  gained a second door: when the desktop app is not on THIS machine, every MCP
+  message travels through the owner's HOAI account to the computer that runs it,
+  and comes back the same way (`POST /api/v1/integrations/browser/mcp`, long
+  poll, then `GET .../mcp/:rpcId` for a slow answer). The local loopback door
+  still wins whenever it answers, so nothing changes for an agent that sits on
+  the owner's own computer. The owner sees the agent's name in the pane.
+- **The launcher hands the daemon credentials to the shim as env.** The
+  `hoai-browser` server now starts `bin/hoai-browser-launch.mjs`, which
+  resolves this folder's agent exactly as the MCP server does (the same
+  `resolveCredentialsSelection` / `loadCredentialsFile` / `resolveAuth`, run
+  through `bin/hoai-browser-creds.ts` under bun because that resolver is
+  TypeScript) and spawns the shim with `HOAI_RELAY_BACKEND_URL`,
+  `HOAI_RELAY_ASSISTANT_ID` and then either `HOAI_RELAY_PAIRING_TOKEN` or, for
+  legacy api-key agents, `HOAI_RELAY_API_KEY`. The assistant id rides BOTH
+  lanes: the relay endpoint requires it whichever header is used, because one
+  pairing can back several assistants and the owner's pane shows which agent is
+  browsing. The shim itself stays framework neutral and reads nothing but its
+  environment. A pre-set `HOAI_RELAY_*` is an operator override and passes
+  through untouched.
+- **Nothing about it is fatal and nothing is logged.** No bun, a resolver that
+  fails, an agent that is not paired yet: the shim starts anyway without relay
+  env (local mode keeps working) and one plain stderr line says the relay is
+  off and why. No credential is ever written to a log, a stderr line or a tool
+  result.
+- **Honest wording when the owner app is down.** `host_offline` now reads as
+  "your owner's Home of Agents desktop app is not running or not signed in"
+  rather than the local "not running on this computer", and while relay
+  credentials exist the shim probes every 20 s so the browser tools appear by
+  themselves the moment the owner opens the app.
+- **Instructions:** the server instructions and the bundled capability fallback
+  now say the Agent Browser is the default browser, ahead of Playwright MCP,
+  chrome-devtools-mcp or Claude in Chrome, and that it works the same from
+  another machine. The served canon carries the same rule.
+- Guarded by `test/hoai-browser-mcp.test.ts` (the local and offline doors),
+  `test/hoai-browser-mcp.relay.test.ts` (the relay door against a fake backend
+  on loopback: the pairing header, the assistant id on both lanes, the api-key
+  lane, a pending answer polled to done under both the 201 the relay endpoint
+  really answers and the documented 200 / 202, `host_offline`, local winning
+  over relay) and
+  `test/hoai-browser-launch.test.ts` (the env mapping, the operator override,
+  every failure path, and the bun resolver printing one JSON line).
+- **The vendored shim is pinned by hash, not by a sentence.**
+  `bin/hoai-browser-mcp.mjs` is a byte-identical copy of the BGOS shim, and for
+  one round that claim lived only in a commit message: the BGOS source then
+  moved twice and this repo shipped a stale copy whose relay lane was dead.
+  `bin/hoai-browser-mcp.vendor.json` now holds the expected sha256
+  (`e749abf800fb53cc1afce7ee20ead271610c3d0eaec69e071791ade027000d97`) and
+  `test/hoai-browser-mcp.vendor.test.ts` checks it on every run, so a re-vendor
+  cannot land without the hash moving with it. It also pins the LF rule and the
+  `.gitattributes` line behind it, and it compares against the BGOS tree itself
+  when `HOAI_BROWSER_SHIM_SOURCE` names it (skipped with a reason otherwise:
+  BGOS is a separate repo and is not on this runner). Procedure:
+  `docs/vendoring-the-hoai-browser-shim.md`; the drift and what is still not
+  guarded: `docs/learnings/a-vendored-copy-is-only-as-good-as-its-hash-check.md`.
+- **The launcher can never half-configure the pairing lane.** Two cases marked
+  "THE INVARIANT" in `test/hoai-browser-launch.test.ts` pin it at the pure map,
+  at the resolver path and at the env the shim is actually spawned with: a
+  pairing result naming no assistant leaves the relay OFF rather than relaying
+  into a guaranteed 400. The shim's own env-only contract (it sends whatever it
+  is handed, which is what an operator or another host may configure) stays
+  pinned in the relay test, which now says which of the two it is covering.
+
+Design and evidence: BGOS `docs/superpowers/specs/2026-09-11-hoai-agent-browser-design.md`,
+`docs/superpowers/plans/2026-09-12-agent-browser-relay.md`,
+`docs/reports/2026-09-11-agent-browser-dev-environment/`.
+
 ## 0.39.1 (2026-09-12)
 
 A one-click update can no longer leave a daemon deaf. On 2026-09-11 a forced
