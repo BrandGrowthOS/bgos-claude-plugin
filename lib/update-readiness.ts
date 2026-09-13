@@ -6,6 +6,16 @@
  *
  * Restart authorities, strongest first (path naming mirrors bin/bgos-agent's
  * label_for / unit_for / plist_for / unitfile_for / statedir_for):
+ *   - a live KEEPALIVE script that declared itself in
+ *     ~/.bgos-agent/<id>/keepalive.json (bin/hoai-keepalive-marker.mjs). It
+ *     goes first because it is the only tier whose ownership is PROVEN when it
+ *     is resolved: the declaring pid must be alive AND the claude session it
+ *     declares must be one of this process's own ancestors. Every tier below
+ *     is a NAME whose ownership is only checked later, in lib/update-rpc.ts.
+ *     Without this tier the keepalive-launched agents (a launchd job running a
+ *     script that starts claude in a detached tmux) had no authority the
+ *     ownership rule would accept, and a one-click update on them could only
+ *     ever end in restart-pending limbo;
  *   - an installed always-on service file for this assistant AT THE CANONICAL
  *     NAME bin/bgos-agent installs: launchd plist on macOS, systemd --user
  *     unit on Linux;
@@ -58,20 +68,50 @@ import {
 export type { ResolvedService, SyncExecResult }
 
 /** Mirror of bin/hoai-core.mjs SUPERVISOR_FILE_NAME / RESTART_MARKER_FILE_NAME
- *  (pinned by test/update-readiness.test.ts, which imports both sides). */
+ *  / KEEPALIVE_MARKER_FILE_NAME (pinned by test/update-readiness.test.ts,
+ *  which imports both sides). */
 export const SUPERVISOR_FILE = 'supervisor.json'
 export const RESTART_MARKER_FILE = 'restart-requested.json'
+export const KEEPALIVE_MARKER_FILE = 'keepalive.json'
 
-/** The wire enum for updateReadiness.supervised. This plugin only ever
- *  reports systemd | launchd | launcher | none; supervise-npm and pm2 belong
- *  to other channel daemons sharing the contract. */
+/** The supervisor kinds this daemon reasons with. 'keepalive' is INTERNAL: it
+ *  is the tier below, and it is mapped to the nearest wire value by
+ *  wireSupervisedKind before a heartbeat carries it (see that function for the
+ *  measured reason). The rest are the wire enum for
+ *  updateReadiness.supervised; supervise-npm and pm2 belong to other channel
+ *  daemons sharing the contract. */
 export type SupervisedKind =
   | 'systemd'
   | 'launchd'
   | 'launcher'
+  | 'keepalive'
   | 'supervise-npm'
   | 'pm2'
   | 'none'
+
+/**
+ * What a 'keepalive' supervision reports on the wire.
+ *
+ * Measured 2026-09-13 before choosing it: the backend's
+ * UPDATE_SUPERVISED_MODES (backend/src/integrations/pairing-update-state.ts)
+ * has no 'keepalive', and sanitizeUpdateReadiness maps anything outside that
+ * list to 'none' rather than 400ing. The app then gates the one-click button
+ * on `supervised !== "none"` (frontend updateStateModel.ts isOneClickEligible).
+ * So sending the honest new token today would take the update button AWAY from
+ * exactly the sessions this tier makes restartable, which is worse than the bug
+ * it fixes. 'launcher' is the truthful neighbour: a live launcher process that
+ * relaunches this session, which is precisely what a keepalive is.
+ *
+ * To make 'keepalive' visible end to end: add it to UPDATE_SUPERVISED_MODES
+ * (backend) and to PairingUpdateReadiness.supervised (frontend
+ * queries/integrationPairingsQuery.ts), then flip this one constant.
+ */
+export const KEEPALIVE_WIRE_SUPERVISED: SupervisedKind = 'launcher'
+
+/** The wire value for a resolved supervision kind. */
+export function wireSupervisedKind(kind: SupervisedKind): SupervisedKind {
+  return kind === 'keepalive' ? KEEPALIVE_WIRE_SUPERVISED : kind
+}
 
 export interface UpdateReadiness {
   supervised: SupervisedKind
@@ -140,6 +180,14 @@ export function restartMarkerPath(
 ): string | null {
   const dir = agentStateDir(home, assistantId)
   return dir ? join(dir, RESTART_MARKER_FILE) : null
+}
+
+export function keepaliveMarkerPath(
+  home: string,
+  assistantId: string | number | null | undefined,
+): string | null {
+  const dir = agentStateDir(home, assistantId)
+  return dir ? join(dir, KEEPALIVE_MARKER_FILE) : null
 }
 
 /** A relaunch command a launcher declared verbatim (structured, never a shell
@@ -235,6 +283,143 @@ export function parseSupervisorFile(raw: string | null): LauncherSupervisor | nu
   }
 }
 
+/**
+ * What a keepalive script declares in ~/.bgos-agent/<id>/keepalive.json every
+ * time it launches the session (bin/hoai-keepalive-marker.mjs writes it,
+ * bin/hoai-core.mjs keepaliveMarkerBody builds it).
+ *
+ *   pid         the keepalive script's own pid, the thing that promises the
+ *               relaunch; it must still be ALIVE for the promise to stand
+ *   claudePid   the claude session it launched. This is the binding that makes
+ *               the marker OURS and the process a restart has to signal
+ *   tmuxSession the pane name, for the log line only; never acted on
+ *
+ * The pids are the whole contract, so both are validated as integers above 1
+ * (pid 1 is init: it is everyone's ancestor and it restarts no one).
+ */
+export interface KeepaliveMarker {
+  pid: number
+  claudePid: number
+  tmuxSession: string | null
+}
+
+function positivePid(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value > 1 ? value : null
+}
+
+/**
+ * Parse a keepalive.json body. Fail-closed exactly like parseSupervisorFile:
+ * anything malformed is null, which reads as "no keepalive" and falls through
+ * to the older tiers, never as a restart authority. `kind` is required so a
+ * file that is not this contract can never be misread as one, and the
+ * 'relaunch' capability is the explicit promise: a script that writes the
+ * marker without it is saying it will NOT bring the session back.
+ */
+export function parseKeepaliveMarker(raw: string | null | undefined): KeepaliveMarker | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (parsed.kind !== 'keepalive') return null
+  const capabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities : []
+  if (!capabilities.includes('relaunch')) return null
+  const pid = positivePid(parsed.pid)
+  const claudePid = positivePid(parsed.claudePid)
+  if (pid === null || claudePid === null) return null
+  // The one free-text field, and it reaches a daemon log line, so it is
+  // whitespace-collapsed and capped: nothing here is ever acted on, but a
+  // newline in it would split a log line in two.
+  const declared = typeof parsed.tmuxSession === 'string' ? parsed.tmuxSession : ''
+  const tmuxSession = declared.replace(/\s+/g, ' ').trim().slice(0, 64)
+  return { pid, claudePid, tmuxSession: tmuxSession || null }
+}
+
+/**
+ * Does the keepalive this marker describes actually hold THIS process?
+ *
+ * The rule the 2026-09-11 mute teaches is that an authority only counts when
+ * it can reach us, and the reading that proves it is our own pid ancestry. For
+ * a keepalive the ancestry link is the SESSION it launched, not the script
+ * itself: measured on KC's Mac on 2026-09-13, a session chains
+ * claude > expect > tmux server > launchd, because the keepalive starts claude
+ * inside a DETACHED tmux and then only waits on it. The keepalive's own pid is
+ * in nobody's ancestry, so requiring it there would reject every real case, and
+ * a check that can only say no is not a check. The claude pid it declares IS
+ * our ancestor, and it is also the pid the restart signals, so it is both the
+ * proof and the target.
+ *
+ * It is the declared SESSION pid that must be in the chain, and nothing else is
+ * accepted in its place: the pid we prove has to be the pid we signal. A marker
+ * whose own script pid is an ancestor cannot vouch for a claudePid that is not
+ * one, or a writer that raced and recorded the wrong session would have the
+ * daemon SIGTERM an unrelated process and restart nothing. An exec-chain
+ * keepalive (one that really is our parent) still binds, because the claude it
+ * launched is our ancestor too. A marker written by ANOTHER agent's keepalive
+ * names a session we do not descend from, so it is refused.
+ */
+export function keepaliveOwnsProcess(
+  ancestorPids: number[],
+  marker: KeepaliveMarker | null | undefined,
+): boolean {
+  if (!marker || !Array.isArray(ancestorPids) || ancestorPids.length === 0) return false
+  // STRICT ancestor: readProcessAncestry puts self first, and the invariant the
+  // restart needs is "killing this pid takes this process with it". Our own pid
+  // fails that: signalling ourselves kills the daemon while claude lives on, so
+  // the keepalive never relaunches and the agent is simply gone.
+  return ancestorPids.slice(1).some((pid) => pid === marker.claudePid)
+}
+
+/** The process name a keepalive's declared session must have. */
+export const KEEPALIVE_SESSION_COMM = 'claude'
+
+/**
+ * Is the process the marker points at actually a claude SESSION?
+ *
+ * Being an ancestor is necessary and NOT sufficient, because ancestry is not
+ * private to one session. Measured on KC's Mac on 2026-09-13: a single tmux
+ * server (pid 798) is a strict ancestor of every agent on the host, so a marker
+ * naming 798 would bind to all nine daemons at once and the restart would
+ * SIGTERM the tmux server, killing the whole fleet mid-turn from one agent's
+ * update. The same is true of any shared wrapper. So the target must also BE
+ * what the marker claims it is: a claude process. `ps -o comm=` prints either a
+ * bare name or the absolute path the binary was launched by, so the comparison
+ * is on the basename.
+ *
+ * Fail-closed: an unreadable or unexpected name is refused, never assumed. A
+ * claude hosted under another process name (the node-hosted install
+ * bin/bgos-agent's run.sh already documents as undetectable) therefore gets no
+ * keepalive tier and falls back to the older rules, which is the pre-keepalive
+ * behaviour and safe.
+ */
+export function isKeepaliveSessionProcess(comm: string | null | undefined): boolean {
+  if (typeof comm !== 'string') return false
+  const name = comm.trim()
+  if (!name) return false
+  const base = name.slice(name.lastIndexOf('/') + 1)
+  return base === KEEPALIVE_SESSION_COMM
+}
+
+/** `ps -o comm= -p <pid>` prints exactly one line; anything else is null. */
+export function parseCommOutput(stdout: string): string | null {
+  const text = String(stdout ?? '').trim()
+  if (!text || text.includes('\n')) return null
+  return text
+}
+
+/** The process name of `pid`, or null when ps could not answer. */
+export function readProcessComm(
+  pid: number,
+  execSync: (file: string, args: string[]) => SyncExecResult,
+): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  const result = execSync('ps', ['-o', 'comm=', '-p', String(pid)])
+  return result.code === 0 ? parseCommOutput(result.stdout) : null
+}
+
 /** Is this pid alive on THIS host? Signal 0 probes without touching the
  *  process; EPERM means it exists under another user, which is still alive. */
 export function defaultPidAlive(pid: number): boolean {
@@ -257,6 +442,11 @@ export interface SupervisionProbe {
    *  by (an agent's identity comes from the .mcp.json of the folder it runs
    *  in, so a job that re-runs in that folder brings back THIS agent). */
   cwd?: string | null
+  /** This process's own pid, the anchor of the ancestry walk the keepalive
+   *  tier proves ownership with. REQUIRED for that tier: without it there is
+   *  no chain to check a marker against, so the tier does not fire at all
+   *  (fail-closed, and the pre-keepalive behaviour is unchanged). */
+  ownPid?: number
   /** Discovery probes. Both must be supplied for the discovery tier to run at
    *  all; without them detection falls back to the canonical name, which is
    *  the pre-discovery behaviour and is fail-closed. */
@@ -268,6 +458,8 @@ export interface Supervision {
   supervised: SupervisedKind
   /** The job a restart must go through, when one was resolved. */
   service: ResolvedService | null
+  /** The keepalive that holds this session, when one was proven. */
+  keepalive?: KeepaliveMarker | null
 }
 
 /** The service authority installed under the canonical bin/bgos-agent name,
@@ -290,7 +482,53 @@ function canonicalService(probe: SupervisionProbe): ResolvedService | null {
  *  capability; a stale file is 'none', never a lie. A discovered job only
  *  counts when the platform reports it LOADED and exactly one loaded job
  *  names this agent. */
+/**
+ * The keepalive that holds this session, or null. Three things must all hold,
+ * and each one is a separate reading:
+ *   1. a marker parses (the script declared a relaunch promise at all),
+ *   2. the declaring script is still ALIVE (a stale file from a keepalive that
+ *      has exited promises nothing),
+ *   3. the session the marker names is one of OUR ancestors (this marker is
+ *      about this process, not about the agent next door).
+ * Any of them missing is null, which falls through to the tiers below exactly
+ * as if no marker existed.
+ */
+export function resolveKeepalive(probe: SupervisionProbe): KeepaliveMarker | null {
+  const execSync = probe.execSync
+  const ownPid = probe.ownPid
+  if (!execSync || typeof ownPid !== 'number' || !Number.isInteger(ownPid) || ownPid <= 0) {
+    return null
+  }
+  const path = keepaliveMarkerPath(probe.home, probe.assistantId)
+  if (!path) return null
+  const marker = parseKeepaliveMarker(probe.readFile(path))
+  if (!marker) return null
+  const alive = probe.pidAlive ?? defaultPidAlive
+  if (!alive(marker.pid)) return null
+  if (!keepaliveOwnsProcess(readProcessAncestry(ownPid, execSync), marker)) return null
+  // Ancestry alone is not identity: one tmux server is an ancestor of every
+  // session on the host. The declared pid must also BE a claude session, or a
+  // marker naming a shared ancestor would have us signal it. Read last, so the
+  // extra ps only happens for a marker that already passed everything else.
+  return isKeepaliveSessionProcess(readProcessComm(marker.claudePid, execSync)) ? marker : null
+}
+
 export function resolveSupervision(probe: SupervisionProbe): Supervision {
+  // The keepalive tier goes FIRST because it is the only one whose ownership
+  // is PROVEN at resolve time (a live script plus an ancestry walk). Every
+  // service tier below is a name that is only checked for ownership later, in
+  // lib/update-rpc.ts, and on these sessions it resolves to a launchd job that
+  // holds nothing: that is the 2026-09-11 mute and tonight's nine 'restart
+  // pending' sessions. A proven authority must not lose to an unproven one.
+  //
+  // It resolves with NO service, deliberately. server.ts publishes the
+  // resolved service to ~/.bgos-agent/<id>/service.json for the per-machine
+  // watcher, and a record naming the keepalive's launchd job would invite the
+  // watcher to `launchctl kickstart -k` it, which kills the keepalive script
+  // (not the session), restarts nothing, and leaves the marker stale.
+  const keepalive = resolveKeepalive(probe)
+  if (keepalive) return { supervised: 'keepalive', service: null, keepalive }
+
   const canonical = canonicalService(probe)
   if (canonical) {
     return { supervised: canonical.kind === 'launchd' ? 'launchd' : 'systemd', service: canonical }
@@ -419,6 +657,9 @@ export interface RestartAuthorityService {
 export type RestartAuthority =
   | { kind: 'service'; service: RestartAuthorityService; command: { file: string; args: string[] } }
   | { kind: 'launcher'; markerPath: string }
+  /** A live keepalive script: SIGTERM `sessionPid` and it relaunches the
+   *  session on the new version. No command, no handle, nothing to kickstart. */
+  | { kind: 'keepalive'; sessionPid: number; keepalivePid: number; tmuxSession: string | null }
   | { kind: 'staged' }
 
 /** Wrap a launcher-declared relaunch command so it runs AFTER a short delay
@@ -455,7 +696,18 @@ export function delayedDeclaredCommand(
 export function chooseRestartAuthority(
   probe: SupervisionProbe & { uid: number | null },
 ): RestartAuthority {
-  const { supervised, service } = resolveSupervision(probe)
+  const { supervised, service, keepalive } = resolveSupervision(probe)
+  // A proven keepalive first, same order as the detection above: the restart
+  // is a signal to the session it declared, which resolveKeepalive has already
+  // shown to be one of our own ancestors.
+  if (supervised === 'keepalive' && keepalive) {
+    return {
+      kind: 'keepalive',
+      sessionPid: keepalive.claudePid,
+      keepalivePid: keepalive.pid,
+      tmuxSession: keepalive.tmuxSession,
+    }
+  }
   // Every service tier resolves WITH the job it found (canonical, declared,
   // discovered). Without one there is no handle to address a restart to or to
   // verify ownership against, so it is no authority: staged.

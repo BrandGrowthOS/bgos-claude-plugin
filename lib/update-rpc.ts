@@ -22,8 +22,10 @@
  * (suppresses the backend's 1.5s re-emit), then report progress stages:
  *
  *   draining -> installing -> restarting   a restart authority exists (an
- *                                          always-on service, or the hoai
- *                                          launcher's supervise loop)
+ *                                          always-on service, the hoai
+ *                                          launcher's supervise loop, or a
+ *                                          live keepalive script whose session
+ *                                          is signalled)
  *   draining -> installing -> staged       no authority: the update is on
  *                                          disk, the daemon keeps serving,
  *                                          and pendingRestartVersion rides
@@ -196,6 +198,10 @@ export interface UpdateRpcDeps {
   restartAuthority: () => RestartAuthority
   spawnDetached: (file: string, args: string[]) => void
   writeMarker: (path: string) => boolean
+  /** Send a signal to a pid on this host; false when it could not be
+   *  delivered (gone already, or another user's). The keepalive authority's
+   *  whole restart: SIGTERM the session, the script relaunches it. */
+  signalProcess: (pid: number, signal: NodeJS.Signals) => boolean
   setDrainMode: (enabled: boolean) => void
   requestHeartbeat: () => void
   /** Ownership readings for a SERVICE authority: this process's pid ancestry
@@ -448,13 +454,45 @@ export class UpdateRpcHandler {
   }
 
   /**
-   * The restart ladder (wire contract v1 section 3), shared by both
-   * install methods: service restart > launcher marker > staged. The
-   * update is on disk; only how this process gets replaced differs.
+   * The restart ladder (wire contract v1 section 3), shared by both install
+   * methods: keepalive signal > service restart > launcher marker > staged.
+   * The update is on disk; only how this process gets replaced differs.
+   *
+   * The keepalive rung is first because it is the only one whose ownership was
+   * PROVEN when the authority was resolved (a live script plus a pid-ancestry
+   * walk, lib/update-readiness.ts resolveKeepalive); the service rung is a name
+   * that is checked for ownership here, one rung later.
    */
   private async restartLadder(rpcId: string, targetVersion: string | null): Promise<void> {
     const versionField = targetVersion ? { targetVersion } : {}
     const authority = this.deps.restartAuthority()
+    if (authority.kind === 'keepalive') {
+      // The same mechanism five sessions were recovered with by hand on
+      // 2026-09-13: SIGTERM the claude session and the keepalive script
+      // relaunches it on the new version. Not the same SITUATION, though, and
+      // the difference is the reason the watchdog below still matters: those
+      // were signalled at an idle prompt, while an update rpc can land
+      // mid-turn and take whatever claude was doing with it.
+      // NEVER a kickstart here: the launchd job for these sessions IS the
+      // keepalive script, and killing it restarts nothing while leaving the
+      // daemon drained (the 2026-09-11 mute).
+      // Progress FIRST: the signal kills this very process.
+      await this.progress(rpcId, { stage: 'restarting', ...versionField })
+      this.deps.log(
+        `update_rpc: signalling the keepalive's session (SIGTERM pid ${authority.sessionPid}, ` +
+          `keepalive pid ${authority.keepalivePid}` +
+          `${authority.tmuxSession ? `, tmux ${authority.tmuxSession}` : ''})`,
+      )
+      if (this.deps.signalProcess(authority.sessionPid, 'SIGTERM')) {
+        // Drain stays on: no new work between now and the relaunch. The
+        // watchdog lifts it if the keepalive never brings the session back.
+        this.armRestartWatchdog(rpcId)
+        return
+      }
+      this.deps.log(
+        `update_rpc: could not signal the session (pid ${authority.sessionPid}); staging instead`,
+      )
+    }
     if (authority.kind === 'service' && this.serviceOwnsUs(authority.service)) {
       // Progress FIRST: the detached restart kills this very process, and a
       // 'restarting' the backend never received would read as unreachable.
