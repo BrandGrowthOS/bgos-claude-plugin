@@ -330,6 +330,27 @@ test('relay: done and pending are read from the body status, under the documente
   }
 })
 
+// The launcher hands the shim the daemon's own backend URL, and that URL
+// carries the /api/v1 suffix on every install whose config names it (the
+// checked-in .mcp.json does, and server.ts accepts both forms). Until
+// 2026-09-13 the shim appended /api/v1 again, so every probe went to
+// /api/v1/api/v1/integrations/browser/host, was answered 404, and every
+// Claude Code agent believed the owner's desktop was offline.
+test('relay: a backend URL that already ends in /api/v1 is not doubled', async () => {
+  const relay = await fakeRelay()
+  const c = client({ HOAI_HOME: tempHome(), HOAI_RELAY_BACKEND_URL: relay.url + '/api/v1/', HOAI_RELAY_PAIRING_TOKEN: PAIRING })
+  try {
+    const init = await c.init()
+    assert.match(init.result.instructions, /Relay: this is your DEFAULT browser/)
+    const list = await c.request('tools/list')
+    assert.equal(list.result.tools.length, 2)
+    assert.ok(relay.state.seen.some((s) => s.route === 'host'), 'the host probe reached the single-prefix route')
+  } finally {
+    c.close()
+    await relay.close()
+  }
+})
+
 // The backend's RelayMcpDto requires assistantId whichever header is used (a
 // pairing can back several assistants, and the owner's rail shows the agent's
 // name), so a pairing daemon that leaves it out is answered 400 and never
