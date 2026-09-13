@@ -82,7 +82,16 @@ let initSeq = 0;
  * leaves it out is answered 400 and never reaches the desktop app.
  */
 function readRelayCredentials(env) {
-  const url = String(env.HOAI_RELAY_BACKEND_URL || "").trim().replace(/\/+$/, "");
+  // The daemon's backend URL is accepted with or without the /api/v1 suffix
+  // (server.ts normalises it), and the launcher hands us whatever it holds.
+  // Every relay path below carries /api/v1 itself, so strip a trailing copy
+  // here: with it left in, every probe went to /api/v1/api/v1/... and was
+  // answered 404, which read as "host offline" for every Claude Code agent
+  // whose config carried the suffix (all of them on 2026-09-13).
+  const url = String(env.HOAI_RELAY_BACKEND_URL || "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/api\/v1$/i, "");
   if (!url) return null;
   const assistantId = String(env.HOAI_RELAY_ASSISTANT_ID || "").trim();
   const pairing = String(env.HOAI_RELAY_PAIRING_TOKEN || "").trim();

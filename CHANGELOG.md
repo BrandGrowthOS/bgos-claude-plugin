@@ -2,6 +2,17 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.5 (2026-09-13)
+
+- **The browser relay no longer doubles the API prefix.** The launcher hands
+  the shim the daemon's own backend URL, which carries `/api/v1` on every
+  install whose config names it, and the shim appended `/api/v1` again: every
+  probe went to `/api/v1/api/v1/integrations/browser/host`, was answered 404,
+  and every Claude Code agent believed the owner's desktop app was offline.
+  The shim now strips a trailing `/api/v1` before composing relay paths; a
+  relay test pins it. Versions 0.39.3 and 0.39.4 are taken by open branches
+  (liveness recency, keepalive restart authority).
+
 ## 0.39.2 (2026-09-12)
 
 The HOAI Agent Browser reaches Claude Code agents by default, on this machine
