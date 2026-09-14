@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import {
   ANCESTRY_MAX_DEPTH,
+  KEEPALIVE_MARKER_FILE,
   RESTART_MARKER_FILE,
   SUPERVISOR_ENV_HANDLE,
   SUPERVISOR_ENV_KIND,
@@ -14,7 +15,12 @@ import {
   decideSupervisorWrite,
   delayedDeclaredCommand,
   detectSupervision,
+  isKeepaliveSessionProcess,
+  keepaliveMarkerPath,
+  keepaliveOwnsProcess,
   parseDeclaredSupervisorEnv,
+  parseCommOutput,
+  parseKeepaliveMarker,
   parseLaunchctlPrintPid,
   parsePpidOutput,
   parseSupervisorFile,
@@ -31,13 +37,17 @@ import {
   serviceUnit,
   supervisorFilePath,
   validAssistantId,
+  wireSupervisedKind,
   type Supervision,
 } from '../lib/update-readiness'
 import {
+  KEEPALIVE_MARKER_FILE_NAME,
   RESTART_MARKER_FILE_NAME,
   SUPERVISOR_FILE_NAME,
+  keepaliveMarkerBody,
   supervisorFileBody,
 } from '../bin/hoai-core.mjs'
+import { decideKeepaliveMarkerWrite } from '../bin/hoai-keepalive-marker.mjs'
 
 const HOME = '/home/kc'
 
@@ -768,5 +778,345 @@ describe('decideSupervisorWrite: the boot writer decision', () => {
       pidAlive: () => false, // the prior owner is gone
     })
     expect(decision.action).toBe('write')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The keepalive tier (2026-09-13). A keepalive SCRIPT launches claude inside a
+// DETACHED tmux session, so the script's pid is never in the daemon's
+// ancestry: measured live on KC's Mac on 2026-09-13, a session's chain is
+// claude > expect > tmux server > launchd, and the keepalive pids (33108,
+// 33150, 33154) appear in none of them. The binding that DOES hold is the
+// claude pid the keepalive launched, which is the daemon's own ancestor and
+// the process a restart has to signal.
+// ---------------------------------------------------------------------------
+
+describe('the keepalive tier: a launcher that starts the session in a detached tmux', () => {
+  const KEEPALIVE_PID = 33108
+  const CLAUDE_PID = 35759
+  const OWN_PID = 63948
+  /** Measured on KC's Mac: the daemon sits under claude > expect > tmux > launchd. */
+  const TREE: Record<number, number> = {
+    [OWN_PID]: CLAUDE_PID,
+    [CLAUDE_PID]: 35755,
+    35755: 798,
+    798: 1,
+  }
+  /** comm for each pid in the chain, as `ps -o comm=` prints it on this Mac
+   *  (an absolute path for a path-launched binary). */
+  const COMM: Record<number, string> = {
+    [OWN_PID]: '/opt/homebrew/bin/bun',
+    [CLAUDE_PID]: '/Users/fitecho/.local/bin/claude',
+    35755: '/usr/bin/expect',
+    798: '/opt/homebrew/bin/tmux',
+  }
+  const psExec = (_file: string, args: string[]) => {
+    const pid = Number(args[args.length - 1])
+    if (args.includes('comm=')) {
+      return pid in COMM ? { code: 0, stdout: `${COMM[pid]}\n` } : { code: 1, stdout: '' }
+    }
+    return pid in TREE ? { code: 0, stdout: ` ${TREE[pid]}\n` } : { code: 1, stdout: '' }
+  }
+  const markerPath = keepaliveMarkerPath(HOME, '910')!
+  const body = keepaliveMarkerBody({
+    pid: KEEPALIVE_PID,
+    claudePid: CLAUDE_PID,
+    tmuxSession: 'agent-910',
+    startedAt: '2026-09-13T00:00:00.000Z',
+  })
+  const base = {
+    platform: 'darwin',
+    home: HOME,
+    assistantId: '910',
+    ownPid: OWN_PID,
+    exists: () => false,
+    readFile: (p: string) => (p === markerPath ? body : null),
+    pidAlive: (pid: number) => pid === KEEPALIVE_PID,
+    execSync: psExec,
+  }
+
+  test('the writer writes exactly what the daemon accepts, in the file the daemon reads', () => {
+    // bin (the keepalive-side writer) and lib (the daemon-side parser) meet
+    // only through this file; a rename or a field drop on one side is a
+    // silently dead restart authority.
+    expect(KEEPALIVE_MARKER_FILE).toBe(KEEPALIVE_MARKER_FILE_NAME)
+    expect(markerPath).toBe(join(HOME, '.bgos-agent', '910', 'keepalive.json'))
+    expect(parseKeepaliveMarker(body)).toEqual({
+      pid: KEEPALIVE_PID,
+      claudePid: CLAUDE_PID,
+      tmuxSession: 'agent-910',
+    })
+  })
+
+  test('parseKeepaliveMarker is fail-closed: every malformed body is null', () => {
+    const full = {
+      kind: 'keepalive',
+      pid: KEEPALIVE_PID,
+      claudePid: CLAUDE_PID,
+      capabilities: ['relaunch'],
+    }
+    expect(parseKeepaliveMarker(JSON.stringify(full))?.tmuxSession).toBeNull()
+    const rejected: Array<Record<string, unknown>> = [
+      { ...full, kind: 'launcher' }, // not this contract
+      { ...full, kind: undefined },
+      { ...full, capabilities: [] }, // no relaunch promise
+      { ...full, capabilities: 'relaunch' },
+      { ...full, pid: 1 }, // init restarts no one
+      { ...full, pid: 0 },
+      { ...full, pid: -3 },
+      { ...full, pid: 4.5 },
+      { ...full, pid: '33108' },
+      { ...full, claudePid: 1 },
+      { ...full, claudePid: undefined },
+      { ...full, claudePid: null },
+    ]
+    for (const value of rejected) {
+      expect(parseKeepaliveMarker(JSON.stringify(value))).toBeNull()
+    }
+    expect(parseKeepaliveMarker('garbage')).toBeNull()
+    expect(parseKeepaliveMarker('[]')).toBeNull()
+    expect(parseKeepaliveMarker('')).toBeNull()
+    expect(parseKeepaliveMarker(null)).toBeNull()
+  })
+
+  test('tmuxSession is collapsed and capped: it reaches a log line', () => {
+    // The only free-text field in the marker. Nothing acts on it, but it is
+    // printed in the restart log line, where a newline would split one record
+    // into two.
+    const withNewline = JSON.stringify({
+      kind: 'keepalive',
+      pid: KEEPALIVE_PID,
+      claudePid: CLAUDE_PID,
+      capabilities: ['relaunch'],
+      tmuxSession: ' agent-910\nFAKE LOG LINE ',
+    })
+    expect(parseKeepaliveMarker(withNewline)?.tmuxSession).toBe('agent-910 FAKE LOG LINE')
+    const long = JSON.stringify({
+      kind: 'keepalive',
+      pid: KEEPALIVE_PID,
+      claudePid: CLAUDE_PID,
+      capabilities: ['relaunch'],
+      tmuxSession: 'x'.repeat(500),
+    })
+    expect(parseKeepaliveMarker(long)?.tmuxSession?.length).toBe(64)
+  })
+
+  test('keepaliveOwnsProcess: the session it launched must be one of our ancestors', () => {
+    const marker = parseKeepaliveMarker(body)!
+    const ancestry = [OWN_PID, CLAUDE_PID, 35755, 798, 1]
+    expect(keepaliveOwnsProcess(ancestry, marker)).toBe(true)
+    // Another agent's marker: the session it names is not in our chain.
+    expect(keepaliveOwnsProcess([OWN_PID, 52034, 798, 1], marker)).toBe(false)
+    expect(keepaliveOwnsProcess([], marker)).toBe(false)
+    expect(keepaliveOwnsProcess(ancestry, null)).toBe(false)
+  })
+
+  test('our OWN pid is not a session we can restart by signalling', () => {
+    // readProcessAncestry puts self first, and the invariant this rule needs is
+    // "killing this pid takes this process with it". That holds for a strict
+    // ancestor and not for us: signalling ourselves kills the daemon while
+    // claude lives on, so the keepalive never relaunches and the agent is gone.
+    const selfMarker = parseKeepaliveMarker(
+      keepaliveMarkerBody({
+        pid: KEEPALIVE_PID,
+        claudePid: OWN_PID,
+        tmuxSession: null,
+        startedAt: '2026-09-13T00:00:00.000Z',
+      }),
+    )!
+    expect(keepaliveOwnsProcess([OWN_PID, CLAUDE_PID, 35755, 798, 1], selfMarker)).toBe(false)
+  })
+
+  test('a live keepalive pid in our chain does NOT vouch for a session pid that is not', () => {
+    // The pid we SIGNAL has to be the pid we PROVED. A marker whose own pid is
+    // one of our ancestors (so the cheap half of the check passes) but whose
+    // claudePid is some unrelated process would otherwise have us kill that
+    // unrelated process and restart nothing. Same-user, so this is a
+    // correctness rule before it is a security one: a writer that races and
+    // records the wrong session pid must be refused, not obeyed.
+    const mismatched = parseKeepaliveMarker(
+      keepaliveMarkerBody({
+        pid: KEEPALIVE_PID,
+        claudePid: 424242,
+        tmuxSession: null,
+        startedAt: '2026-09-13T00:00:00.000Z',
+      }),
+    )!
+    expect(keepaliveOwnsProcess([OWN_PID, KEEPALIVE_PID, 1], mismatched)).toBe(false)
+  })
+
+  test('an alive keepalive whose session is our ancestor reports keepalive', () => {
+    expect(detectSupervision(base)).toBe('keepalive')
+    expect(resolveSupervision(base).keepalive).toEqual({
+      pid: KEEPALIVE_PID,
+      claudePid: CLAUDE_PID,
+      tmuxSession: 'agent-910',
+    })
+  })
+
+  test('a DEAD keepalive pid is ignored and the older tiers answer instead', () => {
+    // The positive control is the same probe with the pid alive (above): this
+    // asserts the liveness check is what changed the answer, not the fixture.
+    const plist = serviceFilePath('darwin', HOME, '910')!
+    const probe = { ...base, exists: (p: string) => p === plist, pidAlive: () => false }
+    expect(detectSupervision(probe)).toBe('launchd')
+    expect(detectSupervision({ ...probe, pidAlive: (pid: number) => pid === KEEPALIVE_PID })).toBe(
+      'keepalive',
+    )
+  })
+
+  test('a marker for a session that is NOT our ancestor is ignored', () => {
+    const plist = serviceFilePath('darwin', HOME, '910')!
+    const foreign = keepaliveMarkerBody({
+      pid: KEEPALIVE_PID,
+      claudePid: 99999, // another agent's session
+      tmuxSession: 'agent-918',
+      startedAt: '2026-09-13T00:00:00.000Z',
+    })
+    const probe = {
+      ...base,
+      exists: (p: string) => p === plist,
+      readFile: (p: string) => (p === markerPath ? foreign : null),
+    }
+    expect(detectSupervision(probe)).toBe('launchd')
+  })
+
+  // Defence in depth rather than the only guard: readProcessAncestry is
+  // itself fail-closed on a non-integer pid, so this pins the CONTRACT (a
+  // caller that forgets the anchor gets no keepalive tier) and not one line.
+  // The ancestry check itself is pinned by the foreign-marker test above.
+  test('a shared ancestor is not our session: the tmux server is refused', () => {
+    // Measured on KC's Mac 2026-09-13: ONE tmux server (798) is a strict
+    // ancestor of EVERY session on the host, so an ancestry test alone lets a
+    // marker naming 798 bind to all nine daemons at once, and the restart would
+    // SIGTERM the tmux server and take the whole fleet down mid-turn. Being an
+    // ancestor is necessary and not sufficient: the pid has to BE a claude
+    // session, which is what the marker claims it is.
+    const plist = serviceFilePath('darwin', HOME, '910')!
+    const sharedAncestor = keepaliveMarkerBody({
+      pid: KEEPALIVE_PID,
+      claudePid: 798,
+      tmuxSession: 'agent-910',
+      startedAt: '2026-09-13T00:00:00.000Z',
+    })
+    expect(
+      detectSupervision({
+        ...base,
+        exists: (p: string) => p === plist,
+        readFile: (p: string) => (p === markerPath ? sharedAncestor : null),
+      }),
+    ).toBe('launchd')
+  })
+
+  test('isKeepaliveSessionProcess: only a claude binary, by basename', () => {
+    expect(isKeepaliveSessionProcess('/Users/fitecho/.local/bin/claude')).toBe(true)
+    expect(isKeepaliveSessionProcess('claude')).toBe(true)
+    expect(isKeepaliveSessionProcess('/opt/homebrew/bin/tmux')).toBe(false)
+    expect(isKeepaliveSessionProcess('/usr/bin/expect')).toBe(false)
+    expect(isKeepaliveSessionProcess('launchd')).toBe(false)
+    expect(isKeepaliveSessionProcess('claude-code')).toBe(false)
+    expect(isKeepaliveSessionProcess('')).toBe(false)
+    expect(isKeepaliveSessionProcess(null)).toBe(false)
+  })
+
+  test('parseCommOutput: the one line ps prints, trimmed, anything else null', () => {
+    expect(parseCommOutput('/usr/bin/expect\n')).toBe('/usr/bin/expect')
+    expect(parseCommOutput('  claude  ')).toBe('claude')
+    expect(parseCommOutput('')).toBeNull()
+    expect(parseCommOutput('a\nb\n')).toBeNull()
+  })
+
+  test('a ps that cannot name the session refuses it, never assumes', () => {
+    // Fail-closed: an unreadable comm is not evidence that the pid is claude.
+    expect(detectSupervision({ ...base, execSync: (f, a) => (a.includes('comm=') ? { code: 1, stdout: '' } : psExec(f, a)) })).toBe('none')
+  })
+
+  test('without ownPid or execSync the tier cannot prove ownership and does not fire', () => {
+    const { ownPid: _ownPid, ...noPid } = base
+    expect(detectSupervision(noPid)).toBe('none')
+    const { execSync: _exec, ...noExec } = base
+    expect(detectSupervision(noExec)).toBe('none')
+  })
+
+  test('chooseRestartAuthority hands back the session pid to signal, never a command', () => {
+    expect(chooseRestartAuthority({ ...base, uid: 501 })).toEqual({
+      kind: 'keepalive',
+      sessionPid: CLAUDE_PID,
+      keepalivePid: KEEPALIVE_PID,
+      tmuxSession: 'agent-910',
+    })
+  })
+
+  test('a proven keepalive beats an installed service file that never held us', () => {
+    // This is the whole point: the canonical plist tier answered 'launchd' for
+    // these sessions and the app offered a one-click that kickstarted a job
+    // holding nothing (the 2026-09-11 mute).
+    const plist = serviceFilePath('darwin', HOME, '910')!
+    const probe = { ...base, exists: (p: string) => p === plist, uid: 501 }
+    expect(detectSupervision(probe)).toBe('keepalive')
+    expect(chooseRestartAuthority(probe).kind).toBe('keepalive')
+    // No service record is published for it: a job that cannot restart this
+    // agent must not be left on disk for the watcher to kickstart.
+    expect(resolveSupervision(probe).service).toBeNull()
+  })
+
+  test('the wire keeps saying launcher until the backend enum learns keepalive', () => {
+    // Measured 2026-09-13: backend/src/integrations/pairing-update-state.ts
+    // UPDATE_SUPERVISED_MODES has no 'keepalive', sanitizeUpdateReadiness maps
+    // anything outside it to 'none', and the app gates one-click on
+    // supervised !== 'none' (frontend updateStateModel.ts isOneClickEligible).
+    // Sending the honest new token today would REMOVE the update button from
+    // exactly the sessions this tier fixes.
+    expect(wireSupervisedKind('keepalive')).toBe('launcher')
+    for (const kind of ['systemd', 'launchd', 'launcher', 'pm2', 'none'] as const) {
+      expect(wireSupervisedKind(kind)).toBe(kind)
+    }
+  })
+})
+
+describe('bin/hoai-keepalive-marker: the writer a keepalive script calls', () => {
+  const HOME_2 = '/home/kc'
+  const at = '2026-09-13T04:05:06.000Z'
+
+  test('a complete invocation writes the file the daemon reads, parseable', () => {
+    const decision = decideKeepaliveMarkerWrite({
+      argv: ['--assistant', '910', '--keepalive-pid', '33108', '--claude-pid', '35759', '--tmux', 'agent-910'],
+      home: HOME_2,
+      startedAt: at,
+    })
+    expect(decision.action).toBe('write')
+    if (decision.action !== 'write') throw new Error('unreachable')
+    expect(decision.path).toBe(keepaliveMarkerPath(HOME_2, '910')!)
+    // The end-to-end mirror: what bin writes is exactly what lib accepts.
+    expect(parseKeepaliveMarker(decision.body)).toEqual({
+      pid: 33108,
+      claudePid: 35759,
+      tmuxSession: 'agent-910',
+    })
+  })
+
+  test('--flag=value is the same as --flag value, and tmux is optional', () => {
+    const decision = decideKeepaliveMarkerWrite({
+      argv: ['--assistant=910', '--keepalive-pid=33108', '--claude-pid=35759'],
+      home: HOME_2,
+      startedAt: at,
+    })
+    if (decision.action !== 'write') throw new Error('expected a write')
+    expect(parseKeepaliveMarker(decision.body)?.tmuxSession).toBeNull()
+  })
+
+  test('a missing or unusable argument writes nothing at all', () => {
+    const bad: string[][] = [
+      [],
+      ['--assistant', '910', '--keepalive-pid', '33108'], // no session pid
+      ['--assistant', '910', '--claude-pid', '35759'], // no keepalive pid
+      ['--keepalive-pid', '33108', '--claude-pid', '35759'], // no assistant
+      ['--assistant', '910; rm -rf /', '--keepalive-pid', '33108', '--claude-pid', '35759'],
+      ['--assistant', '910', '--keepalive-pid', '1', '--claude-pid', '35759'], // init
+      ['--assistant', '910', '--keepalive-pid', '33108', '--claude-pid', 'nope'],
+    ]
+    for (const argv of bad) {
+      expect(decideKeepaliveMarkerWrite({ argv, home: HOME_2, startedAt: at }).action).toBe('usage')
+    }
   })
 })

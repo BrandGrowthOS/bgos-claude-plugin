@@ -23,10 +23,12 @@ with the app side in BGOS #1157/#1158. Binding wire contract:
 3. Stage: `lib/update-rpc.ts` acks, drains, applies the fast-forward to disk,
    reporting `draining` then `installing`.
 4. Restart ladder (`lib/update-rpc.ts` + `lib/update-readiness.ts`
-   `chooseRestartAuthority`), strongest first: `service` (launchd/systemd) ->
-   `spawnDetached` `launchctl kickstart -k` / `systemctl --user restart`; `launcher`
-   (a live supervise loop that declared `relaunch`) -> write the existence-only
-   marker `~/.bgos-agent/<id>/restart-requested.json`; else `staged` (keep serving,
+   `chooseRestartAuthority`), strongest first: `keepalive` (a live keepalive
+   script that declared the session it launched) -> `SIGTERM` that session pid;
+   `service` (launchd/systemd) -> `spawnDetached` `launchctl kickstart -k` /
+   `systemctl --user restart`; `launcher` (a live supervise loop that declared
+   `relaunch`) -> write the existence-only marker
+   `~/.bgos-agent/<id>/restart-requested.json`; else `staged` (keep serving,
    ride `pendingRestartVersion`, never self-exit: the kc-server invariant).
 
    The `service` rung is not a name test. `bin/bgos-agent` installs
@@ -73,6 +75,57 @@ with the app side in BGOS #1157/#1158. Binding wire contract:
    after `restarting` (either rung), if the process is still running, drain
    comes off, the rpc ends `error restart_did_not_arrive`, and a heartbeat
    carries `pendingRestartVersion`.
+   The `keepalive` rung (0.39.6) is the answer to the agents the ownership rule
+   correctly refused. A keepalive script (launchd job `ai.bgos.session.<id>`
+   running `~/.bgos-session-<id>/keepalive.sh`) starts claude inside a DETACHED
+   tmux and relaunches it seconds after it exits, so it really will bring the
+   session back; but its pid is in no session's ancestry, so no service rung can
+   ever accept it and a one-click on those agents could only end in
+   restart-pending limbo. Measured on KC's Mac 2026-09-13, a session chains
+   `claude > expect > tmux server > launchd`.
+
+   The script declares itself by writing `~/.bgos-agent/<id>/keepalive.json`:
+
+   ```json
+   {"kind":"keepalive","pid":33108,"claudePid":35759,"tmuxSession":"agent-910",
+    "capabilities":["relaunch"],"startedAt":"2026-09-13T16:58:20.963Z"}
+   ```
+
+   `bin/hoai-keepalive-marker.mjs` writes exactly that (its header carries the
+   call to add to a keepalive script). The daemon never takes it on trust; it
+   accepts the marker only when ALL of:
+   * it parses with `kind:"keepalive"`, a `relaunch` capability, and two pids
+     above 1 (`parseKeepaliveMarker`, fail-closed like every other marker);
+   * the declaring script's pid is ALIVE (a keepalive that has exited promises
+     nothing);
+   * the declared `claudePid` is a STRICT ancestor of this process. Strict,
+     because the invariant a restart needs is "killing this pid takes this
+     process with it", and our own pid fails it: signalling ourselves kills the
+     daemon while claude lives on and the keepalive never relaunches;
+   * that pid is really a claude session (`ps -o comm=`, compared by basename).
+     Ancestry alone is NOT identity: one tmux server (798) is a strict ancestor
+     of every agent on the host, so a marker naming it would bind to all nine
+     daemons at once and the restart would kill the whole fleet mid-turn.
+
+   Anything else falls through to the tiers above exactly as if no marker
+   existed. The restart is `SIGTERM` to that session pid and never a kickstart:
+   kickstarting a keepalive job kills the script, restarts nothing, and leaves
+   the daemon drained, which IS the 2026-09-11 mute. A signal that does not land
+   degrades to `staged`, and the un-drain watchdog still covers a relaunch that
+   never arrives.
+
+   A keepalive resolves with NO service, so `service.json` is cleared for these
+   agents: the watcher must not be left holding a launchd job that cannot
+   restart them. On the wire the kind is reported as `launcher`
+   (`wireSupervisedKind`) until the backend's `UPDATE_SUPERVISED_MODES` learns
+   `keepalive`, because that sanitizer maps an unknown kind to `none` and the
+   app hides the one-click button on `none`.
+
+   THIS RUNG IS INERT UNTIL A KEEPALIVE SCRIPT CALLS THE WRITER. Shipping the
+   plugin alone changes nothing for the nine sessions; the marker has to be
+   written on EVERY launch (a stale `claudePid` is correctly refused), from a
+   background subshell, because the script blocks for the whole session.
+
 5. Completion truth stays server-side: a heartbeat with `daemonVersion >=
    targetVersion` flips `done`; silence times out to `unknown`, never faked.
 

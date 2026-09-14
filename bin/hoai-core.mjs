@@ -549,6 +549,10 @@ export function buildRunPlan({
  *  test/update-readiness.test.ts, which imports both sides. */
 export const SUPERVISOR_FILE_NAME = 'supervisor.json'
 export const RESTART_MARKER_FILE_NAME = 'restart-requested.json'
+/** Mirror of lib/update-readiness.ts KEEPALIVE_MARKER_FILE: what a keepalive
+ *  SCRIPT (not this launcher) declares so the daemon can accept it as a
+ *  restart authority. Pinned by test/update-readiness.test.ts. */
+export const KEEPALIVE_MARKER_FILE_NAME = 'keepalive.json'
 /** The agent's pinned resume identity (GAP 1: identity-safe relaunch). A UUID
  *  minted once and stored here so every (re)launch resumes THIS agent's own
  *  session by id, never `--continue` (newest-in-shared-cwd, the identity bleed
@@ -627,6 +631,31 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
  *  relaunch capability must be declared). */
 export function supervisorFileBody(pid, startedAt) {
   return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt })
+}
+
+/**
+ * keepalive.json body: what a keepalive SCRIPT declares so the daemon inside
+ * the session it launched can accept it as a restart authority
+ * (lib/update-readiness.ts parseKeepaliveMarker validates exactly this).
+ *
+ * Unlike supervisor.json, the pid here is not the only reading that matters:
+ * a keepalive starts claude inside a detached tmux, so its own pid is nowhere
+ * in the daemon's ancestry and cannot prove ownership. `claudePid` is the
+ * proof AND the restart target, so it is required.
+ *
+ * @param {{ pid: number, claudePid: number, tmuxSession?: string | null,
+ *   startedAt: string }} opts
+ * @returns {string}
+ */
+export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt }) {
+  return JSON.stringify({
+    kind: 'keepalive',
+    pid,
+    claudePid,
+    tmuxSession: tmuxSession ?? null,
+    capabilities: ['relaunch'],
+    startedAt,
+  })
 }
 
 /**

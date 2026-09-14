@@ -304,6 +304,7 @@ import {
   probeServiceOwnership,
   resolveSupervision,
   supervisorFilePath,
+  wireSupervisedKind,
   type ResolvedService,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
@@ -6482,6 +6483,9 @@ function supervisionProbe() {
     home: homedir(),
     assistantId: ASSISTANT_ID,
     cwd: process.cwd(),
+    // The anchor of the keepalive tier's ancestry walk. Without it that tier
+    // cannot prove a marker describes THIS session, so it never fires.
+    ownPid: process.pid,
     exists: existsSync,
     readFile: readTextOrNull,
     listDir: listDirOrEmpty,
@@ -6567,7 +6571,10 @@ function updateReadinessSnapshot(): UpdateReadiness {
   const supervision = resolveSupervision(supervisionProbe())
   publishServiceRecord(supervision.service)
   return {
-    supervised: supervision.supervised,
+    // The wire enum is the backend's, not ours: a kind it does not know reads
+    // as 'none' there and the app then hides the one-click button entirely
+    // (lib/update-readiness.ts wireSupervisedKind explains the mapping).
+    supervised: wireSupervisedKind(supervision.supervised),
     autoUpdateEnabled: isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
     // A marketplace install has no git updater (and nothing that would ever
     // clear the git updater's fail-closed latch), so its latch is the
@@ -6691,6 +6698,17 @@ const updateRpc = new UpdateRpcHandler({
   spawnDetached: (file, args) => {
     const child = spawnProcess(file, args, { detached: true, stdio: 'ignore' })
     child.unref()
+  },
+  // The keepalive authority's restart: SIGTERM the session this daemon runs
+  // inside, which lib/update-readiness.ts resolveKeepalive has already proven
+  // is one of our own ancestors. The keepalive script relaunches it.
+  signalProcess: (pid, signal) => {
+    try {
+      process.kill(pid, signal)
+      return true
+    } catch {
+      return false
+    }
   },
   writeMarker: (path) => {
     try {
