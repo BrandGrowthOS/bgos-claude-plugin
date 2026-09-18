@@ -2,6 +2,25 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.7 (2026-09-18)
+
+- **A shared agent's boards belong to the person using it.** KC, 2026-09-16:
+  "If someone uses a shared agent to create boards or whatever it is, a
+  browser, they should all be on the account of the person with the agent
+  that was shared with it, not the owner." Every `boards_*` call now carries
+  `X-BGOS-Acting-User` naming the sender of the most recent inbound user
+  turn (poll, stream and WS alike), which the backend admits only through an
+  active share of this agent to that person (BGOS PR #1472). The owner's own
+  turn sends no header at all, so that wire is byte-identical to before; a
+  peer or system inbound never moves the pointer; a proactive call with no
+  user turn seen acts as the owner. `lib/acting-user.ts` holds the rules,
+  `test/acting-user.test.ts` pins them on the real boards transports and
+  guards the three `server.ts` sites. The browser shim (`bin/hoai-browser-mcp.mjs`)
+  is a vendored copy of the BGOS source and a separate process with no path
+  to the daemon's inbound state, so it does not name the acting user yet; see
+  the PR for the mechanism that needs. Version 0.39.6 is the keepalive restart
+  authority, merged immediately before this.
+
 ## 0.39.6 (2026-09-14)
 
 A keepalive script is a restart authority, so a one-click update can finish on

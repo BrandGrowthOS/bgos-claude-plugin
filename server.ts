@@ -110,6 +110,7 @@ import {
   createBoardsTransports,
   handleBoardsTool,
 } from './lib/boards-tools.js'
+import { createActingUserTracker } from './lib/acting-user.js'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   buildComponentEventMessage,
@@ -830,6 +831,19 @@ const CAPABILITIES_FETCH_MAX_BYTES = 1024 * 1024
 // cannot balloon the daemon's memory or the agent's context.
 const BOARDS_FETCH_MAX_BYTES = 4 * 1024 * 1024
 
+// WHO a boards call acts for. The backend admits X-BGOS-Acting-User as a
+// claim, verified against an active share (BGOS PR #1472); the daemon names
+// the sender of the most recent inbound USER turn and says nothing on the
+// owner's own turn, so that wire stays byte-identical. The three inbound
+// sites that record the sender (lastInboundUserByChat) also note it here; a
+// proactive call with no user turn seen resolves to the owner. Declared
+// beside the transports that consume it; lib/acting-user.ts has the rules.
+const actingUser = createActingUserTracker({
+  ownerUserId: USER_ID,
+  onChange: (next, previous) =>
+    log(`acting user is now ${next.userId} (chat ${next.chatId}); was ${previous}`),
+})
+
 // Boards deliberately does NOT reuse bgosGet/bgosPost/bgosPatch/bgosDelete:
 // those cut an error body at 200 chars (which truncates the ambiguous-board
 // denial into invalid JSON before the verbatim passthrough sees it) and call
@@ -838,7 +852,7 @@ const BOARDS_FETCH_MAX_BYTES = 4 * 1024 * 1024
 // are for every other tool; boards gets its own, in lib/boards-tools.ts.
 const boardsTransports = createBoardsTransports({
   apiBase: API_BASE,
-  headers: () => authHeaders(AUTH),
+  headers: () => ({ ...authHeaders(AUTH), ...actingUser.headers() }),
   maxBytes: BOARDS_FETCH_MAX_BYTES,
   // Boards keeps its own error/204 semantics but not its own hang: the
   // deadline is applied inside lib/boards-tools.ts around the whole call so
@@ -6213,6 +6227,12 @@ async function pollChat(chatId: string): Promise<void> {
       // Reused for the verdict-binding map AND the agent-delivered meta so a
       // shared assistant sees which human actually sent this message.
       lastInboundUserByChat.set(chatId, pollSenderUserId)
+      actingUser.noteInbound({
+        chatId,
+        userId: pollSenderUserId,
+        senderType: pollSenderType,
+        agentOrigin: pollAgentOrigin,
+      })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -7077,6 +7097,12 @@ async function forwardStreamInbound(
     : null
   lastInboundAtMs = Date.now()
   lastInboundUserByChat.set(chatId, senderUserId)
+  actingUser.noteInbound({
+    chatId,
+    userId: senderUserId,
+    senderType: isSystem ? 'system' : view.senderKind,
+    agentOrigin: view.agentOrigin,
+  })
   // Map the conversation before the awaited handoff. A close event can arrive
   // during that await; it must already be able to resolve this chat so the
   // successful handoff below cannot arm a reply timer on a closed thread.
@@ -7904,6 +7930,12 @@ function connectWebsocket(): void {
         : String(wsTurnStateRaw)
       const wsSenderUserId = senderUserIdOf(payload)
       if (chatId) lastInboundUserByChat.set(chatId, wsSenderUserId)
+      actingUser.noteInbound({
+        chatId,
+        userId: wsSenderUserId,
+        senderType: wsSenderType,
+        agentOrigin: wsAgentOrigin,
+      })
       const wsChannel = buildInboundChannel({
         chatId,
         messageId,
