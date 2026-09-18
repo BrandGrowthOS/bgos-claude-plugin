@@ -2,6 +2,42 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.6 (2026-09-14)
+
+A keepalive script is a restart authority, so a one-click update can finish on
+the sessions it launches.
+
+- **New `keepalive` restart authority.** A keepalive that starts claude inside a
+  detached tmux (launchd job `ai.bgos.session.<id>` running
+  `~/.bgos-session-<id>/keepalive.sh`) really does bring the session back, but
+  its pid is nowhere in the daemon's ancestry, so 0.39.1's ownership rule
+  refused it and nine sessions sat on "restart pending" after a one-click
+  update. The script now declares itself in `~/.bgos-agent/<id>/keepalive.json`
+  (`bin/hoai-keepalive-marker.mjs` writes it) and the daemon accepts the marker
+  ONLY while the script's pid is alive, the claude pid it declares is a STRICT
+  ancestor of the daemon (walked through `ps`), and that pid really is a claude
+  session (`ps -o comm=`). The last check is not belt and braces: one tmux
+  server is a strict ancestor of every agent on the host, so ancestry alone
+  would let a marker naming it bind to all nine daemons and the restart would
+  take the whole fleet down mid-turn. A stale marker, a dead script, a foreign
+  session or a shared ancestor all fall through to the older tiers exactly as
+  before.
+- **This rung is inert until a keepalive script calls the writer.** The plugin
+  ships the marker contract and the writer; nothing writes a marker on its own,
+  so an agent with no marker behaves exactly as it did in 0.39.2. The marker has
+  to be rewritten on every launch, since a stale `claudePid` is refused.
+  `docs/one-click-restart-helper.md` carries the wiring notes.
+- **The restart is a signal, never a kickstart.** After the usual drain and
+  install, the daemon sends `SIGTERM` to the session pid from the marker and the
+  keepalive relaunches it on the new version: the same recovery five sessions
+  were brought back by hand with. It never `launchctl kickstart`s a keepalive
+  job, which kills the script, restarts nothing, and leaves the daemon drained
+  (the 2026-09-11 mute). A signal that does not land degrades to `staged`, and
+  the un-drain watchdog still covers a relaunch that never arrives.
+- **A keepalive publishes no service record.** `~/.bgos-agent/<id>/service.json`
+  is cleared for these agents, so the per-machine watcher no longer holds a
+  launchd job that cannot restart them.
+
 ## 0.39.5 (2026-09-13)
 
 - **The browser relay no longer doubles the API prefix.** The launcher hands

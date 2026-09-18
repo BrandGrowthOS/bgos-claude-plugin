@@ -56,6 +56,8 @@ interface HarnessOverrides {
   ackError?: boolean
   progressError?: boolean
   markerWriteOk?: boolean
+  /** Does the SIGTERM to the keepalive's session land? */
+  signalOk?: boolean
   diagnosticsError?: boolean
   now?: () => number
   /** Ownership readings for a service authority; the default says the job
@@ -152,6 +154,7 @@ function harness(overrides: HarnessOverrides = {}) {
   const logs: string[] = []
   const spawned: Array<{ file: string; args: string[] }> = []
   const markers: string[] = []
+  const signals: Array<{ pid: number; signal: string }> = []
   const drainModes: boolean[] = []
   const diagnostics: Array<Record<string, unknown>> = []
   const ownershipCalls: Array<{ kind: string; handle: string }> = []
@@ -192,6 +195,11 @@ function harness(overrides: HarnessOverrides = {}) {
       markers.push(path)
       return true
     },
+    signalProcess: (pid, signal) => {
+      if (overrides.signalOk === false) return false
+      signals.push({ pid, signal })
+      return true
+    },
     setDrainMode: (enabled) => drainModes.push(enabled),
     requestHeartbeat: () => {
       heartbeats += 1
@@ -222,6 +230,7 @@ function harness(overrides: HarnessOverrides = {}) {
     logs,
     spawned,
     markers,
+    signals,
     drainModes,
     diagnostics,
     heartbeats: () => heartbeats,
@@ -948,5 +957,94 @@ describe('UpdateRpcHandler dedupe and failure posture', () => {
     // Tokenized, never the raw text: an fs error would carry the home path.
     expect(h.progress).toEqual([{ stage: 'error', message: 'update_failed:failed' }])
     expect(h.drainModes).toEqual([false])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The keepalive authority (2026-09-13). The nine sessions on KC's Mac are
+// launched by a keepalive script into a DETACHED tmux, so no launchd job holds
+// them and every one-click landed on 'restart pending'. The restart that does
+// work is the one five of them were recovered by hand with: SIGTERM the claude
+// session, and the keepalive relaunches it on the new version.
+// ---------------------------------------------------------------------------
+
+/** The marker's readings for session 910, measured live on 2026-09-13. */
+const KEEPALIVE: RestartAuthority = {
+  kind: 'keepalive',
+  sessionPid: 35759,
+  keepalivePid: 33108,
+  tmuxSession: 'agent-910',
+}
+
+describe('the keepalive authority: signal the session, never kickstart the script', () => {
+  test('draining, installing, restarting, then SIGTERM to the session the marker names', async () => {
+    const h = harness({ authority: KEEPALIVE })
+    await h.handler.handle(FRAME)
+    expect(h.progress).toEqual([
+      { stage: 'draining', targetVersion: '0.39.0' },
+      { stage: 'installing', targetVersion: '0.39.0' },
+      { stage: 'restarting', targetVersion: '0.39.0' },
+    ])
+    expect(h.signals).toEqual([{ pid: 35759, signal: 'SIGTERM' }])
+    // NEVER a kickstart: killing the keepalive script is the 2026-09-11 mute.
+    expect(h.spawned).toEqual([])
+    expect(h.markers).toEqual([])
+    // Drain stays on until the restart lands; the watchdog lifts it if not.
+    expect(h.drainModes).toEqual([])
+    expect(h.heartbeats()).toBe(0)
+    expect(h.timers.length).toBe(1)
+    expect(h.timers[0]!.ms).toBe(RESTART_WATCHDOG_MS)
+  })
+
+  test('a clone pre-flight accepts a keepalive authority and runs the update', async () => {
+    const updater = fakeUpdater()
+    const h = harness({ authority: KEEPALIVE, updater: () => updater })
+    await h.handler.handle(FRAME)
+    expect(updater.updateNowCalls).toBe(1)
+    expect(h.progress.some((p) => p.stage === 'error')).toBe(false)
+    // It restarts rather than staging: 'staged' here would be the limbo the
+    // pre-flight exists to prevent.
+    expect(h.progress.at(-1)?.stage).toBe('restarting')
+  })
+
+  test('a SIGTERM that does not land degrades to staged, never to a muted daemon', async () => {
+    const h = harness({ authority: KEEPALIVE, signalOk: false })
+    await h.handler.handle(FRAME)
+    expect(h.progress.map((p) => p.stage)).toEqual([
+      'draining',
+      'installing',
+      'restarting',
+      'staged',
+    ])
+    expect(h.drainModes).toEqual([false])
+    expect(h.heartbeats()).toBe(1)
+    expect(h.spawned).toEqual([])
+  })
+
+  test('the watchdog un-drains a keepalive restart that never arrived', async () => {
+    const h = harness({ authority: KEEPALIVE })
+    await h.handler.handle(FRAME)
+    expect(h.drainModes).toEqual([])
+    await h.fireWatchdog()
+    expect(h.drainModes).toEqual([false])
+    expect(h.progress.at(-1)).toEqual({ stage: 'error', message: RESTART_DID_NOT_ARRIVE })
+    expect(h.heartbeats()).toBe(1)
+  })
+
+  test('marketplace: a keepalive restart keeps the drain on, like every real restart', async () => {
+    // The marketplace path drains explicitly (the clone path drains inside the
+    // updater), so it is the arm where an un-drain bug would show as a daemon
+    // that keeps taking work while its session is being replaced.
+    const h = harness({ installMethod: 'marketplace', authority: KEEPALIVE })
+    await h.handler.handle(FRAME)
+    expect(h.progress.at(-1)?.stage).toBe('restarting')
+    expect(h.signals).toEqual([{ pid: 35759, signal: 'SIGTERM' }])
+    expect(h.drainModes).toEqual([true])
+  })
+
+  test('the session pid is never the ownership probe: a keepalive asks no launchctl', async () => {
+    const h = harness({ authority: KEEPALIVE })
+    await h.handler.handle(FRAME)
+    expect(h.ownershipCalls).toEqual([])
   })
 })
