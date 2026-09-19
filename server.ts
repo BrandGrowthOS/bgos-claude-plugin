@@ -48,6 +48,11 @@ import {
   isSelfAuthoredAgentOrigin,
 } from './lib/inbound-channel.js'
 import {
+  buildMeetingCard,
+  readMeetingContext,
+  type ParsedMeetingContext,
+} from './lib/meeting-card.js'
+import {
   VoiceRpcHandler,
   normalizeVoiceRpc,
   normalizeVoiceTaskDispatch,
@@ -5169,6 +5174,46 @@ interface MeetingContext {
 }
 const meetingContexts = new Map<number, MeetingContext>()
 const meetingIdByChatId = new Map<string, number>()
+
+// Record what an inbound_message twin says about its meeting. The twin often
+// beats the meeting_message broadcast for the same id, and the broadcast then
+// returns on the dedupe, so this is the only place the local context learns
+// the new speaker on those turns. Only the newest message may move any of it,
+// so a late frame for an older turn cannot put stale state back.
+function noteMeetingTwin(
+  chatId: string,
+  messageId: number,
+  m: ParsedMeetingContext,
+): MeetingContext {
+  meetingChatIds.add(chatId)
+  meetingIdByChatId.set(chatId, m.meetingId)
+  let ctx = meetingContexts.get(m.meetingId)
+  if (!ctx) {
+    ctx = {
+      chatId: Number(chatId),
+      title: null,
+      participants: [],
+      speakerPolicy: 'parallel',
+      currentSpeakerId: null,
+      lastSeenMessageId: 0,
+    }
+    meetingContexts.set(m.meetingId, ctx)
+  }
+  if (messageId < ctx.lastSeenMessageId) return ctx
+  if (m.title != null) ctx.title = m.title
+  if (m.speakerPolicy) ctx.speakerPolicy = m.speakerPolicy
+  if (m.participants.length > 0) {
+    const prior = ctx.participants
+    ctx.participants = m.participants.map((p) => ({
+      assistantId: p.assistantId,
+      name: p.name,
+      avatarUrl: prior.find((q) => Number(q.assistantId) === p.assistantId)?.avatarUrl ?? null,
+    }))
+  }
+  ctx.currentSpeakerId = m.currentSpeakerId
+  ctx.lastSeenMessageId = messageId
+  return ctx
+}
 // Maps a peer_conversation_id → side-thread chatId, populated when a peer
 // inbound carries peer_conversation_id. Used by peer_conversation_closed
 // handler to clear the overdue tracker for that side-thread when the peer
@@ -6092,41 +6137,32 @@ async function pollChat(chatId: string): Promise<void> {
       const meetingCtx = meetingId != null ? meetingContexts.get(meetingId) : undefined
       if (meetingId != null && meetingCtx && !isSlashCommand) {
         const yourTurn = isMyMeetingTurn(text, meetingCtx)
-        const participantList = meetingCtx.participants
-          .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
-          .map((p) => p.name)
-          .join(', ')
         log(
           `${isBacklog ? 'Backlog' : 'New'} meeting message in chat ${chatId}: ` +
             `meeting=${meetingId} your_turn=${yourTurn ? 'YES' : 'NO'}`,
         )
+        const card = buildMeetingCard({
+          meetingId,
+          chatId,
+          messageId: String(msg.message.id),
+          userId: USER_ID,
+          assistantId: ASSISTANT_ID,
+          timestamp: msg.message.sentDate ?? new Date().toISOString(),
+          transport: 'poll',
+          yourTurn,
+          participants: meetingCtx.participants,
+          // The delta poll forwards only user and system rows, and an agent's
+          // meeting turn is stored as sender 'assistant', so every card this
+          // path emits is a human's message.
+          senderName: 'User',
+          senderType: 'user',
+          text,
+          currentSpeakerId: meetingCtx.currentSpeakerId,
+          backlog: isBacklog,
+        })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
-          params: {
-            content:
-              `${isBacklog ? '[backlog, meeting message arrived while you were offline]\n' : ''}` +
-              `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
-              `participants: ${participantList || 'unknown'}]\n` +
-              `User: ${text}`,
-            meta: {
-              chat_id: chatId,
-              message_id: String(msg.message.id),
-              user: 'User',
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
-              ts: msg.message.sentDate ?? new Date().toISOString(),
-              event_type: 'meeting_message',
-              meeting_id: String(meetingId),
-              sender_type: 'user',
-              sender_name: 'User',
-              your_turn: yourTurn ? 'YES' : 'NO',
-              ...(meetingCtx.currentSpeakerId == null
-                ? {}
-                : { current_speaker_id: String(meetingCtx.currentSpeakerId) }),
-              transport: 'poll',
-              ...(isBacklog ? { backlog: 'true' } : {}),
-            },
-          },
+          params: card,
         })).catch((err) => {
           log(`Failed to deliver meeting poll inbound to Claude: ${err}`)
         })
@@ -7936,6 +7972,40 @@ function connectWebsocket(): void {
         senderType: wsSenderType,
         agentOrigin: wsAgentOrigin,
       })
+      // A meeting turn's inbound twin carries the server's own verdict on
+      // whose turn it is. Frame it as a meeting card with that verdict: the
+      // plain chat card below has no turn marker and would win the dedupe
+      // race against the meeting_message broadcast about half the time.
+      const wsMeeting = isWsSlashCommand ? null : readMeetingContext(payload)
+      if (wsMeeting && chatId) {
+        const meetingCtx = noteMeetingTwin(chatId, messageId, wsMeeting)
+        const card = buildMeetingCard({
+          meetingId: wsMeeting.meetingId,
+          chatId,
+          messageId: String(messageId),
+          // The per-sender id the plain card carried, so a shared meeting's
+          // member stays the acting user exactly as before this branch.
+          userId: String(wsSenderUserId),
+          assistantId: ASSISTANT_ID,
+          timestamp: new Date().toISOString(),
+          transport: 'ws',
+          yourTurn: wsMeeting.yourTurn,
+          participants: meetingCtx.participants,
+          senderName: wsMeeting.senderName,
+          senderType: wsMeeting.senderType,
+          text,
+          currentSpeakerId: wsMeeting.currentSpeakerId,
+        })
+        log(
+          `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
+            `your_turn=${wsMeeting.yourTurn ? 'YES' : 'NO'})`,
+        )
+        void trackMessageOperation(() => mcp.notification({
+          method: 'notifications/claude/channel',
+          params: card,
+        })).catch((err) => log(`meeting twin mcp.notification error: ${err}`))
+        return
+      }
       const wsChannel = buildInboundChannel({
         chatId,
         messageId,
@@ -8209,6 +8279,19 @@ function connectWebsocket(): void {
         }
       }
       const messageId = Number(payload?.messageId)
+      // Record the speaker BEFORE the dedupe below can return. The inbound
+      // twin of this same message often arrives first and claims the id, and
+      // returning ahead of this line is what left the poll fallback computing
+      // your_turn from an old speaker. Only the newest message may move it.
+      if (ctx && (!Number.isFinite(messageId) || messageId >= ctx.lastSeenMessageId)) {
+        const currentRaw = payload?.currentSpeakerId
+        ctx.currentSpeakerId =
+          currentRaw == null || currentRaw === ''
+            ? null
+            : Number.isFinite(Number(currentRaw))
+              ? Number(currentRaw)
+              : null
+      }
       if (Number.isFinite(messageId)) {
         // Advance the meeting idempotency cursor so a later meeting_state_resync
         // (reconnect catch-up) whose lastMessageId is <= this is recognised as
@@ -8223,15 +8306,6 @@ function connectWebsocket(): void {
         // handler receives the socket event; if we bump the cursor here, the
         // 2s poll fallback never replays the user turn and the meeting goes
         // silent. Let pollChat confirm delivery for meeting messages.
-      }
-      if (ctx) {
-        const currentRaw = payload?.currentSpeakerId
-        ctx.currentSpeakerId =
-          currentRaw == null || currentRaw === ''
-            ? null
-            : Number.isFinite(Number(currentRaw))
-              ? Number(currentRaw)
-              : null
       }
       // Diagnostic, log every meeting_message receipt so we can confirm
       // (or rule out) WS delivery from the plugin side. Without this, a
@@ -8248,54 +8322,37 @@ function connectWebsocket(): void {
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
       const senderName = String(payload?.senderName ?? 'Unknown')
       const text = String(payload?.text ?? '')
-      const participantList = (ctx?.participants ?? [])
-        .filter((p) => Number(p.assistantId) !== Number(ASSISTANT_ID))
-        .map((p) => p.name)
-        .join(', ')
-      // Meta schema MUST mirror the polling-path notification (chat_id,
-      // message_id, user, user_id, assistant_id, ts). Without those four
-      // canonical fields, Claude Code's notifications/claude/channel
-      // renderer silently drops the notification on the agent side, 
-      // which is why meeting_message notifications were never reaching
-      // the agent's conversation context even though the WS handler was
-      // firing and your_turn was being computed correctly. Confirmed via
-      // /tmp/bgos-plugin-<id>.log: receipts logged, but agents only saw
-      // pollChat-emitted notifications (which have the canonical schema).
-      // Meeting-specific fields (event_type, meeting_id, your_turn, etc.)
-      // are kept as additions on top.
-      const messageIdStr =
-        payload?.messageId != null ? String(payload.messageId) : ''
+      // Meta schema MUST carry the canonical envelope fields (chat_id,
+      // message_id, user, user_id, assistant_id, ts): without them Claude
+      // Code's notifications/claude/channel renderer silently drops the card
+      // on the agent side, which is why meeting_message notifications once
+      // never reached the agent even though this handler fired. The builder
+      // in lib/meeting-card.ts is shared with the inbound twin path so the
+      // two transports cannot drift, and keeps every value a string.
+      const currentSpeakerRaw = payload?.currentSpeakerId
+      const card = buildMeetingCard({
+        meetingId,
+        chatId,
+        messageId: payload?.messageId != null ? String(payload.messageId) : '',
+        userId: USER_ID,
+        assistantId: ASSISTANT_ID,
+        timestamp: new Date().toISOString(),
+        transport: 'ws',
+        yourTurn,
+        participants: ctx?.participants ?? [],
+        senderName,
+        senderType: payload?.senderType === 'agent' ? 'agent' : 'user',
+        text,
+        senderAssistantId: senderId,
+        currentSpeakerId:
+          currentSpeakerRaw == null || currentSpeakerRaw === '' ||
+          !Number.isFinite(Number(currentSpeakerRaw))
+            ? null
+            : Number(currentSpeakerRaw),
+      })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
-        params: {
-          content:
-            `[Meeting #${meetingId}, your_turn=${yourTurn ? 'YES' : 'NO'}, ` +
-            `participants: ${participantList || 'unknown'}]\n` +
-            `${senderName}: ${text}`,
-          meta: {
-            // Canonical channel-envelope fields (rendered as XML attrs).
-            chat_id: chatId,
-            message_id: messageIdStr,
-            user: payload?.senderType === 'agent' ? senderName : 'User',
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
-            ts: new Date().toISOString(),
-            // Meeting-specific extras (additive, Claude Code reads what
-            // it knows, ignores the rest).
-            event_type: 'meeting_message',
-            meeting_id: String(meetingId),
-            sender_type: payload?.senderType ?? 'user',
-            sender_name: senderName,
-            your_turn: yourTurn ? 'YES' : 'NO',
-            ...(senderId == null
-              ? {}
-              : { sender_assistant_id: String(senderId) }),
-            ...(payload?.currentSpeakerId == null
-              ? {}
-              : { current_speaker_id: String(payload.currentSpeakerId) }),
-            transport: 'ws',
-          },
-        },
+        params: card,
       })).catch((err) => log(`meeting_message mcp.notification error: ${err}`))
     } catch (err) {
       log(`meeting_message handler error: ${err}`)
