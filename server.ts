@@ -302,7 +302,7 @@ import {
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
-import { judgeDaemonCommand } from './lib/daemon-command-sender.js'
+import { runDaemonCommand, type DaemonCommandAudience } from './lib/daemon-command-sender.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
@@ -1254,16 +1254,24 @@ let lastInboundAtMs: number | null = null
  * undetermined rather than estimated.
  */
 async function handleStatusCommand(chatId: string, payload: unknown): Promise<void> {
-  // Who asked decides how much is answered (lib/daemon-command-sender.ts).
-  // Judged here, at the one point every rail (poll, WebSocket, stream) lands,
-  // so a rail cannot skip it; `payload` is required so a caller cannot forget.
-  const verdict = judgeDaemonCommand({ command: 'status', payload, ownerUserId: USER_ID })
-  if (verdict.kind === 'refuse') {
-    log(`status refused (chat ${chatId}, ${verdict.reason})`)
-    await sendDaemonText(chatId, verdict.reply)
-    return
-  }
+  // Who asked decides how much is answered. The seam judges the sender and, on
+  // a refusal, replies and returns without ever calling `act`
+  // (lib/daemon-command-sender.ts, driven with spies in its test). Every rail
+  // (poll, WebSocket, stream) lands here; `payload` is required so a caller
+  // cannot forget the sender.
+  await runDaemonCommand({
+    command: 'status',
+    payload,
+    ownerUserId: USER_ID,
+    chatId,
+    send: sendDaemonText,
+    log,
+    act: (verdict) => answerStatus(chatId, verdict.audience),
+  })
+}
 
+/** The /status work itself. Reached only through runDaemonCommand. */
+async function answerStatus(chatId: string, audience: DaemonCommandAudience): Promise<void> {
   let autoUpdateEnrolled: boolean | null = null
   try {
     // Only meaningful for a marketplace install: a clone has no marketplace entry to enrol, so the
@@ -1295,7 +1303,7 @@ async function handleStatusCommand(chatId: string, payload: unknown): Promise<vo
     supervised,
     autoUpdateEnrolled,
     lastInboundAgoMs: lastInboundAtMs === null ? null : Math.max(0, Date.now() - lastInboundAtMs),
-    audience: verdict.audience,
+    audience,
   })
 
   await sendDaemonText(chatId, text)
@@ -1304,20 +1312,25 @@ async function handleStatusCommand(chatId: string, payload: unknown): Promise<vo
 async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
   // Only the owner may compact: one session serves every chat of this agent,
   // so a share recipient compacting from their chat would compact the owner's
-  // context (lib/daemon-command-sender.ts). Judged BEFORE the capability check
-  // below, so a stranger is refused without learning whether this host can
-  // compact remotely at all. Every rail lands here, so no rail can skip it.
-  const verdict = judgeDaemonCommand({ command: 'compact', payload, ownerUserId: USER_ID })
-  if (verdict.kind === 'refuse') {
-    log(
-      `remote compact refused (chat ${chatId}, ${verdict.reason}, ` +
-        `sender ${verdict.sender.userId ?? 'unknown'})`,
-    )
-    await sendDaemonText(chatId, verdict.reply).catch((err) =>
-      log(`remote compact: refusal reply failed: ${err}`),
-    )
-    return
-  }
+  // context. The seam judges the sender and, on a refusal, replies and returns
+  // without ever calling `act` (lib/daemon-command-sender.ts, driven with
+  // spies in its test), so a stranger is refused before the capability check
+  // at the top of the work below could tell them whether this host can
+  // compact remotely at all. Every rail lands here; `payload` is required so
+  // a caller cannot forget the sender.
+  await runDaemonCommand({
+    command: 'compact',
+    payload,
+    ownerUserId: USER_ID,
+    chatId,
+    send: sendDaemonText,
+    log,
+    act: () => compactAsOwner(chatId),
+  })
+}
+
+/** The /compact work itself. Reached only through runDaemonCommand. */
+async function compactAsOwner(chatId: string): Promise<void> {
   if (!compactTarget) {
     const pct = sessionBinder.readContextPct()
     await sendDaemonText(

@@ -218,3 +218,49 @@ export function judgeDaemonCommand(input: {
       : 'not_owner'
   return { kind: 'refuse', reason, reply: refusalReply(input.command, reason), sender }
 }
+
+/** The allow arm, which is what `act` receives. */
+export type DaemonCommandAllowed = Extract<DaemonCommandVerdict, { kind: 'allow' }>
+
+export interface DaemonCommandRun {
+  command: DaemonCommand
+  payload: unknown
+  ownerUserId: string
+  /** The chat the command came from; a refusal is sent there. */
+  chatId: string
+  /** Delivers text to a chat. On a refusal it is called once, with the reply. */
+  send: (chatId: string, text: string) => Promise<void>
+  /** The command's own work. Reached only on an allow verdict, and handed it. */
+  act: (verdict: DaemonCommandAllowed) => Promise<void>
+  log?: (line: string) => void
+}
+
+/**
+ * The enforcement seam. Both server.ts handlers are a single call to this
+ * function with their real work passed as `act`, so the rule "a refused sender
+ * never reaches the action" is code a test can drive with spies, rather than
+ * text a test can only read. A refusal reply that fails to send is logged and
+ * swallowed: the sender is refused either way. A rejection from `act`
+ * propagates, so the rail's own catch still sees a failed command.
+ */
+export async function runDaemonCommand(run: DaemonCommandRun): Promise<'acted' | 'refused'> {
+  const verdict = judgeDaemonCommand({
+    command: run.command,
+    payload: run.payload,
+    ownerUserId: run.ownerUserId,
+  })
+  if (verdict.kind === 'refuse') {
+    run.log?.(
+      `/${run.command} refused (chat ${run.chatId}, ${verdict.reason}, ` +
+        `sender ${verdict.sender.userId ?? 'unknown'})`,
+    )
+    try {
+      await run.send(run.chatId, verdict.reply)
+    } catch (err) {
+      run.log?.(`/${run.command}: refusal reply failed: ${err}`)
+    }
+    return 'refused'
+  }
+  await run.act(verdict)
+  return 'acted'
+}

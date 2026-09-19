@@ -7,12 +7,17 @@
  * session serves every chat of the agent, so a share recipient tapping
  * /compact in their own chat compacted the owner's context. The same message
  * arrives over three rails (poll, WebSocket, stream), so the decision lives in
- * one exported pure function and both server.ts handlers call it first. The
- * decision is tested BEHAVIOURALLY below. The wiring is not: the handlers are
- * module-scoped inside server.ts and not exported, so the tests at the bottom
- * are SHAPE PINS over the source (each rail's exact call, each handler's exact
- * refusal block). They catch drift in the text; they cannot prove the gate
- * runs. The section comment above them lists exactly what they miss.
+ * one exported pure function, judgeDaemonCommand, and the ENFORCEMENT lives
+ * in one exported seam, runDaemonCommand: both server.ts handlers are a
+ * single call to it with their real work passed as `act`. Two kinds of test
+ * below, kept apart on purpose:
+ *   BEHAVIOURAL: the decision, and the seam driven with spies (a refused
+ *     sender never reaches act, the refusal is sent once, the owner reaches
+ *     act with the owner audience, a failed reply is still a refusal).
+ *   SHAPE: the server.ts wiring, whose handlers and rails are module-scoped
+ *     and not exported, so nothing here runs them. Those pins read the
+ *     source. Green there is text, not runtime; the section comment above
+ *     them lists what they cannot catch.
  *
  * Fixtures below copy the REAL wire shapes, verified against the backend:
  * the WS inbound_message carries a nested `sender` block plus mirror share
@@ -32,7 +37,9 @@ import {
   isOwnerSender,
   judgeDaemonCommand,
   readSlashSender,
+  runDaemonCommand,
   type DaemonCommand,
+  type DaemonCommandAllowed,
 } from '../lib/daemon-command-sender.ts'
 
 const OWNER = 'user_2owner000000000000000000000'
@@ -301,37 +308,160 @@ test('every refusal reply is short, names the command, and carries no em or en d
   assert.deepEqual([...seen].sort(), ['not_owner', 'sender_malformed', 'sender_unknown'])
 })
 
-// ── server.ts wiring: SHAPE PINS, not behavioural guards ─────────────────────
+// ── runDaemonCommand: the enforcement, driven with spies (BEHAVIOURAL) ───────
 //
-// The handlers are module-scoped inside server.ts and not exported, so nothing
-// below RUNS them. These tests read the source and pin its SHAPE: that each
-// rail hands the handler the sender-bearing payload, and that each handler's
-// judge call and refusal block are present, verbatim, in the right place. The
-// decision itself is tested behaviourally above; the wiring is not, and green
-// here must not be read as proof that the gate runs.
+// Both server.ts handlers are one call to runDaemonCommand with their real
+// work passed as `act`. So "a refused sender never reaches the action" is code
+// that RUNS here, against the real exported seam, with injected send and act.
+
+function spy<A extends unknown[]>(impl?: (...args: A) => Promise<void>) {
+  const calls: A[] = []
+  const fn = async (...args: A): Promise<void> => {
+    calls.push(args)
+    if (impl) await impl(...args)
+  }
+  return { calls, fn }
+}
+
+async function drive(
+  command: DaemonCommand,
+  payload: unknown,
+  opts: { sendFails?: boolean; actFails?: boolean } = {},
+) {
+  const send = spy<[string, string]>(
+    opts.sendFails
+      ? async () => {
+          throw new Error('send failed')
+        }
+      : undefined,
+  )
+  const act = spy<[DaemonCommandAllowed]>(
+    opts.actFails
+      ? async () => {
+          throw new Error('act failed')
+        }
+      : undefined,
+  )
+  const lines: string[] = []
+  const outcome = await runDaemonCommand({
+    command,
+    payload,
+    ownerUserId: OWNER,
+    chatId: '7001',
+    send: send.fn,
+    act: act.fn,
+    log: (l) => lines.push(l),
+  })
+  return { outcome, send, act, lines }
+}
+
+test('a share recipient never reaches the /compact action; the refusal is sent once, to their chat', async () => {
+  for (const [transport, payload] of [['ws', WS_RECIPIENT], ['poll', POLL_RECIPIENT]] as const) {
+    const r = await drive('compact', payload)
+    assert.equal(r.outcome, 'refused', transport)
+    assert.equal(r.act.calls.length, 0, `${transport}: act must not run for a recipient`)
+    assert.equal(r.send.calls.length, 1, `${transport}: exactly one refusal reply`)
+    assert.equal(r.send.calls[0]?.[0], '7001', 'sent to the chat the command came from')
+    assert.match(String(r.send.calls[0]?.[1]), /^\/compact was not run/)
+    assert.ok(r.lines.some((l) => /refused/.test(l)), `${transport}: the refusal is logged`)
+  }
+})
+
+test('a missing, malformed or non-object sender never reaches the /compact action', async () => {
+  const cases: unknown[] = [
+    stripKeys(WS_OWNER, ['sender', 'isSharedRecipient', 'shareOwnerUserId']),
+    stripKeys(POLL_OWNER, ['sender_user_id', 'sender_display_name', 'sender_relationship']),
+    { ...WS_OWNER, sender: { userId: 42 } },
+    { ...POLL_OWNER, sender_user_id: '' },
+    null,
+    'string',
+  ]
+  for (const payload of cases) {
+    const r = await drive('compact', payload)
+    assert.equal(r.outcome, 'refused', JSON.stringify(payload))
+    assert.equal(r.act.calls.length, 0, `act must not run for ${JSON.stringify(payload)}`)
+    assert.equal(r.send.calls.length, 1)
+  }
+})
+
+test('the owner reaches the /compact action exactly once, with no refusal sent', async () => {
+  for (const [transport, payload] of [['ws', WS_OWNER], ['poll', POLL_OWNER]] as const) {
+    const r = await drive('compact', payload)
+    assert.equal(r.outcome, 'acted', transport)
+    assert.equal(r.act.calls.length, 1, `${transport}: the work runs once`)
+    assert.equal(r.act.calls[0]?.[0].audience, 'owner')
+    assert.equal(r.send.calls.length, 0, `${transport}: nothing is sent by the seam on allow`)
+    assert.equal(r.lines.length, 0, 'nothing to log on allow')
+  }
+})
+
+test('/status reaches its action for everyone, carrying the audience the answer is built for', async () => {
+  const owner = await drive('status', WS_OWNER)
+  assert.equal(owner.outcome, 'acted')
+  assert.equal(owner.act.calls[0]?.[0].audience, 'owner')
+  assert.equal(owner.send.calls.length, 0)
+  const strangers: unknown[] = [
+    WS_RECIPIENT,
+    POLL_RECIPIENT,
+    stripKeys(WS_OWNER, ['sender', 'isSharedRecipient', 'shareOwnerUserId']),
+    { ...WS_OWNER, sender: { userId: 42 } },
+  ]
+  for (const payload of strangers) {
+    const r = await drive('status', payload)
+    assert.equal(r.outcome, 'acted')
+    assert.equal(r.act.calls.length, 1)
+    assert.equal(r.act.calls[0]?.[0].audience, 'non_owner', 'a stranger gets the reduced answer, not a refusal')
+    assert.equal(r.send.calls.length, 0)
+  }
+})
+
+test('a refusal whose reply fails to send is still a refusal: act stays unreached and nothing throws', async () => {
+  const r = await drive('compact', WS_RECIPIENT, { sendFails: true })
+  assert.equal(r.outcome, 'refused')
+  assert.equal(r.act.calls.length, 0)
+  assert.equal(r.send.calls.length, 1)
+  assert.ok(r.lines.some((l) => /refusal reply failed/.test(l)))
+})
+
+test('a failure inside the action propagates, so the rail still logs a failed command', async () => {
+  await assert.rejects(() => drive('compact', WS_OWNER, { actFails: true }), /act failed/)
+})
+
+test('the action is awaited: the seam resolves only after act has resolved', async () => {
+  let settled = false
+  await runDaemonCommand({
+    command: 'compact',
+    payload: WS_OWNER,
+    ownerUserId: OWNER,
+    chatId: '1',
+    send: async () => {},
+    act: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      settled = true
+    },
+  })
+  assert.equal(settled, true)
+})
+
+// ── server.ts wiring: SHAPE PINS ─────────────────────────────────────────────
 //
-// What a shape pin catches: a rail that drops the payload (the bare
-// single-argument call); a judge call or refusal condition that was edited or
-// removed (the condition is matched EXACTLY and anchored to the judge line, so
-// `if (false && verdict.kind === 'refuse')` fails, and a decoy copy of the
-// text elsewhere does not help); a refusal block that no longer replies or no
-// longer returns; a handler that acts before it judges.
+// The enforcement above is behavioural. What remains beyond a test's reach is
+// the wiring in server.ts, whose handlers and rails are module-scoped and not
+// exported, so nothing here runs them. These pins read the source and pin its
+// SHAPE: that each rail calls the handler with the sender-bearing payload,
+// that each handler is a single runDaemonCommand call whose act is the real
+// work, that the real work is invoked nowhere else, that the tmux injection
+// exists in exactly one place, and that the seam comes from the real module.
+// Green here is text, not runtime.
 //
-// Also caught, measured on 2026-09-20: the verdict overwritten between the
-// judge line and the condition (`(verdict as any).kind = 'allow'`), because
-// the block regex requires the condition IMMEDIATELY after the judge line;
-// and the import swapped to a shim that always allows, by the import pin.
-//
-// What it cannot catch, measured the same day and left green on purpose as
-// the documented limit: a rail that performs the action ITSELF before it
-// calls the gated handler (the WebSocket compact branch running the tmux
-// injection loop, then calling handleRemoteCompact as pinned). Every pin
-// here was satisfied and tsc was clean. Also beyond reach, by reasoning:
-// sendDaemonText being a no-op (a silent refusal, not a fail-open one), and
-// anything that depends on runtime values (USER_ID empty, the reply failing
-// to send). Closing that gap needs an exported seam the handlers route
-// through, so the enforcement can be driven with injected send and act
-// callbacks and the rails reduced to a single pinned call.
+// Measured on 2026-09-20, before the appears-once pin existed: the WS compact
+// branch running the tmux injection loop itself before calling the gated
+// handler satisfied every other pin with tsc clean. The pin that
+// `buildInjectionSteps(` appears exactly once in server.ts is what turns that
+// red, and it is a count of text, not a behaviour. What no pin here can
+// catch: a rail doing the work by some other means, sendDaemonText being a
+// no-op (a silent refusal, not a fail-open one), and anything that depends on
+// runtime values (USER_ID empty, the reply failing to send).
 
 const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 
@@ -347,29 +477,9 @@ function functionBody(name: string): string {
   return src.slice(start, end)
 }
 
-// The exact condition. Matched verbatim so a neutralised `if (false && ...)`
-// or `if (... && false)` cannot pass; anchored to the judge line in the block
-// regexes below so a copy of it in a comment cannot stand in for the real one.
-const REFUSE_CONDITION = /if \(verdict\.kind === 'refuse'\) \{/
-
-// The whole refusal block for /compact: judge, exact condition, the reply, the
-// return, and then IMMEDIATELY the capability check, so nothing can be slipped
-// between refusal and action.
-const COMPACT_REFUSAL_BLOCK = new RegExp(
-  "const verdict = judgeDaemonCommand\\(\\{ command: 'compact', payload, ownerUserId: USER_ID \\}\\)\\n" +
-    "  if \\(verdict\\.kind === 'refuse'\\) \\{\\n" +
-    '[\\s\\S]{0,300}?await sendDaemonText\\(chatId, verdict\\.reply\\)' +
-    '[\\s\\S]{0,200}?\\n    return\\n  \\}\\n' +
-    '  if \\(!compactTarget\\) \\{',
-)
-
-// The same for /status: judge, exact condition, reply, return.
-const STATUS_REFUSAL_BLOCK = new RegExp(
-  "const verdict = judgeDaemonCommand\\(\\{ command: 'status', payload, ownerUserId: USER_ID \\}\\)\\n" +
-    "  if \\(verdict\\.kind === 'refuse'\\) \\{\\n" +
-    '[\\s\\S]{0,200}?await sendDaemonText\\(chatId, verdict\\.reply\\)\\n' +
-    '    return\\n  \\}\\n',
-)
+function count(re: RegExp): number {
+  return (src.match(new RegExp(re.source, 'g')) ?? []).length
+}
 
 test('no rail calls a daemon-handled command without the sender-bearing payload (shape pin)', () => {
   assert.doesNotMatch(
@@ -392,55 +502,42 @@ test('the stream rail hands /status the raw replayed row, inside its status bran
   const branch = body.slice(statusAt, body.indexOf('\n  }\n', statusAt) + 4)
   assert.match(branch, /handleStatusCommand\(chatId, view\.raw\)/, `the exact call; ${SHAPE}`)
   assert.equal((branch.match(/handleStatusCommand\(/g) ?? []).length, 1, 'one call, with the payload')
-  // The stream rail has no refusal condition of its own: it lands on
-  // handleStatusCommand, whose block is pinned below.
 })
 
-test('handleRemoteCompact: judge, exact refusal condition, reply, return, then the capability check (shape pin)', () => {
-  const body = functionBody('handleRemoteCompact')
-  assert.match(body, /async function handleRemoteCompact\(chatId: string, payload: unknown\)/, SHAPE)
-  assert.match(
-    body,
-    REFUSE_CONDITION,
-    `the exact condition must be present: a neutralised form such as if (false && ...) fails here; ${SHAPE}`,
-  )
-  assert.equal(
-    (body.match(new RegExp(REFUSE_CONDITION.source, 'g')) ?? []).length,
-    1,
-    'exactly one refusal condition in the handler (a decoy beside a neutralised one would read as two)',
-  )
-  assert.match(
-    body,
-    COMPACT_REFUSAL_BLOCK,
-    `the refusal block, verbatim, between the judge and the capability check; ${SHAPE}`,
-  )
-  const judgeAt = body.indexOf("judgeDaemonCommand({ command: 'compact', payload, ownerUserId: USER_ID })")
-  const capabilityAt = body.indexOf('if (!compactTarget)')
-  assert.ok(judgeAt >= 0 && capabilityAt >= 0 && judgeAt < capabilityAt, 'judged before the host capability is consulted')
-})
-
-test('handleStatusCommand: judge, exact refusal condition, reply, return, then the audience-built answer (shape pin)', () => {
-  const body = functionBody('handleStatusCommand')
-  assert.match(body, /async function handleStatusCommand\(chatId: string, payload: unknown\)/, SHAPE)
-  assert.match(body, REFUSE_CONDITION, `the exact condition; ${SHAPE}`)
-  assert.equal((body.match(new RegExp(REFUSE_CONDITION.source, 'g')) ?? []).length, 1)
-  assert.match(body, STATUS_REFUSAL_BLOCK, `the refusal block, verbatim; ${SHAPE}`)
-  const judgeAt = body.indexOf("judgeDaemonCommand({ command: 'status', payload, ownerUserId: USER_ID })")
-  const buildAt = body.indexOf('buildStatusAnswer({')
-  assert.ok(judgeAt >= 0 && buildAt >= 0 && judgeAt < buildAt, 'judged before the answer is built')
-  assert.match(body.slice(buildAt), /audience: verdict\.audience/, `the verdict decides how much is said; ${SHAPE}`)
-})
-
-test('the judge is imported from the real module and called exactly once per handler (shape pin)', () => {
-  // Measured 2026-09-20 before this line existed: swapping the import to a
-  // shim that always allows left every other pin green, so the module path is
-  // pinned too. Same limit as everything here: the text, not the runtime.
+test('each handler is one runDaemonCommand call whose act is the real work, invoked nowhere else (shape pin)', () => {
+  assert.equal(count(/runDaemonCommand\(\{/), 2, `one seam call per handler; ${SHAPE}`)
+  assert.equal(count(/act: \(\) => compactAsOwner\(chatId\)/), 1, SHAPE)
+  assert.equal(count(/act: \(verdict\) => answerStatus\(chatId, verdict\.audience\)/), 1, SHAPE)
+  assert.equal(count(/compactAsOwner\(/), 2, 'its declaration and the act lambda, nothing else')
+  assert.equal(count(/answerStatus\(/), 2, 'its declaration and the act lambda, nothing else')
+  assert.equal(count(/judgeDaemonCommand/), 0, 'server.ts never judges on its own; the seam does')
   assert.match(
     src,
-    /^import \{ judgeDaemonCommand \} from '\.\/lib\/daemon-command-sender\.js'$/m,
-    `the judge must come from lib/daemon-command-sender.ts; ${SHAPE}`,
+    /async function compactAsOwner\(chatId: string\): Promise<void> \{\n  if \(!compactTarget\) \{/,
+    'the work starts with the capability check, which the seam therefore sits in front of',
   )
-  assert.equal((src.match(/judgeDaemonCommand/g) ?? []).length, 3, 'the import plus one call per handler')
-  const calls = src.match(/judgeDaemonCommand\(\{/g) ?? []
-  assert.equal(calls.length, 2, `one call in each of the two daemon-handled command handlers; ${SHAPE}`)
+  for (const name of ['handleRemoteCompact', 'handleStatusCommand']) {
+    const body = functionBody(name)
+    assert.equal((body.match(/\bawait\b/g) ?? []).length, 1, `${name}: exactly one await, the seam call`)
+    assert.doesNotMatch(body, /sendDaemonText\(chatId,/, `${name}: sends nothing on its own`)
+  }
+})
+
+test('the tmux injection exists in exactly one place, inside compactAsOwner (shape pin)', () => {
+  // The measured bypass: a rail running the injection itself before calling
+  // the gated handler. This count is what makes it red.
+  assert.equal(
+    count(/buildInjectionSteps\(/),
+    1,
+    `a rail running the injection itself would make this two; ${SHAPE}`,
+  )
+  assert.match(functionBody('compactAsOwner'), /buildInjectionSteps\(compactTarget, 'compact'\)/)
+})
+
+test('the seam is imported from the real module (shape pin)', () => {
+  assert.match(
+    src,
+    /^import \{ runDaemonCommand, type DaemonCommandAudience \} from '\.\/lib\/daemon-command-sender\.js'$/m,
+    `the seam must come from lib/daemon-command-sender.ts; ${SHAPE}`,
+  )
 })

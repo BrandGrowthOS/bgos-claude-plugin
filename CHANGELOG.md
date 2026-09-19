@@ -21,14 +21,19 @@ Notable changes to the HOAI Claude Code plugin.
   non-owner is still answered, but only with "connected" and the version,
   not the install method, supervisor, update enrolment or the last-message
   clock, which describe the owner's machine and the owner's traffic. A
-  missing or malformed sender fails closed. `test/daemon-command-sender.test.ts`
-  exercises the real function on both wire shapes (behavioural), and pins
-  the `server.ts` wiring on all three rails as a SHAPE pin over the source:
-  the handlers are module-scoped and not exported, so the pin catches a
-  dropped payload or an edited refusal block and cannot prove the refusal
-  runs. Eight mutations proven red; one, a rail injecting the compact
-  itself before it calls the gated handler, stays green and is recorded in
-  the test as the pin's limit.
+  missing or malformed sender fails closed. The enforcement is one exported
+  seam, `runDaemonCommand`: each handler in `server.ts` is a single call to
+  it with its real work passed as `act`, so
+  `test/daemon-command-sender.test.ts` proves with spies, against the real
+  exported code, that a refused sender never reaches the action, the
+  refusal is sent once to the sender's chat, a failed reply is still a
+  refusal, and the owner reaches the action with the owner audience
+  (behavioural). What is still only pinned by SHAPE, because the handlers
+  and rails are module-scoped and not exported: each rail's exact call with
+  the payload, each handler being one seam call, the real work invoked
+  nowhere else, the tmux injection existing in exactly one place, and the
+  seam's import path. Nine mutations proven red, six by behaviour and
+  three by shape; the test file lists what no pin can catch.
 
 ## 0.39.8 (2026-09-19)
 
