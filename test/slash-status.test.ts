@@ -24,6 +24,7 @@ const BASE: StatusFacts = {
   supervised: 'launchd',
   autoUpdateEnrolled: true,
   lastInboundAgoMs: 12_000,
+  audience: 'owner',
 }
 
 test('reports the facts the daemon owns, and names the agent', () => {
@@ -74,6 +75,27 @@ test('the answer is short enough to read on a phone', () => {
   assert.ok(out.length < 400, `status was ${out.length} chars, too long for a chat bubble`)
 })
 
+test('a non-owner is told the agent is up and which version, and nothing about the owner', () => {
+  // A share recipient, a room member, or a sender the daemon could not identify. The question they
+  // have is "is this agent alive, and is it current"; the install method, the supervisor, update
+  // enrolment and the last-message clock describe the owner's machine and the owner's traffic.
+  const out = buildStatusAnswer({ ...BASE, audience: 'non_owner' })
+  assert.match(out, /Data/)
+  assert.match(out, /0\.38\.6/)
+  assert.match(out, /connected/i)
+  assert.doesNotMatch(out, /marketplace/, 'install method is the owner\'s business')
+  assert.doesNotMatch(out, /launchd|manual|supervisor/i, 'supervision is the owner\'s business')
+  assert.doesNotMatch(out, /automatic/i, 'update enrolment is the owner\'s business')
+  assert.doesNotMatch(out, /\bago\b|no messages/i, 'the inbound clock spans every chat, not only theirs')
+  assert.ok(out.split('\n').length <= 2, 'two facts, two lines')
+})
+
+test('a non-owner is still told when the version could not be read, rather than shown nothing', () => {
+  const out = buildStatusAnswer({ ...BASE, audience: 'non_owner', version: null })
+  assert.match(out, /not reported/i)
+  assert.doesNotMatch(out, /undefined|null|NaN/)
+})
+
 
 // --- wiring contracts, both found by RUNNING the daemon ---------------------
 
@@ -113,7 +135,10 @@ test('/status is answered by the daemon at both delivery rails, and deduped acro
   // identical status bubbles, which is the failure the compact path already solved this way.
   const handled = serverSource.match(/alreadyHandledStatus\(/g) ?? []
   assert.equal(handled.length, 4, 'the definition plus one call on each of the THREE delivery rails')
-  assert.match(serverSource, /handleStatusCommand\(chatId\)/)
+  // Every rail hands the handler the sender-bearing payload (test/daemon-command-sender.test.ts
+  // pins each rail's exact shape); a bare handleStatusCommand(chatId) would be an ungated rail.
+  assert.match(serverSource, /handleStatusCommand\(chatId, (msg\.message|payload \?\? \{\}|view\.raw)\)/)
+  assert.doesNotMatch(serverSource, /handleStatusCommand\(chatId\)/)
 })
 
 
@@ -136,7 +161,7 @@ test('the stream rail ANSWERS /status, because it can be the only rail that sees
   const statusAt = body.indexOf("slashRoute.kind === 'status'")
   assert.notEqual(statusAt, -1, 'the stream rail must route status at all')
   const branch = body.slice(statusAt, statusAt + 2200)
-  assert.match(branch, /handleStatusCommand\(chatId\)/, 'and must actually answer it')
+  assert.match(branch, /handleStatusCommand\(chatId, view\.raw\)/, 'and must actually answer it')
   assert.match(branch, /alreadyHandledStatus/, 'guarded by the same shared id set as the other rails')
 
   // The contrast that makes the reasoning legible: /compact on this same rail must NOT act.

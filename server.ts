@@ -302,6 +302,7 @@ import {
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
+import { judgeDaemonCommand } from './lib/daemon-command-sender.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
@@ -1252,7 +1253,17 @@ let lastInboundAtMs: number | null = null
  * Every field here is a fact this process already holds. Anything it cannot determine is reported as
  * undetermined rather than estimated.
  */
-async function handleStatusCommand(chatId: string): Promise<void> {
+async function handleStatusCommand(chatId: string, payload: unknown): Promise<void> {
+  // Who asked decides how much is answered (lib/daemon-command-sender.ts).
+  // Judged here, at the one point every rail (poll, WebSocket, stream) lands,
+  // so a rail cannot skip it; `payload` is required so a caller cannot forget.
+  const verdict = judgeDaemonCommand({ command: 'status', payload, ownerUserId: USER_ID })
+  if (verdict.kind === 'refuse') {
+    log(`status refused (chat ${chatId}, ${verdict.reason})`)
+    await sendDaemonText(chatId, verdict.reply)
+    return
+  }
+
   let autoUpdateEnrolled: boolean | null = null
   try {
     // Only meaningful for a marketplace install: a clone has no marketplace entry to enrol, so the
@@ -1284,12 +1295,29 @@ async function handleStatusCommand(chatId: string): Promise<void> {
     supervised,
     autoUpdateEnrolled,
     lastInboundAgoMs: lastInboundAtMs === null ? null : Math.max(0, Date.now() - lastInboundAtMs),
+    audience: verdict.audience,
   })
 
   await sendDaemonText(chatId, text)
 }
 
-async function handleRemoteCompact(chatId: string): Promise<void> {
+async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
+  // Only the owner may compact: one session serves every chat of this agent,
+  // so a share recipient compacting from their chat would compact the owner's
+  // context (lib/daemon-command-sender.ts). Judged BEFORE the capability check
+  // below, so a stranger is refused without learning whether this host can
+  // compact remotely at all. Every rail lands here, so no rail can skip it.
+  const verdict = judgeDaemonCommand({ command: 'compact', payload, ownerUserId: USER_ID })
+  if (verdict.kind === 'refuse') {
+    log(
+      `remote compact refused (chat ${chatId}, ${verdict.reason}, ` +
+        `sender ${verdict.sender.userId ?? 'unknown'})`,
+    )
+    await sendDaemonText(chatId, verdict.reply).catch((err) =>
+      log(`remote compact: refusal reply failed: ${err}`),
+    )
+    return
+  }
   if (!compactTarget) {
     const pct = sessionBinder.readContextPct()
     await sendDaemonText(
@@ -6216,7 +6244,7 @@ async function pollChat(chatId: string): Promise<void> {
           log(`remote compact: ignoring stale backlog request (chat ${chatId})`)
         } else if (!alreadyHandledCompact(String(msg.message.id))) {
           log(`remote compact requested via poll (chat ${chatId})`)
-          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleRemoteCompact(chatId, msg.message)).catch((err) => {
             log(`Remote compact failed: ${err}`)
           })
         }
@@ -6230,7 +6258,7 @@ async function pollChat(chatId: string): Promise<void> {
       if (slashRoute.kind === 'status') {
         if (!alreadyHandledStatus(String(msg.message.id))) {
           log(`status requested via poll (chat ${chatId})`)
-          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleStatusCommand(chatId, msg.message)).catch((err) => {
             log(`Status reply failed: ${err}`)
           })
         }
@@ -7117,7 +7145,7 @@ async function forwardStreamInbound(
     // keeps it to a single answer across all three rails.
     if (!alreadyHandledStatus(String(view.messageId))) {
       log(`status requested via stream (chat ${chatId})`)
-      void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+      void trackMessageOperation(() => handleStatusCommand(chatId, view.raw)).catch((err) => {
         log(`Status reply failed: ${err}`)
       })
     }
@@ -8047,7 +8075,7 @@ function connectWebsocket(): void {
       if (slashRoute.kind === 'compact') {
         if (chatId && !alreadyHandledCompact(String(messageId))) {
           log(`remote compact requested via ws (chat ${chatId})`)
-          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleRemoteCompact(chatId, payload ?? {})).catch((err) => {
             log(`Remote compact failed: ${err}`)
           })
         }
@@ -8056,7 +8084,7 @@ function connectWebsocket(): void {
       if (slashRoute.kind === 'status') {
         if (chatId && !alreadyHandledStatus(String(messageId))) {
           log(`status requested via ws (chat ${chatId})`)
-          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleStatusCommand(chatId, payload ?? {})).catch((err) => {
             log(`Status reply failed: ${err}`)
           })
         }

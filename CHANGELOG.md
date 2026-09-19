@@ -2,6 +2,34 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+- **A daemon-handled slash command now checks who sent it.** `/compact` and
+  `/status` are acted on by the daemon and never reach the model, and neither
+  handler asked who sent them. One session serves every chat of an agent, so
+  a person the owner had shared the agent with could tap `/compact` in their
+  own chat and compact the owner's context. The decision now lives in one
+  pure function, `lib/daemon-command-sender.ts`, called first by both
+  handlers, which every rail (poll, WebSocket, stream) lands on. The sender
+  is read from the per-message sender fields in each transport's own shape
+  (the nested `sender` block on the socket, the flat `sender_user_id` on a
+  poll or stream row) and never from the top-level owner id, which on both
+  wires is the owner's for every sender. Decided per command on what it
+  mutates or exposes: `/compact` mutates the owner's session, so anyone but
+  the owner is refused with a short reply in their own chat, before the
+  host's compact capability is consulted; `/status` mutates nothing, so a
+  non-owner is still answered, but only with "connected" and the version,
+  not the install method, supervisor, update enrolment or the last-message
+  clock, which describe the owner's machine and the owner's traffic. A
+  missing or malformed sender fails closed. `test/daemon-command-sender.test.ts`
+  exercises the real function on both wire shapes (behavioural), and pins
+  the `server.ts` wiring on all three rails as a SHAPE pin over the source:
+  the handlers are module-scoped and not exported, so the pin catches a
+  dropped payload or an edited refusal block and cannot prove the refusal
+  runs. Eight mutations proven red; one, a rail injecting the compact
+  itself before it calls the gated handler, stays green and is recorded in
+  the test as the pin's limit.
+
 ## 0.39.8 (2026-09-19)
 
 - **Every meeting turn reaches the agent with its turn marker.** Found in
