@@ -2,6 +2,25 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.39.8 (2026-09-19)
+
+- **Every meeting turn reaches the agent with its turn marker.** Found in
+  KC's meeting QA on 2026-09-19: some meeting messages arrived as plain chat
+  cards with no `[Meeting #N, your_turn=...]` header. The backend delivers
+  each meeting turn twice, as a `meeting_message` broadcast and as an
+  `inbound_message` twin carrying `meetingContext` with the server's own
+  verdict on whose turn it is; both share one message id, so whichever lands
+  first wins the dedupe. The twin path ignored `meetingContext`, so about
+  half of all turns lost the marker, and an agent's handoff was labelled as
+  if the human had written it. The twin is now framed as a meeting card using
+  the server's `yourTurn`, the broadcast handler records the new speaker
+  before its dedupe can return (the stale speaker was what made the poll
+  fallback say `your_turn=NO` on a turn that was ours), and a late frame for
+  an older turn can no longer put stale meeting state back. All three
+  transports build the card through `lib/meeting-card.ts`, every meta value
+  a string. `test/meeting-card.test.ts` exercises the real builder and
+  guards the `server.ts` wiring; seven mutations proven red.
+
 ## 0.39.7 (2026-09-18)
 
 - **A shared agent's boards belong to the person using it.** KC, 2026-09-16:
