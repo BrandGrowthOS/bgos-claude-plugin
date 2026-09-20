@@ -7,6 +7,9 @@ import {
   listRenderableKinds,
   normalizeComponentPayloadArg,
   validateComponentPayload,
+  HOST_POSTED_CATEGORY,
+  HOST_POSTED_REFUSAL,
+  isHostPostedKind,
   type RenderableWireSchema,
 } from '../lib/renderables'
 import { buildHealthTrackerCardMessage } from '../lib/health-log'
@@ -500,5 +503,29 @@ describe('alias parity: show_health_tracker == show_component', () => {
     )
     expect(generic.ok).toBe(false)
     if (!v1.ok && !generic.ok) expect(generic.error).toBe(v1.error)
+  })
+})
+
+// The activity kinds are posted by the host rail from the session's own hook
+// stream. An agent that could summon one could narrate a compaction that never
+// happened into a chat the owner reads as a factual record.
+describe('host posted kinds are not summonable', () => {
+  test('an activity category entry is refused, whatever else it looks like', () => {
+    expect(isHostPostedKind({ kind: 'context_compacted', category: 'activity' })).toBe(true)
+    expect(isHostPostedKind({ kind: 'turn_continues', category: 'Activity' })).toBe(true)
+    expect(isHostPostedKind({ kind: 'turn_continues', category: ' activity ' })).toBe(true)
+  })
+
+  test('every other category stays summonable', () => {
+    expect(isHostPostedKind({ kind: 'health_tracker_card', category: 'health' })).toBe(false)
+    expect(isHostPostedKind({ kind: 'calendar_peek', category: 'calendar' })).toBe(false)
+    expect(isHostPostedKind({ kind: 'nameless' })).toBe(false)
+    expect(isHostPostedKind(undefined)).toBe(false)
+    expect(isHostPostedKind(null)).toBe(false)
+  })
+
+  test('the refusal is one plain sentence, and the category is the manifest word', () => {
+    expect(HOST_POSTED_CATEGORY).toBe('activity')
+    expect(HOST_POSTED_REFUSAL).toBe('This kind is posted by the host, not summoned.')
   })
 })

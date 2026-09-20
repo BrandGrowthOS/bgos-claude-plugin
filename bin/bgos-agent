@@ -167,6 +167,20 @@ cmd_install() {
     write_claude_md_stub "$workdir/CLAUDE.md"
     ok "wrote $workdir/CLAUDE.md (stub, see plugin README Step 5 for full peer rules)"
   fi
+  # A MARKETPLACE channel (plugin:<plugin>@<marketplace>) already ships the
+  # activity rail in the plugin's own hooks/hooks.json, so writing the settings
+  # entries beside it would run the forwarder TWICE per event: two node spawns
+  # per tool call, paid on every tool call, for nothing. Same skip the two
+  # bootstraps make. A server:<name> channel is a clone and needs the entries,
+  # because Claude Code reads a hooks file only for an INSTALLED plugin.
+  case "$channel" in
+    plugin:*)
+      info "marketplace channel ($channel): its own hooks file already carries the activity rail"
+      ;;
+    *)
+      install_hook_entries "$workdir" "$PLUGIN_DIR"
+      ;;
+  esac
 
   if [ "${ALWAYS_ON:-}" != "1" ]; then
     say_launch_hint "$workdir" "$channel"
@@ -391,6 +405,7 @@ install_launchd() { # $1 id $2 workdir $3 statedir $4 path
     <key>TERM</key><string>xterm-256color</string>
     <key>USER</key><string>$x_user</string>
     <key>LOGNAME</key><string>$x_user</string>
+    <key>CLAUDE_CODE_ENABLE_TODO_TOOLS</key><string>1</string>
   </dict>
 </dict>
 </plist>
@@ -428,6 +443,7 @@ Environment=HOME=$HOME
 Environment=TERM=xterm-256color
 Environment=USER=$user_name
 Environment=LOGNAME=$user_name
+Environment=CLAUDE_CODE_ENABLE_TODO_TOOLS=1
 StandardOutput=journal
 StandardError=journal
 
@@ -439,10 +455,44 @@ UNIT
   ok "systemd --user service $unit enabled + started"
 }
 
+# Agent activity hooks for a CLONE install.
+#
+# Claude Code reads a plugin's own hooks/hooks.json ONLY for an INSTALLED plugin
+# under ~/.claude/plugins. This workspace is an MCP server entry in .mcp.json,
+# not an installed plugin, so nothing here would ever read that file and the
+# agent activity rail would simply never appear, with no error to notice. The
+# workspace settings file IS read, so the same entries go there, pointed at this
+# checkout's forwarder by absolute path. Idempotent: safe on every install and
+# on every re-install. Best effort: a failure costs the tool detail, nothing else.
+install_hook_entries() { # $1 workdir $2 plugin_dir
+  local workdir="$1" plugin_dir="$2"
+  if ! command -v node >/dev/null 2>&1; then
+    warn "node not found, skipping the activity hooks (the agent works, tool detail will not show)"
+    return 0
+  fi
+  HOAI_PRESEED="$plugin_dir/lib/claude-preseed.mjs" \
+  HOAI_SETTINGS="$workdir/.claude/settings.local.json" \
+  HOAI_FORWARDER="$plugin_dir/bin/hoai-hook.mjs" \
+  node -e '
+    const { pathToFileURL } = require("node:url");
+    import(pathToFileURL(process.env.HOAI_PRESEED).href)
+      .then((m) => m.ensureHookEntries({
+        settingsPath: process.env.HOAI_SETTINGS,
+        forwarderPath: process.env.HOAI_FORWARDER,
+      }))
+      .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
+  ' 2>/dev/null \
+    && ok "activity hooks registered in $workdir/.claude/settings.local.json" \
+    || warn "could not register the activity hooks (the agent works, tool detail will not show)"
+}
+
 say_launch_hint() { # $1 workdir $2 channel
   echo
   ok "Config ready (no supervisor, foreground mode)."
-  printf '  Run it with:\n    cd %s\n    claude --dangerously-skip-permissions --dangerously-load-development-channels %s\n' "$1" "$2"
+  # CLAUDE_CODE_ENABLE_TODO_TOOLS=1 turns on the CLI's task tools, which is what
+  # feeds the live Steps strip in the app. The rest of the activity rail works
+  # without it.
+  printf '  Run it with:\n    cd %s\n    CLAUDE_CODE_ENABLE_TODO_TOOLS=1 claude --dangerously-skip-permissions --dangerously-load-development-channels %s\n' "$1" "$2"
   printf '  Re-run with %s--always-on%s to keep it running + survive reboot.\n' "$B" "$Z"
 }
 

@@ -45,6 +45,7 @@ import {
   stableWrapperPath,
 } from './bgos-daemon-wrapper.mjs'
 import { launchCommand } from './bgos-install-method.mjs'
+import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -429,8 +430,15 @@ export const MCP_SERVER_NAME = 'bgos'
  * MCP_SERVER_NAME so the two halves of the invariant cannot drift apart.
  */
 export function buildLaunchCommand(dir) {
-  return `cd ${shellQuote(dir)} && ${launchCommand('clone')}`
+  // CLAUDE_CODE_ENABLE_TODO_TOOLS=1 turns on the CLI's task tools. Without it
+  // the agent has no task list, so the live Steps strip in the app stays empty;
+  // everything else on the activity rail (tool rows, subagents, the markers)
+  // works either way.
+  return `cd ${shellQuote(dir)} && ${LAUNCH_ENV_PREFIX}${launchCommand('clone')}`
 }
+
+/** The env the launch line carries, named once so every writer agrees. */
+export const LAUNCH_ENV_PREFIX = 'CLAUDE_CODE_ENABLE_TODO_TOOLS=1 '
 
 // ── Effectful pieces (kept small; main() composes them) ──────────────────────
 
@@ -596,7 +604,17 @@ export function installPluginWrapper(pluginDir, home = homedir()) {
 
 /** Write the scaffold folder from verified pack entries. Pure layout logic
  *  lives in packEntryToWorkspacePath; this only touches the target dir. */
-export async function scaffoldWorkspace(dir, entries, log = console.error) {
+/**
+ * @param {string} dir
+ * @param {any[]} entries
+ * @param {(msg: string) => void} [log]
+ * @param {{ forwarderPath?: string }} [opts]  forwarderPath: the plugin
+ *   checkout's bin/hoai-hook.mjs, written into this workspace's settings so a
+ *   CLONE install gets the agent activity rail (Claude Code reads a plugin's
+ *   own hooks/hooks.json only for an INSTALLED plugin, and a claimed workspace
+ *   is an MCP server entry, not an installed plugin).
+ */
+export async function scaffoldWorkspace(dir, entries, log = console.error, opts = {}) {
   await mkdir(dir, { recursive: true })
   for (const sub of ['.claude/rules', '.claude/skills', 'memory']) {
     await mkdir(join(dir, sub), { recursive: true })
@@ -625,10 +643,17 @@ export async function scaffoldWorkspace(dir, entries, log = console.error) {
   }
   await writeFile(join(dir, '.gitignore'), GITIGNORE_BODY)
   await mkdir(join(dir, '.claude'), { recursive: true })
-  await writeFile(
-    join(dir, '.claude', 'settings.local.json'),
-    `${JSON.stringify(SETTINGS_LOCAL_JSON, null, 2)}\n`,
-  )
+  const settingsLocalPath = join(dir, '.claude', 'settings.local.json')
+  await writeFile(settingsLocalPath, `${JSON.stringify(SETTINGS_LOCAL_JSON, null, 2)}\n`)
+  // The agent activity rail for a clone install. Idempotent and best effort: a
+  // workspace without it still chats perfectly, it just shows no tool detail.
+  if (opts.forwarderPath) {
+    try {
+      ensureHookEntries({ settingsPath: settingsLocalPath, forwarderPath: opts.forwarderPath })
+    } catch (err) {
+      log(`[bgos-claim] could not register the activity hooks: ${err}`)
+    }
+  }
   return written
 }
 
@@ -772,7 +797,9 @@ export async function main(argv = process.argv.slice(2)) {
   const pluginDir = dirname(pluginServerPath)
   const pluginWrapperPath = installPluginWrapper(pluginDir)
 
-  const written = await scaffoldWorkspace(dir, entries)
+  const written = await scaffoldWorkspace(dir, entries, console.error, {
+    forwarderPath: join(pluginDir, 'bin', 'hoai-hook.mjs'),
+  })
   console.log(`[bgos-claim] scaffolded ${dir} (${written} pack files)`)
 
   // The recipient's OWN key: never shipped in the pack, never echoed.

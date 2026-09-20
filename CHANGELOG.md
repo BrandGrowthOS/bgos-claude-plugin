@@ -2,6 +2,136 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.40.0 (2026-09-20)
+
+- **The owner can finally watch the agent work.** Until now a Claude Code
+  agent's chat showed replies and nothing else: the twenty minutes it spent
+  reading files, running commands and handing work to subagents were invisible,
+  and the app's own header could only guess at "working" from the replies
+  themselves. This release gives the channel the activity rail every other BGOS
+  channel already had, fed by the CLI's own hooks rather than by anything the
+  agent has to remember to say.
+  - `hooks/hooks.json` registers nine events (`SessionStart`,
+    `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`,
+    `Stop`, `PreCompact`, `PostCompact`, `SessionEnd`), each in the `args` exec
+    form so a Windows path with a quote or a `$` in it never reaches a shell
+    parser, each `async: true` with a 5 s timeout, and the forwarder exits 0 on
+    every path including a crash. A hook that exits 2 BLOCKS the tool call it
+    was watching; telemetry that can stop the agent is a defect, not a feature.
+  - `bin/hoai-hook.mjs` reads stdin as BYTES and decodes UTF-8 explicitly (a
+    text mode read crashed on a payload carrying a box glyph when the Windows
+    console code page could not decode it), appends one JSON line to
+    `<state>/hooks/<session_id>/events.jsonl`, and exits. It opens no socket and
+    reads no credentials. A payload over 256 KB is reduced to the fields the
+    mapper reads, so a `Write` tool's whole file body never touches the disk
+    twice; a spool over 2 MB rotates.
+  - `lib/hook-intake.ts` is the other half: the daemon watches that directory
+    with `fs.watch` plus a poll that tightens to 500 ms while a turn is live.
+    A loopback listener was considered and rejected: a port needs a descriptor
+    file, a token, a firewall question on Windows and a file fallback anyway for
+    the daemon-is-booting case, and the file fallback is the entire design.
+  - **Only the pairing lock holder consumes, and only our own session.** Several
+    daemons can resolve one pairing on a shared host (the 2026-09-04 three
+    daemon incident), and they all watch the same directory, so a passive one
+    draining it would post every tool row twice. The intake starts inside the
+    lock holder branch, re-checks `channelArmed && lockHeld` on every pump, and
+    stops on stand down and on exit. A source guard in
+    `test/pairing-lock-standdown.test.ts` fails if any of those move.
+  - **Binding got stronger, not weaker.** Every hook payload carries the CLI's
+    own `transcript_path`, which is the CLI naming our file rather than us
+    inferring it from a tool result it echoed. `lib/session-binding.ts` takes
+    `hook` as its strongest source, so the "several recent transcripts and no
+    positive signal yet, refusing to guess" branch stops firing once hooks are
+    live, and the context gauge stops going unreported on a busy machine.
+  - **The Steps snapshot is heartbeated.** The server drops a Steps record after
+    three minutes of silence, and a Claude Code turn is routinely quieter than
+    that between task changes, so the unchanged snapshot is re-sent every 60 s
+    while the turn is live. Without it the strip blinks out mid turn and the
+    owner reads it as the agent dying. The route is the USER family,
+    `assistants/:id/chats/:chatId/steps`, because it is the one both this
+    plugin's auth modes accept; a 403 silences that one chat and nothing else.
+  - **A clone install is not a plugin, and that is the trap.** Claude Code reads
+    a plugin's `hooks/hooks.json` only for an INSTALLED plugin under
+    `~/.claude/plugins`. A claimed workspace is an MCP server entry, so nothing
+    would ever read the checkout's hooks file and the rail would be missing with
+    no error to notice. `ensureHookEntries` writes the same entries into the
+    workspace's `.claude/settings.local.json` with the checkout's absolute
+    forwarder path, through the verified JSON mutator this repo already uses for
+    the trust preseed, and every launcher calls it: `bin/bgos-agent`,
+    `bin/bgos-claim.mjs`, both bootstraps and `hoai` itself, which is the
+    command an agent folder actually starts with day after day. Each of them
+    skips a MARKETPLACE install, which already has the rail, so no event ever
+    fires twice. Existing clones gain the rail on their next install or launch. `docs/learnings/a-plugin-hooks-file-reaches-marketplace-installs-only.md`
+    is the note; a test pins all four callers.
+  - **The launch lines now set `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`.** Without it
+    the CLI has no task tools, so the live Steps strip stays empty forever while
+    the rest of the rail works, which reads as a broken feature rather than a
+    missing env var. The launchd plist and the systemd unit carry it too.
+  - **The daemon always sends; the app decides what to draw.** The owner's per
+    agent "Show technical details" switch hides these rows in the app. Nothing
+    in this plugin reads it, and a test asserts that: the backend derives the
+    agent's live working status from a tool row arriving, and a shared agent has
+    several viewers, so gating here would blind the header for everyone.
+  - **What an adversarial review changed before this shipped.** Fourteen
+    findings, all fixed with a test and a named mutation:
+    - **A session now binds on PROOF, not on proximity.** The first payload
+      whose transcript sat under this daemon's project dir used to capture the
+      rail, so a human's own `claude` in the agent folder, or a session that
+      died last week, could take it and the real agent's rows were then refused
+      as foreign for the life of the daemon. Three positive proofs are accepted
+      instead: a prompt carrying the text of a message this daemon delivered, the
+      transcript `lib/session-binding.ts` has already proven (a reply marker or
+      the CLI assigned session id, never the newest-mtime guess), and a
+      `SessionStart` naming that transcript. Unproven events are held for 60 s in
+      case the proof is a line behind, then dropped.
+    - **The drain cursor is on disk** (`cursor.json` beside `events.jsonl`,
+      written atomically). It lived only in memory, so every restart and every
+      lock re-arm replayed a whole session: every card, marker and step again.
+      A directory is swept when its `SessionEnd` has been consumed, or when
+      nothing in it has been touched for 30 minutes.
+    - **The line id is minted, not measured.** It was the file size each hook
+      process stat'ed, so two hooks on one parallel tool call read the same
+      number and the daemon dropped the second event as a duplicate. It is now a
+      per process random tag plus a counter, written in one `appendFileSync`, and
+      the drain reads whole lines only. That id is also what gives `Stop`,
+      `SessionStart`, `PreCompact` and the other id less events their occurrence
+      identity in the dedupe key, so a second genuine one is no longer swallowed.
+    - **A turn end awaits the card already on the wire** before sending the final
+      `done`, the way the Codex poster's `finalizeTurn` does. A `done` that
+      arrived mid flight used to be thrown away, leaving the card on "running"
+      for ever, on exactly the turns busy enough to matter.
+    - **A turn's chat is fixed at its prompt** and held until `Stop`, so a peer
+      message, a system wake or a meeting invitation arriving mid turn no longer
+      re-points the rest of the rows into a chat the turn was never about. After
+      `Stop` the chat is kept (with no live turn), so an out of turn compaction
+      marker lands in the conversation that just happened rather than in
+      whichever chat happens to be first in the monitored list.
+    - **A 403 is read from the status, never from the text of the error.** The
+      Steps URL carries the chat id, so a chat numbered 4403 silenced its own
+      Steps strip for the life of the daemon.
+    - **A Bash row shortens the paths inside the command**, not only the ones in
+      its path slot, so `~` and a workspace relative path go on the wire instead
+      of a home directory naming the account, and the 120 character clip is spent
+      on what the command did.
+    - **`assistantId` is off the `POST /messages` bodies** (card and markers):
+      `CreateMessageDto` does not declare it, so the backend stripped it and
+      logged an unknown field for every row this rail posted.
+    - **`show_component` refuses the activity kinds** with one plain sentence.
+      They are posted by the host from the session's own hook stream; an agent
+      able to summon `context_compacted` could narrate a compaction that never
+      happened into a chat the owner reads as a record.
+    - **`hoai` carries the rail too**: the run plan now includes
+      `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and the clone hook entries, applied on
+      every launch. And the Windows `cmd` launch line writes
+      `set CLAUDE_CODE_ENABLE_TODO_TOOLS=1&&`, without the space that made the
+      value `"1 "` and the flag dead.
+  - Tests: `test/hoai-hook.test.ts` (22), `test/hook-intake.test.ts` (28),
+    `test/turn-chat.test.ts` (14), the hook halves of
+    `test/claude-preseed.test.ts`, `test/session-binding.test.ts`,
+    `test/hoai-core.test.ts`, `test/renderables.test.ts` and
+    `test/hook-events.redaction.test.ts`, plus eleven `server.ts` source guards.
+    Each was proven red against a named mutation before it was kept.
+
 ## 0.39.8 (2026-09-19)
 
 - **Every meeting turn reaches the agent with its turn marker.** Found in

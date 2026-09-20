@@ -446,6 +446,41 @@ $preseedPath = Join-Path $env:TEMP 'hoai-preseed.js'
 $preseed | Out-File -FilePath $preseedPath -Encoding utf8
 & node $preseedPath $ClaudeConfigDir $Workdir
 
+# Agent activity hooks for a CLONE install.
+#
+# Claude Code reads a plugin's own hooks/hooks.json ONLY for an INSTALLED plugin
+# under the plugins cache. A clone checkout reaches the session as an MCP server
+# entry in this workspace's .mcp.json, which is NOT an installed plugin, so
+# nothing would ever read its hooks file and the activity rail would simply
+# never appear, with no error to notice. The workspace settings file IS read, so
+# the same entries go there with this checkout's absolute forwarder path.
+# A marketplace install already has the rail and is skipped, so no event ever
+# fires twice. Idempotent, and best effort: a failure costs the tool detail.
+if ($ResolvedMethod -ne 'marketplace') {
+    New-Item -ItemType Directory -Force -Path (Join-Path $Workdir '.claude') | Out-Null
+    $env:HOAI_PRESEED = Join-Path $PluginRoot 'lib\claude-preseed.mjs'
+    $env:HOAI_SETTINGS = Join-Path $Workdir '.claude\settings.local.json'
+    $env:HOAI_FORWARDER = Join-Path $PluginRoot 'bin\hoai-hook.mjs'
+    $hookJs = @'
+const { pathToFileURL } = require("node:url");
+import(pathToFileURL(process.env.HOAI_PRESEED).href)
+  .then((m) => m.ensureHookEntries({
+    settingsPath: process.env.HOAI_SETTINGS,
+    forwarderPath: process.env.HOAI_FORWARDER,
+  }))
+  .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
+'@
+    $hookJsPath = Join-Path $env:TEMP 'hoai-hook-entries.js'
+    $hookJs | Out-File -FilePath $hookJsPath -Encoding utf8
+    $global:LASTEXITCODE = 0
+    & node $hookJsPath
+    if ($LASTEXITCODE -eq 0) {
+        Say ('[hoai] activity hooks registered in ' + $env:HOAI_SETTINGS)
+    } else {
+        Say '[hoai] warning: could not register the activity hooks; the agent works, tool detail will not show.'
+    }
+}
+
 $global:LASTEXITCODE = 1
 & node (Join-Path $PluginRoot 'bin\bgos-doctor.mjs') --preflight --assistant-id $AssistantId --workdir $Workdir --backend $Backend
 if ($LASTEXITCODE -ne 0) {
@@ -461,16 +496,22 @@ if ($NoLaunch) {
     Step 'online'
     Say ('Done (not launched). Your agent (assistant ' + $AssistantId + ') is paired and preflight-verified.')
     Say ('  workspace : ' + $Workdir)
-    Say '  start it  : open that folder and run: hoai'
+    Say '  start it  : open that folder and run: set CLAUDE_CODE_ENABLE_TODO_TOOLS=1&& hoai'
     exit 0
 }
 $LaunchEpochMs = [long]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
 Say 'Starting your agent in a new window...'
+# CLAUDE_CODE_ENABLE_TODO_TOOLS=1 turns on the CLI's task tools, which feed the
+# live Steps strip in the app. The rest of the activity rail works without it.
+$env:CLAUDE_CODE_ENABLE_TODO_TOOLS = '1'
 $hoaiCmd = Join-Path $HoaiBin 'hoai.cmd'
 if (Test-Path $hoaiCmd) {
-    Start-Process cmd -WorkingDirectory $Workdir -ArgumentList '/k', $hoaiCmd
+    # No space before the ampersand: cmd.exe takes everything up to it as the
+    # VALUE, so `set X=1 && ...` sets X to "1 " and the CLI, which compares the
+    # string, reads it as not set. The whole Steps strip stays empty.
+    Start-Process cmd -WorkingDirectory $Workdir -ArgumentList '/k', ('set CLAUDE_CODE_ENABLE_TODO_TOOLS=1&& "' + $hoaiCmd + '"')
 } else {
-    Start-Process powershell -WorkingDirectory $Workdir -ArgumentList '-NoExit', '-Command', 'hoai'
+    Start-Process powershell -WorkingDirectory $Workdir -ArgumentList '-NoExit', '-Command', '$env:CLAUDE_CODE_ENABLE_TODO_TOOLS=1; hoai'
 }
 
 Step 'online'

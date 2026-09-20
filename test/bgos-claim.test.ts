@@ -331,8 +331,20 @@ test('the launch command targets the scaffold dir with the channel flags', () =>
   assert.equal(shellQuote("it's"), `'it'\\''s'`)
   assert.equal(
     buildLaunchCommand('/home/kc/bgos-agents/atlas'),
-    "cd '/home/kc/bgos-agents/atlas' && claude --dangerously-skip-permissions " +
+    "cd '/home/kc/bgos-agents/atlas' && CLAUDE_CODE_ENABLE_TODO_TOOLS=1 " +
+      'claude --dangerously-skip-permissions ' +
       '--dangerously-load-development-channels server:bgos',
+  )
+})
+
+test('the launch line turns the task tools on, or the Steps strip stays empty', () => {
+  // The CLI's TaskCreate / TaskUpdate tools are off unless this is set, and the
+  // live Steps list in the app is fed by exactly those calls. The rest of the
+  // activity rail (tool rows, subagent rows, the markers) does not need it, so
+  // a launch without it degrades rather than breaking.
+  assert.ok(
+    buildLaunchCommand('/tmp/x').includes('CLAUDE_CODE_ENABLE_TODO_TOOLS=1 claude '),
+    'the env sits immediately in front of the claude invocation it applies to',
   )
 })
 

@@ -118,9 +118,11 @@ import {
 import { createActingUserTracker } from './lib/acting-user.js'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
+  HOST_POSTED_REFUSAL,
   buildComponentEventMessage,
   deriveComponentTitle,
   findRenderable,
+  isHostPostedKind,
   listRenderableKinds,
   normalizeComponentPayloadArg,
   validateComponentPayload,
@@ -474,6 +476,28 @@ import {
 } from 'node:fs'
 import { join as pathJoin, dirname as pathDirname } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
+// Agent activity from the session's own hooks (stage 4). The mapper is pure
+// (lib/hook-events.ts), the intake is a spool file per session
+// (lib/hook-intake.ts), and the chat a hook event belongs to comes from
+// lib/turn-chat.ts. The daemon ALWAYS sends what it sees: whether the owner
+// draws it is their per agent "Show technical details" setting, read by the
+// app and never by this daemon.
+import {
+  applyHookEventToTurn,
+  emptyTurn,
+  parseHookEvent,
+  type Effect,
+  type StepRow,
+  type ToolRow,
+  type TurnState,
+} from './lib/hook-events.js'
+import {
+  hookStateRoot,
+  hooksRoot,
+  startHookIntake,
+  type HookIntake,
+} from './lib/hook-intake.js'
+import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
 // agents (where stderr isn't easily reachable from inside the agent loop)
@@ -940,6 +964,30 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
   }
 }
 
+/**
+ * An HTTP failure that carries its STATUS, not just a sentence.
+ *
+ * The message is unchanged (`<METHOD> <status>: <body excerpt>`) so every
+ * existing log line reads the same. The status is a field because deciding
+ * anything by searching the text is a bug waiting for a chat id: the Steps
+ * route embeds one in its URL, so a chat numbered 4403 used to look like a
+ * permanent 403 refusal and silenced itself forever.
+ */
+class HttpError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
+
+/** The status of a thrown HTTP failure, or null when it is not one. */
+function httpStatusOf(err: unknown): number | null {
+  return err instanceof HttpError ? err.status : null
+}
+
 async function bgosPost(
   path: string,
   body: Record<string, unknown>,
@@ -1396,6 +1444,20 @@ async function confirmCompaction(
   }
 }
 
+/**
+ * PUT. Two callers: the slash command catalog sync, and the live Steps snapshot
+ * the hook rail sends (stage 4).
+ *
+ * The Steps route family is the USER scoped one,
+ * `assistants/:id/chats/:chatId/steps`, deliberately: this daemon authenticates
+ * with a pairing token on a modern install and with a legacy X-API-Key on an
+ * old one, and the user family accepts BOTH, while the /integrations twin
+ * refuses an API key caller.
+ *
+ * The response body is optional (`.catch(() => null)`): a route that answers
+ * 204 is a success, and turning that into a thrown error made a landed write
+ * look like a failed one.
+ */
 async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
@@ -1412,9 +1474,9 @@ async function bgosPut(path: string, body: Record<string, unknown>): Promise<unk
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`PUT ${response.status}: ${text.slice(0, 200)}`)
+        throw new HttpError(`PUT ${response.status}: ${text.slice(0, 200)}`, response.status)
       }
-      return response.json()
+      return response.json().catch(() => null)
     },
   )
 }
@@ -3367,6 +3429,21 @@ async function handleShowComponent(opts: {
             `Error: unknown component kind "${opts.kind}". Known kinds ` +
             `(${manifestSource} manifest): ` +
             `${kinds.length ? kinds.join(', ') : 'none'}.`,
+        },
+      ],
+      isError: true,
+    }
+  }
+
+  // The activity kinds (the two hook rail markers) are posted by the host,
+  // never summoned: an agent that could send `context_compacted` could narrate
+  // a compaction that never happened into a chat the owner reads as a record.
+  if (isHostPostedKind(entry)) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Error: ${HOST_POSTED_REFUSAL} Kind "${opts.kind}" is not summonable.`,
         },
       ],
       isError: true,
@@ -5582,6 +5659,415 @@ function noteMonitoredChat(chatId: string | undefined | null): void {
   monitoredChatSet.add(String(chatId))
 }
 
+// ── Agent activity from the session's own hooks (stage 4) ────────────────────
+//
+// Claude Code hooks fire in the SESSION; this daemon is a different process.
+// bin/hoai-hook.mjs appends each payload to a spool file per session and
+// lib/hook-intake.ts drains it here. lib/hook-events.ts maps a payload onto
+// effects, and this block is the only part that talks to BGOS.
+//
+// THE DAEMON ALWAYS SENDS. The owner's per agent "Show technical details"
+// setting hides rows in the app; the backend still derives the agent's live
+// working status from a tool_progress row arriving, and a shared agent has
+// several viewers. Nothing here reads the setting, and nothing here may learn
+// to: gating at the plugin would blind the header status for everyone.
+//
+// Everything is BEST EFFORT. A failed post logs and is dropped. It never
+// reaches the model, never fails a turn, and never throws into the intake.
+
+/** Coalesce card edits, the same window the Codex plugin's poster uses. */
+const HOOK_CARD_COALESCE_MS = 600
+/**
+ * Re-PUT the unchanged Steps snapshot this often while a turn is live. The
+ * server treats a record older than STEPS_STALE_MS (three minutes) as gone, and
+ * a Claude Code turn is routinely quiet for longer than that between task
+ * changes, so without this heartbeat the strip blinks out mid turn and the
+ * owner reads it as the agent dying.
+ */
+const HOOK_STEPS_HEARTBEAT_MS = 60_000
+
+/** The chat a hook event belongs to: the last thing delivered to this session,
+ *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
+const turnChat = createTurnChatTracker()
+
+let hookTurn: TurnState = emptyTurn()
+let hookTurnLive = false
+/** Bumped on every turn end, so a card POST that lands after the turn finished
+ *  cannot adopt an id the next turn would then PATCH. */
+let hookTurnToken = 0
+let hookCardId: string | null = null
+let hookCardPending: { state: 'running' | 'done'; tools: ToolRow[]; text: string } | null = null
+let hookCardTimer: ReturnType<typeof setTimeout> | null = null
+/** The card POST or PATCH currently on the wire, so the turn end can wait for
+ *  it instead of racing it. It resolves to the card's id (a POST mints one),
+ *  which is what lets the final update address a card the turn state no longer
+ *  remembers. Null when nothing is in flight. */
+let hookCardFlight: Promise<string | null> | null = null
+let hookStepsSnapshot: StepRow[] | null = null
+let hookStepsTurnId: string | null = null
+let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
+/** A 403 means this chat does not take a Steps list from us (a room). Say it
+ *  once and stop asking; the tool card and the replies are unaffected. */
+const hookStepsSilencedChats = new Set<string>()
+let hookIntake: HookIntake | null = null
+
+/**
+ * Where a hook row is posted.
+ *
+ * The chat of the LIVE turn, which lib/turn-chat.ts fixes at the prompt and
+ * holds until Stop. Between turns it is still the last turn's chat, because an
+ * out of turn marker (a compaction while the agent sits idle is the real case)
+ * belongs to the conversation that just happened. Only when no turn has ever
+ * run does this fall back to the first monitored chat, the same fallback the
+ * liveness probe and the permission relay use.
+ */
+function hookChatId(): string | null {
+  const record = turnChat.current(Date.now())
+  if (record) return record.chatId
+  return monitoredChatIds[0] ?? null
+}
+
+/** The created message id, tolerating both shapes the API has returned. */
+function createdMessageId(response: unknown): string | null {
+  const body = response as { id?: unknown; message?: { id?: unknown } } | null
+  const raw = body?.id ?? body?.message?.id
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw)
+  if (typeof raw === 'string' && raw.trim() !== '') return raw.trim()
+  return null
+}
+
+/** The wire body of one card state. */
+function hookCardBody(pending: { state: 'running' | 'done'; tools: ToolRow[]; text: string }): {
+  text: string
+  toolProgress: { state: 'running' | 'done'; tools: ToolRow[] }
+} {
+  return { text: pending.text, toolProgress: { state: pending.state, tools: pending.tools } }
+}
+
+/**
+ * One card write. Returns the card's id: the created one for a POST, the same
+ * one for a PATCH, so a caller that started the POST can hand the id to the
+ * final update even after the turn state has been cleared.
+ *
+ * No assistantId: CreateMessageDto does not declare it, so the backend's
+ * whitelist strips it and its unknown-field shadow interceptor logs a line for
+ * every card this rail posts. The daemon's credentials already say which
+ * assistant is speaking.
+ */
+async function writeHookCard(
+  chatId: string,
+  cardId: string | null,
+  card: ReturnType<typeof hookCardBody>,
+): Promise<string | null> {
+  if (cardId === null) {
+    const created = await bgosPost('messages', {
+      chatId: Number(chatId),
+      sender: 'assistant',
+      messageType: 'tool_progress',
+      ...card,
+    })
+    return createdMessageId(created)
+  }
+  await bgosPatch(`messages/${cardId}`, card)
+  return cardId
+}
+
+async function flushHookCard(): Promise<void> {
+  // One card write at a time. A caller that finds one in flight leaves its
+  // pending state where it is; the finally below re-schedules it, and the turn
+  // end awaits the flight before sending the final card itself.
+  if (hookCardFlight !== null) return
+  const pending = hookCardPending
+  if (pending === null) return
+  const chatId = hookChatId()
+  if (chatId === null) {
+    hookCardPending = null
+    return
+  }
+  // Captured BEFORE the first await: a turn_end effect runs in the same
+  // synchronous loop as the final card flush and clears both of these.
+  const cardId = hookCardId
+  const token = hookTurnToken
+  hookCardPending = null
+  const write = (async (): Promise<string | null> => {
+    try {
+      return await writeHookCard(chatId, cardId, hookCardBody(pending))
+    } catch (err) {
+      log(`hook rail: tool card post failed: ${err}`)
+      return cardId
+    }
+  })()
+  hookCardFlight = write
+  try {
+    const id = await write
+    if (id !== null && token === hookTurnToken) hookCardId = id
+  } finally {
+    hookCardFlight = null
+    if (hookCardPending !== null) scheduleHookCard()
+  }
+}
+
+function scheduleHookCard(): void {
+  if (hookCardTimer !== null) return
+  hookCardTimer = setTimeout(() => {
+    hookCardTimer = null
+    void flushHookCard()
+  }, HOOK_CARD_COALESCE_MS)
+  hookCardTimer.unref?.()
+}
+
+async function putHookSteps(
+  steps: StepRow[],
+  turnId: string | null,
+  chatId: string,
+): Promise<void> {
+  if (hookStepsSilencedChats.has(chatId)) return
+  try {
+    await bgosPut(`assistants/${ASSISTANT_ID}/chats/${chatId}/steps`, {
+      ...(turnId ? { turnId } : {}),
+      steps,
+    })
+  } catch (err) {
+    // The STATUS, never the text: the text carries the chat id (it is in the
+    // URL) and a timeout message can carry anything, so a chat numbered 4403
+    // used to silence its own Steps strip for the life of the daemon.
+    if (httpStatusOf(err) === 403) {
+      hookStepsSilencedChats.add(chatId)
+      log(`hook rail: chat ${chatId} does not accept a Steps list (403); not asking again`)
+      return
+    }
+    log(`hook rail: steps PUT failed: ${err}`)
+  }
+}
+
+function startHookStepsHeartbeat(): void {
+  if (hookStepsHeartbeat !== null) return
+  hookStepsHeartbeat = setInterval(() => {
+    if (!hookTurnLive) return
+    const steps = hookStepsSnapshot
+    if (steps === null || steps.length === 0) return
+    const chatId = hookChatId()
+    if (chatId === null) return
+    void putHookSteps(steps, hookStepsTurnId, chatId)
+  }, HOOK_STEPS_HEARTBEAT_MS)
+  hookStepsHeartbeat.unref?.()
+}
+
+function stopHookStepsHeartbeat(): void {
+  if (hookStepsHeartbeat === null) return
+  clearInterval(hookStepsHeartbeat)
+  hookStepsHeartbeat = null
+}
+
+async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Promise<void> {
+  const chatId = hookChatId()
+  if (chatId === null) return
+  const built = buildComponentEventMessage({
+    kind: effect.markerKind,
+    payload: effect.payload,
+    chatId: Number(chatId),
+    assistantId: ASSISTANT_ID,
+    description: effect.title,
+  })
+  if (!built.ok) {
+    log(`hook rail: marker ${effect.markerKind} not built: ${built.error}`)
+    return
+  }
+  try {
+    // The builder's own text is the title alone; the mapper already wrote the
+    // readable one-line fallback an old client renders, so it wins here.
+    // assistantId is dropped for the same reason the card POST drops it:
+    // CreateMessageDto does not declare it (see flushHookCard).
+    const { assistantId: _unused, ...markerBody } =
+      built.body as unknown as Record<string, unknown>
+    await bgosPost('messages', {
+      ...markerBody,
+      text: effect.text,
+    })
+  } catch (err) {
+    log(`hook rail: marker ${effect.markerKind} post failed: ${err}`)
+  }
+}
+
+/**
+ * End of turn, properly: take the final card OUT of the turn state, clear the
+ * turn, wait for the write already on the wire, and only then send the last
+ * `done` update. Exactly the shape of the Codex poster's finalizeTurn, which
+ * deletes its card from the map, awaits flushInFlight and then PATCHes.
+ *
+ * Two failures this order avoids. Without the wait, a `done` effect that
+ * arrived while a POST or PATCH was in flight found the flusher busy, left its
+ * state pending, and then had that state cleared by the turn end a microsecond
+ * later: the card stayed on "running" for ever, on exactly the turns that were
+ * busy enough to matter. And without clearing FIRST, a new turn starting while
+ * this one waits for the network would have its own fresh card state cleared
+ * out from under it when the wait finally returned.
+ */
+async function finishHookTurn(): Promise<void> {
+  // Everything the last update needs, captured before anything is cleared.
+  const pending = hookCardPending
+  const chatId = hookChatId()
+  const flight = hookCardFlight
+  let cardId = hookCardId
+  endHookTurn()
+  if (flight !== null) {
+    try {
+      // The write already on the wire must land first: it is what mints the
+      // card id, and an older list must not overwrite the final one.
+      const id = await flight
+      if (id !== null) cardId = id
+    } catch {
+      /* the flush logs its own failure; the final card still goes out */
+    }
+  }
+  if (pending === null || chatId === null) return
+  try {
+    await writeHookCard(chatId, cardId, hookCardBody(pending))
+  } catch (err) {
+    log(`hook rail: final tool card update failed: ${err}`)
+  }
+}
+
+function endHookTurn(): void {
+  hookTurnToken += 1
+  hookTurnLive = false
+  hookCardId = null
+  hookCardPending = null
+  if (hookCardTimer !== null) {
+    clearTimeout(hookCardTimer)
+    hookCardTimer = null
+  }
+  hookStepsSnapshot = null
+  hookStepsTurnId = null
+  stopHookStepsHeartbeat()
+  turnChat.end(Date.now())
+}
+
+function runHookEffects(effects: Effect[]): void {
+  for (const effect of effects) {
+    switch (effect.kind) {
+      case 'tool_card': {
+        hookCardPending = { state: effect.state, tools: effect.tools, text: effect.text }
+        if (effect.state === 'done') {
+          if (hookCardTimer !== null) {
+            clearTimeout(hookCardTimer)
+            hookCardTimer = null
+          }
+          void flushHookCard()
+        } else {
+          hookTurnLive = true
+          scheduleHookCard()
+        }
+        break
+      }
+      case 'steps': {
+        const chatId = hookChatId()
+        hookStepsSnapshot = effect.steps
+        hookStepsTurnId = effect.turnId
+        if (effect.steps.length > 0) {
+          hookTurnLive = true
+          startHookStepsHeartbeat()
+        }
+        if (chatId !== null) void putHookSteps(effect.steps, effect.turnId, chatId)
+        break
+      }
+      case 'marker': {
+        void postHookMarker(effect)
+        break
+      }
+      case 'turn_end': {
+        void finishHookTurn()
+        break
+      }
+    }
+  }
+}
+
+/** One spooled hook payload. Never throws: the intake keeps draining. */
+function onHookPayload(payload: Record<string, unknown>): void {
+  const event = parseHookEvent(payload)
+  if (event === null) return
+  // The payload carries the CLI's own transcript_path, which is the strongest
+  // binding evidence there is (lib/session-binding.ts). Feeding it here is what
+  // lets the context gauge stop guessing.
+  try {
+    sessionBinder.noteHookSession(event.sessionId, event.transcriptPath)
+  } catch {
+    /* binding is telemetry; it may never break the rail */
+  }
+  if (event.name === 'UserPromptSubmit') {
+    hookTurnLive = true
+    // The turn's chat is decided HERE and held until Stop. The prompt carries
+    // the message we delivered, so the delivery it matches names the chat; with
+    // no match (a cron wake the agent started itself) the last delivery stands.
+    // Either way a peer message or a meeting arriving mid turn moves nothing.
+    const matched = turnChat.matchDelivered(payload.prompt)
+    turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
+  }
+  const { next, effects } = applyHookEventToTurn(hookTurn, event, Date.now())
+  hookTurn = next
+  runHookEffects(effects)
+}
+
+/**
+ * Start draining hook spools, for the pairing LOCK HOLDER only.
+ *
+ * Several daemons can resolve one pairing on a shared host, and they all watch
+ * the same directory. If a passive one drained it too, every tool row would be
+ * posted twice. The guard is the first line of this function and it is pinned
+ * by a source test; the intake is also armed-gated on every pump, so a daemon
+ * that stands down between two pumps stops consuming immediately.
+ */
+function startHookIntakeIfHolder(): void {
+  if (!lockHeld) return
+  if (hookIntake !== null) return
+  try {
+    const root = hookStateRoot()
+    hookIntake = startHookIntake({
+      stateRoot: root,
+      projectDir: sessionBinder.projectDirectory,
+      onEvent: (payload) => onHookPayload(payload),
+      isArmed: () => channelArmed && lockHeld,
+      isTurnLive: () => hookTurnLive,
+      // Proof a: the prompt carries a message this daemon delivered. Nothing
+      // else on the machine could have that text in its prompt.
+      provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
+      // Proofs b and c: the transcript lib/session-binding.ts has already
+      // PROVEN is ours (a reply marker, or the CLI assigned session id). A
+      // newest-mtime guess never answers here, by construction.
+      provenTranscript: () => {
+        try {
+          return sessionBinder.provenTranscriptPath()
+        } catch {
+          return null
+        }
+      },
+      log,
+    })
+    log(`hook intake: draining ${hooksRoot(root)} (this daemon holds the pairing lock)`)
+  } catch (err) {
+    // A missing state directory or an unavailable watch must never stop a boot.
+    hookIntake = null
+    log(`hook intake: could not start (${err}); the rail stays off for this spell`)
+  }
+}
+
+/** Stop consuming. Called on stand down and on exit, idempotent. */
+function stopHookIntake(): void {
+  try {
+    hookIntake?.stop()
+  } catch {
+    /* already closed */
+  }
+  hookIntake = null
+  if (hookCardTimer !== null) {
+    clearTimeout(hookCardTimer)
+    hookCardTimer = null
+  }
+  hookCardPending = null
+  stopHookStepsHeartbeat()
+}
+
 /**
  * Capture an opaque sessionHandle the adapter received on an inbound event,
  * binding it to its chat so we can (a) prefer it on the way back and (b) treat
@@ -6268,6 +6754,19 @@ async function pollChat(chatId: string): Promise<void> {
         userId: pollSenderUserId,
         senderType: pollSenderType,
         agentOrigin: pollAgentOrigin,
+      })
+      // The chat this turn's hook rows belong to. Deliberately beside (not
+      // inside) noteInbound: that tracker records HUMAN turns only and is never
+      // cleared, so a scheduled wake or a peer turn would file the tool rows
+      // under the last human chat. A source guard pins the two together.
+      turnChat.note({
+        chatId,
+        messageId: Number(msg.message.id),
+        kind: pollSenderType === 'agent' ? 'peer' : pollSenderType === 'system' ? 'system' : 'user',
+        // The delivered text, so the session's next prompt can PROVE it is the
+        // one we feed (lib/hook-intake.ts admission, proof a).
+        text: content,
+        now: Date.now(),
       })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',
@@ -7139,6 +7638,15 @@ async function forwardStreamInbound(
     senderType: isSystem ? 'system' : view.senderKind,
     agentOrigin: view.agentOrigin,
   })
+  // The chat this turn's hook rows belong to (see the note at the poll site).
+  turnChat.note({
+    chatId,
+    messageId: Number(view.messageId),
+    kind: isSystem ? 'system' : view.senderKind === 'agent' ? 'peer' : 'user',
+    // The delivered text (see the poll site): the binding proof reads it.
+    text: content,
+    now: Date.now(),
+  })
   // Map the conversation before the awaited handoff. A close event can arrive
   // during that await; it must already be able to resolve this chat so the
   // successful handoff below cannot arm a reply timer on a closed thread.
@@ -7972,6 +8480,15 @@ function connectWebsocket(): void {
         senderType: wsSenderType,
         agentOrigin: wsAgentOrigin,
       })
+      // The chat this turn's hook rows belong to (see the note at the poll site).
+      turnChat.note({
+        chatId,
+        messageId: Number(messageId),
+        kind: wsSenderType === 'agent' ? 'peer' : wsSenderType === 'system' ? 'system' : 'user',
+        // The delivered text (see the poll site): the binding proof reads it.
+        text,
+        now: Date.now(),
+      })
       // A meeting turn's inbound twin carries the server's own verdict on
       // whose turn it is. Frame it as a meeting card with that verdict: the
       // plain chat card below has no turn marker and would win the dedupe
@@ -8191,6 +8708,9 @@ function connectWebsocket(): void {
         meetingChatIds.add(chatId)
         meetingIdByChatId.set(chatId, meetingId)
         noteMonitoredChat(chatId)
+        // A meeting is a delivery too: the hook rows of the turn it starts
+        // belong to its chat, not to whatever DM spoke last.
+        turnChat.note({ chatId, kind: 'meeting', now: Date.now() })
       }
       const peerNames = (payload?.participants ?? [])
         .filter((p: any) => Number(p?.assistantId) !== Number(ASSISTANT_ID))
@@ -8266,6 +8786,13 @@ function connectWebsocket(): void {
         meetingChatIds.add(chatId)
         meetingIdByChatId.set(chatId, meetingId)
         noteMonitoredChat(chatId)
+        // The second meeting delivery site (see meeting_invitation above).
+        turnChat.note({
+          chatId,
+          messageId: Number(payload?.messageId),
+          kind: 'meeting',
+          now: Date.now(),
+        })
         if (!ctx) {
           ctx = {
             chatId: Number(chatId),
@@ -9043,6 +9570,7 @@ async function main(): Promise<void> {
     shuttingDown = true
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
+    stopHookIntake()
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
@@ -9053,6 +9581,7 @@ async function main(): Promise<void> {
   // cursors and release the lock. Both are idempotent, so double-firing after
   // shutdown() already ran is harmless.
   process.on('exit', () => {
+    stopHookIntake()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
   })
@@ -9213,6 +9742,9 @@ async function main(): Promise<void> {
       if (!gateRefresh.held) {
         channelArmed = false
         lockHeld = false
+        // Stop consuming hook spools the moment the lock is gone: a passive
+        // daemon that kept draining would post every tool row a second time.
+        stopHookIntake()
         lockIoErrorWarned = false
         standDownIgnoredFrames.clear()
         log(
@@ -9246,6 +9778,7 @@ async function main(): Promise<void> {
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
       channelArmed = true
+      startHookIntakeIfHolder()
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
           `monitoring ${monitoredChatIds.length} chat(s)`,
@@ -9475,6 +10008,8 @@ async function main(): Promise<void> {
           if (!refreshed.held) {
             channelArmed = false
             lockHeld = false
+            // Stop consuming hook spools (see the re-arm gate above).
+            stopHookIntake()
             // Fresh spell, fresh "ignored" reporting: each wrapped frame kind
             // gets to say it once more, and a heartbeat-write failure in a LATER
             // spell warns again instead of being swallowed by this one's latch.
@@ -9812,6 +10347,8 @@ async function main(): Promise<void> {
     if (!gateRefresh.held) {
       channelArmed = false
       lockHeld = false
+      // Stop consuming hook spools (see the re-arm gate above).
+      stopHookIntake()
       lockIoErrorWarned = false
       standDownIgnoredFrames.clear()
       log(
@@ -9833,6 +10370,9 @@ async function main(): Promise<void> {
       return
     }
     channelArmed = true
+    // Last, with the lock proven ours one line above: start draining this
+    // session's hook spool. Only the holder consumes (see the guard inside).
+    startHookIntakeIfHolder()
   }
 
   // The passive watch loop, shared by the two ways a daemon can find itself
@@ -9873,6 +10413,8 @@ async function main(): Promise<void> {
           // go back to watching.
           channelArmed = false
           lockHeld = false
+          // Stop consuming hook spools (see the re-arm gate above).
+          stopHookIntake()
           // Only when the loops were never built. Undoing the latch after the
           // tick was kicked would let the next promotion run the full arm again
           // and leave two interleaved poll chains for the life of the process.

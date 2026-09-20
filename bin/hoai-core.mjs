@@ -85,7 +85,7 @@ import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
   observeMarketplaceInstall,
 } from '../lib/plugin-cli.mjs'
-import { ensureMarketplaceAutoUpdate } from '../lib/claude-preseed.mjs'
+import { ensureHookEntries, ensureMarketplaceAutoUpdate } from '../lib/claude-preseed.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -403,6 +403,39 @@ export function channelNote(resolution) {
 // -- The run plan -------------------------------------------------------------
 
 /**
+ * Environment every hoai launch adds.
+ *
+ * CLAUDE_CODE_ENABLE_TODO_TOOLS=1 turns on the CLI's TaskCreate / TaskUpdate
+ * tools, which are the ONLY source of the live Steps strip in the app. Without
+ * it every other part of the activity rail works and the strip stays empty for
+ * ever, which reads as a broken feature rather than a missing flag. The
+ * bootstraps and bgos-agent have carried it since 0.40.0; hoai is the launcher
+ * an agent folder actually starts with, day after day, and it did not.
+ */
+export const LAUNCH_ENV = Object.freeze({ CLAUDE_CODE_ENABLE_TODO_TOOLS: '1' })
+
+/**
+ * The settings entries a CLONE launch must register, or null for a marketplace
+ * one.
+ *
+ * Claude Code reads a plugin's own hooks/hooks.json only for an INSTALLED
+ * plugin under the plugins cache. A clone reaches the session as an MCP server
+ * entry in the workspace .mcp.json, which is not an installed plugin, so
+ * nothing would ever read its hooks file and no activity would appear, with no
+ * error to notice. The workspace settings file IS read. A marketplace install
+ * already has the rail and must be skipped, or every event fires twice.
+ */
+export function hookRegistrationFor({ cwd, scriptDir, method }) {
+  if (String(method ?? '') === 'marketplace') return null
+  const forwarderPath = joinDir(scriptDir, 'hoai-hook.mjs')
+  if (!String(scriptDir ?? '').trim()) return null
+  return {
+    settingsPath: joinDir(joinDir(cwd, '.claude'), 'settings.local.json'),
+    forwarderPath,
+  }
+}
+
+/**
  * Decide HOW a bare `hoai` launches the agent from this folder.
  *
  * The channel flag comes from install-method detection (the sibling
@@ -426,6 +459,8 @@ export function channelNote(resolution) {
  *   scriptDir?: string,
  * }} [opts]
  * @returns {{ ok: true, command: 'claude', args: string[], note: string,
+ *             env: Record<string, string>,
+ *             hooks: { settingsPath: string, forwarderPath: string } | null,
  *             detection: { method: string, channelSpec: string, pluginRoot: string } }
  *         | { ok: false, reason: string }}
  */
@@ -478,6 +513,10 @@ export function buildRunPlan({
   }
   const args = launchArgsFor(resolution)
   const methodLine = channelNote(resolution)
+  // What the launch needs BESIDES the argv: the task tools flag, and (for a
+  // clone) the hook entries that carry the activity rail into the session.
+  const launchEnv = { ...LAUNCH_ENV }
+  const hooks = hookRegistrationFor({ cwd, scriptDir, method: resolution.method })
 
   const declared = folderIdentity(cwd, readFile)
   if (declared.conflict) {
@@ -500,6 +539,8 @@ export function buildRunPlan({
       ok: true,
       command: 'claude',
       args,
+      env: launchEnv,
+      hooks,
       detection,
       note:
         `${methodLine}\n` +
@@ -514,6 +555,8 @@ export function buildRunPlan({
       ok: true,
       command: 'claude',
       args,
+      env: launchEnv,
+      hooks,
       detection,
       note: `${methodLine}\n[hoai] launching as assistant ${envId} (BGOS_ASSISTANT_ID env pin).`,
     }
@@ -538,7 +581,15 @@ export function buildRunPlan({
     ids.length === 1
       ? `[hoai] launching as this host's sole paired agent (assistant ${ids[0]}); the daemon self-resolves.`
       : `[hoai] no pairing on this host yet; if the agent cannot connect, run: hoai pair <CODE> (code from the HOAI app).`
-  return { ok: true, command: 'claude', args, detection, note: `${methodLine}\n${identityLine}` }
+  return {
+    ok: true,
+    command: 'claude',
+    args,
+    env: launchEnv,
+    hooks,
+    detection,
+    note: `${methodLine}\n${identityLine}`,
+  }
 }
 
 // -- The supervise loop (one-click updates) -----------------------------------
@@ -2029,6 +2080,24 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     return 1
   }
   console.log(plan.note)
+  // The plan's environment and its hook entries are part of the launch, not
+  // decoration: applied here, before claude is spawned, so the child inherits
+  // the task tools flag and the session finds its forwarder registered.
+  const applyEnv = { ...(plan.env ?? {}) }
+  for (const [key, value] of Object.entries(applyEnv)) {
+    if (!env[key]) env[key] = value
+  }
+  if (plan.hooks) {
+    const register = opts.registerHooks ?? ensureHookEntries
+    try {
+      // Best effort, every launch: a folder scaffolded before the rail existed,
+      // or one whose settings file a concurrent claude rewrote, gets it back
+      // here or never.
+      register(plan.hooks)
+    } catch (err) {
+      console.error(`[hoai] could not register the activity hooks: ${err?.message ?? err}`)
+    }
+  }
   if (fresh) {
     console.log(
       '[hoai] --new: starting a brand new conversation for this agent. The previous ' +
