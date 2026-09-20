@@ -14,7 +14,11 @@
  *
  *   - PASSIVE: `live` = at least one bgos MCP tool call since this process
  *     booted. A session that has spoken can obviously hear us, so this is a
- *     sound POSITIVE. It is NOT a sound negative, see below.
+ *     sound POSITIVE. It is NOT a sound negative, see below. And since 0.39.3
+ *     it is not the reading the deaf-session decision uses either: that reads
+ *     `recentlyLive` (a tool call within LIVE_RECENCY_WINDOWS windows), because
+ *     a latch that only flips one way cannot see a session that was live and
+ *     then stopped (see the class comment).
  *   - ACTIVE: when the passive signal is absent we PROBE, by asking the
  *     session to call `channel_ack` (buildLivenessProbeNotification). A
  *     session that hears the channel answers a direct question even when it
@@ -55,20 +59,128 @@
  */
 
 /**
- * One-way latch: flips true on the first bgos tool call this process sees
- * and stays true. `channel_ack` counts, which is what makes the active probe
- * work: a session with nothing to say can still prove it hears us.
+ * Liveness has two readings, and they answer different questions.
+ *
+ * `live` is the ever-live LATCH: flips true on the first bgos tool call this
+ * process sees and stays true. It answers "has this session EVER proven it
+ * hears the channel this boot", which is the right question for cursor
+ * persistence (gatePersistedCursors) and the on-disk marker: a session that
+ * once heard us did receive the deliveries behind its cursor advances.
+ *
+ * `recentlyLive(now, windowMs)` is a CLOCK: true when a tool call happened
+ * within LIVE_RECENCY_WINDOWS reply-overdue windows of `now`. It answers "is
+ * this session hearing us NOW", which is the question the deaf-session
+ * decision and the heartbeat's unresponsive report actually ask.
+ *
+ * WHY THE LATCH ALONE WAS WRONG (2026-09-12, Data/900). A latch that only
+ * flips one way cannot see a session that was live and then stopped. 900's
+ * session made its last bgos tool call at 07:49Z (a reply) and was then
+ * wedged by a queued /exit; the daemon stayed connected and heartbeating for
+ * 12h47m while 13 hourly wakes and 2 owner messages queued unanswered. The
+ * nudge fired once (19:54:36Z) and the ladder never moved, because
+ * deafSessionAction returned 'wait' on `live === true`, and `live` had been
+ * true since 07:49. Zero probe lines, zero escalate lines, in a boot that had
+ * made dozens of tool calls. The owner found out at 00:36 the next morning.
+ *
+ * `channel_ack` counts for both readings, which is what makes the active
+ * probe work: a session with nothing to say can still prove it hears us.
  */
 export class ChannelLiveness {
   private toolCallSeen = false
+  private lastToolCallAtMs: number | null = null
 
-  markToolCall(): void {
+  /** Records a bgos tool call. `now` is injectable for tests; the daemon passes nothing. */
+  markToolCall(now: number = Date.now()): void {
     this.toolCallSeen = true
+    this.lastToolCallAtMs = now
   }
 
+  /** Ever-live this boot. Unchanged: a one-way latch. */
   get live(): boolean {
     return this.toolCallSeen
   }
+
+  /** Epoch ms of the most recent bgos tool call, or null before the first. */
+  get lastToolCallAt(): number | null {
+    return this.lastToolCallAtMs
+  }
+
+  /**
+   * Hearing us NOW: a tool call strictly within LIVE_RECENCY_WINDOWS * windowMs
+   * of `now`. False before the first call, and false again exactly at the
+   * horizon (now - last === horizon), so the boundary is a real boundary.
+   */
+  recentlyLive(now: number, windowMs: number): boolean {
+    if (this.lastToolCallAtMs === null) return false
+    return now - this.lastToolCallAtMs < LIVE_RECENCY_WINDOWS * windowMs
+  }
+
+  /**
+   * Has the session made a tool call at or after `since`? The heartbeat's
+   * recovery anchor: once a session speaks AFTER the deaf verdict it stays
+   * cleared for the rest of the boot. The verdict latch is once per boot, so
+   * no newer verdict can exist to re-assert; a report that came back on
+   * silence alone would be the old accusation with no new probe behind it.
+   * Null means there was no verdict, so nothing to have spoken since.
+   */
+  spokeSince(since: number | null): boolean {
+    if (since === null || this.lastToolCallAtMs === null) return false
+    return this.lastToolCallAtMs >= since
+  }
+}
+
+/**
+ * How long a session may go without touching a bgos tool before its silence
+ * means anything, in reply-overdue windows. Three (12 minutes at the 4 minute
+ * default), for two reasons:
+ *
+ *   - It must be at least the TWO windows the ladder already waits before a
+ *     probe is possible (now - inbound.ts >= 2 * windowMs). A session that
+ *     spoke the moment the inbound landed must still read as live at the
+ *     first eligible tick, or that tick would probe a working session.
+ *   - It matches DEAF_PROBE_GRACE_WINDOWS, which is the same question asked
+ *     the other way round: how long may a session sit on a direct question
+ *     before that means anything. One answer for one question.
+ *
+ * Longer buys nothing on the case that motivated this (900's last call was
+ * twelve hours old when the owner's message landed) and only delays the probe
+ * on a session that spoke just before it wedged. Shorter would probe every
+ * session that runs a long build. A probe costs one silent channel
+ * notification, and only an UNANSWERED probe ever reaches the user.
+ */
+export const LIVE_RECENCY_WINDOWS = 3
+
+/**
+ * What a log line can honestly say about the last bgos tool call. The old
+ * probe and escalate lines asserted "zero bgos tool calls since boot", which
+ * was the latch's reading and was false for 900 (that boot had made dozens).
+ */
+export function lastToolCallPhrase(lastToolCallAt: number | null, now: number): string {
+  if (lastToolCallAt === null) return 'no bgos tool call since boot'
+  const minutes = Math.max(0, Math.floor((now - lastToolCallAt) / 60_000))
+  return `last bgos tool call ${minutes} minute(s) ago`
+}
+
+/**
+ * The probe to carry into deafSessionAction on this tick.
+ *
+ * A probe the session has answered since it was sent (any tool call at or
+ * after it, channel_ack included) is SPENT. Under the ever-live latch this
+ * was implicit: an answer flipped `live` for the boot and the ladder never
+ * looked at probeSentAt again. Under a clock, recency can lapse again while
+ * the same pending inbound is still unanswered, and without this the next
+ * lapse would go straight to 'escalate' on the strength of a probe that WAS
+ * answered, and the chat message would say it was not. Clearing it makes the
+ * ladder ask again before it accuses: every escalation rides on a probe that
+ * went unanswered for the full grace, which is exactly what the copy claims.
+ */
+export function unansweredProbe(
+  probeSentAt: number | null,
+  lastToolCallAt: number | null,
+): number | null {
+  if (probeSentAt === null) return null
+  if (lastToolCallAt !== null && lastToolCallAt >= probeSentAt) return null
+  return probeSentAt
 }
 
 /**
@@ -130,7 +242,12 @@ export type DeafSessionAction = 'wait' | 'probe' | 'escalate'
  * 'probe' is returned at exactly the moment the old function returned true,
  * so the first four conditions below are unchanged decision records:
  *
- *   - the session is not live (zero bgos tool calls since boot),
+ *   - the session is not live. `live` is whatever the caller passes; since
+ *     0.39.3 server.ts passes recentlyLive (a tool call within
+ *     LIVE_RECENCY_WINDOWS windows), never the ever-live latch, so a session
+ *     that spoke and then stopped is seen (900, 2026-09-12). A session with
+ *     no call since boot reads the same under both, so the never-live ladder
+ *     below is unchanged,
  *   - there is a pending unanswered inbound,
  *   - the reply-overdue nudge for it already fired (reminded), and went
  *     unacted for at least ONE MORE full window (now - ts >= 2 * windowMs),
@@ -267,7 +384,12 @@ export function inboundOwesReply(senderKind: string | null | undefined): boolean
  *   - `escalated`, the once-per-boot latch set when deafSessionAction returned
  *     'escalate', which by then means ~20 minutes of silence AND an ignored
  *     direct question. It cannot fire on a busy session or a blip.
- *   - `live`, true the moment the session makes any bgos tool call.
+ *   - `live`, as passed by the caller. Since 0.39.3 server.ts passes the same
+ *     recency the deaf decision reads (recentlyLive), OR'd with spokeSince the
+ *     verdict: the ever-live latch would have hidden 900's wedge from the
+ *     backend entirely (escalated, and `live` true since 07:49), and recency
+ *     alone would re-assert a stale verdict every time a recovered session
+ *     went quiet for twelve minutes.
  * A session that speaks again is live, so this returns null, the backend reads
  * an explicit null as "clear", and health goes back to 'ok' with no separate
  * recovery call. The latch never has to be un-latched.

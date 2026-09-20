@@ -208,6 +208,8 @@ import {
   ChannelLiveness,
   deafSessionAction,
   heartbeatUnresponsiveError,
+  lastToolCallPhrase,
+  unansweredProbe,
   pickHeartbeatLastError,
   deafSessionChatMessage,
   deafFixCommand,
@@ -302,6 +304,7 @@ import {
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
+import { runDaemonCommand, type DaemonCommandAudience } from './lib/daemon-command-sender.js'
 import {
   agentStateDir,
   chooseRestartAuthority,
@@ -1252,7 +1255,25 @@ let lastInboundAtMs: number | null = null
  * Every field here is a fact this process already holds. Anything it cannot determine is reported as
  * undetermined rather than estimated.
  */
-async function handleStatusCommand(chatId: string): Promise<void> {
+async function handleStatusCommand(chatId: string, payload: unknown): Promise<void> {
+  // Who asked decides how much is answered. The seam judges the sender and, on
+  // a refusal, replies and returns without ever calling `act`
+  // (lib/daemon-command-sender.ts, driven with spies in its test). Every rail
+  // (poll, WebSocket, stream) lands here; `payload` is required so a caller
+  // cannot forget the sender.
+  await runDaemonCommand({
+    command: 'status',
+    payload,
+    ownerUserId: USER_ID,
+    chatId,
+    send: sendDaemonText,
+    log,
+    act: (verdict) => answerStatus(chatId, verdict.audience),
+  })
+}
+
+/** The /status work itself. Reached only through runDaemonCommand. */
+async function answerStatus(chatId: string, audience: DaemonCommandAudience): Promise<void> {
   let autoUpdateEnrolled: boolean | null = null
   try {
     // Only meaningful for a marketplace install: a clone has no marketplace entry to enrol, so the
@@ -1284,12 +1305,34 @@ async function handleStatusCommand(chatId: string): Promise<void> {
     supervised,
     autoUpdateEnrolled,
     lastInboundAgoMs: lastInboundAtMs === null ? null : Math.max(0, Date.now() - lastInboundAtMs),
+    audience,
   })
 
   await sendDaemonText(chatId, text)
 }
 
-async function handleRemoteCompact(chatId: string): Promise<void> {
+async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
+  // Only the owner may compact: one session serves every chat of this agent,
+  // so a share recipient compacting from their chat would compact the owner's
+  // context. The seam judges the sender and, on a refusal, replies and returns
+  // without ever calling `act` (lib/daemon-command-sender.ts, driven with
+  // spies in its test), so a stranger is refused before the capability check
+  // at the top of the work below could tell them whether this host can
+  // compact remotely at all. Every rail lands here; `payload` is required so
+  // a caller cannot forget the sender.
+  await runDaemonCommand({
+    command: 'compact',
+    payload,
+    ownerUserId: USER_ID,
+    chatId,
+    send: sendDaemonText,
+    log,
+    act: () => compactAsOwner(chatId),
+  })
+}
+
+/** The /compact work itself. Reached only through runDaemonCommand. */
+async function compactAsOwner(chatId: string): Promise<void> {
   if (!compactTarget) {
     const pct = sessionBinder.readContextPct()
     await sendDaemonText(
@@ -3427,11 +3470,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // Every bgos tool call flows through this one handler, making it the
   // liveness chokepoint: a session that calls ANY tool can hear us, so mark
   // before the drain check (a call during an update drain proves liveness
-  // just the same). The first call of a boot also records the persistent
-  // channel-live marker (fix 09): positive, on-disk proof this install can
-  // hear channel events, which the bootstrap's final wait watches for.
-  if (!channelLiveness.live) {
-    channelLiveness.markToolCall()
+  // just the same). EVERY call marks (0.39.3): the deaf-session decision and
+  // the heartbeat's unresponsive report read recentlyLive, a clock, and a
+  // mark taken only on the first call of a boot is the one-way latch that
+  // could not see 900's session stop at 07:49 (lib/channel-liveness.ts). The
+  // first call of a boot still records the persistent channel-live marker
+  // (fix 09): positive, on-disk proof this install can hear channel events,
+  // which the bootstrap's final wait watches for.
+  const firstToolCallThisBoot = !channelLiveness.live
+  channelLiveness.markToolCall()
+  if (firstToolCallThisBoot) {
     recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
   }
   // channel_ack (zero-terminal lifecycle, design 7.2): the liveness probe's
@@ -5428,11 +5476,14 @@ function isMyMeetingTurn(text: string, ctx: MeetingContext): boolean {
 // Deaf-session handling, once per boot. The nudge below is itself a channel
 // notification, so a session launched without the channel flag discards the
 // rescue too (fix 04). When the nudge goes unacted for a second full window
-// on a session with zero tool calls since boot we do NOT accuse it: silence
-// is a legitimate outcome (the nudge itself says so, and watch-style standing
-// orders tell agents to stand down quietly). We ask it a direct question
-// instead, and only an unanswered question earns the chat warning over REST.
-// See lib/channel-liveness.ts for the 2026-08-26 false-positive record.
+// on a session that has not touched a bgos tool within LIVE_RECENCY_WINDOWS
+// windows we do NOT accuse it: silence is a legitimate outcome (the nudge
+// itself says so, and watch-style standing orders tell agents to stand down
+// quietly). We ask it a direct question instead, and only an unanswered
+// question earns the chat warning over REST. See lib/channel-liveness.ts for
+// the 2026-08-26 false-positive record, and for why the reading is recency
+// rather than the ever-live latch (900, 2026-09-12: live at 07:49, wedged,
+// never probed).
 let deafEscalationDone = false
 let deafProbeSentAt: number | null = null
 // When the deaf verdict was reached, so the heartbeat report can say how long
@@ -5446,9 +5497,14 @@ let bootHelloSent = false
 function checkReplyOverdue(): void {
   if (updateDrainMode) return
   const now = Date.now()
+  // A probe the session has answered (any tool call since it was sent) is
+  // spent: recency can lapse again later, and an escalation must never ride
+  // on a probe that WAS answered. Per boot, like the probe itself. See
+  // unansweredProbe in lib/channel-liveness.ts.
+  deafProbeSentAt = unansweredProbe(deafProbeSentAt, channelLiveness.lastToolCallAt)
   for (const [chatId, p] of pendingInbounds.entries()) {
     const deafAction = deafSessionAction({
-      live: channelLiveness.live,
+      live: channelLiveness.recentlyLive(now, REPLY_OVERDUE_MS),
       pending: p,
       now,
       alreadyEscalated: deafEscalationDone,
@@ -5459,13 +5515,13 @@ function checkReplyOverdue(): void {
       // Ask before accusing. A busy session, or one whose standing order is
       // to stand down quietly, answers this and never reaches the warning;
       // only a session that cannot hear the channel stays silent through a
-      // direct question. The ack flips channelLiveness, so one reply ends
-      // this for the whole boot.
+      // direct question. The ack is a tool call, so it refreshes recency and
+      // one reply ends this (the probe is sent once, the latch is per boot).
       deafProbeSentAt = now
       log(
         `deaf session suspected: nudge for chat ${chatId} message ${p.messageId} ` +
-          'went unacted and this session has made zero bgos tool calls since ' +
-          'boot; probing with channel_ack before saying anything to the user',
+          `went unacted (${lastToolCallPhrase(channelLiveness.lastToolCallAt, now)}); ` +
+          'probing with channel_ack before saying anything to the user',
       )
       const probe = buildLivenessProbeNotification({ chatId })
       void trackMessageOperation(() =>
@@ -5479,8 +5535,8 @@ function checkReplyOverdue(): void {
       deafEscalatedAt = now
       log(
         `WARN deaf session confirmed: chat ${chatId} message ${p.messageId} unacted, ` +
-          'zero bgos tool calls since boot, and the channel_ack probe went ' +
-          'unanswered; posting launch guidance into the chat',
+          `${lastToolCallPhrase(channelLiveness.lastToolCallAt, now)}, and the ` +
+          'channel_ack probe went unanswered; posting launch guidance into the chat',
       )
       // The fix line must never carry a GUESSED channel spec: this message
       // goes to a user whose agent is already deaf, and a wrong spec would
@@ -6216,7 +6272,7 @@ async function pollChat(chatId: string): Promise<void> {
           log(`remote compact: ignoring stale backlog request (chat ${chatId})`)
         } else if (!alreadyHandledCompact(String(msg.message.id))) {
           log(`remote compact requested via poll (chat ${chatId})`)
-          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleRemoteCompact(chatId, msg.message)).catch((err) => {
             log(`Remote compact failed: ${err}`)
           })
         }
@@ -6230,7 +6286,7 @@ async function pollChat(chatId: string): Promise<void> {
       if (slashRoute.kind === 'status') {
         if (!alreadyHandledStatus(String(msg.message.id))) {
           log(`status requested via poll (chat ${chatId})`)
-          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleStatusCommand(chatId, msg.message)).catch((err) => {
             log(`Status reply failed: ${err}`)
           })
         }
@@ -7117,7 +7173,7 @@ async function forwardStreamInbound(
     // keeps it to a single answer across all three rails.
     if (!alreadyHandledStatus(String(view.messageId))) {
       log(`status requested via stream (chat ${chatId})`)
-      void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+      void trackMessageOperation(() => handleStatusCommand(chatId, view.raw)).catch((err) => {
         log(`Status reply failed: ${err}`)
       })
     }
@@ -8047,7 +8103,7 @@ function connectWebsocket(): void {
       if (slashRoute.kind === 'compact') {
         if (chatId && !alreadyHandledCompact(String(messageId))) {
           log(`remote compact requested via ws (chat ${chatId})`)
-          void trackMessageOperation(() => handleRemoteCompact(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleRemoteCompact(chatId, payload ?? {})).catch((err) => {
             log(`Remote compact failed: ${err}`)
           })
         }
@@ -8056,7 +8112,7 @@ function connectWebsocket(): void {
       if (slashRoute.kind === 'status') {
         if (chatId && !alreadyHandledStatus(String(messageId))) {
           log(`status requested via ws (chat ${chatId})`)
-          void trackMessageOperation(() => handleStatusCommand(chatId)).catch((err) => {
+          void trackMessageOperation(() => handleStatusCommand(chatId, payload ?? {})).catch((err) => {
             log(`Status reply failed: ${err}`)
           })
         }
@@ -9749,7 +9805,12 @@ async function main(): Promise<void> {
           heartbeatLastError(authRejection, now),
           heartbeatUnresponsiveError({
             escalated: deafEscalationDone,
-            live: channelLiveness.live,
+            // The same recency the deaf decision reads (the ever-live latch
+            // hid 900's wedge here too), plus: a call AFTER the verdict clears
+            // it for the boot, since no newer verdict can exist to re-assert.
+            live:
+              channelLiveness.recentlyLive(now, REPLY_OVERDUE_MS) ||
+              channelLiveness.spokeSince(deafEscalatedAt),
             since: deafEscalatedAt,
             now,
           }),

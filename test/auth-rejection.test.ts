@@ -244,8 +244,8 @@ test('the daemon actually SENDS it: heartbeat wired to the live rejection state'
   )
   assert.match(
     serverSource,
-    /heartbeatUnresponsiveError\(\{[\s\S]{0,200}?escalated: deafEscalationDone,[\s\S]{0,200}?live: channelLiveness\.live,/,
-    'the deaf projection must read the SAME latch the escalation sets and the SAME liveness that clears it',
+    /heartbeatUnresponsiveError\(\{[\s\S]{0,200}?escalated: deafEscalationDone,[\s\S]{0,300}?live:\s*channelLiveness\.recentlyLive\(now, REPLY_OVERDUE_MS\)/,
+    'the deaf projection must read the SAME latch the escalation sets and the SAME recency the deaf decision reads (0.39.3: the ever-live latch hid a wedged session here)',
   )
   assert.match(
     serverSource,
