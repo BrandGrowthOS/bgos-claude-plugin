@@ -1363,9 +1363,14 @@ function thisScriptPath() {
  *   cwd?: string,
  *   platform?: string,
  *   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
- *   installCliImpl?: (opts: object) => Promise<{ ok: boolean, binDir: string }>,
+ *   installCliImpl?: (opts: Record<string, unknown>) =>
+ *     Promise<{ ok: boolean, binDir: string, kept?: unknown[] }>,
+ *   isInteractive?: () => boolean,
  *   bindTimeoutMs?: number,
  * }} [opts]
+ *   `isInteractive` is the TTY check that keeps install-cli on the path where
+ *   the owner is watching. Injected so a test can describe a non-interactive
+ *   caller without one, rather than the behaviour resting on discipline.
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env

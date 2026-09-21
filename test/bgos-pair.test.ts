@@ -1864,10 +1864,16 @@ test('hoai setup puts the hoai command on PATH BEFORE it pairs', async () => {
     scriptDir: '/tmp/not-a-real-plugin/bin',
     spawnImpl: spawnImpl as never,
     spawnClaudeImpl: async () => 0,
-    isInteractive: () => true, installCliImpl: installCli as never,
+    // NOT isInteractive: runSetup does not take it and never consults it.
+    // `hoai setup` already ran install-cli at step 3 of 4, so the
+    // interactive gate belongs to bgos-pair's path, not this one.
+    installCliImpl: installCli as never,
     ensureAutoUpdateImpl: () => ({ changed: false }) as never,
     print: () => {},
-    writeErr: () => {},
+    // writeErr mirrors process.stderr.write, which answers a boolean. The
+    // double says true rather than void so it is the same shape as the thing
+    // it stands in for.
+    writeErr: () => true,
   })
   assert.equal(code, 0)
   assert.deepEqual(order, ['install-cli', 'pair'])

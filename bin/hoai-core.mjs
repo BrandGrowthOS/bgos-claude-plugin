@@ -2131,7 +2131,14 @@ export async function resolveWrapperPluginRoot({
  * registry mechanism bin/hoai-bootstrap.ps1 uses. No shell alias is ever
  * written, on any platform: an alias would have to freeze a channel spec, and
  * the correct spec is only knowable at run time.
- * @returns {Promise<{ ok: boolean, binDir: string }>}
+ *
+ * `force` re-points a shim that belongs to another install; without it such a
+ * shim is left alone and reported. `kept` lists every shim we declined, and it
+ * is ALWAYS an array, including on the early exit below: a caller that reads
+ * `.kept.length` must not have to know which path was taken.
+ * @returns {Promise<{ ok: boolean, binDir: string,
+ *                     kept: Array<{ path: string, pointsAt: string,
+ *                                   wanted: string, reason: string }> }>}
  */
 export async function installHoaiCli({
   platform = process.platform,
@@ -2147,7 +2154,9 @@ export async function installHoaiCli({
   const pluginRoot = await resolveRoot({ env, home, scriptDir })
   if (!pluginRoot) {
     print('[hoai] could not work out where the plugin lives, so the hoai command was not installed.')
-    return { ok: false, binDir: '' }
+    // kept:[] rather than omitted, so every caller can read .kept.length
+    // without first working out which return it got.
+    return { ok: false, binDir: '', kept: [] }
   }
   const result = installImpl({
     pluginRoot,
