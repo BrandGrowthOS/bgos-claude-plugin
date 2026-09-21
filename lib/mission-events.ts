@@ -35,6 +35,11 @@
  * result; telling it again is pure noise in its context window).
  * mission_failed is always an agent write, and mission_updated changes a card
  * the model re-reads on its next mission call, so neither is narrated here.
+ *
+ * Stage 6 gave this parser a second reader. The goal lane arms, re arms and
+ * clears a NATIVE goal off these same frames, so the snapshot it hands back
+ * carries the owner's keepWorking and turnCap as well as the doneWhen the
+ * condition is taken from. Nothing about the notice text changed.
  */
 
 import {
@@ -196,6 +201,14 @@ export function parseMissionEvent(
       pausedReason: typeof rawMission.pausedReason === 'string' ? rawMission.pausedReason : null,
       doneWhen: typeof rawMission.doneWhen === 'string' ? rawMission.doneWhen : null,
       updatedAt: typeof rawMission.updatedAt === 'string' ? rawMission.updatedAt : undefined,
+      // The owner's goal instruction. Without these two the goal lane cannot
+      // ARM from a frame: keepWorking says the owner asked for a loop, and
+      // turnCap is the number the daemon then holds ITSELF to. Both degrade
+      // the same way everything else here does: an absent or unreadable value
+      // reads as off, and nothing is invented to fill the gap.
+      keepWorking:
+        typeof rawMission.keepWorking === 'boolean' ? rawMission.keepWorking : undefined,
+      turnCap: positiveInt(rawMission.turnCap),
     }
 
     const clearedByRaw = payload.cleared_by ?? payload.clearedBy

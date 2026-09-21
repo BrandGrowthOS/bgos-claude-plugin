@@ -15,6 +15,27 @@
  *   GET   assistants/:assistantId/missions/active               { mission | null }
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
  *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
+ *   PATCH assistants/:assistantId/missions/:missionId/progress  the goal lane
+ *   PATCH assistants/:assistantId/missions/:missionId/fail      the goal lane
+ *
+ * The last two are the GOAL LANE's (stage 6). They are not tool calls: the
+ * daemon builds them from what the runtime's own checker wrote into the
+ * session transcript, so their inputs are typed rather than snake_case tool
+ * args. Two blocks ride them, and three rules bind both:
+ *
+ *   verdict    { verdict, reason, by?, check? }, the checker's answer
+ *   runReport  { turnsUsed?, turnCap?, workingMs? }, what the RUNTIME counted
+ *
+ * 1. NEVER SEND `at`, `source` OR ANYTHING ELSE THE SERVER OWNS. When a check
+ *    happened, and whose runtime counted a turn, are stamped by the server;
+ *    the ValidationPipe strips them on the way in, so sending one is not an
+ *    error, it is a lie with no error anywhere.
+ * 2. A COUNT NOBODY COUNTED IS WORSE THAN NO COUNT. A run report field the
+ *    wire cannot carry is DROPPED, never clamped, and a run report with no
+ *    usable field left is omitted whole. The app draws each half only when it
+ *    is present, so absent is a finished view and a clamped 900 is a lie.
+ * 3. AN ABSENT BLOCK IS AN ABSENT KEY. Never `verdict: null`, never an empty
+ *    object: the backend runs whitelist: true and would strip or reject it.
  *
  * Create body: { title, miniGoals: [{ name, doneWhen }], chatId? }.
  * Complete body: { summary? }, where summary is at most 500 chars. The backend
@@ -45,6 +66,18 @@ export const MISSION_GOAL_NAME_MAX = 120
 export const MISSION_DONE_WHEN_MAX = 200
 export const MISSION_EVIDENCE_MAX = 200
 export const MISSION_SUMMARY_MAX = 500
+/** MissionFeedEntryInputDto.text. */
+export const MISSION_FEED_TEXT_MAX = 200
+/** MissionVerdictInputDto.reason. */
+export const MISSION_VERDICT_REASON_MAX = 240
+/** MissionVerdictInputDto.check. */
+export const MISSION_VERDICT_CHECK_MAX = 999
+/** MissionRunReportInputDto.turnsUsed. */
+export const MISSION_TURNS_USED_MAX = 100_000
+/** MissionRunReportInputDto.turnCap, and the owner's own cap range. */
+export const MISSION_TURN_CAP_MAX = 200
+/** MissionRunReportInputDto.workingMs, one day. */
+export const MISSION_WORKING_MS_MAX = 86_400_000
 
 /** What the trained flow should aim for (the hard caps are 2..12). */
 export const MISSION_TARGET_RANGE = '4 to 10'
@@ -66,8 +99,81 @@ export interface MissionTickBody {
   evidence?: string
 }
 
+/** The three words a checker can return, the backend's MISSION_VERDICTS. */
+export const MISSION_VERDICTS = ['met', 'not_yet', 'impossible'] as const
+export type MissionVerdictWord = (typeof MISSION_VERDICTS)[number]
+
+/** The five feed kinds the backend accepts (MISSION_FEED_KINDS). */
+export const MISSION_FEED_KINDS = [
+  'started',
+  'worked',
+  'checked',
+  'paused',
+  'resumed',
+  'done',
+  'failed',
+] as const
+export type MissionFeedKind = (typeof MISSION_FEED_KINDS)[number]
+
+/** The checker's answer, as it goes ON THE WIRE. No `at`: see rule 1. */
+export interface MissionVerdictBody {
+  verdict: MissionVerdictWord
+  reason: string
+  by?: 'checker' | 'agent'
+  check?: number
+}
+
+/** What the runtime counted. No `source`: see rule 1. */
+export interface MissionRunReportBody {
+  turnsUsed?: number
+  turnCap?: number
+  workingMs?: number
+}
+
+export interface MissionFeedEntryBody {
+  kind: MissionFeedKind
+  text: string
+}
+
 export interface MissionCompleteBody {
   summary?: string
+  verdict?: MissionVerdictBody
+  runReport?: MissionRunReportBody
+}
+
+export interface MissionFailBody {
+  summary?: string
+  verdict?: MissionVerdictBody
+  runReport?: MissionRunReportBody
+}
+
+export interface MissionProgressBody {
+  feedEntry?: MissionFeedEntryBody
+  effort?: { used: number; budget: number; unit: 'turns' }
+  verdict?: MissionVerdictBody
+  runReport?: MissionRunReportBody
+}
+
+/** What a caller hands in. Every count may be null, because a runtime that
+ *  counted nothing must be able to say so without inventing a zero. */
+export interface MissionRunReportInput {
+  turnsUsed?: number | null
+  turnCap?: number | null
+  workingMs?: number | null
+}
+
+export interface MissionVerdictInput {
+  verdict: MissionVerdictWord
+  reason: string
+  by?: 'checker' | 'agent'
+  check?: number | null
+}
+
+export interface MissionProgressInput {
+  feedEntry?: MissionFeedEntryBody
+  effort?: { used: number; budget: number }
+  verdict?: MissionVerdictInput
+  runReport?: MissionRunReportInput
 }
 
 /** The five wire statuses (backend MissionDto.status). The union was three
@@ -108,6 +214,11 @@ export interface MissionSnapshot {
   /** Bumped on EVERY write, so it is a precise per-write key for the self
    *  write stamp and the frame dedupe in server.ts. */
   updatedAt?: string
+  /** The owner's Keep working instruction for THIS mission. Absent means a
+   *  backend older than the column, which is read as false. */
+  keepWorking?: boolean
+  /** The owner's turn limit for THIS mission, null when Keep working is off. */
+  turnCap?: number | null
 }
 
 export type MissionBuildResult<T> = { ok: true; body: T } | { ok: false; error: string }
@@ -245,19 +356,167 @@ export function buildMissionTickBody(input: {
   return { ok: true, body }
 }
 
-/** Build the PATCH .../complete body from snake_case tool args. */
+/**
+ * Trim, cap, and never leave a lone high surrogate at the cut. The same guard
+ * the summary has always had, now shared by every capped string here.
+ */
+function wireText(raw: unknown, max: number): string {
+  let trimmed = String(raw ?? '').trim().slice(0, max)
+  const last = trimmed.charCodeAt(trimmed.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) trimmed = trimmed.slice(0, -1)
+  return trimmed
+}
+
+/** A whole number the wire can carry, or undefined. NEVER a clamp: see rule 2
+ *  in the header. A count outside the range is a count nobody counted. */
+function wireInt(value: unknown, min: number, max: number): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return undefined
+  if (value < min || value > max) return undefined
+  return value
+}
+
+type VerdictResult =
+  | { ok: true; verdict?: MissionVerdictBody }
+  | { ok: false; error: string }
+
+/**
+ * The checker's answer, ready for the wire.
+ *
+ * A word outside the three is REFUSED: only this daemon builds one, so a
+ * fourth word is a bug in the caller and a quiet omission would hide it. A
+ * verdict with no reason is OMITTED instead, because the backend requires a
+ * non empty reason and losing the whole write (a completion, say) over a
+ * missing sentence would cost the owner far more than losing one check line.
+ */
+function buildVerdict(input: MissionVerdictInput | undefined): VerdictResult {
+  if (input == null) return { ok: true }
+  if (!isPlainObject(input)) return { ok: false, error: 'verdict must be an object.' }
+  const word = input.verdict
+  if (typeof word !== 'string' || !(MISSION_VERDICTS as readonly string[]).includes(word)) {
+    return {
+      ok: false,
+      error: `verdict must be one of ${MISSION_VERDICTS.join(', ')} (got ${JSON.stringify(word)}).`,
+    }
+  }
+  const reason = wireText(input.reason, MISSION_VERDICT_REASON_MAX)
+  if (!reason) return { ok: true }
+  const verdict: MissionVerdictBody = { verdict: word as MissionVerdictWord, reason }
+  if (input.by === 'checker' || input.by === 'agent') verdict.by = input.by
+  const check = wireInt(input.check, 1, MISSION_VERDICT_CHECK_MAX)
+  if (check !== undefined) verdict.check = check
+  return { ok: true, verdict }
+}
+
+/** What the runtime counted, ready for the wire, or undefined when it counted
+ *  nothing the wire can carry. */
+function buildRunReport(input: MissionRunReportInput | undefined): MissionRunReportBody | undefined {
+  if (input == null || !isPlainObject(input)) return undefined
+  const report: MissionRunReportBody = {}
+  const turnsUsed = wireInt(input.turnsUsed, 0, MISSION_TURNS_USED_MAX)
+  if (turnsUsed !== undefined) report.turnsUsed = turnsUsed
+  const turnCap = wireInt(input.turnCap, 1, MISSION_TURN_CAP_MAX)
+  if (turnCap !== undefined) report.turnCap = turnCap
+  const workingMs = wireInt(input.workingMs, 0, MISSION_WORKING_MS_MAX)
+  if (workingMs !== undefined) report.workingMs = workingMs
+  return Object.keys(report).length > 0 ? report : undefined
+}
+
+/** Build the PATCH .../complete body. `summary` still arrives from the
+ *  complete_mission tool; the two blocks arrive from the goal lane. */
 export function buildMissionCompleteBody(
-  { summary }: { summary?: unknown } = {},
+  {
+    summary,
+    verdict,
+    runReport,
+  }: {
+    summary?: unknown
+    verdict?: MissionVerdictInput
+    runReport?: MissionRunReportInput
+  } = {},
 ): MissionBuildResult<MissionCompleteBody> {
   const body: MissionCompleteBody = {}
   if (summary != null && typeof summary !== 'string') {
     return { ok: false, error: 'summary must be a string' }
   }
   if (typeof summary === 'string') {
-    let trimmed = summary.trim().slice(0, MISSION_SUMMARY_MAX)
-    const last = trimmed.charCodeAt(trimmed.length - 1)
-    if (last >= 0xd800 && last <= 0xdbff) trimmed = trimmed.slice(0, -1)
+    const trimmed = wireText(summary, MISSION_SUMMARY_MAX)
     if (trimmed) body.summary = trimmed
+  }
+  const checked = buildVerdict(verdict)
+  if (!checked.ok) return checked
+  if (checked.verdict) body.verdict = checked.verdict
+  const report = buildRunReport(runReport)
+  if (report) body.runReport = report
+  return { ok: true, body }
+}
+
+/**
+ * Build the PATCH .../fail body.
+ *
+ * The goal lane's only way to say "the checker decided this cannot be done":
+ * the judge's reason is the summary AND the verdict's reason, so an app that
+ * knows nothing about verdicts still shows the owner why it stopped.
+ */
+export function buildMissionFailBody(
+  {
+    summary,
+    verdict,
+    runReport,
+  }: {
+    summary?: unknown
+    verdict?: MissionVerdictInput
+    runReport?: MissionRunReportInput
+  } = {},
+): MissionBuildResult<MissionFailBody> {
+  return buildMissionCompleteBody({ summary, verdict, runReport })
+}
+
+/**
+ * Build the PATCH .../progress body: one check, as the owner will read it.
+ *
+ * A body that would change nothing is refused rather than sent. The backend
+ * answers 200 and does nothing for one of those, which reads at the call site
+ * exactly like a write that worked.
+ */
+export function buildMissionProgressBody(
+  input: MissionProgressInput = {},
+): MissionBuildResult<MissionProgressBody> {
+  const body: MissionProgressBody = {}
+
+  if (input.feedEntry != null) {
+    const { kind, text } = input.feedEntry
+    if (typeof kind !== 'string' || !(MISSION_FEED_KINDS as readonly string[]).includes(kind)) {
+      return {
+        ok: false,
+        error: `feed entry kind must be one of ${MISSION_FEED_KINDS.join(', ')} (got ${JSON.stringify(kind)}).`,
+      }
+    }
+    const clipped = wireText(text, MISSION_FEED_TEXT_MAX)
+    if (!clipped) return { ok: false, error: 'a feed entry needs a line of text the owner can read.' }
+    body.feedEntry = { kind: kind as MissionFeedKind, text: clipped }
+  }
+
+  if (input.effort != null) {
+    const used = wireInt(input.effort.used, 0, MISSION_TURNS_USED_MAX)
+    const budget = wireInt(input.effort.budget, 1, MISSION_TURNS_USED_MAX)
+    if (used === undefined || budget === undefined) {
+      return { ok: false, error: 'effort needs a whole used count and a budget of at least 1.' }
+    }
+    body.effort = { used, budget, unit: 'turns' }
+  }
+
+  const checked = buildVerdict(input.verdict)
+  if (!checked.ok) return checked
+  if (checked.verdict) body.verdict = checked.verdict
+
+  const report = buildRunReport(input.runReport)
+  if (report) body.runReport = report
+
+  if (Object.keys(body).length === 0) {
+    return {
+      ok: false,
+      error: 'a progress write needs a feed entry, an effort count, a verdict or a run report.',
+    }
   }
   return { ok: true, body }
 }
@@ -370,6 +629,24 @@ export function buildMissionCompletePath(assistantId: unknown, missionId: unknow
     return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
   }
   return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/complete` }
+}
+
+/** The goal lane's check write. */
+export function buildMissionProgressPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/progress` }
+}
+
+/** The goal lane's "the checker said this cannot be done" write. */
+export function buildMissionFailPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/fail` }
 }
 
 /**

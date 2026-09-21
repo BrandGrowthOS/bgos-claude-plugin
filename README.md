@@ -546,12 +546,66 @@ meeting room, or a chat whose last message came from somebody other than the
 owner, such as a share recipient's own chat with the agent); when none is left
 the mission lands in the agent's main chat.
 
-**No Pause button on this channel, and that is deliberate.** The daemon reports
-what it can do on every heartbeat (`lib/declared-capabilities.ts`) and declares
-`mission_events` and NOT `mission_pause`: nothing in this runtime can suspend an
-in flight Claude Code turn, so the app does not offer the owner a Pause button
-here rather than hand them one that does nothing. Mark done and Set aside do
-reach the agent, and they end the mission.
+**Which controls the owner is offered is reported, never assumed.** The daemon
+says what it can do on every heartbeat (`lib/declared-capabilities.ts`), and the
+app shows only what was declared. Until 0.42.0 that was `mission_events` alone
+and there was no Pause button here, because nothing in this runtime could
+suspend an in flight turn. The goal lane below changes that on the hosts where
+this daemon can type: clearing the native goal stops the loop after the current
+turn, which is a pause it can honestly enforce, so `mission_pause` and
+`mission_goal_loop` are declared there and absent everywhere else. Mark done and
+Set aside have always reached the agent, and they end the mission.
+
+## Keep working until it is done: the goal lane (v0.42.0+)
+
+Claude Code has a goal loop of its own. A person types `/goal <condition>` in
+the terminal, and from then on a separate checker reads the agent's work after
+every turn and answers **met**, **not yet** with a reason, or **cannot be done**
+with a reason. From this release the owner sees all of it on the mission card
+as **Last check**, with the turns the runtime counted and, once the goal closes,
+the time it took.
+
+**The reading half works on every host, Windows included.** The verdict is in no
+hook payload at all, and the checker runs as a second hook inside the same Stop
+batch as this plugin's own, so the hook is a wake and the session transcript is
+the source. The daemon tails the transcript it has POSITIVELY bound to itself
+and nothing else, so a goal set in a neighbour's session on the same machine is
+never adopted. A goal a person typed with no mission behind it gets a derived
+mission card of its own, titled by the condition and done when it holds.
+
+**The setting half needs a host that can type.** Arming a native goal means
+putting `/goal <condition>` into the composer, and there is no other way in: a
+channel push cannot do it (the CLI disables slash expansion on every channel
+message and wraps the text before any flag could be read, see
+`docs/learnings/a-channel-push-cannot-arm-a-native-goal.md`) and the model has
+no tool for it. So the owner's **Keep working** switch is offered only where
+this daemon can reach the CLI's own tmux pane, which is Mac and Linux with
+`BGOS_TMUX_SESSION` set or the CLI running inside a pane this process inherited.
+On every other host the switch is absent rather than greyed, and the reading
+half is unaffected.
+
+**Two stops, and they are the daemon's.** The owner chooses a turn cap with the
+switch; the daemon holds it, and holds one more rule of its own: three checks in
+a row that found the same thing. Either one clears the native goal and tells the
+server the loop stopped itself, and the mission turns to Needs you carrying the
+reason with a button that gives it ten more turns and starts the same goal
+again. The turns already spent are carried across that, so the card counts on
+rather than starting over. The CLI has its own competing pause and retry loop
+with its own words; the daemon's stop wins and is the only one the owner sees.
+
+**Pause now means something here.** Pause clears the native goal and remembers
+it, Resume arms the same one again, and Set aside clears and forgets. That is
+the pause this daemon can honestly enforce, and its limit is stated rather than
+hidden: the loop stops after the current turn, and a turn already running is not
+killed. The declaration is computed on every heartbeat
+(`lib/declared-capabilities.ts`), so a host that gains a tmux target half an
+hour after boot starts offering both controls on its next beat.
+
+**What the model is told.** It does not set goals and must not try to type a
+slash command. It works the condition, ends its turn normally when it believes
+it holds, treats a not yet reason as the next instruction, does not argue with
+the checker, and never ticks a mini goal because a check passed. The channel
+posts every check onto the card for it, so it does not narrate them either.
 
 ## Agent activity from hooks (v0.40.0+)
 

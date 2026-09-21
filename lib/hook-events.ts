@@ -11,6 +11,9 @@
  *   Stop                                          -> the card settles, Steps clear,
  *                                                    and the turn_continues marker
  *                                                    when background work is left
+ *   Stop / SessionStart                           -> goal_poll, the wake that sends
+ *                                                    the shell to read the goal
+ *                                                    verdict out of the transcript
  *
  * Three rules this file exists to hold:
  *
@@ -171,6 +174,15 @@ export type Effect =
       payload: Record<string, unknown>
     }
   | { kind: 'turn_end' }
+  /**
+   * A moment when a goal verdict may now exist. The mapper decides NOTHING
+   * about the goal: Claude Code's own /goal writes its verdict into the
+   * session transcript and into no hook payload at all, and the checker runs
+   * as a second hook inside the same Stop batch, so this is a WAKE and the
+   * transcript is the source. The shell reads it (lib/goal-tail.ts) and maps
+   * it (lib/goal-status.ts).
+   */
+  | { kind: 'goal_poll' }
 
 // ── The skip list ────────────────────────────────────────────────────────────
 
@@ -820,6 +832,9 @@ export function applyHookEventToTurn(
 
   switch (event.name) {
     case 'SessionStart': {
+      // Both arms: a resume and a compaction restart are each a moment to
+      // re read the goal this session may already be under.
+      effects.push({ kind: 'goal_poll' })
       if (str(raw.source) === 'compact') {
         effects.push(...markCompacted(next, raw, now))
         return { next, effects }
@@ -892,6 +907,8 @@ export function applyHookEventToTurn(
       if (next.tasks.size > 0) effects.push({ kind: 'steps', turnId: next.turnId, steps: [] })
       const marker = turnContinuesMarker(raw)
       if (marker) effects.push(marker)
+      // Before turn_end, which every reader of this file may assume is last.
+      effects.push({ kind: 'goal_poll' })
       effects.push({ kind: 'turn_end' })
       next.turnId = null
       next.toolOrder = []

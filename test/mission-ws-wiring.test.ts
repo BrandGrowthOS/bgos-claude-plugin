@@ -247,3 +247,258 @@ test('the active-mission read is scoped to a chat, or a tick lands on another ch
     'resolveMissionId must pass the chat into buildMissionActivePath',
   )
 })
+
+// ── The goal lane's own wiring (stage 6) ─────────────────────────────────────
+//
+// The lane closes missions, so it inherits trap 3 above whole: an unstamped
+// completion is narrated back to the model as the owner's own Mark done, and
+// this one is worse than a tool's, because nothing typed it and there is no
+// tool case to read. It also has a trap of its own: SubagentStop looks
+// exactly like a goal checker and is not one (a control session with no goal
+// at any point fired it once per turn, with an empty agent_type, carrying the
+// composer's ghost prompt suggestions and an agent_transcript_path pointing
+// at a file that does not exist), so a lane that keyed off it would report a
+// verdict that never happened.
+
+test('the goal lane stamps the mission BEFORE its complete and its fail leave', () => {
+  const start = server.indexOf('async function writeGoalEffect(')
+  assert.ok(start > 0, 'the goal lane must write its verdicts through one function')
+  const end = server.indexOf('\n}', start)
+  const body = server.slice(start, end)
+
+  const stamp = body.indexOf('noteMissionPendingSelfWrite(')
+  assert.ok(stamp > 0, 'the goal lane must stamp the mission it is about to close')
+  // The complete and the fail share one request call, and it is the only
+  // bgosPatch in this function, so the ordering assertion covers both.
+  const request = body.indexOf('await bgosPatch(', stamp)
+  assert.ok(request > stamp, 'the stamp must come before the request, not after the answer')
+  assert.ok(
+    body.includes('rememberMissionSelfWrite('),
+    'the landed write must be stamped too, which is what covers a late frame',
+  )
+  // The check write must NOT be stamped: progress emits mission_updated,
+  // which is not a self write frame, and spending a stamp on it would leave
+  // the completion that follows looking like the owner's own Mark done.
+  const progress = body.indexOf("write.route === 'progress'")
+  assert.ok(progress > 0 && progress < stamp, 'the check write comes first and takes no stamp')
+})
+
+test('the goal lane reads nothing from SubagentStop, which is not the checker', () => {
+  assert.equal(
+    server.includes('SubagentStop'),
+    false,
+    'SubagentStop must not reach the goal lane: it fires once per turn with or without a goal',
+  )
+  const start = server.indexOf("case 'goal_poll': {")
+  assert.ok(start > 0, 'runHookEffects must answer the goal_poll effect')
+  const body = server.slice(start, start + 800)
+  assert.ok(body.includes('void pollGoalStatus()'), 'the wake must read the transcript')
+  // Twice, because the terminal verdict is written after this plugin's own
+  // Stop hook in the same batch: the poll a Stop triggers is one behind.
+  assert.ok(
+    body.includes('GOAL_POLL_BEAT_MS'),
+    'a second poll a beat later, or a closed goal is read one Stop late',
+  )
+})
+
+test('a slow sweep runs beside the resting one, so a missed hook strands nothing', () => {
+  assert.match(
+    server,
+    /setInterval\(\(\) => void pollGoalStatus\(\), GOAL_SWEEP_MS\)\.unref\(\)/,
+    'the goal lane needs its own sweep: a hook this process never received is not a rare case',
+  )
+})
+
+test('the goal lane hears every mission frame, even one the model is never told about', () => {
+  const start = server.indexOf('function handleMissionEvent(')
+  assert.ok(start > 0)
+  const body = server.slice(start, server.indexOf('\n}', start))
+  const lane = body.indexOf('applyMissionFrameToGoalLane(')
+  const gate = body.indexOf('if (!notice) return')
+  assert.ok(lane > 0, 'the frame must reach the goal lane')
+  assert.ok(
+    gate > lane,
+    'Pause has to clear the native goal even on a frame that produces no notice at all',
+  )
+  // One ask of the ledger, because the pending stamp is CONSUMED by asking.
+  assert.equal(
+    [...body.matchAll(/missionSelfWrites\.isSelfAuthored\(/g)].length,
+    1,
+    'asking the ledger twice spends the pending stamp and narrates the daemon own write back',
+  )
+})
+
+test('the owner Pause reaches the mission this lane REPORTS on, not only one it armed', () => {
+  // A goal a person typed into their own terminal gets a derived mission and
+  // no arm record at all, and the backend still offers Pause, Resume and Set
+  // aside on it, because this daemon declared it can enforce them. The pure
+  // decision reads the report record for exactly that case, so the wiring has
+  // to hand it over; without it the buttons do nothing and the runtime keeps
+  // looping on a mission the owner stopped.
+  const start = server.indexOf('function applyMissionFrameToGoalLane(')
+  assert.ok(start > 0, 'the frame wiring must live in one function')
+  const body = server.slice(start, server.indexOf('\n}', start))
+  assert.ok(
+    body.includes('armed: goalArmRecord(),'),
+    'the goal the owner switch armed is one of the two identities',
+  )
+  assert.ok(
+    body.includes('reporting: goalReportRecord(),'),
+    'the goal this lane reports on is the other, and it is the only one a typed goal has',
+  )
+  // The attachment survives the clear a pause types, or a Resume has nothing
+  // to put back. Only a forget drops it.
+  const clear = body.indexOf("if (command.kind === 'clear')")
+  const forget = body.indexOf('if (command.forget)')
+  const drop = body.indexOf('goalHeld = null')
+  assert.ok(clear > 0, 'the clear branch must be there to read')
+  assert.ok(forget > clear && drop > forget, 'the goal is forgotten on a forget and nowhere else')
+  // The write half goes quiet with it: the checks are addressed to this id,
+  // and a mission the owner paused must stop collecting them.
+  assert.ok(
+    body.slice(clear, forget).includes('goalMissionId = null'),
+    'a paused mission takes no more checks',
+  )
+
+  // The report record is the ATTACHMENT, which is what a pause keeps, and not
+  // the arm record, which is what the defect read.
+  const reader = server.indexOf('function goalReportRecord(')
+  assert.ok(reader > 0, 'the report record needs a reader of its own')
+  const readerBody = server.slice(reader, server.indexOf('\n}', reader))
+  assert.ok(readerBody.includes('goalHeld'), 'it is read off the attachment')
+  assert.equal(
+    readerBody.includes('goalArm'),
+    false,
+    'reading the arm record here would rebuild the defect',
+  )
+
+  // Both branches of the attach remember it: the goal the owner armed, and
+  // the derived or adopted mission a typed goal lands on.
+  const attach = server.indexOf('async function attachGoalToMission(')
+  assert.ok(attach > 0)
+  const attachBody = server.slice(attach, server.indexOf('\n}', attach))
+  assert.equal(
+    [...attachBody.matchAll(/goalHeld = /g)].length,
+    2,
+    'a goal the owner armed and a goal a person typed are both attached',
+  )
+
+  // And the two identities move together at the arm, or a frame landing
+  // before the set sentinel reads an attachment to the previous mission.
+  const arm = server.indexOf('async function armNativeGoal(')
+  assert.ok(arm > 0)
+  const armBody = server.slice(arm, server.indexOf('\n}', arm))
+  assert.ok(
+    armBody.includes('goalArm = {') && armBody.includes('goalHeld = {'),
+    'the arm record and the attachment are set in the same place',
+  )
+})
+
+test('the arm is recorded as pending BEFORE the keystrokes, and released at the sentinel and at the timeout', () => {
+  // `live` is folded from the transcript, and the transcript says nothing
+  // about a goal until its set sentinel is read, so for the whole
+  // confirmation window an arm in flight is indistinguishable from a goal the
+  // runtime dropped. The pending record is the only thing that tells them
+  // apart, and it is worth nothing unless it is taken before the keystrokes
+  // leave and released afterwards BOTH ways: a record left standing is a
+  // mission that can never arm again for the life of the daemon.
+  const arm = server.indexOf('async function armNativeGoal(')
+  assert.ok(arm > 0, 'the arm must live in one function')
+  const armBody = server.slice(arm, server.indexOf('\n}', arm))
+
+  const serialised = armBody.indexOf('goalPendingArm !== null')
+  const record = armBody.indexOf('goalPendingArm = {')
+  const keystrokes = armBody.indexOf('runGoalInjection(steps')
+  assert.ok(
+    serialised > 0,
+    'a second arm for the same mission while one is in flight must type nothing',
+  )
+  assert.ok(record > serialised, 'the guard reads the record before this arm claims it')
+  assert.ok(
+    keystrokes > record,
+    'the pending arm must be recorded BEFORE the keystrokes leave, or a frame landing in between types a second /goal',
+  )
+
+  // A record the wiring never hands over is a rule the pure decision cannot
+  // apply, and that is exactly how this defect shipped green once already.
+  const frame = server.indexOf('function applyMissionFrameToGoalLane(')
+  assert.ok(frame > 0)
+  const frameBody = server.slice(frame, server.indexOf('\n}', frame))
+  assert.ok(
+    frameBody.includes('pending: goalPendingArm'),
+    'the frame reader must be told which arm is in flight',
+  )
+
+  // Released by the runtime's own answer ...
+  const attach = server.indexOf('async function attachGoalToMission(')
+  assert.ok(attach > 0)
+  const attachBody = server.slice(attach, server.indexOf('\n}', attach))
+  assert.ok(
+    attachBody.includes('goalPendingArm = null'),
+    'the set sentinel is the answer, and it ends the window',
+  )
+
+  // ... and by the confirmation giving up, on every way out of it, which is
+  // what the finally is for: the timeout is the path that would otherwise
+  // leave the record standing for ever.
+  const confirm = server.indexOf('async function confirmGoalArmed(')
+  assert.ok(confirm > 0)
+  const confirmBody = server.slice(confirm, server.indexOf('\n}', confirm))
+  assert.ok(
+    confirmBody.includes('no set sentinel'),
+    'the timeout must still be what this watcher ends on',
+  )
+  assert.match(
+    confirmBody,
+    /finally \{[\s\S]*goalPendingArm = null/,
+    'the confirmation must release the record on its way out, the timeout included',
+  )
+})
+
+test("the sentinel consults the owner's stop BEFORE it hands the mission back", () => {
+  // The hole this closes: a Pause or a Set aside landing inside the arming
+  // window typed a clear at a goal that did not exist yet, and the sentinel
+  // that arrived afterwards then restored the mission id and let the runtime
+  // carry on looping on a mission the owner had stopped. The stop is recorded
+  // on the pending arm by the frame, and the sentinel is where it is enforced.
+  const frame = server.indexOf('function applyMissionFrameToGoalLane(')
+  assert.ok(frame > 0)
+  const frameBody = server.slice(frame, server.indexOf('\n}', frame))
+  const marks = frameBody.indexOf('goalPendingStopFor(')
+  const quiet = frameBody.indexOf("if (command.kind === 'none') return")
+  assert.ok(marks > 0, 'the frame must record the stop on the arm in flight')
+  assert.ok(
+    quiet > marks,
+    'the stop must be recorded before the no command exit: a frame that types no clear at all still has to be carried across the window',
+  )
+
+  const attach = server.indexOf('async function attachGoalToMission(')
+  assert.ok(attach > 0)
+  const attachBody = server.slice(attach, server.indexOf('\n}', attach))
+  const consults = attachBody.indexOf('goalSentinelActionFor(')
+  const restores = attachBody.indexOf('goalMissionId = goalArm.missionId')
+  const derives = attachBody.indexOf('goalMissionId = await resolveGoalMission(')
+  assert.ok(consults > 0, 'the sentinel must ask what the record says before doing anything with it')
+  assert.ok(
+    restores > consults && derives > consults,
+    'the stop is read BEFORE the mission id is restored or derived, or the owner stop is overwritten by the goal that answered it',
+  )
+  // And the stop branch does the two things that make it a stop: the goal is
+  // typed away again, and no mission is taken.
+  const stop = attachBody.indexOf("action.kind === 'stop'")
+  assert.ok(stop > consults && stop < restores, 'the stop is settled before the ordinary attach')
+  const stopBody = attachBody.slice(stop, restores)
+  assert.ok(stopBody.includes('clearNativeGoal('), 'the goal that armed after the stop is cleared again')
+  assert.ok(stopBody.includes('goalMissionId = null'), 'a mission the owner stopped takes no more checks')
+  assert.ok(stopBody.includes('return'), 'and it never falls through into deriving a mission of its own')
+})
+
+test('the goal set is the ONLY chat derived text this daemon ever types', () => {
+  // The injector's safety invariant, from the wiring side: server.ts may build
+  // a key sequence through the two builders in lib/compact-inject.ts and
+  // through nothing else.
+  const builders = [...server.matchAll(/build(Injection|GoalSetInjection)Steps\(/g)].length
+  const sends = [...server.matchAll(/'send-keys'/g)].length
+  assert.ok(builders > 0, 'the injection argv must come from the builders')
+  assert.equal(sends, 0, 'server.ts must never build a send-keys argv of its own')
+})

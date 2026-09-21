@@ -12,6 +12,8 @@
  *   - let the reply tool through  -> the skip case goes red
  *   - a Stop with background tasks emits no marker -> the marker case goes red
  *   - clipToolRows keeps the front rather than the tail -> the clip case red
+ * Stage 6 added one line to that ledger:
+ *   - emit goal_poll from PostToolUse too -> the "and nothing else" case red
  */
 
 import { strict as assert } from 'node:assert'
@@ -396,7 +398,7 @@ test('Stop settles the card, clears the Steps and ends the turn, in that order',
     background_tasks: [],
     session_crons: [],
   }))
-  assert.deepEqual(out.effects.map((e) => e.kind), ['tool_card', 'steps', 'turn_end'])
+  assert.deepEqual(out.effects.map((e) => e.kind), ['tool_card', 'steps', 'goal_poll', 'turn_end'])
   const card = cardsOf(out.effects)[0]!
   assert.equal(card.state, 'done')
   assert.deepEqual(stepsOf(out.effects)[0]!.steps, [], 'the turn end clear is an EMPTY list')
@@ -466,7 +468,59 @@ test('a compact SessionStart on its own still marks, and a plain one resets the 
   })).next
   const restarted = feed(withRow, base('SessionStart', { source: 'startup' }))
   assert.equal(restarted.next.toolOrder.length, 0)
-  assert.equal(restarted.effects.length, 0)
+  assert.deepEqual(
+    restarted.effects.map((e) => e.kind),
+    ['goal_poll'],
+    'a resume re reads the goal and does nothing else',
+  )
+})
+
+test('goal_poll is emitted on Stop and on SessionStart, and on nothing else', () => {
+  // The verdict is in NO hook payload: the Stop input schema carries
+  // hook_event_name, stop_hook_active, last_assistant_message, background_tasks
+  // and session_crons and nothing else, and the goal checker runs as a SECOND
+  // hook in the same Stop batch. So the mapper decides nothing about the goal.
+  // It only says "now is a moment when a verdict may exist", and the shell goes
+  // and reads the session transcript, which is the only place a verdict is.
+  const payloads: Record<string, Record<string, unknown>> = {
+    SessionStart: base('SessionStart', { source: 'startup' }),
+    UserPromptSubmit: base('UserPromptSubmit', { prompt: 'keep going' }),
+    PreToolUse: base('PreToolUse', {
+      tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_g1',
+    }),
+    PostToolUse: base('PostToolUse', {
+      tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { ok: true }, tool_use_id: 'toolu_g1',
+    }),
+    PostToolUseFailure: base('PostToolUseFailure', {
+      tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_g2',
+    }),
+    Stop: base('Stop', { stop_hook_active: false, background_tasks: [], session_crons: [] }),
+    PreCompact: base('PreCompact', { trigger: 'manual', custom_instructions: null }),
+    PostCompact: base('PostCompact', { trigger: 'manual' }),
+    SessionEnd: base('SessionEnd', { reason: 'clear' }),
+  }
+  assert.deepEqual(
+    Object.keys(payloads).sort(),
+    [...HOOK_EVENT_NAMES].sort(),
+    'every registered event is exercised, so a new one cannot quietly start polling',
+  )
+
+  const polled: string[] = []
+  for (const [name, payload] of Object.entries(payloads)) {
+    if (feed(emptyTurn(), payload).effects.some((e) => e.kind === 'goal_poll')) polled.push(name)
+  }
+  assert.deepEqual(polled.sort(), ['SessionStart', 'Stop'])
+
+  // A compact SessionStart is a resume too, so it re reads as well.
+  const compacted = feed(emptyTurn(), base('SessionStart', { source: 'compact' }))
+  assert.ok(compacted.effects.some((e) => e.kind === 'goal_poll'))
+
+  const stop = feed(emptyTurn(), payloads.Stop!)
+  assert.equal(
+    stop.effects.filter((e) => e.kind === 'goal_poll').length,
+    1,
+    'one wake per Stop, not one per row',
+  )
 })
 
 // ── The card text, the clip, the icons ───────────────────────────────────────

@@ -161,6 +161,47 @@ test('a backend that sends no chat and no cleared_by still parses', () => {
   assert.equal(event.clearedBy, null)
 })
 
+test('the goal lane fields ride a mission_created frame through the parser', () => {
+  // Without these three the lane cannot ARM from a frame: keepWorking is the
+  // owner's instruction, turnCap is the number the daemon holds itself to, and
+  // doneWhen is the condition the native goal is set to.
+  const armed = parsed('mission_created', {
+    mission: snapshot({
+      keepWorking: true,
+      turnCap: 20,
+      doneWhen: 'the file gate.txt exists in this folder and contains the word ready',
+    }),
+  })
+  assert.equal(armed.mission.keepWorking, true)
+  assert.equal(armed.mission.turnCap, 20)
+  assert.equal(
+    armed.mission.doneWhen,
+    'the file gate.txt exists in this folder and contains the word ready',
+  )
+
+  const raised = parsed('mission_updated', { mission: snapshot({ keepWorking: true, turnCap: 30 }) })
+  assert.equal(raised.mission.turnCap, 30, 'a raised cap is how the daemon hears it may arm again')
+
+  const off = parsed('mission_created', { mission: snapshot({ keepWorking: false, turnCap: null }) })
+  assert.equal(off.mission.keepWorking, false, 'the owner switch is carried as it is, off included')
+  assert.equal(off.mission.turnCap, null)
+})
+
+test('a backend older than the goal lane reads as off, and junk never becomes a cap', () => {
+  const legacy = parsed('mission_created')
+  assert.equal(legacy.mission.keepWorking, undefined, 'absent is read as off by the reader, never invented here')
+  assert.equal(legacy.mission.turnCap, null)
+
+  const junk = parsed('mission_created', {
+    mission: { ...snapshot(), keepWorking: 'yes', turnCap: 'twenty' },
+  })
+  assert.equal(junk.mission.keepWorking, undefined, 'a string is not a boolean, and it is dropped rather than coerced')
+  assert.equal(junk.mission.turnCap, null, 'a cap this daemon cannot read is no cap at all')
+
+  const zero = parsed('mission_created', { mission: snapshot({ turnCap: 0 }) })
+  assert.equal(zero.mission.turnCap, null, 'and a cap of zero is not a limit')
+})
+
 // ── decideMissionNotice: who gets told ───────────────────────────────────────
 
 test('the owner authored set is told: paused, resumed, set aside, marked done, started', () => {

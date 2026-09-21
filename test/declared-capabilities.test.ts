@@ -1,10 +1,10 @@
 /**
  * What this daemon TELLS the backend it can do.
  *
- * The declaration decides whether the owner is offered a Pause button on this
- * agent's mission card, and a button that does nothing is worse than no
- * button at all. So the one token this release must NOT declare has its own
- * assertion here, with the reason written down beside it.
+ * The declaration decides which controls the owner is offered on this agent's
+ * mission card, and a button that does nothing is worse than no button at all.
+ * So each token has its own assertion here, with the reason written beside it,
+ * and the two that depend on the HOST have a case for a host that cannot.
  *
  * The grammar mirrors the backend's CAPABILITY_TOKEN_REGEX and @ArrayMaxSize
  * (backend/src/dto/integrations/pair-exchange.dto.ts). A token that fails
@@ -14,40 +14,86 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 
-import { DECLARED_CAPABILITIES } from '../lib/declared-capabilities.ts'
+import {
+  DECLARED_CAPABILITIES_BASE,
+  declaredCapabilities,
+} from '../lib/declared-capabilities.ts'
 
 /** backend/src/dto/integrations/pair-exchange.dto.ts:25 */
 const CAPABILITY_TOKEN_REGEX = /^[a-z][a-z0-9_]{0,63}$/
 
+/** Every shape this daemon can be in: a host it can type into, and one it
+ *  cannot (Windows, or a Mac outside tmux). */
+const SHAPES = [true, false] as const
+
 test('every declared token matches the grammar the backend accepts', () => {
-  assert.ok(Array.isArray(DECLARED_CAPABILITIES))
-  assert.ok(DECLARED_CAPABILITIES.length > 0, 'declaring nothing hides every capability')
-  for (const token of DECLARED_CAPABILITIES) {
-    assert.match(token, CAPABILITY_TOKEN_REGEX, `"${token}" is not a legal capability token`)
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal })
+    assert.ok(Array.isArray(declared))
+    assert.ok(declared.length > 0, 'declaring nothing hides every capability')
+    for (const token of declared) {
+      assert.match(token, CAPABILITY_TOKEN_REGEX, `"${token}" is not a legal capability token`)
+    }
   }
 })
 
 test('the list stays inside the backend ArrayMaxSize of 32', () => {
-  assert.ok(DECLARED_CAPABILITIES.length <= 32)
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).length <= 32)
+  }
 })
 
-test('the list is frozen, so no call site can push a token onto it at runtime', () => {
-  assert.ok(Object.isFrozen(DECLARED_CAPABILITIES))
+test('the base is frozen, so no call site can push a token onto it at runtime', () => {
+  assert.ok(Object.isFrozen(DECLARED_CAPABILITIES_BASE))
 })
 
-test('mission_events is declared: this daemon hears the owner decision and relays it', () => {
-  assert.ok(DECLARED_CAPABILITIES.includes('mission_events'))
+test('mission_events is declared on every host: this daemon hears the owner decision', () => {
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('mission_events'))
+  }
 })
 
-test('mission_pause is NOT declared, because nothing here can enforce a pause', () => {
-  // Claude Code has no process-level handle on an in-flight turn: its stop is
-  // cooperative (lib/voice-rpc.ts:893-905), so a Pause button on this agent
-  // would lie to the owner. If a pause this daemon can actually enforce ever
-  // lands, it arrives with the goal lane in stage 6 of the Mission program,
-  // and THAT is when this token gets declared.
-  assert.ok(!DECLARED_CAPABILITIES.includes('mission_pause'))
+test('mission_goal_checks is declared on every host, because the checker is the runtime own', () => {
+  // Claude Code's /goal runs its checker as a session scoped Stop hook and
+  // writes the verdict into the session transcript, which a file read reaches
+  // on Mac, Linux and Windows alike. Reporting those verdicts needs no tmux,
+  // so this token is not gated on the injector.
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('mission_goal_checks'))
+  }
 })
 
-test('no token is declared twice', () => {
-  assert.equal(new Set(DECLARED_CAPABILITIES).size, DECLARED_CAPABILITIES.length)
+test('the goal loop and the pause are declared ONLY where the daemon can type', () => {
+  const canType = declaredCapabilities({ canInjectGoal: true })
+  assert.ok(canType.includes('mission_goal_loop'))
+  assert.ok(canType.includes('mission_pause'))
+})
+
+test('a host that cannot type declares the READ half only', () => {
+  // The Windows case, and a Mac or Linux host whose CLI is not in a tmux pane.
+  // Arming a goal is the injector and nothing else, and a pause this daemon
+  // enforces IS clearing the goal, so both promises are false here. An owner
+  // on such an agent sees no Keep working switch and no Pause button, which is
+  // the honest answer, and still sees every Last check.
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: false })],
+    ['mission_events', 'mission_goal_checks'],
+  )
+})
+
+test('no token is declared twice, on either host', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal })
+    assert.equal(new Set(declared).size, declared.length)
+  }
+})
+
+test('a late tmux upgrade changes the answer, because it is computed per beat', () => {
+  // lib/compact-capability.ts can upgrade the target up to thirty minutes
+  // after boot, and the heartbeat sends a THUNK, so the same process must be
+  // able to answer differently on a later beat. A frozen constant could not.
+  const before = declaredCapabilities({ canInjectGoal: false })
+  const after = declaredCapabilities({ canInjectGoal: true })
+  assert.ok(!before.includes('mission_goal_loop'))
+  assert.ok(after.includes('mission_goal_loop'))
 })
