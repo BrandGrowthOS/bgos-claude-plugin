@@ -219,7 +219,11 @@ test('a stream-announced click marks the shared set and consumes the baseline BE
   const gate = body.indexOf('announcedClickIds.has(view.messageId)')
   const mark = body.indexOf('rememberAnnouncedClick(view.messageId)')
   const consume = body.indexOf('chatUnansweredButtons.get(chatId)?.delete(view.messageId)')
-  const permission = body.indexOf('pending.resolve(')
+  // 0.42.1: the resolution moved into lib/permission-relay.ts, which both
+  // click transports now share, so the anchor is the CALL rather than the
+  // `pending.resolve(` that used to sit inline here. Same invariant: the mark
+  // and the consume both happen before this daemon acts on the tap.
+  const permission = body.indexOf('resolvePermissionClick(')
   const forward = body.indexOf('buildStreamClickMeta(')
   assert.ok(gate !== -1, 'the decision gates on the announced-ids set')
   assert.ok(mark !== -1 && consume !== -1)

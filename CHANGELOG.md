@@ -2,6 +2,49 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.1 (2026-09-21)
+
+- **A permission request now looks like one, and waits as long as its owner
+  set.** When this agent needed an OK before running a tool, it posted a plain
+  chat message with four grey chips and gave up on its own after two minutes.
+  It looked like the approval card the rest of HOAI uses and was nothing like
+  it: the app drew chips instead of a card, the agent read as FINISHED on every
+  needs you surface while it sat there waiting, and the morning report never
+  counted the request at all, because every one of those reads the
+  `approval_request` message type and this relay did not send it.
+  - **The card is a real one.** `messageType: 'approval_request'`, an
+    `approvalMeta` naming the tool, the route and the request id, and exactly
+    two buttons: Allow once and Deny, in the platform's `ea:<choice>:<id>`
+    vocabulary. Two and not four, because the CLI accepts only allow or deny,
+    so a session or permanent button would have promised the owner a memory
+    this agent does not have.
+  - **The owner decides how long it waits.** Right before it asks, the daemon
+    reads its own agent's `approvalWaitSeconds` and sends it as
+    `wait_seconds`, so the app can say "If you don't answer within 10 min" and
+    mean it. A read that gives nothing back sends the longest this daemon can
+    hold a request open (30 min) rather than nothing at all: a card with no
+    `wait_seconds` gets the server's generic minute, which would have been
+    shorter than the two minutes this replaces.
+  - **The phone does not ring yet, and this release does not pretend it
+    does.** The card has to go to the messages route, because that is the only
+    one that carries an `approvalMeta` at all, and that route sends no device
+    notification: every push in HOAI is sent from the other one. The old plain
+    message did ring, under the ordinary message category and with none of the
+    permission words. So with the app closed, a request now waits in silence
+    until it expires. The push belongs to the backend half of this stage and
+    lands with it; until then, prefer an agent whose owner has the app open.
+  - **The server is the only judge of when a request is dead.** The 120 s
+    local clock is gone. The wait ends on the owner's answer, or on the
+    server's own expiry flag, or on a backstop 90 s BEHIND the whole wait for
+    a server that never answers, which also strips the buttons off a card
+    nobody is listening to. A yes in the last seconds is honoured now, where
+    before it hit a request the daemon had already declined. And a request
+    raised while an auto update is draining the daemon is answered with a no
+    instead of hanging the CLI on a question nothing was left to answer.
+  - **Nothing changes for an agent installed with auto approve on**, which is
+    the default: that check still short circuits before any of this. And a
+    prompt left on screen by an 0.42.0 daemon still answers, for one release.
+
 ## 0.42.0 (2026-09-21)
 
 - **Keep working until it is done: the agent's own goal loop reaches the

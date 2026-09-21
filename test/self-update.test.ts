@@ -337,9 +337,19 @@ describe('schedule and drain decisions', () => {
     }
     expect(source).not.toContain('void handleRemoteCompact(')
     expect(source).toContain('if (updateDrainMode) {\n    return Promise.resolve({')
-    expect(source).toContain(
-      'if (updateDrainMode) return Promise.resolve()\n  return trackMessageOperation',
+    // The permission relay closes admission like every entry point above it,
+    // and since 0.42.1 it also ANSWERS the CLI on the way out: the old
+    // `return Promise.resolve()` sent no verdict at all, so a request raised
+    // during a drain left the session blocked for ever with nothing in any
+    // log. Asserted as three facts rather than one exact line, because the
+    // branch now carries the reason in a comment.
+    const permissionHandler = source.slice(
+      source.indexOf('mcp.setNotificationHandler(PermissionRequestSchema'),
+      source.indexOf('async function waitForVerdict('),
     )
+    expect(permissionHandler).toContain('if (updateDrainMode) {')
+    expect(permissionHandler).toContain("behavior: 'deny'")
+    expect(permissionHandler).toContain('return trackMessageOperation(')
     expect(source).toContain(
       'function checkReplyOverdue(): void {\n  if (updateDrainMode) return',
     )
