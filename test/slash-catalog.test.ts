@@ -691,3 +691,28 @@ test('a catalog at the cap is NOT annotated, because nothing was dropped', () =>
   // c0 is not /help, so no block at all; the point is the renderer never invents a remainder.
   assert.equal(delivery.content.includes('and 0 more'), false)
 })
+
+test('/goal is never published, or the app own goal door breaks', () => {
+  // The app's slashMissionDoor passes a typed /goal <text> STRAIGHT TO THE
+  // AGENT when this agent's server catalog carries `goal`, instead of
+  // starting a mission with it. On this channel the model cannot set a goal
+  // at all: there is no tool for one, ProposeGoal refuses agent contexts
+  // behind a server side gate that is off, and a model has no way to type a
+  // slash command. So publishing it would replace a door that works with one
+  // that cannot, and nothing on either side would say so.
+  //
+  // The daemon DOES arm a native goal on the hosts where it can type, and it
+  // does it from the owner's Keep working switch through the tmux injector
+  // (lib/compact-inject.ts), which is not a published command and never
+  // reaches a picker.
+  for (const catalog of [
+    catalogForCapabilities({ remoteCompact: false }),
+    catalogForCapabilities({ remoteCompact: true }),
+  ]) {
+    assert.ok(
+      !catalog.some((c) => c.command === '/goal'),
+      '/goal must not be advertised: the model cannot set one, and publishing it breaks the app own door',
+    )
+  }
+  assert.ok(!BUILTIN_COMMANDS.some((c) => c.command === '/goal'))
+})

@@ -14,9 +14,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  GOAL_CONDITION_MAX,
   INJECTABLE_LITERALS,
   resolveTmuxTarget,
   buildProbeArgs,
+  buildGoalSetInjectionSteps,
   buildInjectionSteps,
   type TmuxTarget,
 } from '../lib/compact-inject.ts'
@@ -25,7 +27,10 @@ import {
 
 test('allow-list is frozen and contains exactly the known fixed literals', () => {
   assert.ok(Object.isFrozen(INJECTABLE_LITERALS))
-  assert.deepEqual(INJECTABLE_LITERALS, { compact: '/compact' })
+  assert.deepEqual(INJECTABLE_LITERALS, {
+    compact: '/compact',
+    goalClear: '/goal clear',
+  })
 })
 
 test('buildInjectionSteps throws on a key outside the allow-list', () => {
@@ -58,7 +63,10 @@ test('every injected key is either an allow-listed literal or Enter', () => {
       assert.equal(step.argv[sendKeysIdx + 2], t.target)
       const payload = step.argv.slice(sendKeysIdx + 3)
       const isLiteralStep =
-        payload.length === 2 && payload[0] === '-l' && allowed.has(payload[1]!)
+        payload.length === 3 &&
+        payload[0] === '-l' &&
+        payload[1] === '--' &&
+        allowed.has(payload[2]!)
       const isEnterStep = payload.length === 1 && payload[0] === 'Enter'
       assert.ok(
         isLiteralStep || isEnterStep,
@@ -67,7 +75,8 @@ test('every injected key is either an allow-listed literal or Enter', () => {
     }
     // First step types the literal (with -l so tmux never key-name-expands
     // it), later steps only press Enter.
-    assert.equal(steps[0]!.argv.at(-2), '-l')
+    assert.equal(steps[0]!.argv.at(-3), '-l')
+    assert.equal(steps[0]!.argv.at(-2), '--', 'the separator guards a literal that starts with a dash')
     assert.ok(allowed.has(steps[0]!.argv.at(-1)!))
     assert.equal(steps[1]!.argv.at(-1), 'Enter')
     assert.equal(steps[2]!.argv.at(-1), 'Enter')
@@ -159,4 +168,86 @@ test('probe argv resolves any target spec via display-message', () => {
   assert.deepEqual(buildProbeArgs(t), [
     'tmux', '-S', '/tmp/sock', 'display-message', '-p', '-t', '%12', 'ok',
   ])
+})
+
+// The one parameterised literal
+//
+// The owner's goal condition is the only chat derived text that may ever reach
+// a key sequence. It reaches one through buildGoalSetInjectionSteps and through
+// nothing else, so every rule that keeps it from becoming a SECOND command is
+// tested here rather than at the call site.
+
+const GOAL_TARGET: TmuxTarget = {
+  target: '%12',
+  socketArgs: ['-S', '/tmp/sock'],
+  source: 'tmux-pane',
+}
+
+test('a goal set types "/goal <condition>" as ONE literal, then Enter twice', () => {
+  const steps = buildGoalSetInjectionSteps(GOAL_TARGET, 'every sign up test passes')
+  assert.ok(steps, 'a plain one line condition must be accepted')
+  assert.equal(steps.length, 3, 'literal, Enter, paste-safety Enter')
+  assert.deepEqual(steps[0]!.argv, [
+    'tmux', '-S', '/tmp/sock', 'send-keys', '-t', '%12',
+    '-l', '--', '/goal every sign up test passes',
+  ])
+  assert.equal(steps[0]!.delayMsBefore, 0)
+  assert.deepEqual(steps[1]!.argv.slice(-1), ['Enter'])
+  assert.deepEqual(steps[2]!.argv.slice(-1), ['Enter'])
+  assert.ok(steps[1]!.delayMsBefore > 0 && steps[2]!.delayMsBefore > 0)
+})
+
+test('the separator comes before the literal, so a condition starting with a dash is TEXT', () => {
+  // Without the separator tmux reads a leading -r as a flag of send-keys and
+  // the owner's goal is silently truncated or refused. /compact never hit this;
+  // a typed condition can begin with anything.
+  const steps = buildGoalSetInjectionSteps(GOAL_TARGET, '-r is handled everywhere')
+  assert.ok(steps)
+  const sep = steps[0]!.argv.indexOf('--')
+  const literal = steps[0]!.argv.indexOf('/goal -r is handled everywhere')
+  assert.ok(sep > 0, 'the argv must carry a -- separator')
+  assert.equal(literal, sep + 1, 'the separator must come immediately before the literal')
+})
+
+test('the condition validator refuses everything that could smuggle a second command', () => {
+  // Returns null, never throws: this is reached from a socket handler's path,
+  // and a throw there takes the channel down.
+  for (const bad of [
+    '',
+    '   ',
+    '\t\t',
+    'two\nlines',
+    'two\rlines',
+    'a bell \u0007 inside',
+    'a null \u0000 inside',
+    'an escape \u001b[2J inside',
+    '/clear',
+    '  /goal something',
+    'x'.repeat(GOAL_CONDITION_MAX + 1),
+  ]) {
+    assert.equal(
+      buildGoalSetInjectionSteps(GOAL_TARGET, bad),
+      null,
+      `a condition ${JSON.stringify(bad.slice(0, 20))} must be refused`,
+    )
+  }
+  // The runtime's own cap is 4000 characters, and exactly 4000 is legal.
+  const atCap = 'y'.repeat(GOAL_CONDITION_MAX)
+  const steps = buildGoalSetInjectionSteps(GOAL_TARGET, atCap)
+  assert.ok(steps, 'a condition at the runtime cap must still be injectable')
+  assert.equal(steps[0]!.argv.at(-1), `/goal ${atCap}`)
+})
+
+test('the validator answers null rather than throwing on a non string', () => {
+  assert.equal(
+    buildGoalSetInjectionSteps(GOAL_TARGET, undefined as unknown as string),
+    null,
+  )
+  assert.equal(buildGoalSetInjectionSteps(GOAL_TARGET, 42 as unknown as string), null)
+})
+
+test('a refused condition builds NO argv at all, so nothing half typed can be sent', () => {
+  // The refusal is the whole answer: a caller that ignores null and spreads it
+  // would spread nothing, never a partial key sequence.
+  assert.equal(buildGoalSetInjectionSteps(GOAL_TARGET, 'line one\nline two'), null)
 })

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DECLARED_CAPABILITIES } from '../lib/declared-capabilities'
+import { declaredCapabilities } from '../lib/declared-capabilities'
 import {
   heartbeatEnv,
   readOwnVersion,
@@ -360,24 +360,36 @@ describe('declared capabilities on the heartbeat', () => {
         return {}
       },
       log: () => {},
-      capabilities: () => [...DECLARED_CAPABILITIES],
+      capabilities: () => [...declaredCapabilities({ canInjectGoal: true })],
     })
     await Bun.sleep(0)
     handle!.sendNow()
     await Bun.sleep(0)
     expect(calls.length).toBe(2)
     for (const body of calls) {
-      expect(body.capabilities).toEqual([...DECLARED_CAPABILITIES])
+      expect(body.capabilities).toEqual([...declaredCapabilities({ canInjectGoal: true })])
     }
     clearInterval(handle!.timer)
   })
 
-  test('what is declared is exactly the exported list, mission_pause absent', () => {
-    // Stage 6 of the Mission program is where a pause this daemon can actually
-    // enforce would land; until then, declaring it would hand the owner a
-    // button that does nothing.
-    expect([...DECLARED_CAPABILITIES]).toEqual(['mission_events'])
-    expect(DECLARED_CAPABILITIES.includes('mission_pause')).toBe(false)
+  test('what rides the beat is what THIS host can do, computed per beat', () => {
+    // Until 0.42.0 this asserted one token and that mission_pause was absent,
+    // because nothing here could enforce a pause. The goal lane is the pause
+    // this daemon can enforce: clearing the native goal stops the loop after
+    // the current turn. It is host shaped, so the beat carries a different
+    // answer on a machine that cannot type into its own session, and the
+    // heartbeat evaluates the thunk on every beat precisely so a late tmux
+    // upgrade starts declaring without a restart.
+    expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
+      'mission_events',
+      'mission_goal_checks',
+      'mission_goal_loop',
+      'mission_pause',
+    ])
+    expect([...declaredCapabilities({ canInjectGoal: false })]).toEqual([
+      'mission_events',
+      'mission_goal_checks',
+    ])
   })
 
   test('no provider means no key at all, never an empty array', async () => {

@@ -34,6 +34,12 @@ import {
   buildMissionActivePath,
   buildMissionTickPath,
   buildMissionCompletePath,
+  MISSION_VERDICT_REASON_MAX,
+  MISSION_FEED_TEXT_MAX,
+  buildMissionFailBody,
+  buildMissionFailPath,
+  buildMissionProgressBody,
+  buildMissionProgressPath,
   formatMissionSummary,
   type MissionSnapshot,
 } from '../lib/missions.ts'
@@ -229,6 +235,152 @@ test('complete: preserves an empty body when summary is absent, null, or whitesp
 
 // ── path builders ───────────────────────────────────────────────────────────
 
+// ── The goal lane: progress, fail, and the two runtime blocks ──────────────
+
+test('progress: carries the verdict and the run report only when they are supplied', () => {
+  const plain = buildMissionProgressBody({
+    feedEntry: { kind: 'checked', text: 'Not yet: the file is not there yet.' },
+  })
+  assert.equal(plain.ok, true)
+  if (!plain.ok) return
+  assert.deepEqual(plain.body, {
+    feedEntry: { kind: 'checked', text: 'Not yet: the file is not there yet.' },
+  })
+  assert.ok(!('verdict' in plain.body), 'an absent block is an absent KEY, never an empty object')
+  assert.ok(!('runReport' in plain.body))
+
+  const full = buildMissionProgressBody({
+    feedEntry: { kind: 'checked', text: 'Not yet: the file is not there yet.' },
+    verdict: { verdict: 'not_yet', reason: 'The file gate.txt has not been created yet.', by: 'checker', check: 3 },
+    runReport: { turnsUsed: 3, turnCap: 20 },
+  })
+  assert.equal(full.ok, true)
+  if (!full.ok) return
+  assert.deepEqual(full.body.verdict, {
+    verdict: 'not_yet',
+    reason: 'The file gate.txt has not been created yet.',
+    by: 'checker',
+    check: 3,
+  })
+  assert.deepEqual(full.body.runReport, { turnsUsed: 3, turnCap: 20 })
+  assert.ok(!('workingMs' in full.body.runReport!), 'a live goal has no elapsed time, so it sends none')
+  assert.ok(!('at' in full.body.verdict!), 'when the check happened is the server word, never the daemon one')
+  assert.ok(!('source' in full.body.runReport!), 'and so is whose runtime counted it')
+})
+
+test('progress: refuses an unknown verdict word and drops one with no reason', () => {
+  const bad = buildMissionProgressBody({
+    verdict: { verdict: 'nearly' as unknown as 'met', reason: 'close enough' },
+  })
+  assert.equal(bad.ok, false, 'a word outside the three is a bug in the caller, not a quiet omission')
+
+  const noReason = buildMissionProgressBody({
+    feedEntry: { kind: 'done', text: 'The goal was cleared.' },
+    verdict: { verdict: 'met', reason: '   ' },
+  })
+  assert.equal(noReason.ok, true)
+  if (!noReason.ok) return
+  assert.ok(!('verdict' in noReason.body), 'the backend requires a reason, so the block is omitted')
+  assert.ok('feedEntry' in noReason.body, 'and the rest of the write still lands')
+})
+
+test('progress: a run report field the wire cannot carry is DROPPED, never clamped', () => {
+  const r = buildMissionProgressBody({
+    runReport: { turnsUsed: 4, turnCap: 900, workingMs: -1 },
+  })
+  assert.equal(r.ok, true)
+  if (!r.ok) return
+  assert.deepEqual(r.body.runReport, { turnsUsed: 4 }, 'a count nobody counted is worse than no count')
+
+  const nothingUsable = buildMissionProgressBody({
+    feedEntry: { kind: 'worked', text: 'still going' },
+    runReport: { turnsUsed: null, turnCap: null, workingMs: null },
+  })
+  assert.equal(nothingUsable.ok, true)
+  if (!nothingUsable.ok) return
+  assert.ok(!('runReport' in nothingUsable.body), 'an empty run report is no run report')
+})
+
+test('progress: clips the feed line and the reason to their own wire limits', () => {
+  const r = buildMissionProgressBody({
+    feedEntry: { kind: 'checked', text: `Not yet: ${'x'.repeat(400)}` },
+    verdict: { verdict: 'not_yet', reason: 'y'.repeat(400) },
+  })
+  assert.equal(r.ok, true)
+  if (!r.ok) return
+  assert.equal(r.body.feedEntry!.text.length, MISSION_FEED_TEXT_MAX)
+  assert.equal(r.body.verdict!.reason.length, MISSION_VERDICT_REASON_MAX)
+  assert.equal(MISSION_FEED_TEXT_MAX, 200)
+  assert.equal(MISSION_VERDICT_REASON_MAX, 240)
+})
+
+test('progress: refuses a body that would change nothing', () => {
+  const r = buildMissionProgressBody({})
+  assert.equal(r.ok, false, 'the backend would answer 200 and do nothing, which reads as a write that worked')
+})
+
+test('fail: builds the body and the path this repository did not have', () => {
+  assert.deepEqual(buildMissionFailPath('873', 42), {
+    ok: true,
+    path: 'assistants/873/missions/42/fail',
+  })
+  assert.equal(buildMissionFailPath('873', 0).ok, false)
+  assert.equal(buildMissionFailPath('', 42).ok, false)
+
+  const r = buildMissionFailBody({
+    summary: '  The folder is read only, so the file can never be created.  ',
+    verdict: { verdict: 'impossible', reason: 'The folder is read only.', by: 'checker' },
+    runReport: { turnsUsed: 3, turnCap: 20, workingMs: 12000 },
+  })
+  assert.equal(r.ok, true)
+  if (!r.ok) return
+  assert.equal(r.body.summary, 'The folder is read only, so the file can never be created.')
+  assert.equal(r.body.verdict!.verdict, 'impossible')
+  assert.deepEqual(r.body.runReport, { turnsUsed: 3, turnCap: 20, workingMs: 12000 })
+
+  const bare = buildMissionFailBody({})
+  assert.equal(bare.ok, true)
+  if (!bare.ok) return
+  assert.deepEqual(bare.body, {}, 'a fail with nothing to add is still a fail')
+})
+
+test('complete: carries a met verdict and the run report the runtime counted', () => {
+  const r = buildMissionCompleteBody({
+    summary: 'The file gate.txt exists and contains ready.',
+    verdict: { verdict: 'met', reason: 'The transcript shows the file was written.', by: 'checker', check: 2 },
+    runReport: { turnsUsed: 2, turnCap: 20, workingMs: 9211 },
+  })
+  assert.equal(r.ok, true)
+  if (!r.ok) return
+  assert.equal(r.body.summary, 'The file gate.txt exists and contains ready.')
+  assert.deepEqual(r.body.verdict, {
+    verdict: 'met',
+    reason: 'The transcript shows the file was written.',
+    by: 'checker',
+    check: 2,
+  })
+  assert.deepEqual(r.body.runReport, { turnsUsed: 2, turnCap: 20, workingMs: 9211 })
+
+  const shipped = buildMissionCompleteBody({ summary: 'done' })
+  assert.equal(shipped.ok, true)
+  if (!shipped.ok) return
+  assert.deepEqual(shipped.body, { summary: 'done' }, 'the shipped tool call is byte identical to before')
+})
+
+test('snapshot: keepWorking and the turn cap are read off the mission', () => {
+  const armed = snapshot({ keepWorking: true, turnCap: 20 })
+  assert.equal(armed.keepWorking, true)
+  assert.equal(armed.turnCap, 20)
+
+  const legacy = snapshot()
+  assert.equal(legacy.keepWorking, undefined, 'a backend older than the column sends neither')
+  assert.equal(legacy.turnCap, undefined)
+
+  const off = snapshot({ keepWorking: false, turnCap: null })
+  assert.equal(off.keepWorking, false)
+  assert.equal(off.turnCap, null)
+})
+
 test('paths: build the user-scoped mission routes', () => {
   assert.deepEqual(buildMissionCreatePath('873'), { ok: true, path: 'assistants/873/missions' })
   assert.deepEqual(buildMissionActivePath('873'), { ok: true, path: 'assistants/873/missions/active' })
@@ -236,6 +388,10 @@ test('paths: build the user-scoped mission routes', () => {
   assert.deepEqual(buildMissionCompletePath('873', 42), {
     ok: true,
     path: 'assistants/873/missions/42/complete',
+  })
+  assert.deepEqual(buildMissionProgressPath('873', 42), {
+    ok: true,
+    path: 'assistants/873/missions/42/progress',
   })
 })
 

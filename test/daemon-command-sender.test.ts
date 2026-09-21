@@ -523,15 +523,35 @@ test('each handler is one runDaemonCommand call whose act is the real work, invo
   }
 })
 
-test('the tmux injection exists in exactly one place, inside compactAsOwner (shape pin)', () => {
-  // The measured bypass: a rail running the injection itself before calling
-  // the gated handler. This count is what makes it red.
+test('the COMPACT injection exists in exactly one place, inside compactAsOwner (shape pin)', () => {
+  // The measured bypass: a rail running the compact injection itself before
+  // calling the gated handler. 0.39.9 pinned this as a count of EVERY
+  // buildInjectionSteps call, which was right while compact was the only
+  // injection the daemon performed. 0.42.0's goal lane adds a second, for a
+  // different action kind ('goalClear'), reached only from the owner's own
+  // pause, stop and frame, never from a slash route, so the blunt count went
+  // red on a feature rather than on a bypass.
+  //
+  // Pinned by KIND instead, which is STRICTER for the property that matters:
+  // a second COMPACT injection anywhere still fails, and any future injection
+  // that smuggles the compact kind in fails too, neither of which the old
+  // count could distinguish from an ordinary new feature.
   assert.equal(
-    count(/buildInjectionSteps\(/),
+    count(/buildInjectionSteps\(compactTarget, 'compact'\)/),
     1,
-    `a rail running the injection itself would make this two; ${SHAPE}`,
+    `a rail running the compact injection itself would make this two; ${SHAPE}`,
   )
   assert.match(functionBody('compactAsOwner'), /buildInjectionSteps\(compactTarget, 'compact'\)/)
+  // Every OTHER injection site must be a different action kind. Read the kind
+  // argument of each call and assert exactly one of them is 'compact'.
+  const kinds = [...src.matchAll(/buildInjectionSteps\(compactTarget, '([a-zA-Z]+)'\)/g)].map(
+    (m) => m[1],
+  )
+  assert.equal(
+    kinds.filter((k) => k === 'compact').length,
+    1,
+    `exactly one call may carry the compact kind, found ${kinds.join(', ')}; ${SHAPE}`,
+  )
 })
 
 test('the seam is imported from the real module (shape pin)', () => {

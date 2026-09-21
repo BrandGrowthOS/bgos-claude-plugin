@@ -63,3 +63,27 @@ test('the bundled fallback itself carries the markers (so injection guards match
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes('BGOS Channel'))
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes('Agent Capabilities'))
 })
+
+// The Claude channel's goal lane sentence, copied BYTE FOR BYTE out of the
+// served canon (backend/src/integrations/capability-canon.ts,
+// CLAUDE_GOAL_LANE_SENTENCE, gated at GOAL_LANE_MIN_DAEMON.claude = 0.42.0).
+// The two repositories cannot import from one another, so the only thing that
+// can keep the offline copy honest is a literal it is compared against here.
+const SERVED_CLAUDE_GOAL_LANE_SENTENCE =
+  "- Your owner can ask you to keep working until a condition holds. Where this host can type into your session it sets a native goal for you and clears it at your owner's turn cap; where it cannot there is no switch on their side and nothing pretends otherwise. You never set a goal yourself and there is no tool for it, so do not try to type a slash command. While a goal is active a separate checker reads your work after every turn and answers met, not yet with a reason, or cannot be done with a reason, and the host posts every answer onto the mission for you: do not narrate the checks, do not argue with the checker, and never tick a mini goal because a check passed."
+
+test('the bundled fallback carries the served goal lane sentence, word for word', () => {
+  // The fetch that fails is exactly the moment the agent has no other source
+  // for this: it is the one capability on this channel the model must not act
+  // on by itself, because it CANNOT (there is no tool for a goal and a model
+  // has no way to type a slash command), and a half remembered version of
+  // that reads as permission to try.
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(SERVED_CLAUDE_GOAL_LANE_SENTENCE),
+    'the offline copy has drifted from the served Claude delta; copy the sentence across verbatim',
+  )
+})
+
+test('the fallback stays free of dashes, because it is injected into a prompt', () => {
+  assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
+})

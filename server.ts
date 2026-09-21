@@ -98,7 +98,9 @@ import { SessionTranscriptBinder } from './lib/session-binding.js'
 import {
   resolveTmuxTarget,
   buildProbeArgs,
+  buildGoalSetInjectionSteps,
   buildInjectionSteps,
+  type InjectionStep,
   type TmuxTarget,
 } from './lib/compact-inject.js'
 import { evaluateCompactionOutcome } from './lib/compact-confirm.js'
@@ -156,12 +158,18 @@ import {
   buildMissionCreateBody,
   buildMissionTickBody,
   buildMissionCompleteBody,
+  buildMissionFailBody,
+  buildMissionProgressBody,
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
   buildMissionCompletePath,
+  buildMissionFailPath,
+  buildMissionProgressPath,
   formatMissionSummary,
   pickImplicitMissionChat,
+  MISSION_DONE_WHEN_MAX,
+  MISSION_TITLE_MAX,
   type MissionSnapshot,
 } from './lib/missions.js'
 import {
@@ -169,8 +177,32 @@ import {
   decideMissionNotice,
   missionEventKey,
   parseMissionEvent,
+  type MissionEventWire,
 } from './lib/mission-events.js'
-import { DECLARED_CAPABILITIES } from './lib/declared-capabilities.js'
+import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { pinChannelProtocolRevision } from './lib/channel-transport.js'
+import {
+  applyGoalRecords,
+  emptyGoalLane,
+  extractGoalRecords,
+  GOAL_FEED_TEXT_MAX,
+  type GoalEffect,
+  type GoalLaneState,
+} from './lib/goal-status.js'
+import { GoalTail } from './lib/goal-tail.js'
+import { decideGoalStop } from './lib/goal-cap.js'
+import {
+  buildGoalMissionCreateBody,
+  goalCommandForMissionFrame,
+  goalConditionFor,
+  goalPendingStopFor,
+  goalSentinelActionFor,
+  goalWriteFor,
+  type GoalArmRecord,
+  type GoalCommand,
+  type GoalPendingArm,
+  type GoalReportRecord,
+} from './lib/goal-writes.js'
 import {
   resolveAuth,
   resolveCredentialsPath,
@@ -2014,6 +2046,30 @@ const mcp = new Server(
       '"open the editor". Never claim progress in prose that you have not',
       'ticked; the card is the source of truth.',
       '',
+      '## Keep working (the goal loop)',
+      '',
+      'Your owner can ask you to keep working until a condition holds. When they',
+      'do, this channel sets a native goal on your session and you will see a line',
+      'saying a session scoped Stop hook is now active with that condition. You do',
+      'not set it and you cannot set it: there is no tool for it and you must not',
+      'try to type a slash command.',
+      '',
+      'While a goal is active: work the condition, and end your turn normally when',
+      'you believe it holds. A separate checker reads your work after each turn and',
+      'answers met, not yet with a reason, or cannot be done with a reason. You will',
+      'see a not yet reason as "Stop hook feedback"; treat it as the next',
+      'instruction and fix exactly what it names. Do not argue with the checker and',
+      'do not claim the condition holds in prose: the checker decides, and its',
+      'answer is what your owner sees as Last check.',
+      '',
+      'The channel posts each check onto the mission card for you, so do not narrate',
+      'the checks and do not tick a mini goal because a check passed. Tick a mini',
+      'goal only when its own done_when is true, exactly as before.',
+      '',
+      'Your owner set a turn cap. When it is reached the channel clears the goal and',
+      'tells them you stopped. Stop working the condition at that point and say in',
+      'one short line where you got to.',
+      '',
       '## Sending Files & Media',
       '',
       'The `reply` tool supports file attachments alongside text:',
@@ -2205,6 +2261,19 @@ const mcp = new Server(
     ].join('\n'),
   },
 )
+
+// The channel's second transport gate, and the one nothing else in this file
+// would reveal. Claude Code refuses to deliver an UNSOLICITED notification (a
+// channel push, which is every inbound BGOS message) over a connection whose
+// negotiated protocol revision it considers modern, and the SDK answers
+// initialize with whatever revision the CLI asked for. So the era this channel
+// lives in would otherwise be decided by the CLI's request and by whichever
+// SDK a `bun install` resolved, both of which move without this repo, and the
+// day one of them crosses the line the daemon goes deaf with nothing on screen
+// and nothing in any log. lib/channel-transport.ts pins the answer to the
+// legacy revision the stage 6 gate probe proved a live session accepts, and
+// fails open (changing nothing) if a future SDK has no handler to wrap.
+pinChannelProtocolRevision(mcp)
 
 // ── Permission Request Handler ───────────────────────────────────────────────
 
@@ -6141,6 +6210,17 @@ function runHookEffects(effects: Effect[]): void {
         void postHookMarker(effect)
         break
       }
+      case 'goal_poll': {
+        // The hook is a WAKE and the transcript is the SOURCE, so this reads
+        // rather than reacts. Twice: the terminal verdict is written AFTER
+        // this plugin's Stop hook in the same batch, so the poll a Stop
+        // triggers is usually one verdict behind. A SessionStart gets the
+        // same free beat, which costs one file read on a cursor that has
+        // nothing new to give.
+        void pollGoalStatus()
+        setTimeout(() => void pollGoalStatus(), GOAL_POLL_BEAT_MS).unref?.()
+        break
+      }
       case 'turn_end': {
         void finishHookTurn()
         break
@@ -7179,6 +7259,623 @@ function rememberMissionSelfWrite(mission: unknown): void {
   missionSelfWrites.noteWritten(mission)
 }
 
+// ── The goal lane (stage 6 of the Mission program) ───────────────────────────
+//
+// Claude Code's own /goal is a session scoped Stop hook plus one piece of app
+// state, and a separate checker reads the agent's work after every turn and
+// answers met, not yet with a reason, or cannot be done with a reason. That
+// answer is in NO hook payload: the Stop schema carries hook_event_name,
+// stop_hook_active, last_assistant_message, background_tasks and
+// session_crons and nothing else, and the checker runs as a SECOND hook in
+// the same Stop batch. The hook is a WAKE and the session transcript is the
+// SOURCE.
+//
+// So the lane has two halves, and only one of them works everywhere:
+//
+//   READ, on every host including Windows. A cursored tailer over the PROVEN
+//   transcript (lib/goal-tail.ts), a pure mapper (lib/goal-status.ts), a pure
+//   judgement (lib/goal-writes.ts) and the two stops this daemon holds
+//   (lib/goal-cap.ts). Nothing here needs to type, so a Windows agent shows a
+//   complete Last check, the turns and the time for a goal a person typed in
+//   its own terminal.
+//
+//   WRITE, only where this daemon can type. Arming a native goal means
+//   putting `/goal <condition>` into the composer, and there is no other way
+//   in: a channel push cannot do it (the CLI hard codes skipSlashCommands on
+//   the channel enqueue and wraps the text in a <channel> element before any
+//   flag could be read, see docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
+//   and the model has no tool for it. lib/declared-capabilities.ts therefore
+//   declares mission_goal_loop and mission_pause only while compactTarget
+//   answers, so the owner is never offered a switch that would do nothing.
+//
+// Three facts the timing rests on. The terminal verdict is written AFTER this
+// plugin's own Stop hook in the same batch, so the poll a Stop triggers is
+// usually one verdict behind: the lane polls again a beat later AND sweeps at
+// the resting cadence, so a missed hook cannot strand a closed goal. A
+// superseding goal emits only a new set sentinel and no clear for the one it
+// replaced, so nothing here waits for a clear. And a not met check reports no
+// iterations, no elapsed time and no tokens at all, so the turns are this
+// lane's own count of the runtime's check rows and the time arrives with the
+// terminal record or never.
+
+/** Records older than the daemon's own start are never adopted. A resumed
+ *  session rewrites its parent's rows with their ORIGINAL timestamps, and
+ *  completing a mission off a goal that closed yesterday is exactly the
+ *  failure this lane must not have. */
+const GOAL_FLOOR_MS = Date.now()
+/** How long after a Stop the second poll runs. The gate's own goal check took
+ *  1876 ms, and the sweep below covers anything slower. */
+const GOAL_POLL_BEAT_MS = 2_500
+/** The slow sweep, at the resting cadence. */
+const GOAL_SWEEP_MS = 30_000
+/** How long a set is given to show up in the transcript before the owner is
+ *  told it did not. Generous on purpose: injected keystrokes queue behind a
+ *  turn that is already running, exactly as /compact's do. */
+const GOAL_ARM_CONFIRM_TIMEOUT_MS = 4 * 60_000
+const GOAL_ARM_CONFIRM_POLL_MS = 5_000
+
+const GOAL_ARM_REFUSED_TEXT =
+  'I could not start the keep going goal for this mission: its done when line is not one plain line I can type into my own terminal. Rewrite it as one short sentence and start the mission again.'
+const GOAL_ARM_UNCONFIRMED_TEXT =
+  'I typed the keep going goal into my terminal but it never started, so nothing is checking my work on its own. Tell me here and I will carry on.'
+
+const goalTail = new GoalTail(() => sessionBinder.provenTranscriptPath())
+
+/** The runtime's own view of the goal, folded from the transcript. */
+let goalLane: GoalLaneState = emptyGoalLane()
+/** The mission every verdict for the armed goal is written onto. */
+let goalMissionId: number | null = null
+/** The owner's turn limit for that mission, null when nobody set one. */
+let goalTurnCap: number | null = null
+/** Checks counted for this mission BEFORE the current set sentinel. */
+let goalTurnsBefore = 0
+/** Every check counted for this mission so far, across re arms. */
+let goalTurnsUsed = 0
+/** The not met reasons since the current set, oldest first (the stall rule). */
+let goalReasons: string[] = []
+/** One stop per armed goal, or a capped goal would report itself for ever. */
+let goalStopped = false
+/** Clears THIS daemon typed whose sentinel has not come back yet. A counter
+ *  and not a flag: a pause and a resume can both be in flight, and a clear
+ *  this daemon asked for is never narrated to the owner, because whatever
+ *  asked for it already told them why in its own words. */
+let goalSelfClears = 0
+/** What the owner's Keep working asked for, remembered across a pause so
+ *  Resume arms the SAME goal rather than a new one. */
+let goalArm: { missionId: number; condition: string; turnCap: number | null } | null = null
+/** The goal this lane is REPORTING on: the mission every check is written
+ *  onto and the condition the runtime holds for it, set the moment a goal
+ *  attaches to a mission whoever typed it. A goal a person typed in their own
+ *  terminal has one of these and no `goalArm` at all, and the owner's Pause,
+ *  Resume and Set aside are offered on its mission like any other, so this is
+ *  the identity those frames are read against. It survives a pause, because
+ *  Resume has to put the same condition back. */
+let goalHeld: { missionId: number; condition: string } | null = null
+/** An arm this daemon has TYPED whose set sentinel has not come back yet.
+ *  `live` on both records above is folded from the TRANSCRIPT, which says
+ *  nothing about a goal until that sentinel is read, so for the whole
+ *  confirmation window an arm in flight reads exactly like a goal the runtime
+ *  dropped. Without this record every mission_updated inside the window (the
+ *  backend emits one on every progress write, and the window runs to four
+ *  minutes) re armed: a SECOND /goal typed into the person's composer and a
+ *  second confirmation watcher behind it, again on the next frame. Released
+ *  by the set sentinel, and by the confirmation giving up. */
+let goalPendingArm: GoalPendingArm | null = null
+/** Single flight, the shape flushHookCard uses: a caller that finds a poll in
+ *  flight leaves it alone, because the next Stop, beat or sweep comes soon. */
+let goalPollFlight: Promise<void> | null = null
+
+/** What the lane is REPORTING on, as lib/goal-writes.ts needs to see it. */
+function goalReportRecord(): GoalReportRecord | null {
+  if (goalHeld === null) return null
+  return {
+    missionId: goalHeld.missionId,
+    condition: goalHeld.condition,
+    turnCap: goalTurnCap,
+    turns: goalTurnsUsed,
+    live:
+      goalSelfClears === 0 &&
+      goalLane.condition === goalHeld.condition &&
+      !goalLane.closed,
+  }
+}
+
+/** What the lane is holding, as lib/goal-writes.ts needs to see it. */
+function goalArmRecord(): GoalArmRecord | null {
+  if (goalArm === null) return null
+  return {
+    missionId: goalArm.missionId,
+    condition: goalArm.condition,
+    turnCap: goalArm.turnCap,
+    turns: goalTurnsUsed,
+    live:
+      goalSelfClears === 0 &&
+      goalLane.condition === goalArm.condition &&
+      !goalLane.closed,
+  }
+}
+
+/** Run one injection sequence. Never throws: a tmux that went away is a lane
+ *  that stops working, never a daemon that stops. */
+async function runGoalInjection(steps: InjectionStep[], label: string): Promise<boolean> {
+  try {
+    for (const step of steps) {
+      if (step.delayMsBefore > 0) await sleepMs(step.delayMsBefore)
+      await execFileAsync(step.argv[0]!, step.argv.slice(1), { timeout: 5_000 })
+    }
+    return true
+  } catch (err) {
+    log(`goal lane: could not ${label}: ${err}`)
+    return false
+  }
+}
+
+/**
+ * Type `/goal clear` into the composer.
+ *
+ * The runtime has its OWN competing pause and retry loop, with its own words,
+ * and it runs in interactive sessions, which every BGOS agent is. The
+ * daemon's stop wins and is the only one the owner sees, which is why every
+ * stop clears the native goal rather than merely stopping its own counting:
+ * the runtime's loop must not resume behind the owner's back.
+ */
+function clearNativeGoal(why: string): void {
+  if (!compactTarget) return
+  if (goalLane.condition === null || goalLane.closed) return
+  goalSelfClears += 1
+  void runGoalInjection(buildInjectionSteps(compactTarget, 'goalClear'), `clear the goal (${why})`)
+}
+
+/** Type `/goal <condition>` into the composer, then watch for the set
+ *  sentinel the way confirmCompaction watches for a compact boundary. */
+async function armNativeGoal(
+  command: Extract<GoalCommand, { kind: 'arm' }>,
+  chatId: string | null,
+): Promise<void> {
+  // Serialised per mission. The pure decision already answers `none` for a
+  // frame that lands while this mission's arm is in flight; this is the
+  // second lock, because the record is read from a caller that may have
+  // decided a beat ago, and two arms for one mission are two /goal lines in
+  // the person's composer whatever decided them.
+  if (goalPendingArm !== null && goalPendingArm.missionId === command.missionId) {
+    log(`goal lane: an arm for mission #${command.missionId} is already in flight`)
+    return
+  }
+  const target = compactTarget
+  if (target === null) {
+    // This host cannot type, so the switch was never offered for this agent
+    // (lib/declared-capabilities.ts). The read half is unaffected.
+    log('goal lane: Keep working is on, but nothing here can type into the session')
+    return
+  }
+  const steps = buildGoalSetInjectionSteps(target, command.condition)
+  if (steps === null) {
+    log(`goal lane: refused to type the condition for mission #${command.missionId}`)
+    if (chatId !== null) {
+      await sendDaemonText(chatId, GOAL_ARM_REFUSED_TEXT).catch((err) =>
+        log(`goal lane: refusal notice failed: ${err}`),
+      )
+    }
+    return
+  }
+  // BEFORE the keystrokes, never after: a frame landing between the injection
+  // and the set sentinel is the whole of this defect, and it is answered by
+  // this record being there when it is read.
+  goalPendingArm = { missionId: command.missionId, condition: command.condition }
+  goalArm = {
+    missionId: command.missionId,
+    condition: command.condition,
+    turnCap: command.turnCap,
+  }
+  // Both identities move together. A frame that lands between this and the
+  // set sentinel would otherwise read an attachment to the PREVIOUS mission
+  // and clear a goal that is already being replaced.
+  goalHeld = { missionId: command.missionId, condition: command.condition }
+  goalTurnCap = command.turnCap
+  goalTurnsBefore = command.turnsBefore
+  goalTurnsUsed = command.turnsBefore
+  goalReasons = []
+  goalStopped = false
+  log(
+    `goal lane: arming the goal for mission #${command.missionId} ` +
+      `(cap ${command.turnCap ?? 'none'}, ${command.turnsBefore} turns already used)`,
+  )
+  if (!(await runGoalInjection(steps, 'set the goal'))) {
+    // Nothing was typed, so nothing is in flight and no watcher will come
+    // along to release the record. A tmux that went away must not lock this
+    // mission out of ever arming again.
+    goalPendingArm = null
+    return
+  }
+  void confirmGoalArmed(command.condition, command.missionId, chatId)
+}
+
+/** Watch the transcript for the set sentinel, and say so plainly when it
+ *  never comes. Silence is the one answer this must not give: the owner
+ *  turned a switch on and would otherwise watch a card that never checks. */
+async function confirmGoalArmed(
+  condition: string,
+  missionId: number,
+  chatId: string | null,
+): Promise<void> {
+  try {
+    const deadline = Date.now() + GOAL_ARM_CONFIRM_TIMEOUT_MS
+    while (Date.now() < deadline) {
+      await sleepMs(GOAL_ARM_CONFIRM_POLL_MS)
+      // Superseded: another mission armed its own goal, or this one was
+      // cleared. Whatever happens next is that goal's business, not this
+      // watcher's.
+      if (goalArm === null || goalArm.missionId !== missionId) return
+      if (goalArm.condition !== condition) return
+      await pollGoalStatus()
+      if (goalLane.condition === condition && !goalLane.closed) {
+        log(`goal lane: the goal for mission #${missionId} is armed`)
+        return
+      }
+    }
+    log(`goal lane: no set sentinel for mission #${missionId} before the timeout`)
+    if (chatId !== null) await sendDaemonText(chatId, GOAL_ARM_UNCONFIRMED_TEXT)
+  } catch (err) {
+    log(`goal lane: arm confirmation error: ${err}`)
+  } finally {
+    // The timeout, an error, and a supersede all land here. Released only if
+    // the record is still THIS arm's: a newer arm owns it by then, and
+    // clearing another one's would reopen the window it is holding shut.
+    if (
+      goalPendingArm !== null &&
+      goalPendingArm.missionId === missionId &&
+      goalPendingArm.condition === condition
+    ) {
+      goalPendingArm = null
+    }
+  }
+}
+
+/**
+ * Read whatever the transcript has appended and act on it.
+ *
+ * Re entrancy guarded the way flushHookCard is, because a Stop, its beat and
+ * the sweep can all land inside one another. The lane state advances before
+ * the writes go out, which is deliberate: a write that fails costs one check
+ * line, while re reading the same records would cost a duplicate completion.
+ */
+async function pollGoalStatus(): Promise<void> {
+  if (goalPollFlight !== null) return
+  const run = (async () => {
+    const chunk = goalTail.read()
+    if (chunk === '') return
+    const records = extractGoalRecords(chunk, GOAL_FLOOR_MS)
+    if (records.length === 0) return
+    const { next, effects } = applyGoalRecords(goalLane, records)
+    goalLane = next
+    for (const effect of effects) await applyGoalEffect(effect)
+  })()
+  goalPollFlight = run
+  try {
+    await run
+  } catch (err) {
+    log(`goal lane: poll failed: ${err}`)
+  } finally {
+    goalPollFlight = null
+  }
+}
+
+/** One goal effect, onto the mission it belongs to. */
+async function applyGoalEffect(effect: GoalEffect): Promise<void> {
+  switch (effect.kind) {
+    case 'goal_set':
+      await attachGoalToMission(effect.condition)
+      return
+
+    case 'goal_check': {
+      goalTurnsUsed = goalTurnsBefore + effect.check
+      goalReasons.push(effect.reason)
+      await writeGoalEffect(effect, false)
+      await stopGoalIfDue()
+      return
+    }
+
+    case 'goal_met':
+    case 'goal_impossible': {
+      goalTurnsUsed = goalTurnsBefore + effect.check
+      await writeGoalEffect(effect, false)
+      // The goal closed itself and the mission closed with it. Nothing is
+      // remembered for a resume, because there is nothing left to resume.
+      goalMissionId = null
+      goalArm = null
+      goalHeld = null
+      goalTurnsBefore = 0
+      goalTurnsUsed = 0
+      goalReasons = []
+      return
+    }
+
+    case 'goal_cleared': {
+      const ours = goalSelfClears > 0
+      if (ours) goalSelfClears -= 1
+      await writeGoalEffect(effect, ours)
+      if (!ours) {
+        // A person cleared it in their own terminal. There is nothing to
+        // resume and no count to carry: they may set another in a moment.
+        goalArm = null
+        goalHeld = null
+        goalTurnsBefore = 0
+        goalTurnsUsed = 0
+      } else {
+        // A pause, an abandon or one of this daemon's own two stops. Keep the
+        // count, so "Give it 10 more turns" means ten more and not a fresh
+        // budget.
+        goalTurnsBefore = goalTurnsUsed
+      }
+      goalMissionId = null
+      goalReasons = []
+      return
+    }
+  }
+}
+
+/**
+ * Which mission the goal that just armed writes onto.
+ *
+ * A goal the owner's Keep working armed already has one. A goal a PERSON
+ * typed into their own terminal has none, so it gets a derived mission of its
+ * own in the turn's chat: Last check, the turns and the time then show for it
+ * exactly as they do for a goal the owner armed, which is the whole of the
+ * Windows story. An open mission whose own done when line IS this condition
+ * is ADOPTED rather than replaced, which is what a daemon that restarted mid
+ * goal finds, and what stops it abandoning the card it wrote itself.
+ */
+async function attachGoalToMission(condition: string): Promise<void> {
+  goalReasons = []
+  goalStopped = false
+  goalSelfClears = 0
+  // A set sentinel is the runtime answering, so nothing is in flight any
+  // more: the arm this answers, or the one it superseded, whose own watcher
+  // would otherwise hold the window open until it timed out.
+  const pending = goalPendingArm
+  goalPendingArm = null
+
+  // The owner stopped this mission while its arm was in the air. Their stop
+  // wins: the goal that just arrived is typed away again and the mission is
+  // NOT handed back, which is what let the runtime carry on looping on a
+  // mission they had paused or set aside. A pause keeps the condition on
+  // goalHeld, which is what a Resume puts back.
+  const action = goalSentinelActionFor({ condition, pending })
+  if (action.kind === 'stop') {
+    goalMissionId = null
+    clearNativeGoal(`the owner's ${action.stopped === 'paused' ? 'pause' : 'stop'} while it armed`)
+    log(
+      `goal lane: the goal armed after the owner's ${action.stopped}, ` +
+        'so it is cleared again and takes no mission',
+    )
+    return
+  }
+
+  if (goalArm !== null && goalArm.condition === condition) {
+    goalMissionId = goalArm.missionId
+    goalTurnCap = goalArm.turnCap
+    goalTurnsUsed = goalTurnsBefore
+    goalHeld = { missionId: goalArm.missionId, condition }
+    log(`goal lane: the goal for mission #${goalArm.missionId} is armed`)
+    return
+  }
+
+  goalArm = null
+  goalTurnCap = null
+  goalTurnsBefore = 0
+  goalTurnsUsed = 0
+  goalMissionId = await resolveGoalMission(condition)
+  // Held whoever typed it: the owner's Pause reaches this mission through
+  // THIS record, and a goal a person typed has no other.
+  goalHeld = goalMissionId === null ? null : { missionId: goalMissionId, condition }
+}
+
+async function resolveGoalMission(condition: string): Promise<number | null> {
+  const chat = resolveMissionToolChat(undefined)
+  const chatId = chat.ok ? chat.chatId : null
+
+  try {
+    const activePath = buildMissionActivePath(ASSISTANT_ID, chatId)
+    if (activePath.ok) {
+      const answer = (await bgosGetCachedOn304(activePath.path)) as {
+        mission?: MissionSnapshot | null
+      }
+      const open = answer?.mission ?? null
+      if (open && goalConditionFor(open) === condition) {
+        goalTurnCap = open.keepWorking === true ? (open.turnCap ?? null) : null
+        log(`goal lane: adopting open mission #${open.id}, which already names this goal`)
+        return open.id
+      }
+    }
+  } catch (err) {
+    log(`goal lane: could not read the chat's open mission: ${err}`)
+  }
+
+  const built = buildGoalMissionCreateBody(condition, chatId)
+  if (!built.ok) {
+    log(`goal lane: no mission for this goal: ${built.error}`)
+    return null
+  }
+  const path = buildMissionCreatePath(ASSISTANT_ID)
+  if (!path.ok) {
+    log(`goal lane: no mission for this goal: ${path.error}`)
+    return null
+  }
+  try {
+    const result = (await bgosPost(path.path, { ...built.body })) as {
+      mission?: MissionSnapshot
+    }
+    if (!result?.mission) return null
+    // Stamp the landed write, exactly as create_mission does: a create has no
+    // mission id until the response carries one, so there is nothing to stamp
+    // in advance.
+    rememberMissionSelfWrite(result.mission)
+    log(`goal lane: created mission #${result.mission.id} for a goal typed in the session`)
+    return result.mission.id
+  } catch (err) {
+    log(`goal lane: mission create failed: ${err}`)
+    return null
+  }
+}
+
+/** Send one goal effect to the mission. The judgement is lib/goal-writes.ts's;
+ *  this is the wire. */
+async function writeGoalEffect(effect: GoalEffect, selfCleared: boolean): Promise<void> {
+  const missionId = goalMissionId
+  if (missionId === null) return
+  const write = goalWriteFor(effect, {
+    turnCap: goalTurnCap,
+    turnsBefore: goalTurnsBefore,
+    selfCleared,
+  })
+  if (write.route === 'none') return
+  if (write.route === 'refused') {
+    log(`goal lane: ${effect.kind} not written: ${write.error}`)
+    return
+  }
+
+  if (write.route === 'progress') {
+    const path = buildMissionProgressPath(ASSISTANT_ID, missionId)
+    if (!path.ok) {
+      log(`goal lane: ${effect.kind} not written: ${path.error}`)
+      return
+    }
+    try {
+      await bgosPatch(path.path, { ...write.body })
+    } catch (err) {
+      log(`goal lane: check write failed: ${err}`)
+    }
+    return
+  }
+
+  const path =
+    write.route === 'complete'
+      ? buildMissionCompletePath(ASSISTANT_ID, missionId)
+      : buildMissionFailPath(ASSISTANT_ID, missionId)
+  if (!path.ok) {
+    log(`goal lane: ${effect.kind} not written: ${path.error}`)
+    return
+  }
+  // BEFORE the request, never after the answer: the backend emits the frame
+  // from inside the transaction it answers from, so the frame beats the
+  // response home and an unstamped completion is narrated back to the model
+  // as the owner's own Mark done.
+  noteMissionPendingSelfWrite(missionId)
+  try {
+    const result = (await bgosPatch(path.path, { ...write.body })) as {
+      mission?: MissionSnapshot
+    }
+    if (result?.mission) rememberMissionSelfWrite(result.mission)
+    log(`goal lane: mission #${missionId} closed as ${write.route === 'complete' ? 'met' : 'cannot be done'}`)
+  } catch (err) {
+    log(`goal lane: ${write.route} write failed: ${err}`)
+  }
+}
+
+/**
+ * The two stops this daemon holds: the owner's turn cap, and three checks in
+ * a row that found the same thing.
+ *
+ * It clears the native goal first and reports the stop second. It does NOT
+ * set Needs you: that is derived on the snapshot from the stop the server
+ * recorded, and a daemon that declared one itself would be declaring a state
+ * the server owns.
+ */
+async function stopGoalIfDue(): Promise<void> {
+  if (goalStopped) return
+  const stop = decideGoalStop({
+    armed: goalLane.condition !== null,
+    closed: goalLane.closed,
+    checks: goalTurnsUsed,
+    turnCap: goalTurnCap,
+    reasons: goalReasons,
+  })
+  if (stop === null) return
+  goalStopped = true
+  const missionId = goalMissionId
+  clearNativeGoal(`the ${stop.kind} stop`)
+  if (missionId === null) return
+  try {
+    // The PAIRING family: this is the daemon reporting a fact about its own
+    // loop, and there is deliberately no owner twin for it.
+    await bgosPost(
+      `integrations/assistants/${ASSISTANT_ID}/missions/${missionId}/stopped`,
+      { kind: stop.kind, text: stop.text },
+    )
+    log(`goal lane: reported the ${stop.kind} stop on mission #${missionId}`)
+  } catch (err) {
+    log(`goal lane: the stop report failed: ${err}`)
+  }
+}
+
+/**
+ * One mission frame, onto the native goal.
+ *
+ * Every decision is lib/goal-writes.ts's; this is the wiring. A frame this
+ * daemon has already seen is skipped, or a duplicate delivery (a paired
+ * daemon sits in two rooms) would type a second /goal into the composer.
+ */
+function applyMissionFrameToGoalLane(
+  event: MissionEventWire,
+  selfAuthored: boolean,
+  alreadySeen: boolean,
+): void {
+  if (alreadySeen) return
+  try {
+    const command = goalCommandForMissionFrame({
+      frame: event.frame,
+      mission: event.mission,
+      selfAuthored,
+      armed: goalArmRecord(),
+      reporting: goalReportRecord(),
+      pending: goalPendingArm,
+    })
+    // The clear below can only reach a goal the runtime is already holding,
+    // and inside the arming window there is none: the goal arrives AFTER the
+    // owner stopped the mission. So the stop rides the pending record to the
+    // sentinel, which is the first moment anything can act on it. Recorded
+    // BEFORE the no command exit on purpose: a stop on a mission whose goal
+    // closed itself mid window types no clear at all and still has to be
+    // carried across.
+    const pendingStop = goalPendingStopFor({
+      frame: event.frame,
+      mission: event.mission,
+      selfAuthored,
+      pending: goalPendingArm,
+    })
+    if (pendingStop !== null && goalPendingArm !== null) {
+      goalPendingArm = { ...goalPendingArm, stopped: pendingStop }
+      log(
+        `goal lane: the owner's ${event.frame} landed while mission ` +
+          `#${event.mission.id}'s goal was arming; the stop wins`,
+      )
+    }
+    if (command.kind === 'none') return
+    if (command.kind === 'clear') {
+      clearNativeGoal(`the owner's ${event.frame}`)
+      // Carry the count into whatever comes next: a Resume arms the same goal
+      // and must not tell the owner the turns it already spent never happened.
+      goalTurnsBefore = goalTurnsUsed
+      // And no more checks onto this mission. The owner stopped it, so the
+      // write half goes quiet too: a turn already running is not killed, and
+      // whatever it reports must not land on a card they paused.
+      goalMissionId = null
+      goalReasons = []
+      goalStopped = false
+      if (command.forget) {
+        goalArm = null
+        goalHeld = null
+        goalTurnsBefore = 0
+        goalTurnsUsed = 0
+      }
+      return
+    }
+    void armNativeGoal(command, missionChatId(event.mission))
+  } catch (err) {
+    log(`goal lane: ${event.frame} not applied: ${err}`)
+  }
+}
+
 /**
  * One mission event from the owner's app, turned into at most one in-band line
  * for the live session. NEVER throws: this runs inside a socket handler, and a
@@ -7200,10 +7897,18 @@ function handleMissionEvent(frame: string, payload: unknown): void {
     }
 
     const chatId = missionChatId(event.mission)
+    // Asked ONCE: the ledger's pending stamp is consumed by the question, so
+    // a second ask would answer no and narrate the daemon's own write back to
+    // its model.
+    const selfAuthored = missionSelfWrites.isSelfAuthored(event)
+    // The goal lane hears every frame, whether or not the model is told about
+    // it: Pause has to clear the native goal even on a frame that produces no
+    // notice at all.
+    applyMissionFrameToGoalLane(event, selfAuthored, alreadySeen)
     const notice = decideMissionNotice({
       event,
       chatId,
-      selfAuthored: missionSelfWrites.isSelfAuthored(event),
+      selfAuthored,
       alreadySeen,
     })
     if (!notice) return
@@ -10567,6 +11272,10 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // The goal lane's belt: a Stop that never reached this process, or a
+    // verdict written after its beat, must not be able to strand a closed
+    // goal on the owner's card.
+    setInterval(() => void pollGoalStatus(), GOAL_SWEEP_MS).unref()
     log('Honest Limits resting self-report enabled (30s transcript sweep)')
 
     // Step 9: version heartbeat. Pairing-mode daemons report their plugin
@@ -10657,10 +11366,12 @@ async function main(): Promise<void> {
       // What this daemon reports it can do, sent on EVERY beat because the
       // backend replaces the stored declaration wholesale. That is what lets
       // an already-paired daemon start declaring on its next beat with no
-      // re-pair, and what decides whether the owner is offered a Pause button
-      // on this agent's mission card. See lib/declared-capabilities.ts for
-      // what is deliberately absent and why.
-      capabilities: () => [...DECLARED_CAPABILITIES],
+      // re-pair, and what decides which controls the owner is offered on this
+      // agent's mission card. It is computed HERE, per beat, because two of
+      // the four tokens depend on whether this daemon can type into its own
+      // CLI's composer, and lib/compact-capability.ts can discover that up to
+      // thirty minutes after boot. See lib/declared-capabilities.ts.
+      capabilities: () => [...declaredCapabilities({ canInjectGoal: compactTarget !== null })],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would

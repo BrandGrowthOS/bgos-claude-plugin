@@ -2,6 +2,89 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.0 (2026-09-21)
+
+- **Keep working until it is done: the agent's own goal loop reaches the
+  mission card.** Claude Code has had a real goal loop of its own for a while:
+  a person types `/goal <condition>` in the terminal, and after every turn a
+  separate checker reads the work and answers met, not yet with a reason, or
+  cannot be done with a reason. None of that reached the owner's phone. This
+  release makes the whole of it visible, and on the hosts where this daemon can
+  type into its own session it lets the owner's **Keep working** switch arm one.
+  - **The reading half works on every host, Windows included.** The verdict is
+    in NO hook payload (the Stop schema carries `hook_event_name`,
+    `stop_hook_active`, `last_assistant_message`, `background_tasks` and
+    `session_crons` and nothing else), and the checker runs as a SECOND hook
+    inside the same Stop batch. So the hook is a wake and the session
+    transcript is the source: `lib/goal-tail.ts` is a cursored tailer over the
+    PROVEN transcript only (a goal set in a neighbour's session on the same
+    machine is never adopted), `lib/goal-status.ts` maps the five
+    `goal_status` shapes, and `lib/goal-writes.ts` decides which mission write
+    each one deserves. A Windows agent shows a complete Last check, the turns
+    and the time for a goal a person typed in its own terminal, and gets a
+    mission card of its own for it.
+  - **Time and turns only where the runtime counted them.** A not met check
+    reports no iterations, no elapsed time and no tokens at all, so a live
+    check sends the check count and NO working time; the time arrives with the
+    terminal record or it never arrives. Nothing is ever worked out from when
+    the mission was created.
+  - **The turns already spent are carried.** "Give it 10 more turns" raises the
+    cap and arms the same goal again, and the runtime starts its own count over
+    at the new set sentinel. The lane adds what it already counted, so the card
+    goes from 20 of 20 to 21 of 30 rather than back to 1.
+  - **Two stops, both this daemon's.** The owner's turn cap, and three checks in
+    a row that found the same thing after trimming, collapsing the whitespace
+    and lowercasing (a judge rewords one finding between turns, and treating a
+    reword as progress is how a goal loops for ever). Each clears the native
+    goal and posts `stopped` so the server can turn the mission to Needs you.
+    The runtime has its own competing pause and retry loop, with its own words,
+    and it runs in interactive sessions, which every BGOS agent is: this
+    daemon's stop wins and is the only one the owner sees.
+  - **Setting a goal is the tmux injector, and nothing else.** A channel push
+    provably cannot arm one: the CLI hard codes `skipSlashCommands: true` on
+    the channel enqueue and wraps the text in a `<channel>` element before any
+    flag could be read. `lib/compact-inject.ts` gains its FIRST parameterised
+    literal in exchange, behind a validator that refuses an empty condition, a
+    multi line one, any control character, anything over the runtime's own 4000
+    character cap, and anything beginning with `/`, plus a `--` before the
+    literal so a condition starting with a dash is text and not a tmux flag.
+    See `docs/learnings/a-channel-push-cannot-arm-a-native-goal.md`.
+  - **The declaration is now computed per beat.** `lib/declared-capabilities.ts`
+    is a frozen base plus a pure function: `mission_events` and
+    `mission_goal_checks` on every host, `mission_goal_loop` and `mission_pause`
+    only while the injector answers. A late tmux upgrade (up to thirty minutes
+    after boot) starts declaring on the next heartbeat, and a host that cannot
+    type is never offered a switch that would do nothing. `mission_pause` was
+    deliberately absent until now; clearing the native goal is the pause this
+    daemon can genuinely enforce, and the canon says plainly what it means: the
+    loop stops after the current turn, and a turn already running is not killed.
+  - **Pause, Resume and Set aside reach a goal nobody armed from the app.** The
+    owner is offered those three buttons on every open mission of this agent,
+    and the pause this daemon enforces is clearing the native goal, so the lane
+    reads them against the mission it is REPORTING on and not only against the
+    one the switch armed. A goal a person typed in their own terminal has a
+    derived mission and no switch behind it: Pause clears it and the checks
+    stop, Resume puts the same condition back, and Set aside forgets it.
+  - **The model is told, in the instructions, that it does not set goals.**
+    There is no tool for one and it must not try to type a slash command; it
+    works the condition, ends its turn normally, treats a not yet reason as the
+    next instruction, and never ticks a mini goal because a check passed.
+  - `/goal` is deliberately NOT published in the slash catalog: the app passes a
+    typed `/goal <text>` straight to the agent when the server catalog carries
+    it, and on this channel the model cannot set one, so publishing it would
+    break the app's own door.
+- **The channel's protocol era is pinned.** Claude Code refuses to deliver an
+  unsolicited notification (a channel push, which is every inbound BGOS
+  message) over a connection whose negotiated protocol revision it considers
+  modern, and the MCP SDK answers `initialize` with whatever revision the CLI
+  asked for. The era this channel lives in was therefore decided by the CLI's
+  request and by whichever SDK a `bun install` resolved, both of which move
+  without this repository, and the day one of them crossed the line the daemon
+  would have gone deaf with nothing on screen and nothing in any log.
+  `lib/channel-transport.ts` now pins the answer to the legacy revision a live
+  session was proved to accept, wrapping the SDK's own handler rather than
+  replacing it, and failing open if a future SDK has no handler to wrap.
+
 ## 0.41.0 (2026-09-20)
 
 - **Your owner's decisions about a mission now reach you.** Until this release a

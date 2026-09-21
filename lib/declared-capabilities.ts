@@ -9,32 +9,79 @@
  * "enforces nothing", which is both fail-closed and exactly what a pre-0.41.0
  * install looks like.
  *
- * Why this is a list and not a channel constant: the backend decides what the
- * OWNER is offered from what the DAEMON reported, per daemon, at runtime. Two
- * installs of this same plugin on two hosts can differ (tmux control of the
- * CLI pane exists on Mac and Linux and not on Windows), so a channel-level
- * constant would be wrong on half the fleet the day it shipped.
+ * Why this is a FUNCTION and no longer a frozen constant (0.42.0). Two of the
+ * four tokens depend on the HOST rather than on the release: this daemon is an
+ * MCP stdio child of the CLI, so it can only type into its parent's composer
+ * where tmux control of that pane exists, which is Mac and Linux and not
+ * Windows, and which lib/compact-capability.ts can discover up to thirty
+ * minutes AFTER boot. The heartbeat already sends a thunk evaluated per beat
+ * (lib/version-heartbeat.ts:141), so a late upgrade starts declaring on the
+ * next beat and a Windows host declares the read half for the life of the
+ * process. A channel-level constant would have been wrong on half the fleet
+ * the day it shipped.
  *
- * What is deliberately ABSENT is the point of the file:
+ * The four tokens, and what each one PROMISES the owner:
  *
- *   mission_pause  NOT declared. This daemon has no process-level handle on an
- *                  in-flight Claude Code turn, so its stop is cooperative: it
- *                  can ASK the session to stand down and it cannot enforce
- *                  anything. A Pause button that does nothing is worse than no
- *                  Pause button, so the owner is not offered one here. If a
- *                  pause this daemon can genuinely enforce ever lands, it
- *                  arrives with the goal lane in stage 6 of the Mission
- *                  program, and that is when this token gets declared.
+ *   mission_events      this daemon listens for the owner's own mission
+ *                       decisions (Set aside, Mark done, Pause, Resume,
+ *                       Start) and relays each one to its model in band, in
+ *                       the chat the mission belongs to. Every host.
+ *   mission_goal_checks a separate judge reads this agent's work and this
+ *                       daemon reports its verdict. Every host: Claude Code's
+ *                       own /goal runs the checker as a session scoped Stop
+ *                       hook and writes the verdict into the session
+ *                       transcript, and reading a file has no platform limit.
+ *                       So a Windows agent shows a real Last check for a goal
+ *                       a person typed in its own terminal.
+ *   mission_goal_loop   the owner's Keep working can really arm this daemon's
+ *                       loop. ONLY where the injector answers, because arming
+ *                       a native goal means typing `/goal <condition>` into
+ *                       the composer and there is no other way in: a channel
+ *                       push cannot do it (the enqueue sets
+ *                       skipSlashCommands, see
+ *                       docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
+ *                       and the model has no tool for it.
+ *   mission_pause       a pause truly stops the work. ONLY where the injector
+ *                       answers, because the pause this daemon can enforce IS
+ *                       clearing the native goal. It is honest about its
+ *                       limit, which the canon states: the loop stops after
+ *                       the current turn, and a turn already running is not
+ *                       killed. Before 0.42.0 this file said mission_pause was
+ *                       deliberately absent because nothing here could enforce
+ *                       a pause and promised the goal lane would decide it.
+ *                       This is that decision.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
- * entries (backend/src/dto/integrations/pair-exchange.dto.ts). Frozen so no
- * call site can push onto it at runtime; test/declared-capabilities.test.ts
- * holds all of it in place.
+ * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
+ * frozen so no call site can push onto it at runtime, and the answer is a
+ * fresh array each call, so a caller that mutates what it was given cannot
+ * poison the next beat; test/declared-capabilities.test.ts holds all of it in
+ * place.
  */
 
-export const DECLARED_CAPABILITIES: readonly string[] = Object.freeze([
-  // This daemon listens for the owner's own mission decisions (Set aside,
-  // Mark done, Pause, Resume, Start) and relays each one to its model in
-  // band, in the chat the mission belongs to.
+/** Declared wherever this plugin runs, on every host. */
+export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
+  'mission_goal_checks',
 ])
+
+/** Declared only while this daemon can type into its own CLI's composer. */
+export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
+  'mission_goal_loop',
+  'mission_pause',
+])
+
+/**
+ * What to declare on THIS beat.
+ *
+ * `canInjectGoal` is the live answer to "can this daemon type into the session
+ * right now", which server.ts passes as `compactTarget !== null`. Fail closed:
+ * an install with no tmux target declares the read half and the owner is
+ * offered neither the Keep working switch nor Pause, rather than being offered
+ * a control that would quietly do nothing.
+ */
+export function declaredCapabilities(input: { canInjectGoal: boolean }): readonly string[] {
+  return input.canInjectGoal === true
+    ? [...DECLARED_CAPABILITIES_BASE, ...DECLARED_CAPABILITIES_INJECTOR]
+    : [...DECLARED_CAPABILITIES_BASE]
+}
