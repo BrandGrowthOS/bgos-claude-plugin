@@ -10493,7 +10493,11 @@ async function reconcileAlwaysOn(): Promise<void> {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
-        ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
+        // LAUNCH_CWD, not process.cwd(). bin/bgos-launch.mjs relocates a marketplace daemon's cwd to the
+        // plugin cache root, so `--dir process.cwd()` asked for a supervisor INSIDE the plugin cache: no
+        // pin there, refused, and the app's Always-on toggle could never work for a marketplace agent.
+        // For a clone daemon the two are the same directory (LAUNCH_CWD falls back to process.cwd()).
+        ['install', '--assistant', ASSISTANT_ID, '--dir', LAUNCH_CWD, '--always-on', '--no-clone'],
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')

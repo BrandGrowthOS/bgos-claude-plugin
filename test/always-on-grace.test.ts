@@ -48,3 +48,19 @@ test('server.ts consults the grace in the UNINSTALL branch, before removing anyt
   const agent = readFileSync(join(root, 'bin', 'bgos-agent'), 'utf8')
   assert.ok(agent.includes(`date +%s > "$statedir/${ALWAYS_ON_INSTALLED_AT_FILE}"`), 'bin/bgos-agent must stamp the file the daemon reads')
 })
+
+test('the Always-on toggle installs the supervisor for the folder the OPERATOR launched from, never for the daemon own cwd', () => {
+  // bin/bgos-launch.mjs relocates a marketplace daemon's cwd to the plugin cache
+  // root and hands the real folder over as BGOS_LAUNCH_CWD. `--dir process.cwd()`
+  // therefore asked for a supervisor inside the plugin cache, which carries no
+  // pin and is refused, so the toggle could never work for a marketplace agent.
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const start = server.indexOf('async function reconcileAlwaysOn()')
+  const reconcile = server.slice(start, server.indexOf("log('always-on: supervisor installed", start))
+  const code = reconcile.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n')
+  assert.match(code, /\['install', '--assistant', ASSISTANT_ID, '--dir', LAUNCH_CWD, '--always-on', '--no-clone'\]/)
+  assert.doesNotMatch(code, /'--dir', process\.cwd\(\)/)
+  // and LAUNCH_CWD still falls back to the daemon's own cwd, which is what keeps a CLONE daemon exactly as it was
+  assert.match(server, /const LAUNCH_CWD = process\.env\.BGOS_LAUNCH_CWD\?\.trim\(\) \|\| process\.cwd\(\)/)
+})
