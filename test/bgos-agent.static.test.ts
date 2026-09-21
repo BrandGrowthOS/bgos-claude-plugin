@@ -231,7 +231,13 @@ test('a .mcp.json that belongs to ANOTHER tool only is treated as no .mcp.json, 
   assert.ok(start >= 0)
   const fn = code.slice(start, code.indexOf('\n}\n', start) + 3)
   assert.match(fn, /bgos-doctor\.mjs" --workspace-publishes --workdir "\$1"/)
-  assert.match(fn, /\[ "\$out" = "HOAI_WORKSPACE ours=none named=no" \]\n\}\n$/, 'exactly one answer is a yes, and it is the last word of the function')
+  // ANCHORED at the start of the line: unanchored, `[ -z "$out" ] || [ "$out" = ... ]` passed, which turns
+  // fail OPEN into fail CLOSED (found by the mutation pass). And no early yes anywhere above it.
+  assert.match(fn, /\n  \[ "\$out" = "HOAI_WORKSPACE ours=none named=no" \]\n\}\n$/, 'exactly one answer is a yes, and it is the last word of the function')
+  // (`|| true` inside the pipeline is how a failed reader becomes an empty answer; a bare `true` line or a `return 0` would be a yes)
+  assert.equal((fn.match(/return 0|^\s*true\s*$/gm) ?? []).length, 0, 'no other way to answer yes')
+  // The flag is CONSUMED by the arm, which is the "treated as no .mcp.json" half of this test's title.
+  assert.match(code, /elif \[ ! -f "\$mcp" \] \|\| \[ -n "\$foreign_mcp" \]; then/)
   assert.deepEqual(code.match(/foreign_mcp=1/g)?.length, 1, 'set in one place only')
   assert.match(code, /if \[ -f "\$mcp" \] && \{ \[ -z "\$\{API_KEY:-\}" \] \|\| \[ -z "\$\{USER_ID:-\}" \]; \} && mcp_publishes_nothing_of_ours "\$workdir"; then\s*\n\s*foreign_mcp=1/)
   // the message must not claim there is no file when there is one

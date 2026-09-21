@@ -314,6 +314,8 @@ test('the same foreign .mcp.json in a folder that is NOT a proven paired folder 
   assert.equal(result.status, 1, result.out)
   assert.match(result.out, /the \.mcp\.json in .*941-workspace publishes no HOAI server \(it belongs to another tool\) and no creds given/)
   assert.match(result.out, /paired-topology:no-folder-pin/)
+  // the NEGATIVE the title promises: with the file right there, nothing may say it is missing
+  assert.doesNotMatch(result.out, /no \.mcp\.json in/i)
   assert.equal(existsSync(join(m.home, '.bgos-agent', '941', 'run.expect')), false)
   assert.deepEqual(m.serviceFiles(), [])
   assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m)
@@ -338,4 +340,35 @@ test('every folder that DOES publish something server:bgos can launch keeps the 
   assert.equal(b.status, 0, b.out)
   assert.match(b.out, /using existing/)
   assert.ok(spawnLine(broken, '943').endsWith(`"${CLONE_CHANNEL_SPEC}"`))
+})
+
+test('only a POSITIVE "publishes nothing of ours" widens the arm: a file that is not JSON, a renamed server of ours, and one with an unusable name all keep the old arm', SLOW, () => {
+  if (!ready) return requireTools()
+  // The bash side of the fail-open promise, which the mutation pass showed was pinned by text only.
+  const cases: Array<[string, string]> = [
+    ['950', '{ this is not json'],
+    ['951', JSON.stringify({ mcpServers: { atlas: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '951' } } } })],
+    ['952', JSON.stringify({ mcpServers: { 'my server': { command: 'bun', env: { BGOS_BACKEND_URL: 'x' } } } })],
+  ]
+  for (const [id, body] of cases) {
+    const m = machine()
+    const ws = pair(m, id)
+    writeFileSync(join(ws, '.mcp.json'), body)
+    const result = m.run(['--assistant', id, '--dir', ws, '--always-on'])
+    assert.equal(result.status, 0, `${id}: ${result.out}`)
+    assert.match(result.out, /using existing/, id)
+    assert.doesNotMatch(result.out, /paired folder proven|paired-topology/, id)
+    assert.ok(spawnLine(m, id).endsWith(`"${CLONE_CHANNEL_SPEC}"`), `${id}: ${spawnLine(m, id)}`)
+    assert.equal(readFileSync(join(ws, '.mcp.json'), 'utf8'), body, `${id}: untouched`)
+  }
+})
+
+test('a foreign .mcp.json that starts with a BOM is still recognised as foreign', SLOW, () => {
+  if (!ready) return requireTools()
+  const m = machine()
+  const ws = pair(m, '953')
+  writeFileSync(join(ws, '.mcp.json'), String.fromCharCode(0xfeff) + FOREIGN_MCP)
+  const result = m.run(['--assistant', '953', '--dir', ws, '--always-on'])
+  assert.equal(result.status, 0, result.out)
+  assert.ok(spawnLine(m, '953').endsWith(`"${MARKETPLACE_CHANNEL_SPEC}"`), spawnLine(m, '953'))
 })

@@ -1160,7 +1160,7 @@ export async function provePairedTopology({
  * Two readings, both by lib/service-supervision.mjs, the readers the launcher's
  * own resolver uses:
  *   ours   the entry whose env carries a BGOS_ key (parseMcpChannelServerName):
- *          a name, 'none', or 'conflict'
+ *          a name, 'conflict', 'unnameable' (ours, but a name no channel can carry), or 'none'
  *   named  whether ANY entry is named `serverName` (bgos). A hand-written entry
  *          called bgos with no env block is still a server that server:bgos
  *          launches, so it keeps the old arm too.
@@ -1170,8 +1170,11 @@ export async function provePairedTopology({
  * @returns {{ ours: string, named: 'yes' | 'no' | 'unknown' }}
  */
 export function workspacePublishes({ workdir, serverName = 'bgos', readFile = defaultReadText } = {}) {
-  const raw = readFile(join(String(workdir ?? ''), '.mcp.json'))
-  if (raw == null) return { ours: 'unknown', named: 'unknown' }
+  const read = readFile(join(String(workdir ?? ''), '.mcp.json'))
+  if (read == null) return { ours: 'unknown', named: 'unknown' }
+  // The same BOM rule mcpServerEntries applies, or a BOM-prefixed file that belongs to another tool
+  // reads as "unknown" here and keeps the deaf arm this exists to end (found by the mutation pass).
+  const raw = String(read).replace(/^\uFEFF/, '')
   let entries
   try {
     JSON.parse(raw)
@@ -1179,9 +1182,12 @@ export function workspacePublishes({ workdir, serverName = 'bgos', readFile = de
   } catch {
     return { ours: 'unknown', named: 'unknown' }
   }
-  const ours = parseMcpChannelServerName(raw)
+  const name = parseMcpChannelServerName(raw)
+  // An entry that IS ours (a BGOS_ env key) but whose name the resolver will not spell into a
+  // channel is still ours. Calling that folder "another tool's" would be false, so it is not 'none'.
+  const anyOurs = entries.some((entry) => entry.env && Object.keys(entry.env).some((key) => key.startsWith('BGOS_')))
   return {
-    ours: ours == null ? 'none' : ours,
+    ours: name != null ? name : anyOurs ? 'unnameable' : 'none',
     named: entries.some((entry) => entry.name === serverName) ? 'yes' : 'no',
   }
 }

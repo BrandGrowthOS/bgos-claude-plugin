@@ -1899,6 +1899,18 @@ test('workspacePublishes: a .mcp.json that belongs to another tool only publishe
   assert.deepEqual(publishes(mcpOf({ bgos: { command: 'bun', args: ['wrapper.mjs'] } })), { ours: 'none', named: 'yes' })
 })
 
+test('workspacePublishes: a BOM does not hide a foreign file, and a server of ours with an unusable name is still OURS', () => {
+  // Both found by the mutation pass. A BOM-prefixed file read as "unknown" and kept the deaf arm;
+  // an entry of ours the resolver cannot name read as "none" and would have been called another tool's.
+  const bom = String.fromCharCode(0xfeff)
+  assert.deepEqual(publishes(bom + mcpOf({ playwright: { command: 'npx' } })), { ours: 'none', named: 'no' })
+  assert.deepEqual(publishes(bom + mcpOf({ bgos: { command: 'bun', env: { BGOS_BACKEND_URL: 'x' } } })), { ours: 'bgos', named: 'yes' })
+  assert.deepEqual(publishes(mcpOf({ 'my server': { command: 'bun', env: { BGOS_ASSISTANT_ID: '5' } } })), { ours: 'unnameable', named: 'no' })
+  // a file that publishes nothing at all is foreign too
+  assert.deepEqual(publishes('null'), { ours: 'none', named: 'no' })
+  assert.deepEqual(publishes('[]'), { ours: 'none', named: 'no' })
+})
+
 test('workspacePublishes: a file that is absent or unreadable is UNKNOWN, never "publishes nothing", and the line is one line', () => {
   assert.deepEqual(publishes(null), { ours: 'unknown', named: 'unknown' })
   assert.deepEqual(publishes('{ not json'), { ours: 'unknown', named: 'unknown' })
