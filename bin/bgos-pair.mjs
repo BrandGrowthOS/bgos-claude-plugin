@@ -34,9 +34,11 @@
  * server.ts reads that file, sends X-BGOS-Pairing, and the session is live.
  *
  * Self-contained plain JavaScript: node >= 18 builtins only, no imports from
- * the TS plugin sources (the sibling plain-JS bin/bgos-install-method.mjs is
- * the one local import). Import-safe: every helper is exported and main() only
- * runs when the file is executed directly, so tests can import the pure pieces.
+ * the TS plugin sources. The two local imports are both plain JS that obey the
+ * same rule, so this file still runs under bare node: bin/bgos-install-method.mjs
+ * and lib/claude-preseed.mjs. Import-safe: every helper is exported and main()
+ * only runs when the file is executed directly, so tests can import the pure
+ * pieces.
  *
  * The pairing token is a device credential. It is never printed, logged, or
  * echoed; only the file path and non-secret status lines are shown.
@@ -49,7 +51,8 @@ import { homedir, hostname } from 'node:os'
 import { join, dirname, win32 as win32Path } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
-import { detectInstallMethod } from './bgos-install-method.mjs'
+import { claudeConfigDir, detectInstallMethod } from './bgos-install-method.mjs'
+import { preseedClaudeTrust } from '../lib/claude-preseed.mjs'
 
 export const DEFAULT_API_BASE = 'https://api.brandgrowthos.ai/api/v1'
 export const CLAUDE_INTEGRATION = 'claude-code'
@@ -1258,6 +1261,37 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     } catch (err) {
       console.error(
         `[bgos-pair] note: could not bake the launch-folder pin (${err?.message ?? err}); set BGOS_ASSISTANT_ID=${assistantId} in this agent's environment yourself.`,
+      )
+    }
+    // Pre-seed Claude Code's one-time prompts for the folder we just pinned.
+    //
+    // WHY PAIRING DOES THIS. The line printed a few lines below tells the user
+    // to run `hoai` in this folder, and until now nothing on that path had ever
+    // seeded the trust dialog: preseedClaudeTrust's only production caller was
+    // the watcher's create-agent job, which a hand-paired machine never runs.
+    // So the very next thing the user was told to do stopped on a full-screen
+    // question that the whole preseed mechanism exists to remove.
+    //
+    // Best effort, loudly: the pairing itself is already written and verified,
+    // so a settings file we could not write is a note, never a failure. Saying
+    // it out loud matters because the symptom it predicts (a launch that stops
+    // on a one-time prompt) otherwise looks like the agent hanging.
+    try {
+      const seeded = preseedClaudeTrust({
+        configDir: claudeConfigDir({ env, home }),
+        cwd: pairCwd,
+        env,
+        home,
+      })
+      console.log(
+        `[bgos-pair] pre-seeded Claude Code's one-time prompts for ${pairCwd} ` +
+          `(trust in ${seeded.configPath}, bypass warning in ${seeded.settingsPath}), ` +
+          'so the launch below does not stop on a first-run question.',
+      )
+    } catch (err) {
+      console.error(
+        `[bgos-pair] note: could not pre-seed the one-time prompts (${err?.message ?? err}); ` +
+          'the first launch may stop on the folder-trust or first-run question. Answer it once and it stays answered.',
       )
     }
     // Verify the baked state ON DISK: a pin that provably resolves from this

@@ -386,6 +386,7 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
+import { servePairRequired } from './lib/pair-required-server.mjs'
 import { installWatcherBundle } from './lib/watcher-bundle.mjs'
 import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
@@ -496,7 +497,23 @@ if (!AUTH.complete) {
     process.stderr.write(`[bgos] WARN ${PAIRING_REJECTION_WARN}\n`)
   }
   process.stderr.write(`[bgos] ${missingCredsMessage(AUTH)}\n`)
-  process.exit(1)
+  // NOT process.exit(1). Exiting here kills the transport BEFORE the initialize
+  // handshake, and all Claude Code can report for that is CONNECTION_CLOSED:
+  // the line above, which names the one thing the user has to do, is written to
+  // a stderr stream the session never shows. From inside that session "you have
+  // not paired yet" and "the daemon crashed" are the same symptom.
+  //
+  // So answer the handshake and serve a DEGRADED channel instead: one tool,
+  // hoai_pair_required, whose description and result carry the pairing steps
+  // (lib/pair-required-server.mjs). Nothing else is exposed, and no channel
+  // capability is declared, so nothing here can be mistaken for a live channel.
+  // The process ends when the host disconnects, and the rest of this module
+  // never runs, which is what the exit used to guarantee.
+  const served = await servePairRequired({
+    reason: missingCredsMessage(AUTH),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
 }
 
 function getApiBaseUrl(): string {

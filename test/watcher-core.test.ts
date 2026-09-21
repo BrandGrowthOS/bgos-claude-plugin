@@ -676,7 +676,14 @@ test('runWatcher create_agent: folder, preseed, pair (exact argv, cwd = folder),
   assert.deepEqual(pair.args, [`${ROOT}/bin/bgos-pair.mjs`, PAIR_CODE, '--assistant-id', '55', '--backend', 'https://api.example.test'])
   assert.equal(pair.opts.cwd, folder)
   // preseed: trust entry for the folder + the bypass prompt suppressed.
-  const cfg = JSON.parse(fs.files.get(`${CONFIG}/.claude.json`)!)
+  //
+  // The two files are in DIFFERENT places, and this assertion used to get one
+  // of them wrong. This watcher runs with no CLAUDE_CONFIG_DIR in its env (the
+  // manifest here records none), so Claude Code reads $HOME/.claude.json, while
+  // settings.json really is inside $HOME/.claude. Asserting both against CONFIG
+  // is what let the config half be written to a file nothing ever opens.
+  assert.equal(fs.files.has(`${CONFIG}/.claude.json`), false, 'nothing must be written inside the config dir')
+  const cfg = JSON.parse(fs.files.get(`${HOME}/.claude.json`)!)
   assert.equal(cfg.projects[folder].hasTrustDialogAccepted, true)
   assert.equal(JSON.parse(fs.files.get(`${CONFIG}/settings.json`)!).skipDangerousModePermissionPrompt, true)
   // recipe written for the new agent, without a session id.

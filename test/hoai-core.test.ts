@@ -15,7 +15,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1684,6 +1684,105 @@ test('main(): the launch environment gains the task tools flag, and the hooks ar
       registered[0]!.settingsPath.replace(/\\/g, '/').endsWith('/.claude/settings.local.json'),
       registered[0]!.settingsPath,
     )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// --- the one-time-prompt preseed reaches a HAND-TYPED launch (2026-09-21) ----
+// preseedClaudeTrust had exactly ONE production caller, the watcher's
+// create-agent job. bin/hoai-core.mjs imported only ensureHookEntries and
+// ensureMarketplaceAutoUpdate from that module, so `hoai`, the command
+// bgos-pair prints for the user to run, seeded nothing at all and the first
+// launch stopped on the folder-trust dialog. These drive the REAL function
+// against a real (throwaway) home, so the seam being exercised is the one a
+// user gets, not an injected stand-in.
+
+test('main(): EVERY launch form pre-seeds the one-time prompts for the launch folder', async () => {
+  // Every spelling, not just the bare one: they all funnel into the same run
+  // path, and a seed that reached only some of them would leave the dialog
+  // standing for whichever one a given user happens to type.
+  for (const argv of [[], ['-c'], ['--continue'], ['--resume'], ['--new'], ['run', '--continue']]) {
+    const { home, cwd } = tempAgentFolder()
+    try {
+      const code = await main(argv, {
+        platform: 'linux',
+        env: {},
+        home,
+        cwd,
+        scriptDir: CLONE_SCRIPT_DIR,
+        spawnImpl: (() => scriptedChild(0)) as never,
+      } as never)
+      assert.equal(code, 0, argv.join(' '))
+      // The trust entry, in the file Claude Code reads when CLAUDE_CONFIG_DIR is
+      // unset: $HOME/.claude.json, NOT $HOME/.claude/.claude.json.
+      const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+      assert.equal(cfg.projects[cwd].hasTrustDialogAccepted, true, argv.join(' '))
+      assert.equal(cfg.hasCompletedOnboarding, true)
+      assert.equal(existsSync(join(home, '.claude', '.claude.json')), false, argv.join(' '))
+      // And the bypass warning, whose default answer is exit, suppressed in the
+      // settings file, which DOES live inside the config dir.
+      const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'))
+      assert.equal(settings.skipDangerousModePermissionPrompt, true, argv.join(' '))
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  }
+})
+
+test('main(): the preseed runs BEFORE claude is spawned, and a preseed that throws never stops the launch', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const order: string[] = []
+  try {
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      preseedTrust: () => {
+        order.push('preseed')
+        // A read-only config dir is the realistic failure, and it must cost the
+        // user a prompt, never their agent.
+        throw new Error('EACCES: read-only file system')
+      },
+      spawnImpl: (() => {
+        order.push('spawn')
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0, 'a seeding convenience may never cost the user their launch')
+    assert.deepEqual(order, ['preseed', 'spawn'], 'seeding after the spawn would seed nothing in time')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): the preseed is handed the LAUNCH folder and this host\'s config dir', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const calls: Array<{ configDir: string; cwd: string; home: string }> = []
+  try {
+    await main([], {
+      platform: 'linux',
+      env: { CLAUDE_CONFIG_DIR: '/opt/agents/cfg' },
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      preseedTrust: (args: { configDir: string; cwd: string; home: string }) => {
+        calls.push(args)
+        return { configPath: '', settingsPath: '', seededKeys: [] }
+      },
+      spawnImpl: (() => scriptedChild(0)) as never,
+    } as never)
+    assert.equal(calls.length, 1, 'a launch that seeds nothing is the defect this closes')
+    // The cwd is the identity here: seeding any other folder leaves the trust
+    // dialog exactly where it was.
+    assert.equal(calls[0]!.cwd, cwd)
+    assert.equal(calls[0]!.configDir, '/opt/agents/cfg')
+    assert.equal(calls[0]!.home, home)
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })
