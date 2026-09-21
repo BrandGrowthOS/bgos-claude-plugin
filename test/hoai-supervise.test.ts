@@ -27,6 +27,7 @@ import {
   SESSION_ID_FILE_NAME,
   SUPERVISOR_FILE_NAME,
   buildGateAutoAcceptExpect,
+  readGateBlock,
   decideMarkerRelaunch,
   decideRelaunchRecovery,
   decideSupervisorArming,
@@ -185,7 +186,7 @@ test('relaunchNeedsGateAutoAccept: clone AND marketplace installs prompt on 2.1.
   assert.equal(relaunchNeedsGateAutoAccept('marketplace'), true)
 })
 
-test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-accepts the confirm gate', () => {
+test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args, embeds the shared gate block, hands off to interact', () => {
   const script = buildGateAutoAcceptExpect({
     claudePath: '/usr/bin/claude',
     args: ['--dangerously-load-development-channels', 'server:bgos', '--resume', 'abc'],
@@ -197,43 +198,61 @@ test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-a
     ),
     true,
   )
-  // Sends Enter on the single-word "confirm" footer (the run.expect lesson).
-  assert.equal(/confirm/.test(script) && /send .\\r./.test(script), true)
-  // A SIGTERM trap kills the spawned claude so a supervisor kill never orphans it.
+  // The gate rules are the SHARED block, byte for byte, not a second hand-kept
+  // copy. Two copies is how the 2026-09-21 fix reached this script and never
+  // reached the supervisor desktop one-click installs.
+  assert.equal(script.includes(readGateBlock()), true)
+  // A SIGTERM trap kills the spawned claude so a supervisor kill never orphans
+  // it, and it is armed BEFORE the gate block can start waiting.
   assert.equal(/trap .* SIGTERM/.test(script) && script.includes('exp_pid'), true)
+  assert.ok(script.indexOf('SIGTERM') < script.indexOf('hoai_outcome'), script)
   // Hands off to interact so a human is still relayed and kill still ends it.
   assert.equal(script.includes('interact'), true)
+  assert.ok(script.lastIndexOf('interact') > script.indexOf('hoai_outcome'), script)
 })
 
-test('buildGateAutoAcceptExpect: the timeout branch NEVER sends a key, it hands the screen to the human', () => {
-  // THE DEFECT THIS PINS (2026-09-21). The script used to answer an
-  // unrecognised screen with `timeout { send "\r" }`. Enter is not a safe
-  // default everywhere: the bypass-permissions warning DEFAULTS TO DECLINE, so
-  // that blind Enter exits claude instantly, silently, on the very first launch
-  // of a fresh install. The win32 helper's own doc comment had already promised
-  // the opposite property, "never presses blindly, so a prompt with a dangerous
-  // default is never answered by it"; only the posix path broke it.
+test('buildGateAutoAcceptExpect: the launcher itself never sends a key, only the gate block does, and only to a screen it read', () => {
+  // THE DEFECT THIS PINS (2026-09-21, measured against Claude Code 2.1.278).
+  // The script used to carry `-re {(?i)confirm} { sleep 1; send "\r" }`, on the
+  // theory that Enter accepts every gate. Folder trust and the bypass warning
+  // list "No, exit" FIRST, so that Enter DECLINED them: run against the real CLI
+  // on an unseeded folder it exited 1 after 2 seconds with no trust written and
+  // nothing printed. The earlier fix removed the Enter on timeout and left that
+  // one, so "never presses blind" held for the timeout branch only.
+  const block = 'set hoai_outcome live\nset hoai_answered {}\nset hoai_screen ""'
   const script = buildGateAutoAcceptExpect({
     claudePath: 'claude',
     args: ['--dangerously-skip-permissions'],
+    gateBlock: block,
   })
-  const lines = script.split('\n')
-  const timeoutLines = lines.filter((line) => /^\s*timeout\b/.test(line))
-  assert.equal(timeoutLines.length, 1, script)
-  // The load-bearing assertion: whatever that branch does, it does not send.
-  assert.doesNotMatch(timeoutLines[0]!, /send/, timeoutLines[0])
-  // And no OTHER unconditional send crept in to replace it. The only send left
-  // is the one guarded by a matched "confirm" footer, which is a screen we have
-  // read, not a screen we are guessing at.
-  const sendLines = lines.filter((line) => /\bsend\b/.test(line))
-  assert.equal(sendLines.length, 1, sendLines.join('\n'))
-  assert.match(sendLines[0]!, /confirm/)
-  // Control from the timeout branch still reaches interact: the wait loop ends
-  // rather than spinning, so the human's keystrokes are relayed straight away
-  // instead of being swallowed for the rest of the loop.
-  assert.match(timeoutLines[0]!, /set done 1/)
-  assert.equal(script.includes('interact'), true)
-  assert.ok(script.indexOf('interact') > script.indexOf('timeout'), script)
+  // With the block swapped for a stub, what is left is the launcher's own
+  // text, and it must contain no send at all and no bare "confirm" rule.
+  assert.doesNotMatch(script, /\bsend\b/, script)
+  assert.doesNotMatch(script, /confirm/, script)
+  // The stub landed where the block goes: after spawn and the trap, before the tail.
+  assert.ok(script.indexOf(block) > script.indexOf('SIGTERM'), script)
+  assert.ok(script.indexOf(block) < script.indexOf('interact'), script)
+})
+
+test('buildGateAutoAcceptExpect: a failed launch is never silent (F6)', () => {
+  const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: [] })
+  const tail = script.slice(script.indexOf(readGateBlock()) + readGateBlock().length)
+  // claude gone before its session was up: say so, name the gates that were
+  // answered first, exit nonzero. It used to be a bare `eof { exit 1 }`.
+  assert.match(tail, /\$hoai_outcome eq "exited-during-startup"/)
+  assert.match(tail, /puts stderr "[^"]*exited during startup[^"]*\$hoai_answered/)
+  assert.match(tail, /exit 1/)
+  // A screen the block will not answer: say which and what it says, press
+  // nothing, and still reach interact, because in a terminal a person may be
+  // right there to answer it.
+  assert.match(tail, /string match "gate-\*" \$hoai_outcome/)
+  assert.match(tail, /\$hoai_screen/)
+  assert.match(tail, /Nothing was pressed/)
+  assert.ok(tail.indexOf('interact') > tail.indexOf('Nothing was pressed'), tail)
+  // Tcl would run [hoai] as a command: every bracket in the messages is escaped.
+  for (const line of tail.split('\n').filter((l) => /puts stderr/.test(l))) {
+    assert.doesNotMatch(line.replace(/\\\[|\\\]/g, ''), /\[hoai\]/, line)
+  }
 })
 
 // -- superviseAssistantId -----------------------------------------------------

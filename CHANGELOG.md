@@ -2,6 +2,38 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.3 (2026-09-22)
+
+Two live defects that 0.42.1 and 0.42.2 shipped, plus the startup gates.
+
+- **The doctor failed EVERY desktop one-click install.** 0.42.2 added a folder
+  trust row that GATES the preflight, and the desktop runs `hoai doctor
+  --preflight` from the owner's HOME with no `--workdir`, so it checked the
+  wrong folder and failed after the pair code was already spent. Measured from
+  HOME against 0.42.2: `FAIL Folder trust` then `preflight FAILED: trust`. The
+  row now reads UNPROVEN when no agent folder was named, carries its remedy in
+  the detail, and resolves the folder from a pin when there is one. It also
+  honours trust INHERITED from a trusted ancestor, which Claude Code does and
+  the exact-key lookup did not.
+- **The trust seed replaced an owner's `~/.claude.json` when it could not read
+  it.** A 0600 file it could not parse came back as a fresh five line config at
+  0644, no backup, and the function reported success. Measured, and the same
+  for a zero byte file, a non-object and EACCES. It now refuses and says so,
+  leaving the file exactly as it was; both call sites already treat the seed as
+  best effort, so a refusal costs nobody their install.
+- **The startup gate block answers a gate by READING it**, rather than pressing
+  a key it hopes is right. It waits for the screen to be quiet, identifies a
+  gate by its footer phrase rather than a bare word (a resumed transcript
+  saying "can you confirm" had made the supervisor kill a healthy agent), reads
+  where the selection marker actually sits after each Down, and sends nothing
+  at all on a screen it does not recognise, reporting what was on it instead.
+
+A timing note worth keeping, because it made a correct fix look broken: a key
+sent within about 100 ms of the trust gate painting is drawn but not honoured,
+and the Enter that follows still declines. From about 150 ms on the same bytes
+work. Two people measured opposite results from the same key for exactly that
+reason.
+
 ## 0.42.2 (2026-09-21)
 
 The other half of the same install post-mortem, plus one defect found while

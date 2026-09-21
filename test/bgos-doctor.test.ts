@@ -59,6 +59,8 @@ import {
   EXPECT_PROBE_PATHS,
   expectInstallHint,
   probeFolderTrust,
+  ancestorDirs,
+  resolveLaunchFolder,
   probeBypassPrompt,
   probeGateStrategy,
   probeIncumbent,
@@ -1516,4 +1518,179 @@ test('buildDoctorRows: no em or en dashes in the launch rows or an unproven tabl
     assert.ok(!/[\u2013\u2014]/.test(JSON.stringify(rows)), 'rows must not contain em or en dashes')
     assert.ok(!/[\u2013\u2014]/.test(renderDoctorTable(rows)), 'the table must not contain em or en dashes')
   }
+})
+
+
+// -- the desktop one-click preflight, and trust as Claude Code really applies it (2026-09-22) --
+//
+// Measured end to end on 2026-09-21 against plugin main (0.42.2): the desktop
+// app runs `hoai doctor --preflight --assistant-id N --backend URL` from the
+// HOME directory with NO --workdir. The Folder trust row probed $HOME, which
+// pairing never seeds, the row gates the preflight, and the run ended
+// "[bgos-doctor] preflight FAILED: trust" AFTER the one time pair code was
+// spent. Every desktop install, on every machine whose home is not a trusted
+// Claude Code folder, which is every non-technical owner's machine.
+
+test('ancestorDirs: nearest first, root included, in the path own separator style', () => {
+  assert.deepEqual(ancestorDirs('/Users/kc/.bgos-agent/12-workspace'), ['/Users/kc/.bgos-agent', '/Users/kc', '/Users', '/'])
+  assert.deepEqual(ancestorDirs('/Users/kc/'), ['/Users', '/'])
+  assert.deepEqual(ancestorDirs('C:\\Users\\kc\\agent'), ['C:\\Users\\kc', 'C:\\Users', 'C:\\'])
+  assert.deepEqual(ancestorDirs('C:/Users/kc'), ['C:/Users', 'C:/'])
+  // Nothing above a root, and a bare name has no ancestors to claim.
+  assert.deepEqual(ancestorDirs('/'), [])
+  assert.deepEqual(ancestorDirs('relative'), [])
+  assert.deepEqual(ancestorDirs(''), [])
+})
+
+test('probeFolderTrust: a folder under a TRUSTED ANCESTOR is trusted, because that is how Claude Code behaves', () => {
+  // Measured on 2.1.278: a brand new folder under a trusted /private/tmp went
+  // straight past the trust dialog, while a sibling outside it still got one.
+  const raw = JSON.stringify({ projects: { '/Users/kc/hoai-agents': { hasTrustDialogAccepted: true } } })
+  const probe = probeFolderTrust({
+    env: {},
+    home: '/Users/kc',
+    cwd: '/Users/kc/hoai-agents/athena',
+    readFile: () => raw,
+    resolvePath: (p: string) => p,
+  })
+  assert.strictEqual(probe.accepted, true)
+  assert.equal(probe.reason, 'accepted')
+  assert.equal(probe.inheritedFrom, '/Users/kc/hoai-agents')
+  assert.equal(probe.cwd, '/Users/kc/hoai-agents/athena', 'the row still names the folder that was asked about')
+})
+
+test('probeFolderTrust: a trusted ancestor wins even over an EXPLICIT false entry on the folder itself', () => {
+  // Also measured: child seeded false beside a parent seeded true, no dialog.
+  // Claude Code writes a false entry for every folder it opens, so without
+  // this rule the row FAILs most folders under any trusted parent.
+  const raw = JSON.stringify({
+    projects: {
+      '/private/tmp': { hasTrustDialogAccepted: true },
+      '/private/tmp/work': { hasTrustDialogAccepted: false },
+    },
+  })
+  const probe = probeFolderTrust({ env: {}, home: '/h', cwd: '/private/tmp/work', readFile: () => raw, resolvePath: (p: string) => p })
+  assert.strictEqual(probe.accepted, true)
+  assert.equal(probe.inheritedFrom, '/private/tmp')
+})
+
+test('probeFolderTrust: the ancestor walk also runs on the RESOLVED spelling, and a merely SIBLING folder inherits nothing', () => {
+  const raw = JSON.stringify({ projects: { '/private/tmp/agents': { hasTrustDialogAccepted: true } } })
+  const viaSymlink = probeFolderTrust({
+    env: {},
+    home: '/h',
+    cwd: '/tmp/agents/a',
+    readFile: () => raw,
+    resolvePath: (p: string) => p.replace(/^\/tmp\//, '/private/tmp/'),
+  })
+  assert.strictEqual(viaSymlink.accepted, true)
+  assert.equal(viaSymlink.inheritedFrom, '/private/tmp/agents')
+  const sibling = probeFolderTrust({ env: {}, home: '/h', cwd: '/private/tmp/agents-other/a', readFile: () => raw, resolvePath: (p: string) => p })
+  assert.strictEqual(sibling.accepted, false, 'a name that merely STARTS WITH a trusted path is not inside it')
+  assert.equal(sibling.reason, 'no-entry')
+})
+
+test('probeFolderTrust: an ancestor that is present but NOT accepted grants nothing', () => {
+  const raw = JSON.stringify({ projects: { '/a': { hasTrustDialogAccepted: false }, '/a/b': {} } })
+  const probe = probeFolderTrust({ env: {}, home: '/h', cwd: '/a/b', readFile: () => raw, resolvePath: (p: string) => p })
+  assert.strictEqual(probe.accepted, false)
+  assert.equal(probe.reason, 'not-accepted')
+  assert.equal(probe.inheritedFrom, undefined)
+})
+
+test('resolveLaunchFolder: flag, then a cwd pinned to THIS agent, then the pinned default workspace for the id, else an unnamed cwd', () => {
+  const pins: Record<string, string> = { '/agents/a': '7', '/h/.bgos-agent/12-workspace': '12', '/h/.bgos-agent/99-workspace': '12' }
+  const readPin = (dir: string) => pins[dir] ?? ''
+  assert.deepEqual(resolveLaunchFolder({ workdirFlag: '/x', cwd: '/agents/a', home: '/h', assistantId: '12', readPin }), { dir: '/x', source: 'flag' })
+  // No id asked about: the folder's own pin names the subject.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/agents/a', home: '/h', readPin }), { dir: '/agents/a', source: 'cwd-pin' })
+  // The id asked about IS this folder's agent.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/agents/a', home: '/h', assistantId: '7', readPin }), { dir: '/agents/a', source: 'cwd-pin' })
+  // THE DESKTOP CASE: standing in HOME, only the id is known.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '12', readPin }), {
+    dir: '/h/.bgos-agent/12-workspace',
+    source: 'default-workspace',
+  })
+  // A workspace pinned to a DIFFERENT agent is not this agent's folder.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '99', readPin }), { dir: '/h', source: 'cwd-unpinned' })
+  // No id, or an id that is not a plain number, never builds a path.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', readPin }), { dir: '/h', source: 'cwd-unpinned' })
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '../../etc', readPin }), { dir: '/h', source: 'cwd-unpinned' })
+})
+
+test('resolveLaunchFolder: a STALE pin in cwd for another agent does not outrank the id that was asked about', () => {
+  // Found by review. A HOME that still carries a pin from a pairing made there
+  // (what F9 now refuses) would otherwise drag the desktop preflight straight
+  // back to probing HOME, the exact failure this resolution exists to end.
+  const pins: Record<string, string> = { '/h': '5', '/h/.bgos-agent/12-workspace': '12' }
+  const readPin = (dir: string) => pins[dir] ?? ''
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '12', readPin }), {
+    dir: '/h/.bgos-agent/12-workspace',
+    source: 'default-workspace',
+  })
+  // And with no workspace for that id, another agent's folder is NOT passed off as this agent's.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '44', readPin }), { dir: '/h', source: 'cwd-unpinned' })
+})
+
+test('doctor trust row: an UNNAMED folder renders UNPROVEN with what was seen, and does not abort the install', () => {
+  const trust = { cwd: '/Users/kc', configPath: '/Users/kc/.claude.json', accepted: false, reason: 'no-entry', matchedKey: '' }
+  const rows = buildDoctorRows(healthyProbes({ trust, launchFolder: { dir: '/Users/kc', source: 'cwd-unpinned' } }))
+  const row = rows.find((r) => r.id === 'trust')!
+  assert.strictEqual(row.ok, UNPROVEN)
+  assert.match(row.detail, /no agent folder was named/)
+  assert.match(row.detail, /\/Users\/kc/)
+  assert.match(row.detail, /no-entry/, 'what was actually seen stays on the record')
+  // The table prints Fix lines for FAIL rows only, so the remedy must live in the detail.
+  assert.match(row.detail, /Pass --workdir <the agent folder>/)
+  assert.match(renderDoctorTable(rows), /Pass --workdir/)
+  const green = ['claude', 'auth', 'handshake', 'mcp-list'].map((id) => ({ id, ok: true }))
+  assert.deepEqual(preflightVerdict([...green, row]), { ok: true, failing: [] })
+  assert.match(renderDoctorTable(rows), /UNPROVEN\s+Folder trust/)
+})
+
+test('doctor trust row: a NAMED folder that is not trusted still FAILs and still gates, whatever named it', () => {
+  // The exemption is narrow. The three sources that name a real agent folder
+  // keep the gate exactly as it was.
+  const trust = { cwd: '/agents/a', configPath: '/h/.claude.json', accepted: false, reason: 'no-entry', matchedKey: '' }
+  const green = ['claude', 'auth', 'handshake', 'mcp-list'].map((id) => ({ id, ok: true }))
+  for (const source of ['flag', 'cwd-pin', 'default-workspace'] as const) {
+    const row = buildDoctorRows(healthyProbes({ trust, launchFolder: { dir: '/agents/a', source } })).find((r) => r.id === 'trust')!
+    assert.strictEqual(row.ok, false, source)
+    assert.deepEqual(preflightVerdict([...green, row]), { ok: false, failing: ['trust'] }, source)
+  }
+  // An older caller that passes no launchFolder at all keeps the old behaviour.
+  const legacy = buildDoctorRows(healthyProbes({ trust })).find((r) => r.id === 'trust')!
+  assert.strictEqual(legacy.ok, false)
+})
+
+test('doctor trust row: inherited trust PASSes and says which parent it came through', () => {
+  const trust = {
+    cwd: '/Users/kc/hoai-agents/athena',
+    configPath: '/Users/kc/.claude.json',
+    accepted: true,
+    reason: 'accepted',
+    matchedKey: '/Users/kc/hoai-agents',
+    inheritedFrom: '/Users/kc/hoai-agents',
+  }
+  const row = buildDoctorRows(healthyProbes({ trust, launchFolder: { dir: trust.cwd, source: 'cwd-pin' } })).find((r) => r.id === 'trust')!
+  assert.strictEqual(row.ok, true)
+  assert.match(row.detail, /through its trusted parent \/Users\/kc\/hoai-agents/)
+})
+
+test('the desktop one-click preflight, end to end through the pure parts: HOME as cwd, only the id known, workspace seeded by pairing', () => {
+  const home = '/Users/kc'
+  const workspace = `${home}/.bgos-agent/936-workspace`
+  const launchFolder = resolveLaunchFolder({ cwd: home, home, assistantId: '936', readPin: (dir: string) => (dir === workspace ? '936' : '') })
+  assert.equal(launchFolder.dir, workspace, 'the doctor must check the agent folder, not the folder it happens to stand in')
+  const trust = probeFolderTrust({
+    env: {},
+    home,
+    cwd: launchFolder.dir,
+    readFile: () => JSON.stringify({ projects: { [workspace]: { hasTrustDialogAccepted: true } } }),
+    resolvePath: (p: string) => p,
+  })
+  const row = buildDoctorRows(healthyProbes({ trust, launchFolder })).find((r) => r.id === 'trust')!
+  assert.strictEqual(row.ok, true)
+  const green = ['claude', 'auth', 'handshake', 'mcp-list'].map((id) => ({ id, ok: true }))
+  assert.deepEqual(preflightVerdict([...green, row]), { ok: true, failing: [] })
 })
