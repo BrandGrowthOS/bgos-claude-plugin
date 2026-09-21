@@ -305,7 +305,8 @@ function joinPreservingStyle(dir, name) {
  *   bun: { found: boolean, path?: string, via?: string },
  *   bunx: { found: boolean, path?: string },
  *   method: { method: string, channelSpec: string, pluginRoot: string } | null,
- *   trust?: { cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey?: string, error?: string },
+ *   trust?: { cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey?: string, inheritedFrom?: string, error?: string },
+ *   launchFolder?: { dir: string, source: 'flag' | 'cwd-pin' | 'default-workspace' | 'cwd-unpinned' },
  *   bypass?: { settingsPath: string, accepted: boolean, reason: string },
  *   gate?: { needed: boolean, method?: string, helper: 'expect' | 'win32-console', expectPath?: string },
  *   incumbent?: { cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string },
@@ -468,8 +469,27 @@ export function buildDoctorRows(probes) {
   if (p.trust !== undefined) {
     const trust = p.trust ?? {}
     const trustFix = 'run hoai in this folder (every launch seeds the trust entry), or hoai pair <code from the HOAI app>'
-    if (trust.accepted) {
+    if (trust.accepted && trust.inheritedFrom) {
+      row('trust', 'Folder trust', true, `Claude Code trusts ${trust.cwd} through its trusted parent ${trust.inheritedFrom} (hasTrustDialogAccepted in ${trust.configPath})`)
+    } else if (trust.accepted) {
       row('trust', 'Folder trust', true, `Claude Code trusts ${trust.cwd} (hasTrustDialogAccepted in ${trust.configPath})`)
+    } else if (p.launchFolder?.source === 'cwd-unpinned') {
+      // NOBODY NAMED AN AGENT FOLDER (2026-09-22). The desktop one-click runs
+      // `hoai doctor --preflight --assistant-id N` from the HOME directory with
+      // no --workdir. This row then probed $HOME, which pairing never seeds and
+      // now refuses as an agent folder, so it FAILed, and because it gates the
+      // preflight every desktop install stopped dead AFTER the one time pair
+      // code was spent (measured end to end against main on 2026-09-21). A
+      // folder with no .bgos-agent-id pin is not known to be anybody's launch
+      // folder, so its trust state is not evidence about the agent. Say what
+      // was seen, fail nothing.
+      row(
+        'trust',
+        'Folder trust',
+        UNPROVEN,
+        `no agent folder was named: --workdir was not given and ${trust.cwd} carries no ${FOLDER_PIN_FILE_NAME} pin, so there is no launch folder to check (for the record, Claude Code does not trust ${trust.cwd} itself: ${trust.reason})`,
+        'pass --workdir <the agent folder> to check that folder',
+      )
     } else if (trust.reason === 'no-config-path') {
       row('trust', 'Folder trust', false, `Claude Code's config file could not be located: ${trust.error ?? 'no CLAUDE_CONFIG_DIR and no home directory'}`, trustFix)
     } else if (trust.reason === 'no-config-file') {
@@ -1027,7 +1047,7 @@ function trustLookupKeys(cwd, resolvePath) {
  * @param {{ env?: Record<string, string | undefined>, home?: string, cwd?: string,
  *           readFile?: (path: string) => string | null,
  *           resolvePath?: (path: string) => string }} [opts]
- * @returns {{ cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey: string, error?: string }}
+ * @returns {{ cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey: string, inheritedFrom?: string, error?: string }}
  */
 export function probeFolderTrust({
   env = process.env,
@@ -1069,7 +1089,80 @@ export function probeFolderTrust({
     }
     result.reason = 'not-accepted'
   }
+  // TRUST IS INHERITED (measured on Claude Code 2.1.278, 2026-09-21). A folder
+  // under a trusted ancestor never shows the trust dialog, with no entry of its
+  // own AND with an explicit hasTrustDialogAccepted:false entry of its own: a
+  // fresh folder under a trusted /private/tmp went straight past the gate, and
+  // so did a child seeded false beside a parent seeded true, while a sibling
+  // outside that parent still got the dialog. An exact-key lookup therefore
+  // FAILs folders Claude Code launches in without a word, and this row gates
+  // the install.
+  for (const key of trustLookupKeys(result.cwd, resolvePath)) {
+    for (const ancestor of ancestorDirs(key)) {
+      if (projects[ancestor]?.hasTrustDialogAccepted === true) {
+        result.accepted = true
+        result.reason = 'accepted'
+        result.matchedKey = ancestor
+        result.inheritedFrom = ancestor
+        return result
+      }
+    }
+  }
   return result
+}
+
+/**
+ * Every ancestor directory of `path`, nearest first, root included, in the
+ * path's own separator style. Pure string work: the keys in Claude Code's
+ * config are strings, and the doctor may be reading a config written on
+ * another platform's spelling.
+ * @param {string} path
+ * @returns {string[]}
+ */
+export function ancestorDirs(path) {
+  let current = String(path ?? '').replace(/[\\/]+$/, '')
+  const out = []
+  for (let guard = 0; guard < 256; guard += 1) {
+    const cut = Math.max(current.lastIndexOf('/'), current.lastIndexOf('\\'))
+    if (cut < 0) break
+    const isDriveRoot = /^[A-Za-z]:$/.test(current.slice(0, cut))
+    const parent = cut === 0 ? current.slice(0, 1) : isDriveRoot ? current.slice(0, cut + 1) : current.slice(0, cut)
+    if (!parent || parent === current) break
+    out.push(parent)
+    if (cut === 0 || isDriveRoot) break
+    current = parent
+  }
+  return out
+}
+
+/**
+ * WHICH folder do the launch rows describe? Strongest evidence first:
+ *   flag               --workdir was given
+ *   cwd-pin            the doctor is standing in a folder that carries an agent pin
+ *   default-workspace  --assistant-id N was given and ~/.bgos-agent/N-workspace
+ *                      carries that pin (where desktop one-click and
+ *                      `hoai-agent install` put an agent nobody chose a folder for)
+ *   cwd-unpinned       none of those: cwd, which is not known to be an agent folder
+ * @param {{ workdirFlag?: string, cwd?: string, home?: string, assistantId?: string,
+ *           readPin?: (dir: string) => string }} [opts]
+ * @returns {{ dir: string, source: 'flag' | 'cwd-pin' | 'default-workspace' | 'cwd-unpinned' }}
+ */
+export function resolveLaunchFolder({
+  workdirFlag = '',
+  cwd = process.cwd(),
+  home = homedir(),
+  assistantId = '',
+  readPin = readFolderPin,
+} = {}) {
+  const flag = String(workdirFlag ?? '').trim()
+  if (flag) return { dir: flag, source: 'flag' }
+  if (readPin(cwd)) return { dir: cwd, source: 'cwd-pin' }
+  const id = String(assistantId ?? '').trim()
+  if (/^\d+$/.test(id) && home) {
+    const workspace = joinPreservingStyle(joinPreservingStyle(home, '.bgos-agent'), `${id}-workspace`)
+    if (readPin(workspace) === id) return { dir: workspace, source: 'default-workspace' }
+  }
+  return { dir: cwd, source: 'cwd-unpinned' }
 }
 
 /**
@@ -1482,7 +1575,15 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
-  const workdir = args.workdir || process.cwd()
+  // The folder the launch rows describe. It used to be `--workdir || cwd`, which
+  // made the desktop one-click preflight (no --workdir, cwd = HOME) check HOME.
+  const launchFolder = resolveLaunchFolder({
+    workdirFlag: args.workdir,
+    cwd: opts.cwd ?? process.cwd(),
+    home,
+    assistantId: args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim(),
+  })
+  const workdir = launchFolder.dir
 
   // Wait-only mode (the bootstrap's final gate): poll for the channel-live
   // marker to be touched after the launch instant. Positive proof the
@@ -1585,6 +1686,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     method,
     route,
     trust,
+    launchFolder,
     bypass,
     gate,
     incumbent,

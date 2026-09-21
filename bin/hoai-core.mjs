@@ -975,53 +975,64 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
 }
 
 /**
- * A minimal expect script that spawns claude and auto-accepts the startup gate,
- * mirroring the fleet's proven run.expect: the Claude Code TUI splits words
- * with cursor-move escapes, so only the single contiguous word "confirm" (every
- * selection prompt's "Enter to confirm" footer) matches the raw PTY stream;
- * sending Enter on it accepts folder-trust, dev-channels, and bypass gates
- * alike. It stops on the live-TUI markers, and on anything it does not
- * recognise it stops waiting and hands off with interact so a human at the
- * terminal decides. A SIGTERM trap kills the spawned claude before exiting, so
- * when the supervisor SIGTERMs this expect process claude cannot be orphaned
- * into a second live session (which would reintroduce the identity bleed).
+ * The shared startup gate block (lib/gate-block.tcl): ONE copy of the rules for
+ * answering Claude Code's first-run screens, embedded here in the launcher's
+ * expect script and copied by bin/bgos-agent into the supervisor's run.expect.
+ * Two hand-kept copies is how the 2026-09-21 fix landed in this file and never
+ * reached the supervisor that desktop one-click actually installs.
+ * @param {(path: string) => string} [read]
+ * @returns {string}
+ */
+export const GATE_BLOCK_FILE = 'gate-block.tcl'
+export function readGateBlock(read = (p) => readFileSync(p, 'utf8')) {
+  return String(read(fileURLToPath(new URL(`../lib/${GATE_BLOCK_FILE}`, import.meta.url))))
+}
+
+/**
+ * The launcher's expect script: spawn claude, run the shared gate block, then
+ * hand the terminal to the person with interact. A SIGTERM trap kills the
+ * spawned claude before exiting, so when the supervisor SIGTERMs this expect
+ * process claude cannot be orphaned into a second live session (which would
+ * reintroduce the identity bleed).
  *
- * IT NEVER PRESSES BLIND, AND THAT IS THE WHOLE POINT OF THE TIMEOUT BRANCH.
- * It used to answer a silent screen with `timeout { send "\r" }`: an Enter at
- * an unrecognised prompt, up to six times. Not every prompt's default is
- * harmless. The bypass-permissions warning DEFAULTS TO DECLINE, so that blind
- * Enter exits claude instantly, with no error, on the launch a first-time user
- * is watching. The win32 helper's own doc comment already claimed this property
- * ("never presses blindly, so a prompt with a dangerous default is never
- * answered by it") while the posix path here did the opposite. The worst case
- * now is a keypress somebody has to make; the worst case before was a session
- * that declined itself and vanished.
+ * WHAT CHANGED, AND WHY (2026-09-21, measured against Claude Code 2.1.278).
+ * This script used to press Enter on the single word "confirm", on the theory
+ * that Enter "accepts folder-trust, dev-channels, and bypass gates alike". It
+ * does not. Folder trust and the bypass warning list "No, exit" FIRST, so that
+ * Enter declined them: claude exited in two seconds, code 0, nothing printed,
+ * on exactly the launch where the pre-seed had missed. The earlier fix removed
+ * the Enter on TIMEOUT and left this one, so "never presses blind" was true of
+ * the timeout branch only. The gate block now reads each screen and derives
+ * the key from it; see the file for the rules and the measurements.
+ *
+ * It also stops a failed launch from being silent. A claude that exits during
+ * startup, and a screen the block cannot answer, each print one plain line
+ * saying which, with the words that were on the screen. An unanswerable screen
+ * is still handed to interact, because in a terminal a person may be right
+ * there to answer it; the supervisor, which has nobody, exits with the reason
+ * instead (bin/bgos-agent).
  *
  * Each arg is brace-quoted (Tcl literal, no substitution) so a future arg with
  * a space or a Tcl-special char cannot break or inject into the script; today's
  * args are fixed flags plus a regex-validated UUID, so this is defense in depth.
- * @param {{ claudePath: string, args: readonly string[] }} params
+ * @param {{ claudePath: string, args: readonly string[], gateBlock?: string }} params
  * @returns {string}
  */
-export function buildGateAutoAcceptExpect({ claudePath, args }) {
+export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGateBlock() }) {
   const quoted = (args ?? []).map((a) => `{${a}}`).join(' ')
   const spawnLine = quoted ? `spawn ${claudePath} ${quoted}` : `spawn ${claudePath}`
   return [
-    'set timeout 12',
-    'set done 0',
     spawnLine,
     // Kill the spawned claude on SIGTERM so a supervisor kill never orphans it.
     'trap {catch {exec kill [exp_pid]}; exit 143} SIGTERM',
-    'for {set i 0} {$i < 6 && !$done} {incr i} {',
-    '  expect {',
-    '    -re {(?i)experimental} { set done 1 }',
-    '    -re {(?i)connecting}   { set done 1 }',
-    '    -re {(?i)confirm}      { sleep 1; send "\\r" }',
-    // NO send here. An unrecognised screen is answered by the human, never by
-    // us: see this function's doc comment for the prompt whose default is exit.
-    '    timeout                { set done 1 }',
-    '    eof                    { exit 1 }',
-    '  }',
+    gateBlock,
+    'if {$hoai_outcome eq "exited-during-startup"} {',
+    '  puts stderr "\\n\\[hoai\\] Claude Code exited during startup, before its session was up. Gates answered first: \\[$hoai_answered\\]. Run: hoai doctor"',
+    '  exit 1',
+    '}',
+    'if {[string match "gate-*" $hoai_outcome]} {',
+    '  puts stderr "\\n\\[hoai\\] Claude Code is showing a screen hoai will not answer for you ($hoai_outcome): $hoai_screen"',
+    '  puts stderr "\\[hoai\\] It is waiting for an answer in this window. Nothing was pressed."',
     '}',
     'set timeout -1',
     'interact',
