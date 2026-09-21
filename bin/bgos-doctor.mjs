@@ -64,7 +64,13 @@ import {
   selfAndAncestorPids,
 } from './hoai-core.mjs'
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
-import { resolveReadCredentialsPath, normalizeApiBase, FOLDER_PIN_FILE_NAME } from './bgos-pair.mjs'
+import {
+  resolveReadCredentialsPath,
+  normalizeApiBase,
+  FOLDER_PIN_FILE_NAME,
+  launchFolderLiveSafe,
+  perAssistantCredentialsPath,
+} from './bgos-pair.mjs'
 
 export const DEFAULT_BACKEND_URL = 'https://api.brandgrowthos.ai/api/v1'
 /** The MCP server names `claude mcp list` may print for this plugin. */
@@ -960,13 +966,154 @@ export function probeMethod({ scriptPath = fileURLToPath(import.meta.url), env =
 export function probeChannelRoute({
   cwd = process.cwd(),
   env = process.env,
+  home = homedir(),
   scriptDir = dirname(fileURLToPath(import.meta.url)),
 } = {}) {
   try {
-    return resolveChannelSpec({ cwd, env, scriptDir })
+    return resolveChannelSpec({ cwd, env, home, scriptDir })
   } catch (err) {
     return { spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: String(err?.message ?? err) }
   }
+}
+
+// -- The paired topology: proving a folder with no .mcp.json is launchable -----
+//
+// `hoai-agent install --always-on` used to refuse any workspace with no
+// .mcp.json, and that gate was load bearing: it guaranteed the session had a
+// `bgos` MCP server to load, so `server:bgos` was correct by construction. It
+// also made desktop one-click impossible on a fresh workspace, because the
+// one-click path installs the MARKETPLACE plugin and pairs with a code: it
+// never has a key to write a .mcp.json with. Measured 2026-09-21: the desktop's
+// exact launch line died on "no .mcp.json ... and no creds given".
+//
+// The gate exists because an agent once came back DEAF on the wrong channel
+// spec (2026-08-21): it starts, `claude mcp list` says Connected, and not one
+// inbound message is ever delivered. So a missing .mcp.json is never simply
+// waved through. The supervisor may launch such a folder only when the paired
+// topology is PROVEN, by the two readers the rest of this repo already trusts,
+// not by a third reading written here:
+//
+//   launchFolderLiveSafe (bin/bgos-pair.mjs)   the folder pin names this agent
+//                                              and its credentials-<id>.json is
+//                                              there: what pairing itself
+//                                              verifies before it calls a
+//                                              pairing live-safe.
+//   probeChannelRoute (the Channel route row)  the launcher's own resolver says
+//                                              the route from this folder is a
+//                                              marketplace install.
+//
+// Both are asked about the environment the SUPERVISED claude will have, not the
+// installer's: the launchd plist and the systemd unit carry no CLAUDE_CONFIG_DIR,
+// so a plugin installed only under the installing shell's custom config dir is
+// a plugin the supervised session will never load. That is a refusal, by name.
+// A deaf agent is worse than a refused install.
+
+/** Refusal reasons, stable strings: bin/bgos-agent prints them and tests pin them. */
+export const PAIRED_TOPOLOGY_REASONS = Object.freeze({
+  NO_ASSISTANT_ID: 'paired-topology:no-assistant-id',
+  NO_FOLDER_PIN: 'paired-topology:no-folder-pin',
+  PIN_MISMATCH: 'paired-topology:pin-mismatch',
+  NO_AGENT_CREDENTIALS: 'paired-topology:no-agent-credentials',
+  NOT_LIVE_SAFE: 'paired-topology:not-live-safe',
+  WORKSPACE_DECLARES_SERVER: 'paired-topology:workspace-declares-server',
+  PLUGIN_NOT_INSTALLED: 'paired-topology:plugin-not-installed',
+  INSTALLER_IS_A_CLONE: 'paired-topology:installer-is-a-clone',
+})
+
+/** Variables the generated launchd plist and systemd unit do NOT carry. */
+const NOT_IN_SUPERVISED_ENV = ['CLAUDE_CONFIG_DIR', 'CLAUDE_PLUGIN_ROOT', 'BGOS_ASSISTANT_ID', 'BGOS_CREDENTIALS_PATH']
+
+/** The installer's env minus everything the supervised session will not have. */
+export function supervisedEnv(env = process.env) {
+  const out = { ...env }
+  for (const name of NOT_IN_SUPERVISED_ENV) delete out[name]
+  return out
+}
+
+/**
+ * Can an always-on supervisor launch `workdir` for `assistantId` with no
+ * workspace .mcp.json? Only when all three hold, each by an existing reader.
+ * @param {{ workdir: string, assistantId: string | number, env?: Record<string, string | undefined>,
+ *           home?: string, scriptDir?: string, readPin?: (dir: string) => string,
+ *           exists?: (path: string) => boolean,
+ *           liveSafe?: (o: { cwd: string, assistantId: string, env: Record<string, string | undefined>, home: string }) => boolean,
+ *           route?: (o: { cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string }) =>
+ *             { spec?: string, source?: string, method?: string, serverName?: string, reason?: string } }} opts
+ * @returns {{ ok: boolean, channel: string, reason: string, detail: string }}
+ */
+export function provePairedTopology({
+  workdir,
+  assistantId,
+  env = process.env,
+  home = homedir(),
+  scriptDir = dirname(fileURLToPath(import.meta.url)),
+  readPin = readFolderPin,
+  exists = existsSync,
+  liveSafe = launchFolderLiveSafe,
+  route = probeChannelRoute,
+} = {}) {
+  const R = PAIRED_TOPOLOGY_REASONS
+  const refused = (reason, detail) => ({ ok: false, channel: '', reason, detail })
+  const dir = String(workdir ?? '').trim()
+  const id = String(assistantId ?? '').trim()
+  if (!/^\d+$/.test(id) || !dir) return refused(R.NO_ASSISTANT_ID, 'a numeric --assistant-id and a --workdir are both needed')
+  const runtimeEnv = supervisedEnv(env)
+
+  // 1 and 2, named first so the refusal says WHICH one is missing...
+  const pin = readPin(dir)
+  if (!pin) {
+    return refused(R.NO_FOLDER_PIN, `${dir} carries no ${FOLDER_PIN_FILE_NAME} pin, so this folder was never paired as an agent folder; pair from inside it first (hoai-pair <code> --assistant-id ${id})`)
+  }
+  if (pin !== id) {
+    return refused(R.PIN_MISMATCH, `${dir} is pinned to agent ${pin}, not ${id}; launching ${id} from here would run as the wrong agent`)
+  }
+  const credsPath = perAssistantCredentialsPath(home, id)
+  if (!exists(credsPath)) {
+    return refused(R.NO_AGENT_CREDENTIALS, `no credentials for agent ${id} at ${credsPath}; pair this machine as that agent first`)
+  }
+  // ...then the verdict itself comes from pairing's OWN verifier, under the
+  // supervised environment, so this function cannot drift from what the daemon
+  // will actually resolve from that folder.
+  if (!liveSafe({ cwd: dir, assistantId: id, env: runtimeEnv, home })) {
+    return refused(R.NOT_LIVE_SAFE, `pairing's own verifier says a session launched from ${dir} would not resolve agent ${id}`)
+  }
+
+  // 3. The route, from the launcher's resolver through the doctor's row reader.
+  const resolved = route({ cwd: dir, env: runtimeEnv, home, scriptDir })
+  if (resolved?.source === 'workspace') {
+    return refused(R.WORKSPACE_DECLARES_SERVER, `${dir} declares its own MCP server ${resolved.serverName}, so it is not a marketplace folder; its route is ${resolved.spec}`)
+  }
+  const spec = String(resolved?.spec ?? '').trim()
+  if (resolved?.method === 'clone') {
+    // Its own reason, because "the plugin is not installed" would be a false
+    // statement here: it may well be installed. What the resolver says is that
+    // the code being run is a CLONE, and a clone's route from a folder with no
+    // .mcp.json is a channel nothing in that folder publishes.
+    return refused(
+      R.INSTALLER_IS_A_CLONE,
+      `this installer is running from a plugin clone, whose route from ${dir} would be ${spec || 'unresolved'}, a channel nothing in that folder publishes; a clone agent is loaded from a workspace .mcp.json (pass --key and --user to write one), and a paired marketplace folder is installed through npx or the marketplace plugin itself`,
+    )
+  }
+  if (resolved?.method !== 'marketplace' || !spec.startsWith('plugin:')) {
+    const configDir = claudeConfigDir({ env: runtimeEnv, home })
+    const custom = String(env?.CLAUDE_CONFIG_DIR ?? '').trim()
+    const why = String(resolved?.reason ?? '').trim()
+    return refused(
+      R.PLUGIN_NOT_INSTALLED,
+      `the HOAI marketplace plugin is not installed where the background agent will look (${configDir})` +
+        (custom ? `; this shell has CLAUDE_CONFIG_DIR=${custom}, which the background service does not inherit` : '') +
+        `. Install method read as ${resolved?.method ?? 'unknown'}${why ? `: ${why}` : ''}`,
+    )
+  }
+  return { ok: true, channel: spec, reason: '', detail: `folder pin ${id}, credentials ${credsPath}, route ${spec}` }
+}
+
+/** The one line bin/bgos-agent parses. Kept to a single line on purpose. */
+export function pairedTopologyLine(verdict) {
+  const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim()
+  return verdict.ok
+    ? `HOAI_TOPOLOGY_OK ${verdict.channel}`
+    : `HOAI_TOPOLOGY_REFUSED ${verdict.reason} ${oneLine(verdict.detail)}`
 }
 
 /** Read a text file, or null when it cannot be read. The one injection point
@@ -1453,6 +1600,10 @@ Options:
                          handshake environment
   --workdir <dir>        working directory for claude mcp list and the
                          launch-folder identity pin (default: cwd)
+  --prove-paired-topology  with --workdir and --assistant-id: print ONE line saying whether a
+                         folder with no .mcp.json is a proven paired marketplace folder
+                         (folder pin, agent credentials, plugin install record) and which
+                         channel it launches on. Used by hoai-agent install. Exit 0 or 1.
   --backend <url>        backend base (default ${DEFAULT_BACKEND_URL})
   --json                 print the rows as JSON instead of the table
   --skip-handshake       skip the live MCP initialize handshake (fast mode)
@@ -1527,6 +1678,7 @@ export function parseDoctorArgs(argv) {
     help: false,
     waitLiveSince: null,
     waitLiveTimeoutS: 120,
+    provePairedTopology: false,
   }
   const errors = []
   for (let i = 0; i < (argv ?? []).length; i++) {
@@ -1535,6 +1687,7 @@ export function parseDoctorArgs(argv) {
     else if (arg === '--preflight') args.preflight = true
     else if (arg === '--json') args.json = true
     else if (arg === '--skip-handshake') args.skipHandshake = true
+    else if (arg === '--prove-paired-topology') args.provePairedTopology = true
     else if (arg === '--assistant-id') {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
@@ -1564,7 +1717,10 @@ export function parseDoctorArgs(argv) {
  * Run every probe, print the table (or JSON), and return the exit code:
  * always 0 in report mode, the preflight verdict under --preflight.
  * @param {string[]} [argv]
- * @param {{ env?: Record<string, string | undefined>, home?: string, platform?: string }} [opts]
+ * @param {{ env?: Record<string, string | undefined>, home?: string, platform?: string,
+ *           cwd?: string, scriptDir?: string, print?: (line: string) => void }} [opts]
+ *   `cwd`, `scriptDir` and `print` are seams for tests: where the doctor stands, where its own
+ *   files live (decides the install method), and where the prove-only line goes.
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const { args, errors } = parseDoctorArgs(argv)
@@ -1581,6 +1737,21 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
+
+  // Prove-only mode, for `hoai-agent install`: one line, no table, no network,
+  // no claude. Exit 0 when the paired topology is proven, 1 when it is refused.
+  if (args.provePairedTopology) {
+    const verdict = provePairedTopology({
+      workdir: args.workdir,
+      assistantId: args.assistantId,
+      env,
+      home,
+      ...(opts.scriptDir ? { scriptDir: opts.scriptDir } : {}),
+    })
+    ;(opts.print ?? console.log)(pairedTopologyLine(verdict))
+    return verdict.ok ? 0 : 1
+  }
+
   // The folder the launch rows describe. It used to be `--workdir || cwd`, which
   // made the desktop one-click preflight (no --workdir, cwd = HOME) check HOME.
   const launchFolder = resolveLaunchFolder({

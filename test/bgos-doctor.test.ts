@@ -38,6 +38,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 
 import {
   buildDoctorRows,
@@ -61,12 +63,17 @@ import {
   probeFolderTrust,
   ancestorDirs,
   resolveLaunchFolder,
+  provePairedTopology,
+  pairedTopologyLine,
+  supervisedEnv,
+  PAIRED_TOPOLOGY_REASONS,
+  main as doctorMain,
   probeBypassPrompt,
   probeGateStrategy,
   probeIncumbent,
 } from '../bin/bgos-doctor.mjs'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
-import { launchCommand } from '../bin/bgos-install-method.mjs'
+import { launchCommand, MARKETPLACE_CHANNEL_SPEC, CLONE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 
 // ── Shared probe fixtures ────────────────────────────────────────────────────
 
@@ -1693,4 +1700,149 @@ test('the desktop one-click preflight, end to end through the pure parts: HOME a
   assert.strictEqual(row.ok, true)
   const green = ['claude', 'auth', 'handshake', 'mcp-list'].map((id) => ({ id, ok: true }))
   assert.deepEqual(preflightVerdict([...green, row]), { ok: true, failing: [] })
+})
+
+
+// -- the paired topology: a folder with NO .mcp.json that the supervisor may launch (2026-09-22) --
+//
+// `hoai-agent install --always-on` refused every workspace with no .mcp.json,
+// which made desktop one-click impossible on a fresh workspace (measured: "no
+// .mcp.json ... and no creds given"). The gate exists because an agent once came
+// back DEAF on the wrong channel spec, so it is not skipped: the launch is
+// allowed only when the folder pin, the agent's credentials and the marketplace
+// install record all agree, as read by the verifiers the repo already has.
+
+const TOPO = { workdir: '/h/.bgos-agent/12-workspace', assistantId: '12', home: '/h', env: {} }
+const allGood = {
+  readPin: () => '12',
+  exists: () => true,
+  liveSafe: () => true,
+  route: () => ({ spec: 'plugin:hoai@some-marketplace', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' }),
+}
+
+test('provePairedTopology: pin, credentials and a marketplace route together prove it, and the channel is the RESOLVER spec, never one typed here', () => {
+  const verdict = provePairedTopology({ ...TOPO, ...allGood })
+  assert.deepEqual([verdict.ok, verdict.channel, verdict.reason], [true, 'plugin:hoai@some-marketplace', ''])
+  assert.equal(pairedTopologyLine(verdict), 'HOAI_TOPOLOGY_OK plugin:hoai@some-marketplace')
+})
+
+test('provePairedTopology: each missing proof is a NAMED refusal, and no channel is ever returned with one', () => {
+  const R = PAIRED_TOPOLOGY_REASONS
+  const cases: Array<[string, Record<string, unknown>, string, RegExp]> = [
+    ['never paired', { readPin: () => '' }, R.NO_FOLDER_PIN, /carries no \.bgos-agent-id pin/],
+    ['pinned to another agent', { readPin: () => '7' }, R.PIN_MISMATCH, /pinned to agent 7, not 12/],
+    ['no credentials for that id', { exists: () => false }, R.NO_AGENT_CREDENTIALS, /credentials-12\.json/],
+    ['pairing verifier says no', { liveSafe: () => false }, R.NOT_LIVE_SAFE, /would not resolve agent 12/],
+    ['the folder publishes its own server', { route: () => ({ spec: 'server:bgos', source: 'workspace', method: 'marketplace', serverName: 'bgos', conflict: false, reason: '' }) }, R.WORKSPACE_DECLARES_SERVER, /declares its own MCP server bgos/],
+    ['the running code is a clone', { route: () => ({ spec: CLONE_CHANNEL_SPEC, source: 'install-method', method: 'clone', serverName: '', conflict: false, reason: '' }) }, R.INSTALLER_IS_A_CLONE, /running from a plugin clone/],
+    ['no install record', { route: () => ({ spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: 'records no HOAI plugin install' }) }, R.PLUGIN_NOT_INSTALLED, /not installed where the background agent will look.*records no HOAI plugin install/],
+    ['a marketplace method with no plugin spec', { route: () => ({ spec: 'server:bgos', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' }) }, R.PLUGIN_NOT_INSTALLED, /not installed/],
+  ]
+  for (const [name, override, reason, detail] of cases) {
+    const verdict = provePairedTopology({ ...TOPO, ...allGood, ...override })
+    assert.equal(verdict.ok, false, name)
+    assert.equal(verdict.reason, reason, name)
+    assert.equal(verdict.channel, '', `${name}: a refusal must never carry a channel someone could launch on`)
+    assert.match(verdict.detail, detail, name)
+    assert.match(pairedTopologyLine(verdict), new RegExp(`^HOAI_TOPOLOGY_REFUSED ${reason} `), name)
+    assert.doesNotMatch(pairedTopologyLine(verdict), /\n/, 'one line, because bash parses it')
+  }
+  assert.equal(provePairedTopology({ ...TOPO, ...allGood, assistantId: '../etc' }).reason, R.NO_ASSISTANT_ID)
+  assert.equal(provePairedTopology({ ...TOPO, ...allGood, workdir: '' }).reason, R.NO_ASSISTANT_ID)
+})
+
+test('provePairedTopology: both verifiers are asked about the SUPERVISED environment, not the installing shell', () => {
+  // The launchd plist and the systemd unit carry no CLAUDE_CONFIG_DIR. A plugin
+  // installed only under the installing shell's custom config dir is a plugin
+  // the background session never loads: that must read as NOT installed.
+  const seen: Array<Record<string, string | undefined>> = []
+  const env = { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/custom', CLAUDE_PLUGIN_ROOT: '/custom/plugins/x', BGOS_ASSISTANT_ID: '99', BGOS_CREDENTIALS_PATH: '/elsewhere.json' }
+  provePairedTopology({
+    ...TOPO,
+    ...allGood,
+    env,
+    liveSafe: (o: { env: Record<string, string | undefined> }) => (seen.push(o.env), true),
+    route: (o: { env: Record<string, string | undefined> }) => (seen.push(o.env), allGood.route()),
+  })
+  assert.equal(seen.length, 2)
+  for (const e of seen) {
+    assert.deepEqual(Object.keys(e), ['PATH'])
+  }
+  assert.deepEqual(supervisedEnv(env), { PATH: '/usr/bin' })
+  assert.equal(env.CLAUDE_CONFIG_DIR, '/custom', 'the caller env is not mutated')
+  // And the refusal says so, in words the owner can act on.
+  const refused = provePairedTopology({ ...TOPO, ...allGood, env, route: () => ({ spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: '' }) })
+  assert.match(refused.detail, /CLAUDE_CONFIG_DIR=\/custom, which the background service does not inherit/)
+})
+
+function pairedHome(): { home: string; workspace: string; npxBin: string } {
+  const home = mkdtempSync(join(tmpdir(), 'hoai-topology-'))
+  const workspace = join(home, '.bgos-agent', '936-workspace')
+  mkdirSync(workspace, { recursive: true })
+  writeFileSync(join(workspace, '.bgos-agent-id'), '936\n')
+  writeFileSync(join(home, '.bgos-agent', 'credentials-936.json'), JSON.stringify({ assistantId: 936 }))
+  mkdirSync(join(home, '.claude', 'plugins'), { recursive: true })
+  writeFileSync(
+    join(home, '.claude', 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: join(home, '.claude/plugins/cache/hoai/hoai/0.42.3'), version: '0.42.3' }] } }),
+  )
+  // where npx really unpacks the package the desktop launch line runs
+  return { home, workspace, npxBin: join(home, '.npm', '_npx', 'abc123', 'node_modules', 'claude-channel-bgos', 'bin') }
+}
+
+test('provePairedTopology, with the REAL verifiers on a real folder: what pairing and the plugin step leave behind is proven, from where npx runs it', () => {
+  const { home, workspace, npxBin } = pairedHome()
+  const verdict = provePairedTopology({ workdir: workspace, assistantId: '936', env: {}, home, scriptDir: npxBin })
+  assert.deepEqual([verdict.ok, verdict.channel], [true, MARKETPLACE_CHANNEL_SPEC], verdict.detail)
+})
+
+test('provePairedTopology, with the REAL verifiers: the same folder is refused when any one of the three is taken away', () => {
+  const R = PAIRED_TOPOLOGY_REASONS
+  const noPlugin = pairedHome()
+  writeFileSync(join(noPlugin.home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }))
+  assert.equal(provePairedTopology({ workdir: noPlugin.workspace, assistantId: '936', env: {}, home: noPlugin.home, scriptDir: noPlugin.npxBin }).reason, R.PLUGIN_NOT_INSTALLED)
+
+  const clone = pairedHome()
+  assert.equal(
+    provePairedTopology({ workdir: clone.workspace, assistantId: '936', env: {}, home: clone.home, scriptDir: join(clone.home, 'bgos-claude-plugin', 'bin') }).reason,
+    R.INSTALLER_IS_A_CLONE,
+    'the launcher resolver calls code outside the plugins dir a clone, and this function must not disagree with it',
+  )
+
+  const declares = pairedHome()
+  writeFileSync(join(declares.workspace, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['x'], env: { BGOS_ASSISTANT_ID: '936' } } } }))
+  const v = provePairedTopology({ workdir: declares.workspace, assistantId: '936', env: {}, home: declares.home, scriptDir: declares.npxBin })
+  assert.equal(v.reason, R.WORKSPACE_DECLARES_SERVER, v.detail)
+
+  const otherAgent = pairedHome()
+  assert.equal(provePairedTopology({ workdir: otherAgent.workspace, assistantId: '937', env: {}, home: otherAgent.home, scriptDir: otherAgent.npxBin }).reason, R.PIN_MISMATCH)
+
+  const customConfig = pairedHome()
+  // the plugin exists ONLY under a custom config dir the installing shell exports
+  const custom = join(customConfig.home, 'custom-claude')
+  mkdirSync(join(custom, 'plugins'), { recursive: true })
+  writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: join(custom, 'plugins/cache/hoai/hoai/0.42.3'), version: '0.42.3' }] } }))
+  writeFileSync(join(customConfig.home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }))
+  const c = provePairedTopology({ workdir: customConfig.workspace, assistantId: '936', env: { CLAUDE_CONFIG_DIR: custom }, home: customConfig.home, scriptDir: customConfig.npxBin })
+  assert.equal(c.reason, R.PLUGIN_NOT_INSTALLED, 'installed for the shell, invisible to the background service: that is a deaf agent, so it is a refusal')
+  assert.match(c.detail, /does not inherit/)
+})
+
+test('bgos-doctor --prove-paired-topology: one line, exit 0 or 1, and none of the doctor table machinery runs', async () => {
+  const parsed = parseDoctorArgs(['--prove-paired-topology', '--workdir', '/w', '--assistant-id', '5'])
+  assert.deepEqual(parsed.errors, [])
+  assert.equal(parsed.args.provePairedTopology, true)
+  assert.equal(parseDoctorArgs([]).args.provePairedTopology, false)
+
+  const { home, workspace, npxBin } = pairedHome()
+  const lines: string[] = []
+  const ok = await doctorMain(['--prove-paired-topology', '--workdir', workspace, '--assistant-id', '936'], { env: {}, home, scriptDir: npxBin, print: (l: string) => lines.push(l) })
+  assert.equal(ok, 0)
+  assert.deepEqual(lines, [`HOAI_TOPOLOGY_OK ${MARKETPLACE_CHANNEL_SPEC}`])
+
+  lines.length = 0
+  const refused = await doctorMain(['--prove-paired-topology', '--workdir', join(home, 'nowhere'), '--assistant-id', '936'], { env: {}, home, scriptDir: npxBin, print: (l: string) => lines.push(l) })
+  assert.equal(refused, 1)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0]!, /^HOAI_TOPOLOGY_REFUSED paired-topology:no-folder-pin /)
 })
