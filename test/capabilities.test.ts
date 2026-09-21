@@ -84,6 +84,24 @@ test('the bundled fallback carries the served goal lane sentence, word for word'
   )
 })
 
+// The Claude channel's turn summary sentence (Mission program stage 7, C-30),
+// copied BYTE FOR BYTE out of the served canon
+// (backend/src/integrations/capability-canon.ts, CLAUDE_TURN_SUMMARY_SENTENCE,
+// gated at TURN_SUMMARY_MIN_DAEMON.claude = 0.43.0).
+const SERVED_CLAUDE_TURN_SUMMARY_SENTENCE =
+  "- Your tool rows now carry what your commands printed, their exit codes and your edits' line counts, and this host fills every one of them from your own hook events: it takes the output tail from the tool result, masks secrets in it, caps it, reads the exit code off the runtime's own failure line, and counts the plus and minus lines off the patch. You write none of it and you cannot add to it. So do not paste command output into your reply, do not restate an exit code or a line count in prose, and do not close a turn with a summary of what you did: the folded card already says how long the turn took, how many tools ran, how many failed and how many files changed, and saying it again reads to your owner as a second, competing answer."
+
+test('the bundled fallback carries the served turn summary sentence, word for word', () => {
+  // This one tells the model what NOT to do: the host fills the output, the
+  // exit code and the line counts from the hook events, so pasting command
+  // output into a reply or closing a turn with a summary of the work is a
+  // second, competing answer beside the card the owner is already reading.
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(SERVED_CLAUDE_TURN_SUMMARY_SENTENCE),
+    'the offline copy has drifted from the served Claude delta; copy the sentence across verbatim',
+  )
+})
+
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
 })

@@ -2,6 +2,41 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.43.0 (2026-09-21)
+
+- **The folded card after a turn stops saying "Used 5 tools" and starts saying
+  what happened.** How long the turn took, how many tools ran, how many failed
+  and how many files changed, and underneath it a shell row now carries what
+  the command printed and the code it exited with, and an edit row the lines it
+  added and removed. The owner opens a row and reads the output where before
+  they had to ask the agent what it saw.
+  - **Every number comes from the runtime's own events, and each part is drawn
+    only where its datum exists.** The turn's start and finish are the moments
+    the hook process stamped on its own receipts, never the moment this daemon
+    happened to read the spool file (idle polling delays that by two seconds
+    and an unproven session by up to a minute, so a card built on the later
+    clock can report minutes that are wrong by more than the turn was long).
+    A card with no clock shows no minutes. A row with no output has no chevron.
+    A grep that matched nothing reports no exit code at all, because zero would
+    be a lie and one would be a guess: it carries the runtime's own reading,
+    "No matches found", as its short qualifier instead.
+  - **What a command printed is masked before it is cut, and never leaves the
+    machine in full.** The plugin's secret scanner runs over the output first
+    and the tail is taken second, because cutting first can slice a token in
+    half and hand the scanner a value its pattern no longer matches. Then the
+    caps: the last 2048 characters and the last 200 lines of a row, and 8192
+    characters of output across a whole card, spent newest first. Those caps
+    are applied before EVERY write and not only the last one, because the whole
+    tool list rides every card update while a turn is live.
+  - **Nothing here is new for an owner who keeps the switch off.** The card is
+    still hidden by the per agent "Show technical details" setting, still off
+    by default, and this daemon still never reads it: the plugin always sends,
+    and what is drawn is the owner's choice.
+  - **No Undo button, and it is blocked rather than deferred.** Claude Code's
+    own `/rewind` is an interactive selector with no tool, no channel method
+    and no control request behind it, so a daemon cannot call it and a button
+    that cannot do what it says is worse than no button.
+
 ## 0.42.3 (2026-09-22)
 
 Two live defects that 0.42.1 and 0.42.2 shipped, plus the startup gates.

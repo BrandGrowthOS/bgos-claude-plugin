@@ -621,6 +621,25 @@ The daemon always SENDS: the backend derives the agent's live working status
 from these rows arriving, and a shared agent has several viewers. Nothing in
 this plugin reads that setting.
 
+**What a finished turn says (v0.43.0+).** The folded card carries the turn's
+own clock, so it can say how long the turn took, how many tools ran, how many
+failed and how many files changed. A shell row carries what the command
+printed and the code it exited with; an edit row carries the lines it added and
+removed. Every part of that is drawn only where its datum exists: a card with
+no clock shows no minutes, a row with no output has no chevron, and a command
+whose non zero exit was not a failure (a grep that matched nothing) carries the
+runtime's own one line reading instead of a code nobody measured.
+
+**The output is masked, then capped, and never leaves the machine in full.**
+The secret scan runs over what a command printed BEFORE the tail is taken,
+because cutting first can slice a token in half and hand the scanner a value
+its pattern no longer matches. What ships is the LAST 2048 characters and the
+last 200 lines of a row, and at most 8192 characters of output across a whole
+card, spent from the newest row backwards. Those caps are applied before every
+card write and not only the last one, because the whole tool list rides every
+update while a turn is live. The two moments the card reports are the receipts
+the hook process stamped, not the moment this daemon read the spool file.
+
 **The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
 the payload as JSON on stdin. The forwarder appends one line to
 `<state>/hooks/<session_id>/events.jsonl` and exits 0, always. The daemon

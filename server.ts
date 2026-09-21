@@ -548,7 +548,6 @@ import {
   parseHookEvent,
   type Effect,
   type StepRow,
-  type ToolRow,
   type TurnState,
 } from './lib/hook-events.js'
 import {
@@ -556,7 +555,15 @@ import {
   hooksRoot,
   startHookIntake,
   type HookIntake,
+  type SpoolLine,
 } from './lib/hook-intake.js'
+// The card's wire body: the per card output budget and the turn clock as ISO
+// 8601, applied on EVERY write rather than only the last one (stage 7).
+import {
+  hookCardWireBody,
+  type HookCardPending,
+  type HookCardWireBody,
+} from './lib/hook-card-body.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -5922,7 +5929,9 @@ let hookTurnLive = false
  *  cannot adopt an id the next turn would then PATCH. */
 let hookTurnToken = 0
 let hookCardId: string | null = null
-let hookCardPending: { state: 'running' | 'done'; tools: ToolRow[]; text: string } | null = null
+/** The card state waiting to go out, including the turn's own clock (stage 7).
+ *  Epoch milliseconds here; the builder turns them into ISO 8601 at the wire. */
+let hookCardPending: HookCardPending | null = null
 let hookCardTimer: ReturnType<typeof setTimeout> | null = null
 /** The card POST or PATCH currently on the wire, so the turn end can wait for
  *  it instead of racing it. It resolves to the card's id (a POST mints one),
@@ -5988,12 +5997,16 @@ function createdMessageId(response: unknown): string | null {
   return null
 }
 
-/** The wire body of one card state. */
-function hookCardBody(pending: { state: 'running' | 'done'; tools: ToolRow[]; text: string }): {
-  text: string
-  toolProgress: { state: 'running' | 'done'; tools: ToolRow[] }
-} {
-  return { text: pending.text, toolProgress: { state: pending.state, tools: pending.tools } }
+/**
+ * The wire body of one card state.
+ *
+ * Everything that has to happen to every card, coalesced or final, happens in
+ * lib/hook-card-body.ts: the per card output budget (the whole tools array
+ * rides every PATCH, one per 600 ms while a turn is live) and the turn clock
+ * as ISO 8601. Both write paths call this, so neither can forget either.
+ */
+function hookCardBody(pending: HookCardPending): HookCardWireBody {
+  return hookCardWireBody(pending)
 }
 
 /**
@@ -6157,6 +6170,8 @@ async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Prom
  */
 async function finishHookTurn(): Promise<void> {
   // Everything the last update needs, captured before anything is cleared.
+  // The turn's summary fields (its start and its finish) ride on `pending`,
+  // which the clear below nulls, so this line is what puts them on the wire.
   const pending = hookCardPending
   const chatId = hookChatId()
   const flight = hookCardFlight
@@ -6199,7 +6214,15 @@ function runHookEffects(effects: Effect[]): void {
   for (const effect of effects) {
     switch (effect.kind) {
       case 'tool_card': {
-        hookCardPending = { state: effect.state, tools: effect.tools, text: effect.text }
+        // The clock rides the card state, so the turn end picks it up out of
+        // `pending` with everything else it captures before clearing.
+        hookCardPending = {
+          state: effect.state,
+          tools: effect.tools,
+          text: effect.text,
+          startedAt: effect.startedAt,
+          finishedAt: effect.finishedAt,
+        }
         if (effect.state === 'done') {
           if (hookCardTimer !== null) {
             clearTimeout(hookCardTimer)
@@ -6246,10 +6269,20 @@ function runHookEffects(effects: Effect[]): void {
   }
 }
 
-/** One spooled hook payload. Never throws: the intake keeps draining. */
-function onHookPayload(payload: Record<string, unknown>): void {
+/**
+ * One spooled hook payload. Never throws: the intake keeps draining.
+ *
+ * `line` is the spool line the intake read, and its `receivedAt` was stamped
+ * inside the hook process at the moment the event happened. That is the clock
+ * the turn is measured on: Date.now() here is the moment this daemon DRAINED
+ * the file, which idle polling delays by 2 seconds and an unproven session by
+ * up to a minute, so a card built on it can report minutes that are wrong by
+ * more than the turn was long.
+ */
+function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
+  const receivedAt = line?.receivedAt ?? Date.now()
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -6267,7 +6300,7 @@ function onHookPayload(payload: Record<string, unknown>): void {
     const matched = turnChat.matchDelivered(payload.prompt)
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
   }
-  const { next, effects } = applyHookEventToTurn(hookTurn, event, Date.now())
+  const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   runHookEffects(effects)
 }
@@ -6289,7 +6322,7 @@ function startHookIntakeIfHolder(): void {
     hookIntake = startHookIntake({
       stateRoot: root,
       projectDir: sessionBinder.projectDirectory,
-      onEvent: (payload) => onHookPayload(payload),
+      onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
       isTurnLive: () => hookTurnLive,
       // Proof a: the prompt carries a message this daemon delivered. Nothing

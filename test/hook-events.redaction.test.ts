@@ -10,7 +10,9 @@
  * pattern oriented, so cutting a 40 character token down to its first 10 characters
  * first leaves a value no rule matches, and the head of a live secret ships as
  * plain text. The straddle case below is the proof, and its mutation (clip
- * before redaction) is the one that turns it red.
+ * before redaction) is the one that turns it red. Stage 7 added the same case
+ * at the OTHER end of the string, where the output keeps its tail: its
+ * mutation is clipping the output before masking it at the mapper's call site.
  */
 
 import { strict as assert } from 'node:assert'
@@ -18,14 +20,52 @@ import { test } from 'node:test'
 
 import {
   TOOL_ARGS_MAX,
+  TOOL_OUTPUT_LINES_MAX,
+  TOOL_OUTPUT_MAX,
+  applyHookEventToTurn,
   clipForWire,
+  emptyTurn,
+  parseHookEvent,
   redactForWire,
   shortenPath,
   shortenPathsInText,
   summarizeToolArgs,
+  type Effect,
 } from '../lib/hook-events.ts'
+import { clipOutputTail } from '../lib/tool-outcome.ts'
 
 const CWD = '/home/karim/work/bgos'
+
+/** The row a Bash call leaves on the card when it printed this. */
+const rowForStdout = (stdout: string) => {
+  const payload = (name: string, extra: Record<string, unknown>) => {
+    const event = parseHookEvent({
+      session_id: 'sess-redact',
+      transcript_path: '/home/kc/.claude/projects/-work/sess-redact.jsonl',
+      cwd: CWD,
+      prompt_id: 'p-1',
+      hook_event_name: name,
+      tool_name: 'Bash',
+      tool_use_id: 'toolu_redact',
+      tool_input: { command: 'run the thing' },
+      ...extra,
+    })
+    assert.ok(event, 'the payload should parse')
+    return event
+  }
+  const opened = applyHookEventToTurn(emptyTurn(), payload('PreToolUse', {}), 1_000)
+  const closed = applyHookEventToTurn(
+    opened.next,
+    payload('PostToolUse', {
+      duration_ms: 7,
+      tool_response: { stdout, stderr: '', interrupted: false, isImage: false },
+    }),
+    1_100,
+  )
+  const card = closed.effects.find((e: Effect) => e.kind === 'tool_card')
+  assert.ok(card && card.kind === 'tool_card', 'expected a tool_card effect')
+  return card.tools[0]!
+}
 
 test('a Bash command carrying real secrets ships with each one masked by rule', () => {
   const command = [
@@ -84,6 +124,31 @@ test('REDACT THEN CLIP: a secret straddling the 120 character cut is still maske
   const clippedFirst = redactForWire(clipForWire(command, TOOL_ARGS_MAX))
   assert.ok(
     clippedFirst.includes(head),
+    'this fixture only proves the rule if the wrong order really does leak',
+  )
+})
+
+test('REDACT THEN CLIP: a secret at the 2048 character output boundary is still masked', () => {
+  // The same defect as the 120 character case above, at the other end of the
+  // string: the output keeps its TAIL, so a token that starts just before the
+  // cut would ship its LAST characters in the clear if the clip ran first.
+  const token = `ZZtok${'b'.repeat(35)}`
+  const tail = token.slice(-19)
+  const stdout = `curl -H "Authorization: Bearer ${token}" ${'x'.repeat(2027)}`
+  assert.equal(stdout.length, 2100)
+  const cut = stdout.length - TOOL_OUTPUT_MAX
+  assert.ok(cut > stdout.indexOf(token), 'the fixture must start the token before the cut')
+  assert.ok(cut < stdout.indexOf(token) + token.length, 'and end it after the cut')
+
+  const output = rowForStdout(stdout).output ?? ''
+  assert.ok(output.length <= TOOL_OUTPUT_MAX)
+  assert.ok(!output.includes(tail), 'the live tail of the token reached the wire')
+  assert.ok(output.includes('bearer_token]'), 'what is left of the mask says what was there')
+
+  // The wrong order, spelled out: clipping first hides the token from the scan.
+  const clippedFirst = redactForWire(clipOutputTail(stdout, TOOL_OUTPUT_MAX, TOOL_OUTPUT_LINES_MAX))
+  assert.ok(
+    clippedFirst.includes(tail),
     'this fixture only proves the rule if the wrong order really does leak',
   )
 })

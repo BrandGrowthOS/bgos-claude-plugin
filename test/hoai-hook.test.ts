@@ -9,6 +9,12 @@
  *   3. never grow the spool without bound
  *   4. never throw, whatever arrives on stdin
  *
+ * Stage 7 inverted one of them: the tool response is now read by the mapper,
+ * so an oversized payload REDUCES it instead of dropping it. Mutations the two
+ * new cases are proven against:
+ *   - keep tool_response whole, with no reducer -> the Write case goes red
+ *   - keep the HEAD of a reduced response       -> the tail case goes red
+ *
  * Run: npx tsx --test test/hoai-hook.test.ts
  */
 
@@ -20,6 +26,7 @@ import { Readable } from 'node:stream'
 import {
   KEPT_PAYLOAD_KEYS,
   PAYLOAD_MAX_BYTES,
+  REDUCED_OUTPUT_MAX,
   SPOOL_MAX_BYTES,
   SPOOL_ROTATED_NAME,
   appendEvent,
@@ -29,6 +36,7 @@ import {
   nextLineId,
   parseStdinPayload,
   readStdin,
+  reduceToolResponse,
   rotateIfFull,
   safeSessionKey,
   spoolPath,
@@ -230,6 +238,13 @@ test('an oversized payload is reduced to the fields the mapper reads, and nothin
   const huge = payloadOf({
     tool_name: 'Write',
     tool_input: { file_path: '/work/big.ts', content: 'A'.repeat(PAYLOAD_MAX_BYTES + 10) },
+    tool_response: {
+      type: 'create',
+      filePath: '/work/big.ts',
+      content: 'A'.repeat(PAYLOAD_MAX_BYTES + 10),
+      structuredPatch: [],
+      originalFile: null,
+    },
   })
   const clipped = clipPayload(huge) as Record<string, any>
   assert.equal(clipped.hoai_clipped, true)
@@ -238,6 +253,10 @@ test('an oversized payload is reduced to the fields the mapper reads, and nothin
   assert.equal(clipped.tool_use_id, 'tu-1')
   assert.ok(clipped.tool_input.content.length < 300, 'the file body does not reach the spool')
   assert.equal(clipped.tool_input.file_path, '/work/big.ts')
+  // Stage 7 INVERTS the old rule: the tool response is now read, so it survives
+  // the clip, reduced. What must not survive is the file body inside it.
+  assert.deepEqual(clipped.tool_response.content, { lines: 1 }, 'the body becomes its line count')
+  assert.equal(clipped.tool_response.structuredPatch, undefined, 'an empty patch says nothing')
   assert.ok(
     Buffer.byteLength(JSON.stringify(clipped), 'utf8') < PAYLOAD_MAX_BYTES,
     'the reduced payload is under the cap',
@@ -256,6 +275,81 @@ test('an oversized payload is reduced to the fields the mapper reads, and nothin
 test('a payload under the cap passes through byte for byte', () => {
   const small = payloadOf()
   assert.equal(clipPayload(small), small, 'the same object, not a rebuilt copy')
+})
+
+test('an oversized Write payload keeps a reduced tool_response with its diff counts', () => {
+  const body = 'A'.repeat(PAYLOAD_MAX_BYTES + 10)
+  const huge = payloadOf({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Write',
+    tool_input: { file_path: '/work/big.ts', content: body },
+    tool_response: {
+      type: 'update',
+      filePath: '/work/big.ts',
+      content: body,
+      originalFile: body,
+      userModified: false,
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 3,
+          lines: [' one', '-two', '+TWO', '+three', '\\ No newline at end of file'],
+        },
+      ],
+    },
+  })
+  const clipped = clipPayload(huge) as Record<string, any>
+
+  assert.deepEqual(
+    clipped.tool_response.structuredPatch,
+    { linesAdded: 2, linesRemoved: 1 },
+    'the hunks become the two counts the row draws',
+  )
+  assert.deepEqual(clipped.tool_response.content, { lines: 1 }, 'and the body becomes one number')
+  assert.equal(clipped.tool_response.originalFile, undefined, 'the OTHER side of the change goes too')
+  assert.ok(
+    !JSON.stringify(clipped).includes('A'.repeat(500)),
+    'a megabyte of file body must never reach the spool',
+  )
+  assert.ok(Buffer.byteLength(JSON.stringify(clipped), 'utf8') < PAYLOAD_MAX_BYTES)
+})
+
+test('a reduced tool_response keeps the TAIL of what the command printed', () => {
+  const noisy = payloadOf({
+    hook_event_name: 'PostToolUse',
+    tool_response: {
+      stdout: `HEAD${'x'.repeat(PAYLOAD_MAX_BYTES)}TAIL`,
+      stderr: `ERRHEAD${'y'.repeat(PAYLOAD_MAX_BYTES)}ERRTAIL`,
+      interrupted: false,
+      returnCodeInterpretation: 'No matches found',
+    },
+  })
+  const response = (clipPayload(noisy) as Record<string, any>).tool_response
+  assert.equal(response.stdout.length, REDUCED_OUTPUT_MAX)
+  assert.ok(response.stdout.endsWith('TAIL'), 'the end of the output is what the owner reads')
+  assert.ok(!response.stdout.includes('HEAD'))
+  assert.ok(response.stderr.endsWith('ERRTAIL'))
+  assert.equal(response.interrupted, false)
+  assert.equal(response.returnCodeInterpretation, 'No matches found')
+
+  const failure = payloadOf({
+    hook_event_name: 'PostToolUseFailure',
+    tool_response: `Exit code 2\nHEAD${'z'.repeat(PAYLOAD_MAX_BYTES)}TAIL`,
+    error: 'Exit code 2',
+    is_interrupt: false,
+  })
+  const clipped = clipPayload(failure) as Record<string, any>
+  assert.ok(
+    clipped.tool_response.startsWith('Exit code 2\n'),
+    'the first line carries the code, so it is the one line that cannot be cut',
+  )
+  assert.ok(clipped.tool_response.endsWith('TAIL'))
+  assert.equal(clipped.tool_response.length, 'Exit code 2\n'.length + REDUCED_OUTPUT_MAX)
+  assert.equal(clipped.error, 'Exit code 2')
+  assert.equal(clipped.is_interrupt, false, 'one boolean, read the same on both paths')
+  assert.equal(reduceToolResponse('short'), 'short', 'a small string is itself')
 })
 
 test('buildSpoolLine is a single line: an embedded newline can never split a record', () => {

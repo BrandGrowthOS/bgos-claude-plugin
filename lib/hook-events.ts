@@ -35,6 +35,14 @@
  */
 
 import { scanText } from './secret-scan.ts'
+import {
+  clipCardOutput,
+  clipOutputTail,
+  editCountsFor,
+  exitCodeFor,
+  interpretationFor,
+  outputFor,
+} from './tool-outcome.ts'
 
 // ── Limits (the backend DTOs own these numbers) ──────────────────────────────
 
@@ -48,6 +56,17 @@ export const STEPS_MAX_TEXT = 200
 export const MARKER_WHAT_MAX = 80
 export const MARKER_REASON_MAX = 60
 export const MARKER_TOKENS_MAX = 16
+
+/**
+ * `output` is the only field in this file measured in kilobytes, and the whole
+ * tools array rides EVERY PATCH (one per 600 ms while a turn is live) and every
+ * WS frame to every viewer of a shared agent. So the per card budget matters
+ * more than the per row cap: at most 8192 characters of output on a card, spent
+ * newest first, on top of 2048 characters and 200 lines per row.
+ */
+export const TOOL_OUTPUT_MAX = 2048
+export const TOOL_OUTPUT_LINES_MAX = 200
+export const CARD_OUTPUT_BUDGET = 8192
 
 /** A second compaction inside this window is the same compaction, seen from
  *  another hook (PreCompact, then PostCompact, then SessionStart source
@@ -121,6 +140,15 @@ export interface ToolRow {
   pathCount?: number
   detail?: string
   durationMs?: number
+  /** The TAIL of what a command printed: stdout, then, only when stderr is not
+   *  empty, a line reading exactly `stderr:` and the stderr. One field, masked
+   *  before it is clipped, and never a second one (stage 7). */
+  output?: string
+  /** Minus one to 255. Absent when the runtime reported none, which is not the
+   *  same as zero: a grep that found nothing reports no code at all. */
+  exitCode?: number
+  linesAdded?: number
+  linesRemoved?: number
 }
 
 export type StepStatus = 'pending' | 'running' | 'done' | 'waiting'
@@ -163,7 +191,22 @@ export function emptyTurn(): TurnState {
 export type MarkerKind = 'context_compacted' | 'turn_continues'
 
 export type Effect =
-  | { kind: 'tool_card'; state: 'running' | 'done'; tools: ToolRow[]; text: string }
+  /**
+   * `startedAt` and `finishedAt` are epoch milliseconds and are the TURN's own
+   * clock, taken from the receipt the hook process stamped (stage 7). They are
+   * the only source of the minutes the card shows: nothing anywhere works them
+   * out from when a message was created. `startedAt` rides every card once the
+   * turn has opened; `finishedAt` exists only on the card a Stop or a
+   * SessionEnd settles, because that is the only moment a turn is over.
+   */
+  | {
+      kind: 'tool_card'
+      state: 'running' | 'done'
+      tools: ToolRow[]
+      text: string
+      startedAt?: number
+      finishedAt?: number
+    }
   | { kind: 'steps'; turnId: string | null; steps: StepRow[] }
   | {
       kind: 'marker'
@@ -261,6 +304,23 @@ export function isSkippedTool(name: string): boolean {
 
 export function isTaskTool(name: string): boolean {
   return (TASK_TOOLS as readonly string[]).includes(baseToolName(name))
+}
+
+/** The tools that RUN something: a row of theirs can carry what it printed and
+ *  an exit code. PowerShell is the Windows agent's shell and its result shape
+ *  is Bash's, so leaving it out would give a Windows owner empty rows. */
+export const SHELL_TOOLS = ['Bash', 'PowerShell'] as const
+
+/** The tools that CHANGE a file: a row of theirs can carry its plus and minus
+ *  counts. Nothing else derives either pair, so a Read draws as it always did. */
+export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const
+
+export function isShellTool(name: string): boolean {
+  return (SHELL_TOOLS as readonly string[]).includes(baseToolName(name))
+}
+
+export function isEditTool(name: string): boolean {
+  return (EDIT_TOOLS as readonly string[]).includes(baseToolName(name))
 }
 
 /** The subagent tool: one row per handoff, named by the subagent type. */
@@ -664,9 +724,23 @@ const cloneTurn = (state: TurnState): TurnState => ({
 const rowsOf = (state: TurnState): ToolRow[] =>
   state.toolOrder.map((key) => state.tools.get(key)).filter((r): r is ToolRow => r !== undefined)
 
-const cardEffect = (state: TurnState, done: boolean): Effect => {
-  const tools = clipToolRows(rowsOf(state))
-  return { kind: 'tool_card', state: done ? 'done' : 'running', tools, text: buildCardText(tools, done) }
+/**
+ * One card state, with the turn's own clock on it.
+ *
+ * `finishedAt` is a PARAMETER and not a field of the turn, because only the
+ * caller knows whether the turn is actually over: a closed ROW is not a closed
+ * TURN, and the only two moments that end one are Stop and SessionEnd.
+ */
+const cardEffect = (state: TurnState, done: boolean, finishedAt?: number): Effect => {
+  const tools = clipCardOutput(clipToolRows(rowsOf(state)), CARD_OUTPUT_BUDGET)
+  return {
+    kind: 'tool_card',
+    state: done ? 'done' : 'running',
+    tools,
+    text: buildCardText(tools, done),
+    ...(state.startedAt > 0 ? { startedAt: state.startedAt } : {}),
+    ...(typeof finishedAt === 'number' && finishedAt > 0 ? { finishedAt } : {}),
+  }
 }
 
 const rowKey = (raw: Record<string, unknown>, state: TurnState): string => {
@@ -859,6 +933,11 @@ export function applyHookEventToTurn(
       const name = str(raw.tool_name)
       if (isSkippedTool(name)) return { next, effects }
       if (next.turnId === null && event.promptId) next.turnId = event.promptId
+      // The daemon attached mid turn, so no prompt ever opened it: the first
+      // tool of the turn is the earliest moment the runtime reported. Late by
+      // however long the model thought, and honest, which is the trade the
+      // stage's own rule asks for.
+      if (next.startedAt === 0) next.startedAt = now
       const key = rowKey(raw, next)
       const row = buildRow(raw, event.cwd, 'running')
       if (sameRow(next.tools.get(key), row)) return { next, effects }
@@ -889,6 +968,25 @@ export function applyHookEventToTurn(
       if (typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
         row.durationMs = Math.round(duration)
       }
+      // What the call actually did (stage 7). It lands BEFORE the sameRow
+      // check so the comparison sees the WHOLE row: a row that differs only in
+      // what it printed is a row the card still has to repaint.
+      if (isShellTool(name)) {
+        const interpretation = interpretationFor(raw)
+        if (interpretation) row.detail = clipForWire(redactForWire(interpretation), TOOL_DETAIL_MAX)
+        const printed = outputFor(raw)
+        if (printed) {
+          // REDACT BEFORE YOU CLIP (header rule 2), then the TAIL.
+          const tail = clipOutputTail(redactForWire(printed), TOOL_OUTPUT_MAX, TOOL_OUTPUT_LINES_MAX)
+          if (tail) row.output = tail
+        }
+        const code = exitCodeFor(raw)
+        if (code !== null) row.exitCode = code
+      } else if (isEditTool(name)) {
+        const { linesAdded, linesRemoved } = editCountsFor(raw)
+        if (typeof linesAdded === 'number') row.linesAdded = linesAdded
+        if (typeof linesRemoved === 'number') row.linesRemoved = linesRemoved
+      }
       if (sameRow(previous, row)) return { next, effects }
       if (!previous) next.toolOrder.push(key)
       next.tools.set(key, row)
@@ -903,7 +1001,8 @@ export function applyHookEventToTurn(
     }
 
     case 'Stop': {
-      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true))
+      // The turn is over HERE, so this is the one card that carries a finish.
+      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true, now))
       if (next.tasks.size > 0) effects.push({ kind: 'steps', turnId: next.turnId, steps: [] })
       const marker = turnContinuesMarker(raw)
       if (marker) effects.push(marker)
@@ -913,15 +1012,21 @@ export function applyHookEventToTurn(
       next.turnId = null
       next.toolOrder = []
       next.tools = new Map()
+      // The clock belongs to the TURN. Leaving it set would hand the next turn
+      // a start from the last one, and a turn the owner pushed from their
+      // phone (no prompt hook of its own) would then report the minutes since
+      // whatever was typed here last.
+      next.startedAt = 0
       return { next, effects }
     }
 
     case 'SessionEnd': {
-      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true))
+      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true, now))
       effects.push({ kind: 'turn_end' })
       next.turnId = null
       next.toolOrder = []
       next.tools = new Map()
+      next.startedAt = 0
       return { next, effects }
     }
 
