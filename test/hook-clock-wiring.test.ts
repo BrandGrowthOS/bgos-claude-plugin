@@ -14,7 +14,7 @@
  * Mutations these tests are proven against (task C2):
  *   - onEvent: (payload) => onHookPayload(payload)   -> the SpoolLine case red
  *   - applyHookEventToTurn(..., Date.now())          -> the receipt case red
- *   - read pending after endHookTurn()               -> the final card case red
+ *   - read pending after endHookTurn(keepCard)       -> the final card case red
  *   - build the final body without the shared builder -> the one builder case red
  *   - drop startedAt from the pending assignment      -> the carry case goes red
  */
@@ -63,10 +63,12 @@ test('the turn machine is driven by the hook receipt, never by the drain clock',
 })
 
 test('the final card is read out of the pending state before the turn end clears it', () => {
-  const body = functionBody('async function finishHookTurn(): Promise<void> {')
+  const body = functionBody('async function finishHookTurn(')
   const capture = body.indexOf('const pending = hookCardPending')
   // The CALL on its own line, not a mention of the name inside a comment.
-  const clear = body.search(/\n\s*endHookTurn\(\)\n/)
+  // The CALL, whatever it is handed: stage 8 gave it the keep flag, which is
+  // the mapper's answer to "is a child agent still working".
+  const clear = body.search(/\n\s*endHookTurn\([^)]*\)\n/)
   assert.ok(capture >= 0, 'finishHookTurn no longer captures the pending card')
   assert.ok(clear >= 0, 'finishHookTurn no longer clears the turn')
   assert.ok(

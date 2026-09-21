@@ -68,10 +68,20 @@ test('the declared event set is exactly the set the mapper handles', () => {
 
 test('the registered set is deliberate: no event fires that nothing reads', () => {
   // Registering an event that never fired in the gate (PermissionRequest,
-  // Notification, SubagentStart, SubagentStop) costs a process per occurrence
-  // for nothing. Adding one must be an edit here, not a drive by.
+  // Notification, SubagentStart) costs a process per occurrence for nothing.
+  // Adding one must be an edit here, not a drive by.
+  //
+  // Stage 8 registers SubagentStop and ONLY SubagentStop, and the two are not
+  // a pair. A SubagentStop carries the child's agent_id and its last message,
+  // which is what closes a helper row and gives it its result. A SubagentStart
+  // carries no description, so it can name nothing, and no tool_use_id, so it
+  // can be joined to nothing; it also fires BEFORE the launch response that
+  // first says which agent id belongs to which row, so it cannot even seed the
+  // index. Registering it would cost one process per child launch to read a
+  // payload nothing can use.
+  assert.ok('SubagentStop' in manifest.hooks, 'a helper row closes on this event')
   for (const unregistered of ['PermissionRequest', 'Notification', 'SubagentStart',
-    'SubagentStop', 'PostToolBatch', 'StopFailure', 'TaskCreated', 'TaskCompleted']) {
+    'PostToolBatch', 'StopFailure', 'TaskCreated', 'TaskCompleted']) {
     assert.ok(
       !(unregistered in manifest.hooks),
       `${unregistered} is not part of this release; stage 8 has its own gate`,

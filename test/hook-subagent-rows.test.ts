@@ -1,0 +1,436 @@
+/**
+ * A turn's helpers: the child agents an agent spawns, as rows on its own card
+ * (stage 8 of the BGOS Mission program, task C1).
+ *
+ * Every payload below is REAL. They come out of the stage 8 feasibility gate,
+ * one live interactive turn on 2026-09-21 that spawned two general purpose
+ * subagents in parallel, and they are copied into
+ * test/fixtures/stage8-hooks.jsonl with the scratchpad paths scrubbed. Four of
+ * them (the two SubagentStart payloads and the two Agent launch responses)
+ * survived only in the raw driver log, because they interleaved with a
+ * concurrent write and did not parse into the probe's own table; they are in
+ * the fixture too, in the order the wire really had them. Invented payload
+ * shapes are how a mapper ends up passing its tests and reading nothing in the
+ * field, which is test/hook-events.test.ts's own standing rule.
+ *
+ * Mutations these tests are proven against (task C1):
+ *   - close the row on the launch response   -> the still running case goes red
+ *   - write the launch's 5 ms duration_ms    -> the same case goes red
+ *   - branch the launch detection on the tool name -> the plain response case red
+ *   - drop the child's ordinary tool rows    -> the "still draws its own row" case red
+ *   - act on every SubagentStop              -> the suggestion generator case red
+ *   - let a child's task tool reach Steps     -> the parent's Steps case goes red
+ *   - read the task notification's duration  -> the receipt difference case red
+ *   - clear carried on a prompt submit        -> the late stop case goes red
+ *   - drop the running child exemption        -> the 50 row cap case goes red
+ *   - send an over long agent id as the row id -> the wire cap case goes red
+ */
+
+import { strict as assert } from 'node:assert'
+import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
+
+import {
+  TOOL_ROWS_MAX,
+  applyHookEventToTurn,
+  clipToolRows,
+  emptyTurn,
+  parseHookEvent,
+  type Effect,
+  type ToolRow,
+  type TurnState,
+} from '../lib/hook-events.ts'
+
+const PROBE = readFileSync(new URL('./fixtures/stage8-hooks.jsonl', import.meta.url), 'utf8')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line !== '')
+  .map((line) => JSON.parse(line) as { hook: string; payload: Record<string, unknown> })
+
+const pick = (
+  match: (record: { hook: string; payload: Record<string, unknown> }) => boolean,
+  what: string,
+): Record<string, unknown> => {
+  const record = PROBE.find(match)
+  assert.ok(record, `the probe has no ${what}`)
+  return record.payload
+}
+
+const pickAll = (
+  match: (record: { hook: string; payload: Record<string, unknown> }) => boolean,
+): Array<Record<string, unknown>> => PROBE.filter(match).map((record) => record.payload)
+
+/** The two children, by the ids the launch responses minted. */
+const CHILD_A = 'ae89978c2d1dd91df'
+const CHILD_B = 'a4d889afb590641fd'
+
+const agentCall = (child: string) => {
+  const launch = pick(
+    (r) =>
+      r.hook === 'PostToolUse' &&
+      r.payload.tool_name === 'Agent' &&
+      ((r.payload.tool_response as Record<string, unknown>)?.agentId ?? '') === child,
+    `an Agent launch response for ${child}`,
+  )
+  const opened = pick(
+    (r) =>
+      r.hook === 'PreToolUse' &&
+      r.payload.tool_name === 'Agent' &&
+      r.payload.tool_use_id === launch.tool_use_id,
+    `the Agent PreToolUse for ${child}`,
+  )
+  return { opened, launch }
+}
+
+const childTool = (hook: string, child: string) =>
+  pick(
+    (r) => r.hook === hook && r.payload.agent_id === child && r.payload.tool_name === 'Bash',
+    `a ${hook} for ${child}`,
+  )
+
+const stopFor = (child: string) =>
+  pick((r) => r.hook === 'SubagentStop' && r.payload.agent_id === child, `a stop for ${child}`)
+
+/** The composer's suggestion generator: two per turn, agent_type empty, and one
+ *  of them with no last_assistant_message key at all. */
+const SUGGESTION_STOPS = pickAll((r) => r.hook === 'SubagentStop' && r.payload.agent_type === '')
+
+const PARENT_STOP = pick(
+  (r) => r.hook === 'Stop' && r.payload.last_assistant_message === 'Waiting for the agents to complete...',
+  'the parent Stop that waited for its children',
+)
+
+const NOTIFICATION = pick(
+  (r) => r.hook === 'UserPromptSubmit' && String(r.payload.prompt ?? '').includes('<task-notification>'),
+  'a task notification prompt',
+)
+
+const SESSION_END = pick((r) => r.hook === 'SessionEnd', 'a SessionEnd')
+
+const feed = (
+  state: TurnState,
+  raw: Record<string, unknown>,
+  now: number,
+): { next: TurnState; effects: Effect[] } => {
+  const event = parseHookEvent(raw)
+  assert.ok(event, `payload should parse: ${String(raw.hook_event_name)}`)
+  return applyHookEventToTurn(state, event, now)
+}
+
+const cardsOf = (effects: Effect[]): Array<Extract<Effect, { kind: 'tool_card' }>> =>
+  effects.filter((e): e is Extract<Effect, { kind: 'tool_card' }> => e.kind === 'tool_card')
+
+const lastCardOf = (effects: Effect[]): Extract<Effect, { kind: 'tool_card' }> => {
+  const cards = cardsOf(effects)
+  assert.ok(cards.length > 0, 'expected a tool_card effect')
+  return cards[cards.length - 1]!
+}
+
+const helperRow = (rows: ToolRow[]): ToolRow => {
+  const row = rows.find((r) => r.kind === 'subagent')
+  assert.ok(row, 'expected a helper row on the card')
+  return row
+}
+
+/** The prompt, the launch and the launch response: the state every case below
+ *  starts from, with the child's row open and linked to its agent id. */
+const launched = (child: string, openedAt: number, respondedAt: number) => {
+  const call = agentCall(child)
+  const prompt = feed(emptyTurn(), pick((r) => r.hook === 'UserPromptSubmit' && !String(r.payload.prompt ?? '').includes('<task-notification>'), 'the owner prompt'), openedAt - 1)
+  const opened = feed(prompt.next, call.opened, openedAt)
+  const responded = feed(opened.next, call.launch, respondedAt)
+  return { call, opened, responded }
+}
+
+// ── The launch ───────────────────────────────────────────────────────────────
+
+test('the Agent PreToolUse opens a helper row named by the kind of child it is', () => {
+  const { opened } = launched(CHILD_A, 1_000, 1_005)
+  const row = helperRow(lastCardOf(opened.effects).tools)
+  assert.equal(row.kind, 'subagent')
+  assert.equal(row.name, 'general-purpose', 'the row is named by the subagent_type')
+  assert.equal(row.args, 'Run wc -l on hay.txt', 'and the one line description is its args')
+  assert.equal(row.detail, undefined, 'detail is free for the qualifier the child fills in')
+  assert.equal(row.status, 'running')
+  assert.equal(row.startedAt, 1_000, "the row's own start is the receipt of the line that opened it")
+  assert.equal(row.result, undefined)
+})
+
+test('the launch response leaves the row RUNNING and writes no duration', () => {
+  // The real numbers: this response arrived 5 ms after the call, and the child
+  // it started ran for 4612 ms. A mapper that closes the row here reports a
+  // five millisecond helper.
+  const { call, responded } = launched(CHILD_A, 1_000, 1_005)
+  assert.equal(call.launch.duration_ms, 5, 'the fixture must really carry the launch duration')
+  const row = helperRow(lastCardOf(responded.effects).tools)
+  assert.equal(row.status, 'running')
+  assert.equal(row.durationMs, undefined, 'a launch is not a finish')
+  assert.equal(row.id, CHILD_A, "the row takes the child's own id from the response")
+  assert.equal(
+    responded.next.agentRows.get(CHILD_A),
+    call.launch.tool_use_id,
+    'and the link every later child event resolves through is recorded',
+  )
+})
+
+test('an agent id too long for the wire is dropped, and the row is still linked', () => {
+  // The wire caps a row id at 64 characters and the backend refuses the WHOLE
+  // card over a field longer than that, so one strange id would cost the owner
+  // every row on it. Half an identity is no use either, so it is dropped rather
+  // than cut, and the link this daemon resolves through is unaffected.
+  const { call, opened } = launched(CHILD_A, 1_000, 1_005)
+  const long = 'z'.repeat(100)
+  const wide = {
+    ...call.launch,
+    tool_response: { ...(call.launch.tool_response as Record<string, unknown>), agentId: long },
+  }
+  const responded = feed(opened.next, wide, 1_005)
+  assert.equal(cardsOf(responded.effects).length, 0, 'and nothing on the wire changed, so nothing repaints')
+  const row = helperRow([...responded.next.tools.values()])
+  assert.equal(row.id, undefined, 'nothing is sent that the card would be refused for')
+  assert.equal(row.status, 'running')
+  assert.equal(responded.next.agentRows.get(long), call.launch.tool_use_id)
+
+  const stopped = feed(responded.next, { ...stopFor(CHILD_A), agent_id: long }, 9_000)
+  assert.equal(helperRow(lastCardOf(stopped.effects).tools).status, 'done')
+})
+
+test('an Agent response that is NOT an async launch closes its row exactly as before', () => {
+  // The launch is detected off the RESPONSE, never off the tool name: an Agent
+  // call that really did answer is a finished call and must keep the shipped
+  // behaviour. The envelope is the real one; only the response is replaced,
+  // because the gate's turn contained no synchronous Agent call.
+  const { call, opened } = launched(CHILD_A, 1_000, 1_005)
+  const plain = { ...call.launch, tool_response: { content: 'the child answered here' } }
+  const closed = feed(opened.next, plain, 4_000)
+  const row = helperRow(lastCardOf(closed.effects).tools)
+  assert.equal(row.status, 'done')
+  assert.equal(row.durationMs, 5, 'a finished call keeps the duration the runtime reported')
+  assert.equal(row.id, undefined, 'and there is no child to link')
+  assert.equal(closed.next.agentRows.size, 0)
+})
+
+// ── What a child does while it runs ──────────────────────────────────────────
+
+test("a child's own tool still draws its own row, AND names the helper's qualifier", () => {
+  // Both halves matter. The child's rows are what 0.43.0 draws, with the
+  // command, its output and its exit code, and taking them away would be a
+  // visible loss for anyone who delegates heavily.
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const childPre = feed(responded.next, childTool('PreToolUse', CHILD_A), 2_000)
+  const rows = lastCardOf(childPre.effects).tools
+  assert.equal(rows.length, 2, "the child's Bash keeps a row of its own")
+  assert.equal(rows[1]!.name, 'Bash')
+  assert.equal(rows[1]!.kind, undefined, "a child's tool row is an ordinary tool row")
+  assert.equal(rows[1]!.args, 'wc -l hay.txt')
+  assert.equal(helperRow(rows).detail, 'Bash wc -l hay.txt', 'the helper says what it is doing')
+
+  const childPost = feed(childPre.next, childTool('PostToolUse', CHILD_A), 2_300)
+  const after = lastCardOf(childPost.effects).tools
+  assert.equal(after[1]!.status, 'done')
+  assert.equal(after[1]!.output, '3 hay.txt', "and what it printed is still on the child's own row")
+})
+
+test("a child this daemon never saw launched draws its row and touches no helper", () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stranger = feed(responded.next, childTool('PreToolUse', CHILD_B), 2_000)
+  const rows = lastCardOf(stranger.effects).tools
+  assert.equal(rows.length, 2, 'the ordinary row path runs alone, exactly as today')
+  assert.equal(helperRow(rows).detail, undefined, 'and the helper we DO know is untouched')
+})
+
+test("a child's task tools write nothing into the PARENT's Steps", () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const create = {
+    ...childTool('PostToolUse', CHILD_A),
+    tool_name: 'TaskCreate',
+    tool_use_id: 'toolu_child_task',
+    tool_input: { subject: 'the child plans its own work', activeForm: 'planning' },
+    tool_response: { task: { id: 't-1', subject: 'the child plans its own work' } },
+  }
+  const childTask = feed(responded.next, create, 2_000)
+  assert.deepEqual(childTask.effects, [], 'a child planning is not the parent planning')
+  assert.equal(childTask.next.tasks.size, 0)
+
+  // The control: the same call from the PARENT does reach Steps.
+  const parents: Record<string, unknown> = { ...create }
+  delete parents.agent_id
+  const parentTask = feed(responded.next, parents, 2_000)
+  assert.ok(parentTask.effects.some((e) => e.kind === 'steps'))
+  assert.equal(parentTask.next.tasks.size, 1)
+})
+
+// ── The stop ─────────────────────────────────────────────────────────────────
+
+test('the matching SubagentStop closes the row with the receipt difference and a result', () => {
+  // The notification for this child says <duration_ms>4612</duration_ms> and
+  // carries a token count too. Neither is read: the elapsed is the difference
+  // between two of this host's own receipts, and tokens were never promised.
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, stopFor(CHILD_A), 9_000)
+  const row = helperRow(lastCardOf(stopped.effects).tools)
+  assert.equal(row.status, 'done')
+  assert.equal(row.durationMs, 8_000, 'the difference between the two receipts')
+  assert.notEqual(row.durationMs, 4_612, "and not the number the notification quotes")
+  assert.equal(row.result, '3', "the child's last message is the result line")
+  assert.equal(row.detail, undefined, 'the qualifier said what it WAS doing, and it is not any more')
+  assert.ok(!stopped.effects.some((e) => e.kind === 'goal_poll'), "a child's stop is not a verdict")
+})
+
+test('a long last message keeps its HEAD, at 240 characters', () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const long = 'A'.repeat(300) + 'TAIL'
+  const stopped = feed(responded.next, { ...stopFor(CHILD_A), last_assistant_message: long }, 9_000)
+  const result = helperRow(lastCardOf(stopped.effects).tools).result ?? ''
+  assert.ok(result.length <= 240, 'the wire cap is 240')
+  assert.ok(result.startsWith('AAA'), 'an answer is worth reading from the start')
+  assert.ok(!result.includes('TAIL'))
+})
+
+test('the suggestion generator stops, both of them real, produce no effects at all', () => {
+  assert.equal(SUGGESTION_STOPS.length, 2, 'the probe carries both of them')
+  assert.equal(
+    SUGGESTION_STOPS.filter((p) => p.last_assistant_message === undefined).length,
+    1,
+    'and one of them has no last message key at all',
+  )
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  for (const stop of SUGGESTION_STOPS) {
+    const ignored = feed(responded.next, stop, 9_000)
+    assert.deepEqual(ignored.effects, [], `${String(stop.agent_id)} was never launched here`)
+    assert.equal(helperRow([...ignored.next.tools.values()]).status, 'running')
+  }
+})
+
+// ── A child that outlives its parent's turn ──────────────────────────────────
+
+test('a Stop with a live helper keeps the card running and carries it', () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const card = lastCardOf(stopped.effects)
+  assert.equal(card.state, 'running', 'a card folds when it is over, and this one is not')
+  assert.equal(card.finishedAt, undefined)
+
+  const ended = stopped.effects.find((e) => e.kind === 'turn_end')
+  assert.deepEqual(ended, { kind: 'turn_end', keepCard: true })
+
+  assert.ok(stopped.next.carried, 'the card is reachable after the turn ended')
+  assert.equal(stopped.next.carried!.cardKey, card.cardKey)
+  assert.equal(stopped.next.carried!.startedAt, 999, "and it keeps the turn's own start")
+  assert.equal(stopped.next.carried!.agentRows.get(CHILD_A), agentCall(CHILD_A).launch.tool_use_id)
+
+  // The live fields are cleared exactly as they are today: leaving them set is
+  // how a turn inherits the previous turn's start.
+  assert.equal(stopped.next.turnId, null)
+  assert.deepEqual(stopped.next.toolOrder, [])
+  assert.equal(stopped.next.tools.size, 0)
+  assert.equal(stopped.next.agentRows.size, 0)
+  assert.equal(stopped.next.startedAt, 0)
+})
+
+test('a Stop with no live helper settles the card and carries nothing', () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const closed = feed(responded.next, stopFor(CHILD_A), 9_000)
+  const stopped = feed(closed.next, PARENT_STOP, 10_000)
+  const card = lastCardOf(stopped.effects)
+  assert.equal(card.state, 'done')
+  assert.equal(card.finishedAt, 10_000)
+  assert.equal(stopped.next.carried, null)
+  assert.deepEqual(
+    stopped.effects.find((e) => e.kind === 'turn_end'),
+    { kind: 'turn_end', keepCard: false },
+  )
+})
+
+test('a stop AFTER the turn ended patches the same card, with the turn s own clock', () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const late = feed(stopped.next, stopFor(CHILD_A), 20_000)
+  const card = lastCardOf(late.effects)
+  assert.equal(card.cardKey, stopped.next.carried!.cardKey, 'the same message, not a second card')
+  assert.equal(card.startedAt, 999, "the turn's ORIGINAL start, not the time of the stop")
+  assert.equal(card.state, 'done', 'the last helper settled, so now the card is over')
+  assert.equal(card.finishedAt, 20_000)
+  const row = helperRow(card.tools)
+  assert.equal(row.status, 'done')
+  assert.equal(row.durationMs, 19_000)
+  assert.equal(row.result, '3')
+  assert.equal(late.next.carried, null, 'nothing is left to wait for')
+})
+
+test('the prompt a completion notification opens must NOT clear the carried card', () => {
+  // Every finished child is delivered to its parent as a prompt carrying a
+  // <task-notification> block, and a prompt resets the live turn. If it reset
+  // the carried card too, the child's own stop would land on a card that is
+  // about the notification.
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const prompted = feed(stopped.next, NOTIFICATION, 12_000)
+  assert.ok(prompted.next.carried, 'the carried card survives a prompt')
+  assert.deepEqual(prompted.next.carried, stopped.next.carried)
+  assert.equal(prompted.next.turnId, NOTIFICATION.prompt_id, 'and a fresh live turn opens')
+  assert.equal(prompted.next.startedAt, 12_000)
+  assert.equal(prompted.next.tools.size, 0)
+
+  const late = feed(prompted.next, stopFor(CHILD_A), 20_000)
+  assert.equal(lastCardOf(late.effects).cardKey, stopped.next.carried!.cardKey)
+})
+
+test("a child's tool after the turn ended still updates the card it belongs to", () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
+  const carried = cardsOf(working.effects).find((c) => c.cardKey === stopped.next.carried!.cardKey)
+  assert.ok(carried, 'the card the helper is on is the card that repaints')
+  assert.equal(carried!.state, 'running')
+  assert.equal(helperRow(carried!.tools).detail, 'Bash wc -l hay.txt')
+})
+
+test('SessionEnd settles a child that never reported as an error, and clears the carried card', () => {
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const ended = feed(stopped.next, SESSION_END, 30_000)
+  const card = cardsOf(ended.effects).find((c) => c.cardKey === stopped.next.carried!.cardKey)
+  assert.ok(card, 'the carried card settles too, or it ticks forever')
+  assert.equal(card!.state, 'done')
+  const row = helperRow(card!.tools)
+  assert.equal(row.status, 'error')
+  assert.equal(row.result, undefined, 'it never said anything, so there is nothing to show')
+  assert.equal(
+    row.durationMs,
+    undefined,
+    'and no moment to measure to: the child never stopped, the session did',
+  )
+  assert.equal(ended.next.carried, null)
+  assert.deepEqual(
+    ended.effects.find((e) => e.kind === 'turn_end'),
+    { kind: 'turn_end', keepCard: false },
+  )
+})
+
+// ── The 50 row cap ───────────────────────────────────────────────────────────
+
+test('the front drop never takes a helper that is still working', () => {
+  const live: ToolRow = {
+    icon: '🔀',
+    name: 'general-purpose',
+    args: 'Run wc -l on hay.txt',
+    status: 'running',
+    kind: 'subagent',
+    startedAt: 1_000,
+  }
+  const filler = (index: number): ToolRow => ({ icon: '💻', name: `Bash ${index}`, status: 'done' })
+  const rows = [live, ...Array.from({ length: 60 }, (_, i) => filler(i))]
+  const clipped = clipToolRows(rows)
+  assert.equal(clipped.length, TOOL_ROWS_MAX, 'the backend refuses a card with 51 rows')
+  assert.ok(clipped.some((r) => r.kind === 'subagent' && r.status === 'running'), 'the helper stayed')
+  assert.equal(clipped[0]!.name, 'earlier', 'and the drop is still announced')
+  assert.equal(clipped[1]!.kind, 'subagent', 'in the order it happened in')
+  assert.equal(clipped[clipped.length - 1]!.name, 'Bash 59', 'the newest rows are still the tail')
+
+  const settled = clipToolRows([{ ...live, status: 'done' }, ...Array.from({ length: 60 }, (_, i) => filler(i))])
+  assert.ok(
+    !settled.some((r) => r.kind === 'subagent'),
+    'a helper that has already reported is an ordinary old row',
+  )
+})

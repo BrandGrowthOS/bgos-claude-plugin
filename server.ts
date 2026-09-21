@@ -5925,10 +5925,27 @@ const turnChat = createTurnChatTracker()
 
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
-/** Bumped on every turn end, so a card POST that lands after the turn finished
- *  cannot adopt an id the next turn would then PATCH. */
-let hookTurnToken = 0
-let hookCardId: string | null = null
+/**
+ * How many cards this daemon can still address at once.
+ *
+ * One for the live turn, plus the card of a turn whose child agent outlived
+ * it. Bounded for the same reason the intake's dedupe is (lib/hook-intake.ts):
+ * a map that only ever grows is a leak in a process that runs for weeks.
+ * Losing the oldest key means a very late update posts a second card instead
+ * of patching the first, which is the behaviour this stage replaced and not a
+ * failure of anything.
+ */
+const HOOK_CARD_ID_LIMIT = 8
+/**
+ * Which message each card became, keyed on the card's own key.
+ *
+ * This replaced a single id held for a single turn. A child agent that stops
+ * after its parent's turn has ended still has a card to patch, and this key is
+ * what reaches it. It is also the guard: a later turn carries a key of its own
+ * and cannot touch an older entry, which is why nothing else gates the write
+ * back any more.
+ */
+const hookCardIds = new Map<string, string>()
 /** The card state waiting to go out, including the turn's own clock (stage 7).
  *  Epoch milliseconds here; the builder turns them into ISO 8601 at the wire. */
 let hookCardPending: HookCardPending | null = null
@@ -5938,6 +5955,10 @@ let hookCardTimer: ReturnType<typeof setTimeout> | null = null
  *  which is what lets the final update address a card the turn state no longer
  *  remembers. Null when nothing is in flight. */
 let hookCardFlight: Promise<string | null> | null = null
+/** The key of the card that write is about, so the turn end adopts the id it
+ *  mints only when it is the id of the card the turn end is itself sending.
+ *  With more than one card reachable, an id is no longer interchangeable. */
+let hookCardFlightKey: string | null = null
 let hookStepsSnapshot: StepRow[] | null = null
 let hookStepsTurnId: string | null = null
 let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
@@ -6010,9 +6031,31 @@ function hookCardBody(pending: HookCardPending): HookCardWireBody {
 }
 
 /**
+ * Remember which message a card became.
+ *
+ * Insertion ordered and bounded, in the shape of the intake's own dedupe: the
+ * oldest key falls out at the limit. A key written again keeps the place it
+ * already had, because a card that is being updated is the SAME card and its
+ * age is when it was opened.
+ */
+function rememberHookCardId(cardKey: string, id: string): void {
+  hookCardIds.set(cardKey, id)
+  while (hookCardIds.size > HOOK_CARD_ID_LIMIT) {
+    const oldest = hookCardIds.keys().next().value
+    if (oldest === undefined) break
+    hookCardIds.delete(oldest)
+  }
+}
+
+/**
  * One card write. Returns the card's id: the created one for a POST, the same
  * one for a PATCH, so a caller that started the POST can hand the id to the
  * final update even after the turn state has been cleared.
+ *
+ * The chat may be null, and only a POST cares: a PATCH addresses the message
+ * directly and never reads it. That is what lets a child agent that finished
+ * long after its parent's turn still land its result on the card it belongs
+ * to, when the turn's chat record has already been dropped as stale.
  *
  * No assistantId: CreateMessageDto does not declare it, so the backend's
  * whitelist strips it and its unknown-field shadow interceptor logs a line for
@@ -6020,11 +6063,12 @@ function hookCardBody(pending: HookCardPending): HookCardWireBody {
  * assistant is speaking.
  */
 async function writeHookCard(
-  chatId: string,
+  chatId: string | null,
   cardId: string | null,
   card: ReturnType<typeof hookCardBody>,
 ): Promise<string | null> {
   if (cardId === null) {
+    if (chatId === null) return null
     const created = await bgosPost('messages', {
       chatId: Number(chatId),
       sender: 'assistant',
@@ -6044,15 +6088,20 @@ async function flushHookCard(): Promise<void> {
   if (hookCardFlight !== null) return
   const pending = hookCardPending
   if (pending === null) return
+  // Captured BEFORE the first await: a turn_end effect runs in the same
+  // synchronous loop as the final card flush and clears the pending state.
+  const cardKey = pending.cardKey ?? ''
+  const cardId = cardKey === '' ? null : (hookCardIds.get(cardKey) ?? null)
   const chatId = hookChatId()
-  if (chatId === null) {
+  // A POST needs a chat and a PATCH does not, so a card is given up on only
+  // when it can be neither. The turn's chat record is dropped fifteen minutes
+  // after the turn ends, and a child agent that runs longer than that is
+  // exactly the case this lane exists for: bailing on the chat alone would
+  // throw away the update carrying that helper's result.
+  if (chatId === null && cardId === null) {
     hookCardPending = null
     return
   }
-  // Captured BEFORE the first await: a turn_end effect runs in the same
-  // synchronous loop as the final card flush and clears both of these.
-  const cardId = hookCardId
-  const token = hookTurnToken
   hookCardPending = null
   const write = (async (): Promise<string | null> => {
     try {
@@ -6063,11 +6112,16 @@ async function flushHookCard(): Promise<void> {
     }
   })()
   hookCardFlight = write
+  hookCardFlightKey = cardKey === '' ? null : cardKey
   try {
     const id = await write
-    if (id !== null && token === hookTurnToken) hookCardId = id
+    // Nothing gates this any more. The old guard refused a write back once the
+    // turn had ended, which is precisely when a card left behind for a working
+    // child learns the id it will be patched by.
+    if (id !== null && cardKey !== '') rememberHookCardId(cardKey, id)
   } finally {
     hookCardFlight = null
+    hookCardFlightKey = null
     if (hookCardPending !== null) scheduleHookCard()
   }
 }
@@ -6168,37 +6222,60 @@ async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Prom
  * this one waits for the network would have its own fresh card state cleared
  * out from under it when the wait finally returned.
  */
-async function finishHookTurn(): Promise<void> {
+async function finishHookTurn(keepCard: boolean): Promise<void> {
   // Everything the last update needs, captured before anything is cleared.
   // The turn's summary fields (its start and its finish) ride on `pending`,
   // which the clear below nulls, so this line is what puts them on the wire.
   const pending = hookCardPending
   const chatId = hookChatId()
   const flight = hookCardFlight
-  let cardId = hookCardId
-  endHookTurn()
+  const flightKey = hookCardFlightKey
+  const cardKey = pending?.cardKey ?? null
+  let cardId = cardKey === null ? null : (hookCardIds.get(cardKey) ?? null)
+  endHookTurn(keepCard)
   if (flight !== null) {
     try {
       // The write already on the wire must land first: it is what mints the
-      // card id, and an older list must not overwrite the final one.
+      // card id, and an older list must not overwrite the final one. Only when
+      // it is about THIS card, though: with a card left behind by an earlier
+      // turn also reachable, an id is no longer interchangeable, and adopting
+      // another card's would patch this turn's rows onto that message.
       const id = await flight
-      if (id !== null) cardId = id
+      if (id !== null && flightKey === cardKey) cardId = id
     } catch {
       /* the flush logs its own failure; the final card still goes out */
     }
   }
-  if (pending === null || chatId === null) return
+  if (pending === null) return
+  if (chatId === null && cardId === null) return
   try {
-    await writeHookCard(chatId, cardId, hookCardBody(pending))
+    const id = await writeHookCard(chatId, cardId, hookCardBody(pending))
+    // A card kept for a working child has to be findable again, and this write
+    // is often the POST that mints its id: a fast turn can end before the 600
+    // ms coalescer ever fired.
+    if (keepCard && cardKey !== null && id !== null) rememberHookCardId(cardKey, id)
   } catch (err) {
     log(`hook rail: final tool card update failed: ${err}`)
   }
 }
 
-function endHookTurn(): void {
-  hookTurnToken += 1
+/**
+ * `keepCard` is the mapper's answer to "is a child agent still working".
+ *
+ * When it is true the card this turn leaves behind must stay addressable, so
+ * no id is forgotten here. When it is false the only card that still needs one
+ * is a card an EARLIER turn left behind, which is the carried card the mapper
+ * is holding; every other entry belonged to the turn that just ended, and a
+ * turn after it carries a key of its own and could never reach them anyway.
+ */
+function endHookTurn(keepCard: boolean): void {
   hookTurnLive = false
-  hookCardId = null
+  if (!keepCard) {
+    const carried = hookTurn.carried?.cardKey ?? null
+    for (const key of [...hookCardIds.keys()]) {
+      if (key !== carried) hookCardIds.delete(key)
+    }
+  }
   hookCardPending = null
   if (hookCardTimer !== null) {
     clearTimeout(hookCardTimer)
@@ -6220,6 +6297,7 @@ function runHookEffects(effects: Effect[]): void {
           state: effect.state,
           tools: effect.tools,
           text: effect.text,
+          cardKey: effect.cardKey,
           startedAt: effect.startedAt,
           finishedAt: effect.finishedAt,
         }
@@ -6230,7 +6308,10 @@ function runHookEffects(effects: Effect[]): void {
           }
           void flushHookCard()
         } else {
-          hookTurnLive = true
+          // A card a turn left behind repainting because its child is working
+          // is NOT the turn coming back to life. Calling that live would hold
+          // the intake at its live cadence for the rest of the session.
+          if (effect.cardKey !== hookTurn.carried?.cardKey) hookTurnLive = true
           scheduleHookCard()
         }
         break
@@ -6262,7 +6343,7 @@ function runHookEffects(effects: Effect[]): void {
         break
       }
       case 'turn_end': {
-        void finishHookTurn()
+        void finishHookTurn(effect.keepCard)
         break
       }
     }
@@ -6324,7 +6405,11 @@ function startHookIntakeIfHolder(): void {
       projectDir: sessionBinder.projectDirectory,
       onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
-      isTurnLive: () => hookTurnLive,
+      // A child agent still working after its parent stopped keeps this true:
+      // its qualifier and its result arrive on the next drain, and the idle
+      // cadence is two seconds on a row whose whole point is that it moves
+      // while the owner watches it.
+      isTurnLive: () => hookTurnLive || hookTurn.carried !== null,
       // Proof a: the prompt carries a message this daemon delivered. Nothing
       // else on the machine could have that text in its prompt.
       provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
@@ -6361,6 +6446,7 @@ function stopHookIntake(): void {
     hookCardTimer = null
   }
   hookCardPending = null
+  hookCardIds.clear()
   stopHookStepsHeartbeat()
 }
 
