@@ -30,6 +30,17 @@ export interface StatusFacts {
   autoUpdateEnrolled: boolean | null
   /** Milliseconds since the last inbound message, or null when none has arrived. */
   lastInboundAgoMs: number | null
+  /**
+   * Who asked (lib/daemon-command-sender.ts decides). The owner gets every fact. Anyone else, a
+   * share recipient, a room member, or a sender the daemon could not identify, gets the two facts
+   * that answer "is this agent up, and which version". The rest describes the owner's machine
+   * (install method, supervisor, update enrolment) and the owner's traffic (the last-message clock
+   * is one clock across every chat this daemon serves), which is not theirs to see.
+   *
+   * Required, not optional with a default: a caller that forgets to say who asked must not get the
+   * owner's answer by accident.
+   */
+  audience: 'owner' | 'non_owner'
 }
 
 /** Human-readable age, kept coarse because precision here would be false precision. */
@@ -53,6 +64,11 @@ export function buildStatusAnswer(facts: StatusFacts): string {
     : `Agent ${facts.assistantId ?? 'unknown'}`
 
   const version = facts.version?.trim() ? `v${facts.version.trim()}` : 'version not reported'
+
+  // A stranger's answer stops here: alive, and which version. See `audience`.
+  if (facts.audience !== 'owner') {
+    return [`**${name}** is connected.`, `${version}.`].join('\n')
+  }
 
   const install =
     facts.installMethod === 'unknown' || !facts.installMethod
