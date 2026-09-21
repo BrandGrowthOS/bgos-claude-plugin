@@ -168,13 +168,13 @@ test('install still refuses a workspace with no .mcp.json, unless the paired top
   // nobody mistakes it for a new failure. A deaf agent is worse than a refused
   // install (2026-08-21).
   assert.ok(
-    /die "no \.mcp\.json in \$workdir and no creds given/.test(code),
+    /local lacking="no \.mcp\.json in \$workdir"/.test(code) && /die "\$lacking and no creds given/.test(code),
     'cmd_install must still die when the workspace has no .mcp.json, no creds, and no proof',
   )
-  const branch = code.slice(code.indexOf('elif [ ! -f "$mcp" ]; then'), code.indexOf('info "using existing $mcp'))
+  const branch = code.slice(code.indexOf('elif [ ! -f "$mcp" ] || [ -n "$foreign_mcp" ]; then'), code.indexOf('info "using existing $mcp'))
   assert.ok(branch.length > 0, 'the no-.mcp.json branch must exist')
   // The die is reached through a FAILED proof, and the channel is assigned from the proof and from nothing else.
-  assert.match(branch, /if ! proven="\$\(prove_paired_topology "\$workdir" "\$ASSISTANT_ID"\)"; then\s*\n\s*die "no \.mcp\.json/)
+  assert.match(branch, /if ! proven="\$\(prove_paired_topology "\$workdir" "\$ASSISTANT_ID"\)"; then[\s\S]{0,260}?die "\$lacking and no creds given/)
   assert.deepEqual(branch.match(/^\s*channel=.*$/gm)?.map((l) => l.trim()), ['channel="$proven"'])
   // The guard must EXIST and come first. Comparing two indexOf results alone passed with the guard
   // deleted, because -1 is lower than anything (a mutation found that).
@@ -205,7 +205,9 @@ test('a workspace that DOES carry a .mcp.json takes exactly the path it always t
   // The ruling that allowed the relaxation above: clone-style folders must
   // behave exactly as they did. The two other arms of the same if are pinned
   // here word for word, and neither may mention the prover.
-  const writes = code.slice(code.indexOf('if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then'), code.indexOf('elif [ ! -f "$mcp" ]; then'))
+  const armEnd = code.indexOf('elif [ ! -f "$mcp" ] || [ -n "$foreign_mcp" ]; then')
+  assert.ok(armEnd > 0, 'the no-server arm must be where it was')
+  const writes = code.slice(code.indexOf('if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then'), armEnd)
   assert.match(writes, /write_mcp_json "\$mcp" "\$backend" "\$API_KEY" "\$USER_ID" "\$ASSISTANT_ID" "\$auto" "\$\{OPENAI_VOICE_KEY:-\}"/)
   assert.doesNotMatch(writes, /prove_paired_topology|proven/)
   const existing = code.slice(code.indexOf('  else\n    info "using existing $mcp'), code.indexOf('  if [ ! -f "$workdir/CLAUDE.md" ]'))
@@ -217,4 +219,21 @@ test('a workspace that DOES carry a .mcp.json takes exactly the path it always t
 test('both supervisors run claude in the workspace, which is what loads that .mcp.json', () => {
   assert.ok(/<key>WorkingDirectory<\/key><string>\$x_wd<\/string>/.test(code), 'launchd plist')
   assert.ok(/^WorkingDirectory=\$workdir$/m.test(code), 'systemd unit')
+})
+
+test('a .mcp.json that belongs to ANOTHER tool only is treated as no .mcp.json, and nothing else is', () => {
+  // Found by review and reproduced with the real installer: such a folder took the
+  // "using existing" arm and launched server:bgos, which nothing in it publishes.
+  // The widening is one flag, set only when the shared reader POSITIVELY says the
+  // file publishes nothing of ours. Any other answer, including the reader failing
+  // to run, leaves the folder on the arm it always had.
+  const start = code.indexOf('mcp_publishes_nothing_of_ours() {')
+  assert.ok(start >= 0)
+  const fn = code.slice(start, code.indexOf('\n}\n', start) + 3)
+  assert.match(fn, /bgos-doctor\.mjs" --workspace-publishes --workdir "\$1"/)
+  assert.match(fn, /\[ "\$out" = "HOAI_WORKSPACE ours=none named=no" \]\n\}\n$/, 'exactly one answer is a yes, and it is the last word of the function')
+  assert.deepEqual(code.match(/foreign_mcp=1/g)?.length, 1, 'set in one place only')
+  assert.match(code, /if \[ -f "\$mcp" \] && \{ \[ -z "\$\{API_KEY:-\}" \] \|\| \[ -z "\$\{USER_ID:-\}" \]; \} && mcp_publishes_nothing_of_ours "\$workdir"; then\s*\n\s*foreign_mcp=1/)
+  // the message must not claim there is no file when there is one
+  assert.match(code, /\[ -n "\$foreign_mcp" \] && lacking="the \.mcp\.json in \$workdir publishes no HOAI server/)
 })

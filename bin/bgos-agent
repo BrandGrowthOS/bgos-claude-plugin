@@ -170,18 +170,28 @@ cmd_install() {
   # --- workspace + .mcp.json ------------------------------------------------
   mkdir -p "$workdir" "$statedir"
   local mcp="$workdir/.mcp.json"
+  # A .mcp.json that belongs to ANOTHER tool only publishes no HOAI server. The old arm launched
+  # server:$MCP_SERVER_NAME there anyway: Connected and deaf (found by review, 2026-09-22). Such a
+  # folder is treated exactly like one with no .mcp.json: a proven paired folder, or a named refusal.
+  # The file itself is never touched. A folder that DOES publish a server of ours is unaffected.
+  local foreign_mcp=""
+  if [ -f "$mcp" ] && { [ -z "${API_KEY:-}" ] || [ -z "${USER_ID:-}" ]; } && mcp_publishes_nothing_of_ours "$workdir"; then
+    foreign_mcp=1
+  fi
   if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then
     [ -f "$mcp" ] && cp "$mcp" "$mcp.bak" && warn "backed up existing .mcp.json → $mcp.bak"
     write_mcp_json "$mcp" "$backend" "$API_KEY" "$USER_ID" "$ASSISTANT_ID" "$auto" "${OPENAI_VOICE_KEY:-}"
     bun -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$mcp" >/dev/null 2>&1 \
       || die "generated .mcp.json is not valid JSON, check your --key/--user/--backend for special characters"
     ok "wrote $mcp"
-  elif [ ! -f "$mcp" ]; then
-    # No .mcp.json and no key. That is only launchable as a PROVEN paired
+  elif [ ! -f "$mcp" ] || [ -n "$foreign_mcp" ]; then
+    # No .mcp.json (or one that publishes no server of ours) and no key. That is only launchable as a PROVEN paired
     # marketplace folder (see "THE SECOND WORLD" at the top of this file).
     local proven
     if ! proven="$(prove_paired_topology "$workdir" "$ASSISTANT_ID")"; then
-      die "no .mcp.json in $workdir and no creds given, and it is not a proven paired folder either: $proven. (A clone-style agent instead needs --key <api-key> --user <user-id>, or --dir <existing-project>.)"
+      local lacking="no .mcp.json in $workdir"
+      [ -n "$foreign_mcp" ] && lacking="the .mcp.json in $workdir publishes no HOAI server (it belongs to another tool)"
+      die "$lacking and no creds given, and it is not a proven paired folder either: $proven. (A clone-style agent instead needs --key <api-key> --user <user-id>, or --dir <existing-project>.)"
     fi
     valid_paired_channel "$proven" || die "paired-topology:unusable-channel the resolver proved '$proven', which is not a marketplace channel spec"
     if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "$proven" ]; then
@@ -270,6 +280,15 @@ prove_paired_topology() { # $1 workdir $2 assistant id
   esac
   printf 'paired-topology:prover-failed the topology check itself did not run: %s' "$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | grep -vE '^(Bun v|Node\.js v)' | tail -n 4 | tr '\n' ' ' || true)"
   return 1
+}
+
+# True ONLY when the workspace .mcp.json is readable and publishes nothing a supervisor could launch
+# on: no entry of ours (a BGOS_ env key) and no entry named $MCP_SERVER_NAME. Anything else, including
+# the check failing to run, is false, so a folder that carries a .mcp.json keeps the arm it always had.
+mcp_publishes_nothing_of_ours() { # $1 workdir
+  local out
+  out="$(bun "$PLUGIN_DIR/bin/bgos-doctor.mjs" --workspace-publishes --workdir "$1" 2>/dev/null | grep -E '^HOAI_WORKSPACE ' | tail -n 1 || true)"
+  [ "$out" = "HOAI_WORKSPACE ours=none named=no" ]
 }
 
 # --- file generators ---------------------------------------------------------

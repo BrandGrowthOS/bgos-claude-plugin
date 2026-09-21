@@ -174,6 +174,7 @@ test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always
   assert.ok(spawnLine(m, '901').endsWith(`--dangerously-load-development-channels "${CLONE_CHANNEL_SPEC}"`), spawnLine(m, '901'))
   assert.equal(readFileSync(join(workspace, '.mcp.json'), 'utf8'), mcp, 'byte for byte')
   assert.doesNotMatch(callsOf(m), /prove-paired-topology/, 'the prover must not run at all for a folder that publishes its own server')
+  assert.match(callsOf(m), /--workspace-publishes --workdir .*901-workspace/, 'the file is READ (one line, nothing written), which is how a foreign .mcp.json is told apart')
   assert.equal(existsSync(join(m.home, '.bgos-agent', '901', 'installed-at')), false, 'no stamp either: a clone-style install leaves exactly what it always left')
 })
 
@@ -285,4 +286,56 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
     assert.deepEqual(m.serviceFiles(), [], `${c.name}: no service file may be written`)
     assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m, `${c.name}: the service manager must never be called`)
   }
+})
+
+const FOREIGN_MCP = JSON.stringify({ mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@latest'] } } }, null, 2)
+
+test('a .mcp.json that belongs to ANOTHER tool only no longer gets a deaf server:bgos agent: proven paired, it launches on the marketplace channel', SLOW, () => {
+  if (!ready) return requireTools()
+  // Reproduced by review with the real installer before this change: exit 0,
+  // "using existing .mcp.json", spawn line ending "server:bgos", in a folder where
+  // nothing publishes bgos. Connected and deaf, held up by launchd forever.
+  const m = machine()
+  const workspace = pair(m, '940')
+  writeFileSync(join(workspace, '.mcp.json'), FOREIGN_MCP)
+  const result = m.run(['--assistant', '940', '--dir', workspace, '--always-on'])
+  assert.equal(result.status, 0, result.out)
+  assert.doesNotMatch(result.out, /using existing/)
+  assert.ok(spawnLine(m, '940').endsWith(`--dangerously-load-development-channels "${MARKETPLACE_CHANNEL_SPEC}"`), spawnLine(m, '940'))
+  assert.equal(readFileSync(join(workspace, '.mcp.json'), 'utf8'), FOREIGN_MCP, 'the other tool keeps its file, byte for byte')
+})
+
+test('the same foreign .mcp.json in a folder that is NOT a proven paired folder is refused by name, and the message does not claim the file is missing', SLOW, () => {
+  if (!ready) return requireTools()
+  const m = machine()
+  const workspace = pair(m, '941', { pin: '', creds: false })
+  writeFileSync(join(workspace, '.mcp.json'), FOREIGN_MCP)
+  const result = m.run(['--assistant', '941', '--dir', workspace, '--always-on'])
+  assert.equal(result.status, 1, result.out)
+  assert.match(result.out, /the \.mcp\.json in .*941-workspace publishes no HOAI server \(it belongs to another tool\) and no creds given/)
+  assert.match(result.out, /paired-topology:no-folder-pin/)
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '941', 'run.expect')), false)
+  assert.deepEqual(m.serviceFiles(), [])
+  assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m)
+})
+
+test('every folder that DOES publish something server:bgos can launch keeps the old arm: a hand written bgos entry, and a reader that could not run', SLOW, () => {
+  if (!ready) return requireTools()
+  // (a) an entry CALLED bgos with no env block: not "ours" by the BGOS_ rule, still what server:bgos launches
+  const handWritten = machine()
+  const wsA = pair(handWritten, '942')
+  writeFileSync(join(wsA, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['wrapper.mjs'] } } }))
+  const a = handWritten.run(['--assistant', '942', '--dir', wsA, '--always-on'])
+  assert.equal(a.status, 0, a.out)
+  assert.match(a.out, /using existing/)
+  assert.ok(spawnLine(handWritten, '942').endsWith(`"${CLONE_CHANNEL_SPEC}"`))
+  // (b) the reader itself broken: FAIL OPEN to the arm the folder always had, never to a refusal
+  const broken = machine()
+  const wsB = pair(broken, '943')
+  writeFileSync(join(wsB, '.mcp.json'), FOREIGN_MCP)
+  writeFileSync(join(broken.pluginRoot, 'bin', 'bgos-doctor.mjs'), 'throw new Error("the doctor could not even load")\n')
+  const b = broken.run(['--assistant', '943', '--dir', wsB, '--always-on'])
+  assert.equal(b.status, 0, b.out)
+  assert.match(b.out, /using existing/)
+  assert.ok(spawnLine(broken, '943').endsWith(`"${CLONE_CHANNEL_SPEC}"`))
 })

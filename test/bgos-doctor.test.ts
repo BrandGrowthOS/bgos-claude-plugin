@@ -64,6 +64,8 @@ import {
   ancestorDirs,
   resolveLaunchFolder,
   provePairedTopology,
+  workspacePublishes,
+  workspacePublishesLine,
   pairedTopologyLine,
   supervisedEnv,
   PAIRED_TOPOLOGY_REASONS,
@@ -1877,4 +1879,38 @@ test('provePairedTopology: an installer running from a marketplace install under
   assert.equal(verdict.reason, PAIRED_TOPOLOGY_REASONS.PLUGIN_NOT_INSTALLED)
   assert.match(verdict.detail, /installed for this shell \(\/custom\) but not where the background agent will look/)
   assert.equal(seenEnvs.length, 2, 'asked once as the service will run, once as the installing shell sees it')
+})
+
+
+// -- what a folder's .mcp.json publishes (2026-09-22) --
+const mcpOf = (servers: Record<string, unknown>) => JSON.stringify({ mcpServers: servers })
+const publishes = (raw: string | null) => workspacePublishes({ workdir: '/w', readFile: (p: string) => (p === join('/w', '.mcp.json') ? raw : null) })
+
+test('workspacePublishes: a server of OURS is one whose env carries a BGOS_ key, whatever it is called', () => {
+  assert.deepEqual(publishes(mcpOf({ bgos: { command: 'bun', env: { BGOS_BACKEND_URL: 'x' } } })), { ours: 'bgos', named: 'yes' })
+  assert.deepEqual(publishes(mcpOf({ atlas: { command: 'bun', env: { BGOS_ASSISTANT_ID: '5' } } })), { ours: 'atlas', named: 'no' })
+  assert.deepEqual(publishes(mcpOf({ a: { command: 'bun', env: { BGOS_X: '1' } }, b: { command: 'bun', env: { BGOS_Y: '1' } } })), { ours: 'conflict', named: 'no' })
+})
+
+test('workspacePublishes: a .mcp.json that belongs to another tool only publishes NOTHING of ours, and only that answers none and no', () => {
+  assert.deepEqual(publishes(mcpOf({ playwright: { command: 'npx', args: ['@playwright/mcp'] }, context7: { command: 'npx', env: { API: 'k' } } })), { ours: 'none', named: 'no' })
+  assert.deepEqual(publishes(mcpOf({})), { ours: 'none', named: 'no' })
+  // A hand written entry CALLED bgos with no env block is still what server:bgos launches: not foreign.
+  assert.deepEqual(publishes(mcpOf({ bgos: { command: 'bun', args: ['wrapper.mjs'] } })), { ours: 'none', named: 'yes' })
+})
+
+test('workspacePublishes: a file that is absent or unreadable is UNKNOWN, never "publishes nothing", and the line is one line', () => {
+  assert.deepEqual(publishes(null), { ours: 'unknown', named: 'unknown' })
+  assert.deepEqual(publishes('{ not json'), { ours: 'unknown', named: 'unknown' })
+  assert.equal(workspacePublishesLine({ ours: 'none', named: 'no' }), 'HOAI_WORKSPACE ours=none named=no')
+  assert.equal(workspacePublishesLine(publishes(null)), 'HOAI_WORKSPACE ours=unknown named=unknown')
+})
+
+test('bgos-doctor --workspace-publishes prints that one line and nothing of the doctor runs', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-publishes-'))
+  writeFileSync(join(dir, '.mcp.json'), mcpOf({ playwright: { command: 'npx' } }))
+  const lines: string[] = []
+  const code = await doctorMain(['--workspace-publishes', '--workdir', dir], { env: {}, home: dir, print: (l: string) => lines.push(l) })
+  assert.equal(code, 0)
+  assert.deepEqual(lines, ['HOAI_WORKSPACE ours=none named=no'])
 })

@@ -65,6 +65,7 @@ import {
 } from './hoai-core.mjs'
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
 import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import { mcpServerEntries, parseMcpChannelServerName } from '../lib/service-supervision.mjs'
 import {
   resolveReadCredentialsPath,
   normalizeApiBase,
@@ -1146,6 +1147,50 @@ export async function provePairedTopology({
   return { ok: true, channel: spec, reason: '', detail: `folder pin ${id}, credentials ${credsPath}, route ${spec}` }
 }
 
+/**
+ * What does <workdir>/.mcp.json publish that a supervisor could launch on?
+ *
+ * `hoai-agent install` takes its old arm ("using existing .mcp.json", channel
+ * server:bgos) for any folder that HAS the file. But a .mcp.json that belongs
+ * to another tool only (playwright, context7) publishes no HOAI server at all,
+ * and launching server:bgos there is the 2026-08-21 signature again: the
+ * marketplace plugin still loads, the app says Connected, nothing is delivered.
+ * Found by review, reproduced with the real installer.
+ *
+ * Two readings, both by lib/service-supervision.mjs, the readers the launcher's
+ * own resolver uses:
+ *   ours   the entry whose env carries a BGOS_ key (parseMcpChannelServerName):
+ *          a name, 'none', or 'conflict'
+ *   named  whether ANY entry is named `serverName` (bgos). A hand-written entry
+ *          called bgos with no env block is still a server that server:bgos
+ *          launches, so it keeps the old arm too.
+ * Only ours=none AND named=no means the folder publishes nothing of ours. An
+ * unreadable or absent file says 'unknown', and the caller keeps today's arm.
+ * @param {{ workdir: string, serverName?: string, readFile?: (path: string) => string | null }} opts
+ * @returns {{ ours: string, named: 'yes' | 'no' | 'unknown' }}
+ */
+export function workspacePublishes({ workdir, serverName = 'bgos', readFile = defaultReadText } = {}) {
+  const raw = readFile(join(String(workdir ?? ''), '.mcp.json'))
+  if (raw == null) return { ours: 'unknown', named: 'unknown' }
+  let entries
+  try {
+    JSON.parse(raw)
+    entries = mcpServerEntries(raw)
+  } catch {
+    return { ours: 'unknown', named: 'unknown' }
+  }
+  const ours = parseMcpChannelServerName(raw)
+  return {
+    ours: ours == null ? 'none' : ours,
+    named: entries.some((entry) => entry.name === serverName) ? 'yes' : 'no',
+  }
+}
+
+/** One line, for bash. */
+export function workspacePublishesLine(answer) {
+  return `HOAI_WORKSPACE ours=${answer.ours} named=${answer.named}`
+}
+
 /** The one line bin/bgos-agent parses. Kept to a single line on purpose. */
 export function pairedTopologyLine(verdict) {
   const oneLine = (text) => String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -1717,6 +1762,7 @@ export function parseDoctorArgs(argv) {
     waitLiveSince: null,
     waitLiveTimeoutS: 120,
     provePairedTopology: false,
+    workspacePublishes: false,
   }
   const errors = []
   for (let i = 0; i < (argv ?? []).length; i++) {
@@ -1726,6 +1772,7 @@ export function parseDoctorArgs(argv) {
     else if (arg === '--json') args.json = true
     else if (arg === '--skip-handshake') args.skipHandshake = true
     else if (arg === '--prove-paired-topology') args.provePairedTopology = true
+    else if (arg === '--workspace-publishes') args.workspacePublishes = true
     else if (arg === '--assistant-id') {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
@@ -1775,6 +1822,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
+
+  // What the folder's .mcp.json publishes, for `hoai-agent install`: one line, nothing else runs.
+  if (args.workspacePublishes) {
+    ;(opts.print ?? console.log)(workspacePublishesLine(workspacePublishes({ workdir: args.workdir })))
+    return 0
+  }
 
   // Prove-only mode, for `hoai-agent install`: one line, no table, no network,
   // no claude. Exit 0 when the paired topology is proven, 1 when it is refused.
