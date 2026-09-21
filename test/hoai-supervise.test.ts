@@ -205,6 +205,37 @@ test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-a
   assert.equal(script.includes('interact'), true)
 })
 
+test('buildGateAutoAcceptExpect: the timeout branch NEVER sends a key, it hands the screen to the human', () => {
+  // THE DEFECT THIS PINS (2026-09-21). The script used to answer an
+  // unrecognised screen with `timeout { send "\r" }`. Enter is not a safe
+  // default everywhere: the bypass-permissions warning DEFAULTS TO DECLINE, so
+  // that blind Enter exits claude instantly, silently, on the very first launch
+  // of a fresh install. The win32 helper's own doc comment had already promised
+  // the opposite property, "never presses blindly, so a prompt with a dangerous
+  // default is never answered by it"; only the posix path broke it.
+  const script = buildGateAutoAcceptExpect({
+    claudePath: 'claude',
+    args: ['--dangerously-skip-permissions'],
+  })
+  const lines = script.split('\n')
+  const timeoutLines = lines.filter((line) => /^\s*timeout\b/.test(line))
+  assert.equal(timeoutLines.length, 1, script)
+  // The load-bearing assertion: whatever that branch does, it does not send.
+  assert.doesNotMatch(timeoutLines[0]!, /send/, timeoutLines[0])
+  // And no OTHER unconditional send crept in to replace it. The only send left
+  // is the one guarded by a matched "confirm" footer, which is a screen we have
+  // read, not a screen we are guessing at.
+  const sendLines = lines.filter((line) => /\bsend\b/.test(line))
+  assert.equal(sendLines.length, 1, sendLines.join('\n'))
+  assert.match(sendLines[0]!, /confirm/)
+  // Control from the timeout branch still reaches interact: the wait loop ends
+  // rather than spinning, so the human's keystrokes are relayed straight away
+  // instead of being swallowed for the rest of the loop.
+  assert.match(timeoutLines[0]!, /set done 1/)
+  assert.equal(script.includes('interact'), true)
+  assert.ok(script.indexOf('interact') > script.indexOf('timeout'), script)
+})
+
 // -- superviseAssistantId -----------------------------------------------------
 
 test('superviseAssistantId: folder pin, then env pin, then sole paired agent, else off', () => {

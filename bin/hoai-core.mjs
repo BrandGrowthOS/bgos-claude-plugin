@@ -85,7 +85,11 @@ import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
   observeMarketplaceInstall,
 } from '../lib/plugin-cli.mjs'
-import { ensureHookEntries, ensureMarketplaceAutoUpdate } from '../lib/claude-preseed.mjs'
+import {
+  ensureHookEntries,
+  ensureMarketplaceAutoUpdate,
+  preseedClaudeTrust,
+} from '../lib/claude-preseed.mjs'
 import {
   MCP_CONFIG_FILE_NAME,
   parseMcpChannelServerName,
@@ -927,11 +931,22 @@ export function win32GateHelperArgs({ scriptDir = '', consolePid, timeoutSeconds
  * with cursor-move escapes, so only the single contiguous word "confirm" (every
  * selection prompt's "Enter to confirm" footer) matches the raw PTY stream;
  * sending Enter on it accepts folder-trust, dev-channels, and bypass gates
- * alike. It stops on the live-TUI markers, nudges Enter on an unrecognised
- * prompt, then hands off with interact so a human at the terminal is still
- * relayed. A SIGTERM trap kills the spawned claude before exiting, so when the
- * supervisor SIGTERMs this expect process claude cannot be orphaned into a
- * second live session (which would reintroduce the identity bleed).
+ * alike. It stops on the live-TUI markers, and on anything it does not
+ * recognise it stops waiting and hands off with interact so a human at the
+ * terminal decides. A SIGTERM trap kills the spawned claude before exiting, so
+ * when the supervisor SIGTERMs this expect process claude cannot be orphaned
+ * into a second live session (which would reintroduce the identity bleed).
+ *
+ * IT NEVER PRESSES BLIND, AND THAT IS THE WHOLE POINT OF THE TIMEOUT BRANCH.
+ * It used to answer a silent screen with `timeout { send "\r" }`: an Enter at
+ * an unrecognised prompt, up to six times. Not every prompt's default is
+ * harmless. The bypass-permissions warning DEFAULTS TO DECLINE, so that blind
+ * Enter exits claude instantly, with no error, on the launch a first-time user
+ * is watching. The win32 helper's own doc comment already claimed this property
+ * ("never presses blindly, so a prompt with a dangerous default is never
+ * answered by it") while the posix path here did the opposite. The worst case
+ * now is a keypress somebody has to make; the worst case before was a session
+ * that declined itself and vanished.
  *
  * Each arg is brace-quoted (Tcl literal, no substitution) so a future arg with
  * a space or a Tcl-special char cannot break or inject into the script; today's
@@ -953,7 +968,9 @@ export function buildGateAutoAcceptExpect({ claudePath, args }) {
     '    -re {(?i)experimental} { set done 1 }',
     '    -re {(?i)connecting}   { set done 1 }',
     '    -re {(?i)confirm}      { sleep 1; send "\\r" }',
-    '    timeout                { send "\\r" }',
+    // NO send here. An unrecognised screen is answered by the human, never by
+    // us: see this function's doc comment for the prompt whose default is exit.
+    '    timeout                { set done 1 }',
     '    eof                    { exit 1 }',
     '  }',
     '}',
@@ -2097,6 +2114,28 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     } catch (err) {
       console.error(`[hoai] could not register the activity hooks: ${err?.message ?? err}`)
     }
+  }
+  // Pre-seed Claude Code's one-time prompts for THIS launch folder, on EVERY
+  // launch, immediately before claude is spawned.
+  //
+  // WHY HERE and not only where an agent is created. preseedClaudeTrust had
+  // exactly one production caller, the watcher's create-agent job
+  // (lib/watcher-core.mjs). A hand-typed `hoai` seeded nothing, and a
+  // hand-typed `hoai` is the line bgos-pair tells every user to run, so the
+  // ordinary first install reached the trust dialog with nothing seeded and
+  // stopped there with no error anywhere. Doing it on every launch rather than
+  // once also REPAIRS agents paired by older versions, which is the half that
+  // reaches machines already out there.
+  //
+  // Best effort by design: the seed is an unattended-launch convenience, and a
+  // settings file we could not write must never be the reason a launch the user
+  // asked for does not happen. The worst case without it is the prompt the user
+  // is sitting in front of anyway.
+  const preseed = opts.preseedTrust ?? preseedClaudeTrust
+  try {
+    preseed({ configDir: claudeConfigDir({ env, home }), cwd, env, home })
+  } catch (err) {
+    console.error(`[hoai] could not pre-seed the one-time prompts: ${err?.message ?? err}`)
   }
   if (fresh) {
     console.log(

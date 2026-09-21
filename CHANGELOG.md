@@ -2,6 +2,47 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.1 (2026-09-21)
+
+A first-time install on a fresh macOS user failed at four separate points, and
+every one of them failed SILENTLY. Compiled from a real debugging session, then
+each defect verified in source and on the host before it was touched.
+
+- **The trust pre-seed wrote to a file Claude Code never opens.**
+  `preseedClaudeTrust` derived its target by joining the config directory, so
+  with `CLAUDE_CONFIG_DIR` unset it wrote `~/.claude/.claude.json` while the CLI
+  reads `~/.claude.json`. The `settings.json` half of the same function resolved
+  correctly, which is why the failure read as a partial success rather than a
+  bug. A new `claudeConfigFilePath({env, home})` answers the question the config
+  directory cannot. Every existing test passed over this because all of them
+  inject an explicit `configDir`; the unset case now has its own test.
+
+- **Nothing on the hand-typed path ever pre-seeded anything.**
+  `preseedClaudeTrust` had exactly one production caller, the app's create-agent
+  flow, so running `hoai` by hand (the command pairing itself tells you to run)
+  seeded nothing. It is now called from pairing and from the launcher, the
+  second of which also repairs agents paired by older versions.
+
+- **The startup gate answered unknown screens with a blind Enter.** The posix
+  expect wrapper ended in `timeout { send "\r" }`. The bypass-permissions
+  warning defaults to DECLINE, so an unrecognised screen was answered by
+  quitting, instantly and with no output. It now falls through to `interact`
+  and lets the person decide. This file's own comment about the Windows helper
+  had already stated the rule it broke: never press blindly on a prompt with a
+  dangerous default.
+
+- **An unpaired daemon died before the handshake, so nothing could say why.**
+  The host could only report `CONNECTION_CLOSED` while the real reason went to
+  stderr where nobody reads it. An unpaired server now completes `initialize`
+  and offers a single `hoai_pair_required` tool carrying the instructions. A
+  degraded connected server is diagnosable from inside the session; a dead one
+  is not.
+
+Not fixed here, and named so they are not assumed: `hoai` still does not reach
+the user's own PATH after a marketplace install, `hoai doctor` still passes
+while the agent cannot start, `waitForIncumbent` still has no timeout, and
+pairing still accepts `$HOME` as an agent folder.
+
 ## 0.42.0 (2026-09-21)
 
 - **Keep working until it is done: the agent's own goal loop reaches the

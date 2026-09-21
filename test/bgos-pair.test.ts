@@ -835,6 +835,70 @@ test('pairExitCode: an explicit override lets an operator proceed knowingly', ()
   )
 })
 
+// --- pairing pre-seeds the one-time prompts (2026-09-21) ---------------------
+// bgos-pair ends by telling the user to run `hoai` in this folder. Until now
+// nothing on that path had ever pre-seeded Claude Code's one-time prompts:
+// preseedClaudeTrust's only production caller was the watcher's create-agent
+// job, which a hand-paired machine never runs. So the very next thing the user
+// was told to do stopped on a full-screen trust dialog, on a fresh install,
+// with every line printed above it reporting success.
+//
+// Driven against the REAL function and a real throwaway home, because the
+// point of the fix is that the unmocked production path does this.
+
+test('main: a completed pairing pre-seeds the one-time prompts for the folder it just pinned', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-preseed-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 77, user_id: 'user_mark' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          assistants: [{ assistant_id: 936, agent_route: 'claude', name: 'Mark' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = () => {}
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, cwd: folder, fetchImpl },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+
+    // The trust entry is keyed on the folder the pin was baked into, byte for
+    // byte: any other key leaves the dialog exactly where it was.
+    const cfg = JSON.parse(await readFile(join(home, '.claude.json'), 'utf8'))
+    assert.equal(cfg.projects[folder].hasTrustDialogAccepted, true)
+    assert.equal(cfg.hasCompletedOnboarding, true)
+    // Written to the file Claude Code actually reads with CLAUDE_CONFIG_DIR
+    // unset, not to one inside the config dir.
+    assert.equal(existsSync(join(home, '.claude', '.claude.json')), false)
+    // The bypass warning's default answer is exit, so it is suppressed in
+    // settings.json, which really does live in the config dir.
+    const settings = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'))
+    assert.equal(settings.skipDangerousModePermissionPrompt, true)
+    // And it SAYS so: a seed nobody can see is one nobody can check.
+    assert.match(output.join('\n'), /pre-seeded Claude Code's one-time prompts/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('main reaches the post-success pin check without a home ReferenceError', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bgos-pair-main-success-'))
   const output: string[] = []
