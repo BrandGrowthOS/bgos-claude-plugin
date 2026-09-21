@@ -61,6 +61,7 @@ import {
   type AgentIdentity,
 } from './lib/voice-rpc.js'
 import { buildCallOwnerBody } from './lib/call-owner.js'
+import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
   buildReachableChatsPath,
   summarizeReachableChats,
@@ -10497,6 +10498,19 @@ async function reconcileAlwaysOn(): Promise<void> {
       )
       log('always-on: supervisor installed (takes over when this session ends)')
     } else if (!desired && installed) {
+      // A supervisor installed moments ago is NOT "switched off": the app records
+      // alwaysOn only after it has seen this agent connect. See lib/always-on-grace.ts.
+      let stamp: string | null = null
+      try {
+        stamp = readFileSync(joinPath(homedir(), '.bgos-agent', String(ASSISTANT_ID), ALWAYS_ON_INSTALLED_AT_FILE), 'utf8')
+      } catch {
+        stamp = null
+      }
+      const graceLeft = alwaysOnGraceRemainingMs(stamp, Date.now())
+      if (graceLeft > 0) {
+        log(`always-on: off in BGOS, but this supervisor was installed ${Math.round((ALWAYS_ON_INSTALL_GRACE_MS - graceLeft) / 1000)}s ago; leaving it for the app to record always-on (grace ${Math.round(graceLeft / 1000)}s left)`)
+        return
+      }
       log('always-on: disabled in BGOS, removing supervisor')
       await execFileAsync(BGOS_AGENT_BIN, ['uninstall', '--assistant', ASSISTANT_ID], {
         timeout: 60_000,

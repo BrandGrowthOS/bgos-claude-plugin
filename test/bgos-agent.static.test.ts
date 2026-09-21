@@ -12,7 +12,9 @@
  *
  * `server:<name>` names a channel that comes from an MCP SERVER ENTRY;
  * `plugin:<plugin>@<marketplace>` names one that comes from a marketplace
- * plugin. bgos-agent does not guess which world it is in, it GUARANTEES it:
+ * plugin. bgos-agent does not guess which world it is in, it GUARANTEES it (and,
+ * since 2026-09-22, for a folder with NO .mcp.json it demands PROOF of the
+ * paired marketplace topology from the shared resolver, or refuses):
  * cmd_install refuses to continue without a workspace .mcp.json, it writes that
  * file itself, and both supervisors run claude with WorkingDirectory set to
  * that workspace. So the emitted spec must be `server:` plus the name of the
@@ -156,15 +158,60 @@ test('the approved-sounding --channels flag is never used', () => {
 
 // ── The .mcp.json gate that makes the invariant true ─────────────────────────
 
-test('install refuses to proceed without a workspace .mcp.json', () => {
+test('install still refuses a workspace with no .mcp.json, unless the paired topology is PROVEN', () => {
   // This gate is load bearing for the spec above: it is what guarantees the
-  // session has a `bgos` MCP server to load. If it is ever relaxed so the
-  // supervisor can be installed for a workspace with no .mcp.json, the spec
-  // stops being correct by construction and this whole file needs rethinking.
+  // session has a `bgos` MCP server to load. It was relaxed ONCE, on purpose
+  // (2026-09-22), and only like this: with no .mcp.json the install goes ahead
+  // when `bgos-doctor --prove-paired-topology` proves the folder pin, the
+  // agent credentials and the marketplace install record, and takes the channel
+  // THE RESOLVER proved. Anything else still dies, with the old words first so
+  // nobody mistakes it for a new failure. A deaf agent is worse than a refused
+  // install (2026-08-21).
   assert.ok(
     /die "no \.mcp\.json in \$workdir and no creds given/.test(code),
-    'cmd_install must die when the workspace has no .mcp.json and no creds were given',
+    'cmd_install must still die when the workspace has no .mcp.json, no creds, and no proof',
   )
+  const branch = code.slice(code.indexOf('elif [ ! -f "$mcp" ]; then'), code.indexOf('info "using existing $mcp'))
+  assert.ok(branch.length > 0, 'the no-.mcp.json branch must exist')
+  // The die is reached through a FAILED proof, and the channel is assigned from the proof and from nothing else.
+  assert.match(branch, /if ! proven="\$\(prove_paired_topology "\$workdir" "\$ASSISTANT_ID"\)"; then\s*\n\s*die "no \.mcp\.json/)
+  assert.deepEqual(branch.match(/^\s*channel=.*$/gm)?.map((l) => l.trim()), ['channel="$proven"'])
+  // The guard must EXIST and come first. Comparing two indexOf results alone passed with the guard
+  // deleted, because -1 is lower than anything (a mutation found that).
+  const guardAt = branch.indexOf('valid_paired_channel "$proven" || die')
+  assert.ok(guardAt >= 0, 'the proven spec must be validated')
+  assert.ok(branch.indexOf('channel="$proven"') > guardAt, 'and validated BEFORE it is used')
+  // node is resolved inside this arm too, before anything is written
+  assert.match(branch, /paired_node_bin="\$\(command -v node \|\| true\)"\s*\n\s*\[ -n "\$paired_node_bin" \] \|\| die "paired-topology:node-not-found/)
+  // An explicit --channel that disagrees with the proof is refused, never obeyed.
+  assert.match(branch, /if \[ -n "\$\{CHANNEL:-\}" \] && \[ "\$CHANNEL" != "\$proven" \]; then\s*\n\s*die "paired-topology:channel-mismatch/)
+})
+
+test('the prover wrapper never guesses: only its own OK line is a proof, everything else is a refusal', () => {
+  const start = code.indexOf('prove_paired_topology() {')
+  assert.ok(start >= 0, 'prove_paired_topology must exist')
+  // `code` has its comment lines stripped, so the function ends at its own closing brace.
+  const fn = code.slice(start, code.indexOf('\n}\n', start) + 3)
+  assert.match(fn, /bgos-doctor\.mjs" --prove-paired-topology --workdir "\$1" --assistant-id "\$2"/)
+  // exactly one way to return 0, and it is the OK line
+  assert.deepEqual(fn.match(/return 0/g)?.length, 1)
+  assert.match(fn, /"HOAI_TOPOLOGY_OK "\*\)\s+printf '%s' "\$\{line#HOAI_TOPOLOGY_OK \}"; return 0 ;;/)
+  // a prover that crashed, printed nothing, or printed something else is a named refusal too
+  assert.match(fn, /paired-topology:prover-failed/)
+  assert.match(fn, /return 1\n\}\n$/, 'and the function falls through to a refusal, never to a guess')
+})
+
+test('a workspace that DOES carry a .mcp.json takes exactly the path it always took', () => {
+  // The ruling that allowed the relaxation above: clone-style folders must
+  // behave exactly as they did. The two other arms of the same if are pinned
+  // here word for word, and neither may mention the prover.
+  const writes = code.slice(code.indexOf('if [ -n "${API_KEY:-}" ] && [ -n "${USER_ID:-}" ]; then'), code.indexOf('elif [ ! -f "$mcp" ]; then'))
+  assert.match(writes, /write_mcp_json "\$mcp" "\$backend" "\$API_KEY" "\$USER_ID" "\$ASSISTANT_ID" "\$auto" "\$\{OPENAI_VOICE_KEY:-\}"/)
+  assert.doesNotMatch(writes, /prove_paired_topology|proven/)
+  const existing = code.slice(code.indexOf('  else\n    info "using existing $mcp'), code.indexOf('  if [ ! -f "$workdir/CLAUDE.md" ]'))
+  assert.match(existing, /^  else\n    info "using existing \$mcp \(pass --key\/--user to regenerate\)"\n  fi\n$/)
+  // and the default those two arms launch on is still the constant built from MCP_SERVER_NAME
+  assert.ok(/local channel="\$\{CHANNEL:-\$DEFAULT_CHANNEL\}"/.test(code))
 })
 
 test('both supervisors run claude in the workspace, which is what loads that .mcp.json', () => {

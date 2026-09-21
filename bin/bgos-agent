@@ -52,6 +52,20 @@ DEFAULT_BACKEND="https://api.brandgrowthos.ai/api/v1"
 # a permanently deaf agent held up forever by launchd or systemd. That is the
 # 2026-08-21 failure signature, pointed the other way.
 #
+# THE SECOND WORLD (2026-09-22): a PAIRED MARKETPLACE folder has no .mcp.json at
+# all. Desktop one-click installs the marketplace plugin and pairs with a one
+# time code, so it never holds a key to write a .mcp.json with, and the old
+# rule ("no .mcp.json, die") made its launch step impossible on a fresh
+# workspace (measured: "no .mcp.json ... and no creds given", exit 1). That gate
+# is NOT simply skipped. With no .mcp.json the supervisor is installed only when
+# the paired topology is PROVEN: the folder pin names this agent, its per-agent
+# credentials are there, and the marketplace plugin is installed where the
+# background session will look. The proof is `bgos-doctor --prove-paired-topology`,
+# which composes pairing's own live-safe verifier with the SAME route resolver
+# hoai launches through, so this script still never types the marketplace spec
+# and still never runs detection itself: it takes the spec the resolver proved,
+# or it refuses with a named reason. A deaf agent is worse than a refused
+# install. A workspace that DOES carry a .mcp.json is untouched by any of this.
 # The name is spelled once (MCP_SERVER_NAME) so test/bgos-agent.static.test.ts
 # can pin the two halves of that invariant against each other and against
 # CLONE_CHANNEL_SPEC in bin/bgos-install-method.mjs. Use --channel only for a
@@ -97,6 +111,9 @@ default_workdir_for() { printf '%s/%s-workspace' "$STATE_ROOT" "$1"; }
 valid_id()      { [[ "$1" =~ ^[0-9]+$ ]]; }
 valid_channel() { [[ "$1" =~ ^[A-Za-z0-9:_.-]+$ ]]; }
 valid_bool()    { [[ "$1" =~ ^(true|false)$ ]]; }
+# A PROVEN marketplace channel, as the shared resolver spells it. Separate from
+# valid_channel on purpose: `@` is not something a person may pass with --channel.
+valid_paired_channel() { [[ "$1" =~ ^plugin:[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$ ]]; }
 xml_escape()    { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
 require_id()    { [ -n "${ASSISTANT_ID:-}" ] || die "missing --assistant <id>"; valid_id "$ASSISTANT_ID" || die "--assistant must be a positive integer"; }
 
@@ -120,6 +137,7 @@ cmd_install() {
   local channel="${CHANNEL:-$DEFAULT_CHANNEL}"
   local auto="${AUTO_APPROVE:-true}"
   local workdir="${WORKDIR:-$(default_workdir_for "$ASSISTANT_ID")}"
+  local paired_node_bin=""
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
   valid_channel "$channel" || die "--channel must match [A-Za-z0-9:_.-] (got '$channel')"
   valid_bool "$auto"       || die "--auto-approve must be 'true' or 'false'"
@@ -159,7 +177,25 @@ cmd_install() {
       || die "generated .mcp.json is not valid JSON, check your --key/--user/--backend for special characters"
     ok "wrote $mcp"
   elif [ ! -f "$mcp" ]; then
-    die "no .mcp.json in $workdir and no creds given. Pass --key <api-key> --user <user-id> (or --dir <existing-project>)."
+    # No .mcp.json and no key. That is only launchable as a PROVEN paired
+    # marketplace folder (see "THE SECOND WORLD" at the top of this file).
+    local proven
+    if ! proven="$(prove_paired_topology "$workdir" "$ASSISTANT_ID")"; then
+      die "no .mcp.json in $workdir and no creds given, and it is not a proven paired folder either: $proven. (A clone-style agent instead needs --key <api-key> --user <user-id>, or --dir <existing-project>.)"
+    fi
+    valid_paired_channel "$proven" || die "paired-topology:unusable-channel the resolver proved '$proven', which is not a marketplace channel spec"
+    if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "$proven" ]; then
+      die "paired-topology:channel-mismatch --channel $CHANNEL was given, but $workdir is a paired marketplace folder whose proven channel is $proven; launching on the other one comes up Connected and hears nothing. Drop --channel."
+    fi
+    channel="$proven"
+    # The marketplace plugin starts its MCP server and every hook with a bare `node`
+    # (.claude-plugin/plugin.json), and the service PATH below was built for the clone
+    # topology, which runs `bun`. With no node on that PATH the session comes up and the
+    # channel never does: deaf again. So node is resolved NOW, before anything is
+    # written, and its directory goes on the service PATH.
+    paired_node_bin="$(command -v node || true)"
+    [ -n "$paired_node_bin" ] || die "paired-topology:node-not-found the HOAI marketplace plugin runs on Node.js and no node is on PATH, so the background agent would start and never hear anything. Install Node.js 18 or newer, then run this again."
+    ok "paired folder proven for agent $ASSISTANT_ID (folder pin, agent credentials, plugin install record): channel $channel"
   else
     info "using existing $mcp (pass --key/--user to regenerate)"
   fi
@@ -194,6 +230,13 @@ cmd_install() {
   bun_bin="$(command -v bun)"
   expect_bin="$(command -v expect)"
   path="$(dirname "$claude_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+  if [ -n "$paired_node_bin" ]; then
+    path="$(dirname "$paired_node_bin"):$path"
+    # Stamped for a PAIRED folder only. The app records alwaysOn in BGOS only after it has
+    # seen this agent connect, and until then the agent's own daemon reads "off" with a
+    # supervisor installed, which used to mean "remove it". lib/always-on-grace.ts.
+    date +%s > "$statedir/installed-at"
+  fi
   write_run_expect "$statedir/run.expect" "$statedir" "$claude_bin" "$channel" "${CONTINUE:-}"
   write_run_sh     "$statedir/run.sh"     "$statedir" "$statedir/run.expect" "$expect_bin"
   chmod +x "$statedir/run.expect" "$statedir/run.sh"
@@ -211,6 +254,22 @@ cmd_install() {
   printf '  logs      : hoai-agent logs --assistant %s   (%s/agent.log)\n' "$ASSISTANT_ID" "$statedir"
   printf '  status    : hoai-agent status --assistant %s\n' "$ASSISTANT_ID"
   printf '  off       : hoai-agent uninstall --assistant %s\n' "$ASSISTANT_ID"
+}
+
+# --- the paired topology (a workspace with no .mcp.json) ----------------------
+# Prints the PROVEN channel spec and returns 0, or prints the named refusal and
+# returns 1. Never guesses: anything that is not the prover's own OK line is a
+# refusal, including the prover failing to run at all.
+prove_paired_topology() { # $1 workdir $2 assistant id
+  local out line
+  out="$(bun "$PLUGIN_DIR/bin/bgos-doctor.mjs" --prove-paired-topology --workdir "$1" --assistant-id "$2" 2>&1)" || true
+  line="$(printf '%s\n' "$out" | grep -E '^HOAI_TOPOLOGY_(OK|REFUSED) ' | tail -n 1 || true)"
+  case "$line" in
+    "HOAI_TOPOLOGY_OK "*)      printf '%s' "${line#HOAI_TOPOLOGY_OK }"; return 0 ;;
+    "HOAI_TOPOLOGY_REFUSED "*) printf '%s' "${line#HOAI_TOPOLOGY_REFUSED }"; return 1 ;;
+  esac
+  printf 'paired-topology:prover-failed the topology check itself did not run: %s' "$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | grep -vE '^(Bun v|Node\.js v)' | tail -n 4 | tr '\n' ' ' || true)"
+  return 1
 }
 
 # --- file generators ---------------------------------------------------------

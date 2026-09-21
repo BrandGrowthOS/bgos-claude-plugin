@@ -2,6 +2,51 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.4 (2026-09-22)
+
+Desktop one-click could not start a background agent on a fresh workspace, and
+once it could, the agent removed itself.
+
+- **`hoai-agent install --always-on` now installs a PROVEN paired folder that has
+  no `.mcp.json`**, which is what desktop one-click leaves: it installs the
+  marketplace plugin and pairs with a one time code, so it never holds a key to
+  write a `.mcp.json` with. The launch step died there ("no .mcp.json ... and no
+  creds given", measured with the desktop's exact line). The gate is not
+  skipped, because an agent once came back deaf on the wrong channel spec
+  (2026-08-21). The install goes ahead only when `bgos-doctor
+  --prove-paired-topology` proves it, by readers the repo already had: pairing's
+  own live-safe verifier (the folder pin names this agent, its per-agent
+  credentials are there and hold that agent's id) and the launcher's channel
+  resolver (a marketplace install, enabled, its files on disk). Both are asked
+  about the environment the BACKGROUND session will have, which carries no
+  `CLAUDE_CONFIG_DIR`. `bin/bgos-agent` still never types the marketplace spec:
+  it takes the one the resolver proved.
+- **Anything unproven is refused by name**, exit 1, with nothing written and the
+  service manager never called: `paired-topology:no-folder-pin`, `:pin-mismatch`,
+  `:no-agent-credentials`, `:credentials-belong-to-another-agent`,
+  `:plugin-not-installed`, `:plugin-disabled`, `:plugin-files-missing`,
+  `:installer-is-a-clone`, `:node-not-found`, `:channel-mismatch`. A refused
+  install is better than an agent that says Connected and hears nothing.
+- **A workspace that DOES carry a `.mcp.json` is untouched.** Pinned by tests,
+  and checked by putting the same clone-style folder through the 0.42.3
+  installer and this one: state dir, service file, `.mcp.json`, `CLAUDE.md` and
+  the installer's own output came out byte identical.
+- **The supervisor is no longer removed by its own daemon.** The app records
+  always-on in BGOS only after it has seen the agent connect, and a new agent's
+  flag defaults to off, so the supervised session's daemon read "off" with a
+  supervisor installed and uninstalled the job it was running in. A paired
+  install is now stamped, and the reconcile leaves a supervisor younger than 15
+  minutes alone. After that a flag that is still off is honoured as before.
+  Read in code, not yet run against a real backend.
+- **Node on the service PATH.** The marketplace plugin starts its MCP server and
+  its hooks with `node`, and the service PATH was built for clone agents, which
+  run `bun`. With node from nvm, volta or fnm the session came up and the channel
+  never did. Node is now resolved before anything is written and leads the
+  service PATH.
+
+Not verified in this release: a supervised session actually coming online through
+the marketplace channel. That needs one real one-click run on a clean account.
+
 ## 0.42.3 (2026-09-22)
 
 Two live defects that 0.42.1 and 0.42.2 shipped, plus the startup gates.
