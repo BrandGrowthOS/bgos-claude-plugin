@@ -161,8 +161,16 @@ import {
   buildMissionTickPath,
   buildMissionCompletePath,
   formatMissionSummary,
+  pickImplicitMissionChat,
   type MissionSnapshot,
 } from './lib/missions.js'
+import {
+  createMissionSelfWriteLedger,
+  decideMissionNotice,
+  missionEventKey,
+  parseMissionEvent,
+} from './lib/mission-events.js'
+import { DECLARED_CAPABILITIES } from './lib/declared-capabilities.js'
 import {
   resolveAuth,
   resolveCredentialsPath,
@@ -1984,13 +1992,27 @@ const mcp = new Server(
       '4. Ticking the last open goal completes the mission automatically',
       '   (confetti; the user may get one push). Call `complete_mission` only',
       '   to end a mission early when the remaining goals became moot.',
+      '5. Your owner can change a mission from the app while you work. When',
+      '   they do, the channel tells you in band as a [mission_cleared],',
+      '   [mission_paused], [mission_resumed] or [mission_started] event.',
+      '   Obey it at once. A mission the owner closed or paused is DEAD to',
+      '   you: stop working it, stop ticking it (the server refuses), and',
+      '   never cite it again as something you are pursuing. The card the',
+      '   owner is looking at is the truth, not your memory of it.',
+      '6. A mission belongs to ONE CHAT. Pass `chat_id` on `create_mission`,',
+      '   the same chat you are answering in; omit it only when you truly',
+      '   mean this agent\'s main chat. `tick_mini_goal` and',
+      '   `complete_mission` target that chat\'s open mission unless you pass',
+      '   `mission_id`. A mission started in one chat never sets aside the',
+      '   mission in another.',
       '',
-      'Rules: ONE active mission per agent, and creating a new one abandons',
-      'the previous active mission, so finish missions before starting the',
-      'next. Do NOT create missions for single-step or conversational asks',
-      '(a question, a one-file edit). Mini-goals are OUTCOMES, not keystrokes:',
-      '"Landing page live", not "open the editor". Never claim progress in',
-      'prose that you have not ticked; the card is the source of truth.',
+      'Rules: ONE open mission per CHAT, and creating a new one in a chat',
+      'sets aside that chat\'s previous open mission, so finish a mission',
+      'before starting the next one in the same chat. Do NOT create missions',
+      'for single-step or conversational asks (a question, a one-file edit).',
+      'Mini-goals are OUTCOMES, not keystrokes: "Landing page live", not',
+      '"open the editor". Never claim progress in prose that you have not',
+      'ticked; the card is the source of truth.',
       '',
       '## Sending Files & Media',
       '',
@@ -3105,9 +3127,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'this FIRST whenever a user request is multi-step (3+ distinct ' +
         'steps or work spanning tools and minutes), then work normally and ' +
         'tick goals with `tick_mini_goal` as their checks come true. One ' +
-        'active mission per agent; creating a new one abandons the previous ' +
-        'active mission. Maps to POST /api/v1/assistants/:id/missions ' +
-        '(user-scoped, X-API-Key).',
+        'open mission per CHAT; creating a new one sets aside that chat\'s ' +
+        'previous open mission and leaves every other chat alone. Maps to ' +
+        'POST /api/v1/assistants/:id/missions (user-scoped, X-API-Key).',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -3138,6 +3160,15 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               },
               required: ['name', 'done_when'],
             },
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat this mission belongs to: the chat_id (or ' +
+              'session_handle) of the turn you are answering. Omit it only ' +
+              "when you truly mean this agent's main chat. Each chat has at " +
+              'most one open mission, so a mission started in one chat never ' +
+              'sets aside the mission in another.',
           },
         },
         required: ['title', 'mini_goals'],
@@ -3171,6 +3202,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             description:
               'Optional mission id; omit to target your active mission.',
           },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are ticking; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over ' +
+              'this.',
+          },
         },
         required: ['goal_id'],
       },
@@ -3199,6 +3237,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description:
               'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are completing; omit to use ' +
+              'the chat you are answering in. An explicit mission_id wins ' +
+              'over this.',
           },
         },
         required: [],
@@ -4669,9 +4714,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     case 'create_mission': {
       // Missions (capability #20): durable goal card the agent creates and
       // ticks. User-scoped route via X-API-Key, same auth as set_status.
+      //
+      // A mission belongs to ONE CHAT (0.41.0). Omitting the chat means this
+      // agent's main chat, which is what a single-chat agent has always meant,
+      // so nothing changes for one.
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
       const built = buildMissionCreateBody({
         title: rawArgs.title,
         mini_goals: rawArgs.mini_goals,
+        chat_id: chat.chatId,
       })
       if (!built.ok) {
         return {
@@ -4697,6 +4749,18 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
+        // Stamp the write BEFORE anything else can observe it: the backend
+        // emits mission_created (and, on a replace, mission_abandoned) off
+        // this call, and an unstamped write is narrated straight back to the
+        // model that made it.
+        //
+        // No PENDING stamp here, unlike the tick and the complete: a create
+        // has no mission id until the response carries one, so there is
+        // nothing to stamp in advance. It costs nothing today, because the
+        // created mission's own frame says createdByAssistant and the abandon
+        // of the mission it replaced says clear_reason 'replaced', and neither
+        // is narrated on either count.
+        rememberMissionSelfWrite(result.mission)
         log(`create_mission: #${result.mission.id} "${result.mission.title}"`)
         return {
           content: [
@@ -4730,16 +4794,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
         if (missionId == null) {
           return {
             content: [
               {
                 type: 'text',
                 text:
-                  'No active mission to tick. Create one with create_mission ' +
-                  'first (multi-step requests get a mission).',
+                  'No active mission to tick in this chat. Create one with ' +
+                  'create_mission first (multi-step requests get a mission).',
               },
             ],
             isError: true,
@@ -4752,6 +4819,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
+        // BEFORE the request, not after the answer: a tick that closes the
+        // last open goal auto-completes the mission, and the backend emits
+        // that completion from inside the transaction it answers from, so the
+        // frame regularly arrives while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
         const result = (await bgosPatch(builtPath.path, {
           ...built.body,
         })) as { mission?: MissionSnapshot }
@@ -4761,6 +4833,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
+        rememberMissionSelfWrite(result.mission)
         const completed = result.mission.status === 'completed'
         log(
           `tick_mini_goal: mission #${missionId} goal ${built.body.goalId}` +
@@ -4795,11 +4868,14 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
         if (missionId == null) {
           return {
-            content: [{ type: 'text', text: 'No active mission to complete.' }],
+            content: [{ type: 'text', text: 'No active mission to complete in this chat.' }],
             isError: true,
           }
         }
@@ -4810,6 +4886,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
+        // BEFORE the request: the mission_completed frame this causes can beat
+        // the response home, and an unstamped one reads as the owner's own
+        // Mark done.
+        // BEFORE the request: the mission_completed frame this causes can beat
+        // the response home, and an unstamped one reads as the owner's own
+        // Mark done.
+        noteMissionPendingSelfWrite(missionId)
         const result = (await bgosPatch(builtPath.path, { ...built.body })) as {
           mission?: MissionSnapshot
         }
@@ -4819,6 +4902,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             isError: true,
           }
         }
+        rememberMissionSelfWrite(result.mission)
         log(`complete_mission: #${missionId}`)
         return {
           content: [
@@ -5783,6 +5867,32 @@ function hookChatId(): string | null {
   return monitoredChatIds[0] ?? null
 }
 
+/**
+ * Which chat a MISSION event belongs to.
+ *
+ * Deliberately NOT hookChatId(): that one answers "which chat is this TURN
+ * in", and a mission event is about a mission. The order is
+ *
+ *   1. the mission's own chat from the event snapshot (authoritative)
+ *   2. the live turn's chat, which lib/turn-chat.ts fixes at the prompt and
+ *      holds until Stop, for a backend older than per-chat scope
+ *   3. the first monitored chat, LAST
+ *
+ * Step 3 is a GUESS the moment the agent watches more than one chat, and a
+ * notice delivered against the wrong chat makes the model answer the wrong
+ * person. That is exactly why per-chat scope had to land in the same release
+ * as the in-band tell rather than after it.
+ */
+function missionChatId(
+  mission: { chatId?: number | null } | null | undefined,
+): string | null {
+  const own = mission?.chatId
+  if (typeof own === 'number' && Number.isInteger(own) && own > 0) return String(own)
+  const record = turnChat.current(Date.now())
+  if (record) return record.chatId
+  return monitoredChatIds[0] ?? null
+}
+
 /** The created message id, tolerating both shapes the API has returned. */
 function createdMessageId(response: unknown): string | null {
   const body = response as { id?: unknown; message?: { id?: unknown } } | null
@@ -6148,11 +6258,71 @@ function rememberSessionHandle(
  * for REST paths, plus `sessionHandle` (preferred for POST bodies) when known.
  */
 /**
- * Resolve the mission id a tick/complete call targets: an explicit
- * mission_id argument wins; otherwise the assistant's single active mission
- * (GET assistants/:id/missions/active). Returns null when there is none.
+ * Which chat a mission TOOL call is about.
+ *
+ * Order, strongest first:
+ *   1. the explicit chat_id argument, run through resolveAuthorizedChat the
+ *      same way `reply` does, so an opaque session_handle round-tripped by the
+ *      model resolves and a chat this agent may not reach is refused
+ *   2. the live turn's chat (lib/turn-chat.ts fixes it at the prompt and holds
+ *      it until Stop), which is a real answer for a scheduled wake or a peer
+ *      message where there is no "current human chat"
+ *   3. the first monitored chat, which is precisely today's implicit behaviour
+ *      for a single-chat agent
+ *
+ * The two IMPLICIT steps skip any chat the backend's create route would
+ * refuse, because handing it one is not a mission in the wrong chat, it is a
+ * 400 the agent cannot act on. Two kinds are skipped (lib/missions.ts
+ * pickImplicitMissionChat holds the rule):
+ *
+ *   - a ROOM. A meeting chat is owned by the first participant and a mission
+ *     is one agent's promise, so the backend refuses it. An agent answering in
+ *     a meeting must still be able to create the mission it can create today.
+ *   - a chat whose LAST INBOUND came from somebody other than the owner. A
+ *     share recipient's DM with a shared agent belongs to the recipient, and a
+ *     mission planted there is somebody else's card in somebody else's chat.
+ *
+ * When nothing acceptable is left the answer is null, which MEANS this agent's
+ * main chat: the same thing a single-chat agent gets, and what the backend
+ * resolves an absent chat to. An explicit chat_id is still passed on, and the
+ * backend answers for it.
  */
-async function resolveMissionId(rawMissionId: unknown): Promise<number | null> {
+function resolveMissionToolChat(rawChatId: unknown):
+  | { ok: true; chatId: string | null }
+  | { ok: false; error: { content: Array<{ type: 'text'; text: string }>; isError: true } } {
+  if (rawChatId != null && rawChatId !== '') {
+    const resolved = resolveAuthorizedChat(String(rawChatId))
+    if (!resolved.ok) return resolved
+    return { ok: true, chatId: resolved.chatId }
+  }
+  const record = turnChat.current(Date.now())
+  return {
+    ok: true,
+    chatId: pickImplicitMissionChat({
+      turnChatId: record?.chatId ?? null,
+      monitoredChatIds,
+      ownerUserId: USER_ID,
+      isRoom: (chatId) => meetingIdByChatId.has(chatId),
+      lastInboundUserId: (chatId) => lastInboundUserByChat.get(chatId) ?? null,
+    }),
+  }
+}
+
+/**
+ * Resolve the mission id a tick/complete call targets: an explicit
+ * mission_id argument wins; otherwise THAT CHAT's open mission
+ * (GET assistants/:id/missions/active?chatId=). Returns null when there is
+ * none.
+ *
+ * The chat argument is load bearing: without it a tick issued while the agent
+ * works chat B resolves chat A's open mission and ticks the wrong card. With
+ * no chat named the path is byte identical to the pre-0.41.0 one, so a
+ * single-chat agent is unchanged.
+ */
+async function resolveMissionId(
+  rawMissionId: unknown,
+  chatId: string | null,
+): Promise<number | null> {
   if (
     typeof rawMissionId === 'number' &&
     Number.isInteger(rawMissionId) &&
@@ -6160,7 +6330,7 @@ async function resolveMissionId(rawMissionId: unknown): Promise<number | null> {
   ) {
     return rawMissionId
   }
-  const builtPath = buildMissionActivePath(ASSISTANT_ID)
+  const builtPath = buildMissionActivePath(ASSISTANT_ID, chatId)
   if (!builtPath.ok) return null
   const result = (await bgosGetCachedOn304(builtPath.path)) as {
     mission?: MissionSnapshot | null
@@ -6963,6 +7133,93 @@ function rememberAnnouncedClick(id: number): void {
   if (announcedClickIds.size > FORWARD_CACHE_MAX) {
     const first = announcedClickIds.values().next().value
     if (first !== undefined) announcedClickIds.delete(first)
+  }
+}
+
+// ── Mission events from the owner's app ──────────────────────────────────────
+//
+// Two bounded memories, both in the shape of announcedClickIds above, and each
+// one closes a hole that is invisible without it.
+//
+// (a) The SELF ECHO. The agent's own create_mission / tick_mini_goal /
+//     complete_mission calls make the backend emit mission_created /
+//     mission_ticked / mission_completed. Unstamped, the daemon would tell the
+//     model about the write the model just made, on every tick, forever. The
+//     ledger in lib/mission-events.ts holds both halves of that stamp: the
+//     PENDING one by mission id, taken BEFORE the request leaves because the
+//     frame regularly beats the HTTP response home, and the WRITTEN one by
+//     mission id plus updatedAt, taken when the response lands, which is what
+//     covers a frame delivered late.
+// (b) The DUPLICATE FRAME. A paired daemon sits in BOTH pairing:<id> and
+//     assistant:<id>, and a daemon in the field outlives a backend deploy (and
+//     the reverse), so this holds whatever the gateway's fan out does today.
+const missionSelfWrites = createMissionSelfWriteLedger(FORWARD_CACHE_MAX)
+const missionFramesSeen = new Set<string>()
+
+function evictOldest(set: Set<string>): void {
+  if (set.size <= FORWARD_CACHE_MAX) return
+  const first = set.values().next().value
+  if (first !== undefined) set.delete(first)
+}
+
+/** Stamp a mission write the daemon is ABOUT to make, BEFORE the request goes
+ *  out. The backend emits the frame from inside the same transaction it
+ *  answers from, so the socket handler can run before the response lands and
+ *  the after-the-fact stamp below is not written yet. Called with the mission
+ *  id the tick or the complete resolved. */
+function noteMissionPendingSelfWrite(missionId: number): void {
+  missionSelfWrites.notePending(missionId)
+}
+
+/** Stamp the agent's OWN landed mission write, so the event it causes is not
+ *  narrated back to the model. Called by every mission tool case; a fourth
+ *  mission tool that forgets this is caught by
+ *  test/mission-ws-wiring.test.ts. */
+function rememberMissionSelfWrite(mission: unknown): void {
+  missionSelfWrites.noteWritten(mission)
+}
+
+/**
+ * One mission event from the owner's app, turned into at most one in-band line
+ * for the live session. NEVER throws: this runs inside a socket handler, and a
+ * notice that fails must not take the transport with it.
+ *
+ * Everything decidable lives in lib/mission-events.ts (pure, unit tested); this
+ * is only the wiring: dedupe, which chat, and the one MCP notification.
+ */
+function handleMissionEvent(frame: string, payload: unknown): void {
+  try {
+    const event = parseMissionEvent(frame, payload, ASSISTANT_ID)
+    if (!event) return
+
+    const frameKey = missionEventKey(event)
+    const alreadySeen = missionFramesSeen.has(frameKey)
+    if (!alreadySeen) {
+      missionFramesSeen.add(frameKey)
+      evictOldest(missionFramesSeen)
+    }
+
+    const chatId = missionChatId(event.mission)
+    const notice = decideMissionNotice({
+      event,
+      chatId,
+      selfAuthored: missionSelfWrites.isSelfAuthored(event),
+      alreadySeen,
+    })
+    if (!notice) return
+
+    log(
+      `${frame}: telling the session about mission #${event.mission.id} ` +
+        `(chat ${chatId ?? 'unknown'})`,
+    )
+    void trackMessageOperation(() =>
+      mcp.notification({
+        method: 'notifications/claude/channel',
+        params: { content: notice.content, meta: notice.meta },
+      }),
+    ).catch((err) => log(`${frame} notice delivery failed: ${err}`))
+  } catch (err) {
+    log(`${frame} handler error: ${err}`)
   }
 }
 let realtimeSocket: IOClientSocket | null = null
@@ -9193,6 +9450,52 @@ function connectWebsocket(): void {
       }
     }))
   }
+
+  // ── Missions: the owner's own decisions reach the agent ─────────────────────
+  //
+  // A paired daemon already sat in the room these frames are emitted to; it
+  // simply had no listener, so Set aside, Mark done, Pause and Resume changed
+  // the card the owner was looking at and never reached the model.
+  //
+  // EIGHT LITERAL registrations, deliberately not a loop. The counting guard
+  // in test/pairing-lock-standdown.test.ts keys on a literal single-quoted
+  // frame name inside the socket registration call, so a loop would match
+  // neither of its two patterns, would never enter `registered`, and would
+  // ship an UNGATED handler with that whole suite green.
+  // test/mission-ws-wiring.test.ts holds the literals, the drain guards and
+  // the self-write stamps in place.
+  realtimeSocket.on('mission_created', whenArmed('mission_created', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_created', payload)
+  }))
+  realtimeSocket.on('mission_ticked', whenArmed('mission_ticked', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_ticked', payload)
+  }))
+  realtimeSocket.on('mission_paused', whenArmed('mission_paused', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_paused', payload)
+  }))
+  realtimeSocket.on('mission_resumed', whenArmed('mission_resumed', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_resumed', payload)
+  }))
+  realtimeSocket.on('mission_completed', whenArmed('mission_completed', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_completed', payload)
+  }))
+  realtimeSocket.on('mission_abandoned', whenArmed('mission_abandoned', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_abandoned', payload)
+  }))
+  realtimeSocket.on('mission_failed', whenArmed('mission_failed', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_failed', payload)
+  }))
+  realtimeSocket.on('mission_updated', whenArmed('mission_updated', (payload: any) => {
+    if (updateDrainMode) return
+    handleMissionEvent('mission_updated', payload)
+  }))
 }
 
 // ── Slash-command discovery + sync ───────────────────────────────────────────
@@ -10351,6 +10654,13 @@ async function main(): Promise<void> {
           }),
         )
       },
+      // What this daemon reports it can do, sent on EVERY beat because the
+      // backend replaces the stored declaration wholesale. That is what lets
+      // an already-paired daemon start declaring on its next beat with no
+      // re-pair, and what decides whether the owner is offered a Pause button
+      // on this agent's mission card. See lib/declared-capabilities.ts for
+      // what is deliberately absent and why.
+      capabilities: () => [...DECLARED_CAPABILITIES],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would

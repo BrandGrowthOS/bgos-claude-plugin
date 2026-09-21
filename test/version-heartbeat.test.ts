@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DECLARED_CAPABILITIES } from '../lib/declared-capabilities'
 import {
   heartbeatEnv,
   readOwnVersion,
@@ -341,5 +342,101 @@ describe('readiness resend on change', () => {
     await expect(handle!.pollReadiness()).resolves.toBeUndefined()
     clearInterval(handle!.timer)
     clearInterval(handle!.readinessTimer)
+  })
+})
+
+describe('declared capabilities on the heartbeat', () => {
+  // The heartbeat is the REFRESH path: an already-paired daemon that updates
+  // starts declaring here on its next beat, no re-pair required, and an array
+  // replaces the stored declaration wholesale. That is what lets the backend
+  // decide, per daemon, whether the owner sees a Pause button at all.
+  test('the declaration rides EVERY beat, not only the first', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.41.0'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      capabilities: () => [...DECLARED_CAPABILITIES],
+    })
+    await Bun.sleep(0)
+    handle!.sendNow()
+    await Bun.sleep(0)
+    expect(calls.length).toBe(2)
+    for (const body of calls) {
+      expect(body.capabilities).toEqual([...DECLARED_CAPABILITIES])
+    }
+    clearInterval(handle!.timer)
+  })
+
+  test('what is declared is exactly the exported list, mission_pause absent', () => {
+    // Stage 6 of the Mission program is where a pause this daemon can actually
+    // enforce would land; until then, declaring it would hand the owner a
+    // button that does nothing.
+    expect([...DECLARED_CAPABILITIES]).toEqual(['mission_events'])
+    expect(DECLARED_CAPABILITIES.includes('mission_pause')).toBe(false)
+  })
+
+  test('no provider means no key at all, never an empty array', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.41.0'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+    })
+    await Bun.sleep(0)
+    expect('capabilities' in calls[0]!).toBe(false)
+    clearInterval(handle!.timer)
+  })
+
+  test('an empty declaration is omitted rather than clearing the stored one', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.41.0'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      capabilities: () => [],
+    })
+    await Bun.sleep(0)
+    expect('capabilities' in calls[0]!).toBe(false)
+    clearInterval(handle!.timer)
+  })
+
+  test('a throwing capabilities provider never drops the beat or daemonVersion', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.41.0'),
+      post: async (_path, body) => {
+        calls.push(body)
+        return {}
+      },
+      log: () => {},
+      capabilities: () => {
+        throw new Error('capability probe exploded')
+      },
+    })
+    await Bun.sleep(0)
+    expect(calls.length).toBe(1)
+    expect(calls[0]!.daemonVersion).toBe('0.41.0')
+    expect('capabilities' in calls[0]!).toBe(false)
+    clearInterval(handle!.timer)
+  })
+
+  test('a legacy X-API-Key install still declares nothing at all', () => {
+    // It has no pairing row to carry a declaration, so the whole loop is
+    // skipped. The backend must read "no declaration" as "enforces nothing".
+    expect(shouldSendVersionHeartbeat('apikey', '0.41.0')).toBe(false)
   })
 })

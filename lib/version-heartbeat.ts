@@ -129,6 +129,16 @@ export function startVersionHeartbeat(deps: {
    * must never be the reason a heartbeat fails.
    */
   lastError?: () => { code: string; message: string; at: string } | null
+  /**
+   * What this daemon reports it can do (lib/declared-capabilities.ts). The
+   * backend REPLACES the stored declaration wholesale with whatever arrives,
+   * so this rides every beat and an updated daemon starts declaring on its
+   * next one with no re-pair. An EMPTY list is omitted rather than sent: an
+   * empty array would clear a declaration the daemon still honours. Guarded
+   * like the providers above, because telemetry must never be the reason a
+   * heartbeat fails.
+   */
+  capabilities?: () => string[]
   /** Test seam for the readiness change poll (default READINESS_POLL_MS). */
   readinessPollMs?: number
 }): {
@@ -164,6 +174,12 @@ export function startVersionHeartbeat(deps: {
       if (deps.lastError) {
         try {
           body.lastError = deps.lastError()
+        } catch {}
+      }
+      if (deps.capabilities) {
+        try {
+          const declared = deps.capabilities()
+          if (Array.isArray(declared) && declared.length > 0) body.capabilities = declared
         } catch {}
       }
       await deps.post('integrations/heartbeat', body)

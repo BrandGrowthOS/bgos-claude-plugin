@@ -2,6 +2,72 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.41.0 (2026-09-20)
+
+- **Your owner's decisions about a mission now reach you.** Until this release a
+  mission was something the agent wrote and never heard about again: the owner
+  could press Set aside, Mark done, Pause or Resume in the app, the card in
+  front of them changed, and the agent kept working a goal that was already
+  dead. The daemon now listens for the eight `mission_*` frames it was already
+  being sent and tells the live session, in one plain line in the chat's own
+  channel voice, what its owner decided.
+  - `lib/mission-events.ts` is the whole decision, pure and unit tested:
+    `parseMissionEvent` is total (junk in, null out, never a throw into the
+    socket handler), and `decideMissionNotice` returns the words or null. The
+    narrated set is exactly five: paused, resumed, set aside, marked done, and
+    a mission the OWNER started. `mission_ticked` is never narrated, because
+    the owner cannot tick, so every tick is the agent's own write and the model
+    already has the tool result; telling it again is noise in its context.
+  - **Three ways this could have gone wrong, each closed with a test.** The
+    agent's own writes are stamped TWICE so the daemon never narrates the
+    model's own create or tick back to it: once by mission id BEFORE the
+    request leaves, because the backend emits the frame from inside the
+    transaction it answers from and it regularly beats the response home, and
+    once by mission id plus `updatedAt` when the response lands, which is what
+    covers a frame delivered late. The pending stamp is spent by one frame, so
+    a later change by the owner to the same mission is still heard, and the two
+    frames that are never narrated cannot spend it: a tick that closes the last
+    goal emits `mission_ticked` AND `mission_completed`, and a tick that ate
+    the stamp would leave the completion looking like the owner's Mark done.
+    Every frame is deduped (frame, mission id, `updatedAt`),
+    because a paired daemon sits in BOTH `pairing:<id>` and `assistant:<id>`
+    and a daemon in the field outlives a backend deploy. And an owner-authored
+    title is collapsed to one line with any channel marker inside it defanged,
+    so a crafted 200 character title cannot forge a second `[mission_*]` line
+    and hand the model instructions its owner never wrote.
+  - The eight registrations are written out one per line on purpose. The
+    stand-down guard counts handlers by matching a literal quoted frame name,
+    so a loop would have shipped eight ungated handlers with the whole suite
+    green; `test/mission-ws-wiring.test.ts` now fails if anyone writes one.
+  - A mission the owner REPLACED by starting a new one in the same chat is not
+    narrated as a Set aside. The `[mission_started]` line riding the same write
+    already says the new mission replaced any that was open, so telling the
+    model to stop and post a "where I stopped" line for the mission its owner
+    simply swapped out would contradict the line it is about to read.
+- **A mission belongs to ONE CHAT.** `create_mission`, `tick_mini_goal` and
+  `complete_mission` take an optional `chat_id`, resolved the way `reply`
+  resolves one (an opaque `session_handle` round-tripped by the model resolves,
+  a chat this agent may not reach is refused), then the live turn's chat, then
+  the first monitored chat last. The two implicit steps skip any chat the
+  server would refuse a mission in, because handing it one is not a mission in
+  the wrong chat, it is a 400 the agent cannot act on: a meeting room (owned by
+  the first participant) and a chat whose last inbound came from somebody other
+  than the owner (a share recipient's own chat with the agent). When nothing is
+  left the answer is the agent's main chat, which is what a single chat agent
+  has always had. The active read carries `?chatId=`, which is
+  what stops a tick issued while working chat B from ticking chat A's card.
+  An agent with ONE chat sees no difference at all: with no chat named the
+  request is byte identical to the 0.40.0 one, and the backend reads an absent
+  chat as the agent's main chat.
+- **The owner is not offered a Pause button on this channel, and now that is
+  the honest answer rather than a hardcoded one.** The daemon declares
+  `mission_events` on every heartbeat (`lib/declared-capabilities.ts`), and
+  deliberately does NOT declare `mission_pause`: this runtime has no
+  process-level handle on an in-flight turn, so its stop is cooperative and a
+  Pause button here would do nothing. Mark done and Set aside DO reach the
+  agent, and they end the mission. A pause this daemon can genuinely enforce
+  is stage 6 work, and that is when the token gets declared.
+
 ## 0.40.0 (2026-09-20)
 
 - **The owner can finally watch the agent work.** Until now a Claude Code

@@ -16,14 +16,22 @@
  *   PATCH assistants/:assistantId/missions/:missionId/tick      { goalId, evidence? }
  *   PATCH assistants/:assistantId/missions/:missionId/complete  { summary? }
  *
- * Create body: { title, miniGoals: [{ name, doneWhen }] }.
+ * Create body: { title, miniGoals: [{ name, doneWhen }], chatId? }.
  * Complete body: { summary? }, where summary is at most 500 chars. The backend
  * accepts 2..12 goals (the trained flow targets 4 to 10), assigns goal ids
- * 1..n, enforces ONE active mission per assistant (creating a new one
- * abandons the previous active mission), auto-completes on the last tick,
- * and treats a tick of an already-done goal as an idempotent no-op. All
- * write responses embed the full mission snapshot as { ok, mission }; the
- * active read returns { mission | null }.
+ * 1..n, auto-completes on the last tick, and treats a tick of an already-done
+ * goal as an idempotent no-op. All write responses embed the full mission
+ * snapshot as { ok, mission }; the active read returns { mission | null }.
+ *
+ * A mission belongs to ONE CHAT. `chatId` on the create body names it, and
+ * `?chatId=` on the active read asks for that chat's open mission. OMITTING
+ * the chat means the agent's MAIN chat, which is exactly what a single-chat
+ * agent has always meant, so the requests below are byte identical to the
+ * pre-0.41.0 ones when no chat is named. Each chat holds at most one open
+ * mission, so creating one in chat A never sets aside chat B's mission. Never
+ * send `chatId: null`: the backend's ValidationPipe runs with whitelist: true
+ * and strips an undeclared or wrongly typed field in silence, so a null would
+ * be a lie with no error anywhere.
  *
  * Validation failures return { ok: false, error } rather than throwing, so
  * the thin server wiring can relay a clear, actionable message to the agent
@@ -49,6 +57,8 @@ export interface MissionGoalBody {
 export interface MissionCreateBody {
   title: string
   miniGoals: MissionGoalBody[]
+  /** Present ONLY when the caller named a chat. Never null: see the header. */
+  chatId?: number
 }
 
 export interface MissionTickBody {
@@ -60,11 +70,24 @@ export interface MissionCompleteBody {
   summary?: string
 }
 
-/** The mission snapshot shape the backend returns (subset the tools read). */
+/** The five wire statuses (backend MissionDto.status). The union was three
+ *  for as long as the tools only ever wrote, and 'paused' and 'failed' have
+ *  always been on the wire: now that the daemon LISTENS for the owner's own
+ *  pause, a narrow union would type every new path against a lie. */
+export type MissionSnapshotStatus =
+  | 'active'
+  | 'paused'
+  | 'completed'
+  | 'abandoned'
+  | 'failed'
+
+/** The mission snapshot shape the backend returns (subset the tools read).
+ *  Everything below `miniGoals` is OPTIONAL because an older backend does not
+ *  send it and a reader must degrade rather than blank the notice. */
 export interface MissionSnapshot {
   id: number
   title: string
-  status: 'active' | 'completed' | 'abandoned'
+  status: MissionSnapshotStatus
   miniGoals: Array<{
     id: number
     name: string
@@ -73,6 +96,18 @@ export interface MissionSnapshot {
     doneAt: string | null
     evidence: string | null
   }>
+  /** The chat this mission belongs to; null (or absent) means the main chat. */
+  chatId?: number | null
+  /** True when the AGENT created it, false when the owner did. The notice
+   *  builder tells the model only about the owner's own creates. */
+  createdByAssistant?: boolean
+  /** The reason the owner typed when pausing, shown to them on the strip. */
+  pausedReason?: string | null
+  /** The mission-level done-when line, when the owner wrote one. */
+  doneWhen?: string | null
+  /** Bumped on EVERY write, so it is a precise per-write key for the self
+   *  write stamp and the frame dedupe in server.ts. */
+  updatedAt?: string
 }
 
 export type MissionBuildResult<T> = { ok: true; body: T } | { ok: false; error: string }
@@ -90,8 +125,9 @@ const GOALS_HELP =
 export function buildMissionCreateBody(input: {
   title?: unknown
   mini_goals?: unknown
+  chat_id?: unknown
 }): MissionBuildResult<MissionCreateBody> {
-  const { title, mini_goals } = input
+  const { title, mini_goals, chat_id } = input
 
   if (typeof title !== 'string' || !title.trim()) {
     return { ok: false, error: 'title is required: a short mission headline the user will see on the card.' }
@@ -157,7 +193,23 @@ export function buildMissionCreateBody(input: {
     miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
   }
 
-  return { ok: true, body: { title: trimmedTitle, miniGoals } }
+  const body: MissionCreateBody = { title: trimmedTitle, miniGoals }
+  // A chat is OPTIONAL and, when absent, the key must not exist at all. A
+  // refusal here is better than a silent main-chat create: a mission planted
+  // in the wrong chat sets aside the wrong chat's mission.
+  if (chat_id !== undefined && chat_id !== null && chat_id !== '') {
+    if (!isPositiveIntLike(chat_id)) {
+      return {
+        ok: false,
+        error:
+          `chat_id must be a positive integer chat id (got ${JSON.stringify(chat_id)}). ` +
+          'Pass the chat_id (or session_handle) of the turn you are answering, or omit ' +
+          "it to mean this agent's main chat.",
+      }
+    }
+    body.chatId = Number(chat_id)
+  }
+  return { ok: true, body }
 }
 
 /** Build the PATCH .../tick body from snake_case tool args. */
@@ -210,6 +262,68 @@ export function buildMissionCompleteBody(
   return { ok: true, body }
 }
 
+/**
+ * Which chat an IMPLICIT mission create or read lands in, when the agent named
+ * none.
+ *
+ * The backend refuses a mission in any chat that is not one of the OWNER's own
+ * DMs with this agent (mission.service.ts requireOwnedChatKey): a room is
+ * refused because a mission is one agent's promise and a room has many, and a
+ * chat belonging to somebody else is refused because the card would be planted
+ * in their chat. A share recipient's DM with a shared agent is exactly that
+ * second case, and it is the one stage 3 recorded as a real security finding.
+ *
+ * So an implicit source the create route would refuse is SKIPPED rather than
+ * sent, and when none is left the answer is null. Null is not a failure: it
+ * MEANS the agent's main chat, which is what a single-chat agent has always
+ * had and what the backend resolves a missing chat to.
+ *
+ * An EXPLICIT chat_id is not this function's business. The agent named it, the
+ * daemon checks only that it may reach it, and the backend answers for it.
+ *
+ * The two things the daemon knows, passed in rather than read, so this stays
+ * pure: whether a chat is a room (the meeting chats it tracks), and who sent
+ * the last inbound it saw there. A chat it has seen NO inbound in is not
+ * refused for that: silence is not somebody else, and a proactive create in a
+ * chat this process has only written to must keep working.
+ *
+ * One consequence worth stating: a peer (a2a) chat whose last message came
+ * from the other agent's owner is skipped too, even though the backend would
+ * accept it, because from here it looks exactly like a recipient's chat. The
+ * mission then lands in the agent's main chat, which is always valid and is
+ * where its owner is watching; an explicit chat_id still puts it in the peer
+ * chat.
+ */
+export interface ImplicitMissionChatInput {
+  /** The chat of the live turn, from the turn-chat tracker. */
+  turnChatId?: string | number | null
+  /** Every chat this daemon watches, in the order it watches them. */
+  monitoredChatIds: readonly string[]
+  /** The account this daemon's credentials belong to. */
+  ownerUserId: string
+  /** Is that chat a room? A meeting chat is the case that exists today. */
+  isRoom: (chatId: string) => boolean
+  /** Who sent the last inbound seen there, or null/undefined for none seen. */
+  lastInboundUserId: (chatId: string) => string | null | undefined
+}
+
+export function pickImplicitMissionChat(input: ImplicitMissionChatInput): string | null {
+  const { monitoredChatIds, ownerUserId, isRoom, lastInboundUserId } = input
+  const usable = (chatId: string): boolean => {
+    if (isRoom(chatId)) return false
+    const sender = lastInboundUserId(chatId)
+    if (typeof sender !== 'string' || sender === '') return true
+    return sender === ownerUserId
+  }
+  const turn = String(input.turnChatId ?? '').trim()
+  if (turn !== '' && usable(turn)) return turn
+  for (const chatId of monitoredChatIds) {
+    const id = String(chatId ?? '').trim()
+    if (id !== '' && usable(id)) return id
+  }
+  return null
+}
+
 const isPositiveIntLike = (v: unknown): boolean => {
   const n = typeof v === 'string' ? Number(v) : v
   return typeof n === 'number' && Number.isInteger(n) && n > 0
@@ -222,9 +336,24 @@ export function buildMissionCreatePath(assistantId: unknown): MissionPathResult 
   return { ok: true, path: `assistants/${assistantId}/missions` }
 }
 
-export function buildMissionActivePath(assistantId: unknown): MissionPathResult {
+/**
+ * The active-mission read, optionally scoped to ONE chat.
+ *
+ * With no chat (or a chat that is not a usable id) the path is byte identical
+ * to the pre-0.41.0 one, which is the single-chat agent's no-change proof. A
+ * junk chat is ignored rather than fatal: a read is not a write, and answering
+ * with the main chat's mission beats refusing to look. The query string is
+ * part of the daemon's ETag cache key (bgosGet keys on the path), so two chats
+ * can never share one cached snapshot.
+ */
+export function buildMissionActivePath(
+  assistantId: unknown,
+  chatId?: unknown,
+): MissionPathResult {
   if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
-  return { ok: true, path: `assistants/${assistantId}/missions/active` }
+  const base = `assistants/${assistantId}/missions/active`
+  if (!isPositiveIntLike(chatId)) return { ok: true, path: base }
+  return { ok: true, path: `${base}?chatId=${Number(chatId)}` }
 }
 
 export function buildMissionTickPath(assistantId: unknown, missionId: unknown): MissionPathResult {

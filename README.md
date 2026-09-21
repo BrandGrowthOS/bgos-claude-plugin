@@ -517,6 +517,42 @@ Two additions that let the BGOS app supervise a running session:
 - **Stop button (`stop_turn`, cooperative)**: when the user presses Stop for a chat, the backend sends a `stop_turn` RPC over the same WebSocket lane as voice. The plugin cannot kill an in-flight Claude Code turn (there is no process-level cancel hook), so the stop is **cooperative and honest about it**: the plugin pushes a channel notification telling the live agent to stand down on that ONE chat immediately (no new tool calls, one short acknowledgement reply, partial results kept), posts a plain "Run stopped at your request." confirmation into the chat, and reports `{stopped: true, mode: 'cooperative'}`. If the live session is unreachable (or the frame has no chat id) it reports `{stopped: false, supported: false}` instead of pretending. Nothing is killed and other chats are never touched.
 - **Context gauge (`contextPct`)**: the plugin automatically PATCHes the assistant status with the context-window fill percent, computed from the LATEST assistant usage entry in the session transcript (input + cache-read + cache-creation tokens over the model's window; 1M for `[1m]` model ids, 200k otherwise). It refreshes after each reply and on the poll heartbeat. The value is **approximate**: it lags one turn (it reflects the last completed API call) and drops back down after the host compacts the conversation. Agents must never set `contextPct` themselves.
 
+## Missions the owner can change while you work (v0.41.0+)
+
+A mission is the durable goal card the agent creates with `create_mission` and
+ticks as it works. From this release the traffic goes BOTH ways: when the owner
+presses Set aside, Mark done, Pause or Resume in the app, or starts a mission
+themselves, the live session is told in one plain line on its own channel, and
+a mission the owner closed stops being chased.
+
+**What is said, and what is not.** Exactly five things are narrated: paused,
+resumed, set aside, marked done, and a mission the OWNER started. A tick is
+never narrated, because the owner cannot tick, so every tick is the agent's own
+write and the model already has the tool result. A mission the owner REPLACED
+by starting a new one in the same chat says nothing on its own either: the
+start notice riding the same write already tells the whole story, and a second
+line telling the agent to stand down from what it was just told to pursue would
+contradict it. The agent's own writes are stamped and skipped, and every frame
+is deduped, so the same decision is never told twice.
+
+**A mission belongs to ONE CHAT.** `create_mission`, `tick_mini_goal` and
+`complete_mission` take an optional `chat_id`: pass the chat you are answering
+in, and omit it only when you truly mean the agent's main chat. Each chat holds
+at most one open mission, so starting one in a side chat never sets aside the
+main chat's mission. An agent with one chat behaves exactly as it did before.
+With no `chat_id` named the daemon uses the chat of the turn, then the first
+chat it watches, skipping any chat the server would refuse a mission in (a
+meeting room, or a chat whose last message came from somebody other than the
+owner, such as a share recipient's own chat with the agent); when none is left
+the mission lands in the agent's main chat.
+
+**No Pause button on this channel, and that is deliberate.** The daemon reports
+what it can do on every heartbeat (`lib/declared-capabilities.ts`) and declares
+`mission_events` and NOT `mission_pause`: nothing in this runtime can suspend an
+in flight Claude Code turn, so the app does not offer the owner a Pause button
+here rather than hand them one that does nothing. Mark done and Set aside do
+reach the agent, and they end the mission.
+
 ## Agent activity from hooks (v0.40.0+)
 
 The owner can watch the agent work: the tools it runs with the file or command

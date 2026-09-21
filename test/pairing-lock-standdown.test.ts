@@ -55,6 +55,18 @@ const PAIRING_FRAMES = [
   'meeting_policy_changed',
   'stream_authority',
   'update_state',
+  // Missions (0.41.0): the owner's own Set aside, Mark done, Pause, Resume and
+  // Start reach the agent in band. A stood-down daemon must not relay them:
+  // several daemons can resolve one pairing on a shared host, and the passive
+  // ones would each tell their model the same thing.
+  'mission_created',
+  'mission_ticked',
+  'mission_paused',
+  'mission_resumed',
+  'mission_completed',
+  'mission_abandoned',
+  'mission_failed',
+  'mission_updated',
 ]
 
 // Transport bookkeeping, not work done on the pairing's behalf: a passive
