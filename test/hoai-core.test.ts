@@ -55,6 +55,8 @@ import {
   HOAI_PLUGIN_REF,
   launchArgsFor,
   unresolvedChannelMessage,
+  LAUNCH_ENV,
+  hookRegistrationFor,
 } from '../bin/hoai-core.mjs'
 
 const WIN_HOME = 'C:\\Users\\x'
@@ -219,6 +221,58 @@ test('buildRunPlan: clone-shaped scriptDir launches server:bgos', () => {
   if (!plan.ok) return
   assert.deepEqual(plan.args, [...CLONE_FLAGS, 'server:bgos'])
   assert.match(plan.note, /assistant 42/)
+})
+
+// ── the activity rail travels in the run plan ──────────────────────────
+//
+// hoai is the launcher an agent folder actually starts with, day after day. It
+// carried neither the task tools flag (so the live Steps strip stayed empty for
+// ever, while everything else on the rail worked) nor the clone hook entries (so
+// a folder scaffolded before the rail existed never gained it). Both are part of
+// HOW this folder launches, so both belong in the plan.
+
+test('buildRunPlan: a clone launch carries the task tools flag AND the hook entries', () => {
+  const cwd = '/home/kc/agents/ava'
+  const plan = buildRunPlan({
+    cwd,
+    env: {},
+    home: POSIX_HOME,
+    readFile: readFileServing(`${cwd}/${FOLDER_PIN_FILE}`, '42'),
+    listDir: noDir,
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, true)
+  if (!plan.ok) return
+  assert.deepEqual(plan.env, { CLAUDE_CODE_ENABLE_TODO_TOOLS: '1' })
+  assert.deepEqual(plan.hooks, {
+    settingsPath: `${cwd}/.claude/settings.local.json`,
+    forwarderPath: `${CLONE_SCRIPT_DIR}/hoai-hook.mjs`,
+  })
+})
+
+test('buildRunPlan: a marketplace launch registers nothing, so no hook fires twice', () => {
+  const cwd = 'C:\\agents\\ava'
+  const plan = buildRunPlan({
+    cwd,
+    env: {},
+    home: WIN_HOME,
+    readFile: readFileServing(`${cwd}\\${FOLDER_PIN_FILE}`, '871\n'),
+    listDir: noDir,
+    scriptDir: MARKETPLACE_SCRIPT_DIR,
+  })
+  assert.equal(plan.ok, true)
+  if (!plan.ok) return
+  assert.equal(plan.hooks, null, 'a marketplace install already reads its own hooks/hooks.json')
+  assert.deepEqual(plan.env, { ...LAUNCH_ENV }, 'but it still needs the task tools')
+})
+
+test('hookRegistrationFor names the workspace settings file and this checkout\u2019s forwarder', () => {
+  assert.deepEqual(hookRegistrationFor({ cwd: '/w/a', scriptDir: '/p/bin', method: 'clone' }), {
+    settingsPath: '/w/a/.claude/settings.local.json',
+    forwarderPath: '/p/bin/hoai-hook.mjs',
+  })
+  assert.equal(hookRegistrationFor({ cwd: '/w/a', scriptDir: '/p/bin', method: 'marketplace' }), null)
+  assert.equal(hookRegistrationFor({ cwd: '/w/a', scriptDir: '', method: 'clone' }), null)
 })
 
 test('buildRunPlan: no pin + several credentials files refuses, naming both remedies', () => {
@@ -1595,6 +1649,67 @@ test('superviseClaude does not spawn while a hand-started claude owns the folder
     assert.equal(code, 0)
     assert.equal(spawns.length, 1, 'exactly one launch, after the incumbent left')
     assert.ok(polls >= 3, `the incumbent was polled until it left (polls=${polls})`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): the launch environment gains the task tools flag, and the hooks are registered', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const env: Record<string, string | undefined> = {}
+  const registered: Array<{ settingsPath: string; forwarderPath: string }> = []
+  try {
+    const code = await main([], {
+      platform: 'linux',
+      env,
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: (args: { settingsPath: string; forwarderPath: string }) => {
+        registered.push(args)
+        return { changed: true, reason: 'set' }
+      },
+      spawnImpl: (() => scriptedChild(0)) as never,
+    } as never)
+    assert.equal(code, 0)
+    assert.equal(
+      env.CLAUDE_CODE_ENABLE_TODO_TOOLS,
+      '1',
+      'the child inherits this environment; without the flag there are no task tools at all',
+    )
+    assert.equal(registered.length, 1, 'a clone launch registers the forwarder every time')
+    assert.equal(registered[0]!.forwarderPath, `${CLONE_SCRIPT_DIR}/hoai-hook.mjs`)
+    assert.ok(
+      registered[0]!.settingsPath.replace(/\\/g, '/').endsWith('/.claude/settings.local.json'),
+      registered[0]!.settingsPath,
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): a registration that throws never stops the launch', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const spawns: Array<{ file: string }> = []
+  try {
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      registerHooks: () => {
+        throw new Error('EACCES: a read only workspace')
+      },
+      spawnImpl: ((file: string) => {
+        spawns.push({ file })
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0, 'telemetry plumbing may never cost the user their agent')
+    assert.equal(spawns.length, 1)
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })

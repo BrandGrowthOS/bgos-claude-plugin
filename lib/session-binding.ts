@@ -26,8 +26,15 @@
 //      the next reply.
 //
 // Resolution chain (strongest evidence first):
-//   marker hit > sticky marker binding > env session id file >
-//   sticky previous binding > UNAMBIGUOUS newest-mtime (last resort, logged).
+//   hook payload transcript_path > sticky hook binding > marker hit >
+//   sticky marker binding > env session id file > sticky previous binding >
+//   UNAMBIGUOUS newest-mtime (last resort, logged).
+//
+// The hook step is stage 4's addition (2026-09-20). A Claude Code hook payload
+// carries the CLI's own transcript_path for the session that fired it, so it is
+// the CLI naming our file rather than us inferring it from a tool result the
+// CLI echoed. Once hooks are live the refusal branch below stops firing: there
+// is nothing left to guess about.
 //
 // The newest-mtime last resort is still correct at daemon BOOT for
 // --continue launches: --continue itself picks the newest-mtime session at
@@ -56,7 +63,16 @@ import { join } from 'node:path'
 // lib/resting.ts; tsconfig has allowImportingTsExtensions.
 import { latestContextPctFromJsonl, mungeCwd } from './usage-report.ts'
 
-export type BindingSource = 'marker' | 'env' | 'sticky' | 'newest-mtime'
+export type BindingSource = 'hook' | 'marker' | 'env' | 'sticky' | 'newest-mtime'
+
+/**
+ * The sources that are PROOF rather than inference. A hook payload is the CLI
+ * naming its own transcript, a marker is a message id only we could have
+ * minted, and the env session id is the CLI telling our own MCP child what it
+ * is. `newest-mtime` is the deliberate last resort and is excluded: it is a
+ * guess, and lib/hook-intake.ts binds a whole activity rail on this answer.
+ */
+export const POSITIVE_BINDING_SOURCES: readonly BindingSource[] = ['hook', 'marker', 'env']
 
 export interface Binding {
   /** Transcript file name (basename, <session-id>.jsonl). */
@@ -127,10 +143,23 @@ export function resolveBinding(args: {
   candidates: TranscriptCandidate[]
   envSessionId: string | null
   markerFile: string | null
+  /** The transcript a hook payload named as its own (stage 4). */
+  hookFile?: string | null
   previous: Binding | null
   now: number
 }): Binding | null {
   const names = new Set(args.candidates.map((c) => c.name))
+  // 0. The strongest evidence there is: a hook payload carries the CLI's own
+  //    transcript_path for the session that fired it, so the CLI has told us
+  //    which file is ours rather than us inferring it from a tool result it
+  //    echoed. Sticky for the same reason a marker binding is: the hook has
+  //    already proved the file, and a later scan miss proves nothing.
+  if (args.hookFile && names.has(args.hookFile)) {
+    return { name: args.hookFile, source: 'hook' }
+  }
+  if (args.previous?.source === 'hook' && names.has(args.previous.name)) {
+    return args.previous
+  }
   // 1. Fresh positive proof: a transcript containing OUR reply marker.
   if (args.markerFile && names.has(args.markerFile)) {
     return { name: args.markerFile, source: 'marker' }
@@ -185,6 +214,7 @@ export class SessionTranscriptBinder {
   private readonly envSessionId: string | null
   private readonly log: (msg: string) => void
   private markers: string[] = []
+  private hookFile: string | null = null
   private binding: Binding | null = null
   private loggedFallback = false
   private loggedRefusal = false
@@ -217,6 +247,31 @@ export class SessionTranscriptBinder {
       0,
       MARKER_LIMIT,
     )
+  }
+
+  /**
+   * A hook payload named its own transcript. Stage 4's positive proof: the CLI
+   * writes transcript_path into every hook payload, so once one arrives there
+   * is nothing left to infer. Records the basename; resolve() checks it still
+   * exists before trusting it, exactly as it does for a marker binding.
+   */
+  noteHookSession(sessionId: string, transcriptPath: string): void {
+    const path = String(transcriptPath ?? '').trim()
+    if (path) {
+      const name = path.split(/[\\/]/).pop() ?? ''
+      if (name.endsWith('.jsonl')) {
+        this.hookFile = name
+        return
+      }
+    }
+    const id = String(sessionId ?? '').trim()
+    if (id) this.hookFile = `${id}.jsonl`
+  }
+
+  /** The Claude project dir this daemon's cwd maps to. The hook intake needs it
+   *  to decide whether a first payload is ours (lib/hook-intake.ts). */
+  get projectDirectory(): string {
+    return this.projectDir
   }
 
   /** Resolve (and cache) THIS session's transcript path. Null when unknown. */
@@ -264,6 +319,7 @@ export class SessionTranscriptBinder {
       candidates,
       envSessionId: this.envSessionId,
       markerFile,
+      hookFile: this.hookFile,
       previous: this.binding,
       now,
     })
@@ -296,6 +352,17 @@ export class SessionTranscriptBinder {
     }
     this.binding = next
     return { path: join(this.projectDir, next.name), binding: next }
+  }
+
+  /**
+   * The transcript this daemon has POSITIVELY proven is its own session's, or
+   * null. The hook intake uses it as one of its three binding proofs, which is
+   * why a newest-mtime guess may never answer here.
+   */
+  provenTranscriptPath(now: number = Date.now()): string | null {
+    const resolved = this.resolve(now)
+    if (!resolved) return null
+    return POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) ? resolved.path : null
   }
 
   /** Tail of the currently-bound transcript, or null when unbound. */

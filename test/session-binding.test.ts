@@ -21,6 +21,7 @@ import {
   findMarkerFile,
   resolveBinding,
   AMBIGUITY_WINDOW_MS,
+  POSITIVE_BINDING_SOURCES,
   SessionTranscriptBinder,
 } from '../lib/session-binding.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
@@ -360,4 +361,111 @@ test('binder: missing project dir degrades to null, never throws', () => {
   assert.equal(binder.resolve(), null)
   assert.equal(binder.readContextPct(), null)
   assert.equal(binder.readBoundTail(), null)
+})
+
+// ── The hook payload is the strongest evidence there is (stage 4) ────────────
+//
+// Every Claude Code hook payload carries transcript_path for the session that
+// fired it. That is the CLI naming our own file, which beats inferring it from
+// a tool result the CLI echoed. Once hooks are live, the refusal branch above
+// ("several recent transcripts and no positive signal yet") stops firing.
+
+test('a hook binding outranks a marker hit and stays sticky', () => {
+  const candidates = [
+    { name: 'hook.jsonl', mtimeMs: 1 },
+    { name: 'marker.jsonl', mtimeMs: 9_999 },
+  ]
+  const bound = resolveBinding({
+    candidates,
+    envSessionId: 'marker',
+    markerFile: 'marker.jsonl',
+    hookFile: 'hook.jsonl',
+    previous: null,
+    now: 10_000,
+  })
+  assert.deepEqual(bound, { name: 'hook.jsonl', source: 'hook' })
+
+  // Sticky, for the same reason a marker binding is: the hook already proved
+  // the file, and a later scan that misses proves nothing.
+  assert.deepEqual(
+    resolveBinding({
+      candidates,
+      envSessionId: 'marker',
+      markerFile: 'marker.jsonl',
+      hookFile: null,
+      previous: bound,
+      now: 10_000,
+    }),
+    { name: 'hook.jsonl', source: 'hook' },
+  )
+})
+
+test('a hook naming a transcript that does not exist is ignored, not trusted', () => {
+  assert.deepEqual(
+    resolveBinding({
+      candidates: [{ name: 'real.jsonl', mtimeMs: 5 }],
+      envSessionId: null,
+      markerFile: null,
+      hookFile: 'ghost.jsonl',
+      previous: null,
+      now: 10,
+    }),
+    { name: 'real.jsonl', source: 'newest-mtime' },
+  )
+})
+
+test('noteHookSession takes the transcript path, and falls back to the session id', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-hook-binding-'))
+  const projectDir = join(dir, '.claude', 'projects', '-work')
+  mkdirSync(projectDir, { recursive: true })
+  // Two plausible transcripts and no positive signal: the old chain refuses.
+  writeFileSync(join(projectDir, 'ours.jsonl'), '{"type":"user"}\n')
+  writeFileSync(join(projectDir, 'stranger.jsonl'), '{"type":"user"}\n')
+
+  const binder = new SessionTranscriptBinder('/work', { claudeHome: join(dir, '.claude') })
+  assert.equal(binder.resolve(Date.now()), null, 'ambiguous, so it refuses to guess')
+
+  // The PATH decides, not the id. A --continue launch carries a freshly minted
+  // session id while the CLI keeps appending to the transcript of the session
+  // it resumed, so deriving the file name from the id would bind the wrong one
+  // (or nothing at all). The header of lib/session-binding.ts records that
+  // exact observation from the live fleet.
+  binder.noteHookSession('a-fresh-id-nobody-wrote', join(projectDir, 'ours.jsonl'))
+  const resolved = binder.resolve(Date.now())
+  assert.equal(resolved?.binding.source, 'hook')
+  assert.equal(resolved?.binding.name, 'ours.jsonl')
+
+  // A payload with no transcript_path still names the session, and the CLI's
+  // transcript file is always <session id>.jsonl.
+  const second = new SessionTranscriptBinder('/work', { claudeHome: join(dir, '.claude') })
+  second.noteHookSession('stranger', '')
+  assert.equal(second.resolve(Date.now())?.binding.name, 'stranger.jsonl')
+
+  // And the project dir it exposes for the hook intake is the real one.
+  assert.equal(binder.projectDirectory, projectDir)
+})
+
+// ── the proof half of the chain (what the hook intake is allowed to bind on) ─
+
+test('provenTranscriptPath answers only for POSITIVE proof, never for a guess', () => {
+  // lib/hook-intake.ts binds a whole activity rail on this answer: a newest
+  // mtime guess would bind the rail to a neighbour's session, which is the
+  // defect the intake's admission rule exists to prevent.
+  const cwd = '/work/proof'
+  const { home, dir } = makeProjectDir(cwd)
+  const now = Date.now()
+  writeFileSync(join(dir, 'only.jsonl'), `${assistantLine(100_000)}\n`)
+  const binder = new SessionTranscriptBinder(cwd, { claudeHome: home })
+  assert.equal(binder.resolve(now)!.binding.source, 'newest-mtime', 'the guess still resolves')
+  assert.equal(binder.provenTranscriptPath(now), null, 'but it is not PROOF, so it does not answer here')
+
+  // A reply marker is proof: we minted that message id.
+  writeFileSync(join(dir, 'only.jsonl'), `${assistantLine(100_000)}\n${markerLine(31337)}\n`)
+  binder.recordReplyMessageId(31337)
+  assert.equal(binder.provenTranscriptPath(now), join(dir, 'only.jsonl'))
+})
+
+test('POSITIVE_BINDING_SOURCES is the proof set, and excludes the last resort', () => {
+  assert.deepEqual([...POSITIVE_BINDING_SOURCES].sort(), ['env', 'hook', 'marker'])
+  assert.ok(!POSITIVE_BINDING_SOURCES.includes('newest-mtime'))
 })

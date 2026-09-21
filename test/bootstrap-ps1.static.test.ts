@@ -19,6 +19,24 @@ test('no em dashes or en dashes anywhere in the bootstrap', () => {
   assert.ok(!ps1.includes('–'), 'found an en dash')
 })
 
+test('the cmd launch line sets the task tools flag to "1", not to "1 "', () => {
+  // cmd.exe takes everything between the = and the && as the VALUE, so
+  // `set X=1 && foo` sets X to "1 " (with the trailing space). The CLI compares
+  // the string, reads that as not enabled, and ships no TaskCreate / TaskUpdate
+  // tools at all: the live Steps strip in the app stays empty for ever while
+  // every other part of the activity rail works, which reads as a broken
+  // feature rather than a typo.
+  const lines = ps1.split('\n').filter((line) => line.includes('set CLAUDE_CODE_ENABLE_TODO_TOOLS='))
+  assert.ok(lines.length >= 2, 'the cmd launch line and the printed hint both set it')
+  for (const line of lines) {
+    assert.ok(
+      !/CLAUDE_CODE_ENABLE_TODO_TOOLS=1\s+&&/.test(line),
+      `a space before the ampersand puts it in the value: ${line.trim()}`,
+    )
+    assert.ok(/CLAUDE_CODE_ENABLE_TODO_TOOLS=1&&/.test(line), `expected 1&&: ${line.trim()}`)
+  }
+})
+
 test('sentinel protocol: every step id is emitted, in order', () => {
   const ids = ['tools', 'claude-login', 'plugin', 'pair', 'preflight', 'launch', 'online']
   let last = -1

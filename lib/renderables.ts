@@ -145,6 +145,26 @@ export function listRenderableKinds(manifest: unknown): string[] {
   return manifestEntries(manifest).map((entry) => entry.kind)
 }
 
+/**
+ * The manifest category whose kinds are posted by the HOST rail, not summoned.
+ *
+ * `context_compacted` and `turn_continues` are markers the plugin itself emits
+ * from the session's own hook stream; they describe something that HAPPENED to
+ * the session. An agent calling show_component for one of them would be
+ * narrating an event nobody observed, in a chat the owner reads as a factual
+ * record, so the tool refuses instead of posting it.
+ */
+export const HOST_POSTED_CATEGORY = 'activity'
+
+/** The one sentence the refusal says. Kept here so the tool and its test agree. */
+export const HOST_POSTED_REFUSAL = 'This kind is posted by the host, not summoned.'
+
+/** Is this manifest entry one of the host posted (activity) kinds? */
+export function isHostPostedKind(entry: RenderableWireEntry | undefined | null): boolean {
+  if (!entry) return false
+  return String(entry.category ?? '').trim().toLowerCase() === HOST_POSTED_CATEGORY
+}
+
 /** Normalize the tool's optional `payload` argument to a plain object. */
 export function normalizeComponentPayloadArg(
   value: unknown,

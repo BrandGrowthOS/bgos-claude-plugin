@@ -517,6 +517,79 @@ Two additions that let the BGOS app supervise a running session:
 - **Stop button (`stop_turn`, cooperative)**: when the user presses Stop for a chat, the backend sends a `stop_turn` RPC over the same WebSocket lane as voice. The plugin cannot kill an in-flight Claude Code turn (there is no process-level cancel hook), so the stop is **cooperative and honest about it**: the plugin pushes a channel notification telling the live agent to stand down on that ONE chat immediately (no new tool calls, one short acknowledgement reply, partial results kept), posts a plain "Run stopped at your request." confirmation into the chat, and reports `{stopped: true, mode: 'cooperative'}`. If the live session is unreachable (or the frame has no chat id) it reports `{stopped: false, supported: false}` instead of pretending. Nothing is killed and other chats are never touched.
 - **Context gauge (`contextPct`)**: the plugin automatically PATCHes the assistant status with the context-window fill percent, computed from the LATEST assistant usage entry in the session transcript (input + cache-read + cache-creation tokens over the model's window; 1M for `[1m]` model ids, 200k otherwise). It refreshes after each reply and on the poll heartbeat. The value is **approximate**: it lags one turn (it reflects the last completed API call) and drops back down after the host compacts the conversation. Agents must never set `contextPct` themselves.
 
+## Agent activity from hooks (v0.40.0+)
+
+The owner can watch the agent work: the tools it runs with the file or command
+they touched and how long they took, the subagents it hands work to, a quiet
+line when its context was compacted, and its live task list as Steps. None of
+this is self reported, so the agent cannot forget to do it and cannot get it
+wrong. It comes from Claude Code's own hooks.
+
+**What the owner sees is their setting, not yours.** The app has a per agent
+"Show technical details" switch, OFF by default, and it decides what is DRAWN.
+The daemon always SENDS: the backend derives the agent's live working status
+from these rows arriving, and a shared agent has several viewers. Nothing in
+this plugin reads that setting.
+
+**The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
+the payload as JSON on stdin. The forwarder appends one line to
+`<state>/hooks/<session_id>/events.jsonl` and exits 0, always. The daemon
+watches that directory, maps the events (`lib/hook-events.ts`, pure) and posts
+the tool progress card, the Steps snapshot and the two markers. The forwarder
+opens no socket and reads no credentials, and every string built from tool input
+passes the plugin's secret scan before it leaves the machine.
+
+**A marketplace install gets this for free.** `hooks/hooks.json` ships in the
+plugin, and Claude Code loads an installed plugin's hooks file automatically.
+Nothing to do.
+
+**A clone install needs one entry, and the launchers write it.** Claude Code
+reads a plugin's `hooks/hooks.json` only for an INSTALLED plugin under
+`~/.claude/plugins`. A clone reaches the session as an MCP server entry in the
+workspace `.mcp.json`, which is not an installed plugin, so that file is never
+read. `bin/bgos-agent`, `bin/bgos-claim.mjs`, both bootstraps and `hoai` itself
+therefore write the same entries into the workspace's
+`.claude/settings.local.json`, pointing at the checkout's `bin/hoai-hook.mjs` by
+absolute path (`${CLAUDE_PLUGIN_ROOT}` does not resolve outside a plugin's own
+hooks file). Each of them skips a marketplace install, which already has the
+rail, so no event fires twice. It is idempotent and `hoai` does it on EVERY
+launch, so an existing agent folder gains the rail the next time it starts. To
+do it by hand:
+
+```jsonc
+// <agent folder>/.claude/settings.local.json
+{
+  "enableAllProjectMcpServers": true,
+  "hooks": {
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "node",
+                     "args": ["/absolute/path/to/bgos-claude-plugin/bin/hoai-hook.mjs"],
+                     "timeout": 5, "async": true } ] }
+    ]
+    // ... the same entry for SessionStart, UserPromptSubmit, PostToolUse,
+    // PostToolUseFailure, Stop, PreCompact, PostCompact, SessionEnd
+  }
+}
+```
+
+**Launch with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`.** Without it the CLI has no
+task tools, so there are no `TaskCreate` / `TaskUpdate` calls and the live Steps
+strip stays empty. Everything else on the rail works either way. The launchers
+already set it (the launchd plist and the systemd unit carry it in the service
+environment); a hand started session needs it on the command line:
+
+```bash
+cd <agent folder>
+CLAUDE_CODE_ENABLE_TODO_TOOLS=1 claude --dangerously-skip-permissions \
+  --dangerously-load-development-channels server:bgos
+```
+
+**Two things that turn the rail off silently**, both worth checking before
+debugging anything else: `--safe-mode` disables hooks outright, and a daemon
+that does not hold the pairing lock never consumes the spool (that is
+deliberate, it is what stops several daemons on one host posting every row
+twice). `hoai doctor` and the daemon log both name the lock holder.
+
 ## Agent Update Stream (v0.34.0+, experimental, default OFF)
 
 Set `BGOS_UPDATE_STREAM=true` (pairing mode only) to opt this daemon into the

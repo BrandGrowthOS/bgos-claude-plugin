@@ -18,8 +18,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import {
+  HOOK_EVENT_NAMES,
+  HOOK_TIMEOUT_SECONDS,
   TRUST_ENTRY_DEFAULTS,
   alternateSlashSpelling,
+  ensureHookEntries,
   ensureMarketplaceAutoUpdate,
   readMarketplaceAutoUpdate,
   preseedClaudeTrust,
@@ -500,4 +503,226 @@ test('a truthy non-boolean autoUpdate is not read as enrolment', () => {
       `${JSON.stringify(value)} must not read as enrolled`,
     )
   }
+})
+
+// ── ensureHookEntries: the hook rail for a CLONE install ─────────────────────
+//
+// The fact this exists for, and the one most likely to cost somebody a day:
+// Claude Code reads a plugin's hooks/hooks.json ONLY for an INSTALLED plugin
+// under ~/.claude/plugins. A clone install is an MCP server entry in a
+// workspace, not an installed plugin, so nothing ever reads that checkout's
+// hooks file and the agent activity rail is simply never there, silently. The
+// workspace settings file IS read, so the same entries go there with the
+// checkout's absolute forwarder path (${CLAUDE_PLUGIN_ROOT} does not resolve
+// outside a plugin's own hooks file).
+
+const FORWARDER = '/home/kc/bgos-claude-plugin/bin/hoai-hook.mjs'
+const settingsOf = (fs: ReturnType<typeof memFs>) =>
+  JSON.parse(fs.files.get('/agent/.claude/settings.local.json') ?? '{}')
+
+test('ensureHookEntries registers every event, in the exec form, pointed at the checkout', () => {
+  const fs = memFs()
+  const result = ensureHookEntries({
+    settingsPath: '/agent/.claude/settings.local.json',
+    forwarderPath: FORWARDER,
+    fs,
+  })
+  assert.deepEqual(result, { changed: true, reason: 'set' })
+
+  const hooks = settingsOf(fs).hooks
+  assert.deepEqual(
+    Object.keys(hooks).sort(),
+    [...HOOK_EVENT_NAMES].sort(),
+    'the clone entries register the same events as hooks/hooks.json',
+  )
+  for (const name of HOOK_EVENT_NAMES) {
+    const entry = hooks[name][0].hooks[0]
+    assert.equal(entry.type, 'command')
+    assert.equal(entry.command, 'node')
+    assert.deepEqual(entry.args, [FORWARDER], 'an absolute path: the placeholder is plugin-only')
+    assert.equal(entry.timeout, HOOK_TIMEOUT_SECONDS)
+    assert.equal(entry.async, true, 'a hook that blocks a tool call is a defect')
+    assert.ok(!('asyncRewake' in entry), 'waking the model is not this lane\u2019s job')
+    assert.ok(!('matcher' in hooks[name][0]), 'routing by tool name happens in the mapper')
+  }
+})
+
+test('a second run is a no-op that rewrites identical bytes', () => {
+  const fs = memFs()
+  const args = { settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs }
+  ensureHookEntries(args)
+  const first = fs.files.get('/agent/.claude/settings.local.json')
+  const again = ensureHookEntries(args)
+  assert.deepEqual(again, { changed: false, reason: 'already' })
+  assert.equal(fs.files.get('/agent/.claude/settings.local.json'), first, 'byte identical')
+})
+
+test('a moved checkout replaces our old entry instead of stacking a dead one beside it', () => {
+  const fs = memFs()
+  const settingsPath = '/agent/.claude/settings.local.json'
+  ensureHookEntries({ settingsPath, forwarderPath: '/old/place/bin/hoai-hook.mjs', fs })
+  ensureHookEntries({ settingsPath, forwarderPath: FORWARDER, fs })
+  const entries = settingsOf(fs).hooks.PreToolUse.flatMap((m: any) => m.hooks)
+  assert.equal(entries.length, 1, 'exactly one HOAI forwarder per event, the live one')
+  assert.deepEqual(entries[0].args, [FORWARDER])
+})
+
+test('a hook the user wrote themselves survives untouched', () => {
+  const mine = { type: 'command', command: 'bash', args: ['/home/kc/lint.sh'], timeout: 10 }
+  const fs = memFs({
+    '/agent/.claude/settings.local.json': JSON.stringify({
+      enableAllProjectMcpServers: true,
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [mine] }] },
+    }),
+  })
+  ensureHookEntries({
+    settingsPath: '/agent/.claude/settings.local.json',
+    forwarderPath: FORWARDER,
+    fs,
+  })
+  const settings = settingsOf(fs)
+  assert.equal(settings.enableAllProjectMcpServers, true, 'the MCP opt-in is not clobbered')
+  const flat = settings.hooks.PreToolUse.flatMap((m: any) => m.hooks)
+  assert.ok(
+    flat.some((h: any) => h.command === 'bash' && h.args[0] === '/home/kc/lint.sh'),
+    'the user\u2019s own hook is still registered',
+  )
+  assert.ok(flat.some((h: any) => h.args?.[0] === FORWARDER))
+})
+
+test('a corrupt settings file is replaced rather than failing the install', () => {
+  const fs = memFs({ '/agent/.claude/settings.local.json': '{ not json' })
+  const result = ensureHookEntries({
+    settingsPath: '/agent/.claude/settings.local.json',
+    forwarderPath: FORWARDER,
+    fs,
+  })
+  assert.equal(result.reason, 'set')
+  assert.equal(settingsOf(fs).hooks.Stop.length, 1)
+})
+
+test('no forwarder path means no entries, never a half written hooks block', () => {
+  const fs = memFs()
+  assert.deepEqual(
+    ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: '', fs }),
+    { changed: false, reason: 'no_path' },
+  )
+  assert.equal(fs.files.size, 0)
+  assert.throws(() => ensureHookEntries({ settingsPath: '', forwarderPath: FORWARDER, fs }))
+})
+
+test('a write that a concurrent claude overwrites is reported, not claimed', () => {
+  // Same race, same answer, as every other key this module writes: read back,
+  // and if our change is not on disk, say so instead of logging a rail that
+  // does not exist.
+  const files = new Map<string, string>()
+  const fs = {
+    files,
+    readFile: (p: string) => files.get(p) ?? null,
+    writeFile: (p: string) => {
+      // The rival wins every time: our bytes never land.
+      files.set(p, JSON.stringify({ enableAllProjectMcpServers: true }))
+    },
+  }
+  assert.deepEqual(
+    ensureHookEntries({
+      settingsPath: '/agent/.claude/settings.local.json',
+      forwarderPath: FORWARDER,
+      fs: fs as never,
+    }),
+    { changed: false, reason: 'not_persisted' },
+  )
+})
+
+test('the clone entry list and hooks/hooks.json register the same events', () => {
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8'),
+  )
+  assert.deepEqual(
+    Object.keys(manifest.hooks).sort(),
+    [...HOOK_EVENT_NAMES].sort(),
+    'a marketplace install and a clone install must see the same events, or the mapper ' +
+      'is fed differently on two halves of the fleet',
+  )
+})
+
+// ── Every launcher reaches the settings writer ───────────────────────────────
+//
+// The failure this guards is SILENCE: a clone install whose launcher forgot the
+// call chats perfectly and simply never shows tool detail, so nobody reports it.
+
+const launcher = (rel: string): string =>
+  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8').replace(/\r\n/g, '\n')
+
+test('every launcher that creates an agent folder registers the hook entries', () => {
+  for (const rel of [
+    '../bin/bgos-agent',
+    '../bin/bgos-claim.mjs',
+    '../bin/hoai-bootstrap.sh',
+    '../bin/hoai-bootstrap.ps1',
+    // hoai is the launcher an existing agent folder actually starts with, day
+    // after day. A folder scaffolded before this release, or one whose settings
+    // file was rewritten by a concurrent claude, gets the rail back here or
+    // never: it simply shows no tool detail, with nothing to notice.
+    '../bin/hoai-core.mjs',
+  ]) {
+    const source = launcher(rel)
+    assert.match(source, /ensureHookEntries/, `${rel} never registers the activity hooks`)
+    assert.match(
+      source,
+      /hoai-hook\.mjs/,
+      `${rel} must name the forwarder by path (the plugin placeholder does not resolve here)`,
+    )
+    assert.match(
+      source,
+      /settings\.local\.json/,
+      `${rel} must write into the workspace settings file, the one the CLI reads`,
+    )
+  }
+})
+
+test('every launcher skips a marketplace install, so no hook ever fires twice', () => {
+  // A marketplace install already has hooks/hooks.json. Writing the settings
+  // entries there too would run the forwarder twice per event: the dedupe
+  // catches it, but paying for two node spawns per tool call would not be free.
+  assert.match(launcher('../bin/hoai-bootstrap.sh'), /if \[ "\$RESOLVED_METHOD" != "marketplace" \]/)
+  assert.match(launcher('../bin/hoai-bootstrap.ps1'), /if \(\$ResolvedMethod -ne 'marketplace'\)/)
+  // bgos-agent knows the answer by its CHANNEL: plugin:<plugin>@<marketplace>
+  // is the marketplace one, server:<name> is a clone.
+  const agentScript = launcher('../bin/bgos-agent')
+  const install = agentScript.indexOf('install_hook_entries "$workdir"')
+  assert.ok(install > 0, 'bgos-agent must still register the hooks for a clone')
+  const guard = agentScript.lastIndexOf('plugin:*)', install)
+  assert.ok(
+    guard > 0 && guard < install,
+    'bgos-agent writes the settings entries whatever channel it installed, so a ' +
+      'marketplace channel double registers the forwarder',
+  )
+  // hoai, the launcher every agent folder actually starts with, asks the same
+  // question through the install-method detector.
+  assert.match(launcher('../bin/hoai-core.mjs'), /=== 'marketplace'\) return null/)
+})
+
+test('every launch line the launchers write turns the task tools on', () => {
+  // Without CLAUDE_CODE_ENABLE_TODO_TOOLS=1 the CLI has no TaskCreate /
+  // TaskUpdate tools, so the live Steps strip in the app stays empty forever
+  // while everything else on the rail works, which reads as a broken feature.
+  for (const rel of [
+    '../bin/bgos-agent',
+    '../bin/bgos-claim.mjs',
+    '../bin/hoai-bootstrap.sh',
+    '../bin/hoai-bootstrap.ps1',
+    '../bin/hoai-core.mjs',
+  ]) {
+    assert.match(
+      launcher(rel),
+      /CLAUDE_CODE_ENABLE_TODO_TOOLS[= ]/,
+      `${rel} starts a session without the task tools`,
+    )
+  }
+  // And the supervisors, which launch with no shell line at all, carry it in
+  // the service environment instead.
+  const agent = launcher('../bin/bgos-agent')
+  assert.match(agent, /<key>CLAUDE_CODE_ENABLE_TODO_TOOLS<\/key><string>1<\/string>/, 'launchd')
+  assert.match(agent, /Environment=CLAUDE_CODE_ENABLE_TODO_TOOLS=1/, 'systemd')
 })

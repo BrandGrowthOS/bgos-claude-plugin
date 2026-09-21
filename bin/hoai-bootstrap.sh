@@ -580,6 +580,34 @@ JS
 node "$PRESEED_JS" "$CONFIG_DIR" "$WORKDIR" \
     || say '[hoai] warning: prompt pre-seed failed; the first launch may stop on a one-time question.'
 
+# Agent activity hooks for a CLONE install.
+#
+# Claude Code reads a plugin's own hooks/hooks.json ONLY for an INSTALLED plugin
+# under the plugins cache. A clone checkout reaches the session as an MCP server
+# entry in this workspace's .mcp.json, which is NOT an installed plugin, so
+# nothing would ever read its hooks file and the activity rail would simply
+# never appear, with no error to notice. The workspace settings file IS read, so
+# the same entries go there with this checkout's absolute forwarder path.
+# A marketplace install already has the rail and is skipped, so no event ever
+# fires twice. Idempotent, and best effort: a failure costs the tool detail.
+if [ "$RESOLVED_METHOD" != "marketplace" ]; then
+    mkdir -p "$WORKDIR/.claude"
+    HOAI_PRESEED="$PLUGIN_ROOT/lib/claude-preseed.mjs" \
+    HOAI_SETTINGS="$WORKDIR/.claude/settings.local.json" \
+    HOAI_FORWARDER="$PLUGIN_ROOT/bin/hoai-hook.mjs" \
+    node -e '
+        const { pathToFileURL } = require("node:url");
+        import(pathToFileURL(process.env.HOAI_PRESEED).href)
+          .then((m) => m.ensureHookEntries({
+            settingsPath: process.env.HOAI_SETTINGS,
+            forwarderPath: process.env.HOAI_FORWARDER,
+          }))
+          .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
+    ' \
+        && say "[hoai] activity hooks registered in $WORKDIR/.claude/settings.local.json" \
+        || say '[hoai] warning: could not register the activity hooks; the agent works, tool detail will not show.'
+fi
+
 if ! node "$TOOLS_ROOT/bin/bgos-doctor.mjs" --preflight --assistant-id "$ASSISTANT_ID" --workdir "$WORKDIR" --backend "$BACKEND"; then
     say 'Preflight FAILED. The table above names the broken piece and its fix command.'
     fail 'preflight-failed'
@@ -590,7 +618,10 @@ say 'Preflight passed: MCP handshake ok, channel Connected.'
 step 'launch'
 if [ "$NO_LAUNCH" -eq 1 ] || [ "$NON_INTERACTIVE" -eq 1 ]; then
     say 'Skipping launch. Start the agent any time:'
-    say "  cd \"$WORKDIR\" && hoai"
+    # CLAUDE_CODE_ENABLE_TODO_TOOLS=1 turns on the CLI's task tools, which feed
+    # the live Steps strip in the app. The rest of the activity rail works
+    # without it.
+    say "  cd \"$WORKDIR\" && CLAUDE_CODE_ENABLE_TODO_TOOLS=1 hoai"
     step 'online'
     say "Done (not launched). Your agent (assistant $ASSISTANT_ID) is paired and preflight-verified."
     say "  workspace : $WORKDIR"
@@ -601,9 +632,9 @@ fi
 # has no %N; node is already a hard prerequisite, so ask it.
 LAUNCH_EPOCH_MS="$(node -e 'process.stdout.write(String(Date.now()))')"
 say 'Starting your agent in a new window...'
-if ! open_terminal_with "cd '$WORKDIR' && hoai"; then
+if ! open_terminal_with "cd '$WORKDIR' && CLAUDE_CODE_ENABLE_TODO_TOOLS=1 hoai"; then
     say 'Could not open a terminal window automatically. Start the agent yourself:'
-    say "  cd \"$WORKDIR\" && hoai"
+    say "  cd \"$WORKDIR\" && CLAUDE_CODE_ENABLE_TODO_TOOLS=1 hoai"
 fi
 
 step 'online'
