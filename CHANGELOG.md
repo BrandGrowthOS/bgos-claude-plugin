@@ -4,8 +4,8 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## 0.42.1 (2026-09-21)
 
-- **A permission request now looks like one, and waits as long as its owner
-  set.** When this agent needed an OK before running a tool, it posted a plain
+- **A permission request now looks like one, and stops dying after two
+  minutes.** When this agent needed an OK before running a tool, it posted a plain
   chat message with four grey chips and gave up on its own after two minutes.
   It looked like the approval card the rest of HOAI uses and was nothing like
   it: the app drew chips instead of a card, the agent read as FINISHED on every
@@ -18,29 +18,62 @@ Notable changes to the HOAI Claude Code plugin.
     vocabulary. Two and not four, because the CLI accepts only allow or deny,
     so a session or permanent button would have promised the owner a memory
     this agent does not have.
-  - **The owner decides how long it waits.** Right before it asks, the daemon
-    reads its own agent's `approvalWaitSeconds` and sends it as
-    `wait_seconds`, so the app can say "If you don't answer within 10 min" and
-    mean it. A read that gives nothing back sends the longest this daemon can
-    hold a request open (30 min) rather than nothing at all: a card with no
-    `wait_seconds` gets the server's generic minute, which would have been
-    shorter than the two minutes this replaces.
-  - **The phone does not ring yet, and this release does not pretend it
-    does.** The card has to go to the messages route, because that is the only
-    one that carries an `approvalMeta` at all, and that route sends no device
-    notification: every push in HOAI is sent from the other one. The old plain
-    message did ring, under the ordinary message category and with none of the
-    permission words. So with the app closed, a request now waits in silence
-    until it expires. The push belongs to the backend half of this stage and
-    lands with it; until then, prefer an agent whose owner has the app open.
+  - **The owner decides how long it waits, and this daemon only offers.** The
+    plugin reads no setting of the owner's. Every card carries
+    `wait_seconds: 1800`, the longest this daemon can keep its own side of a
+    request open, and the SERVER stores the smaller of that and the owner's
+    per agent choice (10 minutes unless they change it). That stored number
+    comes back on the created message, and it is what the card says and what
+    this daemon's own backstop is built from. Sending nothing instead would be
+    the shortest wait of all: a card with no `wait_seconds` gets the server's
+    generic minute, shorter than the two minutes this replaces.
+  - **Deploy the backend first, and this is why.** Both halves this release
+    leans on are on one BGOS branch, `feat/p2-requests-wait-for-you`, and
+    neither is on the deployed backend yet.
+    - The **push**: the card has to go to the messages route, because that is
+      the only one that carries an `approvalMeta` at all, and that route sends
+      no device notification today. Every push in HOAI is sent from the other
+      one. So until that branch deploys, a request raised while the app is
+      closed reaches nobody.
+    - The **per agent clamp**: the deployed backend caps `wait_seconds` at
+      1800 and stores what it is given. Until the clamp lands, every request
+      from this daemon waits the full 30 minutes whatever the owner chose,
+      and can hold an update's drain for that whole time (see below).
+    Both are reasons to let hosts take this release AFTER the backend is out,
+    not before.
   - **The server is the only judge of when a request is dead.** The 120 s
     local clock is gone. The wait ends on the owner's answer, or on the
-    server's own expiry flag, or on a backstop 90 s BEHIND the whole wait for
+    server's own expiry flag, or on a backstop 90 s BEHIND the stored wait for
     a server that never answers, which also strips the buttons off a card
     nobody is listening to. A yes in the last seconds is honoured now, where
     before it hit a request the daemon had already declined. And a request
     raised while an auto update is draining the daemon is answered with a no
     instead of hanging the CLI on a question nothing was left to answer.
+  - **A parked request stopped costing 2,100 reads of one chat.** TWO loops
+    read that chat while a request waits, and only counting one of them is how
+    a half hour request got expensive. The verdict watch now looks every 1.5 s
+    for the first minute, where an answer usually lands, then every 5 s: about
+    390 looks over half an hour rather than 1,200. And the daemon's own 2 s
+    fast scope, which a pending request used to hold for as long as it waited,
+    is bounded at ten minutes exactly the way an abandoned button prompt
+    already was: about 300 reads rather than 900. Half an hour of waiting is
+    about 700 reads in total, per waiting daemon, and every one of them still
+    carries an If-None-Match. A request parked past the ten minutes loses
+    nothing: the tap still arrives on the socket, and its own watch is still
+    reading the chat every 5 s.
+  - **The expiry reaches a request in a busy chat.** The watch reads a PAGE of
+    the chat, the newest 50 messages, and a card posted into a chat with
+    several people talking can slide off that page during a wait that now
+    lasts minutes. The server's "this request is dead" flag lives on the card
+    row, so once the row was off the page nothing ended the wait but the local
+    backstop, with the CLI blocked the whole time. The card is now read on its
+    own, anchored, the moment the page stops carrying it.
+  - **Known and not fixed here: a pending request holds an auto update's
+    drain** for as long as it waits, because the handler runs inside the same
+    message operation tracker that the drain waits on. Up to the owner's whole
+    wait once the backend clamp is deployed, and up to the full 30 minutes
+    until then. Bounding the drain belongs to the self update lane, not to
+    this one.
   - **Nothing changes for an agent installed with auto approve on**, which is
     the default: that check still short circuits before any of this. And a
     prompt left on screen by an 0.42.0 daemon still answers, for one release.

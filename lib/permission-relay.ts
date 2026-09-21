@@ -26,19 +26,23 @@
  * server.ts is one 11,000 line file and nothing inside it can be unit tested
  * without booting a daemon.
  *
- * THE ONE THING THIS DOES NOT FIX, SAID PLAINLY SO NOBODY READS IT AS FIXED.
- * The card has to go to POST /api/v1/messages, because that is the only route
- * whose DTO carries an `approvalMeta` at all (the /send-message body declares
- * none, and the whitelist strips what it does not declare). That route sends
- * NO device push: its DM arm does a WebSocket emit, an unread bump and the
- * activity detector, and every push helper in the backend, `needsYou`
- * category included, is called from the /send-message service alone. The
- * plain message this replaced DID ring the owner's phone, under the wrong
- * category and with no permission words, but it rang it. So until the backend
- * sends the approval push from the create path as well, a request raised
- * while the app is closed reaches nobody and then denies itself. That is a
- * backend change, not one this repo can make, and it is the one thing
- * standing between this and the stage it belongs to.
+ * THE ORDER THIS SHIPS IN, AND THE TWO BACKEND HALVES IT WAITS ON. Both are
+ * on one BGOS branch, `feat/p2-requests-wait-for-you`, and neither is on the
+ * deployed backend, so this release should reach hosts AFTER that one is out.
+ *
+ *   - THE PUSH. The card has to go to POST /api/v1/messages, because that is
+ *     the only route whose DTO carries an `approvalMeta` at all (the
+ *     /send-message body declares none, and the whitelist strips what it does
+ *     not declare). That route sends NO device push today: its DM arm does a
+ *     WebSocket emit, an unread bump and the activity detector, and every push
+ *     helper in the backend, `needsYou` category included, is called from the
+ *     /send-message service alone. The plain message this replaced DID ring
+ *     the owner's phone, under the wrong category and with no permission
+ *     words, but it rang it.
+ *   - THE PER AGENT CLAMP, which is what makes the offer below an offer. The
+ *     deployed backend caps `wait_seconds` at 1800 and stores what it is
+ *     given, so until the clamp lands every request from this daemon waits the
+ *     full 30 minutes whatever the owner chose for this agent.
  *
  * THE SERVER IS THE ONLY JUDGE OF WHEN A REQUEST IS DEAD. A daemon that runs
  * a shorter clock of its own declares a decline while the card in the owner's
@@ -239,8 +243,6 @@ export interface PermissionRequestBodyInput {
   toolName: string
   description?: string
   inputPreview?: string
-  /** How long this request waits, already resolved by permissionWaitSeconds. */
-  waitSeconds: number
 }
 
 /**
@@ -274,84 +276,143 @@ export function buildPermissionRequestBody(
       // technical details on, so the value is an audit field here, not copy.
       risk: 'medium',
       request_id: input.requestId,
-      // ALWAYS sent. See permissionWaitSeconds: an absent wait is not "as it
-      // was", it is the server's 60 s, which is shorter than the clock this
-      // change removed.
-      wait_seconds: input.waitSeconds,
+      // ALWAYS sent, always the same number. See PERMISSION_HOLD_SECONDS: an
+      // absent wait is not "as it was", it is the server's 60 s, which is
+      // shorter than the clock this change removed.
+      wait_seconds: PERMISSION_HOLD_SECONDS,
     },
   }
 }
 
-// ── The owner's wait ─────────────────────────────────────────────────────────
-
-/** The server's own floor and ceiling for a per agent approval wait. */
-export const APPROVAL_WAIT_MIN_SECONDS = 60
-export const APPROVAL_WAIT_MAX_SECONDS = 1800
+// ── The wait: this daemon offers, the server decides ─────────────────────────
 
 /**
- * Read `approvalWaitSeconds` off an assistant row. Anything that is not a
- * whole number inside the server's own range is ignored, which covers every
- * way this read can come back thin: an older backend without the column, a
- * 304 with no body, a null, a string, a value some other client wrote through
- * the API. A null answer is handed to permissionWaitSeconds, which decides
- * what a request with no owner preference actually waits.
+ * The longest this daemon keeps its own side of a request open, and the number
+ * every card carries.
  *
- * WHETHER A DAEMON SHOULD READ THIS AT ALL IS AN OPEN QUESTION, one level up.
- * The other reading of the rule is that a plugin never reads a per agent
- * setting: it always asks for the longest it can hold, and the SERVER stores
- * the smaller of that and the owner's choice. The two only differ when this
- * read fails, and permissionWaitSeconds answers that case the same way either
- * reading would, so the wait an owner gets is the same under both today. What
- * is left is the 3 s this read costs a blocked agent, and the day the server
- * starts clamping, this whole function is dead weight rather than wrong.
+ * IT IS AN OFFER, NOT A CHOICE, and that is the whole design. This plugin
+ * never reads a per agent setting (there is a guard test for it, beside the
+ * others): it sends the longest it can hold, and the SERVER stores the smaller
+ * of this and the owner's own choice for this agent
+ * (`assistants.approval_wait_seconds`, 10 minutes unless the owner changes
+ * it). The stored number comes back on the created message, which is where
+ * the backstop below reads it and what the card in the owner's hand says.
+ * That clamp is the backend half named at the top of this file, and it is not
+ * deployed yet: until it is, the server stores this number whole and every
+ * request waits the full half hour.
+ *
+ * Sending nothing instead would not leave the request as it was: the server
+ * applies its generic 60 s to a row with no `wait_seconds`, which is SHORTER
+ * than the 120 s local clock this whole change removed.
  */
-export function parseApprovalWaitSeconds(data: unknown): number | null {
-  if (data === null || typeof data !== 'object') return null
-  const raw = (data as { approvalWaitSeconds?: unknown }).approvalWaitSeconds
+export const PERMISSION_HOLD_SECONDS = 1800
+
+/**
+ * The wait the SERVER stored, read off the message the POST just created.
+ *
+ * This is the only place this daemon ever learns the owner's real wait. A
+ * whole number from 1 to the hold above is usable; everything else reads as
+ * "not stated", which covers an older backend that echoes no `approvalMeta`,
+ * a response shape that moved, and a value some other client wrote. The
+ * backstop answers that case with the hold, which is the longest the server
+ * could possibly have stored, so a thin response can only ever make this
+ * daemon wait LONGER than it needed to, never shorter than the owner's card.
+ */
+export function storedWaitSeconds(posted: unknown): number | null {
+  if (posted === null || typeof posted !== 'object') return null
+  const meta = (posted as { approvalMeta?: unknown }).approvalMeta
+  if (meta === null || typeof meta !== 'object') return null
+  const raw = (meta as { wait_seconds?: unknown }).wait_seconds
   if (typeof raw !== 'number' || !Number.isInteger(raw)) return null
-  if (raw < APPROVAL_WAIT_MIN_SECONDS || raw > APPROVAL_WAIT_MAX_SECONDS) return null
+  if (raw < 1 || raw > PERMISSION_HOLD_SECONDS) return null
   return raw
 }
 
 /**
- * The generic fail closed wait the server applies when a row carries no
- * `wait_seconds` of its own (APPROVAL_TIMEOUT_SECONDS). Nothing here sends a
- * card without one any more; the number is kept because it is the reason why.
- */
-export const DEFAULT_APPROVAL_WAIT_SECONDS = 60
-
-/**
- * How long THIS request waits, and the one number both the card and the
- * backstop below are built from.
- *
- * WHY A FAILED READ IS NOT "SEND NOTHING" (found in review, and it was the
- * live case: a backend without the column answers every read thin). Sending
- * no `wait_seconds` does not leave the request as it was. The server then
- * applies its generic 60 s and refuses the owner's tap by the expiry flag, so
- * the window would have been SHORTER than the 120 s local clock this change
- * removed, on every request, for as long as the column took to deploy.
- *
- * So a request with no owner preference asks for the longest this daemon can
- * hold its own side open. That is also exactly what a plugin is asked to send
- * once the SERVER does the deciding (it stores the smaller of this and the
- * agent's own setting), so the number is right under both readings and the
- * owner can only ever gain time, never lose it.
- */
-export function permissionWaitSeconds(fromAssistant: number | null | undefined): number {
-  return fromAssistant ?? APPROVAL_WAIT_MAX_SECONDS
-}
-
-/**
- * The local backstop: the request's own wait plus 90 s of slack.
+ * The local backstop: the wait the server stored, plus 90 s of slack.
  *
  * It is NOT a second deadline racing the server. The server flags an
  * unanswered row somewhere between its deadline and the next 30 s sweep, and
  * the poll below reads that flag; the backstop only catches the case where no
  * answer of any kind ever comes back, so it must sit BEHIND every honest
- * server answer, never in front of one.
+ * server answer, never in front of one. A response that stated no wait falls
+ * back to the hold, for the same reason.
  */
-export function permissionBackstopMs(waitSeconds: number): number {
-  return (waitSeconds + 90) * 1000
+export function permissionBackstopMs(storedSeconds: number | null): number {
+  return ((storedSeconds ?? PERMISSION_HOLD_SECONDS) + 90) * 1000
+}
+
+/**
+ * How often the watch below looks at the chat, as a function of how long this
+ * request has been waiting.
+ *
+ * WHY IT IS NOT ONE NUMBER. A 30 minute request at a flat 1.5 s is about
+ * 1,200 reads of the chat, per waiting daemon, and a fleet of them sits on the
+ * same backend. The first minute keeps the fast cadence because that is where
+ * an answer usually lands and a person watching the card expects their tap to
+ * do something; after that the request is parked, and the server's own expiry
+ * is what ends the wait anyway, so a slower look costs the owner nothing. The
+ * same 30 minutes now costs about 390 looks here.
+ *
+ * THIS IS THE SMALLER HALF OF THE BILL, and the comment used to pretend it was
+ * the whole of it. A pending request also fast scopes its chat on the
+ * scheduler tick (pendingPermissionFastChatIds, below), which is a second read
+ * of the same endpoint every 2 s; that one is bounded too, and the two
+ * together are what a parked request actually costs.
+ */
+export const PERMISSION_POLL_FAST_MS = 1500
+export const PERMISSION_POLL_SLOW_MS = 5000
+export const PERMISSION_POLL_FAST_WINDOW_MS = 60_000
+
+export function permissionPollIntervalMs(ageMs: number): number {
+  // The boundary is `>=` so the tick at exactly 60 s is already the slow one.
+  // Neither spelling can busy loop, whatever the clock does: the slowest thing
+  // either branch returns is a 1.5 s sleep. The clock hazard in this file is
+  // the other one, and it is on the BACKSTOP: the watch takes its elapsed time
+  // from a monotonic reading (server.ts hands it performance.now()) precisely
+  // because a wall clock that steps FORWARD, after a laptop resumes or an NTP
+  // correction lands, would carry the elapsed time past the timeout and deny a
+  // request whose card is still tappable, which is the 120 s bug in a new hat.
+  return ageMs >= PERMISSION_POLL_FAST_WINDOW_MS
+    ? PERMISSION_POLL_SLOW_MS
+    : PERMISSION_POLL_FAST_MS
+}
+
+/**
+ * How long a pending request keeps its chat on the scheduler's 2 s fast scope.
+ *
+ * THE SECOND LOOP, found in review after the first version of this lane
+ * counted only the watch. `fastScopeChatIds` reads the pending map, so every
+ * unanswered request pins its chat at the base tick (2 s) for the whole of its
+ * life: 900 more reads of the same endpoint over half an hour, on top of the
+ * watch's own 390. Unbounded, that is exactly the defect
+ * BUTTON_PROMPT_FAST_WINDOW_MS exists to stop one loop over, in the same file,
+ * for the same reason ("without a bound an abandoned prompt pins its chat at
+ * 2s forever").
+ *
+ * Ten minutes, the same number the button prompt uses, and the same argument:
+ * it covers a request at the default wait end to end, and a request parked
+ * past it loses nothing. The tap arrives on the WebSocket when the socket is
+ * up, and on the 10 s WS down cycle when it is not; the watch is still reading
+ * the chat every 5 s either way; and the server's own expiry, not this loop,
+ * is what ends a wait nobody answers.
+ */
+export const PENDING_PERMISSION_FAST_WINDOW_MS = 10 * 60_000
+
+export function pendingPermissionFastChatIds(
+  pending: Iterable<{ chatId: string; createdAt: number }>,
+  nowMs: number,
+  windowMs: number = PENDING_PERMISSION_FAST_WINDOW_MS,
+): string[] {
+  const out = new Set<string>()
+  for (const p of pending) {
+    const age = nowMs - p.createdAt
+    // A backwards clock reads as "not fresh" rather than as forever, the same
+    // rule activeButtonPromptChatIds applies to a prompt.
+    if (age < 0 || age >= windowMs) continue
+    out.add(String(p.chatId))
+  }
+  return [...out]
 }
 
 /**
@@ -374,6 +435,51 @@ export function isApprovalExpired(
   row: { approvalMeta?: { expired?: unknown } | null } | null | undefined,
 ): boolean {
   return row?.approvalMeta?.expired === true
+}
+
+/**
+ * One look at the chat, with the card guaranteed to be among the rows the
+ * watch scans for as long as the server will still hand it over.
+ *
+ * THE READ IS A PAGE, and the first version of this wait quietly depended on
+ * it not being one. `chats/<id>/messages` with no cursor is the NEWEST 50
+ * rows, and the watch's expiry arm can only fire on a row it is given. At
+ * 120 s that was safe; at the owner's whole wait it is not. The card goes into
+ * `monitoredChatIds[0]`, which may be a busy meeting chat, and 50 messages
+ * later the card is off the page: the server flags the row dead, the watch
+ * never sees it, and the request runs to the backstop with the CLI blocked and
+ * an auto update's drain held open behind it. That is the same shape as the
+ * bug this whole change removes, at the other end of the wait.
+ *
+ * So the page is still what the typed fallback is read from, and the EXPIRY
+ * stops depending on it: the first page that comes back without the card
+ * switches on one anchored read of the card row itself, which is a single row
+ * on its own validator. It stays on from then on, because "off the page" only
+ * goes one way, and because the page's own 304 means "nothing new in the
+ * newest 50", which is true and useless once the card is not among them.
+ */
+export function permissionRowsReader<T>(opts: {
+  /** Null turns this off entirely: with no card id there is nothing to anchor. */
+  cardMessageId: number | null
+  idOf: (row: T) => number | null
+  /** The page: rows, or null for a 304 or a failed look. */
+  page: () => Promise<readonly T[] | null>
+  /** The anchored read of the card row, or null for a 304 or a failed look. */
+  card: () => Promise<T | null>
+}): () => Promise<readonly T[] | null> {
+  let offPage = false
+  return async () => {
+    const rows = await opts.page()
+    if (opts.cardMessageId === null) return rows
+    if (!offPage) {
+      if (rows === null) return rows
+      if (rows.some((row) => opts.idOf(row) === opts.cardMessageId)) return rows
+      offPage = true
+    }
+    const card = await opts.card()
+    if (card === null) return rows
+    return rows === null ? [card] : [...rows, card]
+  }
 }
 
 // ── Resolving a click ────────────────────────────────────────────────────────
@@ -454,7 +560,6 @@ export interface VerdictWatch<T> {
   requestId: string
   /** The local backstop, from permissionBackstopMs. */
   timeoutMs: number
-  pollIntervalMs: number
   /**
    * Is this request still ours to answer.
    *
@@ -495,7 +600,9 @@ export async function watchPermissionVerdict<T>(
   const cancelled: PermissionVerdict = { choice: 'deny', via: 'cancelled' }
 
   while (w.now() - startedAt < w.timeoutMs) {
-    await w.sleep(w.pollIntervalMs)
+    // The cadence lives in the loop, not at the call site: the reads this
+    // saves are the loop's own looks at the chat.
+    await w.sleep(permissionPollIntervalMs(w.now() - startedAt))
     // Between two looks at the chat is the ONLY place this loop can learn the
     // owner answered, because the click is settled on the other side of the
     // race and leaves nothing here to read.

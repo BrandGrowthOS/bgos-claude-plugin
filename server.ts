@@ -322,11 +322,12 @@ import {
   cardMessageIdFrom,
   choiceToBehavior,
   isApprovalExpired,
-  parseApprovalWaitSeconds,
   parsePermissionChoice,
+  pendingPermissionFastChatIds,
   permissionBackstopMs,
-  permissionWaitSeconds,
+  permissionRowsReader,
   resolvePermissionClick,
+  storedWaitSeconds,
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
@@ -1797,22 +1798,17 @@ const lastInboundUserByChat = new Map<string, string>()
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
 
-/**
- * How often the verdict watch looks at the chat. Unchanged from the 120 s
- * era, and the watch can now run for the owner's whole wait, so a 30 minute
- * request is ~1,200 looks. They are cheap: every one carries an
- * If-None-Match and a 304 costs no body, and the chat is fast-scoped anyway
- * while a permission is pending (fastScopeChatIds reads pendingPermissions).
- */
-const PERMISSION_POLL_INTERVAL_MS = 1500
-
-/**
- * The per agent wait lookup is on the path of a request the agent is BLOCKED
- * on, so it gets a short deadline of its own rather than the ordinary HTTP
- * timeout. Missing it costs the owner nothing: the card simply carries no
- * wait_seconds and the server applies its own default.
- */
-const APPROVAL_WAIT_FETCH_TIMEOUT_MS = 3000
+// How often the verdict watch looks at the chat now lives in
+// lib/permission-relay.ts (permissionPollIntervalMs), because it is no longer
+// one number: the watch can run for the owner's whole wait, and a 30 minute
+// request at the old flat 1.5 s was ~1,200 looks per waiting daemon.
+//
+// AND THAT IS ONLY HALF THE BILL, which the first version of this comment
+// dropped instead of counting. The same request also holds its chat on THIS
+// file's 2 s fast scope, because fastScopeChatIds reads pendingPermissions:
+// another ~900 reads of the same endpoint over the same half hour. That half
+// is bounded now too (PENDING_PERMISSION_FAST_WINDOW_MS, at the tick), so a
+// parked request costs about 700 reads rather than 2,100.
 
 // ── Button-value namespace isolation ─────────────────────────────────────────
 // escapeAgentButtonValue / unescapeAgentButtonValue / collidesWithReserved and
@@ -1845,32 +1841,6 @@ function senderUserIdOf(message: unknown): string {
     (m?.userId as string | undefined) ??
     (m?.user_id as string | undefined)
   return typeof candidate === 'string' && candidate ? candidate : USER_ID
-}
-
-/**
- * The owner's per agent approval wait, read fresh right before a request is
- * posted. Requests are rare, so a read per request is both cheaper and
- * fresher than any cache: a change the owner makes applies to the very next
- * request. A failed or thin read means no `wait_seconds` on the card, which
- * is exactly the behaviour before this existed, so this can never throw into
- * the permission handler.
- */
-async function fetchApprovalWaitSeconds(): Promise<number | null> {
-  try {
-    const data = await bgosCall(
-      {
-        url: `${API_BASE}/assistants/${encodeURIComponent(ASSISTANT_ID)}`,
-        init: { headers: { ...authHeaders(AUTH) } },
-        timeoutMs: APPROVAL_WAIT_FETCH_TIMEOUT_MS,
-        label: 'GET assistants/:id (approval wait)',
-      },
-      async (response) => (response.ok ? await response.json() : null),
-    )
-    return parseApprovalWaitSeconds(data)
-  } catch (err) {
-    log(`Approval wait lookup failed, using the server default: ${err}`)
-    return null
-  }
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
@@ -2373,13 +2343,6 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     resolve: resolveButtonChoice,
   })
 
-  // How long the owner gets. Read fresh, right before the post, so a change
-  // made in the app applies to the very next request. Never throws, and a read
-  // that gives nothing does NOT mean "send no wait_seconds": see
-  // permissionWaitSeconds, an absent field is the server's 60 s, which is
-  // shorter than the clock this whole change removed.
-  const waitSeconds = permissionWaitSeconds(await fetchApprovalWaitSeconds())
-
   // Post a REAL approval card: messageType approval_request, two ea: options
   // and an approvalMeta. All three together are what makes the app draw the
   // card, the sweep see the row and the morning report count it. A plain
@@ -2388,10 +2351,17 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   //
   // AND IT IS THE ONLY ROUTE THAT TAKES THEM, which costs the device push:
   // the messages route sends none, and every push in HOAI goes out from
-  // /send-message, whose body declares no approvalMeta at all. So with the
-  // app closed this card reaches nobody until the backend sends the approval
-  // push from this path too. See the note at the top of
-  // lib/permission-relay.ts; it is the one part of this that did not ship.
+  // /send-message, whose body declares no approvalMeta at all. The backend is
+  // adding that push on this create path in the same stage, on the same branch
+  // as the per agent clamp below; see the note at the top of
+  // lib/permission-relay.ts for the order this ships in.
+  //
+  // Nothing is awaited between the pending entry above and this post. The card
+  // carries this daemon's own hold and nothing it had to look up: the server
+  // stores the smaller of that and the owner's choice, and tells us which on
+  // the way back. Until the clamp is deployed that smaller number is always
+  // the hold itself, which is why the log below prints what came back rather
+  // than what was sent.
   try {
     const posted = await bgosPost(
       'messages',
@@ -2401,14 +2371,18 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         toolName: tool_name,
         description,
         inputPreview: input_preview,
-        waitSeconds,
       }),
     )
     const cardMessageId = cardMessageIdFrom(posted)
+    // What the SERVER decided this request waits, off the row it just created.
+    // Null means the response did not say, and the backstop falls back to the
+    // hold, which is the longest it could have been.
+    const storedWait = storedWaitSeconds(posted)
 
     log(
       `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
-        `(message ${cardMessageId ?? 'unknown'}, wait ${waitSeconds}s)`,
+        `(message ${cardMessageId ?? 'unknown'}, wait ` +
+        `${storedWait === null ? 'not stated' : `${storedWait}s`})`,
     )
     if (cardMessageId === null) {
       // Not cosmetic, and worth a line of its own: with no id there is no row
@@ -2432,7 +2406,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         request_id,
         chatId,
         cardMessageId,
-        permissionBackstopMs(waitSeconds),
+        permissionBackstopMs(storedWait),
         requesterUserId,
       ),
     ])
@@ -2489,8 +2463,13 @@ async function waitForVerdict(
   const verdict = await watchPermissionVerdict<ChatMessage>({
     requestId,
     timeoutMs,
-    pollIntervalMs: PERMISSION_POLL_INTERVAL_MS,
-    now: () => Date.now(),
+    // A MONOTONIC reading, not the wall clock. Everything this hands back is
+    // used as a duration (the backstop and the poll cadence), and a wall clock
+    // that steps FORWARD, after a laptop resumes from sleep or an NTP
+    // correction lands, would carry the elapsed time past the timeout and deny
+    // a request whose card is still perfectly tappable. That is the 120 s bug
+    // wearing a different hat, and it is free to rule out.
+    now: () => performance.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log,
     // The button click is settled on the other side of the race, and the
@@ -2499,27 +2478,54 @@ async function waitForVerdict(
     // polled on for the whole backstop after an answer that took five
     // seconds, then stripped the buttons off the answered card.
     stillPending: () => pendingPermissions.has(requestId),
-    rows: async () => {
-      try {
-        const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
-          // Its OWN validator. The default key is the path, and the
-          // ask_user_input wait loop reads the same path in the same chat:
-          // whichever loop got the 200 recorded the ETag and the other one
-          // got a 304 and lost that tick. Per REQUEST, so two open requests
-          // in one chat cannot do it to each other either. The cache is a
-          // bounded LRU, so a key per request costs nothing.
-          cacheKey: `perm:${requestId}`,
-        })
-        // 304: nothing changed since the last look, so no verdict landed either.
-        if (isNotModified(raw)) return null
-        const data = raw as ChatHistoryResponse
-        if (!data.messages?.length) return null
-        return data.messages
-      } catch {
-        // Poll error, retry on the next tick.
-        return null
-      }
-    },
+    // The page, plus the card itself once the page stops carrying it. See
+    // permissionRowsReader: this read is the NEWEST 50 rows, and a wait that
+    // now lasts minutes can outlive the card's place in them.
+    rows: permissionRowsReader<ChatMessage>({
+      cardMessageId,
+      idOf: (msg) => msg.message.id,
+      page: async () => {
+        try {
+          const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+            // Its OWN validator. The default key is the path, and the
+            // ask_user_input wait loop reads the same path in the same chat:
+            // whichever loop got the 200 recorded the ETag and the other one
+            // got a 304 and lost that tick. Per REQUEST, so two open requests
+            // in one chat cannot do it to each other either. The cache is a
+            // bounded LRU, so a key per request costs nothing.
+            cacheKey: `perm:${requestId}`,
+          })
+          // 304: nothing changed since the last look, so no verdict landed either.
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          if (!data.messages?.length) return null
+          return data.messages
+        } catch {
+          // Poll error, retry on the next tick.
+          return null
+        }
+      },
+      card: async () => {
+        if (cardMessageId === null) return null
+        try {
+          // One row, anchored on the card. `beforeId` is exclusive (`m.id <`),
+          // so the id above it asks for the card itself. Its own cacheKey for
+          // the same reason the page has one, and a 304 here is the honest
+          // answer that the row has not changed, so no expiry has landed.
+          const raw = await bgosGet(
+            `chats/${chatId}/messages?userId=${USER_ID}` +
+              `&beforeId=${cardMessageId + 1}&limit=1`,
+            { cacheKey: `perm-card:${requestId}` },
+          )
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          const row = data.messages?.[0]
+          return row && row.message.id === cardMessageId ? row : null
+        } catch {
+          return null
+        }
+      },
+    }),
     // The server is the judge. Only OUR card counts: another agent's expired
     // approval sitting in the same chat is none of this request's business.
     expiredOn: (msg) =>
@@ -11235,8 +11241,15 @@ async function main(): Promise<void> {
         streamSchedulerTick(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
-          pendingPermissionChatIds: [...pendingPermissions.values()].map(
-            (p) => p.chatId,
+          // BOUNDED, like the button prompt beside it. Every entry in this map
+          // used to pin its chat at the base 2 s tick until the request was
+          // answered, which was fine at 120 s and is 900 extra reads of one
+          // chat at half an hour. See PENDING_PERMISSION_FAST_WINDOW_MS: a
+          // request parked past the window still hears the tap on the socket,
+          // and its own watch is still reading the chat every 5 s.
+          pendingPermissionChatIds: pendingPermissionFastChatIds(
+            pendingPermissions.values(),
+            Date.now(),
           ),
           buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now()),
         })
