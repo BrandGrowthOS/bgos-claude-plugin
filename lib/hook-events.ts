@@ -208,7 +208,17 @@ export interface TaskRecord {
  * dropping the parent's work would erase what the owner is reading.
  */
 export interface CarriedCard {
+  /** The card's OWN key, minted at the Stop from the key the turn drew it
+   *  under plus that Stop's receipt. The prefix is the whole point: a child
+   *  stamps the PARENT's prompt id on its own hook events, so the turn one of
+   *  those events re opens mints the very key this card had, and a key a turn
+   *  state can never produce is what keeps the child's own rows off the
+   *  message the helper row is on. */
   cardKey: string
+  /** The key the card answered to while its turn was live, which is the key
+   *  the message was posted under. The daemon moves the message onto `cardKey`
+   *  at the turn end, and this is what it moves it from. */
+  turnKey: string
   toolOrder: string[]
   tools: Map<string, ToolRow>
   agentRows: Map<string, string>
@@ -227,11 +237,25 @@ export interface TurnState {
   /** A child's agent id to the key of the row that launched it. Every later
    *  event a child tags with that id finds its row through this. */
   agentRows: Map<string, string>
-  carried: CarriedCard | null
+  /** The cards of turns that ended while a child agent was still working,
+   *  keyed on each card's own key, oldest first. More than one, because a
+   *  second turn can end the same way while the first card is still waiting:
+   *  a single slot dropped the older card without settling it, and the child
+   *  it was waiting for could then never close it. */
+  carried: Map<string, CarriedCard>
   startedAt: number
   lastActivityAt: number
   lastCompactMarkerAt: number | null
 }
+
+/** How many cards a turn state holds for working children at once.
+ *
+ * Half the daemon's own card id limit, which also has the live turn's card in
+ * it and keeps slack. Bounded for the reason every map in this rail is: a
+ * process that runs for weeks may not grow one for ever. Losing the oldest
+ * costs that one card its settle, which is what a single slot did to every
+ * card but the newest. */
+export const CARRIED_CARDS_MAX = 4
 
 export function emptyTurn(): TurnState {
   return {
@@ -240,7 +264,7 @@ export function emptyTurn(): TurnState {
     tools: new Map(),
     tasks: new Map(),
     agentRows: new Map(),
-    carried: null,
+    carried: new Map(),
     startedAt: 0,
     lastActivityAt: 0,
     lastCompactMarkerAt: null,
@@ -828,17 +852,21 @@ export function taskDirFor(claudeHome: string, sessionId: string): string {
 
 // ── The turn machine ─────────────────────────────────────────────────────────
 
-const cloneCarried = (carried: CarriedCard | null): CarriedCard | null =>
-  carried === null
-    ? null
-    : {
-        cardKey: carried.cardKey,
-        toolOrder: [...carried.toolOrder],
-        tools: new Map(carried.tools),
-        agentRows: new Map(carried.agentRows),
-        startedAt: carried.startedAt,
-        finishedAt: carried.finishedAt,
-      }
+const cloneCarried = (carried: CarriedCard): CarriedCard => ({
+  cardKey: carried.cardKey,
+  turnKey: carried.turnKey,
+  toolOrder: [...carried.toolOrder],
+  tools: new Map(carried.tools),
+  agentRows: new Map(carried.agentRows),
+  startedAt: carried.startedAt,
+  finishedAt: carried.finishedAt,
+})
+
+const cloneCarriedCards = (cards: Map<string, CarriedCard>): Map<string, CarriedCard> => {
+  const out = new Map<string, CarriedCard>()
+  for (const [key, card] of cards) out.set(key, cloneCarried(card))
+  return out
+}
 
 const cloneTurn = (state: TurnState): TurnState => ({
   turnId: state.turnId,
@@ -846,7 +874,7 @@ const cloneTurn = (state: TurnState): TurnState => ({
   tools: new Map(state.tools),
   tasks: new Map(state.tasks),
   agentRows: new Map(state.agentRows),
-  carried: cloneCarried(state.carried),
+  carried: cloneCarriedCards(state.carried),
   startedAt: state.startedAt,
   lastActivityAt: state.lastActivityAt,
   lastCompactMarkerAt: state.lastCompactMarkerAt,
@@ -860,7 +888,10 @@ const rowsOf = (state: TurnState): ToolRow[] =>
  *
  * `finishedAt` is a PARAMETER and not a field of the turn, because only the
  * caller knows whether the turn is actually over: a closed ROW is not a closed
- * TURN, and the only two moments that end one are Stop and SessionEnd.
+ * TURN. Three moments end one, and no others: a Stop, a SessionEnd, and a
+ * prompt arriving while rows are still open, which is a turn no Stop is coming
+ * for (the owner interrupted it, or a child's own tools opened it after its
+ * parent had stopped) and whose rows that prompt is about to throw away.
  */
 const cardFrom = (
   rows: ToolRow[],
@@ -881,11 +912,35 @@ const cardFrom = (
   }
 }
 
-/** One card, for the life of one turn. The prompt id when there is one, and
- *  the turn's own start when there is not (a daemon that attached mid turn),
- *  which is fixed for as long as that turn lasts. */
-const cardKeyOf = (state: TurnState): string =>
-  state.turnId ?? (state.startedAt > 0 ? `turn:${state.startedAt}` : 'turn:none')
+/**
+ * One card, for the life of one turn.
+ *
+ * The prompt id when there is one, the turn's own start when there is not (a
+ * daemon that attached mid turn), and the key of the FIRST row on the card
+ * when there is neither: a tool_use_id, which one call has and no other. Never
+ * a constant, which is what the last arm used to be: two turns that each
+ * opened on a tool the mapper could not date then shared one key, and the
+ * second turn's rows patched the first turn's message.
+ */
+const cardKeyOf = (state: TurnState): string => {
+  if (state.turnId) return state.turnId
+  if (state.startedAt > 0) return `turn:${state.startedAt}`
+  return `turn:${state.toolOrder[0] ?? state.lastActivityAt}`
+}
+
+/**
+ * The key a card answers to once its turn has ended with a child still working.
+ *
+ * Minted at the Stop, from the key the card was drawn under and that Stop's
+ * receipt. A card key identifies a CARD and never a prompt, and this prefix is
+ * what makes that true: every hook event a child sends carries the PARENT's
+ * prompt id, so the turn the child's own next tool re opens mints exactly the
+ * key the card had. Sharing it meant the child's Bash row replaced the helper
+ * row on the message the owner was watching, for the whole time the helper
+ * worked.
+ */
+const carriedKeyOf = (turnKey: string, finishedAt: number): string =>
+  `carried:${turnKey}:${finishedAt}`
 
 const cardEffect = (state: TurnState, done: boolean, finishedAt?: number): Effect =>
   cardFrom(rowsOf(state), cardKeyOf(state), done, state.startedAt, finishedAt)
@@ -903,27 +958,37 @@ const isLiveHelper = (row: ToolRow): boolean => row.kind === 'subagent' && row.s
 /** The child this payload belongs to, or empty for the parent's own work. */
 const childAgentId = (raw: Record<string, unknown>): string => str(raw.agent_id).trim()
 
+/** The card a turn left behind whose child this is, searched over every one of
+ *  them: two turns can each end with their own live helper, and each child has
+ *  to find the card its own row is on. */
+function carriedHolding(state: TurnState, agentId: string): CarriedCard | null {
+  for (const carried of state.carried.values()) {
+    if (carried.agentRows.has(agentId)) return carried
+  }
+  return null
+}
+
 /**
  * Say what a child is doing right now on the child's own row.
  *
- * Resolved through the LIVE turn first and then through a carried card, so a
- * child that outlived its parent's turn still updates the card it is on rather
- * than the card of whatever the parent is doing now. Returns which card moved,
- * because a carried one has to be repainted by hand: nothing else on that
- * event's path knows the carried card exists.
+ * Resolved through the LIVE turn first and then through the cards earlier
+ * turns left behind, so a child that outlived its parent's turn still updates
+ * the card it is on rather than the card of whatever the parent is doing now.
+ * Returns WHICH card moved, because a carried one has to be repainted by hand:
+ * nothing else on that event's path knows the carried card exists.
  */
 function noteChildTool(
   next: TurnState,
   raw: Record<string, unknown>,
   cwd: string,
-): 'live' | 'carried' | null {
+): CarriedCard | 'live' | null {
   const agentId = childAgentId(raw)
   if (!agentId) return null
   const liveKey = next.agentRows.get(agentId)
-  const key = liveKey ?? next.carried?.agentRows.get(agentId)
+  const carried = liveKey === undefined ? carriedHolding(next, agentId) : null
+  const key = liveKey ?? carried?.agentRows.get(agentId)
   if (key === undefined) return null
-  const where = liveKey !== undefined ? 'live' : 'carried'
-  const tools = where === 'live' ? next.tools : next.carried!.tools
+  const tools = carried === null ? next.tools : carried.tools
   const row = tools.get(key)
   if (row === undefined || row.status !== 'running') return null
   const toolName = baseToolName(str(raw.tool_name))
@@ -933,7 +998,7 @@ function noteChildTool(
   )
   if (!detail || row.detail === detail) return null
   tools.set(key, { ...row, detail })
-  return where
+  return carried ?? 'live'
 }
 
 /** A child has reported: its row closes, with what it said and how long it ran. */
@@ -1151,6 +1216,16 @@ export function applyHookEventToTurn(
     }
 
     case 'UserPromptSubmit': {
+      // A card still open HERE is a card no Stop is coming for: a turn the
+      // owner interrupted, or the pseudo turn a child's own tools opened after
+      // its parent stopped. The reset below throws its rows away, so it is
+      // settled first rather than left reading "Working" for the rest of the
+      // session. A child still running on it never reported and never will:
+      // this prompt clears the link its stop would have resolved through.
+      if (next.toolOrder.length > 0) {
+        abandonHelpers(next.toolOrder, next.tools)
+        effects.push(cardEffect(next, true, now))
+      }
       next.turnId = event.promptId
       next.toolOrder = []
       next.tools = new Map()
@@ -1177,7 +1252,7 @@ export function applyHookEventToTurn(
       // it printed and its exit code are what 0.43.0 shows and taking them
       // away would be a visible loss for anyone who delegates heavily.
       const touched = noteChildTool(next, raw, event.cwd)
-      if (touched === 'carried') effects.push(carriedCard(next.carried!, false))
+      if (touched !== null && touched !== 'live') effects.push(carriedCard(touched, false))
       const key = rowKey(raw, next)
       const previous = next.tools.get(key)
       const row = buildRow(raw, event.cwd, 'running')
@@ -1210,7 +1285,7 @@ export function applyHookEventToTurn(
       }
       if (isSkippedTool(name)) return { next, effects }
       const touched = noteChildTool(next, raw, event.cwd)
-      if (touched === 'carried') effects.push(carriedCard(next.carried!, false))
+      if (touched !== null && touched !== 'live') effects.push(carriedCard(touched, false))
       const key = rowKey(raw, next)
       const status: ToolRowStatus = event.name === 'PostToolUseFailure' ? 'error' : 'done'
       const previous = next.tools.get(key)
@@ -1283,13 +1358,23 @@ export function applyHookEventToTurn(
       // Before turn_end, which every reader of this file may assume is last.
       effects.push({ kind: 'goal_poll' })
       if (keepCard) {
-        next.carried = {
-          cardKey: cardKeyOf(next),
+        const turnKey = cardKeyOf(next)
+        const carried: CarriedCard = {
+          cardKey: carriedKeyOf(turnKey, now),
+          turnKey,
           toolOrder: [...next.toolOrder],
           tools: new Map(next.tools),
           agentRows: new Map(next.agentRows),
           startedAt: next.startedAt,
           finishedAt: now,
+        }
+        next.carried.set(carried.cardKey, carried)
+        // Oldest first, and a dropped card is the only card that loses its
+        // settle. A single slot did that to every card but the newest one.
+        while (next.carried.size > CARRIED_CARDS_MAX) {
+          const oldest = next.carried.keys().next().value
+          if (oldest === undefined) break
+          next.carried.delete(oldest)
         }
       }
       effects.push({ kind: 'turn_end', keepCard })
@@ -1314,8 +1399,8 @@ export function applyHookEventToTurn(
       const agentId = childAgentId(raw)
       if (!agentId) return { next, effects }
       const liveKey = next.agentRows.get(agentId)
-      const carriedKey = liveKey === undefined ? next.carried?.agentRows.get(agentId) : undefined
-      if (liveKey === undefined && carriedKey === undefined) return { next, effects }
+      const carried = liveKey === undefined ? carriedHolding(next, agentId) : null
+      if (liveKey === undefined && carried === null) return { next, effects }
       // MASK, THEN CUT (header rule 2), and the cut keeps the HEAD: an answer
       // is worth reading from its first sentence.
       const result = clipResultHead(redactForWire(str(raw.last_assistant_message)), RESULT_MAX)
@@ -1326,13 +1411,18 @@ export function applyHookEventToTurn(
         effects.push(cardEffect(next, false))
         return { next, effects }
       }
-      const carried = next.carried!
-      const row = carried.tools.get(carriedKey!)
+      // Not null here: the guard above returned when neither card held it.
+      const card = carried!
+      const carriedKey = card.agentRows.get(agentId)!
+      const row = card.tools.get(carriedKey)
       if (row === undefined) return { next, effects }
-      carried.tools.set(carriedKey!, settleChildRow(row, now, result))
-      const over = !carriedRows(carried).some(isLiveHelper)
-      effects.push(carriedCard(carried, over, over ? now : undefined))
-      if (over) next.carried = null
+      card.tools.set(carriedKey, settleChildRow(row, now, result))
+      const over = !carriedRows(card).some(isLiveHelper)
+      effects.push(carriedCard(card, over, over ? now : undefined))
+      // The card is off the books only when its LAST helper has settled: a
+      // card waiting on a second child is still a card a later stop has to
+      // reach.
+      if (over) next.carried.delete(card.cardKey)
       return { next, effects }
     }
 
@@ -1340,11 +1430,11 @@ export function applyHookEventToTurn(
       // The session is gone, so every child that never reported gives up here.
       // A Stop does NOT do this: a live child after its parent stopped is the
       // normal case this whole lane exists for.
-      if (next.carried !== null) {
-        abandonHelpers(next.carried.toolOrder, next.carried.tools)
-        effects.push(carriedCard(next.carried, true, now))
-        next.carried = null
+      for (const carried of next.carried.values()) {
+        abandonHelpers(carried.toolOrder, carried.tools)
+        effects.push(carriedCard(carried, true, now))
       }
+      next.carried = new Map()
       if (next.toolOrder.length > 0) {
         abandonHelpers(next.toolOrder, next.tools)
         effects.push(cardEffect(next, true, now))

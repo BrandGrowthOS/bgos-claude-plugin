@@ -659,11 +659,14 @@ folded head's count.
 ended.** A finished card folds, and a helper ticking behind a fold helps
 nobody. So a turn that stops with a child still running leaves its card behind
 and the child's stop, minutes later, updates that same card rather than posting
-a second one. There is no token count for a child and no way to stop one: this
-runtime hands the host neither, and both are recorded as blocked rather than
-postponed. `SubagentStop` is the one new hook event; `SubagentStart` is
-deliberately not registered, because it carries no description and no tool id,
-so it can name nothing and be joined to nothing.
+a second one. That card is kept under a name of its own, so the commands the
+child runs after the turn has ended draw a card of their own rather than
+replacing the helper row on it, and a second turn that ends the same way keeps
+the first card too. There is no token count for a child and no way to stop
+one: this runtime hands the host neither, and both are recorded as blocked
+rather than postponed. `SubagentStop` is the one new hook event;
+`SubagentStart` is deliberately not registered, because it carries no
+description and no tool id, so it can name nothing and be joined to nothing.
 
 **The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
 the payload as JSON on stdin. The forwarder appends one line to

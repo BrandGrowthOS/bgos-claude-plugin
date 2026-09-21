@@ -26,6 +26,15 @@ Notable changes to the HOAI Claude Code plugin.
     its card behind and the child's own stop, minutes later, updates that same
     card instead of posting a second one. The card settles when the last child
     settles.
+  - **More than one card can be waiting, and none of them can be written over
+    by another.** A card a turn leaves behind is kept under a name of its own,
+    so the commands the child runs after that point draw a card of their own
+    instead of replacing the helper row on the card the owner is watching, and
+    a second turn that ends the same way keeps the first card as well rather
+    than abandoning it half done. Every card still owed an update has its own
+    place in the queue, so what a helper is doing right now reaches its card
+    while it is still working instead of being dropped for whatever the parent
+    drew a moment later.
   - **The child's own commands are still there.** A helper's Bash row still
     carries the command, what it printed and the code it exited with, exactly
     as before, and the helper's row says which of them it is running right

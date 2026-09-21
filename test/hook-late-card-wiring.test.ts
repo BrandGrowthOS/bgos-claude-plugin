@@ -29,6 +29,12 @@
  *   - isTurnLive: () => hookTurnLive             -> the cadence case goes red
  *   - drop cardKey from the pending assignment   -> the carry case goes red
  *   - leave the map behind at stand down         -> the stand down case red
+ *
+ * And the mutations of the fix batch that followed the review:
+ *   - one pending slot for every card            -> the per card slot case red
+ *   - forget the ids before the carried card has -> the adoption case red
+ *     taken the message over
+ *   - keep the ending turn's own id              -> the forgetting case red
  */
 
 import { strict as assert } from 'node:assert'
@@ -111,18 +117,88 @@ test('a pending write survives a chat record that has gone stale', () => {
 test('the turn end keeps a card whose child is still working', () => {
   const end = functionBody('function endHookTurn(')
   assert.match(server, /function endHookTurn\(keepCard: boolean\): void \{/)
-  // The flag has to GUARD the forgetting, not merely be in the signature: a
-  // turn end that drops every id whatever it was told is the old behaviour
-  // back, and the child that reports a minute later posts a second card.
-  assert.match(end, /if \(!keepCard\) \{/, 'the flag decides whether this turn keeps its card')
-  const guard = end.indexOf('if (!keepCard) {')
-  const drop = end.indexOf('hookCardIds.delete(')
-  assert.ok(drop > guard, 'the ids are forgotten inside the guard, not beside it')
+  // What survives a turn end is what the mapper is still CARRYING, and
+  // nothing else. A turn end that keeps its own key as well leaves an entry a
+  // later turn can reach: a child stamps its parent's prompt id on its own
+  // events, so the turn one of those re opens mints the key the ending turn
+  // drew its card under, and its rows would be patched onto that message.
+  assert.match(
+    end,
+    /if \(!hookTurn\.carried\.has\(key\)\) hookCardIds\.delete\(key\)/,
+    'the carried cards are what a turn end spares',
+  )
+  assert.equal(
+    /if \(!keepCard\) \{/.test(end),
+    false,
+    "a turn that keeps its own key hands the next turn's rows to this turn's message",
+  )
   // Every call site passes the flag. A bare call is the old behaviour back.
   assert.equal(/endHookTurn\(\)/.test(server), false, 'a bare turn end forgets the flag')
   const finish = functionBody('async function finishHookTurn(')
   assert.match(finish, /endHookTurn\(keepCard\)/)
   assert.match(server, /finishHookTurn\(effect\.keepCard\)/, 'the mapper decides, the daemon obeys')
+})
+
+test('a carried card takes its message over before the turn s keys are forgotten', () => {
+  // The message was POSTED under the turn's key, and the card answers to a key
+  // of its own from the turn end on. Forgetting first would leave the card the
+  // owner is watching with no id at all, so the helper's result would post a
+  // SECOND card, which is the defect this whole lane replaced.
+  const end = functionBody('function endHookTurn(')
+  const adopt = end.indexOf('adoptCarriedCardIds()')
+  const drop = end.indexOf('hookCardIds.delete(')
+  assert.ok(adopt >= 0, 'the turn end no longer moves a carried card onto its own key')
+  assert.ok(drop > adopt, 'and it moves it BEFORE it forgets the key it was posted under')
+  const adoption = functionBody('function adoptCarriedCardIds(): void {')
+  assert.match(adoption, /hookCardIds\.get\(carried\.turnKey\)/, 'from the key it was posted under')
+  assert.match(adoption, /rememberHookCardId\(carried\.cardKey/, 'to the key it answers to now')
+  // And the id a LATE POST mints goes to the carried key too, never back to
+  // the turn's own.
+  const finish = functionBody('async function finishHookTurn(')
+  assert.match(finish, /const carriedKey = keepCard \? carriedKeyFor\(cardKey\) : null/)
+  assert.match(finish, /if \(carriedKey !== null && id !== null\) rememberHookCardId\(carriedKey, id\)/)
+  assert.equal(
+    /rememberHookCardId\(cardKey, id\)/.test(finish),
+    false,
+    'an id under the turn s own key is an id a later turn can reach',
+  )
+})
+
+test('every card owed a write has a slot of its own', () => {
+  // The mapper emits the repaint of a card a working child outlived AND the
+  // live turn's card in the SAME batch. One slot wrote the second and threw
+  // the first away, so the qualifier saying what the helper is doing right now
+  // never reached the wire at all.
+  assert.equal(
+    /hookCardPending = \{/.test(server),
+    false,
+    'a single slot drops the carried repaint the live card arrives beside',
+  )
+  assert.equal(/hookCardPending = null/.test(server), false, 'and so does clearing that slot')
+  assert.match(server, /const hookCardPending = new PendingCards\(/)
+  const effects = functionBody('function runHookEffects(')
+  assert.match(effects, /hookCardPending\.put\(/, 'each card state is held under its own key')
+  const flush = functionBody('async function flushHookCard(): Promise<void> {')
+  assert.match(flush, /hookCardPending\.take\(\)/, 'and the flusher writes them one at a time')
+  const finish = functionBody('async function finishHookTurn(')
+  assert.match(
+    finish,
+    /const pending = hookCardPending\.get\(hookTurnCardKey\)/,
+    "the turn end sends the LIVE turn's card, not a carried repaint waiting beside it",
+  )
+})
+
+test('the final write of a turn takes the one write at a time slot as well', () => {
+  // A card left behind for a working child can be waiting in the queue at the
+  // moment a turn ends, and the id it will be patched by is the one the final
+  // write mints. A flush that ran beside that write would find no id for it
+  // and POST a second card, which is the defect this lane replaced.
+  const finish = functionBody('async function finishHookTurn(')
+  assert.match(finish, /hookCardFlight = write/, 'the final write is on the wire like any other')
+  assert.match(finish, /hookCardFlightKey = cardKey/)
+  const clear = finish.indexOf('hookCardFlight = null')
+  assert.ok(clear > finish.indexOf('hookCardFlight = write'), 'and the slot is given back after it')
+  assert.match(finish, /if \(hookCardPending\.size > 0\) scheduleHookCard\(\)/, 'then the queue runs on')
 })
 
 test('nothing but the turn end and the bounded remember touches the map entries', () => {
@@ -157,7 +233,7 @@ test('the intake keeps its live cadence while a child agent is still working', (
   // The qualifier on a running helper row arrives on the next drain. At the
   // idle cadence that is two seconds, on a row whose whole point is that it
   // moves while the owner watches it.
-  assert.match(server, /isTurnLive: \(\) => hookTurnLive \|\| hookTurn\.carried !== null/)
+  assert.match(server, /isTurnLive: \(\) => hookTurnLive \|\| hookTurn\.carried\.size > 0/)
 })
 
 test('the card state carries the key of the card it belongs to', () => {
@@ -168,4 +244,5 @@ test('the card state carries the key of the card it belongs to', () => {
 test('standing down forgets the cards, the way it forgets the pending state', () => {
   const body = functionBody('function stopHookIntake(): void {')
   assert.match(body, /hookCardIds\.clear\(\)/)
+  assert.match(body, /hookCardPending\.clear\(\)/)
 })

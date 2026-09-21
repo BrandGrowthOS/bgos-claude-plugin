@@ -24,6 +24,12 @@
  *   - clear carried on a prompt submit        -> the late stop case goes red
  *   - drop the running child exemption        -> the 50 row cap case goes red
  *   - send an over long agent id as the row id -> the wire cap case goes red
+ *
+ * And the mutations of the fix batch that followed the review:
+ *   - mint the carried key from the turn's own key -> the two keys case red
+ *   - hold one carried card at a time          -> the two cards case goes red
+ *   - a constant fallback card key             -> the two anonymous turns red
+ *   - leave a card open at a new prompt        -> the settle case goes red
  */
 
 import { strict as assert } from 'node:assert'
@@ -31,11 +37,13 @@ import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 
 import {
+  CARRIED_CARDS_MAX,
   TOOL_ROWS_MAX,
   applyHookEventToTurn,
   clipToolRows,
   emptyTurn,
   parseHookEvent,
+  type CarriedCard,
   type Effect,
   type ToolRow,
   type TurnState,
@@ -132,14 +140,31 @@ const helperRow = (rows: ToolRow[]): ToolRow => {
   return row
 }
 
+/** Every card the turns of this state left behind for a working child, in the
+ *  order they were left. */
+const carriedOf = (state: TurnState): CarriedCard[] => [...state.carried.values()]
+
+/** The ONE card this state is holding, so a case about a single carried card
+ *  cannot quietly pass while a second one is there. */
+const theCarried = (state: TurnState): CarriedCard => {
+  const cards = carriedOf(state)
+  assert.equal(cards.length, 1, 'expected exactly one carried card')
+  return cards[0]!
+}
+
+/** The launch and its response, fed into a turn that is already open. */
+const launchInto = (state: TurnState, child: string, openedAt: number, respondedAt: number) => {
+  const call = agentCall(child)
+  const opened = feed(state, call.opened, openedAt)
+  const responded = feed(opened.next, call.launch, respondedAt)
+  return { call, opened, responded }
+}
+
 /** The prompt, the launch and the launch response: the state every case below
  *  starts from, with the child's row open and linked to its agent id. */
 const launched = (child: string, openedAt: number, respondedAt: number) => {
-  const call = agentCall(child)
   const prompt = feed(emptyTurn(), pick((r) => r.hook === 'UserPromptSubmit' && !String(r.payload.prompt ?? '').includes('<task-notification>'), 'the owner prompt'), openedAt - 1)
-  const opened = feed(prompt.next, call.opened, openedAt)
-  const responded = feed(opened.next, call.launch, respondedAt)
-  return { call, opened, responded }
+  return launchInto(prompt.next, child, openedAt, respondedAt)
 }
 
 // ── The launch ───────────────────────────────────────────────────────────────
@@ -314,10 +339,16 @@ test('a Stop with a live helper keeps the card running and carries it', () => {
   const ended = stopped.effects.find((e) => e.kind === 'turn_end')
   assert.deepEqual(ended, { kind: 'turn_end', keepCard: true })
 
-  assert.ok(stopped.next.carried, 'the card is reachable after the turn ended')
-  assert.equal(stopped.next.carried!.cardKey, card.cardKey)
-  assert.equal(stopped.next.carried!.startedAt, 999, "and it keeps the turn's own start")
-  assert.equal(stopped.next.carried!.agentRows.get(CHILD_A), agentCall(CHILD_A).launch.tool_use_id)
+  const carried = theCarried(stopped.next)
+  assert.equal(carried.turnKey, card.cardKey, 'the card this turn drew is the card it leaves behind')
+  assert.notEqual(
+    carried.cardKey,
+    card.cardKey,
+    'and it answers to a key of its OWN from here on, or the next turn reaches it',
+  )
+  assert.ok(carried.cardKey.startsWith('carried:'), 'a key no turn state can ever mint')
+  assert.equal(carried.startedAt, 999, "and it keeps the turn's own start")
+  assert.equal(carried.agentRows.get(CHILD_A), agentCall(CHILD_A).launch.tool_use_id)
 
   // The live fields are cleared exactly as they are today: leaving them set is
   // how a turn inherits the previous turn's start.
@@ -335,7 +366,7 @@ test('a Stop with no live helper settles the card and carries nothing', () => {
   const card = lastCardOf(stopped.effects)
   assert.equal(card.state, 'done')
   assert.equal(card.finishedAt, 10_000)
-  assert.equal(stopped.next.carried, null)
+  assert.equal(stopped.next.carried.size, 0)
   assert.deepEqual(
     stopped.effects.find((e) => e.kind === 'turn_end'),
     { kind: 'turn_end', keepCard: false },
@@ -347,7 +378,7 @@ test('a stop AFTER the turn ended patches the same card, with the turn s own clo
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const late = feed(stopped.next, stopFor(CHILD_A), 20_000)
   const card = lastCardOf(late.effects)
-  assert.equal(card.cardKey, stopped.next.carried!.cardKey, 'the same message, not a second card')
+  assert.equal(card.cardKey, theCarried(stopped.next).cardKey, 'the same message, not a second card')
   assert.equal(card.startedAt, 999, "the turn's ORIGINAL start, not the time of the stop")
   assert.equal(card.state, 'done', 'the last helper settled, so now the card is over')
   assert.equal(card.finishedAt, 20_000)
@@ -355,7 +386,7 @@ test('a stop AFTER the turn ended patches the same card, with the turn s own clo
   assert.equal(row.status, 'done')
   assert.equal(row.durationMs, 19_000)
   assert.equal(row.result, '3')
-  assert.equal(late.next.carried, null, 'nothing is left to wait for')
+  assert.equal(late.next.carried.size, 0, 'nothing is left to wait for')
 })
 
 test('the prompt a completion notification opens must NOT clear the carried card', () => {
@@ -366,31 +397,78 @@ test('the prompt a completion notification opens must NOT clear the carried card
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const prompted = feed(stopped.next, NOTIFICATION, 12_000)
-  assert.ok(prompted.next.carried, 'the carried card survives a prompt')
+  assert.equal(carriedOf(prompted.next).length, 1, 'the carried card survives a prompt')
   assert.deepEqual(prompted.next.carried, stopped.next.carried)
   assert.equal(prompted.next.turnId, NOTIFICATION.prompt_id, 'and a fresh live turn opens')
   assert.equal(prompted.next.startedAt, 12_000)
   assert.equal(prompted.next.tools.size, 0)
 
   const late = feed(prompted.next, stopFor(CHILD_A), 20_000)
-  assert.equal(lastCardOf(late.effects).cardKey, stopped.next.carried!.cardKey)
+  assert.equal(lastCardOf(late.effects).cardKey, theCarried(stopped.next).cardKey)
 })
 
 test("a child's tool after the turn ended still updates the card it belongs to", () => {
+  // And it draws its own row on a card of its OWN. Every hook event a child
+  // sends carries the PARENT's prompt id, so the turn those events re open
+  // used to mint the very key the carried card answers to: one message, two
+  // card bodies, and the helper row replaced by the child's Bash row for the
+  // whole time the helper worked.
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const carriedKey = theCarried(stopped.next).cardKey
   const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
-  const carried = cardsOf(working.effects).find((c) => c.cardKey === stopped.next.carried!.cardKey)
+  const cards = cardsOf(working.effects)
+  assert.equal(cards.length, 2, "the card the helper is on, and the card the child's own row opens")
+
+  const carried = cards.find((c) => c.cardKey === carriedKey)
   assert.ok(carried, 'the card the helper is on is the card that repaints')
-  assert.equal(carried!.state, 'running')
-  assert.equal(helperRow(carried!.tools).detail, 'Bash wc -l hay.txt')
+  assert.equal(carried.state, 'running')
+  assert.equal(helperRow(carried.tools).detail, 'Bash wc -l hay.txt')
+  assert.equal(carried.startedAt, 999, "and it still carries the turn's own start")
+
+  const live = cards.find((c) => c.cardKey !== carriedKey)
+  assert.ok(live, "the child's own row has a card of its own")
+  assert.equal(live.tools.length, 1)
+  assert.equal(live.tools[0]!.name, 'Bash')
+  assert.ok(
+    !live.tools.some((r) => r.kind === 'subagent'),
+    'a card carrying the child rows alone must never reach the message the helper row is on',
+  )
+})
+
+test("a child's finished tool after the turn ended draws on its own card too", () => {
+  // The same shape on the PostToolUse path, which adopts the dead prompt id at
+  // a second site and would otherwise reopen the defect on its own. Only ONE
+  // card repaints here: the qualifier this tool would write is the one the
+  // child's PreToolUse already wrote, and an unchanged row is not repainted.
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const carriedKey = theCarried(stopped.next).cardKey
+  const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
+  const finished = feed(working.next, childTool('PostToolUse', CHILD_A), 12_300)
+  const cards = cardsOf(finished.effects)
+  assert.equal(cards.length, 1)
+  assert.notEqual(
+    cards[0]!.cardKey,
+    carriedKey,
+    "a finished child tool that carries the card's key patches the helper row away",
+  )
+  assert.equal(cards[0]!.tools.length, 1)
+  assert.equal(cards[0]!.tools[0]!.output, '3 hay.txt', "what the child's command printed")
+  const carried = carriedOf(finished.next)[0]!
+  assert.equal(carried.cardKey, carriedKey)
+  assert.equal(
+    [...carried.tools.values()].find((r) => r.kind === 'subagent')!.status,
+    'running',
+    'and the helper is still where the owner is watching it',
+  )
 })
 
 test('SessionEnd settles a child that never reported as an error, and clears the carried card', () => {
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const ended = feed(stopped.next, SESSION_END, 30_000)
-  const card = cardsOf(ended.effects).find((c) => c.cardKey === stopped.next.carried!.cardKey)
+  const card = cardsOf(ended.effects).find((c) => c.cardKey === theCarried(stopped.next).cardKey)
   assert.ok(card, 'the carried card settles too, or it ticks forever')
   assert.equal(card!.state, 'done')
   const row = helperRow(card!.tools)
@@ -401,11 +479,157 @@ test('SessionEnd settles a child that never reported as an error, and clears the
     undefined,
     'and no moment to measure to: the child never stopped, the session did',
   )
-  assert.equal(ended.next.carried, null)
+  assert.equal(ended.next.carried.size, 0)
   assert.deepEqual(
     ended.effects.find((e) => e.kind === 'turn_end'),
     { kind: 'turn_end', keepCard: false },
   )
+})
+
+
+// ── More than one card at once ───────────────────────────────────────────────
+
+test('a second turn that ends with a live helper keeps the FIRST card as well', () => {
+  // One slot for the carried card threw the older one away with no settle at
+  // all: its child's stop then resolved nothing, returned no effects, and the
+  // card it was on ticked on "Working" until the app's own 24 hour cut off.
+  const first = launched(CHILD_A, 1_000, 1_005)
+  const stopped1 = feed(first.responded.next, PARENT_STOP, 10_000)
+  const firstKey = theCarried(stopped1.next).cardKey
+  const prompted = feed(stopped1.next, NOTIFICATION, 11_000)
+  const second = launchInto(prompted.next, CHILD_B, 12_000, 12_005)
+  const stopped2 = feed(second.responded.next, PARENT_STOP, 13_000)
+
+  const cards = carriedOf(stopped2.next)
+  assert.equal(cards.length, 2, 'both children are still working, so both cards are still open')
+  assert.equal(cards[0]!.cardKey, firstKey, 'the first card is still the first card')
+  assert.notEqual(cards[1]!.cardKey, firstKey)
+  assert.equal(cards[0]!.agentRows.get(CHILD_A), agentCall(CHILD_A).launch.tool_use_id)
+  assert.equal(cards[1]!.agentRows.get(CHILD_B), agentCall(CHILD_B).launch.tool_use_id)
+
+  // The FIRST child stops, and it settles the FIRST card, under its own key.
+  const late1 = feed(stopped2.next, stopFor(CHILD_A), 20_000)
+  const settled1 = lastCardOf(late1.effects)
+  assert.equal(settled1.cardKey, firstKey, 'a stop reaches the card its own child is on')
+  assert.equal(settled1.state, 'done')
+  assert.equal(settled1.startedAt, 999, "the FIRST turn's own start, not the second turn's")
+  assert.equal(helperRow(settled1.tools).status, 'done')
+  assert.equal(helperRow(settled1.tools).durationMs, 19_000)
+  assert.equal(carriedOf(late1.next).length, 1, 'and only the card still waiting is left')
+
+  const late2 = feed(late1.next, stopFor(CHILD_B), 21_000)
+  const settled2 = lastCardOf(late2.effects)
+  assert.equal(settled2.cardKey, cards[1]!.cardKey)
+  assert.equal(settled2.state, 'done')
+  assert.equal(settled2.startedAt, 11_000, "the SECOND turn's own start")
+  assert.equal(carriedOf(late2.next).length, 0, 'nothing is left to wait for')
+})
+
+test("a child's tool finds ITS card among the cards left behind", () => {
+  const first = launched(CHILD_A, 1_000, 1_005)
+  const stopped1 = feed(first.responded.next, PARENT_STOP, 10_000)
+  const firstKey = theCarried(stopped1.next).cardKey
+  const prompted = feed(stopped1.next, NOTIFICATION, 11_000)
+  const second = launchInto(prompted.next, CHILD_B, 12_000, 12_005)
+  const stopped2 = feed(second.responded.next, PARENT_STOP, 13_000)
+
+  const working = feed(stopped2.next, childTool('PreToolUse', CHILD_A), 14_000)
+  const repainted = cardsOf(working.effects).find((c) => c.cardKey === firstKey)
+  assert.ok(repainted, "the older card is the one this child's qualifier belongs on")
+  assert.equal(helperRow(repainted.tools).detail, 'Bash wc -l hay.txt')
+  const other = carriedOf(working.next).find((c) => c.cardKey !== firstKey)
+  assert.ok(other, 'and the newer card is untouched')
+  assert.equal([...other.tools.values()].find((r) => r.kind === 'subagent')!.detail, undefined)
+})
+
+test('the cards a turn leaves behind are bounded, oldest first', () => {
+  // A map that only ever grows is a leak in a process that runs for weeks, and
+  // the daemon's own card id map is bounded for the same reason. Losing the
+  // oldest costs that one card its settle, which is what a single slot did to
+  // every card but the newest.
+  const call = agentCall(CHILD_A)
+  const response = call.launch.tool_response as Record<string, unknown>
+  let state = emptyTurn()
+  const keys: string[] = []
+  for (let i = 0; i < CARRIED_CARDS_MAX + 1; i += 1) {
+    const at = 100_000 * (i + 1)
+    const prompt = feed(state, { ...NOTIFICATION, prompt_id: `prompt-${i}` }, at)
+    const opened = feed(prompt.next, call.opened, at + 10)
+    const responded = feed(opened.next, {
+      ...call.launch,
+      tool_response: { ...response, agentId: `child-${i}` },
+    }, at + 20)
+    const stopped = feed(responded.next, PARENT_STOP, at + 100)
+    const cards = carriedOf(stopped.next)
+    keys.push(cards[cards.length - 1]!.cardKey)
+    state = stopped.next
+  }
+  const held = carriedOf(state)
+  assert.equal(held.length, CARRIED_CARDS_MAX)
+  assert.ok(!held.some((c) => c.cardKey === keys[0]), 'the oldest card fell out')
+  assert.equal(held[held.length - 1]!.cardKey, keys[keys.length - 1], 'the newest is still held')
+})
+
+test('SessionEnd settles EVERY card that is still waiting', () => {
+  const first = launched(CHILD_A, 1_000, 1_005)
+  const stopped1 = feed(first.responded.next, PARENT_STOP, 10_000)
+  const prompted = feed(stopped1.next, NOTIFICATION, 11_000)
+  const second = launchInto(prompted.next, CHILD_B, 12_000, 12_005)
+  const stopped2 = feed(second.responded.next, PARENT_STOP, 13_000)
+
+  const ended = feed(stopped2.next, SESSION_END, 30_000)
+  const settled = cardsOf(ended.effects)
+  assert.equal(settled.length, 2, 'a card left unsettled here ticks for ever')
+  for (const card of settled) {
+    assert.equal(card.state, 'done')
+    assert.equal(card.finishedAt, 30_000)
+    assert.equal(helperRow(card.tools).status, 'error')
+  }
+  assert.equal(ended.next.carried.size, 0)
+})
+
+test('two turns with no prompt and no start of their own get different card keys', () => {
+  // The fallback key used to be the constant "turn:none", so two turns that
+  // opened on a tool the mapper could not date shared one key and the second
+  // turn's rows patched the first turn's message.
+  const bare = (id: string): Record<string, unknown> => {
+    const payload: Record<string, unknown> = { ...childTool('PostToolUse', CHILD_A), tool_use_id: id }
+    delete payload.prompt_id
+    delete payload.agent_id
+    return payload
+  }
+  const first = feed(emptyTurn(), bare('toolu_anon_1'), 5_000)
+  const firstKey = lastCardOf(first.effects).cardKey
+  const ended = feed(first.next, PARENT_STOP, 5_500)
+  assert.equal(ended.next.startedAt, 0, 'the turn end clears what little clock there was')
+  const second = feed(ended.next, bare('toolu_anon_2'), 6_000)
+  const secondKey = lastCardOf(second.effects).cardKey
+  assert.notEqual(firstKey, secondKey, 'two cards, two keys, or the second overwrites the first')
+  assert.ok(!firstKey.includes('none'), 'and neither of them is a constant')
+  assert.ok(!secondKey.includes('none'))
+})
+
+test('a prompt settles a card that no Stop is coming for', () => {
+  // The pseudo turn a child's own tools open after its parent stopped never
+  // gets a Stop of its own: the next thing to happen is the prompt that
+  // delivers the child's completion, and it throws those rows away. Settling
+  // the card here is what stops it reading "Working" for the rest of the
+  // session, and the carried card beside it is deliberately left alone.
+  const { responded } = launched(CHILD_A, 1_000, 1_005)
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const carriedKey = theCarried(stopped.next).cardKey
+  const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
+  const live = cardsOf(working.effects).find((c) => c.cardKey !== carriedKey)
+  assert.ok(live, "the child's own row opened a card")
+
+  const prompted = feed(working.next, NOTIFICATION, 13_000)
+  const settled = cardsOf(prompted.effects)
+  assert.equal(settled.length, 1, 'the card still open is settled, and nothing else is touched')
+  assert.equal(settled[0]!.cardKey, live.cardKey)
+  assert.equal(settled[0]!.state, 'done')
+  assert.equal(settled[0]!.finishedAt, 13_000)
+  assert.equal(carriedOf(prompted.next).length, 1, 'a prompt never settles a carried card')
+  assert.equal(prompted.next.toolOrder.length, 0)
 })
 
 // ── The 50 row cap ───────────────────────────────────────────────────────────
