@@ -171,7 +171,19 @@ test('generated run.sh: WEDGED reports what run.expect measured instead of guess
   // Cleared before every launch, so a launch that dies before run.expect writes its line is
   // never reported with the PREVIOUS launch's reason.
   assert.ok(runSh.indexOf('outcome=starting') > 0 && runSh.indexOf('outcome=starting') < runSh.indexOf('"$expect_bin" "$expectfile"'))
-  assert.equal(spawnSync('bash', ['-n', '/dev/stdin'], { input: runSh }).status, 0, 'generated run.sh must parse')
+  // PARSE A FILE, NOT /dev/stdin. On CI this returned 126, which is bash
+  // saying it could not EXECUTE or open the path; a real syntax error is 2.
+  // So the check was reporting the plumbing, not the script, and it had never
+  // parsed anything there. Same check, a path bash can actually open.
+  const parseFile = join(mkdtempSync(join(tmpdir(), 'hoai-parse-')), 'run.sh')
+  writeFileSync(parseFile, runSh)
+  const parsed = spawnSync('bash', ['-n', parseFile], { encoding: 'utf8' })
+  assert.notEqual(
+    parsed.status,
+    126,
+    `bash could not open ${parseFile} (126), so this says nothing about the script: ${parsed.stderr}`,
+  )
+  assert.equal(parsed.status, 0, `generated run.sh must parse: ${parsed.stderr}`)
 })
 
 test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here)', SLOW, async () => {
