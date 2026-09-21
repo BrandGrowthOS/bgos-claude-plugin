@@ -176,7 +176,13 @@ test('install still refuses a workspace with no .mcp.json, unless the paired top
   // The die is reached through a FAILED proof, and the channel is assigned from the proof and from nothing else.
   assert.match(branch, /if ! proven="\$\(prove_paired_topology "\$workdir" "\$ASSISTANT_ID"\)"; then\s*\n\s*die "no \.mcp\.json/)
   assert.deepEqual(branch.match(/^\s*channel=.*$/gm)?.map((l) => l.trim()), ['channel="$proven"'])
-  assert.ok(branch.indexOf('channel="$proven"') > branch.indexOf('valid_paired_channel "$proven" || die'), 'the proven spec is validated before it is used')
+  // The guard must EXIST and come first. Comparing two indexOf results alone passed with the guard
+  // deleted, because -1 is lower than anything (a mutation found that).
+  const guardAt = branch.indexOf('valid_paired_channel "$proven" || die')
+  assert.ok(guardAt >= 0, 'the proven spec must be validated')
+  assert.ok(branch.indexOf('channel="$proven"') > guardAt, 'and validated BEFORE it is used')
+  // node is resolved inside this arm too, before anything is written
+  assert.match(branch, /paired_node_bin="\$\(command -v node \|\| true\)"\s*\n\s*\[ -n "\$paired_node_bin" \] \|\| die "paired-topology:node-not-found/)
   // An explicit --channel that disagrees with the proof is refused, never obeyed.
   assert.match(branch, /if \[ -n "\$\{CHANNEL:-\}" \] && \[ "\$CHANNEL" != "\$proven" \]; then\s*\n\s*die "paired-topology:channel-mismatch/)
 })

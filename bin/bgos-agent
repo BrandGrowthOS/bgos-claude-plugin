@@ -137,6 +137,7 @@ cmd_install() {
   local channel="${CHANNEL:-$DEFAULT_CHANNEL}"
   local auto="${AUTO_APPROVE:-true}"
   local workdir="${WORKDIR:-$(default_workdir_for "$ASSISTANT_ID")}"
+  local paired_node_bin=""
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
   valid_channel "$channel" || die "--channel must match [A-Za-z0-9:_.-] (got '$channel')"
   valid_bool "$auto"       || die "--auto-approve must be 'true' or 'false'"
@@ -180,13 +181,20 @@ cmd_install() {
     # marketplace folder (see "THE SECOND WORLD" at the top of this file).
     local proven
     if ! proven="$(prove_paired_topology "$workdir" "$ASSISTANT_ID")"; then
-      die "no .mcp.json in $workdir and no creds given, and it is not a proven paired folder either: $proven"
+      die "no .mcp.json in $workdir and no creds given, and it is not a proven paired folder either: $proven. (A clone-style agent instead needs --key <api-key> --user <user-id>, or --dir <existing-project>.)"
     fi
     valid_paired_channel "$proven" || die "paired-topology:unusable-channel the resolver proved '$proven', which is not a marketplace channel spec"
     if [ -n "${CHANNEL:-}" ] && [ "$CHANNEL" != "$proven" ]; then
       die "paired-topology:channel-mismatch --channel $CHANNEL was given, but $workdir is a paired marketplace folder whose proven channel is $proven; launching on the other one comes up Connected and hears nothing. Drop --channel."
     fi
     channel="$proven"
+    # The marketplace plugin starts its MCP server and every hook with a bare `node`
+    # (.claude-plugin/plugin.json), and the service PATH below was built for the clone
+    # topology, which runs `bun`. With no node on that PATH the session comes up and the
+    # channel never does: deaf again. So node is resolved NOW, before anything is
+    # written, and its directory goes on the service PATH.
+    paired_node_bin="$(command -v node || true)"
+    [ -n "$paired_node_bin" ] || die "paired-topology:node-not-found the HOAI marketplace plugin runs on Node.js and no node is on PATH, so the background agent would start and never hear anything. Install Node.js 18 or newer, then run this again."
     ok "paired folder proven for agent $ASSISTANT_ID (folder pin, agent credentials, plugin install record): channel $channel"
   else
     info "using existing $mcp (pass --key/--user to regenerate)"
@@ -222,6 +230,13 @@ cmd_install() {
   bun_bin="$(command -v bun)"
   expect_bin="$(command -v expect)"
   path="$(dirname "$claude_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+  if [ -n "$paired_node_bin" ]; then
+    path="$(dirname "$paired_node_bin"):$path"
+    # Stamped for a PAIRED folder only. The app records alwaysOn in BGOS only after it has
+    # seen this agent connect, and until then the agent's own daemon reads "off" with a
+    # supervisor installed, which used to mean "remove it". lib/always-on-grace.ts.
+    date +%s > "$statedir/installed-at"
+  fi
   write_run_expect "$statedir/run.expect" "$statedir" "$claude_bin" "$channel" "${CONTINUE:-}"
   write_run_sh     "$statedir/run.sh"     "$statedir" "$statedir/run.expect" "$expect_bin"
   chmod +x "$statedir/run.expect" "$statedir/run.sh"
@@ -253,7 +268,7 @@ prove_paired_topology() { # $1 workdir $2 assistant id
     "HOAI_TOPOLOGY_OK "*)      printf '%s' "${line#HOAI_TOPOLOGY_OK }"; return 0 ;;
     "HOAI_TOPOLOGY_REFUSED "*) printf '%s' "${line#HOAI_TOPOLOGY_REFUSED }"; return 1 ;;
   esac
-  printf 'paired-topology:prover-failed the topology check itself did not run: %s' "$(printf '%s' "$out" | tail -n 2 | tr '\n' ' ')"
+  printf 'paired-topology:prover-failed the topology check itself did not run: %s' "$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | grep -vE '^(Bun v|Node\.js v)' | tail -n 4 | tr '\n' ' ' || true)"
   return 1
 }
 

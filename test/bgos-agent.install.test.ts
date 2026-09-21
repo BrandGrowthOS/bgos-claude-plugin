@@ -44,6 +44,7 @@ const hasBash = spawnSync('bash', ['-c', 'exit 0']).status === 0
 const hasExpect = spawnSync('bash', ['-c', 'command -v expect']).status === 0
 const hasGit = spawnSync('bash', ['-c', 'command -v git']).status === 0
 const SLOW = { timeout: 120_000 }
+const realBun = spawnSync('bash', ['-c', 'command -v bun'], { encoding: 'utf8' }).stdout.trim()
 
 /** An early return reports PASS, so CI sets HOAI_REQUIRE_EXPECT=1 and a missing tool becomes a failure. */
 function requireTools(): void {
@@ -60,7 +61,7 @@ interface Machine {
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, pluginInstalled = true }: { fromClone?: boolean; pluginInstalled?: boolean } = {}): Machine {
+function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone case.
   const pluginRoot = fromClone
@@ -74,7 +75,9 @@ function machine({ fromClone = false, pluginInstalled = true }: { fromClone?: bo
   writeFileSync(join(pluginRoot, 'server.ts'), '// stand-in: the installer only checks that this file exists\n')
 
   if (pluginInstalled) {
-    mkdirSync(join(home, '.claude', 'plugins'), { recursive: true })
+    // what a real `claude plugin install hoai@hoai` leaves: the record, the files, and the plugin ENABLED
+    mkdirSync(join(home, '.claude/plugins/cache/hoai/hoai/0.42.3'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'hoai@hoai': pluginEnabled } }))
     writeFileSync(
       join(home, '.claude', 'plugins', 'installed_plugins.json'),
       JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: join(home, '.claude/plugins/cache/hoai/hoai/0.42.3'), version: '0.42.3' }] } }),
@@ -93,8 +96,12 @@ function machine({ fromClone = false, pluginInstalled = true }: { fromClone?: bo
   shim('launchctl', '[ "$1" = "print" ] && exit 1\nexit 0')
   shim('systemctl', 'exit 0')
   shim('loginctl', 'exit 0')
-  // no network in a test: skip `bun install`, and otherwise BE a JS runtime
-  shim('bun', `[ "$1" = "install" ] && exit 0\nexec "${process.execPath}" "$@"`)
+  // No network in a test: skip `bun install`. Otherwise hand over to the REAL bun when this
+  // machine has one, because production runs the prover on bun and nothing else in CI loads the
+  // doctor under it (found by review); only fall back to the runtime running this test.
+  shim('bun', `[ "$1" = "install" ] && exit 0\nexec "${realBun || process.execPath}" "$@"`)
+  // The marketplace plugin runs on node, and the installer refuses a paired folder without one.
+  if (withNode) shim('node', 'exit 0')
 
   const agentBin = join(pluginRoot, 'bin', 'bgos-agent')
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
@@ -102,7 +109,7 @@ function machine({ fromClone = false, pluginInstalled = true }: { fromClone?: bo
       cwd: home,
       encoding: 'utf8',
       timeout: 100_000,
-      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin`, ...extraEnv },
+      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv },
     })
     return { status: result.status, out: `${result.stdout}\n${result.stderr}` }
   }
@@ -140,6 +147,11 @@ test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the chann
   assert.equal(existsSync(join(workspace, '.mcp.json')), false, 'a marketplace folder has no .mcp.json, and the installer must not fabricate one')
   assert.equal(m.serviceFiles().length, 1, 'exactly one service file')
   assert.match(callsOf(m), /--prove-paired-topology --workdir .*936-workspace --assistant-id 936/)
+  // node's directory leads the service PATH, or the plugin's `node` command is not found under launchd
+  const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
+  assert.ok(service.includes(`${join(m.home, 'shims')}:`), 'the directory node was found in must be on the service PATH')
+  // and the install is stamped, so the agent's own daemon does not remove it before the app records always-on
+  assert.match(readFileSync(join(m.home, '.bgos-agent', '936', 'installed-at'), 'utf8').trim(), /^\d{9,11}$/)
   // the spec never came from this script: bin/bgos-agent does not contain it outside comments
   const code = readFileSync(m.agentBin, 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
   assert.equal(code.includes(MARKETPLACE_CHANNEL_SPEC), false)
@@ -162,6 +174,7 @@ test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always
   assert.ok(spawnLine(m, '901').endsWith(`--dangerously-load-development-channels "${CLONE_CHANNEL_SPEC}"`), spawnLine(m, '901'))
   assert.equal(readFileSync(join(workspace, '.mcp.json'), 'utf8'), mcp, 'byte for byte')
   assert.doesNotMatch(callsOf(m), /prove-paired-topology/, 'the prover must not run at all for a folder that publishes its own server')
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '901', 'installed-at')), false, 'no stamp either: a clone-style install leaves exactly what it always left')
 })
 
 test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call', SLOW, () => {
@@ -213,6 +226,34 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
         mkdirSync(join(custom, 'plugins'), { recursive: true })
         writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: '/x', version: '0.42.3' }] } }))
         return { m, args: ['--assistant', '14', '--dir', ws, '--always-on'], env: { CLAUDE_CONFIG_DIR: custom } }
+      },
+    },
+    {
+      name: 'the credentials file holds another agent',
+      reason: /paired-topology:credentials-belong-to-another-agent/,
+      setup: () => {
+        const m = machine()
+        const ws = pair(m, '17')
+        writeFileSync(join(m.home, '.bgos-agent', 'credentials-17.json'), JSON.stringify({ assistantId: 99 }))
+        return { m, args: ['--assistant', '17', '--dir', ws, '--always-on'] }
+      },
+    },
+    {
+      name: 'the plugin is installed but disabled',
+      reason: /paired-topology:plugin-disabled/,
+      setup: () => {
+        const m = machine({ pluginEnabled: false })
+        const ws = pair(m, '18')
+        return { m, args: ['--assistant', '18', '--dir', ws, '--always-on'] }
+      },
+    },
+    {
+      name: 'no node on PATH, which the marketplace plugin runs on',
+      reason: /paired-topology:node-not-found/,
+      setup: () => {
+        const m = machine({ withNode: false })
+        const ws = pair(m, '19')
+        return { m, args: ['--assistant', '19', '--dir', ws, '--always-on'] }
       },
     },
     {

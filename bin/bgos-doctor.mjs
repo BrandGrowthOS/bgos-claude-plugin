@@ -64,6 +64,7 @@ import {
   selfAndAncestorPids,
 } from './hoai-core.mjs'
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
+import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
 import {
   resolveReadCredentialsPath,
   normalizeApiBase,
@@ -1018,6 +1019,9 @@ export const PAIRED_TOPOLOGY_REASONS = Object.freeze({
   WORKSPACE_DECLARES_SERVER: 'paired-topology:workspace-declares-server',
   PLUGIN_NOT_INSTALLED: 'paired-topology:plugin-not-installed',
   INSTALLER_IS_A_CLONE: 'paired-topology:installer-is-a-clone',
+  CREDENTIALS_FOR_ANOTHER_AGENT: 'paired-topology:credentials-belong-to-another-agent',
+  PLUGIN_DISABLED: 'paired-topology:plugin-disabled',
+  PLUGIN_FILES_MISSING: 'paired-topology:plugin-files-missing',
 })
 
 /** Variables the generated launchd plist and systemd unit do NOT carry. */
@@ -1039,9 +1043,9 @@ export function supervisedEnv(env = process.env) {
  *           liveSafe?: (o: { cwd: string, assistantId: string, env: Record<string, string | undefined>, home: string }) => boolean,
  *           route?: (o: { cwd: string, env: Record<string, string | undefined>, home: string, scriptDir: string }) =>
  *             { spec?: string, source?: string, method?: string, serverName?: string, reason?: string } }} opts
- * @returns {{ ok: boolean, channel: string, reason: string, detail: string }}
+ * @returns {Promise<{ ok: boolean, channel: string, reason: string, detail: string }>}
  */
-export function provePairedTopology({
+export async function provePairedTopology({
   workdir,
   assistantId,
   env = process.env,
@@ -1051,6 +1055,8 @@ export function provePairedTopology({
   exists = existsSync,
   liveSafe = launchFolderLiveSafe,
   route = probeChannelRoute,
+  credentials = probeCredentials,
+  observeInstall = observeMarketplaceInstall,
 } = {}) {
   const R = PAIRED_TOPOLOGY_REASONS
   const refused = (reason, detail) => ({ ok: false, channel: '', reason, detail })
@@ -1074,6 +1080,13 @@ export function provePairedTopology({
   // ...then the verdict itself comes from pairing's OWN verifier, under the
   // supervised environment, so this function cannot drift from what the daemon
   // will actually resolve from that folder.
+  // The file NAME says agent <id>. The daemon takes its identity from what is INSIDE
+  // it, so a file carrying another agent's id is that other agent, launched from here.
+  // Read through the doctor's own credentials probe.
+  const inner = credentials({ env: runtimeEnv, home, expectedAssistantId: id })
+  if (inner?.assistantId != null && String(inner.assistantId) !== id) {
+    return refused(R.CREDENTIALS_FOR_ANOTHER_AGENT, `${credsPath} is named for agent ${id} but holds the credentials of agent ${inner.assistantId}; pair this machine as agent ${id} again`)
+  }
   if (!liveSafe({ cwd: dir, assistantId: id, env: runtimeEnv, home })) {
     return refused(R.NOT_LIVE_SAFE, `pairing's own verifier says a session launched from ${dir} would not resolve agent ${id}`)
   }
@@ -1085,6 +1098,19 @@ export function provePairedTopology({
   }
   const spec = String(resolved?.spec ?? '').trim()
   if (resolved?.method === 'clone') {
+    // Found by review: an installer running FROM a marketplace install that lives
+    // under a custom CLAUDE_CONFIG_DIR also reads as "clone" here, because the
+    // supervised environment has no such variable and the script is then outside
+    // the default plugins dir. Calling that a clone would be false. If the
+    // installing shell's own environment says marketplace, the true reason is
+    // that the background service will not see that install.
+    const shellView = route({ cwd: dir, env, home, scriptDir })
+    if (shellView?.method === 'marketplace') {
+      return refused(
+        R.PLUGIN_NOT_INSTALLED,
+        `the HOAI marketplace plugin is installed for this shell (${claudeConfigDir({ env, home })}) but not where the background agent will look (${claudeConfigDir({ env: runtimeEnv, home })}); the background service does not inherit CLAUDE_CONFIG_DIR`,
+      )
+    }
     // Its own reason, because "the plugin is not installed" would be a false
     // statement here: it may well be installed. What the resolver says is that
     // the code being run is a CLONE, and a clone's route from a folder with no
@@ -1104,6 +1130,18 @@ export function provePairedTopology({
         (custom ? `; this shell has CLAUDE_CONFIG_DIR=${custom}, which the background service does not inherit` : '') +
         `. Install method read as ${resolved?.method ?? 'unknown'}${why ? `: ${why}` : ''}`,
     )
+  }
+  // "The resolver says marketplace" is an install RECORD. The supervised claude needs the
+  // plugin enabled and its files on disk, and lib/plugin-cli.mjs already reads exactly that
+  // (a real `claude plugin install` writes enabledPlugins["hoai@hoai"]: true, measured).
+  const configDir = claudeConfigDir({ env: runtimeEnv, home })
+  const observed = await observeInstall({ configDir })
+  if (observed?.installed?.present && observed.enabled !== true) {
+    return refused(R.PLUGIN_DISABLED, `the HOAI plugin is installed in ${configDir} but not enabled there (settings.json enabledPlugins), so the background session would start without it`)
+  }
+  const installPath = String(observed?.installed?.installPath ?? '').trim()
+  if (installPath && !exists(installPath)) {
+    return refused(R.PLUGIN_FILES_MISSING, `the install record in ${configDir} points at ${installPath}, which is not on disk; reinstall the plugin (claude plugin install hoai@hoai)`)
   }
   return { ok: true, channel: spec, reason: '', detail: `folder pin ${id}, credentials ${credsPath}, route ${spec}` }
 }
@@ -1741,7 +1779,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // Prove-only mode, for `hoai-agent install`: one line, no table, no network,
   // no claude. Exit 0 when the paired topology is proven, 1 when it is refused.
   if (args.provePairedTopology) {
-    const verdict = provePairedTopology({
+    const verdict = await provePairedTopology({
       workdir: args.workdir,
       assistantId: args.assistantId,
       env,
