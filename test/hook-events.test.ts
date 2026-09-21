@@ -710,6 +710,27 @@ test('a turn that opened with a tool takes that first PreToolUse as its start', 
   assert.equal(cardsOf(opened.effects)[0]!.startedAt, 7_000)
 })
 
+test('a SessionStart opens no clock: the card dates the TURN, not the session', () => {
+  // The moment a session opened is not a moment any turn started. While
+  // SessionStart set the clock, a daemon that attached at boot and saw its
+  // first tool fifteen minutes later drew "Worked 15 min" for a turn that took
+  // seconds, and the PreToolUse fallback below could never run for the first
+  // turn of a session that had no prompt hook. The two sources are the prompt
+  // receipt and the first tool of the turn.
+  const started = feed(emptyTurn(), base('SessionStart', { source: 'startup' }), 1_000)
+  assert.equal(started.next.startedAt, 0, 'a session opening is not a turn opening')
+
+  const opened = feed(started.next, base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_c5',
+  }), 901_000)
+  assert.equal(opened.next.startedAt, 901_000)
+  assert.equal(
+    cardsOf(opened.effects)[0]!.startedAt,
+    901_000,
+    'the start is the first tool of the turn, not the fifteen minutes before it',
+  )
+})
+
 test('a turn end clears the start, so the next turn cannot inherit it', () => {
   // Without this a turn the owner pushed from their phone (no prompt hook of
   // its own) would report the minutes since the LAST typed prompt.

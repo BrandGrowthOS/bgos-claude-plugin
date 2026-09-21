@@ -13,6 +13,10 @@
  * before redaction) is the one that turns it red. Stage 7 added the same case
  * at the OTHER end of the string, where the output keeps its tail: its
  * mutation is clipping the output before masking it at the mapper's call site.
+ *
+ * Two more mutations, from the stage 7 review:
+ *   - drop the private key block branch  -> the PEM body line case goes red
+ *   - mask a value with maskSecret        -> the short password case goes red
  */
 
 import { strict as assert } from 'node:assert'
@@ -169,6 +173,70 @@ test('a secret in a file path is masked too', () => {
   )
   assert.match(out, /\[redacted:github_token\]/)
   assert.ok(!out.includes('ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'))
+})
+
+test('a private key block goes body and all, not just its BEGIN line', () => {
+  // Every rule is line anchored and the private key rule matches the header
+  // alone, so the base64 body lines that follow match NOTHING and a pass that
+  // looked at one line at a time stored the key in the clear. The key below is
+  // a fake, shaped like an ed25519 one.
+  const lines = [
+    'running ssh-keygen',
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gt',
+    'ZWQyNTUxOQAAACBGQUtFRkFLRUZBS0VGQUtFRkFLRUZBS0VGQUtFRkFLRUZBAAAAoGZh',
+    '-----END OPENSSH PRIVATE KEY-----',
+    'done',
+  ]
+  const out = redactForWire(lines.join('\n'))
+
+  for (const body of lines.slice(2, 4)) {
+    assert.ok(!out.includes(body), `a base64 body line survived: ${body}`)
+  }
+  assert.ok(!out.includes('-----END'), 'the END line goes with the body it closes')
+  assert.equal(
+    out,
+    ['running ssh-keygen', '[redacted:private_key_block]', '[private key removed]', 'done'].join('\n'),
+    'the whole block collapses to two lines and the text around it is untouched',
+  )
+
+  // And end to end, on the row the card actually ships: the output block is
+  // what a `cat ~/.ssh/id_ed25519` would have put on the wire.
+  const row = rowForStdout(lines.join('\n'))
+  for (const body of lines.slice(2, 4)) {
+    assert.ok(!(row.output ?? '').includes(body), 'the key reached the row output')
+  }
+})
+
+test('a private key with no END line takes the rest of the text with it', () => {
+  // A tail clipped log, a crash mid print: the header is the only proof there
+  // is, so it has to be enough on its own.
+  const out = redactForWire(
+    ['-----BEGIN RSA PRIVATE KEY-----', 'MIIBOgIBAAJBAKFAKEFAKEFAKEFAKE', 'still the key'].join('\n'),
+  )
+  assert.equal(out, '[redacted:private_key_block]\n[private key removed]')
+
+  const header = redactForWire('-----BEGIN RSA PRIVATE KEY-----')
+  assert.equal(header, '[redacted:private_key_block]', 'a header on its own invents no body line')
+
+  const oneLine = redactForWire('-----BEGIN PRIVATE KEY-----MIIBOgIBAAJBAKFAKEFAKE-----END PRIVATE KEY-----')
+  assert.ok(!oneLine.includes('MIIBOgIBAAJBAKFAKEFAKE'), 'a one line PEM carries its body beside the header')
+})
+
+test('a certificate is not a private key: only the key block is swallowed', () => {
+  const text = ['-----BEGIN CERTIFICATE-----', 'MIIDdzCCAl+gAwIBAgIEAgAAuTAN', '-----END CERTIFICATE-----'].join('\n')
+  assert.equal(redactForWire(text), text, 'a public certificate is not a secret and reads as evidence')
+})
+
+test('a secret shorter than its own excerpt is replaced whole, never excerpted', () => {
+  // maskSecret is a four character EXCERPT plus three dots, which is a display
+  // format: substituting it back into the text would store a three character
+  // password intact. What goes on the wire is the placeholder, so the length
+  // of the value cannot matter.
+  const out = redactForWire('psql postgres://bgos:abc@db.internal/bgos')
+  assert.equal(out, 'psql postgres://bgos:[redacted:connection_string_password]@db.internal/bgos')
+  assert.ok(!out.includes(':abc@'), 'the password survived')
+  assert.ok(!out.includes('abc...'), 'an excerpt is not a redaction')
 })
 
 test('a line full of secrets is redacted to the last one, not to the first few', () => {

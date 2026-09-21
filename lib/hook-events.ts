@@ -354,6 +354,20 @@ interface Span {
 const overlaps = (spans: Span[], start: number, end: number): boolean =>
   spans.some((s) => start < s.end && end > s.start)
 
+/** The one line a private key's body is collapsed into. */
+export const PRIVATE_KEY_BODY_PLACEHOLDER = '[private key removed]'
+
+/** The rule whose header opens a block, and a cheap reject so the scan below
+ *  only runs on a candidate line. The RULE is the authority: keeping a second
+ *  copy of its pattern here is how the two would drift apart. */
+const PRIVATE_KEY_RULE = 'private_key_block'
+const PRIVATE_KEY_HEADER_HINT = '-----BEGIN'
+const PRIVATE_KEY_FOOTER_HINT = '-----END'
+
+const opensPrivateKeyBlock = (line: string): boolean =>
+  line.includes(PRIVATE_KEY_HEADER_HINT) &&
+  scanText('hook', line).some((finding) => finding.rule === PRIVATE_KEY_RULE)
+
 /**
  * Mask every secret the scan finds, in place, as `[redacted:<rule>]`.
  *
@@ -362,13 +376,35 @@ const overlaps = (spans: Span[], start: number, end: number): boolean =>
  * of its token and verifying, by re-scanning, that the replacement actually
  * silenced that rule. A finding whose span cannot be located redacts the whole
  * line rather than shipping it: a finding always redacts.
+ *
+ * A private key is the one secret whose VALUE is not on the line that gives it
+ * away. Every rule here is line anchored, the header rule matches the
+ * `-----BEGIN ... PRIVATE KEY-----` line alone, and the base64 body lines that
+ * follow match nothing at all, so a pass that looked at one line at a time
+ * stored the key whole. A header therefore takes the WHOLE line with it and
+ * swallows everything up to and including the first `-----END` line, or the
+ * rest of the text when there is no END line, into one placeholder.
  */
 export function redactForWire(text: string): string {
   if (typeof text !== 'string' || text === '') return ''
-  return text
-    .split(/\r?\n/)
-    .map((line) => redactLine(line))
-    .join('\n')
+  const lines = text.split(/\r?\n/)
+  const out: string[] = []
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    if (!opensPrivateKeyBlock(line)) {
+      out.push(redactLine(line))
+      continue
+    }
+    // The whole header line, not just the matched span: a one line PEM carries
+    // its body on this same line, after the header the rule matched.
+    out.push(PLACEHOLDER(PRIVATE_KEY_RULE))
+    if (index + 1 >= lines.length) continue
+    let end = index + 1
+    while (end < lines.length && !lines[end]!.includes(PRIVATE_KEY_FOOTER_HINT)) end++
+    out.push(PRIVATE_KEY_BODY_PLACEHOLDER)
+    index = Math.min(end, lines.length - 1)
+  }
+  return out.join('\n')
 }
 
 /** Enough passes for a pathological line; the fail closed exit below covers
@@ -917,7 +953,11 @@ export function applyHookEventToTurn(
       next.toolOrder = []
       next.tools = new Map()
       next.tasks = new Map()
-      next.startedAt = now
+      // The clock belongs to the TURN, and a session opening is not a turn
+      // opening. Setting it here would hand the first turn of the session a
+      // start from whenever the daemon attached, and would stop the PreToolUse
+      // fallback below ever running for a turn that had no prompt hook.
+      next.startedAt = 0
       return { next, effects }
     }
 

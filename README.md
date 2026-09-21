@@ -637,8 +637,11 @@ its pattern no longer matches. What ships is the LAST 2048 characters and the
 last 200 lines of a row, and at most 8192 characters of output across a whole
 card, spent from the newest row backwards. Those caps are applied before every
 card write and not only the last one, because the whole tool list rides every
-update while a turn is live. The two moments the card reports are the receipts
-the hook process stamped, not the moment this daemon read the spool file.
+update while a turn is live. A private key is the one secret whose value is not
+on the line that gives it away, so a `-----BEGIN ... PRIVATE KEY-----` line
+takes its whole body with it, up to and including the `-----END` line. The two
+moments the card reports are the receipts the hook process stamped, not the
+moment this daemon read the spool file.
 
 **The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
 the payload as JSON on stdin. The forwarder appends one line to

@@ -26,6 +26,9 @@
  *   3. A Write that CREATES carries `structuredPatch: []`, so its added count
  *      has to be read off `content`; an Edit carries hunks whose `lines` hold
  *      a `\ No newline at end of file` marker, which is not a removed line.
+ *      An UPDATE can carry an empty patch as well (nothing changed, the diff
+ *      timed out, the write was staged), which is why the content arm is gated
+ *      on `type === 'create'` and not merely on the patch being empty.
  *
  * THE CALLER OWNS THE ORDER. lib/hook-events.ts header rule 2 is redact before
  * you clip: mask with redactForWire FIRST, then clipOutputTail, and the per
@@ -170,7 +173,9 @@ function countHunkLines(hunks: unknown[]): { linesAdded: number; linesRemoved: n
       // "\ No newline at end of file" is a marker, not a line the edit changed,
       // and the probe's one hunk Edit carried it.
       if (entry.startsWith('\\')) continue
-      if (entry.startsWith('@@') || entry.startsWith('+++') || entry.startsWith('---')) continue
+      // No header skip here. A hunk entry is a file line with ONE + or -
+      // prepended and structuredPatch carries no `+++ a/file` headers at all,
+      // so skipping those prefixes only ever dropped `++i;` and `--count;`.
       if (entry.startsWith('+')) linesAdded += 1
       else if (entry.startsWith('-')) linesRemoved += 1
     }
@@ -183,10 +188,13 @@ function countHunkLines(hunks: unknown[]): { linesAdded: number; linesRemoved: n
  * app draws `+0 -0` for a pair it is given, and "I do not know" is not zero.
  *
  * The hunks are the exact answer for an Edit and for a Write that UPDATES. A
- * Write that CREATES has no hunks at all, so its content is the addition. The
- * forwarder's reduced shapes (a `{ linesAdded, linesRemoved }` pair in place of
- * the hunks, a `{ lines }` count in place of the body) are read straight
- * through. Anything else, a Read included, leaves both fields absent.
+ * Write that CREATES has no hunks at all, so its content is the addition, and
+ * `type === 'create'` is what says so: an update reaches the same arm with an
+ * empty patch and a whole body, and counting that body claimed a file nothing
+ * had changed. The forwarder's reduced shapes (a `{ linesAdded, linesRemoved }`
+ * pair in place of the hunks, a `{ lines }` count in place of the body) are
+ * read straight through, under that same gate. Anything else, a Read included,
+ * leaves both fields absent.
  */
 export function editCountsFor(raw: unknown): EditCounts {
   const response = responseOf(raw)
@@ -205,8 +213,14 @@ export function editCountsFor(raw: unknown): EditCounts {
     return { linesAdded, linesRemoved }
   }
 
-  // No hunks: the create arm. A Write that UPDATES never reaches this line,
-  // because its patch is populated and the branch above answered it.
+  // No hunks. This is the CREATE arm and nothing else, because `type` is the
+  // only thing that says the whole body is new. An UPDATE reaches here too:
+  // the runtime sends an empty patch when the content written matched the file
+  // on disk, when the diff timed out and when it staged the write, and reading
+  // `content` on one of those claimed every line of the file for a turn that
+  // changed nothing. A too large to diff update carries `originalFile: null`,
+  // so a missing original is NOT evidence of a create.
+  if (response.type !== 'create') return {}
   const content = response.content
   if (typeof content === 'string') return { linesAdded: countContentLines(content) }
   if (isRecord(content)) {

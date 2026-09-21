@@ -20,6 +20,8 @@
  *   - count the backslash marker as removed -> the Edit test goes red
  *   - count hunks instead of lines          -> the Edit test goes red
  *   - report zero and zero for a create     -> the Write test goes red
+ *   - read content with no create gate      -> the empty patch update test red
+ *   - skip a hunk line starting +++ or ---  -> the ++i; test goes red
  *   - default a missing count to zero       -> the Read test goes red
  *   - spend the card budget from the FRONT  -> the budget test goes red
  *
@@ -227,6 +229,28 @@ test("an Edit's hunk lines count one added and one removed, and the marker is no
   assert.deepEqual(editCountsFor(twoHunks), { linesAdded: 3, linesRemoved: 1 })
 })
 
+test('a changed line whose own text begins with ++ or -- is still a changed line', () => {
+  // A hunk entry is the file's own line with ONE + or - prepended, and it can
+  // never be the `+++ a/file` / `--- b/file` header of a unified diff, because
+  // structuredPatch has no file headers at all. Skipping those prefixes here
+  // only ever ate real content: `++i;` arrives as `+++i;` and `--count;` as
+  // `---count;`, and a SQL or YAML edit lost its counts the same way.
+  const hunks = {
+    tool_response: {
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 3,
+          newStart: 1,
+          newLines: 3,
+          lines: [' for (;;) {', '---count;', '+++i;', '\\ No newline at end of file'],
+        },
+      ],
+    },
+  }
+  assert.deepEqual(editCountsFor(hunks), { linesAdded: 1, linesRemoved: 1 })
+})
+
 test('a Write that CREATES counts the lines of content, because its patch is empty', () => {
   assert.deepEqual(responseOf(WRITE_CREATE).structuredPatch, [])
   assert.equal(responseOf(WRITE_CREATE).content, 'one\ntwo\nthree')
@@ -238,9 +262,38 @@ test('a Write that CREATES counts the lines of content, because its patch is emp
   assert.deepEqual(editCountsFor(created('one\ntwo\nthree\n')), { linesAdded: 3 }, 'a trailing newline is not a fourth line')
   assert.deepEqual(editCountsFor(created('')), { linesAdded: 0 })
   assert.deepEqual(
-    editCountsFor({ tool_response: { content: { lines: 12 } } }),
+    editCountsFor({ tool_response: { type: 'create', content: { lines: 12 } } }),
     { linesAdded: 12 },
     "the forwarder's reduced content is read straight through",
+  )
+  assert.deepEqual(
+    editCountsFor({ tool_response: { content: { lines: 12 } } }),
+    {},
+    'and it is read under the same gate: one rule, both paths',
+  )
+})
+
+test('a Write whose patch is empty because NOTHING changed claims no lines', () => {
+  // The runtime reports an UPDATE with an empty structuredPatch in three real
+  // cases: the content written matched the file on disk, the diff timed out,
+  // and the previous content was too large to diff. The last of those carries
+  // originalFile null, which is why the gate is the type and not a missing
+  // original. Reading content on any of them drew "1 file changed +40" for a
+  // turn that changed nothing.
+  const body = Array.from({ length: 40 }, (_value, i) => `line ${i}`).join('\n')
+  const update = (over: Record<string, unknown>): Record<string, unknown> => ({
+    tool_response: { type: 'update', filePath: '/work/a.ts', content: body, structuredPatch: [], ...over },
+  })
+  assert.deepEqual(editCountsFor(update({ originalFile: body })), {}, 'nothing changed, so nothing is claimed')
+  assert.deepEqual(
+    editCountsFor(update({ originalFile: null })),
+    {},
+    'too large to diff is still an update, so a null original is not a create',
+  )
+  assert.deepEqual(
+    editCountsFor({ tool_response: { filePath: '/work/a.ts', content: body, structuredPatch: [] } }),
+    {},
+    'a response that never says it created anything proves nothing',
   )
 })
 

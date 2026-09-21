@@ -119,9 +119,10 @@ export const KEPT_PAYLOAD_KEYS = [
   'stop_hook_active',
   // Stage 7 reads what the call did: the response on a success, the error
   // string on a failure (its first line carries the exit code), and the one
-  // boolean that says the owner stopped it. tool_response is REDUCED below
-  // rather than kept whole, because keeping a whole file body is the one thing
-  // this reduction exists to prevent.
+  // boolean that says the owner stopped it. tool_response AND error are
+  // REDUCED below rather than kept whole, because keeping a whole file body is
+  // the one thing this reduction exists to prevent, and because the generic
+  // clipper keeps a HEAD, which is the wrong end of a failure.
   'tool_response',
   'error',
   'is_interrupt',
@@ -161,7 +162,7 @@ function countPatchLines(hunks) {
     for (const entry of lines) {
       if (typeof entry !== 'string') continue
       if (entry.startsWith('\\')) continue
-      if (entry.startsWith('@@') || entry.startsWith('+++') || entry.startsWith('---')) continue
+      // No header skip: see lib/tool-outcome.ts, same rule, same reason.
       if (entry.startsWith('+')) linesAdded += 1
       else if (entry.startsWith('-')) linesRemoved += 1
     }
@@ -198,7 +199,15 @@ export function reduceToolResponse(response) {
   if (Array.isArray(response.structuredPatch) && response.structuredPatch.length > 0) {
     out.structuredPatch = countPatchLines(response.structuredPatch)
   }
-  if (typeof response.content === 'string') out.content = { lines: countContentLines(response.content) }
+  if (typeof response.type === 'string') out.type = clipValue(response.type)
+  // ONLY a create: the line count of a body is an addition only when the whole
+  // body is new. An update arrives with an empty patch whenever nothing
+  // changed, the diff timed out or the write was staged, and sending its body
+  // count made the row claim the entire file. lib/tool-outcome.ts gates on the
+  // same `type`, so the rule is one rule on both paths.
+  if (typeof response.content === 'string' && response.type === 'create') {
+    out.content = { lines: countContentLines(response.content) }
+  }
   return out
 }
 
@@ -214,6 +223,11 @@ export function reduceToolResponse(response) {
  * the row's output, its exit code and an edit's counts are all read out of it,
  * so it is reduced (reduceToolResponse above) instead. Dropping it would cost
  * the owner exactly the rows a very large call produces.
+ *
+ * `error` goes through the SAME reducer, and not through the generic per field
+ * clipper, because the generic one keeps a head: a failing command's string
+ * carries its exit code on the first line and what it printed after that, and
+ * the end is the part the owner is looking for.
  */
 export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
   if (!isRecord(payload)) return {}
@@ -236,6 +250,14 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
       if (clipped !== undefined) input[key] = clipped
     }
     reduced.tool_input = input
+  }
+  if (typeof payload.error === 'string') {
+    // The kept keys loop above clipped this to its FIRST 200 characters, and a
+    // failure string is the one field whose end is the point: its first line
+    // carries the exit code and everything after it is what the command
+    // printed before it failed. The live failure shape carries NO
+    // tool_response at all, so this string is the only copy there is.
+    reduced.error = reduceToolResponse(payload.error)
   }
   if ('tool_response' in payload) {
     // The kept keys loop above has no way to shrink an object, so it put the
