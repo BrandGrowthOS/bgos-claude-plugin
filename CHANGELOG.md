@@ -2,6 +2,45 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.42.2 (2026-09-21)
+
+The other half of the same install post-mortem, plus one defect found while
+verifying the fix that shipped in 0.42.1.
+
+- **`hoai` never reached the user's own PATH.** After a marketplace install the
+  command resolved inside Claude Code, which injects the plugin's `bin/` into
+  its session environment, and answered `command not found` in the user's
+  terminal. The remedy existed but pairing printed it as a conditional footnote
+  BELOW the line declaring setup complete. Pairing now RUNS `install-cli` as its
+  last step and says what it did, best effort and never fatal.
+- **`hoai doctor` passed while the agent could not start.** Twelve PASS rows and
+  one SKIP on a machine where every launch exited instantly, because the doctor
+  validated the channel and never the launch. Four rows now cover the launch
+  itself, and a check that never ran renders UNPROVEN rather than SKIP: the one
+  honest row in that report read SKIP, which a reader takes as "not applicable"
+  when it meant "unverified".
+- **`waitForIncumbent` blocked forever.** No deadline, no escape, and a process
+  whose cwd merely COULD NOT BE READ counted as blocking, so any claude under
+  the same uid that `lsof` could not inspect held every launch. Bounded at 90s
+  with the incumbent pid and how to clear it; an unreadable cwd is an absence of
+  evidence, not evidence of a conflict, so it warns and lets the launch through.
+- **Pairing from `$HOME` made the home directory the agent folder**, after which
+  the agent ran with permissions skipped across the whole home. Refused now,
+  before the code exchange, because a pair code is one-time and expires.
+- **The trust seed wrote a key Claude Code never looks up.** 0.42.1 fixed WHICH
+  FILE `preseedClaudeTrust` writes; this fixes the KEY inside it. Claude Code
+  keys `projects` on the RESOLVED cwd, and `/var` is a symlink to `/private/var`
+  on every Mac, so a seed for a folder under `/tmp` or `/var` reported success
+  and changed nothing. Measured on a fresh folder against the real CLI: seeding
+  the literal path left the trust dialog showing, seeding the resolved path made
+  it disappear. Both spellings are seeded now, and a realpath that throws still
+  seeds the literal cwd rather than skipping.
+
+Also, as a rule rather than a patch: a setup step never silently replaces
+anything. `install-cli` runs only on the interactive pairing path, never from
+the watcher's background daemon, and when it finds a shim pointing elsewhere it
+prints what it found and which one wins on PATH instead of re-pointing it.
+
 ## 0.42.1 (2026-09-21)
 
 A first-time install on a fresh macOS user failed at four separate points, and

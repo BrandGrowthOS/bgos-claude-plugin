@@ -10,14 +10,25 @@
  * order: the claude CLI, claude auth (subscription auth specifically, since
  * API-key auth silently drops inbound channel messages), node, bun, bunx,
  * the detected install method (marketplace vs clone, which decides the
- * channel spec), the pairing credentials file, a REAL MCP initialize
- * handshake against the server via the launch shim, `claude mcp list`
- * reading Connected, backend reachability, and the daemon log path.
+ * channel spec), the channel route, the four LAUNCH rows (folder trust, the
+ * bypass prompt, the startup-gate strategy, an incumbent session), the
+ * pairing credentials file, a REAL MCP initialize handshake against the
+ * server via the launch shim, `claude mcp list` reading Connected, backend
+ * reachability, and the daemon log path.
+ *
+ * WHY THE LAUNCH ROWS EXIST (2026-09-21). A real machine printed 12 PASS and
+ * 1 SKIP while EVERY `hoai` invocation exited instantly: every row validated
+ * the CHANNEL and not one validated the LAUNCH. A folder Claude Code does not
+ * trust, an unsuppressed bypass warning whose default answer is exit, a
+ * relaunch that needs the expect wrapper on a host with no expect, and a
+ * claude already holding the cwd all stop a launch dead while every channel
+ * row stays green. Each is one cheap read and each can FAIL.
  *
  * --preflight makes the exit code the verdict: 0 only when the claude CLI,
  * auth, the initialize handshake, and `claude mcp list` are ALL green and
  * nothing else failed (backend reachability is implied by a live handshake
- * and is reported but exempted then).
+ * and is reported but exempted then; the startup-gate and incumbent rows
+ * report without gating, see ADVISORY_ROW_IDS).
  *
  * Wire note: the MCP stdio transport is newline-delimited JSON (one JSON-RPC
  * document per \n-terminated line; see @modelcontextprotocol/sdk
@@ -43,14 +54,39 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import { resolveBunPath, bunInstallHint, executableNames, pathFlavor } from './bgos-launch.mjs'
-import { detectInstallMethod, launchCommandFor } from './bgos-install-method.mjs'
-import { resolveChannelSpec } from './hoai-core.mjs'
+import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bgos-install-method.mjs'
+import {
+  defaultListProcesses,
+  findIncumbentClaude,
+  incumbentBlocks,
+  relaunchNeedsGateAutoAccept,
+  resolveChannelSpec,
+  selfAndAncestorPids,
+} from './hoai-core.mjs'
+import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
 import { resolveReadCredentialsPath, normalizeApiBase, FOLDER_PIN_FILE_NAME } from './bgos-pair.mjs'
 
 export const DEFAULT_BACKEND_URL = 'https://api.brandgrowthos.ai/api/v1'
 /** The MCP server names `claude mcp list` may print for this plugin. */
 export const MCP_SERVER_NAMES = Object.freeze(['bgos', 'plugin:hoai:bgos'])
 export const HANDSHAKE_TIMEOUT_MS = 60_000
+
+/**
+ * The fourth row status, beside PASS / FAIL / SKIP.
+ *
+ * WHY IT IS NOT SKIP (2026-09-21). The one honest row in the 12-PASS report
+ * that started this fix read SKIP: "Channel liveness: never proven". A reader
+ * takes SKIP to mean "not applicable on this machine" and moves on, so the
+ * single row that was telling the truth about a dead install was the one it
+ * read past. UNPROVEN says the other thing: the check APPLIES, it simply has
+ * no evidence yet. SKIP keeps its exact old meaning, a probe that genuinely
+ * did not run or does not apply here.
+ *
+ * It is deliberately not a boolean: like ok:null it is neither a pass nor a
+ * failure, so preflightVerdict treats it exactly as ok:null and an unproven
+ * row can never fail the bootstrap gate.
+ */
+export const UNPROVEN = 'unproven'
 
 // -- Pure layer ---------------------------------------------------------------
 
@@ -222,9 +258,45 @@ export function readFolderPin(dir, read = (p) => readFileSync(p, 'utf8')) {
 }
 
 /**
+ * The install command for `expect`, by platform. Named per platform because a
+ * fix line a user cannot paste is not a fix line.
+ * @param {string} platform
+ * @returns {string}
+ */
+export function expectInstallHint(platform) {
+  return platform === 'darwin' ? 'brew install expect' : 'sudo apt install expect'
+}
+
+/**
+ * The absolute paths hoai-core's own expect detection probes, in its order.
+ * Mirrored (not imported: it is private there) so the doctor cannot report an
+ * availability the launcher does not see.
+ */
+export const EXPECT_PROBE_PATHS = Object.freeze([
+  '/usr/bin/expect',
+  '/opt/homebrew/bin/expect',
+  '/usr/local/bin/expect',
+  '/bin/expect',
+])
+
+/** Join dir + name preserving the directory's separator style, so a win32
+ *  config dir stays win32 on a posix host. The doctor must name the SAME file
+ *  lib/claude-preseed.mjs writes, and node's join would re-spell it. */
+function joinPreservingStyle(dir, name) {
+  const base = String(dir ?? '').replace(/[\\/]+$/, '')
+  if (!base) return String(name ?? '')
+  const sep = base.includes('\\') || /^[A-Za-z]:$/.test(base) ? '\\' : '/'
+  return `${base}${sep}${name}`
+}
+
+/**
  * Turn raw probe results into the ordered diagnostic rows. Pure: everything
- * it needs rides in `probes`. ok:null means the probe did not run (rendered
- * SKIP); every ok:false row carries the single fix command for that failure.
+ * it needs rides in `probes`. ok:true renders PASS, ok:false FAIL, the string
+ * UNPROVEN renders UNPROVEN (the check applies and has no evidence yet), and
+ * ok:null means the probe did not run or does not apply (rendered SKIP); every
+ * ok:false row carries the single fix command for that failure. The four
+ * launch probes (trust, bypass, gate, incumbent) and liveMarker are optional:
+ * an absent key emits no row at all, so an older caller keeps its old table.
  * @param {{
  *   platform?: string,
  *   claude: { found: boolean, version?: string, path?: string },
@@ -233,13 +305,17 @@ export function readFolderPin(dir, read = (p) => readFileSync(p, 'utf8')) {
  *   bun: { found: boolean, path?: string, via?: string },
  *   bunx: { found: boolean, path?: string },
  *   method: { method: string, channelSpec: string, pluginRoot: string } | null,
+ *   trust?: { cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey?: string, error?: string },
+ *   bypass?: { settingsPath: string, accepted: boolean, reason: string },
+ *   gate?: { needed: boolean, method?: string, helper: 'expect' | 'win32-console', expectPath?: string },
+ *   incumbent?: { cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string },
  *   credentials: { path?: string, exists: boolean, assistantId?: string | number, expectedAssistantId?: string },
  *   handshake: { ok: boolean, detail?: string, command?: string } | null,
  *   mcpList: { ok: boolean, state?: string, raw?: string } | null,
  *   backend: { ok: boolean, status?: number, url: string, error?: string },
  *   logPath: string,
  * }} probes
- * @returns {Array<{ id: string, label: string, ok: boolean | null, detail: string, fix: string }>}
+ * @returns {Array<{ id: string, label: string, ok: boolean | null | 'unproven', detail: string, fix: string }>}
  */
 export function buildDoctorRows(probes) {
   const p = probes ?? {}
@@ -378,6 +454,122 @@ export function buildDoctorRows(probes) {
     row('route', 'Channel route', true, `${route.method} install route ${route.spec} (no workspace .mcp.json server declares one)`)
   }
 
+  // Folder trust
+  //
+  // Claude Code stops on a full-screen "Do you trust the files in this
+  // folder?" dialog until projects[<cwd>].hasTrustDialogAccepted is true in
+  // its OWN config file, and an unattended launch answers nothing, so it sits
+  // there and then exits. The preseed writes that flag on every hoai launch;
+  // 0.42.1 is the release where it turned out to have been writing it to
+  // $HOME/.claude/.claude.json, a file Claude Code never opens, while the live
+  // $HOME/.claude.json kept its untouched state. Nothing failed, every log
+  // line said success. This row reads the flag back out of the file the CLI
+  // actually opens, which is the only way that class of bug is visible.
+  if (p.trust !== undefined) {
+    const trust = p.trust ?? {}
+    const trustFix = 'run hoai in this folder (every launch seeds the trust entry), or hoai pair <code from the HOAI app>'
+    if (trust.accepted) {
+      row('trust', 'Folder trust', true, `Claude Code trusts ${trust.cwd} (hasTrustDialogAccepted in ${trust.configPath})`)
+    } else if (trust.reason === 'no-config-path') {
+      row('trust', 'Folder trust', false, `Claude Code's config file could not be located: ${trust.error ?? 'no CLAUDE_CONFIG_DIR and no home directory'}`, trustFix)
+    } else if (trust.reason === 'no-config-file') {
+      row('trust', 'Folder trust', false, `no config file at ${trust.configPath}, so no folder is trusted yet and the first launch stops on the trust dialog`, trustFix)
+    } else if (trust.reason === 'unreadable-config') {
+      row('trust', 'Folder trust', false, `${trust.configPath} is not readable JSON, so the trust state for ${trust.cwd} cannot be confirmed`, trustFix)
+    } else if (trust.reason === 'not-accepted') {
+      row('trust', 'Folder trust', false, `${trust.configPath} has an entry for ${trust.cwd} but hasTrustDialogAccepted is not true, so the launch stops on the trust dialog`, trustFix)
+    } else {
+      row('trust', 'Folder trust', false, `${trust.configPath} has no entry for ${trust.cwd}, so the launch stops on the trust dialog with nobody there to answer it`, trustFix)
+    }
+  }
+
+  // Bypass prompt
+  //
+  // The bypass-permissions warning's DEFAULT answer is exit, so it can never
+  // be blind-Entered; the only safe handling is the settings key that stops it
+  // being shown at all. Missing key, silent instant exit on every launch.
+  if (p.bypass !== undefined) {
+    const bypass = p.bypass ?? {}
+    if (bypass.accepted) {
+      row('bypass', 'Bypass prompt', true, `skipDangerousModePermissionPrompt is true in ${bypass.settingsPath}`)
+    } else {
+      row(
+        'bypass',
+        'Bypass prompt',
+        false,
+        bypass.reason === 'no-settings-file'
+          ? `no settings file at ${bypass.settingsPath}, so the bypass warning is still shown and its default answer is exit`
+          : `skipDangerousModePermissionPrompt is not true in ${bypass.settingsPath}, so the bypass warning is still shown and its default answer is exit`,
+        'run hoai in this folder (every launch seeds the setting), or hoai pair <code from the HOAI app>',
+      )
+    }
+  }
+
+  // Startup gate strategy
+  //
+  // Every launch carrying --dangerously-load-development-channels shows a
+  // confirm at (re)start, for a marketplace install as much as for a clone.
+  // Posix accepts it by wrapping claude in expect; win32 has no expect and
+  // uses the console-input helper instead. A posix host that needs the wrapper
+  // and has no expect installed strands an unattended relaunch on a
+  // full-screen prompt, which looks exactly like a hung agent.
+  if (p.gate !== undefined) {
+    const gate = p.gate ?? {}
+    if (gate.helper === 'win32-console') {
+      row('gate', 'Startup gate', true, 'win32: the dev-channels gate is accepted by the console input helper, not by expect, so expect is not needed on this host')
+    } else if (!gate.needed) {
+      row('gate', 'Startup gate', null, `install method ${gate.method || 'undetermined'}: no relaunch wrapper is used, so the gate strategy is not known (see the Install method row)`)
+    } else if (gate.expectPath) {
+      row('gate', 'Startup gate', true, `the expect wrapper will accept the dev-channels gate on relaunch (expect at ${gate.expectPath})`)
+    } else {
+      row(
+        'gate',
+        'Startup gate',
+        false,
+        `a ${gate.method} install relaunches through the expect wrapper and expect is not installed here (checked ${EXPECT_PROBE_PATHS.join(', ')}), so an unattended relaunch strands on the full-screen dev-channels prompt`,
+        expectInstallHint(platform),
+      )
+    }
+  }
+
+  // Incumbent session
+  //
+  // A pinned conversation can only be resumed once, so hoai waits for any
+  // claude that demonstrably owns this folder rather than starting a second
+  // session beside it. From the outside that wait is indistinguishable from a
+  // launch that does nothing, so the doctor names the pid instead.
+  //
+  // An unreadable cwd does NOT make the launcher wait (F8, 2026-09-21). The
+  // rule used to be "fail toward waiting" and it stranded a real first
+  // install: one claude under the same uid whose cwd lsof would not show made
+  // every launch wait forever. incumbentBlocks now returns false for
+  // 'unreadable-cwd', so the launcher warns once and launches immediately.
+  // This row is the one place a user looks to explain a launch that seems to
+  // do nothing, so its non-blocking branch has to say THAT, not the symptom
+  // F8 removed, and it must not point at a pid to kill for no reason.
+  if (p.incumbent !== undefined) {
+    const incumbent = p.incumbent ?? {}
+    const hit = incumbent.hit ?? null
+    if (!hit) {
+      row('incumbent', 'Incumbent session', true, `no other claude is holding ${incumbent.cwd}`)
+    } else if (incumbent.blocks) {
+      row(
+        'incumbent',
+        'Incumbent session',
+        false,
+        `claude pid ${hit.pid} is already running in ${incumbent.cwd}; hoai waits for it rather than starting a second session on the same pinned conversation, so a launch here looks like it does nothing`,
+        `quit that session, or stop it with: kill ${hit.pid} (confirm the pid is really that claude first), then run hoai again here`,
+      )
+    } else {
+      row(
+        'incumbent',
+        'Incumbent session',
+        true,
+        `nothing is holding ${incumbent.cwd}; claude pid ${hit.pid} is running under this user with an unreadable cwd, which may or may not be this folder, so hoai mentions it once and then launches anyway`,
+      )
+    }
+  }
+
   // pairing credentials (path + assistant id only; never the token)
   const creds = p.credentials ?? { exists: false }
   const expected = String(creds.expectedAssistantId ?? '').trim()
@@ -403,9 +595,23 @@ export function buildDoctorRows(probes) {
   }
 
   // MCP initialize handshake
+  //
+  // UNPROVEN, not SKIP (2026-09-21). The clause "render a never-run check as
+  // UNPROVEN rather than SKIP" reached the liveness row and stopped there,
+  // and this is a never-run check in exactly that sense: a reader takes SKIP
+  // for "not applicable on this machine" and reads past it, and this is the
+  // row the whole preflight gate is built on. The detail now says WHY it did
+  // not run instead of the bare word 'skipped'. The gate is untouched:
+  // handshake is a REQUIRED row and only ok:true satisfies one, so unproven
+  // fails preflight exactly as the old ok:null did.
   const handshake = p.handshake ?? null
   if (!handshake) {
-    row('handshake', 'MCP handshake (initialize)', null, 'skipped')
+    row(
+      'handshake',
+      'MCP handshake (initialize)',
+      UNPROVEN,
+      'not run: the live initialize handshake was skipped, so nothing here has proven the server can boot and speak MCP',
+    )
   } else if (handshake.ok) {
     row('handshake', 'MCP handshake (initialize)', true, handshake.detail ?? 'server answered initialize')
   } else {
@@ -420,9 +626,21 @@ export function buildDoctorRows(probes) {
   }
 
   // claude mcp list
+  //
+  // UNPROVEN for the same reason as the handshake row above, and the detail
+  // names the one thing that stops this probe running: main() only asks
+  // `claude mcp list` when the claude CLI was found, so an absent CLI is the
+  // honest WHY, and it points at the row that carries the fix for it.
   const mcpList = p.mcpList ?? null
   if (!mcpList) {
-    row('mcp-list', 'claude mcp list', null, 'skipped')
+    row(
+      'mcp-list',
+      'claude mcp list',
+      UNPROVEN,
+      claude.found
+        ? 'not run: claude mcp list was never asked whether this plugin reads Connected'
+        : 'not run: the claude CLI was not found, so claude mcp list could not be asked whether this plugin reads Connected (see the Claude Code CLI row)',
+    )
   } else if (mcpList.ok) {
     row('mcp-list', 'claude mcp list', true, mcpList.raw ?? 'Connected')
   } else {
@@ -463,7 +681,14 @@ export function buildDoctorRows(probes) {
   // channel event (the marker the first tool call of a boot writes)? Not a
   // hard failure when absent (a machine that has not launched yet is not
   // broken), but the one row that separates "Connected" from "actually
-  // hearing", so it renders WARN with the exact next action.
+  // hearing", so it renders UNPROVEN with the exact next action.
+  //
+  // UNPROVEN, not SKIP (2026-09-21): this is the row that lied. On the machine
+  // where every hoai invocation exited instantly it printed SKIP beside twelve
+  // PASSes, and SKIP reads as "not applicable here". Its own detail already
+  // said "never proven"; the status word now says the same thing. The gate
+  // behaviour is unchanged, UNPROVEN fails no preflight, exactly as ok:null
+  // did.
   if (p.liveMarker !== undefined) {
     const marker = p.liveMarker
     if (marker && marker.exists) {
@@ -476,7 +701,7 @@ export function buildDoctorRows(probes) {
       row(
         'live',
         'Channel liveness',
-        null,
+        UNPROVEN,
         'never proven: no session has acted on a channel event yet',
         'launch the agent (open its folder, run: hoai) and wait for its hello; if it never arrives, the channel launch flag is wrong (see the Install method row)',
       )
@@ -495,9 +720,14 @@ function oneLine(text) {
  * Render rows as an aligned monospace table (STATUS / CHECK / DETAIL), then
  * one Fix line per failing row, in order. Plain spaces and dashes only: no
  * box-drawing characters, which mangle in some Windows terminals.
+ *
+ * Four statuses. PASS, FAIL and SKIP mean exactly what they always meant;
+ * UNPROVEN is the row that applies and has no evidence yet (see UNPROVEN),
+ * which used to print as SKIP and was read as "not applicable".
  */
 export function renderDoctorTable(rows) {
-  const statusOf = (ok) => (ok === true ? 'PASS' : ok === false ? 'FAIL' : 'SKIP')
+  const statusOf = (ok) =>
+    ok === true ? 'PASS' : ok === false ? 'FAIL' : ok === UNPROVEN ? 'UNPROVEN' : 'SKIP'
   const data = (rows ?? []).map((r) => ({
     status: statusOf(r.ok),
     check: String(r.label ?? r.id ?? ''),
@@ -527,9 +757,43 @@ export function renderDoctorTable(rows) {
  * handshake, and `claude mcp list` are ALL ok:true AND no other row failed.
  * Exception: a failed backend row is exempt when handshake AND mcp list both
  * passed (live MCP traffic implies reachability; the row still reports).
- * @param {Array<{ id: string, ok: boolean | null }>} rows
+ *
+ * ADVISORY ROWS are the second exemption, and it exists because adding a row
+ * here silently changes what aborts an install. bin/hoai-bootstrap.sh runs
+ * this gate at line 611 and calls `fail 'preflight-failed'` on a false, so
+ * every FAIL-capable row is also a way for a first-time install to stop dead.
+ * Two rows report rather than gate:
+ *
+ *   gate: the startup-gate row is about a FUTURE unattended RELAUNCH. It fails
+ *   when the expect wrapper will be used and expect is not installed. That is
+ *   worth reporting loudly, and it is not a reason to abandon an install that
+ *   is otherwise complete. macOS ships /usr/bin/expect so this never shows
+ *   there, but a minimal Linux image does not, and the bootstrap never
+ *   installs it, so gating on it would have turned "your restarts may stall"
+ *   into "your install failed" for every such host.
+ *
+ *   incumbent: an already-running claude in this folder is the NORMAL state of
+ *   a healthy always-on agent, whose service keeps one alive with cwd set to
+ *   the workspace permanently. Re-running the one-click installer against such
+ *   a machine used to complete; with this row gating it aborted with
+ *   `preflight FAILED: incumbent`, after the one-time pair code had already
+ *   been spent. The bootstrap LAUNCHES after preflight, and that launch does
+ *   its own incumbent handling (waitForIncumbent, and incumbentBlocks decides
+ *   what is worth waiting for), so refusing to FINISH an install over a
+ *   session the next step already knows how to handle helps nobody.
+ *
+ * Both rows still render FAIL with their pid and their fix line; they just do
+ * not carry the gate.
+ *
+ * UNPROVEN is not a failure here, by construction: only ok:false fails a
+ * non-required row and only ok:true satisfies a required one, so an unproven
+ * row gates exactly as ok:null always did. Changing that would turn a machine
+ * that has simply not launched yet into a failed bootstrap.
+ * @param {Array<{ id: string, ok: boolean | null | 'unproven' }>} rows
  * @returns {{ ok: boolean, failing: string[] }}
  */
+export const ADVISORY_ROW_IDS = Object.freeze(['gate', 'incumbent'])
+
 export function preflightVerdict(rows) {
   const required = ['claude', 'auth', 'handshake', 'mcp-list']
   const byId = new Map((rows ?? []).map((r) => [r.id, r]))
@@ -540,6 +804,7 @@ export function preflightVerdict(rows) {
   const proven = byId.get('handshake')?.ok === true && byId.get('mcp-list')?.ok === true
   for (const r of rows ?? []) {
     if (required.includes(r.id)) continue
+    if (ADVISORY_ROW_IDS.includes(r.id)) continue
     if (r.ok === false && !(r.id === 'backend' && proven)) failing.push(r.id)
   }
   return { ok: failing.length === 0, failing }
@@ -682,6 +947,219 @@ export function probeChannelRoute({
   } catch (err) {
     return { spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: String(err?.message ?? err) }
   }
+}
+
+/** Read a text file, or null when it cannot be read. The one injection point
+ *  the launch probes need, so a test never touches a real home. */
+function defaultReadText(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * realpath that never throws: an unresolvable path (one that does not exist
+ * yet, or that this user cannot read through) compares as itself. Byte for
+ * byte the rule bgos-pair.mjs defaultResolvePath uses, deliberately, because
+ * the read side and the write side of the trust entry have to agree about what
+ * a path IS.
+ */
+function defaultResolvePath(path) {
+  try {
+    return realpathSync(String(path ?? ''))
+  } catch {
+    return String(path ?? '')
+  }
+}
+
+/**
+ * Every projects[] key that could carry this cwd's trust flag, in the order
+ * they are tried: the literal cwd, its other slash spelling (win32 is seeded
+ * under both), then the same pair for the REALPATH of the cwd. Deduplicated,
+ * so the common case where the two spellings coincide reads one key once.
+ * @param {string} cwd
+ * @param {(path: string) => string} resolvePath
+ * @returns {string[]}
+ */
+function trustLookupKeys(cwd, resolvePath) {
+  const literal = String(cwd ?? '')
+  const resolved = String(resolvePath(literal) ?? '')
+  const keys = []
+  for (const key of [literal, alternateSlashSpelling(literal), resolved, alternateSlashSpelling(resolved)]) {
+    if (key && !keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+/**
+ * Does Claude Code already trust `cwd`? Reads hasTrustDialogAccepted back out
+ * of Claude Code's OWN config file.
+ *
+ * THE FILE IS LOCATED BY claudeConfigFilePath, never by joining '.claude.json'
+ * onto the config dir: with CLAUDE_CONFIG_DIR unset the two differ, the config
+ * file sitting at $HOME/.claude.json BESIDE $HOME/.claude, and reading the
+ * wrong one answers "not trusted" on a machine that is trusted (or, as in
+ * 0.42.1's write-side twin of this bug, reports success having changed
+ * nothing). A win32-shaped cwd is seeded under both slash spellings, so either
+ * key counts as the answer.
+ *
+ * THE CWD IS LOOKED UP UNDER BOTH ITS SPELLINGS, literal and resolved
+ * (2026-09-21). preseedClaudeTrust keys the entry on the cwd it is handed,
+ * which on the write path is process.cwd(), and node reports that as a
+ * REALPATH; the doctor is handed whatever a caller typed at --workdir. On any
+ * host whose home or workspace runs through a symlink (a /tmp home on macOS
+ * resolving under /private/tmp, an ostree /home to /var/home, a bind-mounted
+ * container home) the two strings differ, the lookup missed a row sitting
+ * right there, and the trust row rendered FAIL on a folder Claude Code
+ * trusts. `trust` gates preflightVerdict, so hoai-bootstrap.sh line 611 turned
+ * that miss into `fail 'preflight-failed'` and stopped a first install dead,
+ * after the one-time pair code had already been spent.
+ *
+ * It is the same two-spellings bug commit 9090363 fixed on the WRITE side in
+ * bgos-pair's classifyPairCwd, and the resolver is injected and never throws
+ * for the same reasons it is there: a test must not touch a real filesystem,
+ * and a path that cannot be resolved simply compares as itself. The DIRECTION
+ * differs. classifyPairCwd had to fail CLOSED, any spelling matching home
+ * being enough to refuse; this has to fail toward FINDING the entry that
+ * exists, so any spelling carrying the flag is the answer.
+ * @param {{ env?: Record<string, string | undefined>, home?: string, cwd?: string,
+ *           readFile?: (path: string) => string | null,
+ *           resolvePath?: (path: string) => string }} [opts]
+ * @returns {{ cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey: string, error?: string }}
+ */
+export function probeFolderTrust({
+  env = process.env,
+  home = homedir(),
+  cwd = process.cwd(),
+  readFile = defaultReadText,
+  resolvePath = defaultResolvePath,
+} = {}) {
+  const result = { cwd: String(cwd ?? ''), configPath: '', accepted: false, reason: 'no-entry', matchedKey: '' }
+  try {
+    result.configPath = claudeConfigFilePath({ env, home })
+  } catch (err) {
+    result.reason = 'no-config-path'
+    result.error = String(err?.message ?? err)
+    return result
+  }
+  const raw = readFile(result.configPath)
+  if (raw == null) {
+    result.reason = 'no-config-file'
+    return result
+  }
+  let cfg
+  try {
+    cfg = JSON.parse(raw)
+  } catch {
+    result.reason = 'unreadable-config'
+    return result
+  }
+  const projects = cfg && typeof cfg === 'object' ? cfg.projects : null
+  if (!projects || typeof projects !== 'object') return result
+  for (const key of trustLookupKeys(result.cwd, resolvePath)) {
+    const entry = projects[key]
+    if (!entry || typeof entry !== 'object') continue
+    result.matchedKey = key
+    if (entry.hasTrustDialogAccepted === true) {
+      result.accepted = true
+      result.reason = 'accepted'
+      return result
+    }
+    result.reason = 'not-accepted'
+  }
+  return result
+}
+
+/**
+ * Is the bypass-permissions warning suppressed? That one really does live in
+ * <configDir>/settings.json (claudeConfigDir), which is why this probe and
+ * probeFolderTrust resolve their paths differently on purpose.
+ * @param {{ env?: Record<string, string | undefined>, home?: string,
+ *           readFile?: (path: string) => string | null }} [opts]
+ * @returns {{ settingsPath: string, accepted: boolean, reason: string }}
+ */
+export function probeBypassPrompt({ env = process.env, home = homedir(), readFile = defaultReadText } = {}) {
+  const settingsPath = joinPreservingStyle(claudeConfigDir({ env, home }), 'settings.json')
+  const raw = readFile(settingsPath)
+  if (raw == null) return { settingsPath, accepted: false, reason: 'no-settings-file' }
+  let settings
+  try {
+    settings = JSON.parse(raw)
+  } catch {
+    return { settingsPath, accepted: false, reason: 'unreadable-settings' }
+  }
+  const accepted = Boolean(settings) && settings.skipDangerousModePermissionPrompt === true
+  return { settingsPath, accepted, reason: accepted ? 'accepted' : 'not-set' }
+}
+
+/**
+ * Will a relaunch need the dev-channels gate accepted, and can this host do
+ * it? The decision is hoai-core's own relaunchNeedsGateAutoAccept, so the
+ * doctor cannot disagree with the launcher about it; the availability check
+ * mirrors hoai-core's private expect detection path for path.
+ * @param {{ platform?: string, method?: { method?: string } | null,
+ *           exists?: (path: string) => boolean }} [opts]
+ * @returns {{ needed: boolean, method: string, helper: 'expect' | 'win32-console', expectPath: string }}
+ */
+export function probeGateStrategy({ platform = process.platform, method = null, exists = existsSync } = {}) {
+  const installMethod = String(method?.method ?? '').trim()
+  const needed = relaunchNeedsGateAutoAccept(installMethod)
+  if (platform === 'win32') return { needed, method: installMethod, helper: 'win32-console', expectPath: '' }
+  let expectPath = ''
+  for (const candidate of EXPECT_PROBE_PATHS) {
+    try {
+      if (exists(candidate)) {
+        expectPath = candidate
+        break
+      }
+    } catch {
+      // an unreadable path is simply not the expect we found
+    }
+  }
+  return { needed, method: installMethod, helper: 'expect', expectPath }
+}
+
+/**
+ * Is another claude already holding this cwd? The same rules the launcher
+ * waits on (findIncumbentClaude), classified by hoai-core's own
+ * incumbentBlocks so "blocking" means here what it means there. The process
+ * list is injected, so a test never reads the real process table.
+ *
+ * ANOTHER claude, never this one. `hoai doctor` is normally typed INTO a
+ * claude session whose cwd is the folder being screened, so the node process
+ * running this probe has a claude PARENT sitting right there. Excluding only
+ * ownPid left that parent looking like a same-cwd incumbent: measured on
+ * 2026-09-21, this probe named the pid of the claude running it and the row
+ * told the operator to kill the session they were typing into. The ancestor
+ * walk (hoai-core selfAndAncestorPids, keyed on the ppid defaultListProcesses
+ * now reports) is what tells the caller apart from a rival.
+ * @param {{ cwd?: string, platform?: string, uid?: number | null, ownPid?: number,
+ *           listProcesses?: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
+ *           ignorePidsFor?: (input: { processes: unknown[], pid: number }) => Iterable<number> }} [opts]
+ * @returns {{ cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string }}
+ */
+export function probeIncumbent({
+  cwd = process.cwd(),
+  platform = process.platform,
+  uid = typeof process.getuid === 'function' ? process.getuid() : null,
+  ownPid = process.pid,
+  listProcesses = () => defaultListProcesses(platform),
+  ignorePidsFor = selfAndAncestorPids,
+} = {}) {
+  const target = String(cwd ?? '')
+  let processes
+  try {
+    processes = listProcesses() ?? []
+  } catch (err) {
+    // A process list we could not read is not evidence of an incumbent, and
+    // the launcher's own failure mode here is the same: it sees no hit.
+    return { cwd: target, hit: null, blocks: false, error: String(err?.message ?? err) }
+  }
+  const ignorePids = ignorePidsFor({ processes, pid: ownPid })
+  const hit = findIncumbentClaude({ processes, cwd: target, uid, ownPid, ignorePids })
+  return { cwd: target, hit, blocks: hit ? incumbentBlocks(hit) === true : false }
 }
 
 /**
@@ -1047,6 +1525,14 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const method = probeMethod()
   const route = probeChannelRoute({ cwd: workdir, env })
 
+  // The launch rows: four cheap reads, none of which touches the channel.
+  // They run before the handshake because they are the ones that answer "why
+  // does hoai exit instantly", and the handshake takes up to a minute.
+  const trust = probeFolderTrust({ env, home, cwd: workdir })
+  const bypass = probeBypassPrompt({ env, home })
+  const gate = probeGateStrategy({ platform, method })
+  const incumbent = probeIncumbent({ cwd: workdir, platform })
+
   // Identity, strongest evidence first: the explicit flag, the env var, the
   // launch-folder pin. It scopes the credentials row, the handshake env, and
   // the log path, exactly as the daemon itself would resolve it.
@@ -1098,6 +1584,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     bunx,
     method,
     route,
+    trust,
+    bypass,
+    gate,
+    incumbent,
     credentials,
     handshake,
     mcpList,
@@ -1107,6 +1597,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   })
 
   if (args.json) {
+    // The rows verbatim, ok included. A JSON consumer already had to handle
+    // three values (true / false / null); UNPROVEN is a fourth, and the two
+    // tests that matter, ok === true for green and ok === false for broken,
+    // classify it the same way they classified null.
     process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`)
   } else {
     process.stdout.write(`${renderDoctorTable(rows)}\n`)

@@ -30,6 +30,9 @@
  *                     folder (the escape hatch when a conversation is stuck
  *                     or too long). Still identity safe: a new pinned id for
  *                     this agent, with the same detected channel flag.
+ *   hoai --force      launch NOW: skip the wait for another claude that looks
+ *                     like it owns this folder. The escape hatch for the
+ *                     incumbent check itself, combinable with --new.
  *   hoai install-cli  put the `hoai` command itself on this machine's PATH
  *                     (what `hoai setup` does for you on a first run)
  *   hoai doctor       diagnose this host (hands off to bin/bgos-doctor.mjs)
@@ -117,6 +120,14 @@ export const EXIT_ALREADY_SUPERVISED = 3
  *  (the install method is undetermined and this folder publishes no .mcp.json).
  *  Distinct so a wrapper can tell "would have been deaf" from a claude crash. */
 export const EXIT_CHANNEL_UNRESOLVED = 4
+
+/** A launch that gave up waiting for an incumbent claude: INCUMBENT_WAIT_TIMEOUT_MS
+ *  passed and a process still looked like it owned this folder. Distinct so a
+ *  wrapper (and a KeepAlive) can tell "waited, then declined" from a claude
+ *  crash, from the already-supervised refusal (3) and from an unresolved
+ *  channel (4). It is the exit code the wait never had: before 2026-09-21 the
+ *  wait had no end, so there was nothing to report. */
+export const EXIT_INCUMBENT_TIMEOUT = 5
 
 /** The message printed instead of relaunching on an unresolved channel. */
 export function unresolvedChannelMessage(resolution) {
@@ -228,10 +239,20 @@ export const RUN_RESUME_FLAGS = Object.freeze(['-c', '--continue', '--resume'])
 export const RUN_FRESH_FLAGS = Object.freeze(['--new'])
 
 /**
+ * The flags that mean "launch now, do not wait for any other claude in this
+ * folder". The escape hatch for the incumbent wait itself (2026-09-21): the
+ * wait can only ever see what `ps` and `lsof` will tell it, and an owner who
+ * knows the other process is not a conflict must be able to say so rather than
+ * sit at a terminal reading the same notice every thirty seconds.
+ */
+export const RUN_FORCE_FLAGS = Object.freeze(['--force'])
+
+/**
  * Classify one token as a run flag: 'resume' (a synonym of bare `hoai`),
- * 'new' (force a fresh session), or null (not a run flag).
+ * 'new' (force a fresh session), 'force' (skip the incumbent wait), or null
+ * (not a run flag).
  * @param {unknown} token
- * @returns {'resume' | 'new' | null}
+ * @returns {'resume' | 'new' | 'force' | null}
  */
 export function classifyRunFlag(token) {
   const value = String(token ?? '')
@@ -240,7 +261,32 @@ export function classifyRunFlag(token) {
   if (!value) return null
   if (RUN_RESUME_FLAGS.includes(value)) return 'resume'
   if (RUN_FRESH_FLAGS.includes(value)) return 'new'
+  if (RUN_FORCE_FLAGS.includes(value)) return 'force'
   return null
+}
+
+/**
+ * Peel the leading run flags off a token list. They COMBINE, because they are
+ * about different things: --new picks the session, --force answers the
+ * incumbent check, and `hoai --new --force` is a sensible thing to type after
+ * a crash left both a stuck conversation and a process hoai cannot inspect.
+ * Consuming a run of them (rather than exactly one) is also what keeps
+ * `hoai --force --new` off the unknown-flag path, which prints the help.
+ * @param {readonly string[]} tokens
+ * @returns {{ rest: string[], fresh: boolean, force: boolean }}
+ */
+function collectRunFlags(tokens) {
+  let fresh = false
+  let force = false
+  let index = 0
+  while (index < tokens.length) {
+    const kind = classifyRunFlag(tokens[index])
+    if (!kind) break
+    if (kind === 'new') fresh = true
+    if (kind === 'force') force = true
+    index += 1
+  }
+  return { rest: tokens.slice(index), fresh, force }
 }
 
 /**
@@ -248,25 +294,26 @@ export function classifyRunFlag(token) {
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
  *   setup -> setup              logs -> logs         help / -h / --help -> help
  *   install-cli -> install-cli (put the hoai command on PATH)
- * A run flag (-c / --continue / --resume, and --new) routes to run, either as
- * the first token or right after `run`; `fresh` says which kind it was.
+ * A run flag (-c / --continue / --resume, --new and --force) routes to run,
+ * either as the first token or right after `run`; `fresh` and `force` say
+ * which ones were given, and they combine.
  * An unknown first token that LOOKS like a pair code (BGOS-... / OC-...)
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
  * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'help',
- *             rest: string[], fresh: boolean }}
+ *             rest: string[], fresh: boolean, force: boolean }}
  */
 export function resolveHoaiAction(argv) {
   const args = Array.isArray(argv) ? argv.map((value) => String(value ?? '')) : []
-  const route = (action, rest, fresh = false) => ({ action, rest, fresh })
+  const route = (action, rest, fresh = false, force = false) => ({ action, rest, fresh, force })
   if (args.length === 0) return route('run', [])
   const first = args[0]
   const lowered = first.toLowerCase()
   const rest = args.slice(1)
   if (lowered === 'run') {
-    const flag = classifyRunFlag(rest[0])
-    return flag ? route('run', rest.slice(1), flag === 'new') : route('run', rest)
+    const run = collectRunFlags(rest)
+    return route('run', run.rest, run.fresh, run.force)
   }
   if (lowered === 'doctor') return route('doctor', rest)
   if (lowered === 'pair') return route('pair', rest)
@@ -276,8 +323,10 @@ export function resolveHoaiAction(argv) {
   if (lowered === 'help' || lowered === '-h' || lowered === '--help') {
     return route('help', rest)
   }
-  const runFlag = classifyRunFlag(first)
-  if (runFlag) return route('run', rest, runFlag === 'new')
+  if (classifyRunFlag(first)) {
+    const run = collectRunFlags(args)
+    return route('run', run.rest, run.fresh, run.force)
+  }
   if (/^(BGOS|OC)-/i.test(first)) return route('pair', [first, ...rest])
   return route('help', args)
 }
@@ -1121,6 +1170,7 @@ function defaultHasExpect(platform) {
  *   freshSession?: boolean,
  *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
  *   sleep?: (ms: number) => Promise<void>,
+ *   force?: boolean, incumbentTimeoutMs?: number,
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
@@ -1141,6 +1191,50 @@ function normalizeCwd(p) {
 }
 
 /**
+ * The caller's own pid plus every ancestor reachable by walking `ppid`, as a
+ * Set.
+ *
+ * It exists because `ownPid` was never enough. hoai and `hoai doctor` are both
+ * typed INTO a claude session, so the node process doing the screening has a
+ * claude PARENT sitting in exactly the folder being screened. Excluding only
+ * our own pid left that parent looking like a same-cwd incumbent: measured live
+ * on 2026-09-21, `probeIncumbent({cwd: process.cwd()})` answered
+ * {hit:{pid:77299,reason:'same-cwd'},blocks:true} where 77299 was the claude
+ * running the probe, so the doctor told the operator to `kill` the session they
+ * were typing into, and the launcher waited the full ninety seconds on it and
+ * then exited EXIT_INCUMBENT_TIMEOUT naming that same pid.
+ *
+ * The walk is hostile-input safe by construction: a pid already seen ends it
+ * (a ppid cycle, which a reparented process table can show), and so does a
+ * parent that is not in the list at all (ps raced us, or the parent already
+ * exited). It never loops forever, because that would hang the very probe
+ * whose whole job is to not hang.
+ * @param {{ processes: Array<{ pid: number, ppid?: number | null }>, pid: number }} input
+ * @returns {Set<number>}
+ */
+export function selfAndAncestorPids({ processes, pid }) {
+  const parentOf = new Map()
+  for (const p of Array.isArray(processes) ? processes : []) {
+    if (!p) continue
+    const self = Number(p.pid)
+    if (!Number.isFinite(self)) continue
+    const parent = Number(p.ppid)
+    parentOf.set(self, Number.isFinite(parent) ? parent : null)
+  }
+  const seen = new Set()
+  let cur = Number(pid)
+  // `seen.has(cur)` is the cycle brake; `parent == null` is the missing-parent
+  // brake. pid 0 is the kernel's placeholder for "no parent", never a process.
+  while (Number.isFinite(cur) && cur > 0 && !seen.has(cur)) {
+    seen.add(cur)
+    const parent = parentOf.get(cur)
+    if (parent == null) break
+    cur = parent
+  }
+  return seen
+}
+
+/**
  * The incumbent check the singleton guard never had (board row 01a06223,
  * Poseidon 2026-09-02). decideSupervisorArming keys on supervisor.json, a
  * live LAUNCHER; a claude started by hand in the same folder was invisible to
@@ -1151,77 +1245,233 @@ function normalizeCwd(p) {
  *     sees itself);
  *   - only our own uid is in scope (only that uid can resume the pin), so
  *     another user's agent in an identical path is not ours to wait for;
- *   - within our uid an UNREADABLE cwd counts as occupied: fail toward
- *     waiting, never toward a double launch.
- * @param {{ processes: Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
- *   cwd: string, uid?: number | null, ownPid: number }} input
+ *   - within our uid an UNREADABLE cwd is REPORTED but no longer counts as
+ *     occupied (2026-09-21). The rule used to be the opposite ("fail toward
+ *     waiting, never toward a double launch"), and it stranded a real first
+ *     install: one claude under the same uid whose cwd lsof would not show
+ *     made every hoai launch wait forever, reprinting a notice every thirty
+ *     seconds, on a machine with no conflict at all. An unreadable cwd is not
+ *     evidence of a conflict, only an absence of evidence, so the hit is
+ *     surfaced as a WARNING (see incumbentBlocks / waitForIncumbent) and the
+ *     launch proceeds. A genuine same-cwd process is still a hard block.
+ * A same-cwd hit WINS over an unreadable one, whatever order ps lists them in:
+ * returning the first unreadable process would hide the real incumbent behind
+ * it and hand back exactly the double launch this check exists to prevent.
+ *
+ * `ignorePids` is the fourth rule, added 2026-09-21: a caller that is itself
+ * running INSIDE a claude session passes its own ancestry (see
+ * selfAndAncestorPids), because that session is the caller, not a rival for
+ * the pin. Without it both callers indicted their own parent: the doctor
+ * printed a fix line saying to kill the pid the operator was typing into, and
+ * the launcher waited ninety seconds on it and gave up. `ownPid` keeps working
+ * exactly as before and is simply the degenerate one-pid case of the same idea.
+ * @param {{ processes: Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
+ *   cwd: string, uid?: number | null, ownPid: number,
+ *   ignorePids?: Iterable<number> | null }} input
  * @returns {{ pid: number, reason: 'same-cwd' | 'unreadable-cwd' } | null}
  */
-export function findIncumbentClaude({ processes, cwd, uid, ownPid }) {
+export function findIncumbentClaude({ processes, cwd, uid, ownPid, ignorePids = [] }) {
   const target = normalizeCwd(cwd)
+  // Guarded the same way `processes` below it is: this is a pure decision
+  // surface and every caller injects, so a list that is missing or malformed
+  // has to mean "ignore nothing" rather than throw inside the launch path.
+  const ignored =
+    ignorePids instanceof Set
+      ? ignorePids
+      : new Set(typeof ignorePids?.[Symbol.iterator] === 'function' ? ignorePids : [])
+  let unreadable = null
   for (const p of Array.isArray(processes) ? processes : []) {
-    if (!p || p.pid === ownPid) continue
+    if (!p || p.pid === ownPid || ignored.has(p.pid)) continue
     if (commBase(p.comm) !== 'claude') continue
     if (uid != null && p.uid != null && p.uid !== uid) continue
-    if (p.cwd == null) return { pid: p.pid, reason: 'unreadable-cwd' }
+    if (p.cwd == null) {
+      if (!unreadable) unreadable = { pid: p.pid, reason: 'unreadable-cwd' }
+      continue
+    }
     if (normalizeCwd(p.cwd) === target) return { pid: p.pid, reason: 'same-cwd' }
   }
-  return null
+  return unreadable
 }
 
 /**
- * Wait until no incumbent claude owns `cwd` (see findIncumbentClaude). Prints
- * once at the start and then about every thirty seconds, so an operator at
- * the terminal knows why hoai is not launching; returns how it went so the
- * caller can log it. Timers and the process list are injected for tests.
+ * Does a findIncumbentClaude hit justify holding a launch back? Only a
+ * 'same-cwd' hit does: that process demonstrably sits in this folder and a
+ * pinned session can only be resumed once. An 'unreadable-cwd' hit is an
+ * unknown, not a conflict, and treating unknown as occupied is what left a
+ * first install waiting forever (2026-09-21). The two callers that matter,
+ * the launch wait and the doctor row, must agree on this verdict, so it lives
+ * here rather than being spelled out at each of them.
+ * @param {{ pid: number, reason: 'same-cwd' | 'unreadable-cwd' } | null | undefined} hit
+ * @returns {boolean}
  */
-export async function waitForIncumbent({ cwd, uid, ownPid, listProcesses, sleep, print, pollMs = 1000 }) {
+export function incumbentBlocks(hit) {
+  return hit?.reason === 'same-cwd'
+}
+
+/** How long a launch waits for a blocking incumbent before it gives up and
+ *  says so. Ninety seconds is long enough for a session being closed by hand
+ *  ("/exit, then run hoai") and short enough that an operator gets an answer
+ *  instead of a terminal that never returns. Overridable per call (timeoutMs)
+ *  because the tests must not spend real seconds. */
+export const INCUMBENT_WAIT_TIMEOUT_MS = 90_000
+
+/**
+ * The message printed instead of launching when the incumbent wait times out.
+ * It names the pid and what to do about it, and it claims nothing it has not
+ * established: hoai saw a process that looks like this folder's claude, which
+ * on a recycled pid can be something else entirely, so "confirm before you
+ * kill it" is part of the instruction, exactly as in the already-supervised
+ * refusal.
+ * @param {{ pid: number | null, cwd: string, waitedMs?: number }} input
+ * @returns {string}
+ */
+export function incumbentTimeoutMessage({ pid, cwd, waitedMs = INCUMBENT_WAIT_TIMEOUT_MS }) {
+  const seconds = Math.max(1, Math.round(Number(waitedMs) / 1000))
+  return (
+    `[hoai] STOPPING rather than launching: another claude (pid ${pid}) still looks like it ` +
+    `owns ${cwd} after waiting ${seconds}s for it to exit, and a pinned session can only be ` +
+    `resumed once. Inspect it with \`ps -p ${pid}\`, and stop it with \`kill ${pid}\` only ` +
+    'after confirming it really is this agent (a reused pid could be an unrelated process). ' +
+    'To launch anyway without waiting at all, run `hoai --force`.'
+  )
+}
+
+/**
+ * Wait until no BLOCKING incumbent claude owns `cwd` (see findIncumbentClaude
+ * and incumbentBlocks). Prints once at the start and then about every thirty
+ * seconds, so an operator at the terminal knows why hoai is not launching, and
+ * gives up at `timeoutMs` rather than waiting out the user's whole afternoon:
+ * an endless wait is indistinguishable from a hang, and that is how it was
+ * reported (2026-09-21). A non-blocking unreadable-cwd hit prints one WARNING
+ * naming the pid and does not hold the launch. The clock, the timers and the
+ * process list are injected so tests are deterministic and never sleep.
+ * `ignorePids` is forwarded to findIncumbentClaude unchanged, so a launcher
+ * started from inside a claude session can hand over its own ancestry and not
+ * spend ninety seconds waiting for the session that is running it (2026-09-21).
+ * @param {{ cwd: string, uid?: number | null, ownPid: number,
+ *   listProcesses: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
+ *   sleep: (ms: number) => Promise<void>, print: (line: string) => void,
+ *   pollMs?: number, now?: () => number, timeoutMs?: number,
+ *   ignorePids?: Iterable<number> | null }} input
+ * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean }>}
+ */
+export async function waitForIncumbent({
+  cwd,
+  uid,
+  ownPid,
+  listProcesses,
+  sleep,
+  print,
+  pollMs = 1000,
+  now = Date.now,
+  timeoutMs = INCUMBENT_WAIT_TIMEOUT_MS,
+  ignorePids = [],
+}) {
   let polls = 0
   let lastPid = null
   let lastPrintPoll = -Infinity
+  let warnedUnreadable = false
+  const startedAt = now()
+  const limit = Math.max(0, Number(timeoutMs))
   const printEvery = Math.max(1, Math.round(30_000 / Math.max(1, pollMs)))
   while (true) {
     polls += 1
-    const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid })
-    if (!hit) return { waited: polls > 1, polls, lastPid }
+    const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid, ignorePids })
+    if (hit && !incumbentBlocks(hit) && !warnedUnreadable) {
+      warnedUnreadable = true
+      print(
+        `[hoai] WARNING: another claude of yours (pid ${hit.pid}) is running and its working ` +
+          `directory could not be read, so hoai cannot tell whether it is in ${cwd}. Launching ` +
+          'anyway, because an unreadable directory is not evidence of a conflict. If this agent ' +
+          `ends up with two live sessions, check that pid with \`ps -p ${hit.pid}\` and stop one.`,
+      )
+    }
+    if (!incumbentBlocks(hit)) return { waited: polls > 1, polls, lastPid, timedOut: false }
     lastPid = hit.pid
+    if (now() - startedAt >= limit) return { waited: polls > 1, polls, lastPid, timedOut: true }
     if (polls - lastPrintPoll >= printEvery) {
       lastPrintPoll = polls
       print(
-        `[hoai] waiting for an incumbent claude (pid ${hit.pid}${hit.reason === 'unreadable-cwd' ? ', cwd unreadable' : ''}) ` +
-          `in ${cwd} to exit before taking over; a pinned session can only be resumed once`,
+        `[hoai] waiting for an incumbent claude (pid ${hit.pid}) in ${cwd} to exit before ` +
+          'taking over; a pinned session can only be resumed once',
       )
     }
     await sleep(pollMs)
   }
 }
 
-/** Posix process list for the incumbent check: `ps -Axo pid=,uid=,comm=`,
- *  then the cwd of every claude through lsof (null when unreadable). win32
- *  returns an empty list in this phase: the fleet's Windows switch script
+/** How long `ps` and each `lsof` get before the incumbent probe gives up on
+ *  them. Neither command has a deadline of its own, and `lsof -p <pid> -d cwd`
+ *  blocks INDEFINITELY when any mount on the host is wedged (a dead NFS or
+ *  FUSE server is the classic one). Unbounded, that made `hoai doctor` inherit
+ *  the very hang it exists to diagnose: it printed not one row, and the
+ *  bootstrap preflight stalled with no output at all (2026-09-21). Two seconds
+ *  is far longer than either command needs on a healthy host, and a probe that
+ *  times out simply leaves that process's cwd null, which since 2026-09-21 is
+ *  the SAFE direction: an unreadable cwd is reported and no longer blocks a
+ *  launch (see incumbentBlocks). */
+export const PROCESS_PROBE_TIMEOUT_MS = 2_000
+
+/** Posix process list for the incumbent check: `ps -Axo pid=,ppid=,uid=,comm=`,
+ *  then the cwd of every claude through lsof (null when unreadable).
+ *
+ *  Two things beyond "every claude" are in the list on purpose.
+ *
+ *  ppid, so a caller can exclude its own claude ancestry (selfAndAncestorPids);
+ *  without it the launcher and the doctor both indicted the session they were
+ *  running inside (2026-09-21).
+ *
+ *  And the caller's OWN ancestry rows, claude or not. The chain from a `hoai`
+ *  typed into a claude session runs node -> zsh -> claude -> tmux -> launchd:
+ *  a claude-only list cannot bridge the shell in the middle, so the ancestry
+ *  walk stopped at the node process and the claude parent was still reported
+ *  as a blocking incumbent (measured that way on 2026-09-21 after ppid alone
+ *  had been added). These extra rows cost nothing to the readers: every caller
+ *  runs them through findIncumbentClaude, which keeps only comm === claude.
+ *
+ *  win32 returns an empty list in this phase: the fleet's Windows switch script
  *  kills the tmux claude before starting hoai, and a cwd probe for another
- *  process there is a different tool (documented on board row 01a06223). */
-export function defaultListProcesses(platform = process.platform) {
+ *  process there is a different tool (documented on board row 01a06223).
+ *  `spawn` and `selfPid` are injected only so the tests can drive the parse,
+ *  the ancestry and the timeouts without a real ps or a real wedged mount.
+ *  @param {string} [platform]
+ *  @param {{ spawn?: typeof spawnSync, timeoutMs?: number, selfPid?: number }} [opts] */
+export function defaultListProcesses(platform = process.platform, opts = {}) {
   if (platform === 'win32') return []
+  const run = opts.spawn ?? spawnSync
+  const timeout = opts.timeoutMs ?? PROCESS_PROBE_TIMEOUT_MS
+  const selfPid = opts.selfPid ?? process.pid
   try {
-    const ps = spawnSync('ps', ['-Axo', 'pid=,uid=,comm='], { encoding: 'utf8' })
+    const ps = run('ps', ['-Axo', 'pid=,ppid=,uid=,comm='], { encoding: 'utf8', timeout })
+    // A timed-out spawnSync reports status null, which this already rejects.
     if (ps.status !== 0 || !ps.stdout) return []
-    const out = []
+    const all = []
     for (const line of ps.stdout.split('\n')) {
-      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+      // Four fields now, and comm stays the trailing catch-all because a
+      // command name may legitimately contain spaces ("Google Chrome Helper").
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
       if (!m) continue
-      const comm = m[3].trim()
-      if (commBase(comm) !== 'claude') continue
-      const pid = Number(m[1])
-      let cwd = null
-      try {
-        const lsof = spawnSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' })
-        const n = String(lsof.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
-        if (n) cwd = n.slice(1)
-      } catch {
-        cwd = null
+      all.push({ pid: Number(m[1]), ppid: Number(m[2]), uid: Number(m[3]), comm: m[4].trim(), cwd: null })
+    }
+    const ancestry = selfAndAncestorPids({ processes: all, pid: selfPid })
+    const out = []
+    for (const p of all) {
+      const isClaude = commBase(p.comm) === 'claude'
+      if (!isClaude && !ancestry.has(p.pid)) continue
+      // lsof is only asked about claude: nothing else can be an incumbent, and
+      // every probe skipped is a probe that cannot wedge.
+      if (isClaude) {
+        try {
+          const lsof = run('lsof', ['-a', '-p', String(p.pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout })
+          // A killed-on-timeout lsof leaves no usable 'n' line, so cwd stays
+          // null: unreadable, which warns rather than blocking.
+          const n = String(lsof?.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
+          if (n) p.cwd = n.slice(1)
+        } catch {
+          p.cwd = null
+        }
       }
-      out.push({ pid, uid: Number(m[2]), comm, cwd })
+      out.push(p)
     }
     return out
   } catch {
@@ -1254,6 +1504,8 @@ export async function superviseClaude(args, opts = {}) {
   const clearTimer = opts.clearTimer ?? clearTimeout
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
   const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimer(resolve, ms)))
+  const force = opts.force === true
+  const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
 
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
@@ -1300,17 +1552,46 @@ export async function superviseClaude(args, opts = {}) {
   // Incumbent wait: never start a second session beside a claude that already
   // owns this folder, supervised or not (a hand-started one is invisible to the
   // supervisor.json guard below). See findIncumbentClaude for the rules.
-  const incumbent = await waitForIncumbent({
-    cwd,
-    uid: typeof process.getuid === 'function' ? process.getuid() : null,
-    ownPid: process.pid,
-    listProcesses,
-    sleep,
-    print,
-    pollMs: Math.max(pollMs, 250),
-  })
-  if (incumbent.waited) {
-    print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
+  //
+  // --force skips the check ENTIRELY rather than waiting zero milliseconds: the
+  // user typed it to launch now, so there is no notice to print and no process
+  // list to consult. It is the answer to a wait that cannot be right in every
+  // case, because ps and lsof are all it has to go on.
+  if (force) {
+    print(
+      '[hoai] --force: launching without waiting for any other claude in this folder, as asked. ' +
+        'If another session is live here, both are now resuming the same pinned id.',
+    )
+  } else {
+    // Our own claude PARENT is not a rival for the pin, it is the terminal the
+    // operator typed `hoai` into. Excluding only process.pid left the launcher
+    // waiting the full ninety seconds on that session and then exiting
+    // EXIT_INCUMBENT_TIMEOUT with its pid in the message, telling the user to
+    // kill the window they were sitting in (measured live 2026-09-21, pid
+    // 77299 in its own cwd). The ancestry is read once: it cannot change under
+    // us in a way that matters, since an ancestor that exits is gone anyway.
+    const ignorePids = selfAndAncestorPids({ processes: listProcesses(), pid: process.pid })
+    const incumbent = await waitForIncumbent({
+      cwd,
+      uid: typeof process.getuid === 'function' ? process.getuid() : null,
+      ownPid: process.pid,
+      listProcesses,
+      sleep,
+      print,
+      pollMs: Math.max(pollMs, 250),
+      now,
+      timeoutMs: incumbentTimeoutMs,
+      ignorePids,
+    })
+    // Giving up is an outcome, not a hang: say which pid, how to look at it and
+    // how to launch anyway, then hand back a code a wrapper can act on.
+    if (incumbent.timedOut) {
+      print(incumbentTimeoutMessage({ pid: incumbent.lastPid, cwd, waitedMs: incumbentTimeoutMs }))
+      return EXIT_INCUMBENT_TIMEOUT
+    }
+    if (incumbent.waited) {
+      print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
+    }
   }
   // Singleton guard: never start a second session behind a live supervisor.
   const arming = decideSupervisorArming({
@@ -1850,7 +2131,14 @@ export async function resolveWrapperPluginRoot({
  * registry mechanism bin/hoai-bootstrap.ps1 uses. No shell alias is ever
  * written, on any platform: an alias would have to freeze a channel spec, and
  * the correct spec is only knowable at run time.
- * @returns {Promise<{ ok: boolean, binDir: string }>}
+ *
+ * `force` re-points a shim that belongs to another install; without it such a
+ * shim is left alone and reported. `kept` lists every shim we declined, and it
+ * is ALWAYS an array, including on the early exit below: a caller that reads
+ * `.kept.length` must not have to know which path was taken.
+ * @returns {Promise<{ ok: boolean, binDir: string,
+ *                     kept: Array<{ path: string, pointsAt: string,
+ *                                   wanted: string, reason: string }> }>}
  */
 export async function installHoaiCli({
   platform = process.platform,
@@ -1861,17 +2149,21 @@ export async function installHoaiCli({
   print = (line) => console.log(line),
   installImpl = installWrapper,
   resolveRoot = resolveWrapperPluginRoot,
+  force = false,
 } = {}) {
   const pluginRoot = await resolveRoot({ env, home, scriptDir })
   if (!pluginRoot) {
     print('[hoai] could not work out where the plugin lives, so the hoai command was not installed.')
-    return { ok: false, binDir: '' }
+    // kept:[] rather than omitted, so every caller can read .kept.length
+    // without first working out which return it got.
+    return { ok: false, binDir: '', kept: [] }
   }
   const result = installImpl({
     pluginRoot,
     platform,
     env,
     home,
+    force,
     runPathHelper: (binDir) => runWinPathHelper(binDir, { scriptDir, spawnSyncImpl }),
   })
   if (result.wrote.length > 0) {
@@ -1884,7 +2176,25 @@ export async function installHoaiCli({
   if (result.wrote.length > 0 && !result.onPath && result.profiles.length === 0) {
     print(`[hoai] open a new terminal (or add ${result.binDir} to your PATH) before typing hoai.`)
   }
-  return { ok: result.ok, binDir: result.binDir }
+  // ANNOUNCE WHAT WAS LEFT ALONE (KC's ruling, 2026-09-21: ask or announce,
+  // never silently replace). installWrapper declines to re-point a shim that
+  // belongs to another install, or a file the owner wrote themselves. Saying
+  // nothing here would be the worst of both worlds: the command reports
+  // success, writes nothing, and the owner still has no idea WHICH install
+  // their `hoai` runs. So name what is there, name what this install would
+  // have pointed it at, say plainly which one wins when they type the word,
+  // and give the one command that changes it on purpose.
+  for (const kept of result.kept ?? []) {
+    if (kept.reason === 'foreign-file') {
+      print(`[hoai] ${kept.path} already exists and is not a link this install made, so it was left alone.`)
+    } else {
+      print(`[hoai] ${kept.path} already points at ${kept.pointsAt}, so it was left alone.`)
+    }
+    print(`[hoai] this install is at ${kept.wanted}, and typing hoai will NOT run it.`)
+    print('[hoai] that is deliberate: replacing a command you already have is not something to do quietly.')
+    print('[hoai] to point it at this install instead, run: hoai install-cli --force')
+  }
+  return { ok: result.ok, binDir: result.binDir, kept: result.kept ?? [] }
 }
 
 /** The argv for bin/hoai-add-to-path.ps1. Pure so the spawn is unit-testable
@@ -1975,6 +2285,10 @@ Usage:
                        modes, and none of them is passed on to claude.
   hoai --new           start a brand new conversation for this agent instead of
                        carrying on the old one. Nothing is deleted.
+  hoai --force         launch straight away, without waiting for another claude
+                       that looks like it is already running in this folder.
+                       Use it when you know that other process is not this
+                       agent. Can be combined: hoai --new --force.
   hoai doctor [...]    diagnose this host's HOAI agent setup
   hoai setup <CODE>    first run: add the marketplace, install HOAI, put the
                        hoai command on your PATH, then pair (this is the line
@@ -2025,6 +2339,8 @@ function defaultScriptDir() {
  *   pollMs?: number,
  *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
  *   sleep?: (ms: number) => Promise<void>,
+ *   incumbentTimeoutMs?: number,
+ *   now?: () => number,
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
@@ -2041,7 +2357,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const listDir = opts.listDir ?? defaultListDir
   const spawnImpl = opts.spawnImpl ?? spawn
 
-  const { action, rest, fresh } = resolveHoaiAction(argv)
+  const { action, rest, fresh, force } = resolveHoaiAction(argv)
 
   if (action === 'help') {
     if (rest.length > 0 && !/^(help|-h|--help)$/i.test(rest[0] ?? '')) {
@@ -2071,7 +2387,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   if (action === 'install-cli') {
-    const outcome = await installHoaiCli({ platform, env, home, scriptDir })
+    // --force is the deliberate ask. Without it this command never replaces a
+    // shim another install owns; with it, the owner has said so out loud.
+    const force = rest.some((token) => String(token ?? '').trim().toLowerCase() === '--force')
+    // Injected like every other effect in this file, so the --force wiring is
+    // testable without writing to a real home.
+    const installCli = opts.installCliImpl ?? installHoaiCli
+    const outcome = await installCli({ platform, env, home, scriptDir, force })
     return outcome.ok ? 0 : 1
   }
 
@@ -2153,10 +2475,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     listDir,
     spawnImpl,
     freshSession: fresh,
+    force,
       print: opts.print,
     pollMs: opts.pollMs,
     listProcesses: opts.listProcesses,
     sleep: opts.sleep,
+    incumbentTimeoutMs: opts.incumbentTimeoutMs,
+    now: opts.now,
     healthyMs: opts.healthyMs,
     setTimer: opts.setTimer,
     clearTimer: opts.clearTimer,
