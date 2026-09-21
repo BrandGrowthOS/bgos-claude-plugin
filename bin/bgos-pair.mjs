@@ -127,6 +127,7 @@ export function parsePairArgs(argv) {
     assistantId: '',
     help: false,
     allowUnpinned: false,
+    noInstallCli: false,
     allowHome: false,
   }
   const errors = []
@@ -138,6 +139,10 @@ export function parsePairArgs(argv) {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
       else args.apiBase = normalizeApiBase(value)
+    } else if (arg === '--no-install-cli') {
+      // For a caller that is NOT the owner at a terminal. The watcher's
+      // create-agent job passes it: see the block above installCliOnce.
+      args.noInstallCli = true
     } else if (arg === '--allow-unpinned') {
       // Escape hatch for a flow that sets BGOS_ASSISTANT_ID afterwards. It
       // suppresses the refusal, never the warning: the operator still gets
@@ -850,22 +855,44 @@ function isFilesystemRootPath(path, win32) {
  * to ask before it spends the pair code. A path that cannot be resolved (it
  * does not exist yet, or it is not readable) simply compares as itself.
  *
+ * THAT TOLERANCE IS THE FUNCTION'S, NOT THE DEFAULT RESOLVER'S (2026-09-21).
+ * Until this was fixed only defaultResolvePath carried the try/catch and the
+ * call sites below were bare, so the contract held for exactly one resolver:
+ * a caller injecting a plain `realpathSync` into this exported, documented
+ * parameter got an ENOENT thrown at it instead of a verdict, in front of a
+ * user holding a ten minute pair code. The guard now lives here, so EVERY
+ * resolver is safe to pass and each spelling degrades to itself on its own.
+ *
  * @param {{ cwd?: string, home?: string, platform?: string,
  *           resolvePath?: (path: string) => string }} [opts]
  * @returns {{ ok: boolean, case: 'home' | 'root' | 'ok' }}
  */
 export function classifyPairCwd({ cwd, home, platform = process.platform, resolvePath = defaultResolvePath } = {}) {
   const win32 = String(platform ?? '') === 'win32'
+  // Every resolver call goes through here, so an INJECTED resolver that throws
+  // (a bare realpathSync on a path that does not exist or cannot be read)
+  // degrades that one spelling to itself rather than taking out the whole
+  // verdict. Per call site on purpose: an unresolvable cwd must not stop the
+  // resolved $HOME from being compared, which is the symlinked-home case this
+  // resolver exists for.
+  const resolve = (path) => {
+    const text = String(path ?? '')
+    try {
+      return String(resolvePath(text) ?? text)
+    } catch {
+      return text
+    }
+  }
   const here = comparablePairPath(cwd, win32)
   // An unreadable or empty cwd is not evidence of a bad one; refusing on a
   // string we never read would block pairings that are perfectly fine.
   if (!here) return { ok: true, case: 'ok' }
-  const hereReal = comparablePairPath(resolvePath(String(cwd ?? '')), win32)
+  const hereReal = comparablePairPath(resolve(cwd), win32)
   if (isFilesystemRootPath(here, win32) || isFilesystemRootPath(hereReal, win32)) {
     return { ok: false, case: 'root' }
   }
   const userHome = comparablePairPath(home, win32)
-  const userHomeReal = comparablePairPath(resolvePath(String(home ?? '')), win32)
+  const userHomeReal = comparablePairPath(resolve(home), win32)
   // Fail CLOSED: any spelling of cwd matching any spelling of home is home.
   for (const a of [here, hereReal]) {
     for (const b of [userHome, userHomeReal]) {
@@ -1111,6 +1138,11 @@ Options:
                          accounts with several bound agents (BGOS_ASSISTANT_ID
                          env is honoured as the fallback). If the pairing would
                          resolve to a different assistant, nothing is written.
+  --no-install-cli       do NOT put the hoai command on this machine's PATH.
+                         For a caller that is not the owner at a terminal (the
+                         app's background create-agent job passes it). Pairing
+                         also skips that step on its own when no terminal is
+                         attached, and prints the one line that does it by hand.
   --allow-unpinned       proceed even when the daemon would resolve a different
                          agent's credentials file. Without this, that case exits
                          3 on a host serving other agents, because the
@@ -1332,6 +1364,7 @@ function thisScriptPath() {
  *   platform?: string,
  *   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>,
  *   installCliImpl?: (opts: object) => Promise<{ ok: boolean, binDir: string }>,
+ *   bindTimeoutMs?: number,
  * }} [opts]
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
@@ -1339,6 +1372,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
   const fetchImpl = opts.fetchImpl ?? fetch
+  // Injected so no test depends on whether the runner gave it a tty. A pairing
+  // with no terminal attached is not the owner watching it happen.
+  const isInteractive = opts.isInteractive ?? (() => Boolean(process.stdout?.isTTY))
   const { args, errors } = parsePairArgs(argv)
   if (args.help) {
     process.stdout.write(USAGE)
@@ -1461,7 +1497,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   console.log('[bgos-pair] paired. Adding your agent...')
   let binding = { kind: 'none' }
   let okPolls = 0
-  const deadline = Date.now() + 60_000
+  // Injectable ONLY so the not-yet-bound path can be reached in a test. That
+  // path (the user who pairs before finishing "Add agent" in the app) sits
+  // behind a wall-clock MINUTE of polling, which is why it had no test at all
+  // and why the install-cli step could silently skip it. Production never
+  // passes this; the default is the value it always had.
+  const bindTimeoutMs = Number.isFinite(opts.bindTimeoutMs) ? Number(opts.bindTimeoutMs) : 60_000
+  const deadline = Date.now() + bindTimeoutMs
   while (Date.now() < deadline) {
     let me
     try {
@@ -1559,9 +1601,112 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       '[bgos-pair] and one shared file cannot hold more than one identity. Each daemon pins BGOS_ASSISTANT_ID instead.',
     )
   }
+  // Put `hoai` on the USER'S OWN PATH, as the last step of pairing, on EVERY
+  // path where the pairing itself succeeded.
+  //
+  // Claude Code injects a plugin's bin/ into its own session PATH, so after a
+  // marketplace install `hoai` resolves inside Claude Code and answers
+  // command not found in the terminal the person actually types in. The only
+  // thing that fixes that is installWrapper, via installHoaiCli, and nothing
+  // on the plugin-install path had ever called it: pairing merely mentioned
+  // it, in a conditional footnote printed under a line declaring setup
+  // complete, and charged a full npx round trip to anyone who did read it.
+  // Doing beats describing.
+  //
+  // WHY IT IS A CLOSURE CALLED THREE TIMES (2026-09-21). The first cut of this
+  // put the call inside the `else` of `if (assistantId == null)` and after the
+  // PIN_REQUIRED early return, so TWO successful pairings never reached it:
+  // the user who pairs before finishing "Add agent" in the app, and the
+  // multi-agent host that exits 3. Both got exit codes that mean "your
+  // credentials are written", both were told to go run something, and both
+  // were left in exactly the pre-fix state with no `hoai` and no fallback line
+  // on screen either. A step that only runs on the happiest path is not the
+  // last step of pairing. It does NOT run on a path that failed outright
+  // (a refused exchange, an unwritten credentials file): nothing was paired
+  // there, so there is nothing to put a command on PATH for.
+  //
+  // Never fatal, anywhere: a shim that could not be written is a printed note,
+  // not a failed pairing (the same rule runSetup's step 3 follows). Idempotent,
+  // so a re-pair simply repairs the shim: the PATH line is guarded by a
+  // '.local/bin' needle and the symlink is replaced rather than duplicated.
+  //
+  // `withFallback` prints the npx line right here on the two paths that do NOT
+  // end in the restart block, because restartInstructions is what carries that
+  // fallback on the DONE path and printing it twice there would be noise.
+  const installCliOnce = async ({ withFallback = false } = {}) => {
+    // ASK OR ANNOUNCE, NEVER SILENTLY REPLACE (KC's ruling, 2026-09-21).
+    //
+    // This step writes <home>/.local/bin and appends a PATH line to the
+    // owner's shell profiles. That is right on the INTERACTIVE path, where the
+    // owner asked for it and is watching it happen. It is wrong from a
+    // background daemon: the watcher's create-agent job pairs with nobody at a
+    // terminal, `hoai` already repairs its own launch so a daemon editing
+    // dotfiles buys little, and on a machine whose shell profiles are
+    // generated (nix home-manager, a managed image) the write fails or is
+    // reverted on the next rebuild with the only record in a scrubbed log.
+    // The cost is trust, and it is not worth it.
+    //
+    // Two ways to be told: --no-install-cli, which that caller passes
+    // explicitly, and the absence of a terminal, which is the same answer for
+    // any future non-interactive caller that nobody remembered to update.
+    // Skipping is never silent: the remedy is one line and it is printed.
+    //
+    // WHY THE TTY CHECK COSTS NOTHING, checked before it was added. The two
+    // automated paths that reach pairing already install the shim themselves,
+    // so skipping here loses nothing on either: bin/hoai-bootstrap.sh
+    // symlinks ~/.local/bin/hoai in its own right, and `hoai setup` runs
+    // install-cli as its step 3 of 4, before it ever spawns this script. The
+    // path that genuinely depends on this call is a person typing bgos-pair
+    // or `hoai pair` in their own terminal, and that is a tty. Do not "fix"
+    // this by dropping the check.
+    if (args.noInstallCli || !isInteractive()) {
+      console.log(
+        '[bgos-pair] leaving your PATH alone ' +
+          (args.noInstallCli
+            ? '(--no-install-cli was passed, so this is not the owner at a terminal).'
+            : '(no terminal is attached, so nobody is here to have asked for it).'),
+      )
+      console.log('[bgos-pair] to put the hoai command on your PATH yourself, run this once:')
+      console.log(`[bgos-pair]   npx --yes --package ${PLUGIN_PACKAGE_REF} hoai install-cli`)
+      return null
+    }
+    const installCli = opts.installCliImpl ?? installHoaiCli
+    let cliInstall = null
+    try {
+      const scriptPath = thisScriptPath()
+      cliInstall = await installCli({
+        platform,
+        env,
+        home,
+        scriptDir: scriptPath ? dirname(scriptPath) : '',
+        print: (line) => console.log(line),
+      })
+    } catch (err) {
+      console.error(
+        `[bgos-pair] note: could not install the hoai command (${err?.message ?? err}); ` +
+          'the fallback below still works.',
+      )
+      cliInstall = null
+    }
+    if (cliInstall?.ok && cliInstall.binDir) {
+      console.log(`[bgos-pair] the hoai command is on your PATH now (${cliInstall.binDir}).`)
+    } else {
+      console.log('[bgos-pair] the hoai command could NOT be installed automatically.')
+      if (withFallback) {
+        console.log('[bgos-pair] run this once, then open a new terminal:')
+        console.log(`[bgos-pair]   npx --yes --package ${PLUGIN_PACKAGE_REF} hoai install-cli`)
+      }
+    }
+    return cliInstall
+  }
+
   if (assistantId == null) {
     console.log('[bgos-pair] paired, but no agent is bound yet. Finish "Add agent" in the HOAI app,')
     console.log('[bgos-pair] then start Claude Code with the HOAI channel and it will pick up the binding.')
+    // The pairing SUCCEEDED; only the binding is outstanding. The line above
+    // sends the user back to the app and then to a terminal, so the command
+    // they will need has to exist by then.
+    await installCliOnce({ withFallback: true })
   } else {
     console.log(`[bgos-pair] verified: this file resolves to assistant ${assistantId}.`)
     // Bake the launch-folder auto-pin so a bare launch from THIS folder
@@ -1655,6 +1800,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       folderPinLiveSafe,
     })
     if (code !== PAIR_EXIT_CODES.DONE) {
+      // Exit 3 is "paired but not live-safe", not "pairing failed": the
+      // credentials file is written and verified and only the environment pin
+      // is missing. The user is about to go set that pin and then run `hoai`,
+      // so the command goes on PATH here too. It runs BEFORE the refusal so
+      // the thing they must act on is the last line on screen.
+      await installCliOnce({ withFallback: true })
       console.error(
         `[bgos-pair] NOT DONE: this host serves ${otherAgentCount} other agent(s) and this ` +
           `pairing is not pinned, so the daemon would read ${result.realEnvPath} instead of the ` +
@@ -1663,45 +1814,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       )
       return code
     }
-    // Put `hoai` on the USER'S OWN PATH, now, as the last step of pairing.
-    //
-    // Claude Code injects a plugin's bin/ into its own session PATH, so after a
-    // marketplace install `hoai` resolves inside Claude Code and answers
-    // command not found in the terminal the person actually types in. The only
-    // thing that fixes that is installWrapper, via installHoaiCli, and nothing
-    // on the plugin-install path had ever called it: pairing merely mentioned
-    // it, in a conditional footnote printed under a line declaring setup
-    // complete, and charged a full npx round trip to anyone who did read it.
-    // Doing beats describing.
-    //
-    // LAST, after the pairing is written, verified and baked, and never fatal:
-    // a shim that could not be written is a printed note, not a failed pairing
-    // (the same rule runSetup's step 3 follows). Idempotent, so a re-pair
-    // simply repairs the shim: the PATH line is guarded by a '.local/bin'
-    // needle and the symlink is replaced rather than duplicated.
-    const installCli = opts.installCliImpl ?? installHoaiCli
-    let cliInstall = null
-    try {
-      const scriptPath = thisScriptPath()
-      cliInstall = await installCli({
-        platform,
-        env,
-        home,
-        scriptDir: scriptPath ? dirname(scriptPath) : '',
-        print: (line) => console.log(line),
-      })
-    } catch (err) {
-      console.error(
-        `[bgos-pair] note: could not install the hoai command (${err?.message ?? err}); ` +
-          'the fallback below still works.',
-      )
-      cliInstall = null
-    }
-    if (cliInstall?.ok && cliInstall.binDir) {
-      console.log(`[bgos-pair] the hoai command is on your PATH now (${cliInstall.binDir}).`)
-    } else {
-      console.log('[bgos-pair] the hoai command could NOT be installed automatically.')
-    }
+    // LAST, after the pairing is written, verified and baked. No fallback line
+    // from the helper here: the restart block below reports the outcome and
+    // carries the npx fallback itself.
+    const cliInstall = await installCliOnce()
 
     console.log('[bgos-pair] done. To go live,')
     // Detect HOW this plugin is installed so the restart line names the ONE

@@ -13,7 +13,14 @@
  *     which stops a launch dead while every channel row stays green, plus
  *     their probes against injected files and an injected process list
  *   - UNPROVEN: the status for a check that applies and has no evidence yet,
- *     rendered UNPROVEN and not SKIP, gating preflight exactly as ok:null did
+ *     rendered UNPROVEN and not SKIP, gating preflight exactly as ok:null did,
+ *     for the liveness row and (defect F5) for a handshake or an mcp-list
+ *     that never ran, each of which now says WHY instead of 'skipped'
+ *   - probeFolderTrust across BOTH spellings of a cwd, literal and realpath
+ *     (defect F1): the seed keys the entry on process.cwd(), a realpath, and
+ *     a symlinked home made the lookup miss it and abort a first install
+ *   - ADVISORY_ROW_IDS: the startup-gate and incumbent rows report without
+ *     gating (defect F2), while trust and bypass still gate
  *   - renderDoctorTable: aligned plain-text columns, Fix lines only for
  *     failing rows, in row order, no box-drawing characters
  *   - parseMcpListOutput: Connected / Failed / Needs authentication / missing
@@ -226,12 +233,60 @@ test('buildDoctorRows: posix platform swaps the claude install one-liner', () =>
   assert.ok(rowById(rows, 'claude').fix.includes('curl -fsSL https://claude.ai/install.sh | bash'))
 })
 
-test('buildDoctorRows: null handshake and mcpList probes render as not probed (ok null), no fix', () => {
+// Superseded 2026-09-21 (defect F5). This used to assert ok:null and the
+// detail 'skipped' for both rows. "Render a never-run check as UNPROVEN
+// rather than SKIP" reached the liveness row and stopped there, and these two
+// are never-run checks in exactly the sense that clause describes: they are
+// the pair the whole preflight gate is built on, and a reader who sees SKIP
+// beside them takes it for "not applicable on this machine" and reads past the
+// only two rows that could have told him the channel is dead. The gate is
+// unchanged, and the test below this one pins that.
+test('buildDoctorRows: a handshake and an mcp-list that never ran render UNPROVEN, saying WHY', () => {
   const rows = buildDoctorRows(healthyProbes({ handshake: null, mcpList: null }))
-  assert.equal(rowById(rows, 'handshake').ok, null)
-  assert.equal(rowById(rows, 'mcp-list').ok, null)
-  assert.equal(rowById(rows, 'handshake').fix, '')
-  assert.equal(rowById(rows, 'mcp-list').fix, '')
+  const handshake = rowById(rows, 'handshake')
+  const mcpList = rowById(rows, 'mcp-list')
+  for (const row of [handshake, mcpList]) {
+    assert.strictEqual(row.ok, UNPROVEN, `${row.id} never ran, so it is UNPROVEN, not SKIP`)
+    assert.notStrictEqual(row.ok, null, `${row.id} must no longer render as SKIP`)
+    assert.notEqual(row.detail, 'skipped', `${row.id} must say why it did not run, not just that it did not`)
+    assert.match(row.detail, /not run/i, `${row.id} must say plainly that it did not run`)
+    assert.equal(row.fix, '', 'a check that never ran has no fix of its own to offer')
+  }
+  assert.match(handshake.detail, /skipped/, 'the handshake names the flag that skipped it')
+  assert.match(handshake.detail, /speak MCP/, 'and says what is therefore unproven')
+  const table = renderDoctorTable(rows)
+  assert.ok(table.includes('UNPROVEN  MCP handshake (initialize)'), table)
+  assert.ok(table.includes('UNPROVEN  claude mcp list'), table)
+  assert.ok(!table.includes('SKIP'), 'neither row may print SKIP any more')
+})
+
+test('buildDoctorRows: an mcp-list that never ran because the claude CLI is missing names that reason', () => {
+  // main() only asks `claude mcp list` when the CLI was found, so an absent
+  // CLI is the honest WHY, and the row points at the one that carries its fix.
+  const rows = buildDoctorRows(healthyProbes({ claude: { found: false }, mcpList: null }))
+  const row = rowById(rows, 'mcp-list')
+  assert.strictEqual(row.ok, UNPROVEN)
+  assert.match(row.detail, /claude CLI was not found/)
+  assert.match(row.detail, /Claude Code CLI row/)
+})
+
+test('preflightVerdict: an UNPROVEN handshake or mcp-list gates exactly as the old ok:null did', () => {
+  // F5 changed a STATUS WORD, never the gate. handshake and mcp-list are both
+  // REQUIRED rows and only ok:true satisfies a required row, so a machine that
+  // skipped the handshake still fails preflight, byte for byte as it did when
+  // the row carried null. Anything else would have turned a cosmetic fix into
+  // a bootstrap that claims success without ever speaking to the server.
+  const rows = buildDoctorRows(launchProbes({ handshake: null, mcpList: null }))
+  assert.strictEqual(rowById(rows, 'handshake').ok, UNPROVEN)
+  assert.strictEqual(rowById(rows, 'mcp-list').ok, UNPROVEN)
+  const verdict = preflightVerdict(rows)
+  assert.equal(verdict.ok, false, 'a required row with no evidence is not green')
+  assert.ok(verdict.failing.includes('handshake'))
+  assert.ok(verdict.failing.includes('mcp-list'))
+  const asNull = rows.map((r: { id: string; ok: RowStatus }) =>
+    r.id === 'handshake' || r.id === 'mcp-list' ? { ...r, ok: null as RowStatus } : r,
+  )
+  assert.deepEqual(preflightVerdict(asNull), verdict, 'UNPROVEN gates identically to the null it replaced')
 })
 
 // Superseded 2026-08-25. This used to assert that an UNPROBED install method
@@ -438,14 +493,42 @@ test('preflightVerdict: a failing startup-gate row reports but does NOT abort th
   assert.deepEqual(verdict.failing, [])
 })
 
-test('preflightVerdict: the gate exemption is narrow, every other launch row still gates', () => {
-  // The exemption must not become a blanket. Trust, bypass and incumbent each
-  // describe something that stops THIS launch, so each one still fails.
-  for (const id of ['trust', 'bypass', 'incumbent']) {
+test('preflightVerdict: the advisory exemption is narrow, trust and bypass still gate', () => {
+  // The exemption must not become a blanket. Trust and bypass each describe
+  // something that stops THIS launch dead with nobody there to answer it, and
+  // neither is fixed by anything the bootstrap does next, so each one still
+  // fails. (incumbent left this list on 2026-09-21; see the test below.)
+  for (const id of ['trust', 'bypass']) {
     const verdict = preflightVerdict(launchVerdictRows({ [id]: false }))
     assert.equal(verdict.ok, false, `${id}=false must still fail preflight`)
     assert.ok(verdict.failing.includes(id), `${id} must be named among the failures`)
   }
+})
+
+test('preflightVerdict: an incumbent claude reports but does NOT abort the install', () => {
+  // Defect F2, 2026-09-21. An always-on agent's service keeps a claude running
+  // with cwd set to its workspace permanently, so re-running the one-click
+  // installer on a HEALTHY machine hit this row every time. With the row
+  // gating, that re-run stopped at `preflight FAILED: incumbent` after the
+  // one-time pair code had already been spent. The bootstrap LAUNCHES after
+  // preflight and that launch does its own incumbent handling, so refusing to
+  // FINISH an install over a session the next step already knows about helps
+  // nobody.
+  const rows = launchVerdictRows({ incumbent: false })
+  assert.ok(rows.some((r: { id: string }) => r.id === 'incumbent'), 'the incumbent row must exist for this to mean anything')
+  const verdict = preflightVerdict(rows)
+  assert.equal(verdict.ok, true, 'a claude already running in this folder must not abort an otherwise complete install')
+  assert.deepEqual(verdict.failing, [])
+
+  // It still REPORTS: FAIL, the pid, and the line that clears it.
+  const real = buildDoctorRows(
+    launchProbes({ incumbent: { cwd: '/agents/ava', hit: { pid: 4242, reason: 'same-cwd' }, blocks: true } }),
+  )
+  const row = rowById(real, 'incumbent')
+  assert.strictEqual(row.ok, false, 'reporting rather than gating is not the same as passing')
+  assert.match(row.detail, /4242/)
+  assert.match(row.fix, /kill 4242/)
+  assert.equal(preflightVerdict(real).ok, true, 'and the same rows still pass the gate')
 })
 
 test('preflightVerdict: all green passes', () => {
@@ -954,6 +1037,133 @@ test('probeFolderTrust: an absent or corrupt config file reports why, never a ch
   assert.equal(corrupt.reason, 'unreadable-config')
 })
 
+test('probeFolderTrust: a config path that cannot even be NAMED reports the unknown, never an acceptance', () => {
+  // Defect F4, 2026-09-21. The ROW rendering for this reason was pinned; the
+  // PROBE was not, and a mutation making this branch return
+  // {accepted:true, reason:'accepted'} left all 75 doctor tests green. That is
+  // the exact shape this whole row exists to end: a diagnostic resolving its
+  // own unknown in favour of green. With no CLAUDE_CONFIG_DIR and no home
+  // there is no file to read, so claudeConfigFilePath refuses to guess.
+  let reads = 0
+  const probe = probeFolderTrust({
+    env: {},
+    home: '',
+    cwd: '/agents/ava',
+    // A config file that WOULD say yes, to make the wrong answer available.
+    readFile: () => {
+      reads++
+      return JSON.stringify({ projects: { '/agents/ava': { hasTrustDialogAccepted: true } } })
+    },
+  })
+  assert.strictEqual(probe.accepted, false, 'an unlocatable config file is an unknown, never an acceptance')
+  assert.equal(probe.reason, 'no-config-path')
+  assert.notEqual(probe.reason, 'accepted')
+  assert.equal(probe.configPath, '', 'there is no path to name')
+  assert.match(String(probe.error), /CLAUDE_CONFIG_DIR/, 'it says what was missing')
+  assert.equal(reads, 0, 'nothing is read when the file could not even be named')
+})
+
+// ── The trust lookup and the two spellings of a cwd (defect F1) ──────────────
+//
+// preseedClaudeTrust keys the entry on the cwd it is handed, and on the write
+// path that is process.cwd(), which node reports as a REALPATH. probeFolderTrust
+// was handed whatever a caller typed at --workdir. On any host whose home or
+// workspace runs through a symlink those two strings differ, the lookup missed
+// a row sitting right there, and the row rendered FAIL on a folder Claude Code
+// trusts. `trust` gates preflightVerdict, so hoai-bootstrap.sh line 611 turned
+// that miss into `fail 'preflight-failed'` and stopped a first install dead,
+// after the one-time pair code had already been spent.
+//
+// Reproduced with HOME=/tmp/hoai-symhome-NNN (realpath /private/tmp/...): the
+// seed wrote /private/tmp/.../936-workspace and the probe, asked about
+// /tmp/.../936-workspace, answered {accepted:false, reason:'no-entry'}.
+
+test('probeFolderTrust: the entry the seed wrote under the REALPATH is found from the symlinked spelling', () => {
+  const raw = JSON.stringify({
+    projects: { '/private/tmp/hoai-symhome-936/936-workspace': { hasTrustDialogAccepted: true } },
+  })
+  const probe = probeFolderTrust({
+    env: {},
+    home: '/tmp/hoai-symhome-936',
+    cwd: '/tmp/hoai-symhome-936/936-workspace',
+    readFile: () => raw,
+    // The macOS /tmp symlink, injected: no test touches a real filesystem.
+    resolvePath: (p: string) => p.replace(/^\/tmp\//, '/private/tmp/'),
+  })
+  assert.strictEqual(probe.accepted, true, 'the folder IS trusted; the two strings are one folder')
+  assert.equal(probe.reason, 'accepted')
+  assert.equal(probe.matchedKey, '/private/tmp/hoai-symhome-936/936-workspace')
+  assert.equal(probe.cwd, '/tmp/hoai-symhome-936/936-workspace', 'the row still names the folder the caller asked about')
+})
+
+test('probeFolderTrust: the literal spelling still wins when the config carries it', () => {
+  // The fix accepts EITHER spelling. It must not have swapped one miss for the
+  // other: a config written from the literal path stays readable on a host
+  // whose realpath differs.
+  const raw = JSON.stringify({ projects: { '/tmp/w/936': { hasTrustDialogAccepted: true } } })
+  const probe = probeFolderTrust({
+    env: {},
+    home: '/tmp/w',
+    cwd: '/tmp/w/936',
+    readFile: () => raw,
+    resolvePath: () => '/private/tmp/w/936',
+  })
+  assert.strictEqual(probe.accepted, true)
+  assert.equal(probe.matchedKey, '/tmp/w/936')
+})
+
+test('probeFolderTrust: a resolved entry that is NOT accepted reports not-accepted, not no-entry', () => {
+  // The reason word drives the row's sentence, so a present-but-unaccepted
+  // entry under the resolved spelling has to read as the dialog that is still
+  // waiting, not as a folder nobody ever seeded.
+  const raw = JSON.stringify({ projects: { '/private/tmp/w/936': { hasTrustDialogAccepted: false } } })
+  const probe = probeFolderTrust({
+    env: {},
+    home: '/tmp/w',
+    cwd: '/tmp/w/936',
+    readFile: () => raw,
+    resolvePath: (p: string) => p.replace(/^\/tmp\//, '/private/tmp/'),
+  })
+  assert.strictEqual(probe.accepted, false)
+  assert.equal(probe.reason, 'not-accepted')
+  assert.equal(probe.matchedKey, '/private/tmp/w/936')
+})
+
+test('probeFolderTrust: an unresolvable cwd compares as itself, and the default resolver never throws', () => {
+  // The contract the pair-side guard set in 9090363: a path that cannot be
+  // resolved (it does not exist yet, or is not readable through) is simply
+  // compared as itself. Anything else would make an absent folder crash the
+  // one diagnostic that is supposed to explain it. The readFile is injected,
+  // so this reads no real config; only the absent path itself is resolved.
+  const raw = JSON.stringify({ projects: { '/no/such/folder/hoai-f1': { hasTrustDialogAccepted: true } } })
+  let probe: ReturnType<typeof probeFolderTrust> | null = null
+  assert.doesNotThrow(() => {
+    probe = probeFolderTrust({ env: {}, home: '/home/kc', cwd: '/no/such/folder/hoai-f1', readFile: () => raw })
+  })
+  assert.strictEqual(probe!.accepted, true, 'the literal spelling is still the answer when nothing resolves')
+})
+
+test('doctor trust row: a symlinked workdir no longer renders FAIL, so preflight no longer aborts the install', () => {
+  // The whole incident, end to end: probe, row, verdict. Before the fix this
+  // produced {ok:false, failing:['trust']} and hoai-bootstrap.sh:611 turned it
+  // into `fail 'preflight-failed'` on a machine with nothing wrong with it.
+  const raw = JSON.stringify({
+    projects: { '/private/tmp/hoai-symhome-936/936-workspace': { hasTrustDialogAccepted: true } },
+  })
+  const trust = probeFolderTrust({
+    env: {},
+    home: '/tmp/hoai-symhome-936',
+    cwd: '/tmp/hoai-symhome-936/936-workspace',
+    readFile: () => raw,
+    resolvePath: (p: string) => p.replace(/^\/tmp\//, '/private/tmp/'),
+  })
+  const rows = buildDoctorRows(launchProbes({ trust }))
+  assert.strictEqual(rowById(rows, 'trust').ok, true, 'a trusted folder must never render FAIL')
+  const verdict = preflightVerdict(rows)
+  assert.equal(verdict.ok, true, 'and a correctly trusted folder must never abort an install')
+  assert.deepEqual(verdict.failing, [])
+})
+
 // ── Bypass prompt row ────────────────────────────────────────────────────────
 
 test('doctor bypass row: an unsuppressed bypass warning is a FAIL naming settings.json and the fix', () => {
@@ -1118,6 +1328,31 @@ test('doctor incumbent row: an unreadable-cwd hit does NOT fail the row and is m
   assert.equal(row.fix, '')
 })
 
+test('doctor incumbent row: the unreadable-cwd branch never promises a wait, because F8 removed it', () => {
+  // Defect F3, 2026-09-21. This row's non-blocking branch, and the comment
+  // above it, said "so hoai may still wait for it" and "an unreadable cwd
+  // makes the launcher wait too (it fails toward waiting)". F8 made
+  // incumbentBlocks return false for 'unreadable-cwd' in this same branch, so
+  // the launcher warns once and launches immediately: it never waits. The one
+  // row a user consults to explain a launch that seems to do nothing was
+  // predicting the exact symptom F8 had just removed, and pointing at a pid to
+  // kill for no reason.
+  const rows = buildDoctorRows(
+    launchProbes({ incumbent: { cwd: '/agents/ava', hit: { pid: 77, reason: 'unreadable-cwd' }, blocks: false } }),
+  )
+  const row = rowById(rows, 'incumbent')
+  assert.strictEqual(row.ok, true)
+  assert.doesNotMatch(row.detail, /wait/i, 'nothing waits on an unreadable cwd any more, so the row must not say so')
+  assert.match(row.detail, /launches anyway/i, 'it must say what actually happens instead')
+  assert.equal(row.fix, '', 'and it must not hand out a pid to kill')
+
+  // The BLOCKING branch is the one that still waits, and it still says so.
+  const blocked = buildDoctorRows(
+    launchProbes({ incumbent: { cwd: '/agents/ava', hit: { pid: 4242, reason: 'same-cwd' }, blocks: true } }),
+  )
+  assert.match(rowById(blocked, 'incumbent').detail, /hoai waits for it/)
+})
+
 test('probeIncumbent: an injected process table classifies through incumbentBlocks', () => {
   const holding = probeIncumbent({
     cwd: '/agents/ava',
@@ -1140,6 +1375,42 @@ test('probeIncumbent: an injected process table classifies through incumbentBloc
   const clear = probeIncumbent({ cwd: '/agents/ava', uid: 501, ownPid: 9, listProcesses: () => [] })
   assert.equal(clear.hit, null)
   assert.equal(clear.blocks, false)
+})
+
+test('probeIncumbent: the doctor never reports its OWN claude session as the incumbent', () => {
+  // Defect F6, 2026-09-21. `hoai doctor` is normally typed INTO a claude
+  // session whose cwd is the folder being screened, so the node process
+  // running this probe has a claude ANCESTOR sitting right there. Excluding
+  // only ownPid left that ancestor looking like a same-cwd incumbent: a
+  // reviewer measured the probe naming the pid of the claude running it, and
+  // the row then told the operator to kill the session they were typing into.
+  // The ancestry walk (hoai-core selfAndAncestorPids, over the ppid
+  // defaultListProcesses now reports) is what tells the caller apart from a
+  // rival, so the list it is given has to CONTAIN the caller's own row.
+  const ownSession = [
+    { pid: 77299, ppid: 1, uid: 501, comm: 'claude', cwd: '/agents/ava' },
+    { pid: 77400, ppid: 77299, uid: 501, comm: 'bash', cwd: '/agents/ava' },
+    { pid: 8100, ppid: 77400, uid: 501, comm: 'node', cwd: '/agents/ava' },
+  ]
+  const mine = probeIncumbent({
+    cwd: '/agents/ava',
+    uid: 501,
+    ownPid: 8100,
+    listProcesses: () => ownSession,
+  })
+  assert.equal(mine.hit, null, 'our own claude ancestor is the caller, not a rival for the pin')
+  assert.equal(mine.blocks, false)
+
+  // A stranger in the same folder is still found, so the exclusion is not a
+  // way of never seeing anything.
+  const rival = probeIncumbent({
+    cwd: '/agents/ava',
+    uid: 501,
+    ownPid: 8100,
+    listProcesses: () => [...ownSession, { pid: 9001, ppid: 1, uid: 501, comm: 'claude', cwd: '/agents/ava' }],
+  })
+  assert.deepEqual(rival.hit, { pid: 9001, reason: 'same-cwd' }, 'a claude that is not ours still blocks')
+  assert.equal(rival.blocks, true)
 })
 
 test('probeIncumbent: a process list that cannot be read is not evidence of an incumbent', () => {

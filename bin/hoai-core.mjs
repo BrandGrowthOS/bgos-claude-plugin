@@ -1191,6 +1191,50 @@ function normalizeCwd(p) {
 }
 
 /**
+ * The caller's own pid plus every ancestor reachable by walking `ppid`, as a
+ * Set.
+ *
+ * It exists because `ownPid` was never enough. hoai and `hoai doctor` are both
+ * typed INTO a claude session, so the node process doing the screening has a
+ * claude PARENT sitting in exactly the folder being screened. Excluding only
+ * our own pid left that parent looking like a same-cwd incumbent: measured live
+ * on 2026-09-21, `probeIncumbent({cwd: process.cwd()})` answered
+ * {hit:{pid:77299,reason:'same-cwd'},blocks:true} where 77299 was the claude
+ * running the probe, so the doctor told the operator to `kill` the session they
+ * were typing into, and the launcher waited the full ninety seconds on it and
+ * then exited EXIT_INCUMBENT_TIMEOUT naming that same pid.
+ *
+ * The walk is hostile-input safe by construction: a pid already seen ends it
+ * (a ppid cycle, which a reparented process table can show), and so does a
+ * parent that is not in the list at all (ps raced us, or the parent already
+ * exited). It never loops forever, because that would hang the very probe
+ * whose whole job is to not hang.
+ * @param {{ processes: Array<{ pid: number, ppid?: number | null }>, pid: number }} input
+ * @returns {Set<number>}
+ */
+export function selfAndAncestorPids({ processes, pid }) {
+  const parentOf = new Map()
+  for (const p of Array.isArray(processes) ? processes : []) {
+    if (!p) continue
+    const self = Number(p.pid)
+    if (!Number.isFinite(self)) continue
+    const parent = Number(p.ppid)
+    parentOf.set(self, Number.isFinite(parent) ? parent : null)
+  }
+  const seen = new Set()
+  let cur = Number(pid)
+  // `seen.has(cur)` is the cycle brake; `parent == null` is the missing-parent
+  // brake. pid 0 is the kernel's placeholder for "no parent", never a process.
+  while (Number.isFinite(cur) && cur > 0 && !seen.has(cur)) {
+    seen.add(cur)
+    const parent = parentOf.get(cur)
+    if (parent == null) break
+    cur = parent
+  }
+  return seen
+}
+
+/**
  * The incumbent check the singleton guard never had (board row 01a06223,
  * Poseidon 2026-09-02). decideSupervisorArming keys on supervisor.json, a
  * live LAUNCHER; a claude started by hand in the same folder was invisible to
@@ -1213,15 +1257,31 @@ function normalizeCwd(p) {
  * A same-cwd hit WINS over an unreadable one, whatever order ps lists them in:
  * returning the first unreadable process would hide the real incumbent behind
  * it and hand back exactly the double launch this check exists to prevent.
- * @param {{ processes: Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
- *   cwd: string, uid?: number | null, ownPid: number }} input
+ *
+ * `ignorePids` is the fourth rule, added 2026-09-21: a caller that is itself
+ * running INSIDE a claude session passes its own ancestry (see
+ * selfAndAncestorPids), because that session is the caller, not a rival for
+ * the pin. Without it both callers indicted their own parent: the doctor
+ * printed a fix line saying to kill the pid the operator was typing into, and
+ * the launcher waited ninety seconds on it and gave up. `ownPid` keeps working
+ * exactly as before and is simply the degenerate one-pid case of the same idea.
+ * @param {{ processes: Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
+ *   cwd: string, uid?: number | null, ownPid: number,
+ *   ignorePids?: Iterable<number> | null }} input
  * @returns {{ pid: number, reason: 'same-cwd' | 'unreadable-cwd' } | null}
  */
-export function findIncumbentClaude({ processes, cwd, uid, ownPid }) {
+export function findIncumbentClaude({ processes, cwd, uid, ownPid, ignorePids = [] }) {
   const target = normalizeCwd(cwd)
+  // Guarded the same way `processes` below it is: this is a pure decision
+  // surface and every caller injects, so a list that is missing or malformed
+  // has to mean "ignore nothing" rather than throw inside the launch path.
+  const ignored =
+    ignorePids instanceof Set
+      ? ignorePids
+      : new Set(typeof ignorePids?.[Symbol.iterator] === 'function' ? ignorePids : [])
   let unreadable = null
   for (const p of Array.isArray(processes) ? processes : []) {
-    if (!p || p.pid === ownPid) continue
+    if (!p || p.pid === ownPid || ignored.has(p.pid)) continue
     if (commBase(p.comm) !== 'claude') continue
     if (uid != null && p.uid != null && p.uid !== uid) continue
     if (p.cwd == null) {
@@ -1285,10 +1345,14 @@ export function incumbentTimeoutMessage({ pid, cwd, waitedMs = INCUMBENT_WAIT_TI
  * reported (2026-09-21). A non-blocking unreadable-cwd hit prints one WARNING
  * naming the pid and does not hold the launch. The clock, the timers and the
  * process list are injected so tests are deterministic and never sleep.
+ * `ignorePids` is forwarded to findIncumbentClaude unchanged, so a launcher
+ * started from inside a claude session can hand over its own ancestry and not
+ * spend ninety seconds waiting for the session that is running it (2026-09-21).
  * @param {{ cwd: string, uid?: number | null, ownPid: number,
- *   listProcesses: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
+ *   listProcesses: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
  *   sleep: (ms: number) => Promise<void>, print: (line: string) => void,
- *   pollMs?: number, now?: () => number, timeoutMs?: number }} input
+ *   pollMs?: number, now?: () => number, timeoutMs?: number,
+ *   ignorePids?: Iterable<number> | null }} input
  * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean }>}
  */
 export async function waitForIncumbent({
@@ -1301,6 +1365,7 @@ export async function waitForIncumbent({
   pollMs = 1000,
   now = Date.now,
   timeoutMs = INCUMBENT_WAIT_TIMEOUT_MS,
+  ignorePids = [],
 }) {
   let polls = 0
   let lastPid = null
@@ -1311,7 +1376,7 @@ export async function waitForIncumbent({
   const printEvery = Math.max(1, Math.round(30_000 / Math.max(1, pollMs)))
   while (true) {
     polls += 1
-    const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid })
+    const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid, ignorePids })
     if (hit && !incumbentBlocks(hit) && !warnedUnreadable) {
       warnedUnreadable = true
       print(
@@ -1335,32 +1400,78 @@ export async function waitForIncumbent({
   }
 }
 
-/** Posix process list for the incumbent check: `ps -Axo pid=,uid=,comm=`,
- *  then the cwd of every claude through lsof (null when unreadable). win32
- *  returns an empty list in this phase: the fleet's Windows switch script
+/** How long `ps` and each `lsof` get before the incumbent probe gives up on
+ *  them. Neither command has a deadline of its own, and `lsof -p <pid> -d cwd`
+ *  blocks INDEFINITELY when any mount on the host is wedged (a dead NFS or
+ *  FUSE server is the classic one). Unbounded, that made `hoai doctor` inherit
+ *  the very hang it exists to diagnose: it printed not one row, and the
+ *  bootstrap preflight stalled with no output at all (2026-09-21). Two seconds
+ *  is far longer than either command needs on a healthy host, and a probe that
+ *  times out simply leaves that process's cwd null, which since 2026-09-21 is
+ *  the SAFE direction: an unreadable cwd is reported and no longer blocks a
+ *  launch (see incumbentBlocks). */
+export const PROCESS_PROBE_TIMEOUT_MS = 2_000
+
+/** Posix process list for the incumbent check: `ps -Axo pid=,ppid=,uid=,comm=`,
+ *  then the cwd of every claude through lsof (null when unreadable).
+ *
+ *  Two things beyond "every claude" are in the list on purpose.
+ *
+ *  ppid, so a caller can exclude its own claude ancestry (selfAndAncestorPids);
+ *  without it the launcher and the doctor both indicted the session they were
+ *  running inside (2026-09-21).
+ *
+ *  And the caller's OWN ancestry rows, claude or not. The chain from a `hoai`
+ *  typed into a claude session runs node -> zsh -> claude -> tmux -> launchd:
+ *  a claude-only list cannot bridge the shell in the middle, so the ancestry
+ *  walk stopped at the node process and the claude parent was still reported
+ *  as a blocking incumbent (measured that way on 2026-09-21 after ppid alone
+ *  had been added). These extra rows cost nothing to the readers: every caller
+ *  runs them through findIncumbentClaude, which keeps only comm === claude.
+ *
+ *  win32 returns an empty list in this phase: the fleet's Windows switch script
  *  kills the tmux claude before starting hoai, and a cwd probe for another
- *  process there is a different tool (documented on board row 01a06223). */
-export function defaultListProcesses(platform = process.platform) {
+ *  process there is a different tool (documented on board row 01a06223).
+ *  `spawn` and `selfPid` are injected only so the tests can drive the parse,
+ *  the ancestry and the timeouts without a real ps or a real wedged mount.
+ *  @param {string} [platform]
+ *  @param {{ spawn?: typeof spawnSync, timeoutMs?: number, selfPid?: number }} [opts] */
+export function defaultListProcesses(platform = process.platform, opts = {}) {
   if (platform === 'win32') return []
+  const run = opts.spawn ?? spawnSync
+  const timeout = opts.timeoutMs ?? PROCESS_PROBE_TIMEOUT_MS
+  const selfPid = opts.selfPid ?? process.pid
   try {
-    const ps = spawnSync('ps', ['-Axo', 'pid=,uid=,comm='], { encoding: 'utf8' })
+    const ps = run('ps', ['-Axo', 'pid=,ppid=,uid=,comm='], { encoding: 'utf8', timeout })
+    // A timed-out spawnSync reports status null, which this already rejects.
     if (ps.status !== 0 || !ps.stdout) return []
-    const out = []
+    const all = []
     for (const line of ps.stdout.split('\n')) {
-      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+      // Four fields now, and comm stays the trailing catch-all because a
+      // command name may legitimately contain spaces ("Google Chrome Helper").
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
       if (!m) continue
-      const comm = m[3].trim()
-      if (commBase(comm) !== 'claude') continue
-      const pid = Number(m[1])
-      let cwd = null
-      try {
-        const lsof = spawnSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' })
-        const n = String(lsof.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
-        if (n) cwd = n.slice(1)
-      } catch {
-        cwd = null
+      all.push({ pid: Number(m[1]), ppid: Number(m[2]), uid: Number(m[3]), comm: m[4].trim(), cwd: null })
+    }
+    const ancestry = selfAndAncestorPids({ processes: all, pid: selfPid })
+    const out = []
+    for (const p of all) {
+      const isClaude = commBase(p.comm) === 'claude'
+      if (!isClaude && !ancestry.has(p.pid)) continue
+      // lsof is only asked about claude: nothing else can be an incumbent, and
+      // every probe skipped is a probe that cannot wedge.
+      if (isClaude) {
+        try {
+          const lsof = run('lsof', ['-a', '-p', String(p.pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8', timeout })
+          // A killed-on-timeout lsof leaves no usable 'n' line, so cwd stays
+          // null: unreadable, which warns rather than blocking.
+          const n = String(lsof?.stdout ?? '').split('\n').find((l) => l.startsWith('n'))
+          if (n) p.cwd = n.slice(1)
+        } catch {
+          p.cwd = null
+        }
       }
-      out.push({ pid, uid: Number(m[2]), comm, cwd })
+      out.push(p)
     }
     return out
   } catch {
@@ -1452,6 +1563,14 @@ export async function superviseClaude(args, opts = {}) {
         'If another session is live here, both are now resuming the same pinned id.',
     )
   } else {
+    // Our own claude PARENT is not a rival for the pin, it is the terminal the
+    // operator typed `hoai` into. Excluding only process.pid left the launcher
+    // waiting the full ninety seconds on that session and then exiting
+    // EXIT_INCUMBENT_TIMEOUT with its pid in the message, telling the user to
+    // kill the window they were sitting in (measured live 2026-09-21, pid
+    // 77299 in its own cwd). The ancestry is read once: it cannot change under
+    // us in a way that matters, since an ancestor that exits is gone anyway.
+    const ignorePids = selfAndAncestorPids({ processes: listProcesses(), pid: process.pid })
     const incumbent = await waitForIncumbent({
       cwd,
       uid: typeof process.getuid === 'function' ? process.getuid() : null,
@@ -1462,6 +1581,7 @@ export async function superviseClaude(args, opts = {}) {
       pollMs: Math.max(pollMs, 250),
       now,
       timeoutMs: incumbentTimeoutMs,
+      ignorePids,
     })
     // Giving up is an outcome, not a hang: say which pid, how to look at it and
     // how to launch anyway, then hand back a code a wrapper can act on.
@@ -2022,6 +2142,7 @@ export async function installHoaiCli({
   print = (line) => console.log(line),
   installImpl = installWrapper,
   resolveRoot = resolveWrapperPluginRoot,
+  force = false,
 } = {}) {
   const pluginRoot = await resolveRoot({ env, home, scriptDir })
   if (!pluginRoot) {
@@ -2033,6 +2154,7 @@ export async function installHoaiCli({
     platform,
     env,
     home,
+    force,
     runPathHelper: (binDir) => runWinPathHelper(binDir, { scriptDir, spawnSyncImpl }),
   })
   if (result.wrote.length > 0) {
@@ -2045,7 +2167,25 @@ export async function installHoaiCli({
   if (result.wrote.length > 0 && !result.onPath && result.profiles.length === 0) {
     print(`[hoai] open a new terminal (or add ${result.binDir} to your PATH) before typing hoai.`)
   }
-  return { ok: result.ok, binDir: result.binDir }
+  // ANNOUNCE WHAT WAS LEFT ALONE (KC's ruling, 2026-09-21: ask or announce,
+  // never silently replace). installWrapper declines to re-point a shim that
+  // belongs to another install, or a file the owner wrote themselves. Saying
+  // nothing here would be the worst of both worlds: the command reports
+  // success, writes nothing, and the owner still has no idea WHICH install
+  // their `hoai` runs. So name what is there, name what this install would
+  // have pointed it at, say plainly which one wins when they type the word,
+  // and give the one command that changes it on purpose.
+  for (const kept of result.kept ?? []) {
+    if (kept.reason === 'foreign-file') {
+      print(`[hoai] ${kept.path} already exists and is not a link this install made, so it was left alone.`)
+    } else {
+      print(`[hoai] ${kept.path} already points at ${kept.pointsAt}, so it was left alone.`)
+    }
+    print(`[hoai] this install is at ${kept.wanted}, and typing hoai will NOT run it.`)
+    print('[hoai] that is deliberate: replacing a command you already have is not something to do quietly.')
+    print('[hoai] to point it at this install instead, run: hoai install-cli --force')
+  }
+  return { ok: result.ok, binDir: result.binDir, kept: result.kept ?? [] }
 }
 
 /** The argv for bin/hoai-add-to-path.ps1. Pure so the spawn is unit-testable
@@ -2238,7 +2378,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   }
 
   if (action === 'install-cli') {
-    const outcome = await installHoaiCli({ platform, env, home, scriptDir })
+    // --force is the deliberate ask. Without it this command never replaces a
+    // shim another install owns; with it, the owner has said so out loud.
+    const force = rest.some((token) => String(token ?? '').trim().toLowerCase() === '--force')
+    // Injected like every other effect in this file, so the --force wiring is
+    // testable without writing to a real home.
+    const installCli = opts.installCliImpl ?? installHoaiCli
+    const outcome = await installCli({ platform, env, home, scriptDir, force })
     return outcome.ok ? 0 : 1
   }
 

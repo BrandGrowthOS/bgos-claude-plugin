@@ -27,7 +27,8 @@
  * --preflight makes the exit code the verdict: 0 only when the claude CLI,
  * auth, the initialize handshake, and `claude mcp list` are ALL green and
  * nothing else failed (backend reachability is implied by a live handshake
- * and is reported but exempted then).
+ * and is reported but exempted then; the startup-gate and incumbent rows
+ * report without gating, see ADVISORY_ROW_IDS).
  *
  * Wire note: the MCP stdio transport is newline-delimited JSON (one JSON-RPC
  * document per \n-terminated line; see @modelcontextprotocol/sdk
@@ -60,6 +61,7 @@ import {
   incumbentBlocks,
   relaunchNeedsGateAutoAccept,
   resolveChannelSpec,
+  selfAndAncestorPids,
 } from './hoai-core.mjs'
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
 import { resolveReadCredentialsPath, normalizeApiBase, FOLDER_PIN_FILE_NAME } from './bgos-pair.mjs'
@@ -533,11 +535,18 @@ export function buildDoctorRows(probes) {
   // Incumbent session
   //
   // A pinned conversation can only be resumed once, so hoai waits for any
-  // claude that already owns this folder rather than starting a second
+  // claude that demonstrably owns this folder rather than starting a second
   // session beside it. From the outside that wait is indistinguishable from a
-  // launch that does nothing, so the doctor names the pid instead. An
-  // unreadable cwd makes the launcher wait too (it fails toward waiting), but
-  // it is not proof this folder is taken, so it is reported, not failed.
+  // launch that does nothing, so the doctor names the pid instead.
+  //
+  // An unreadable cwd does NOT make the launcher wait (F8, 2026-09-21). The
+  // rule used to be "fail toward waiting" and it stranded a real first
+  // install: one claude under the same uid whose cwd lsof would not show made
+  // every launch wait forever. incumbentBlocks now returns false for
+  // 'unreadable-cwd', so the launcher warns once and launches immediately.
+  // This row is the one place a user looks to explain a launch that seems to
+  // do nothing, so its non-blocking branch has to say THAT, not the symptom
+  // F8 removed, and it must not point at a pid to kill for no reason.
   if (p.incumbent !== undefined) {
     const incumbent = p.incumbent ?? {}
     const hit = incumbent.hit ?? null
@@ -556,7 +565,7 @@ export function buildDoctorRows(probes) {
         'incumbent',
         'Incumbent session',
         true,
-        `nothing is holding ${incumbent.cwd}; claude pid ${hit.pid} is running under this user with an unreadable cwd, which may or may not be this folder, so hoai may still wait for it`,
+        `nothing is holding ${incumbent.cwd}; claude pid ${hit.pid} is running under this user with an unreadable cwd, which may or may not be this folder, so hoai mentions it once and then launches anyway`,
       )
     }
   }
@@ -586,9 +595,23 @@ export function buildDoctorRows(probes) {
   }
 
   // MCP initialize handshake
+  //
+  // UNPROVEN, not SKIP (2026-09-21). The clause "render a never-run check as
+  // UNPROVEN rather than SKIP" reached the liveness row and stopped there,
+  // and this is a never-run check in exactly that sense: a reader takes SKIP
+  // for "not applicable on this machine" and reads past it, and this is the
+  // row the whole preflight gate is built on. The detail now says WHY it did
+  // not run instead of the bare word 'skipped'. The gate is untouched:
+  // handshake is a REQUIRED row and only ok:true satisfies one, so unproven
+  // fails preflight exactly as the old ok:null did.
   const handshake = p.handshake ?? null
   if (!handshake) {
-    row('handshake', 'MCP handshake (initialize)', null, 'skipped')
+    row(
+      'handshake',
+      'MCP handshake (initialize)',
+      UNPROVEN,
+      'not run: the live initialize handshake was skipped, so nothing here has proven the server can boot and speak MCP',
+    )
   } else if (handshake.ok) {
     row('handshake', 'MCP handshake (initialize)', true, handshake.detail ?? 'server answered initialize')
   } else {
@@ -603,9 +626,21 @@ export function buildDoctorRows(probes) {
   }
 
   // claude mcp list
+  //
+  // UNPROVEN for the same reason as the handshake row above, and the detail
+  // names the one thing that stops this probe running: main() only asks
+  // `claude mcp list` when the claude CLI was found, so an absent CLI is the
+  // honest WHY, and it points at the row that carries the fix for it.
   const mcpList = p.mcpList ?? null
   if (!mcpList) {
-    row('mcp-list', 'claude mcp list', null, 'skipped')
+    row(
+      'mcp-list',
+      'claude mcp list',
+      UNPROVEN,
+      claude.found
+        ? 'not run: claude mcp list was never asked whether this plugin reads Connected'
+        : 'not run: the claude CLI was not found, so claude mcp list could not be asked whether this plugin reads Connected (see the Claude Code CLI row)',
+    )
   } else if (mcpList.ok) {
     row('mcp-list', 'claude mcp list', true, mcpList.raw ?? 'Connected')
   } else {
@@ -727,14 +762,28 @@ export function renderDoctorTable(rows) {
  * here silently changes what aborts an install. bin/hoai-bootstrap.sh runs
  * this gate at line 611 and calls `fail 'preflight-failed'` on a false, so
  * every FAIL-capable row is also a way for a first-time install to stop dead.
- * The startup-gate row is about a FUTURE unattended RELAUNCH: it fails when
- * the expect wrapper will be used and expect is not installed. That is worth
- * reporting loudly, and it is not a reason to abandon an install that is
- * otherwise complete. macOS ships /usr/bin/expect so this never shows there,
- * but a minimal Linux image does not, and the bootstrap never installs it, so
- * gating on it would have turned "your restarts may stall" into "your install
- * failed" for every such host. The row still renders FAIL with its fix; it
- * just does not carry the gate.
+ * Two rows report rather than gate:
+ *
+ *   gate: the startup-gate row is about a FUTURE unattended RELAUNCH. It fails
+ *   when the expect wrapper will be used and expect is not installed. That is
+ *   worth reporting loudly, and it is not a reason to abandon an install that
+ *   is otherwise complete. macOS ships /usr/bin/expect so this never shows
+ *   there, but a minimal Linux image does not, and the bootstrap never
+ *   installs it, so gating on it would have turned "your restarts may stall"
+ *   into "your install failed" for every such host.
+ *
+ *   incumbent: an already-running claude in this folder is the NORMAL state of
+ *   a healthy always-on agent, whose service keeps one alive with cwd set to
+ *   the workspace permanently. Re-running the one-click installer against such
+ *   a machine used to complete; with this row gating it aborted with
+ *   `preflight FAILED: incumbent`, after the one-time pair code had already
+ *   been spent. The bootstrap LAUNCHES after preflight, and that launch does
+ *   its own incumbent handling (waitForIncumbent, and incumbentBlocks decides
+ *   what is worth waiting for), so refusing to FINISH an install over a
+ *   session the next step already knows how to handle helps nobody.
+ *
+ * Both rows still render FAIL with their pid and their fix line; they just do
+ * not carry the gate.
  *
  * UNPROVEN is not a failure here, by construction: only ok:false fails a
  * non-required row and only ok:true satisfies a required one, so an unproven
@@ -743,7 +792,7 @@ export function renderDoctorTable(rows) {
  * @param {Array<{ id: string, ok: boolean | null | 'unproven' }>} rows
  * @returns {{ ok: boolean, failing: string[] }}
  */
-export const ADVISORY_ROW_IDS = Object.freeze(['gate'])
+export const ADVISORY_ROW_IDS = Object.freeze(['gate', 'incumbent'])
 
 export function preflightVerdict(rows) {
   const required = ['claude', 'auth', 'handshake', 'mcp-list']
@@ -911,6 +960,40 @@ function defaultReadText(path) {
 }
 
 /**
+ * realpath that never throws: an unresolvable path (one that does not exist
+ * yet, or that this user cannot read through) compares as itself. Byte for
+ * byte the rule bgos-pair.mjs defaultResolvePath uses, deliberately, because
+ * the read side and the write side of the trust entry have to agree about what
+ * a path IS.
+ */
+function defaultResolvePath(path) {
+  try {
+    return realpathSync(String(path ?? ''))
+  } catch {
+    return String(path ?? '')
+  }
+}
+
+/**
+ * Every projects[] key that could carry this cwd's trust flag, in the order
+ * they are tried: the literal cwd, its other slash spelling (win32 is seeded
+ * under both), then the same pair for the REALPATH of the cwd. Deduplicated,
+ * so the common case where the two spellings coincide reads one key once.
+ * @param {string} cwd
+ * @param {(path: string) => string} resolvePath
+ * @returns {string[]}
+ */
+function trustLookupKeys(cwd, resolvePath) {
+  const literal = String(cwd ?? '')
+  const resolved = String(resolvePath(literal) ?? '')
+  const keys = []
+  for (const key of [literal, alternateSlashSpelling(literal), resolved, alternateSlashSpelling(resolved)]) {
+    if (key && !keys.includes(key)) keys.push(key)
+  }
+  return keys
+}
+
+/**
  * Does Claude Code already trust `cwd`? Reads hasTrustDialogAccepted back out
  * of Claude Code's OWN config file.
  *
@@ -921,8 +1004,29 @@ function defaultReadText(path) {
  * 0.42.1's write-side twin of this bug, reports success having changed
  * nothing). A win32-shaped cwd is seeded under both slash spellings, so either
  * key counts as the answer.
+ *
+ * THE CWD IS LOOKED UP UNDER BOTH ITS SPELLINGS, literal and resolved
+ * (2026-09-21). preseedClaudeTrust keys the entry on the cwd it is handed,
+ * which on the write path is process.cwd(), and node reports that as a
+ * REALPATH; the doctor is handed whatever a caller typed at --workdir. On any
+ * host whose home or workspace runs through a symlink (a /tmp home on macOS
+ * resolving under /private/tmp, an ostree /home to /var/home, a bind-mounted
+ * container home) the two strings differ, the lookup missed a row sitting
+ * right there, and the trust row rendered FAIL on a folder Claude Code
+ * trusts. `trust` gates preflightVerdict, so hoai-bootstrap.sh line 611 turned
+ * that miss into `fail 'preflight-failed'` and stopped a first install dead,
+ * after the one-time pair code had already been spent.
+ *
+ * It is the same two-spellings bug commit 9090363 fixed on the WRITE side in
+ * bgos-pair's classifyPairCwd, and the resolver is injected and never throws
+ * for the same reasons it is there: a test must not touch a real filesystem,
+ * and a path that cannot be resolved simply compares as itself. The DIRECTION
+ * differs. classifyPairCwd had to fail CLOSED, any spelling matching home
+ * being enough to refuse; this has to fail toward FINDING the entry that
+ * exists, so any spelling carrying the flag is the answer.
  * @param {{ env?: Record<string, string | undefined>, home?: string, cwd?: string,
- *           readFile?: (path: string) => string | null }} [opts]
+ *           readFile?: (path: string) => string | null,
+ *           resolvePath?: (path: string) => string }} [opts]
  * @returns {{ cwd: string, configPath: string, accepted: boolean, reason: string, matchedKey: string, error?: string }}
  */
 export function probeFolderTrust({
@@ -930,6 +1034,7 @@ export function probeFolderTrust({
   home = homedir(),
   cwd = process.cwd(),
   readFile = defaultReadText,
+  resolvePath = defaultResolvePath,
 } = {}) {
   const result = { cwd: String(cwd ?? ''), configPath: '', accepted: false, reason: 'no-entry', matchedKey: '' }
   try {
@@ -953,8 +1058,7 @@ export function probeFolderTrust({
   }
   const projects = cfg && typeof cfg === 'object' ? cfg.projects : null
   if (!projects || typeof projects !== 'object') return result
-  for (const key of [result.cwd, alternateSlashSpelling(result.cwd)]) {
-    if (!key) continue
+  for (const key of trustLookupKeys(result.cwd, resolvePath)) {
     const entry = projects[key]
     if (!entry || typeof entry !== 'object') continue
     result.matchedKey = key
@@ -1018,12 +1122,22 @@ export function probeGateStrategy({ platform = process.platform, method = null, 
 }
 
 /**
- * Is another claude already holding this cwd? The same three rules the
- * launcher waits on (findIncumbentClaude), classified by hoai-core's own
+ * Is another claude already holding this cwd? The same rules the launcher
+ * waits on (findIncumbentClaude), classified by hoai-core's own
  * incumbentBlocks so "blocking" means here what it means there. The process
  * list is injected, so a test never reads the real process table.
+ *
+ * ANOTHER claude, never this one. `hoai doctor` is normally typed INTO a
+ * claude session whose cwd is the folder being screened, so the node process
+ * running this probe has a claude PARENT sitting right there. Excluding only
+ * ownPid left that parent looking like a same-cwd incumbent: measured on
+ * 2026-09-21, this probe named the pid of the claude running it and the row
+ * told the operator to kill the session they were typing into. The ancestor
+ * walk (hoai-core selfAndAncestorPids, keyed on the ppid defaultListProcesses
+ * now reports) is what tells the caller apart from a rival.
  * @param {{ cwd?: string, platform?: string, uid?: number | null, ownPid?: number,
- *           listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }> }} [opts]
+ *           listProcesses?: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
+ *           ignorePidsFor?: (input: { processes: unknown[], pid: number }) => Iterable<number> }} [opts]
  * @returns {{ cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string }}
  */
 export function probeIncumbent({
@@ -1032,6 +1146,7 @@ export function probeIncumbent({
   uid = typeof process.getuid === 'function' ? process.getuid() : null,
   ownPid = process.pid,
   listProcesses = () => defaultListProcesses(platform),
+  ignorePidsFor = selfAndAncestorPids,
 } = {}) {
   const target = String(cwd ?? '')
   let processes
@@ -1042,7 +1157,8 @@ export function probeIncumbent({
     // the launcher's own failure mode here is the same: it sees no hit.
     return { cwd: target, hit: null, blocks: false, error: String(err?.message ?? err) }
   }
-  const hit = findIncumbentClaude({ processes, cwd: target, uid, ownPid })
+  const ignorePids = ignorePidsFor({ processes, pid: ownPid })
+  const hit = findIncumbentClaude({ processes, cwd: target, uid, ownPid, ignorePids })
   return { cwd: target, hit, blocks: hit ? incumbentBlocks(hit) === true : false }
 }
 
