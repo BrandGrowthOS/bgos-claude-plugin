@@ -35,6 +35,7 @@ import {
   readMarketplaceAutoUpdate,
   preseedClaudeTrust,
   seedProjectEntry,
+  resolvedPathOrNull,
 } from '../lib/claude-preseed.mjs'
 import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
 
@@ -876,4 +877,90 @@ test('every launch line the launchers write turns the task tools on', () => {
   const agent = launcher('../bin/bgos-agent')
   assert.match(agent, /<key>CLAUDE_CODE_ENABLE_TODO_TOOLS<\/key><string>1<\/string>/, 'launchd')
   assert.match(agent, /Environment=CLAUDE_CODE_ENABLE_TODO_TOOLS=1/, 'systemd')
+})
+
+/**
+ * THE KEY, NOT THE FILE. F4 fixed WHICH FILE this writes to. This is the KEY
+ * inside it, and it fails the same way: it reports success and changes nothing.
+ *
+ * Claude Code keys `projects` on the RESOLVED cwd. `/var` is a symlink to
+ * `/private/var` on every Mac, so a seed for a folder under `/tmp` or `/var`
+ * lands on a key the CLI never looks up. Measured on a fresh folder
+ * 2026-09-21, driving the real CLI over a PTY:
+ *
+ *   seeded /var/folders/.../x          -> the trust dialog STILL APPEARED
+ *   seeded /private/var/folders/.../x  -> the dialog was GONE
+ *
+ * Every existing test here survived the bug because they all use
+ * /home/kc/... paths, where no component is a symlink, which is also why
+ * `~/hoai-agents/<name>` was never affected in the field.
+ */
+test('resolvedPathOrNull: a symlinked path answers its resolved spelling', () => {
+  const resolve = (p: string) => (p.startsWith('/var/') ? p.replace('/var/', '/private/var/') : p)
+  assert.equal(resolvedPathOrNull('/var/folders/t/x', resolve), '/private/var/folders/t/x')
+})
+
+test('resolvedPathOrNull: a path that resolves to ITSELF answers null, so nothing is seeded twice', () => {
+  assert.equal(resolvedPathOrNull('/home/kc/ava', (p: string) => p), null)
+})
+
+test('resolvedPathOrNull: an unresolvable path answers null rather than throwing', () => {
+  // A folder that does not exist yet, or a permission that refuses the walk.
+  // Losing the resolved spelling is survivable; losing the seed is not.
+  assert.equal(
+    resolvedPathOrNull('/nope', () => {
+      throw new Error('ENOENT')
+    }),
+    null,
+  )
+  assert.equal(resolvedPathOrNull('', (p: string) => p), null)
+  assert.equal(resolvedPathOrNull(null as unknown as string, (p: string) => p), null)
+})
+
+test('preseedClaudeTrust: a symlinked cwd seeds BOTH spellings, literal first', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/var/folders/t/agent',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: (p: string) => p.replace('/var/', '/private/var/'),
+  })
+  assert.deepEqual(result.seededKeys, ['/var/folders/t/agent', '/private/var/folders/t/agent'])
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json') as string)
+  // BOTH keys carry the full entry: we cannot tell from here which one the CLI
+  // will look up, so seeding one and not the other is a coin flip.
+  assert.equal(cfg.projects['/var/folders/t/agent'].hasTrustDialogAccepted, true)
+  assert.equal(cfg.projects['/private/var/folders/t/agent'].hasTrustDialogAccepted, true)
+})
+
+test('preseedClaudeTrust: a cwd with no symlink in it still seeds exactly one key', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: (p: string) => p,
+  })
+  assert.deepEqual(result.seededKeys, ['/home/kc/hoai-agents/ava'])
+})
+
+test('preseedClaudeTrust: a realpath that THROWS still seeds the literal cwd', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: () => {
+      throw new Error('EACCES')
+    },
+  })
+  assert.deepEqual(result.seededKeys, ['/home/kc/hoai-agents/ava'])
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json') as string)
+  assert.equal(cfg.projects['/home/kc/hoai-agents/ava'].hasTrustDialogAccepted, true)
 })
