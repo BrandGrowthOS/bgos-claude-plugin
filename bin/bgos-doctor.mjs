@@ -723,6 +723,19 @@ export function renderDoctorTable(rows) {
  * Exception: a failed backend row is exempt when handshake AND mcp list both
  * passed (live MCP traffic implies reachability; the row still reports).
  *
+ * ADVISORY ROWS are the second exemption, and it exists because adding a row
+ * here silently changes what aborts an install. bin/hoai-bootstrap.sh runs
+ * this gate at line 611 and calls `fail 'preflight-failed'` on a false, so
+ * every FAIL-capable row is also a way for a first-time install to stop dead.
+ * The startup-gate row is about a FUTURE unattended RELAUNCH: it fails when
+ * the expect wrapper will be used and expect is not installed. That is worth
+ * reporting loudly, and it is not a reason to abandon an install that is
+ * otherwise complete. macOS ships /usr/bin/expect so this never shows there,
+ * but a minimal Linux image does not, and the bootstrap never installs it, so
+ * gating on it would have turned "your restarts may stall" into "your install
+ * failed" for every such host. The row still renders FAIL with its fix; it
+ * just does not carry the gate.
+ *
  * UNPROVEN is not a failure here, by construction: only ok:false fails a
  * non-required row and only ok:true satisfies a required one, so an unproven
  * row gates exactly as ok:null always did. Changing that would turn a machine
@@ -730,6 +743,8 @@ export function renderDoctorTable(rows) {
  * @param {Array<{ id: string, ok: boolean | null | 'unproven' }>} rows
  * @returns {{ ok: boolean, failing: string[] }}
  */
+export const ADVISORY_ROW_IDS = Object.freeze(['gate'])
+
 export function preflightVerdict(rows) {
   const required = ['claude', 'auth', 'handshake', 'mcp-list']
   const byId = new Map((rows ?? []).map((r) => [r.id, r]))
@@ -740,6 +755,7 @@ export function preflightVerdict(rows) {
   const proven = byId.get('handshake')?.ok === true && byId.get('mcp-list')?.ok === true
   for (const r of rows ?? []) {
     if (required.includes(r.id)) continue
+    if (ADVISORY_ROW_IDS.includes(r.id)) continue
     if (r.ok === false && !(r.id === 'backend' && proven)) failing.push(r.id)
   }
   return { ok: failing.length === 0, failing }

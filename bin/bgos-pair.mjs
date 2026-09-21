@@ -835,22 +835,53 @@ function isFilesystemRootPath(path, win32) {
  * filesystem root. A folder inside the home directory is the normal, correct
  * case (~/hoai-agents/ava lives there) and must never be refused.
  *
- * Pure, string only, no fs: that is what lets main ask before it spends the
- * pair code.
+ * TWO SPELLINGS OF THE SAME DIRECTORY, which is how this guard was first seen
+ * to fail open. `process.cwd()` hands back a REALPATH, while `os.homedir()`
+ * hands back $HOME verbatim, so on any machine where the home path runs
+ * through a symlink the two describe one directory with different strings and
+ * a plain compare says "not home". Reproduced on this Mac with HOME under
+ * /tmp, whose realpath is /private/tmp: the guard waved the pairing straight
+ * through. A guard that fails OPEN on the one case it exists to catch is worse
+ * than no guard, because it also stops anyone looking. So both spellings are
+ * compared, literal and resolved, and a match on EITHER refuses.
  *
- * @param {{ cwd?: string, home?: string, platform?: string }} [opts]
+ * The resolver is injected and defaults to a realpath that returns its input
+ * on any error, which keeps this pure enough to unit test and keeps main able
+ * to ask before it spends the pair code. A path that cannot be resolved (it
+ * does not exist yet, or it is not readable) simply compares as itself.
+ *
+ * @param {{ cwd?: string, home?: string, platform?: string,
+ *           resolvePath?: (path: string) => string }} [opts]
  * @returns {{ ok: boolean, case: 'home' | 'root' | 'ok' }}
  */
-export function classifyPairCwd({ cwd, home, platform = process.platform } = {}) {
+export function classifyPairCwd({ cwd, home, platform = process.platform, resolvePath = defaultResolvePath } = {}) {
   const win32 = String(platform ?? '') === 'win32'
   const here = comparablePairPath(cwd, win32)
   // An unreadable or empty cwd is not evidence of a bad one; refusing on a
   // string we never read would block pairings that are perfectly fine.
   if (!here) return { ok: true, case: 'ok' }
-  if (isFilesystemRootPath(here, win32)) return { ok: false, case: 'root' }
+  const hereReal = comparablePairPath(resolvePath(String(cwd ?? '')), win32)
+  if (isFilesystemRootPath(here, win32) || isFilesystemRootPath(hereReal, win32)) {
+    return { ok: false, case: 'root' }
+  }
   const userHome = comparablePairPath(home, win32)
-  if (userHome && here === userHome) return { ok: false, case: 'home' }
+  const userHomeReal = comparablePairPath(resolvePath(String(home ?? '')), win32)
+  // Fail CLOSED: any spelling of cwd matching any spelling of home is home.
+  for (const a of [here, hereReal]) {
+    for (const b of [userHome, userHomeReal]) {
+      if (a && b && a === b) return { ok: false, case: 'home' }
+    }
+  }
   return { ok: true, case: 'ok' }
+}
+
+/** realpath that never throws: an unresolvable path compares as itself. */
+function defaultResolvePath(path) {
+  try {
+    return realpathSync(String(path ?? ''))
+  } catch {
+    return String(path ?? '')
+  }
 }
 
 /** Wrap a path for a shell line only when it needs it (a space or a quote). */

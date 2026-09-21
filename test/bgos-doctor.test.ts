@@ -411,6 +411,43 @@ function verdictRows(okById: Record<string, RowStatus>) {
   }))
 }
 
+/** verdictRows, but over a probe set that actually CONTAINS the four launch
+ *  rows: healthyProbes supplies none of them, so overriding an absent row is a
+ *  test that silently asserts nothing. */
+function launchVerdictRows(okById: Record<string, RowStatus>) {
+  return buildDoctorRows(launchProbes()).map((row: { id: string; ok: RowStatus }) => ({
+    ...row,
+    ok: okById[row.id] !== undefined ? okById[row.id] : row.ok,
+  }))
+}
+
+test('preflightVerdict: a failing startup-gate row reports but does NOT abort the install', () => {
+  // bin/hoai-bootstrap.sh line 611 runs this gate and calls fail
+  // 'preflight-failed' on a false, so every FAIL-capable row is also a way for
+  // a first-time install to stop dead. The startup-gate row is about a FUTURE
+  // unattended relaunch: it fails when the expect wrapper will be used and
+  // expect is not installed. macOS ships /usr/bin/expect so it never shows
+  // there, but a minimal Linux image does not and the bootstrap never installs
+  // it, so gating on it would turn "your restarts may stall" into "your
+  // install failed" on every such host. That is the exact opposite of what
+  // this release is for.
+  const rows = launchVerdictRows({ gate: false })
+  assert.ok(rows.some((r: { id: string }) => r.id === 'gate'), 'the gate row must exist for this to mean anything')
+  const verdict = preflightVerdict(rows)
+  assert.equal(verdict.ok, true, 'a missing expect must not abort an otherwise complete install')
+  assert.deepEqual(verdict.failing, [])
+})
+
+test('preflightVerdict: the gate exemption is narrow, every other launch row still gates', () => {
+  // The exemption must not become a blanket. Trust, bypass and incumbent each
+  // describe something that stops THIS launch, so each one still fails.
+  for (const id of ['trust', 'bypass', 'incumbent']) {
+    const verdict = preflightVerdict(launchVerdictRows({ [id]: false }))
+    assert.equal(verdict.ok, false, `${id}=false must still fail preflight`)
+    assert.ok(verdict.failing.includes(id), `${id} must be named among the failures`)
+  }
+})
+
 test('preflightVerdict: all green passes', () => {
   const verdict = preflightVerdict(verdictRows({}))
   assert.equal(verdict.ok, true)
@@ -835,6 +872,41 @@ test('doctor trust row: a config file that is not there at all fails naming the 
   const row = rowById(rows, 'trust')
   assert.strictEqual(row.ok, false)
   assert.match(row.detail, /no config file at \/home\/kc\/\.claude\.json/)
+})
+
+test('doctor trust row: a config file that could not be LOCATED at all is a FAIL, not a pass', () => {
+  // Found by mutation, not by design: flipping this branch's status from false
+  // to true left the whole suite green, so nothing stood between it and a
+  // regression. It is the worst branch to get wrong. "could not locate the
+  // config file" means the trust state is unknown, and an unknown trust state
+  // is exactly the 0.42.1 shape where every log line said success while the
+  // launch sat on a full-screen dialog nobody was there to answer.
+  const rows = buildDoctorRows(
+    launchProbes({
+      trust: { cwd: '/agents/ava', configPath: '', accepted: false, reason: 'no-config-path', error: 'no CLAUDE_CONFIG_DIR and no home directory', matchedKey: '' },
+    }),
+  )
+  const row = rowById(rows, 'trust')
+  assert.strictEqual(row.ok, false, 'an unlocatable config file must never render as PASS')
+  assert.match(row.detail, /could not be located/i)
+  assert.ok(row.fix.length > 0, 'a failing row always carries a fix')
+})
+
+test('doctor trust row: a config file that is not readable JSON is a FAIL, not a pass', () => {
+  // The other branch mutation found unguarded. Unreadable JSON means the trust
+  // state cannot be confirmed either way, and "cannot confirm" has to read as
+  // FAIL here: a diagnostic that resolves its own uncertainty in favour of
+  // green is the failure mode this whole row exists to end.
+  const rows = buildDoctorRows(
+    launchProbes({
+      trust: { cwd: '/agents/ava', configPath: '/home/kc/.claude.json', accepted: false, reason: 'unreadable-config', matchedKey: '' },
+    }),
+  )
+  const row = rowById(rows, 'trust')
+  assert.strictEqual(row.ok, false, 'an unreadable config must never render as PASS')
+  assert.match(row.detail, /not readable JSON/)
+  assert.match(row.detail, /\/agents\/ava/)
+  assert.ok(row.fix.length > 0, 'a failing row always carries a fix')
 })
 
 test('probeFolderTrust: the trust flag is read from the file BESIDE the config dir, not the one inside it', () => {

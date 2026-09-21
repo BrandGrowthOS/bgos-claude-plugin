@@ -1628,6 +1628,60 @@ test('hoai setup puts the hoai command on PATH BEFORE it pairs', async () => {
 // use and expires in ten minutes, so refusing after spending it would be worse
 // than the defect.
 
+test('classifyPairCwd refuses home even when cwd and $HOME spell it differently', () => {
+  // The guard was FAILING OPEN here, found by running it rather than reading
+  // it. process.cwd() returns a realpath and os.homedir() returns $HOME
+  // verbatim, so on any machine whose home runs through a symlink the two
+  // describe ONE directory with two strings and a plain compare answers "not
+  // home". Reproduced on macOS with HOME under /tmp, whose realpath is
+  // /private/tmp: pairing from the home directory sailed straight through the
+  // check that exists to stop exactly that.
+  const resolvePath = (path: string) => (path.startsWith('/tmp/') ? path.replace('/tmp/', '/private/tmp/') : path)
+
+  // cwd already resolved, home still the symlinked spelling: the real case.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/private/tmp/kc', home: '/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: false, case: 'home' },
+  )
+  // And the mirror, in case the two are ever read the other way round.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/tmp/kc', home: '/private/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: false, case: 'home' },
+  )
+  // A symlinked ROOT is still a root.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/tmp/', home: '/home/kc', platform: 'darwin', resolvePath: () => '/' }),
+    { ok: false, case: 'root' },
+  )
+  // The hardening must not start refusing ordinary folders: a real subfolder
+  // of home resolves to a real subfolder of home and still pairs.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/private/tmp/kc/hoai-agents/ava', home: '/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: true, case: 'ok' },
+  )
+})
+
+test('classifyPairCwd survives a resolver that throws, and still refuses on the literal spelling', () => {
+  // realpath fails on a path that does not exist or cannot be read. That must
+  // degrade to the old literal compare, never to an exception in front of a
+  // user holding a ten minute code.
+  const resolvePath = () => {
+    throw new Error('ENOENT')
+  }
+  assert.throws(() => resolvePath(), /ENOENT/)
+  const safe = (path: string) => {
+    try {
+      return resolvePath()
+    } catch {
+      return path
+    }
+  }
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/home/kc', home: '/home/kc', platform: 'linux', resolvePath: safe }),
+    { ok: false, case: 'home' },
+  )
+})
+
 test('classifyPairCwd refuses $HOME itself and every filesystem root, and passes a folder inside home', () => {
   // The home directory itself, with and without a trailing separator.
   assert.deepEqual(classifyPairCwd({ cwd: '/home/kc', home: '/home/kc', platform: 'linux' }), {
