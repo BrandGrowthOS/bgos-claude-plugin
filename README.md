@@ -659,12 +659,13 @@ folded head's count.
 ended.** A finished card folds, and a helper ticking behind a fold helps
 nobody. So a turn that stops with a child still running leaves its card behind
 and the child's stop, minutes later, updates that same card rather than posting
-a second one. That card is kept under a name of its own, so the commands the
-child runs after the turn has ended draw a card of their own rather than
-replacing the helper row on it, and a second turn that ends the same way keeps
-the first card too. There is no token count for a child and no way to stop
-one: this runtime hands the host neither, and both are recorded as blocked
-rather than postponed. `SubagentStop` is the one new hook event;
+a second one. That card is kept under a name of its own, so a later turn cannot
+write over it, and a second turn that ends the same way keeps the first card
+too. The commands the child runs after the turn has ended land on that same
+card, beside the helper row they belong to: one delegating turn is one card,
+however long the child goes on working. There is no token count for a child and
+no way to stop one: this runtime hands the host neither, and both are recorded
+as blocked rather than postponed. `SubagentStop` is the one new hook event;
 `SubagentStart` is deliberately not registered, because it carries no
 description and no tool id, so it can name nothing and be joined to nothing.
 

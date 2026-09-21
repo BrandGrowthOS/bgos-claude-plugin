@@ -30,6 +30,11 @@
  *   - hold one carried card at a time          -> the two cards case goes red
  *   - a constant fallback card key             -> the two anonymous turns red
  *   - leave a card open at a new prompt        -> the settle case goes red
+ *
+ * And the mutation of the orchestrator decision that followed that batch, that
+ * one delegating turn is ONE card:
+ *   - route a child's post Stop tools to a live -> the whole sequence case,
+ *     card again                                   and both halves of it, red
  */
 
 import { strict as assert } from 'node:assert'
@@ -111,6 +116,25 @@ const PARENT_STOP = pick(
 const NOTIFICATION = pick(
   (r) => r.hook === 'UserPromptSubmit' && String(r.payload.prompt ?? '').includes('<task-notification>'),
   'a task notification prompt',
+)
+
+/** The OTHER child's completion notification. Two arrived in a row on the
+ *  probe, which is what lets the case below interrupt a turn with a real
+ *  payload rather than an invented one. */
+const NOTIFICATION_B = pick(
+  (r) =>
+    r.hook === 'UserPromptSubmit' &&
+    String(r.payload.prompt ?? '').includes('<task-notification>') &&
+    r.payload.prompt_id !== NOTIFICATION.prompt_id,
+  'a second task notification prompt',
+)
+
+/** The parent's OWN Bash, the one it ran after its children reported: no
+ *  agent_id on it at all, which is how a parent's work is told from a
+ *  child's. */
+const PARENT_TOOL = pick(
+  (r) => r.hook === 'PreToolUse' && r.payload.tool_name === 'Bash' && r.payload.agent_id === undefined,
+  "the parent's own Bash",
 )
 
 const SESSION_END = pick((r) => r.hook === 'SessionEnd', 'a SessionEnd')
@@ -407,61 +431,111 @@ test('the prompt a completion notification opens must NOT clear the carried card
   assert.equal(lastCardOf(late.effects).cardKey, theCarried(stopped.next).cardKey)
 })
 
-test("a child's tool after the turn ended still updates the card it belongs to", () => {
-  // And it draws its own row on a card of its OWN. Every hook event a child
-  // sends carries the PARENT's prompt id, so the turn those events re open
-  // used to mint the very key the carried card answers to: one message, two
-  // card bodies, and the helper row replaced by the child's Bash row for the
-  // whole time the helper worked.
+test("a child's tool after the turn ended draws on the card its helper is on", () => {
+  // ONE delegating turn is ONE card. Every hook event a child sends carries
+  // the PARENT's prompt id, so the turn those events re open mints the very
+  // key the carried card answers to; giving the child's own rows a card of
+  // their own kept them off that message and cost the owner a SECOND card in
+  // the chat for one turn. They belong on the card the child's row is on.
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const carriedKey = theCarried(stopped.next).cardKey
   const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
   const cards = cardsOf(working.effects)
-  assert.equal(cards.length, 2, "the card the helper is on, and the card the child's own row opens")
+  assert.equal(cards.length, 1, 'one turn, one card')
+  assert.equal(cards[0]!.cardKey, carriedKey, 'and it is the card the helper row is on')
+  assert.equal(cards[0]!.state, 'running')
+  assert.equal(cards[0]!.startedAt, 999, "which still carries the turn's own start")
+  assert.equal(cards[0]!.finishedAt, undefined, 'and is not over while its helper works')
 
-  const carried = cards.find((c) => c.cardKey === carriedKey)
-  assert.ok(carried, 'the card the helper is on is the card that repaints')
-  assert.equal(carried.state, 'running')
-  assert.equal(helperRow(carried.tools).detail, 'Bash wc -l hay.txt')
-  assert.equal(carried.startedAt, 999, "and it still carries the turn's own start")
+  const rows = cards[0]!.tools
+  assert.equal(rows.length, 2, "the helper row, and the child's own Bash beside it")
+  assert.equal(helperRow(rows).detail, 'Bash wc -l hay.txt', 'the helper says what it is doing')
+  assert.equal(rows[1]!.name, 'Bash')
+  assert.equal(rows[1]!.kind, undefined, "a child's tool row is an ordinary tool row")
+  assert.equal(rows[1]!.args, 'wc -l hay.txt')
+  assert.equal(rows[1]!.status, 'running')
 
-  const live = cards.find((c) => c.cardKey !== carriedKey)
-  assert.ok(live, "the child's own row has a card of its own")
-  assert.equal(live.tools.length, 1)
-  assert.equal(live.tools[0]!.name, 'Bash')
-  assert.ok(
-    !live.tools.some((r) => r.kind === 'subagent'),
-    'a card carrying the child rows alone must never reach the message the helper row is on',
+  // And no live turn opened for it. A pseudo turn here mints a key of its own,
+  // posts that second message, and takes the dead prompt id with it.
+  assert.equal(working.next.turnId, null, "a child's tool is not the parent's next turn")
+  assert.deepEqual(working.next.toolOrder, [])
+  assert.equal(working.next.tools.size, 0)
+  assert.equal(working.next.startedAt, 0)
+  assert.deepEqual(
+    carriedOf(working.next)[0]!.toolOrder.length,
+    2,
+    'the row is kept on the carried card, so the next repaint still has it',
   )
 })
 
-test("a child's finished tool after the turn ended draws on its own card too", () => {
-  // The same shape on the PostToolUse path, which adopts the dead prompt id at
-  // a second site and would otherwise reopen the defect on its own. Only ONE
-  // card repaints here: the qualifier this tool would write is the one the
-  // child's PreToolUse already wrote, and an unchanged row is not repainted.
+test("a child's finished tool lands on that same card, with what it printed", () => {
+  // The same route on the PostToolUse path, which reads the dead prompt id at
+  // a second site and would otherwise open the second card on its own.
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const carriedKey = theCarried(stopped.next).cardKey
   const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
-  const finished = feed(working.next, childTool('PostToolUse', CHILD_A), 12_300)
+  const finished = feed(working.next, childTool('PostToolUse', CHILD_A), 12_313)
   const cards = cardsOf(finished.effects)
   assert.equal(cards.length, 1)
-  assert.notEqual(
-    cards[0]!.cardKey,
-    carriedKey,
-    "a finished child tool that carries the card's key patches the helper row away",
+  assert.equal(cards[0]!.cardKey, carriedKey, 'the same card the Pre half drew on')
+  const rows = cards[0]!.tools
+  assert.equal(rows.length, 2, 'the same two rows, one of them now closed')
+  assert.equal(rows[1]!.status, 'done')
+  assert.equal(rows[1]!.output, '3 hay.txt', "what the child's command printed")
+  assert.equal(rows[1]!.durationMs, 313, 'the duration the runtime reported for that call')
+  assert.equal(helperRow(rows).status, 'running', 'and the helper is still working')
+  assert.equal(finished.next.tools.size, 0, 'nothing opened a live turn')
+  assert.equal(carriedOf(finished.next).length, 1, 'the card is still waiting for its child')
+})
+
+test('the whole sequence the probe recorded lands on ONE card', () => {
+  // In the order the wire really had it: the Agent call, the async launch
+  // response, the parent Stop while the child is still running, the child's
+  // own Bash opening and closing, and the child's stop. From the launch to the
+  // result, the owner reads one card.
+  const { call, responded } = launched(CHILD_A, 1_000, 1_005)
+  const response = call.launch.tool_response as Record<string, unknown>
+  assert.equal(response.status, 'async_launched', 'the fixture must really be an async launch')
+  const stopped = feed(responded.next, PARENT_STOP, 10_000)
+  const carriedKey = theCarried(stopped.next).cardKey
+
+  const opened = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
+  const closed = feed(opened.next, childTool('PostToolUse', CHILD_A), 12_313)
+  const between = [...opened.effects, ...closed.effects]
+  assert.deepEqual(
+    cardsOf(between)
+      .map((c) => c.cardKey)
+      .filter((key) => key !== carriedKey),
+    [],
+    'between the parent Stop and the child stop, no card but the carried one is opened',
   )
-  assert.equal(cards[0]!.tools.length, 1)
-  assert.equal(cards[0]!.tools[0]!.output, '3 hay.txt', "what the child's command printed")
-  const carried = carriedOf(finished.next)[0]!
-  assert.equal(carried.cardKey, carriedKey)
-  assert.equal(
-    [...carried.tools.values()].find((r) => r.kind === 'subagent')!.status,
-    'running',
-    'and the helper is still where the owner is watching it',
-  )
+  assert.equal(cardsOf(between).length, 2, 'and it repaints once as the row opens and once as it closes')
+
+  const running = cardsOf(opened.effects)[0]!
+  assert.equal(running.tools.length, 2)
+  assert.equal(running.tools[1]!.status, 'running', "the child's Bash opens on the carried card")
+  assert.equal(helperRow(running.tools).detail, 'Bash wc -l hay.txt', 'and the child row reads it')
+
+  const done = cardsOf(closed.effects)[0]!
+  assert.equal(done.state, 'running', 'the card is not over: its helper is still working')
+  assert.equal(done.tools[1]!.status, 'done')
+  assert.equal(done.tools[1]!.durationMs, 313)
+
+  const settled = feed(closed.next, stopFor(CHILD_A), 20_000)
+  const last = lastCardOf(settled.effects)
+  assert.equal(last.cardKey, carriedKey, 'the same message all the way through')
+  assert.equal(last.state, 'done')
+  assert.equal(last.finishedAt, 20_000)
+  assert.equal(last.startedAt, 999)
+  assert.equal(last.tools.length, 2, "the child's own row is still there beside its helper")
+  const helper = helperRow(last.tools)
+  assert.equal(helper.status, 'done')
+  assert.equal(helper.result, '3', "the child's last message is the result line")
+  assert.equal(helper.detail, undefined, 'the qualifier said what it WAS doing')
+  assert.equal(helper.durationMs, 19_000, 'the difference between the two receipts')
+  assert.equal(settled.next.carried.size, 0, 'nothing is left to wait for')
 })
 
 test('SessionEnd settles a child that never reported as an error, and clears the carried card', () => {
@@ -534,9 +608,11 @@ test("a child's tool finds ITS card among the cards left behind", () => {
   const stopped2 = feed(second.responded.next, PARENT_STOP, 13_000)
 
   const working = feed(stopped2.next, childTool('PreToolUse', CHILD_A), 14_000)
+  assert.equal(cardsOf(working.effects).length, 1, 'one card, and the child picks WHICH one')
   const repainted = cardsOf(working.effects).find((c) => c.cardKey === firstKey)
-  assert.ok(repainted, "the older card is the one this child's qualifier belongs on")
+  assert.ok(repainted, "the older card is the one this child's row belongs on")
   assert.equal(helperRow(repainted.tools).detail, 'Bash wc -l hay.txt')
+  assert.equal(repainted.tools.length, 2, "and the child's own row goes on it too")
   const other = carriedOf(working.next).find((c) => c.cardKey !== firstKey)
   assert.ok(other, 'and the newer card is untouched')
   assert.equal([...other.tools.values()].find((r) => r.kind === 'subagent')!.detail, undefined)
@@ -610,19 +686,19 @@ test('two turns with no prompt and no start of their own get different card keys
 })
 
 test('a prompt settles a card that no Stop is coming for', () => {
-  // The pseudo turn a child's own tools open after its parent stopped never
-  // gets a Stop of its own: the next thing to happen is the prompt that
-  // delivers the child's completion, and it throws those rows away. Settling
-  // the card here is what stops it reading "Working" for the rest of the
-  // session, and the carried card beside it is deliberately left alone.
+  // The turn the owner interrupted: rows still open, no Stop ever coming, and
+  // the next prompt about to throw those rows away. Settling the card here is
+  // what stops it reading "Working" for the rest of the session, and the card
+  // a working child is on is deliberately left alone.
   const { responded } = launched(CHILD_A, 1_000, 1_005)
   const stopped = feed(responded.next, PARENT_STOP, 10_000)
   const carriedKey = theCarried(stopped.next).cardKey
-  const working = feed(stopped.next, childTool('PreToolUse', CHILD_A), 12_000)
-  const live = cardsOf(working.effects).find((c) => c.cardKey !== carriedKey)
-  assert.ok(live, "the child's own row opened a card")
+  const resumed = feed(stopped.next, NOTIFICATION, 12_000)
+  const working = feed(resumed.next, PARENT_TOOL, 12_500)
+  const live = lastCardOf(working.effects)
+  assert.notEqual(live.cardKey, carriedKey, "the parent's own next turn draws a card of its own")
 
-  const prompted = feed(working.next, NOTIFICATION, 13_000)
+  const prompted = feed(working.next, NOTIFICATION_B, 13_000)
   const settled = cardsOf(prompted.effects)
   assert.equal(settled.length, 1, 'the card still open is settled, and nothing else is touched')
   assert.equal(settled[0]!.cardKey, live.cardKey)

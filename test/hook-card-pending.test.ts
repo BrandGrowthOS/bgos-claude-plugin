@@ -2,13 +2,13 @@
  * One pending slot per CARD, and the two writes that proves (stage 8, the fix
  * batch that followed the review).
  *
- * The daemon held ONE pending card state. The mapper emits the repaint of a
- * card a working child outlived AND the live turn's own card in the SAME
- * batch, every time that child runs a tool, so the second assignment threw the
- * first away before the 600 ms coalescer ever fired: the qualifier saying what
- * the helper is doing right now never reached the wire at all, in exactly the
- * lane this stage exists for. The queue below is keyed on the card's own key,
- * so a state can only ever replace the state of the SAME card.
+ * The daemon held ONE pending card state. A card a working child outlived is
+ * repainted while the PARENT goes on with its next turn, and both states are
+ * owed a write inside the same 600 ms: the second assignment threw the first
+ * away before the coalescer ever fired, so the qualifier saying what the
+ * helper is doing right now never reached the wire at all, in exactly the lane
+ * this stage exists for. The queue below is keyed on the card's own key, so a
+ * state can only ever replace the state of the SAME card.
  *
  * The first case drives the REAL gate payloads through the real mapper and
  * then through the queue the way the daemon does, because the defect was never
@@ -87,10 +87,10 @@ const card = (key: string, text: string): HookCardPending => ({
   cardKey: key,
 })
 
-test('both cards of one batch are written, because each card has a slot', () => {
+test('both cards owed a write are written, because each card has a slot', () => {
   // The real payloads: the owner's prompt, the Agent launch and its async
-  // response, the parent Stop that left the card behind, and then the child's
-  // own Bash while it goes on working.
+  // response, the parent Stop that left the card behind, the child's own Bash
+  // while it goes on working, and then the parent picking its next turn up.
   const launch = pick(
     (r) =>
       r.hook === 'PostToolUse' &&
@@ -121,16 +121,35 @@ test('both cards of one batch are written, because each card has a slot', () => 
     (r) => r.hook === 'PreToolUse' && r.payload.agent_id === CHILD_A && r.payload.tool_name === 'Bash',
     'the child s own Bash',
   )
+  const notification = pick(
+    (r) =>
+      r.hook === 'UserPromptSubmit' &&
+      String(r.payload.prompt ?? '').includes('<task-notification>'),
+    'a task notification prompt',
+  )
+  const parentBash = pick(
+    (r) =>
+      r.hook === 'PreToolUse' &&
+      r.payload.tool_name === 'Bash' &&
+      r.payload.agent_id === undefined,
+    "the parent's own Bash",
+  )
 
   let state = feed(emptyTurn(), prompt, 999).next
   state = feed(state, opened, 1_000).next
   state = feed(state, launch, 1_005).next
   state = feed(state, stop, 10_000).next
+  // The child's own tool repaints the card its helper row is on, and nothing
+  // else: one delegating turn is one card.
   const working = feed(state, childBash, 12_000)
-  const effects = working.effects.filter(
+  // The parent is handed its child's completion and goes on working, which is
+  // a turn, and a card, of its own. Both are owed a write inside one beat.
+  const resumed = feed(working.next, notification, 12_500)
+  const parentWorking = feed(resumed.next, parentBash, 12_600)
+  const effects = [...working.effects, ...resumed.effects, ...parentWorking.effects].filter(
     (e): e is Extract<Effect, { kind: 'tool_card' }> => e.kind === 'tool_card',
   )
-  assert.equal(effects.length, 2, 'one batch, two cards: the carried repaint and the live card')
+  assert.equal(effects.length, 2, 'two cards: the carried repaint and the live card')
 
   const queue = new PendingCards(8)
   for (const effect of effects) queue.put(pendingOf(effect))

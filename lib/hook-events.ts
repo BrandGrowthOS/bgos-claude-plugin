@@ -37,6 +37,12 @@
  *    is keyed on the agent id that response minted, and a turn that ends with a
  *    child still working leaves its whole card behind in `carried` for that
  *    child to finish into.
+ * 5. ONE DELEGATING TURN IS ONE CARD. A child goes on working after its
+ *    parent's Stop, and its own tool events carry the parent's prompt id, so
+ *    they used to re open a turn and post a SECOND card for the same piece of
+ *    work. A child's events belong to the card its helper row is on: the rows
+ *    go there, the qualifier goes there, and no live turn is opened for
+ *    them.
  *
  * Wire limits are the backend DTO's: tools[] max 50, icon 16, name 64, args
  * 120, path 200, detail 120; steps max 30 rows of 200 chars.
@@ -210,10 +216,10 @@ export interface TaskRecord {
 export interface CarriedCard {
   /** The card's OWN key, minted at the Stop from the key the turn drew it
    *  under plus that Stop's receipt. The prefix is the whole point: a child
-   *  stamps the PARENT's prompt id on its own hook events, so the turn one of
-   *  those events re opens mints the very key this card had, and a key a turn
-   *  state can never produce is what keeps the child's own rows off the
-   *  message the helper row is on. */
+   *  stamps the PARENT's prompt id on its own hook events, so any turn re
+   *  opened under that id would otherwise mint the very key this card had and
+   *  patch ITS rows onto the message the owner is watching this helper on. A
+   *  key no turn state can produce cannot be minted by accident. */
   cardKey: string
   /** The key the card answered to while its turn was live, which is the key
    *  the message was posted under. The daemon moves the message onto `cardKey`
@@ -934,10 +940,10 @@ const cardKeyOf = (state: TurnState): string => {
  * Minted at the Stop, from the key the card was drawn under and that Stop's
  * receipt. A card key identifies a CARD and never a prompt, and this prefix is
  * what makes that true: every hook event a child sends carries the PARENT's
- * prompt id, so the turn the child's own next tool re opens mints exactly the
- * key the card had. Sharing it meant the child's Bash row replaced the helper
- * row on the message the owner was watching, for the whole time the helper
- * worked.
+ * prompt id, so a turn re opened under that id would mint exactly the key this
+ * card had, and its rows would land on the message the helper row is on. The
+ * child's OWN rows do land there, deliberately (header rule 5); a later turn's
+ * must not, and a key no turn state can produce is what stops them.
  */
 const carriedKeyOf = (turnKey: string, finishedAt: number): string =>
   `carried:${turnKey}:${finishedAt}`
@@ -969,36 +975,73 @@ function carriedHolding(state: TurnState, agentId: string): CarriedCard | null {
 }
 
 /**
- * Say what a child is doing right now on the child's own row.
+ * The rows of one card: a live turn's, or a card an earlier turn left behind
+ * for a working child.
  *
- * Resolved through the LIVE turn first and then through the cards earlier
- * turns left behind, so a child that outlived its parent's turn still updates
- * the card it is on rather than the card of whatever the parent is doing now.
- * Returns WHICH card moved, because a carried one has to be repainted by hand:
- * nothing else on that event's path knows the carried card exists.
+ * Both hold the same three fields, and every row rule below is written against
+ * THIS rather than against either one. The row key, the launch link and the
+ * repaint are the same rules wherever the row lands, and the way two sets of
+ * rules drift apart is by being written twice.
  */
-function noteChildTool(
-  next: TurnState,
-  raw: Record<string, unknown>,
-  cwd: string,
-): CarriedCard | 'live' | null {
+interface RowSink {
+  toolOrder: string[]
+  tools: Map<string, ToolRow>
+  agentRows: Map<string, string>
+}
+
+/** Where a child's own event belongs: the helper row it is working under, and
+ *  the card that row is on. */
+interface ChildOwner {
+  /** The card an earlier turn left behind, or null when the helper row is on
+   *  the LIVE turn's card. */
+  carried: CarriedCard | null
+  /** The key of the helper row itself, inside that card. */
+  rowKey: string
+}
+
+/**
+ * Resolve a child's own event to the helper row it belongs to.
+ *
+ * The LIVE turn first and then the cards earlier turns left behind, so a child
+ * that outlived its parent's turn is answered by the card it is actually on
+ * rather than by whatever the parent is doing now. Null for the parent's own
+ * work (no agent id at all) and for a child this daemon never saw launched:
+ * both keep the ordinary path.
+ */
+function childOwnerFor(state: TurnState, raw: Record<string, unknown>): ChildOwner | null {
   const agentId = childAgentId(raw)
   if (!agentId) return null
-  const liveKey = next.agentRows.get(agentId)
-  const carried = liveKey === undefined ? carriedHolding(next, agentId) : null
-  const key = liveKey ?? carried?.agentRows.get(agentId)
+  const liveKey = state.agentRows.get(agentId)
+  if (liveKey !== undefined) return { carried: null, rowKey: liveKey }
+  const carried = carriedHolding(state, agentId)
+  if (carried === null) return null
+  const key = carried.agentRows.get(agentId)
   if (key === undefined) return null
-  const tools = carried === null ? next.tools : carried.tools
+  return { carried, rowKey: key }
+}
+
+/**
+ * Say what a child is doing right now on the child's own row.
+ *
+ * True when the row actually moved, which is what tells the caller the card
+ * has to be repainted: a qualifier that did not change is not news.
+ */
+function noteChildQualifier(
+  tools: Map<string, ToolRow>,
+  key: string,
+  raw: Record<string, unknown>,
+  cwd: string,
+): boolean {
   const row = tools.get(key)
-  if (row === undefined || row.status !== 'running') return null
+  if (row === undefined || row.status !== 'running') return false
   const toolName = baseToolName(str(raw.tool_name))
   const detail = clipForWire(
     redactForWire(helperQualifier(toolName, summarizeToolArgs(toolName, raw.tool_input, cwd))),
     TOOL_DETAIL_MAX,
   )
-  if (!detail || row.detail === detail) return null
+  if (!detail || row.detail === detail) return false
   tools.set(key, { ...row, detail })
-  return carried ?? 'live'
+  return true
 }
 
 /** A child has reported: its row closes, with what it said and how long it ran. */
@@ -1026,10 +1069,10 @@ function abandonHelpers(order: string[], tools: Map<string, ToolRow>): void {
   }
 }
 
-const rowKey = (raw: Record<string, unknown>, state: TurnState): string => {
+const rowKey = (raw: Record<string, unknown>, sink: RowSink): string => {
   const id = str(raw.tool_use_id).trim()
   if (id) return id
-  return `anon:${str(raw.tool_name)}:${state.toolOrder.length}`
+  return `anon:${str(raw.tool_name)}:${sink.toolOrder.length}`
 }
 
 function buildRow(raw: Record<string, unknown>, cwd: string, status: ToolRowStatus): ToolRow {
@@ -1065,6 +1108,93 @@ function buildRow(raw: Record<string, unknown>, cwd: string, status: ToolRowStat
 
 const sameRow = (a: ToolRow | undefined, b: ToolRow): boolean =>
   a !== undefined && JSON.stringify(a) === JSON.stringify(b)
+
+/**
+ * A tool call OPENING, as a row on whichever card it belongs to. True when the
+ * card has something new to say.
+ */
+function applyPreToolRow(
+  sink: RowSink,
+  raw: Record<string, unknown>,
+  cwd: string,
+  now: number,
+): boolean {
+  const key = rowKey(raw, sink)
+  const previous = sink.tools.get(key)
+  const row = buildRow(raw, cwd, 'running')
+  if (row.kind === 'subagent') {
+    // A helper's own start, the receipt of the line that opened it. It never
+    // moves afterwards: it is the number the app ticks from.
+    row.startedAt = previous?.startedAt ?? now
+    if (previous?.id) row.id = previous.id
+  }
+  if (sameRow(previous, row)) return false
+  if (!sink.tools.has(key)) sink.toolOrder.push(key)
+  sink.tools.set(key, row)
+  return true
+}
+
+/**
+ * A tool call CLOSING, on the same card and the same terms.
+ */
+function applyPostToolRow(
+  sink: RowSink,
+  raw: Record<string, unknown>,
+  cwd: string,
+  status: ToolRowStatus,
+): boolean {
+  const name = str(raw.tool_name)
+  const key = rowKey(raw, sink)
+  const previous = sink.tools.get(key)
+  const row: ToolRow = previous
+    ? { ...previous, status }
+    : { ...buildRow(raw, cwd, status), status }
+  // An async LAUNCH is not a finished call, and it is read off the RESPONSE:
+  // never off the tool name, never off the event name. The gate's two
+  // launches answered in 5 ms and 2 ms while their children ran for 4.6 and
+  // 3.9 seconds, so writing this duration would report a five millisecond
+  // helper.
+  const launch = isAsyncLaunch(raw.tool_response)
+  if (launch) {
+    row.status = 'running'
+    const agentId = launchedAgentId(raw.tool_response)
+    if (agentId) {
+      if (agentId.length <= TOOL_ID_MAX) row.id = agentId
+      // The link is this daemon's own, and it is kept whatever the wire
+      // would accept: the child still has to find its row. It is kept on the
+      // card the launch happened on, so a child launched BY a child finds the
+      // carried card its parent's row is on.
+      sink.agentRows.set(agentId, key)
+    }
+  }
+  const duration = raw.duration_ms
+  if (!launch && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
+    row.durationMs = Math.round(duration)
+  }
+  // What the call actually did (stage 7). It lands BEFORE the sameRow check so
+  // the comparison sees the WHOLE row: a row that differs only in what it
+  // printed is a row the card still has to repaint.
+  if (isShellTool(name)) {
+    const interpretation = interpretationFor(raw)
+    if (interpretation) row.detail = clipForWire(redactForWire(interpretation), TOOL_DETAIL_MAX)
+    const printed = outputFor(raw)
+    if (printed) {
+      // REDACT BEFORE YOU CLIP (header rule 2), then the TAIL.
+      const tail = clipOutputTail(redactForWire(printed), TOOL_OUTPUT_MAX, TOOL_OUTPUT_LINES_MAX)
+      if (tail) row.output = tail
+    }
+    const code = exitCodeFor(raw)
+    if (code !== null) row.exitCode = code
+  } else if (isEditTool(name)) {
+    const { linesAdded, linesRemoved } = editCountsFor(raw)
+    if (typeof linesAdded === 'number') row.linesAdded = linesAdded
+    if (typeof linesRemoved === 'number') row.linesRemoved = linesRemoved
+  }
+  if (sameRow(previous, row)) return false
+  if (!previous) sink.toolOrder.push(key)
+  sink.tools.set(key, row)
+  return true
+}
 
 function applyTaskTool(state: TurnState, raw: Record<string, unknown>): boolean {
   const tool = baseToolName(str(raw.tool_name))
@@ -1241,30 +1371,35 @@ export function applyHookEventToTurn(
     case 'PreToolUse': {
       const name = str(raw.tool_name)
       if (isSkippedTool(name)) return { next, effects }
+      const owner = childOwnerFor(next, raw)
+      if (owner !== null && owner.carried !== null) {
+        // ONE DELEGATING TURN IS ONE CARD (header rule 5). This child's parent
+        // has already stopped, so its work belongs to the card its own helper
+        // row is on: the qualifier and the row both go there, and no live turn
+        // is opened. A live card here is a SECOND message for one turn, minted
+        // under the parent's prompt id, which is the id every event a child
+        // sends carries.
+        const card = owner.carried
+        const moved = noteChildQualifier(card.tools, owner.rowKey, raw, event.cwd)
+        const drew = applyPreToolRow(card, raw, event.cwd, now)
+        if (moved || drew) effects.push(carriedCard(card, false))
+        return { next, effects }
+      }
       if (next.turnId === null && event.promptId) next.turnId = event.promptId
       // The daemon attached mid turn, so no prompt ever opened it: the first
       // tool of the turn is the earliest moment the runtime reported. Late by
       // however long the model thought, and honest, which is the trade the
       // stage's own rule asks for.
       if (next.startedAt === 0) next.startedAt = now
-      // A child's own tool events say what their helper is doing, and then go
-      // on to draw their own rows exactly as they do today: the command, what
-      // it printed and its exit code are what 0.43.0 shows and taking them
-      // away would be a visible loss for anyone who delegates heavily.
-      const touched = noteChildTool(next, raw, event.cwd)
-      if (touched !== null && touched !== 'live') effects.push(carriedCard(touched, false))
-      const key = rowKey(raw, next)
-      const previous = next.tools.get(key)
-      const row = buildRow(raw, event.cwd, 'running')
-      if (row.kind === 'subagent') {
-        // A helper's own start, the receipt of the line that opened it. It
-        // never moves afterwards: it is the number the app ticks from.
-        row.startedAt = previous?.startedAt ?? now
-        if (previous?.id) row.id = previous.id
-      }
-      if (sameRow(previous, row) && touched === null) return { next, effects }
-      if (!next.tools.has(key)) next.toolOrder.push(key)
-      next.tools.set(key, row)
+      // A child of the turn that is still live says what its helper is doing,
+      // and then goes on to draw its own row exactly as it does today: the
+      // command, what it printed and its exit code are what 0.43.0 shows and
+      // taking them away would be a visible loss for anyone who delegates
+      // heavily.
+      const moved =
+        owner === null ? false : noteChildQualifier(next.tools, owner.rowKey, raw, event.cwd)
+      const drew = applyPreToolRow(next, raw, event.cwd, now)
+      if (!moved && !drew) return { next, effects }
       effects.push(cardEffect(next, false))
       return { next, effects }
     }
@@ -1272,7 +1407,12 @@ export function applyHookEventToTurn(
     case 'PostToolUse':
     case 'PostToolUseFailure': {
       const name = str(raw.tool_name)
-      if (next.turnId === null && event.promptId) next.turnId = event.promptId
+      const owner = childOwnerFor(next, raw)
+      const onCarried = owner !== null && owner.carried !== null
+      // A child whose parent has already stopped is not opening a turn. Its
+      // events carry the PARENT's prompt id, and adopting that here mints the
+      // very key the card its helper row is on was drawn under.
+      if (!onCarried && next.turnId === null && event.promptId) next.turnId = event.promptId
       if (isTaskTool(name)) {
         // A child planning its own work is not the parent planning: the Steps
         // strip is the PARENT's list, and a child's task tools used to push
@@ -1284,56 +1424,21 @@ export function applyHookEventToTurn(
         return { next, effects }
       }
       if (isSkippedTool(name)) return { next, effects }
-      const touched = noteChildTool(next, raw, event.cwd)
-      if (touched !== null && touched !== 'live') effects.push(carriedCard(touched, false))
-      const key = rowKey(raw, next)
       const status: ToolRowStatus = event.name === 'PostToolUseFailure' ? 'error' : 'done'
-      const previous = next.tools.get(key)
-      const row: ToolRow = previous
-        ? { ...previous, status }
-        : { ...buildRow(raw, event.cwd, status), status }
-      // An async LAUNCH is not a finished call, and it is read off the RESPONSE:
-      // never off the tool name, never off the event name. The gate's two
-      // launches answered in 5 ms and 2 ms while their children ran for 4.6 and
-      // 3.9 seconds, so writing this duration would report a five millisecond
-      // helper.
-      const launch = isAsyncLaunch(raw.tool_response)
-      if (launch) {
-        row.status = 'running'
-        const agentId = launchedAgentId(raw.tool_response)
-        if (agentId) {
-          if (agentId.length <= TOOL_ID_MAX) row.id = agentId
-          // The link is this daemon's own, and it is kept whatever the wire
-          // would accept: the child still has to find its row.
-          next.agentRows.set(agentId, key)
-        }
+      if (owner !== null && owner.carried !== null) {
+        // The closing half of header rule 5, and it has to be its own site:
+        // this is the second place that reads the dead prompt id, and it would
+        // open that second card on its own.
+        const card = owner.carried
+        const moved = noteChildQualifier(card.tools, owner.rowKey, raw, event.cwd)
+        const drew = applyPostToolRow(card, raw, event.cwd, status)
+        if (moved || drew) effects.push(carriedCard(card, false))
+        return { next, effects }
       }
-      const duration = raw.duration_ms
-      if (!launch && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
-        row.durationMs = Math.round(duration)
-      }
-      // What the call actually did (stage 7). It lands BEFORE the sameRow
-      // check so the comparison sees the WHOLE row: a row that differs only in
-      // what it printed is a row the card still has to repaint.
-      if (isShellTool(name)) {
-        const interpretation = interpretationFor(raw)
-        if (interpretation) row.detail = clipForWire(redactForWire(interpretation), TOOL_DETAIL_MAX)
-        const printed = outputFor(raw)
-        if (printed) {
-          // REDACT BEFORE YOU CLIP (header rule 2), then the TAIL.
-          const tail = clipOutputTail(redactForWire(printed), TOOL_OUTPUT_MAX, TOOL_OUTPUT_LINES_MAX)
-          if (tail) row.output = tail
-        }
-        const code = exitCodeFor(raw)
-        if (code !== null) row.exitCode = code
-      } else if (isEditTool(name)) {
-        const { linesAdded, linesRemoved } = editCountsFor(raw)
-        if (typeof linesAdded === 'number') row.linesAdded = linesAdded
-        if (typeof linesRemoved === 'number') row.linesRemoved = linesRemoved
-      }
-      if (sameRow(previous, row) && touched === null) return { next, effects }
-      if (!previous) next.toolOrder.push(key)
-      next.tools.set(key, row)
+      const moved =
+        owner === null ? false : noteChildQualifier(next.tools, owner.rowKey, raw, event.cwd)
+      const drew = applyPostToolRow(next, raw, event.cwd, status)
+      if (!moved && !drew) return { next, effects }
       effects.push(cardEffect(next, false))
       return { next, effects }
     }
