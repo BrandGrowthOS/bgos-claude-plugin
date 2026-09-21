@@ -20,7 +20,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -214,37 +216,68 @@ test('preseedClaudeTrust: no file yet is still a brand new machine, and gets its
   assert.equal(JSON.parse(fs.files.get('/c/settings.json')!).skipDangerousModePermissionPrompt, true)
 })
 
-test('preseedClaudeTrust: the rename never widens the owner file mode, and a created file gets 0600', () => {
-  const modes = new Map<string, number>([['/c/.claude.json', 0o600]])
-  const chmods: Array<[string, number]> = []
+test('preseedClaudeTrust: the rename keeps the mode the owner file HAD, and a created file gets 0600', () => {
+  // 0640, not 0600: with the same value as the created-file fallback this test
+  // could not tell "preserve" from "always chmod 0600" (found by review).
+  const modes = new Map<string, number>([['/c/.claude.json', 0o640]])
+  const events: string[] = []
   const base = memFs({ '/c/.claude.json': '{"numStartups":412}' })
   const fs = {
     ...base,
+    writeFile: (p: string, c: string, opts?: { mode?: number }) => {
+      events.push(`write ${p.replace(/\.\d+\.tmp$/, '.tmp')} mode=${opts?.mode === undefined ? 'none' : opts.mode.toString(8)}`)
+      base.files.set(p, c)
+    },
     rename: (from: string, to: string) => {
+      events.push(`rename ${to}`)
       base.files.set(to, base.files.get(from)!)
       base.files.delete(from)
     },
     modeOf: (p: string) => modes.get(p) ?? null,
     chmod: (p: string, mode: number) => {
-      chmods.push([p, mode])
+      events.push(`chmod ${p.replace(/\.\d+\.tmp$/, '.tmp')} ${mode.toString(8)}`)
     },
   }
   preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs })
-  const forConfig = chmods.filter(([p]) => p.startsWith('/c/.claude.json.'))
-  assert.equal(forConfig.length, 1, 'the temp file is chmodded before it is renamed over the owner file')
-  assert.equal(forConfig[0]![1], 0o600)
+  // The temp file is CREATED with the mode (never world readable, not even for an
+  // instant), chmodded for the case where the umask narrowed it, and only then renamed.
+  assert.deepEqual(events.slice(0, 3), ['write /c/.claude.json.tmp mode=640', 'chmod /c/.claude.json.tmp 640', 'rename /c/.claude.json'])
   assert.equal(JSON.parse(base.files.get('/c/.claude.json')!).numStartups, 412, 'a readable config keeps every key it had')
   // settings.json did not exist: it is created 0600 rather than at the umask default.
-  const forSettings = chmods.filter(([p]) => p.startsWith('/c/settings.json.'))
-  assert.deepEqual(forSettings.map(([, m]) => m), [0o600])
+  assert.deepEqual(events.slice(3), ['write /c/settings.json.tmp mode=600', 'chmod /c/settings.json.tmp 600', 'rename /c/settings.json'])
 })
 
-test('preseedClaudeTrust: refuses an empty cwd or config dir instead of seeding a junk key', () => {
-  const fs = memFs()
-  const env = { CLAUDE_CONFIG_DIR: '/c' }
-  assert.throws(() => preseedClaudeTrust({ configDir: '/c', cwd: '', env, home: '/home/kc', fs }), /cwd/)
-  assert.throws(() => preseedClaudeTrust({ configDir: '', cwd: '/w', env, home: '/home/kc', fs }), /configDir/)
-  assert.equal(fs.files.size, 0)
+test('preseedClaudeTrust: an unreadable settings.json is left alone too, it is the owner file just as much', () => {
+  // Found by review: the config half refused, the settings half still replaced.
+  const fs = { ...memFs({ '/c/settings.json': '{"permissions": {"allow": [' }), exists: (p: string) => p === '/c/settings.json' }
+  assert.throws(
+    () => preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs }),
+    /left untouched/,
+  )
+  assert.equal(fs.files.get('/c/settings.json'), '{"permissions": {"allow": [')
+})
+
+test('preseedClaudeTrust on a REAL filesystem: garbage stays byte identical at its mode, a good config keeps its keys and its mode', () => {
+  // The default fs seam (exists, modeOf, chmod, writeFile with a mode) had no
+  // coverage at all: every other test here injects an in-memory one.
+  if (process.platform === 'win32') return
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-preseed-'))
+  const garbage = join(dir, 'garbage')
+  const good = join(dir, 'good')
+  mkdirSync(garbage)
+  mkdirSync(good)
+  writeFileSync(join(garbage, '.claude.json'), 'this is not json {{{', { mode: 0o600 })
+  writeFileSync(join(good, '.claude.json'), '{"numStartups":412,"oauthAccount":{"x":1}}', { mode: 0o640 })
+  chmodSync(join(good, '.claude.json'), 0o640)
+  assert.throws(() => preseedClaudeTrust({ configDir: garbage, cwd: dir, env: { CLAUDE_CONFIG_DIR: garbage }, home: dir }), /left untouched/)
+  assert.equal(readFileSync(join(garbage, '.claude.json'), 'utf8'), 'this is not json {{{')
+  assert.equal(statSync(join(garbage, '.claude.json')).mode & 0o777, 0o600)
+  preseedClaudeTrust({ configDir: good, cwd: dir, env: { CLAUDE_CONFIG_DIR: good }, home: dir })
+  const after = JSON.parse(readFileSync(join(good, '.claude.json'), 'utf8'))
+  assert.equal(after.numStartups, 412)
+  assert.deepEqual(after.oauthAccount, { x: 1 })
+  assert.equal(statSync(join(good, '.claude.json')).mode & 0o777, 0o640, 'the mode the owner file had, not the umask default')
+  assert.equal(statSync(join(good, 'settings.json')).mode & 0o777, 0o600, 'a created file is private')
 })
 
 // --- WHERE .claude.json lives (2026-09-21) ----------------------------------

@@ -487,15 +487,15 @@ export function buildDoctorRows(probes) {
         'trust',
         'Folder trust',
         UNPROVEN,
-        `no agent folder was named: --workdir was not given and ${trust.cwd} carries no ${FOLDER_PIN_FILE_NAME} pin, so there is no launch folder to check (for the record, Claude Code does not trust ${trust.cwd} itself: ${trust.reason})`,
-        'pass --workdir <the agent folder> to check that folder',
+        `no agent folder was named: --workdir was not given and ${trust.cwd} carries no ${FOLDER_PIN_FILE_NAME} pin, so there is no launch folder to check. Pass --workdir <the agent folder> to check one (for the record, Claude Code does not trust ${trust.cwd} itself: ${trust.reason})`,
+        '',
       )
     } else if (trust.reason === 'no-config-path') {
       row('trust', 'Folder trust', false, `Claude Code's config file could not be located: ${trust.error ?? 'no CLAUDE_CONFIG_DIR and no home directory'}`, trustFix)
     } else if (trust.reason === 'no-config-file') {
       row('trust', 'Folder trust', false, `no config file at ${trust.configPath}, so no folder is trusted yet and the first launch stops on the trust dialog`, trustFix)
     } else if (trust.reason === 'unreadable-config') {
-      row('trust', 'Folder trust', false, `${trust.configPath} is not readable JSON, so the trust state for ${trust.cwd} cannot be confirmed`, trustFix)
+      row('trust', 'Folder trust', false, `${trust.configPath} is not readable JSON, so the trust state for ${trust.cwd} cannot be confirmed`, `repair or remove ${trust.configPath}: hoai will not replace a Claude Code config it cannot read`)
     } else if (trust.reason === 'not-accepted') {
       row('trust', 'Folder trust', false, `${trust.configPath} has an entry for ${trust.cwd} but hasTrustDialogAccepted is not true, so the launch stops on the trust dialog`, trustFix)
     } else {
@@ -1156,9 +1156,15 @@ export function resolveLaunchFolder({
 } = {}) {
   const flag = String(workdirFlag ?? '').trim()
   if (flag) return { dir: flag, source: 'flag' }
-  if (readPin(cwd)) return { dir: cwd, source: 'cwd-pin' }
   const id = String(assistantId ?? '').trim()
-  if (/^\d+$/.test(id) && home) {
+  const cwdPin = readPin(cwd)
+  // No id was asked about: whatever agent this folder is pinned to is the subject.
+  if (!/^\d+$/.test(id)) return cwdPin ? { dir: cwd, source: 'cwd-pin' } : { dir: cwd, source: 'cwd-unpinned' }
+  // An id WAS asked about, so a pin only counts when it is that agent's. A HOME that
+  // still carries a stale pin from a pairing made there (what F9 now refuses) must not
+  // drag the desktop preflight back to probing HOME for a different agent.
+  if (cwdPin === id) return { dir: cwd, source: 'cwd-pin' }
+  if (home) {
     const workspace = joinPreservingStyle(joinPreservingStyle(home, '.bgos-agent'), `${id}-workspace`)
     if (readPin(workspace) === id) return { dir: workspace, source: 'default-workspace' }
   }
@@ -1579,7 +1585,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // made the desktop one-click preflight (no --workdir, cwd = HOME) check HOME.
   const launchFolder = resolveLaunchFolder({
     workdirFlag: args.workdir,
-    cwd: opts.cwd ?? process.cwd(),
+    cwd: opts.cwd ?? (args.workdir ? args.workdir : process.cwd()),
     home,
     assistantId: args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim(),
   })

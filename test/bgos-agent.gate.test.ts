@@ -34,6 +34,11 @@ const expectBin = ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bi
 const hasBash = spawnSync('bash', ['-c', 'exit 0']).status === 0
 const SLOW = { timeout: 90_000 }
 
+/** An early return reports PASS, so CI sets HOAI_REQUIRE_EXPECT=1 and a missing tool becomes a failure. */
+function requireTools(): void {
+  assert.notEqual(process.env.HOAI_REQUIRE_EXPECT, '1', 'HOAI_REQUIRE_EXPECT=1 but bash or expect is missing')
+}
+
 /** Cut one bash function (up to and including the line after its last heredoc terminator) out of the script. */
 function bashFunction(name: string, lastTerminator: string): string {
   const lines = agentSource.split('\n')
@@ -44,36 +49,54 @@ function bashFunction(name: string, lastTerminator: string): string {
   return lines.slice(start, end + 2).join('\n')
 }
 
-const SIMULATOR = `#!${process.execPath}
+const SIMULATOR = `
 // SIMULATION, not Claude Code. Mode comes from HOAI_SIM_MODE because run.expect owns the argv.
+// It repaints the selection marker on every Down the way the real TUI does, and goes live only
+// if Enter lands on the wanted option; otherwise it leaves, as the real CLI does.
 const M = '\\u276f'
 const mode = process.env.HOAI_SIM_MODE
-const SCREENS = {
-  trust: 'Quick safety check: Is this a project you trust?\\r\\n ' + M + ' No, exit\\r\\n   Yes, I trust this folder\\r\\n Enter to confirm\\r\\n',
-  unknown: 'Claude Code would like to enable shiny new telemetry.\\r\\n ' + M + ' Decline\\r\\n   Allow\\r\\n Enter to confirm\\r\\n',
+const born = Date.now()
+const GATES = {
+  trust: { head: 'Quick safety check: Is this a project you trust?', opts: ['No, exit', 'Yes, I trust this folder'], want: 1 },
+  // MEASURED on the real CLI: a key that arrives before claude has finished initialising is
+  // PAINTED and not honoured. Here "finished" is 2.5 s after the paint, to stand in for a loaded Mac.
+  'slow-init': { head: 'Quick safety check: Is this a project you trust?', opts: ['No, exit', 'Yes, I trust this folder'], want: 1, deafMs: 2500 },
+  unknown: { head: 'Claude Code would like to enable shiny new telemetry.', opts: ['Decline', 'Allow'], want: -1 },
 }
 if (mode === 'dies') process.exit(0)
-let got = Buffer.alloc(0)
+const LIVE = '\\r\\n\\x1b[6Gbypass\\x1b[13Gpermissions\\x1b[25Gon\\r\\n'
+const gate = GATES[mode]
+let shown = 0, real = 0
+const lines = () => gate.opts.map((o, i) => ' ' + (i === shown ? M : ' ') + ' ' + o).join('\\r\\n')
 if (process.stdin.isTTY) process.stdin.setRawMode(true)
-process.stdin.on('data', (d) => { got = Buffer.concat([got, d]) })
-process.stdout.write(SCREENS[mode] ?? '')
-const live = '\\r\\n\\x1b[6Gbypass\\x1b[13Gpermissions\\x1b[25Gon\\r\\n'
-if (mode === 'trust') setTimeout(() => {
-  // only go live if the block really sent Down then Enter; otherwise behave like the real CLI and leave
-  if (got.toString('hex') === '1b5b420d') process.stdout.write(live)
-  else process.exit(0)
-}, 2800)
-if (mode === 'signed-out') setTimeout(() => process.stdout.write(live + '\\x1b[53GNot\\x1b[57Glogged\\x1b[64Gin\\x1b[69GRun\\x1b[73G/login\\r\\n'), 200)
-// a live session ends when the test is done with it: 7 s is past the block's 3 s sign-in check
-setTimeout(() => process.exit(0), mode === 'trust' ? 7000 : 12000)
+process.stdin.on('data', (d) => {
+  const text = d.toString('latin1')
+  if (gate && text.includes('\\x1b[B')) {
+    shown = (shown + 1) % gate.opts.length
+    if (!gate.deafMs || Date.now() - born > gate.deafMs) real = shown
+    process.stdout.write('\\x1b[2A' + lines() + '\\r\\n')
+  }
+  if (text.includes('\\r')) {
+    if (gate && real === gate.want) setTimeout(() => process.stdout.write(LIVE), 200)
+    else setTimeout(() => process.exit(0), 100)
+  }
+})
+if (gate) process.stdout.write(gate.head + '\\r\\n' + lines() + '\\r\\n Enter to confirm\\r\\n')
+if (mode === 'signed-out') setTimeout(() => process.stdout.write(LIVE + '\\x1b[53GNot\\x1b[57Glogged\\x1b[64Gin\\x1b[69GRun\\x1b[73G/login\\r\\n'), 200)
+// a live session ends when the test is done with it, well past the block's 3 s sign-in check
+setTimeout(() => process.exit(0), 14000)
 `
 
-function generate(): { dir: string; runExpect: string; runSh: string } {
+function generate(failcount?: number): { dir: string; runExpect: string; runSh: string } {
   const dir = mkdtempSync(join(tmpdir(), 'hoai-agent-gate-'))
   const state = join(dir, 'state')
   mkdirSync(state)
+  if (failcount !== undefined) writeFileSync(join(state, 'failcount'), `${failcount}\n`)
+  // A two line sh wrapper, not a shebang: a shebang cannot carry a runtime path with a space in it.
+  const simJs = join(dir, 'sim.cjs')
+  writeFileSync(simJs, SIMULATOR)
   const sim = join(dir, 'fake-claude')
-  writeFileSync(sim, SIMULATOR)
+  writeFileSync(sim, `#!/bin/sh\nexec "${process.execPath}" "${simJs}" "$@"\n`)
   chmodSync(sim, 0o755)
   const script = [
     'set -euo pipefail',
@@ -116,10 +139,15 @@ test('bin/bgos-agent: the script carries no key press of its own, it copies the 
 })
 
 test('generated run.expect: spawn line, then the shared block VERBATIM, then the supervisor tail', () => {
-  if (!hasBash) return
+  if (!hasBash) return requireTools()
   const { runExpect: text } = generate()
   assert.match(text, /spawn ".*fake-claude" --dangerously-skip-permissions --dangerously-load-development-channels "plugin:hoai@hoai"/)
   assert.ok(text.includes(gateBlock), 'the block must be copied byte for byte, not re-typed')
+  // The extra settle is derived from run.sh's own fail count, and it is set BEFORE the block reads it.
+  const pre = text.slice(0, text.indexOf(gateBlock))
+  assert.match(pre, /set hoai_extra_settle 0/)
+  assert.match(pre, /open "\$hoai_statedir\/failcount"/)
+  assert.match(pre, /\$hoai_fails >= 5 \? 10 : 2 \* \$hoai_fails/)
   const tail = text.slice(text.indexOf(gateBlock) + gateBlock.length)
   // The tail presses nothing either.
   assert.doesNotMatch(tail, /\bsend\b/)
@@ -134,30 +162,51 @@ test('generated run.expect: spawn line, then the shared block VERBATIM, then the
 })
 
 test('generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible', () => {
-  if (!hasBash) return
+  if (!hasBash) return requireTools()
   const { runSh } = generate()
   assert.doesNotMatch(runSh, /Likely auth/, 'the old text blamed sign-in for a declined startup gate')
   assert.match(runSh, /Last launch: \$\(cat "\$sd\/launch-status"/)
   assert.match(runSh, /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/)
   assert.match(runSh, /outcome=waiting-for-incumbent pids=/)
+  // Cleared before every launch, so a launch that dies before run.expect writes its line is
+  // never reported with the PREVIOUS launch's reason.
+  assert.ok(runSh.indexOf('outcome=starting') > 0 && runSh.indexOf('outcome=starting') < runSh.indexOf('"$expect_bin" "$expectfile"'))
   assert.equal(spawnSync('bash', ['-n', '/dev/stdin'], { input: runSh }).status, 0, 'generated run.sh must parse')
 })
 
 test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here)', SLOW, async () => {
-  if (!hasBash || !expectBin) return
+  if (!hasBash || !expectBin) return requireTools()
   const { dir } = generate()
   const started = Date.now()
   const run = await runExpect(dir, 'trust')
-  // The simulator only goes live for the exact bytes Down, Enter, and otherwise
-  // leaves like the real CLI does. So status 0 after the simulator's own 7 s
-  // life means the gate was answered correctly and the session was HELD.
+  // The simulator only goes live when Enter lands on "Yes", and otherwise leaves
+  // like the real CLI does. So status 0 after the simulator's own 14 s life
+  // means the gate was answered correctly and the session was HELD.
   assert.equal(run.status, 0)
-  assert.ok(Date.now() - started > 5000, 'the supervisor must hold a live session, not return in seconds')
+  assert.ok(Date.now() - started > 10_000, 'the supervisor must hold a live session, not return in seconds')
   assert.match(run.launchStatus, /outcome=live answered=\[trust\]/)
 })
 
+test('behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it)', SLOW, async () => {
+  if (!hasBash || !expectBin) return requireTools()
+  // MEASURED on a signed-in config, 2026-09-22: a Down sent before claude has
+  // finished initialising is painted ("Yes" lights up) and not honoured, so the
+  // Enter that follows declines and claude exits. The simulator's slow-init mode
+  // is deaf for 2.5 s. With no counted failure the block's quiet second is not
+  // enough, and the launch ends as a NAMED exit 4, which run.sh counts. With one
+  // counted failure the same wrapper waits 2 s longer and gets through. Nothing
+  // about the machine changed between the two: only the number run.sh wrote.
+  const first = generate(0)
+  const second = generate(1)
+  const [lost, won] = await Promise.all([runExpect(first.dir, 'slow-init'), runExpect(second.dir, 'slow-init')])
+  assert.equal(lost.status, 4)
+  assert.match(lost.launchStatus, /outcome=exited-during-startup answered=\[trust\]/, 'the reason names the gate it answered before claude left')
+  assert.equal(won.status, 0)
+  assert.match(won.launchStatus, /outcome=live answered=\[trust\]/)
+})
+
 test('behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy', SLOW, async () => {
-  if (!hasBash || !expectBin) return
+  if (!hasBash || !expectBin) return requireTools()
   const { dir } = generate()
   const run = await runExpect(dir, 'unknown')
   assert.equal(run.status, 3)
@@ -165,7 +214,7 @@ test('behaviour: a screen nobody can answer is a failed launch with a reason, ex
 })
 
 test('behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk', SLOW, async () => {
-  if (!hasBash || !expectBin) return
+  if (!hasBash || !expectBin) return requireTools()
   const a = generate()
   const b = generate()
   const [died, signedOut] = await Promise.all([runExpect(a.dir, 'dies'), runExpect(b.dir, 'signed-out')])

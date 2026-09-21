@@ -1598,11 +1598,14 @@ test('probeFolderTrust: an ancestor that is present but NOT accepted grants noth
   assert.equal(probe.inheritedFrom, undefined)
 })
 
-test('resolveLaunchFolder: flag, then a pinned cwd, then the pinned default workspace for the id, else an unnamed cwd', () => {
+test('resolveLaunchFolder: flag, then a cwd pinned to THIS agent, then the pinned default workspace for the id, else an unnamed cwd', () => {
   const pins: Record<string, string> = { '/agents/a': '7', '/h/.bgos-agent/12-workspace': '12', '/h/.bgos-agent/99-workspace': '12' }
   const readPin = (dir: string) => pins[dir] ?? ''
   assert.deepEqual(resolveLaunchFolder({ workdirFlag: '/x', cwd: '/agents/a', home: '/h', assistantId: '12', readPin }), { dir: '/x', source: 'flag' })
-  assert.deepEqual(resolveLaunchFolder({ cwd: '/agents/a', home: '/h', assistantId: '12', readPin }), { dir: '/agents/a', source: 'cwd-pin' })
+  // No id asked about: the folder's own pin names the subject.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/agents/a', home: '/h', readPin }), { dir: '/agents/a', source: 'cwd-pin' })
+  // The id asked about IS this folder's agent.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/agents/a', home: '/h', assistantId: '7', readPin }), { dir: '/agents/a', source: 'cwd-pin' })
   // THE DESKTOP CASE: standing in HOME, only the id is known.
   assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '12', readPin }), {
     dir: '/h/.bgos-agent/12-workspace',
@@ -1615,6 +1618,20 @@ test('resolveLaunchFolder: flag, then a pinned cwd, then the pinned default work
   assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '../../etc', readPin }), { dir: '/h', source: 'cwd-unpinned' })
 })
 
+test('resolveLaunchFolder: a STALE pin in cwd for another agent does not outrank the id that was asked about', () => {
+  // Found by review. A HOME that still carries a pin from a pairing made there
+  // (what F9 now refuses) would otherwise drag the desktop preflight straight
+  // back to probing HOME, the exact failure this resolution exists to end.
+  const pins: Record<string, string> = { '/h': '5', '/h/.bgos-agent/12-workspace': '12' }
+  const readPin = (dir: string) => pins[dir] ?? ''
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '12', readPin }), {
+    dir: '/h/.bgos-agent/12-workspace',
+    source: 'default-workspace',
+  })
+  // And with no workspace for that id, another agent's folder is NOT passed off as this agent's.
+  assert.deepEqual(resolveLaunchFolder({ cwd: '/h', home: '/h', assistantId: '44', readPin }), { dir: '/h', source: 'cwd-unpinned' })
+})
+
 test('doctor trust row: an UNNAMED folder renders UNPROVEN with what was seen, and does not abort the install', () => {
   const trust = { cwd: '/Users/kc', configPath: '/Users/kc/.claude.json', accepted: false, reason: 'no-entry', matchedKey: '' }
   const rows = buildDoctorRows(healthyProbes({ trust, launchFolder: { dir: '/Users/kc', source: 'cwd-unpinned' } }))
@@ -1623,7 +1640,9 @@ test('doctor trust row: an UNNAMED folder renders UNPROVEN with what was seen, a
   assert.match(row.detail, /no agent folder was named/)
   assert.match(row.detail, /\/Users\/kc/)
   assert.match(row.detail, /no-entry/, 'what was actually seen stays on the record')
-  assert.match(row.fix, /--workdir/)
+  // The table prints Fix lines for FAIL rows only, so the remedy must live in the detail.
+  assert.match(row.detail, /Pass --workdir <the agent folder>/)
+  assert.match(renderDoctorTable(rows), /Pass --workdir/)
   const green = ['claude', 'auth', 'handshake', 'mcp-list'].map((id) => ({ id, ok: true }))
   assert.deepEqual(preflightVerdict([...green, row]), { ok: true, failing: [] })
   assert.match(renderDoctorTable(rows), /UNPROVEN\s+Folder trust/)

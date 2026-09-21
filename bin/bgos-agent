@@ -304,6 +304,21 @@ log_file -a "$2/expect.log"
 set hoai_statedir "$2"
 spawn "$3" ${cont}--dangerously-skip-permissions --dangerously-load-development-channels "$4"
 EXP
+  # A launch that lost the startup race (a key sent before claude had finished
+  # initialising is painted and not honoured, measured 2026-09-22) exits fast,
+  # and run.sh counts it. The next launch waits 2 s longer per counted failure,
+  # 10 s at most, so the race heals itself instead of repeating.
+  cat >> "$1" <<'EXP_PRE'
+set hoai_extra_settle 0
+catch {
+  set hoai_fh [open "$hoai_statedir/failcount"]
+  set hoai_fails [string trim [read $hoai_fh]]
+  close $hoai_fh
+  if {[string is integer -strict $hoai_fails] && $hoai_fails > 0} {
+    set hoai_extra_settle [expr {$hoai_fails >= 5 ? 10 : 2 * $hoai_fails}]
+  }
+}
+EXP_PRE
   cat "$gate_block" >> "$1"
   cat >> "$1" <<'EXP_TAIL'
 
@@ -363,6 +378,9 @@ done
 fails=\$(cat "\$sd/failcount" 2>/dev/null || echo 0)
 start=\$(date +%s)
 echo "[\$(ts)] starting agent (consecutive fast-fails: \$fails)"
+# Cleared first, so a launch that dies before run.expect can write its line is never
+# reported with the reason the PREVIOUS launch left behind.
+echo "\$(ts) outcome=starting" > "\$sd/launch-status"
 rc=0
 "\$expect_bin" "\$expectfile" || rc=\$?
 dur=\$(( \$(date +%s) - start ))
