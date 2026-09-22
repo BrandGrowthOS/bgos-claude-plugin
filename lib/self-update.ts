@@ -1136,7 +1136,7 @@ export class SelfUpdater {
     await this.waitForDrain()
     const lock = tryAcquireUpdateLock(this.lockPath, this.now())
     if (lock.kind === 'held') {
-      this.opts.log('Auto-update is being applied by another daemon. Waiting to restart safely.')
+      this.opts.log('Auto-update is being applied by another daemon. Waiting for it to finish.')
       let completedLock: Extract<UpdateLockResult, { kind: 'acquired' }> | null = null
       while (true) {
         await this.delay(UPDATE_DRAIN_POLL_MS)
@@ -1163,7 +1163,30 @@ export class SelfUpdater {
           completedLock = null
           return 'installed'
         }
-        this.opts.log('The shared checkout update is complete. Restarting this daemon.')
+        // A DAEMON NEVER EXITS UNLESS SOMETHING WILL RESTART IT (kc-server,
+        // 2026-08-06). The acquired-lock branch below has honoured that since
+        // the kc-server fix; THIS branch kept the pre-fix unconditional exit.
+        // 2026-09-20 04:01 Dubai: three validating daemons re-checked in
+        // lock-step at boot+60s, 963 won the lock, 947 and 960 landed here,
+        // exited "to restart", and nothing relaunched them: Claude Code does
+        // not respawn a stdio MCP server that exits mid-session. The channel
+        // was dead for 3h52m. Same opt-in as the acquired path, same message
+        // shape: the update is on disk and takes effect at the next restart.
+        if (!shouldExitAfterUpdate(this.opts.env)) {
+          this.opts.log(
+            `Auto-update staged by another daemon. This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +
+              'the update takes effect when this session restarts.',
+          )
+          // Un-drain, or the daemon stays up and mute, which is the same
+          // outage wearing a healthier-looking process list.
+          this.opts.setDrainMode(false)
+          completedLock.release()
+          completedLock = null
+          return 'installed'
+        }
+        this.opts.log(
+          'The shared checkout update is complete. Exiting so the supervisor can restart the daemon.',
+        )
         this.exiting = true
         completedLock.release()
         completedLock = null
