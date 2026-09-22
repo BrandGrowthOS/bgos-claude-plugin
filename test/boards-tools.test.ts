@@ -1445,3 +1445,463 @@ test('update_schema lists the table ops when the op is unknown', async () => {
     assert.ok(t.includes(op), `${op} missing from ${t}`)
   }
 })
+
+// ── Column lines: set_column_lines and option_renames (0.45.0) ───────────────
+//
+// Kanban phase 1 (plan 3.8, P1.11): an agent may describe what each column of
+// a workflow select means, in one plain sentence plus a few closed facts. The
+// server owns every length and every cross reference and its refusal reaches
+// the model verbatim; this module owns the shape, the enums and the snake
+// case to camel case wire.
+//
+// MUTATION PROOFS (each applied to lib/boards-tools.ts, confirmed red,
+// restored):
+//
+//  1. WIRE MAPPING. Sent `waits_on` through as it came instead of `waitsOn`
+//     -> "set_column_lines sends exactly optionRules and workflow, in camel
+//     case" fails. The DTO whitelists camelCase only, so a snake key would be
+//     stripped and the line would lose the fact without a word.
+//  2. CLEAR AS NULL. Made clear_lines send `{}` instead of `null` -> the same
+//     case fails on `Dropped: null`, and so does "only a workflow flag, or
+//     only a clear, is a legal write"; the server removes a line only on null.
+//  3. ECHO CHECK. Returned the PATCH answer as it came for set_column_lines
+//     (neither the `playbook` check nor the `filed` report) -> "a server that
+//     answers without playbook stored nothing, and the tool says so" and "a
+//     filed change is reported, not claimed" fail: an older server strips the
+//     unknown keys, answers 200 with `{ field }`, and the model would read a
+//     write that never happened as done.
+//  4. FILED IS NOT DONE. Ignored `filed` and rendered the body -> "a filed
+//     change is reported, not claimed" fails: the model would read the 200 as
+//     done and send the same structural change again on every run.
+//  5. RENAMES. Dropped the `body.optionRenames` line in set_options -> "a
+//     set_options with option_renames sends optionRenames" fails.
+//  6. BOTH LINES AND CLEAR. Dropped the both-places refusal -> "an option in
+//     both lines and clear_lines is refused before the network" fails (the
+//     later assignment would silently win).
+//  7. ENUMS. Dropped the `WAITS_ON.includes` check -> "an enum refusal names
+//     the allowed values" fails, and "owner" would reach the server as a fact.
+
+const LINES_BASE = { board: 'decisions', op: 'set_column_lines', field_key: 'status' }
+
+function playbookEcho(filed: string[] = []) {
+  return async () => ({
+    field: { key: 'status', label: 'Status', type: 'select' },
+    playbook: { status: { workflow: true, lines: {} } },
+    filed,
+  })
+}
+
+test('set_column_lines is an op, and the tool roster is still the 12', () => {
+  assert.deepEqual(
+    BOARDS_TOOL_DECLS.map((d) => d.name),
+    EXPECTED_NAMES,
+  )
+  const props = (decl('boards_update_schema').inputSchema as unknown as {
+    properties: Record<string, { enum?: string[]; description?: string }>
+  }).properties
+  assert.ok(props.op!.enum!.includes('set_column_lines'))
+  assert.ok(props.op!.description!.includes('set_column_lines'))
+  for (const key of ['lines', 'clear_lines', 'workflow', 'option_renames']) {
+    assert.equal(typeof props[key]?.description, 'string', `${key} is declared`)
+  }
+  // The confirmed table qualifier travels with the lines argument (E4), so
+  // the model knows before it writes that a structural change can be filed.
+  assert.ok(props.lines!.description!.includes('suggestion for the owner'))
+  assert.ok(decl('boards_update_schema').description.includes('set_column_lines'))
+  assert.ok(decl('boards_update_schema').description.includes('nothing you write there starts work'))
+})
+
+test('set_column_lines sends exactly optionRules and workflow, in camel case', async () => {
+  const f = fakeDeps({ patch: playbookEcho() })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        'Waiting on me': {
+          means: 'Cards that need the owner\'s answer.',
+          waits_on: 'you',
+          rest: 'open',
+          sort_by: { field_key: 'due', dir: 'asc' },
+          answers: [
+            { label: 'Approve', move_to: 'Done' },
+            { label: 'Kill', move_to: 'Dropped', ask_note: true },
+          ],
+        },
+        Done: { rest: 'finished' },
+      },
+      clear_lines: ['Dropped'],
+      workflow: true,
+    },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined, textOf(r))
+  assert.equal(f.calls.length, 1)
+  assert.equal(f.calls[0]!.method, 'PATCH')
+  assert.equal(f.calls[0]!.path, `${BASE}/decisions/fields/status`)
+  assert.deepEqual(f.calls[0]!.body, {
+    optionRules: {
+      'Waiting on me': {
+        means: 'Cards that need the owner\'s answer.',
+        waitsOn: 'you',
+        rest: 'open',
+        sortBy: { fieldKey: 'due', dir: 'asc' },
+        answers: [
+          { label: 'Approve', moveTo: 'Done' },
+          { label: 'Kill', moveTo: 'Dropped', askNote: true },
+        ],
+      },
+      Done: { rest: 'finished' },
+      Dropped: null,
+    },
+    workflow: true,
+  })
+})
+
+test('set_column_lines never sends a key the server owns', async () => {
+  // v, writtenBy, at and does are the server's (does is phase 2's half and is
+  // always filed): the tool refuses them as unknown keys of a line.
+  for (const key of ['v', 'writtenBy', 'at', 'does', 'waitsOn']) {
+    const f = fakeDeps({ patch: playbookEcho() })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { ...LINES_BASE, lines: { Done: { means: 'Shipped.', [key]: 'x' } } },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted ${key}`)
+    const t = textOf(r)
+    assert.ok(t.includes(`"${key}"`), t)
+    assert.ok(t.includes('means, waits_on, rest, sort_by, answers'), t)
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('an answer and a sort_by are closed shapes too', async () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ waits_on: 'you', answers: [{ label: 'Yes', move_to: 'Done', note: 'x' }] }, '"note"'],
+    [{ waits_on: 'you', answers: [{ label: 'Yes' }] }, 'move_to'],
+    [{ waits_on: 'you', answers: [{ label: 'Yes', move_to: 'Done', ask_note: 'yes' }] }, 'ask_note'],
+    [{ waits_on: 'you', answers: 'Approve' }, 'answers'],
+    [{ sort_by: { field_key: 'due' } }, 'dir'],
+    [{ sort_by: { field_key: 'due', dir: 'up' } }, 'asc, desc'],
+    [{ sort_by: { field_key: 'due', dir: 'asc', nulls: 'last' } }, '"nulls"'],
+    [{ means: 42 }, 'means'],
+  ]
+  for (const [line, needle] of cases) {
+    const f = fakeDeps({ patch: playbookEcho() })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { ...LINES_BASE, lines: { Done: line } },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted ${JSON.stringify(line)}`)
+    assert.ok(textOf(r).includes(needle), `${needle} not in ${textOf(r)}`)
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('an enum refusal names the allowed values', async () => {
+  const waits = fakeDeps({ patch: playbookEcho() })
+  const r1 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Review: { waits_on: 'owner' } } },
+    waits.deps,
+  )
+  assert.equal(r1.isError, true)
+  const t1 = textOf(r1)
+  assert.ok(t1.includes('lines.Review.waits_on'), t1)
+  assert.ok(t1.includes('you, agent, someone_else, nobody'), t1)
+  assert.ok(t1.includes('"owner"'), t1)
+  assert.equal(waits.calls.length, 0)
+
+  const rest = fakeDeps({ patch: playbookEcho() })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'done' } } },
+    rest.deps,
+  )
+  assert.equal(r2.isError, true)
+  assert.ok(textOf(r2).includes('open, parked, finished, dropped'), textOf(r2))
+  assert.equal(rest.calls.length, 0)
+})
+
+test('lengths and cross references are the server\'s, and its sentence reaches the model verbatim', async () => {
+  // A 300 character sentence and an answer aimed at an option that does not
+  // exist both leave this module untouched: the server measures in code
+  // points and knows the options, and its 400 body is the model's answer.
+  const body =
+    '{"statusCode":400,"error":"boards.validation","message":"The line for \\"Done\\" is 300 characters; a column line is at most 140."}'
+  const f = fakeDeps({
+    patch: async () => {
+      throw new Error(`PATCH 400: ${body}`)
+    },
+  })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Done: {
+          means: 'x'.repeat(300),
+          waits_on: 'you',
+          answers: [{ label: 'Go', move_to: 'Nowhere' }],
+        },
+      },
+    },
+    f.deps,
+  )
+  assert.equal(f.calls.length, 1, 'reached the server')
+  assert.equal(r.isError, true)
+  assert.equal(textOf(r), body)
+})
+
+test('an option in both lines and clear_lines is refused before the network', async () => {
+  const f = fakeDeps({ patch: playbookEcho() })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'finished' } }, clear_lines: ['Done'] },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  const t = textOf(r)
+  assert.ok(t.includes('"Done"'), t)
+  assert.ok(t.includes('clear_lines'), t)
+  assert.equal(f.calls.length, 0)
+})
+
+test('a line that is not an object, and a lines call with nothing in it, are refused', async () => {
+  const notObject = fakeDeps({ patch: playbookEcho() })
+  const r1 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: 'finished' } },
+    notObject.deps,
+  )
+  assert.equal(r1.isError, true)
+  assert.ok(textOf(r1).includes('clear_lines'), textOf(r1))
+  assert.equal(notObject.calls.length, 0)
+
+  const empty = fakeDeps({ patch: playbookEcho() })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: {} },
+    empty.deps,
+  )
+  assert.equal(r2.isError, true)
+  assert.ok(textOf(r2).includes('nothing to write'), textOf(r2))
+  assert.equal(empty.calls.length, 0)
+
+  const emptyLine = fakeDeps({ patch: playbookEcho() })
+  const r3 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: {} } },
+    emptyLine.deps,
+  )
+  assert.equal(r3.isError, true)
+  assert.equal(emptyLine.calls.length, 0)
+
+  const wrongWorkflow = fakeDeps({ patch: playbookEcho() })
+  const r4 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: {}, workflow: 'yes' },
+    wrongWorkflow.deps,
+  )
+  assert.equal(r4.isError, true)
+  assert.ok(textOf(r4).includes('workflow'), textOf(r4))
+  assert.equal(wrongWorkflow.calls.length, 0)
+})
+
+test('only a workflow flag, or only a clear, is a legal write', async () => {
+  const flag = fakeDeps({ patch: playbookEcho() })
+  await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: {}, workflow: false },
+    flag.deps,
+  )
+  assert.deepEqual(flag.calls[0]!.body, { workflow: false })
+
+  const clear = fakeDeps({ patch: playbookEcho() })
+  await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: {}, clear_lines: ['Done', 'Dropped'] },
+    clear.deps,
+  )
+  assert.deepEqual(clear.calls[0]!.body, { optionRules: { Done: null, Dropped: null } })
+})
+
+test('an option named __proto__ is an own key on the wire, never a prototype', async () => {
+  const f = fakeDeps({ patch: playbookEcho() })
+  const lines = JSON.parse('{"__proto__": {"rest": "finished"}}') as Record<string, unknown>
+  await handleBoardsTool('boards_update_schema', { ...LINES_BASE, lines }, f.deps)
+  assert.equal(f.calls.length, 1)
+  assert.equal(
+    JSON.stringify(f.calls[0]!.body),
+    '{"optionRules":{"__proto__":{"rest":"finished"}}}',
+  )
+})
+
+test('set_options still refuses lines, and set_column_lines refuses options', async () => {
+  const opts = fakeDeps({ patch: playbookEcho() })
+  const r1 = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      board: 'decisions',
+      op: 'set_options',
+      field_key: 'status',
+      options: ['Pending', 'Done'],
+      lines: { Done: { rest: 'finished' } },
+    },
+    opts.deps,
+  )
+  assert.equal(r1.isError, true)
+  assert.ok(textOf(r1).includes('"lines"'), textOf(r1))
+  assert.equal(opts.calls.length, 0)
+
+  const lines = fakeDeps({ patch: playbookEcho() })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'finished' } }, options: ['Done'] },
+    lines.deps,
+  )
+  assert.equal(r2.isError, true)
+  assert.ok(textOf(r2).includes('"options"'), textOf(r2))
+  assert.equal(lines.calls.length, 0)
+})
+
+test('option_renames is refused on every op but set_options', async () => {
+  for (const extra of [
+    { op: 'set_column_lines', field_key: 'status', lines: { Done: { rest: 'finished' } } },
+    { op: 'rename_field', field_key: 'status', label: 'State' },
+    { op: 'set_description', field_key: 'status', description: 'Where it is.' },
+  ]) {
+    const f = fakeDeps({ patch: playbookEcho() })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { board: 'decisions', ...extra, option_renames: [{ from: 'Todo', to: 'Next' }] },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `${extra.op} accepted option_renames`)
+    assert.ok(textOf(r).includes('"option_renames"'), textOf(r))
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('a set_options with option_renames sends optionRenames', async () => {
+  const f = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    {
+      board: 'decisions',
+      op: 'set_options',
+      field_key: 'status',
+      options: ['Next', 'Doing', 'Done'],
+      option_renames: [{ from: 'Todo', to: 'Next' }],
+    },
+    f.deps,
+  )
+  assert.deepEqual(f.calls[0]!.body, {
+    options: ['Next', 'Doing', 'Done'],
+    optionRenames: [{ from: 'Todo', to: 'Next' }],
+  })
+
+  // Without renames the wire is byte for byte what 0.44.0 sent.
+  const plain = fakeDeps()
+  await handleBoardsTool(
+    'boards_update_schema',
+    { board: 'decisions', op: 'set_options', field_key: 'status', options: ['A', 'B'] },
+    plain.deps,
+  )
+  assert.deepEqual(plain.calls[0]!.body, { options: ['A', 'B'] })
+})
+
+test('a malformed rename pair is refused before the network', async () => {
+  for (const renames of [
+    'Todo to Next',
+    [{ from: 'Todo' }],
+    [{ from: 'Todo', to: 7 }],
+    [{ from: 'Todo', to: 'Next', merge: true }],
+    [['Todo', 'Next']],
+  ]) {
+    const f = fakeDeps()
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      {
+        board: 'decisions',
+        op: 'set_options',
+        field_key: 'status',
+        options: ['Next'],
+        option_renames: renames,
+      },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted ${JSON.stringify(renames)}`)
+    assert.ok(textOf(r).includes('option_renames'), textOf(r))
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('a server that answers without playbook stored nothing, and the tool says so', async () => {
+  // An older server's whitelist strips optionRules and workflow and answers
+  // 200 with the field alone.
+  const f = fakeDeps({
+    patch: async () => ({ field: { key: 'status', label: 'Status', type: 'select' } }),
+  })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'finished' } } },
+    f.deps,
+  )
+  assert.equal(r.isError, true)
+  assert.equal(
+    textOf(r),
+    'This BGOS server does not store column descriptions yet, so nothing was written.',
+  )
+
+  // A body that is not an object at all is the same answer, never a crash.
+  for (const answer of [{}, 'ok', null]) {
+    const g = fakeDeps({ patch: async () => answer })
+    const r2 = await handleBoardsTool(
+      'boards_update_schema',
+      { ...LINES_BASE, lines: { Done: { rest: 'finished' } } },
+      g.deps,
+    )
+    assert.equal(r2.isError, true, JSON.stringify(answer))
+  }
+})
+
+test('a phase 1 server answer is rendered like any other schema write', async () => {
+  const f = fakeDeps({ patch: playbookEcho() })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { means: 'Shipped and checked.' } } },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined)
+  const t = textOf(r)
+  assert.ok(t.includes('"playbook"'), t)
+  assert.ok(!t.includes('suggestion'), t)
+})
+
+test('a filed change is reported, not claimed', async () => {
+  const f = fakeDeps({ patch: playbookEcho(['Done']) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'parked' } } },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined, 'the call itself landed')
+  assert.equal(
+    textOf(r),
+    'The owner confirmed this board, so your change to "Done" was saved as a ' +
+      'suggestion for the owner and the column keeps its current setting. Do ' +
+      'not send it again.',
+  )
+  assert.ok(!textOf(r).includes('"playbook"'), 'the body is not handed over as a success')
+
+  const two = fakeDeps({ patch: playbookEcho(['Done', 'Dropped']) })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'parked' } }, clear_lines: ['Dropped'] },
+    two.deps,
+  )
+  assert.ok(textOf(r2).includes('your change to "Done", "Dropped" was saved'), textOf(r2))
+})

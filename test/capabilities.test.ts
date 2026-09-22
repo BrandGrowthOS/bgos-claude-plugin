@@ -9,9 +9,11 @@ import assert from 'node:assert/strict'
 
 import {
   pickCapabilities,
+  capabilitiesFetchPath,
   BGOS_CAPABILITIES_FALLBACK,
   MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
+import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 
 const SERVED_TEXT =
   '# BGOS Channel Agent Capabilities\n(channel: claude, canon v2026.07.11)\n\nGuide body.'
@@ -123,4 +125,74 @@ test('the bundled fallback carries the served helper rows sentence, word for wor
 
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
+})
+
+// \u2500\u2500 The canon fetch path (0.45.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+//
+// The backend serves the column lines sentence only to a connection that
+// declares boards_playbook, and the fetch at connect can run before the first
+// heartbeat has stored the declaration, so the fetch carries the list itself.
+//
+// MUTATION PROOFS (each applied to lib/capabilities.ts, confirmed red,
+// restored):
+//
+//  1. DROP THE PARAMETER. Returned the base path without `&capabilities=` ->
+//     "the fetch path carries the channel, the version and the declared list",
+//     "the daemon's own base declaration reaches the fetch", the version case
+//     and the malformed token case fail (four red): the agent would never be
+//     told about the tool it has.
+//  2. NO ENCODING. Joined the tokens into the query unencoded -> the literal
+//     pin fails on `%2C`. A raw comma is legal in a query, but the pin is the
+//     contract the backend spec is written against, so it stays exact.
+//  3. NO GRAMMAR FILTER. Sent every token as given -> "a malformed token is
+//     dropped rather than costing the whole canon" fails, and the backend's
+//     @Matches would answer 400 and cost the live canon for every token.
+
+test('the fetch path carries the channel, the version and the declared list', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.45.0', ['mission_events', 'boards_playbook']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=mission_events%2Cboards_playbook',
+  )
+})
+
+test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
+  const path = capabilitiesFetchPath('0.45.0', declaredCapabilities({ canInjectGoal: false }))
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  assert.equal(query.get('channel'), 'claude')
+  assert.equal(query.get('daemonVersion'), '0.45.0')
+  assert.deepEqual(query.get('capabilities')!.split(','), [
+    'mission_events',
+    'mission_goal_checks',
+    'boards_playbook',
+  ])
+})
+
+test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
+  assert.ok(
+    capabilitiesFetchPath('0.45.0-rc.1+build 7', ['boards_playbook']).includes(
+      'daemonVersion=0.45.0-rc.1%2Bbuild%207&',
+    ),
+  )
+  assert.ok(capabilitiesFetchPath(null, ['boards_playbook']).includes('daemonVersion=0.0.0&'))
+})
+
+test('an empty declaration sends no capabilities key, exactly the pre 0.45.0 path', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.44.0', []),
+    'integrations/capabilities?channel=claude&daemonVersion=0.44.0',
+  )
+})
+
+test('a malformed token is dropped rather than costing the whole canon, and the list is capped at 32', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.45.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=boards_playbook',
+  )
+  const many = Array.from({ length: 40 }, (_, i) => `cap_${i}`)
+  const path = capabilitiesFetchPath('0.45.0', many)
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  const sent = query.get('capabilities')!.split(',')
+  assert.equal(sent.length, 32)
+  assert.equal(sent[0], 'cap_0')
+  assert.equal(sent[31], 'cap_31')
 })

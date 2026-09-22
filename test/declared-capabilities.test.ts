@@ -77,7 +77,30 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks'],
+    ['mission_events', 'mission_goal_checks', 'boards_playbook'],
+  )
+})
+
+/**
+ * boards_playbook (0.45.0, Kanban phase 1).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): moved 'boards_playbook' from DECLARED_CAPABILITIES_BASE into
+ * DECLARED_CAPABILITIES_INJECTOR -> "boards_playbook is declared on every
+ * host" fails on the host that cannot type, and so do the read half pin
+ * above and test/capabilities.test.ts's "the daemon's own base declaration
+ * reaches the fetch" (three red). A Windows agent has the set_column_lines tool exactly like a Mac one,
+ * so hiding the canon sentence from it would leave it with a tool it is never
+ * told how to use.
+ */
+test('boards_playbook is declared on every host, because the tool is typed and has no platform limit', () => {
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('boards_playbook'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('boards_playbook'))
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: true })],
+    ['mission_events', 'mission_goal_checks', 'boards_playbook', 'mission_goal_loop', 'mission_pause'],
   )
 })
 

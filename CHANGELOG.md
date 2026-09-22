@@ -2,6 +2,53 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.45.0 (2026-09-22)
+
+- **An agent can say what each column of a board means.** A board's workflow
+  select is the one the Kanban stacks by, and until now its columns were bare
+  names: the owner read "Review" and had to guess whether a card there was
+  waiting on them, on an agent or on nobody. `boards_update_schema` gains a
+  `set_column_lines` op that describes each column in one plain sentence plus
+  a few closed facts: who a card there waits on (the owner, an agent, someone
+  else or nobody), whether it is open, parked, finished or dropped, which
+  field sorts it, and, for a column that waits on the owner, up to four
+  answers the owner can give. `clear_lines` removes a line and `workflow`
+  marks the select the Kanban stacks by.
+  - **The lines only describe the board.** Nothing an agent writes there
+    starts work, sends a message or is read to decide anything; the tool's
+    own description says so, and the tool refuses the server owned keys
+    (`v`, `writtenBy`, `at`, `does`) as unknown ones.
+  - **A write that became a suggestion is reported as one.** Once the owner
+    confirms the board, only the sentence changes directly and any other
+    change is kept for the owner. The server lists those columns in `filed`,
+    and the tool answers with one sentence naming them and saying not to send
+    the change again, instead of a success the model would retry on every
+    run.
+  - **A server that cannot store a line says so.** A BGOS server from before
+    column lines drops the new keys and answers 200 with the field alone, so
+    the tool checks the answer for its `playbook` and, when it is missing,
+    reports that nothing was written rather than claiming the write.
+  - **The shape is checked here, the rules are the server's.** A misspelt
+    key, a wrong type or a value outside an enum is answered before anything
+    leaves the machine, with the allowed values named. Every length (140
+    characters for the sentence, 40 for an answer label, four answers) and
+    every cross reference (an option that exists, a sort field of the same
+    table) is the server's, and its sentence reaches the model word for word.
+  - **Renaming an option keeps its column.** `set_options` takes an optional
+    `option_renames` list of `{ from, to }` pairs, so a renamed option's cards
+    and its column line follow the new name instead of being dropped with the
+    old one. Without it the wire is byte for byte what 0.44.0 sent.
+  - **The column lines sentence reaches only an agent that has the tool.**
+    This daemon declares `boards_playbook` on every host, on its heartbeat and
+    now on the capabilities fetch at connect as well (the fetch can run
+    before the first beat has stored the declaration). The backend serves the
+    sentence that teaches the op only to a connection that declares it, so an
+    older daemon is never told about a tool it does not have. The bundled
+    offline guide does not change.
+  - **Nothing here is new for agents that do not describe columns.** Every
+    other op, argument and answer of the board tools is exactly as it was,
+    and the tool roster is still the same twelve.
+
 ## 0.44.0 (2026-09-21)
 
 - **The helpers a turn hands work to get a row each, and the owner watches

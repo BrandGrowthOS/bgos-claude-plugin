@@ -120,6 +120,8 @@ const SCHEMA_OPS = [
   'delete_field',
   'set_description',
   'set_options',
+  // Kanban phase 1 (0.45.0): what each column of a workflow select means.
+  'set_column_lines',
   'move_field',
   // Multi-table boards: the table lifecycle, folded under update_schema so the
   // tool count stays 12. These address the /tables collection, not /fields.
@@ -130,6 +132,25 @@ const SCHEMA_OPS = [
 ] as const
 
 const ROLES = ['read', 'write', 'admin'] as const
+
+/**
+ * The closed facts of a column line (Kanban phase 1). The server owns every
+ * length and every cross reference (an option that exists, a sort field of the
+ * same table, an answer only on a column that waits on the owner) and says so
+ * in a sentence that reaches the model verbatim; this module checks the shape
+ * and these enums so a typo is answered before anything leaves the machine.
+ */
+const WAITS_ON = ['you', 'agent', 'someone_else', 'nobody'] as const
+const REST = ['open', 'parked', 'finished', 'dropped'] as const
+const SORT_DIRS = ['asc', 'desc'] as const
+const LINE_KEYS = ['means', 'waits_on', 'rest', 'sort_by', 'answers'] as const
+const ANSWER_KEYS = ['label', 'move_to', 'ask_note'] as const
+const SORT_BY_KEYS = ['field_key', 'dir'] as const
+const RENAME_KEYS = ['from', 'to'] as const
+
+/** What a set_column_lines answer from a server that predates column lines means. */
+export const COLUMN_LINES_UNSUPPORTED =
+  'This BGOS server does not store column descriptions yet, so nothing was written.'
 
 const MAX_LIMIT = 200
 /**
@@ -313,7 +334,12 @@ export const BOARDS_TOOL_DECLS = [
       'Adding a select option is the honest way to record a state the board ' +
       'does not have a word for yet. A board can also hold several tables ' +
       '(Airtable style): the add_table, rename_table, move_table and ' +
-      'delete_table ops manage them, and boards_describe lists what exists.',
+      'delete_table ops manage them, and boards_describe lists what exists. ' +
+      'Describe what each column of a workflow select means with ' +
+      'set_column_lines: one plain sentence per column, who a card there ' +
+      'waits on, whether it is open, parked, finished or dropped, and which ' +
+      'field sorts it. These lines only describe the board; nothing you ' +
+      'write there starts work.',
     inputSchema: {
       type: 'object' as const,
       additionalProperties: false,
@@ -327,7 +353,9 @@ export const BOARDS_TOOL_DECLS = [
             'add_field (needs field), rename_field (field_key + label), ' +
             'delete_field (field_key), set_description (field_key + ' +
             'description), set_options (field_key + options, optional ' +
-            'option_tones), move_field (field_key + position). Tables: ' +
+            'option_tones and option_renames), set_column_lines (field_key + ' +
+            'lines, optional clear_lines and workflow), move_field ' +
+            '(field_key + position). Tables: ' +
             'add_table (label is the new table name), rename_table (table + ' +
             'label), move_table (table + position), delete_table (table).',
         },
@@ -359,6 +387,106 @@ export const BOARDS_TOOL_DECLS = [
           description:
             'set_options only: option name to tone (idle, thinking, working, ' +
             'talking, blocked, done, stale).',
+        },
+        option_renames: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              from: { type: 'string', description: 'The option as it is now.' },
+              to: { type: 'string', description: 'Its new name, which must be in options.' },
+            },
+            required: ['from', 'to'],
+          },
+          description:
+            'set_options only: options you are renaming rather than replacing, ' +
+            'so their cards and their column line follow the new name.',
+        },
+        lines: {
+          type: 'object',
+          additionalProperties: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              means: {
+                type: 'string',
+                description:
+                  'What a card in this column means, in one plain sentence of ' +
+                  'at most 140 characters. People read it under the column title.',
+              },
+              waits_on: {
+                type: 'string',
+                enum: [...WAITS_ON],
+                description: 'Who a card here is waiting on. "you" means the owner.',
+              },
+              rest: {
+                type: 'string',
+                enum: [...REST],
+                description:
+                  'Whether a card here is still open, parked, finished or ' +
+                  'dropped. Only finished counts as done.',
+              },
+              sort_by: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  field_key: {
+                    type: 'string',
+                    description: 'A field of the same table, as boards_describe prints it.',
+                  },
+                  dir: { type: 'string', enum: [...SORT_DIRS], description: 'asc or desc.' },
+                },
+                required: ['field_key', 'dir'],
+                description: 'Which field orders the cards in this column.',
+              },
+              answers: {
+                type: 'array',
+                maxItems: 4,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    label: {
+                      type: 'string',
+                      description:
+                        'The answer as the owner would say it, at most 40 characters.',
+                    },
+                    move_to: {
+                      type: 'string',
+                      description: 'An option of this same field the card moves to.',
+                    },
+                    ask_note: {
+                      type: 'boolean',
+                      description: 'True to offer the owner a short note with this answer.',
+                    },
+                  },
+                  required: ['label', 'move_to'],
+                },
+                description:
+                  'Only with waits_on "you": up to four answers the owner can give.',
+              },
+            },
+          },
+          description:
+            'set_column_lines only: option name to the line that describes ' +
+            'that column. Before the owner confirms the board, each line you ' +
+            'send replaces that column\'s line; after that only the sentence ' +
+            '(means) changes directly, and any other change is kept as a ' +
+            'suggestion for the owner. Columns you leave out keep theirs. A ' +
+            'line only describes the board: nothing you write here starts ' +
+            'work or sends a message.',
+        },
+        clear_lines: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'set_column_lines only: options whose line you remove.',
+        },
+        workflow: {
+          type: 'boolean',
+          description:
+            'set_column_lines only: true marks this select as the board\'s ' +
+            'workflow, the one the Kanban stacks by. At most one select per table.',
         },
         position: {
           type: 'number',
@@ -669,6 +797,10 @@ const ARG_HINTS: Record<string, string> = {
   field_key: 'the field key as boards_describe prints it.',
   label: 'the new name (a column heading, or a table name for a table op).',
   options: 'the full option list, in display order.',
+  lines:
+    'option name to its column line, for example { "Done": { "means": ' +
+    '"Shipped and checked.", "rest": "finished" } }. Pass {} when you only ' +
+    'clear lines or set workflow.',
   description: 'the one-line column description.',
   position: 'the new zero-based position.',
 }
@@ -817,6 +949,272 @@ function readTones(
     }
   }
   return { ok: true, value: map.value }
+}
+
+// ── Column lines (set_column_lines, option_renames) ──────────────────────────
+
+/**
+ * An own, enumerable key even when the key is "__proto__", which a plain
+ * assignment would turn into a prototype swap and JSON.stringify would then
+ * drop. Option names are the owner's words, so any string is legal here.
+ */
+function setOwn<T>(target: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  })
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function strayKeys(item: Record<string, unknown>, allowed: readonly string[]): string[] {
+  return Object.keys(item).filter((k) => !allowed.includes(k))
+}
+
+function enumFail(tool: string, where: string, allowed: readonly string[], got: unknown): Fail {
+  return fail(
+    `${tool} "${where}" must be one of ${allowed.join(', ')}, got ${JSON.stringify(got)}.`,
+  )
+}
+
+/**
+ * One column line, snake case in, the server's camel case out, rebuilt key by
+ * key so nothing the model invents rides along. Lengths (140 for the sentence,
+ * 40 for an answer label, 4 answers) and cross references are left to the
+ * server, whose refusal names the option and reaches the model verbatim.
+ */
+function compileColumnLine(
+  tool: string,
+  option: string,
+  raw: unknown,
+): { ok: true; line: Record<string, unknown> } | Fail {
+  const where = `lines.${option}`
+  if (!isPlainObject(raw)) {
+    return fail(
+      `${tool} "${where}" must be a column line object, for example ` +
+        '{ "means": "Waiting for the owner to say yes.", "waits_on": "you" }. ' +
+        'To remove a line, name the option in clear_lines.',
+    )
+  }
+  const unknown = strayKeys(raw, LINE_KEYS)
+  if (unknown.length) {
+    return fail(
+      `${tool} "${where}" does not take ${unknown.map((k) => `"${k}"`).join(', ')}. ` +
+        `A column line takes: ${LINE_KEYS.join(', ')}.`,
+    )
+  }
+  const present = (key: string) => raw[key] !== undefined && raw[key] !== null
+  if (!LINE_KEYS.some(present)) {
+    return fail(
+      `${tool} "${where}" is empty. Give it at least one of ` +
+        `${LINE_KEYS.join(', ')}, or name the option in clear_lines to remove its line.`,
+    )
+  }
+
+  const line: Record<string, unknown> = {}
+  if (present('means')) {
+    if (typeof raw.means !== 'string') {
+      return wrongType(tool, `${where}.means`, 'a string', raw.means)
+    }
+    line.means = raw.means
+  }
+  if (present('waits_on')) {
+    if (!WAITS_ON.includes(raw.waits_on as (typeof WAITS_ON)[number])) {
+      return enumFail(tool, `${where}.waits_on`, WAITS_ON, raw.waits_on)
+    }
+    line.waitsOn = raw.waits_on
+  }
+  if (present('rest')) {
+    if (!REST.includes(raw.rest as (typeof REST)[number])) {
+      return enumFail(tool, `${where}.rest`, REST, raw.rest)
+    }
+    line.rest = raw.rest
+  }
+  if (present('sort_by')) {
+    const sort = raw.sort_by
+    if (!isPlainObject(sort)) {
+      return wrongType(tool, `${where}.sort_by`, 'an object { field_key, dir }', sort)
+    }
+    const strays = strayKeys(sort, SORT_BY_KEYS)
+    if (strays.length) {
+      return fail(
+        `${tool} "${where}.sort_by" does not take ` +
+          `${strays.map((k) => `"${k}"`).join(', ')}. It takes: ${SORT_BY_KEYS.join(', ')}.`,
+      )
+    }
+    if (typeof sort.field_key !== 'string' || !sort.field_key.trim()) {
+      return fail(
+        `${tool} "${where}.sort_by" needs "field_key": a field of the same ` +
+          'table, as boards_describe prints it.',
+      )
+    }
+    if (sort.dir === undefined || sort.dir === null) {
+      return fail(`${tool} "${where}.sort_by" needs "dir": one of ${SORT_DIRS.join(', ')}.`)
+    }
+    if (!SORT_DIRS.includes(sort.dir as (typeof SORT_DIRS)[number])) {
+      return enumFail(tool, `${where}.sort_by.dir`, SORT_DIRS, sort.dir)
+    }
+    line.sortBy = { fieldKey: sort.field_key, dir: sort.dir }
+  }
+  if (present('answers')) {
+    if (!Array.isArray(raw.answers)) {
+      return wrongType(
+        tool,
+        `${where}.answers`,
+        'an array of { label, move_to, ask_note } answers',
+        raw.answers,
+      )
+    }
+    const answers: Array<Record<string, unknown>> = []
+    for (const [i, item] of raw.answers.entries()) {
+      const at = `${where}.answers[${i}]`
+      if (!isPlainObject(item)) {
+        return wrongType(tool, at, 'an object { label, move_to, ask_note }', item)
+      }
+      const strays = strayKeys(item, ANSWER_KEYS)
+      if (strays.length) {
+        return fail(
+          `${tool} "${at}" does not take ${strays.map((k) => `"${k}"`).join(', ')}. ` +
+            `An answer takes: ${ANSWER_KEYS.join(', ')}.`,
+        )
+      }
+      if (typeof item.label !== 'string') {
+        return fail(`${tool} "${at}" needs "label": the answer as the owner would say it.`)
+      }
+      if (typeof item.move_to !== 'string') {
+        return fail(
+          `${tool} "${at}" needs "move_to": an option of this same field the card moves to.`,
+        )
+      }
+      const answer: Record<string, unknown> = { label: item.label, moveTo: item.move_to }
+      if (item.ask_note !== undefined && item.ask_note !== null) {
+        if (typeof item.ask_note !== 'boolean') {
+          return wrongType(tool, `${at}.ask_note`, 'true or false', item.ask_note)
+        }
+        answer.askNote = item.ask_note
+      }
+      answers.push(answer)
+    }
+    line.answers = answers
+  }
+  return { ok: true, line }
+}
+
+/**
+ * The set_column_lines body: `{ optionRules?, workflow? }`, with a cleared
+ * option sent as null (the server removes a line only on null). An option in
+ * both `lines` and `clear_lines` is refused rather than letting one silently
+ * win, and a call that would send nothing is refused rather than spending a
+ * write on it.
+ */
+function compileColumnLines(
+  tool: string,
+  args: Record<string, unknown>,
+): { ok: true; body: Record<string, unknown> } | Fail {
+  if (!isPlainObject(args.lines)) {
+    return wrongType(tool, 'lines', 'an object of option name to column line', args.lines)
+  }
+  const rules: Record<string, Record<string, unknown> | null> = {}
+  for (const [option, raw] of Object.entries(args.lines)) {
+    const compiled = compileColumnLine(tool, option, raw)
+    if (!compiled.ok) return compiled
+    setOwn(rules, option, compiled.line)
+  }
+  const clear = readStringArray(tool, args, 'clear_lines', false)
+  if (!clear.ok) return clear
+  for (const option of clear.value ?? []) {
+    if (Object.prototype.hasOwnProperty.call(rules, option) && rules[option] !== null) {
+      return fail(
+        `${tool} "${option}" is in both lines and clear_lines. Describe its ` +
+          'column or clear its line, not both.',
+      )
+    }
+    setOwn(rules, option, null)
+  }
+  const workflow = args.workflow
+  if (workflow !== undefined && workflow !== null && typeof workflow !== 'boolean') {
+    return wrongType(tool, 'workflow', 'true or false', workflow)
+  }
+
+  const body: Record<string, unknown> = {}
+  if (Object.keys(rules).length) body.optionRules = rules
+  if (typeof workflow === 'boolean') body.workflow = workflow
+  if (!Object.keys(body).length) {
+    return fail(
+      `${tool} op "set_column_lines" has nothing to write. Describe at least ` +
+        'one option in lines, name one in clear_lines, or set workflow.',
+    )
+  }
+  return { ok: true, body }
+}
+
+/** `option_renames` as the server's `optionRenames`, shape checked only. */
+function readOptionRenames(
+  tool: string,
+  args: Record<string, unknown>,
+): Fail | { ok: true; value: Array<{ from: string; to: string }> | undefined } {
+  const raw = args.option_renames
+  if (raw === undefined || raw === null) return { ok: true, value: undefined }
+  if (!Array.isArray(raw)) {
+    return wrongType(tool, 'option_renames', 'an array of { from, to } pairs', raw)
+  }
+  const out: Array<{ from: string; to: string }> = []
+  for (const [i, item] of raw.entries()) {
+    const at = `option_renames[${i}]`
+    if (!isPlainObject(item)) {
+      return wrongType(tool, at, 'an object { from, to }', item)
+    }
+    const strays = strayKeys(item, RENAME_KEYS)
+    if (strays.length) {
+      return fail(
+        `${tool} "${at}" does not take ${strays.map((k) => `"${k}"`).join(', ')}. ` +
+          `A rename takes: ${RENAME_KEYS.join(', ')}.`,
+      )
+    }
+    for (const key of RENAME_KEYS) {
+      const value = item[key]
+      if (typeof value !== 'string' || !value.trim()) {
+        return fail(`${tool} "${at}.${key}" must be a non-empty option name.`)
+      }
+    }
+    out.push({ from: item.from as string, to: item.to as string })
+  }
+  return { ok: true, value: out }
+}
+
+/**
+ * What the model reads after a set_column_lines PATCH.
+ *
+ * A server with column lines ALWAYS answers `{ field, playbook, filed }`. One
+ * that predates them strips optionRules and workflow in its whitelist and
+ * answers 200 with the field alone, so a missing `playbook` means nothing was
+ * stored, and the tool says so instead of reporting a success. A non empty
+ * `filed` means the owner confirmed the board and the structural part of the
+ * change became a suggestion; reporting that as a plain success would have the
+ * model send the same change again on every run.
+ */
+function columnLinesAnswer(data: unknown): { ok: true; data: unknown } | Fail {
+  if (!isPlainObject(data) || !('playbook' in data)) {
+    return fail(COLUMN_LINES_UNSUPPORTED)
+  }
+  const filed = Array.isArray(data.filed)
+    ? data.filed.filter((o): o is string => typeof o === 'string')
+    : []
+  if (filed.length) {
+    return {
+      ok: true,
+      data:
+        `The owner confirmed this board, so your change to ` +
+        `${filed.map((o) => JSON.stringify(o)).join(', ')} was saved as a ` +
+        'suggestion for the owner and the column keeps its current setting. ' +
+        'Do not send it again.',
+    }
+  }
+  return { ok: true, data }
 }
 
 // ── Path building (nothing raw ever reaches a URL) ───────────────────────────
@@ -1619,7 +2017,10 @@ const SCHEMA_OP_ARGS: Record<string, { needs: string[]; optional: string[] }> = 
   rename_field: { needs: ['field_key', 'label'], optional: [] },
   delete_field: { needs: ['field_key'], optional: [] },
   set_description: { needs: ['field_key', 'description'], optional: [] },
-  set_options: { needs: ['field_key', 'options'], optional: ['option_tones'] },
+  set_options: { needs: ['field_key', 'options'], optional: ['option_tones', 'option_renames'] },
+  // Kanban phase 1: a separate op, not a key on set_options, because that op
+  // needs the FULL option list and every sentence would resend it.
+  set_column_lines: { needs: ['field_key', 'lines'], optional: ['clear_lines', 'workflow'] },
   move_field: { needs: ['field_key', 'position'], optional: [] },
   // Table lifecycle. `label` carries the table name (new table, or the new
   // name on a rename); `table` names the existing table to act on.
@@ -1702,8 +2103,15 @@ async function updateSchema(
     if (!options.ok) return options
     const tones = readTones(name, args, 'option_tones')
     if (!tones.ok) return tones
+    const renames = readOptionRenames(name, args)
+    if (!renames.ok) return renames
     body.options = options.value
     if (tones.value) body.optionTones = tones.value
+    if (renames.value?.length) body.optionRenames = renames.value
+  } else if (op.value === 'set_column_lines') {
+    const lines = compileColumnLines(name, args)
+    if (!lines.ok) return lines
+    return columnLinesAnswer(await deps.bgosPatch(fieldPath, lines.body))
   } else if (op.value === 'move_field') {
     const position = readInt(name, args, 'position', 0, 200, true)
     if (!position.ok) return position
