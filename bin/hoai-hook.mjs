@@ -117,7 +117,20 @@ export const KEPT_PAYLOAD_KEYS = [
   'source',
   'trigger',
   'stop_hook_active',
+  // Stage 7 reads what the call did: the response on a success, the error
+  // string on a failure (its first line carries the exit code), and the one
+  // boolean that says the owner stopped it. tool_response AND error are
+  // REDUCED below rather than kept whole, because keeping a whole file body is
+  // the one thing this reduction exists to prevent, and because the generic
+  // clipper keeps a HEAD, which is the wrong end of a failure.
+  'tool_response',
+  'error',
+  'is_interrupt',
 ]
+
+/** Double the 2048 the wire keeps, so the mapper still has slack to mask the
+ *  output and only then cut it to its tail. */
+export const REDUCED_OUTPUT_MAX = 4096
 
 const isRecord = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -129,6 +142,75 @@ const clipValue = (value) => {
   return undefined
 }
 
+const tailOf = (text, max = REDUCED_OUTPUT_MAX) => (text.length > max ? text.slice(-max) : text)
+
+const countContentLines = (content) =>
+  content === '' ? 0 : content.replace(/\r?\n$/, '').split(/\r?\n/).length
+
+/**
+ * The same counting rule as lib/tool-outcome.ts: a `+` line is added, a `-`
+ * line is removed, and the `\ No newline at end of file` marker is neither.
+ * It is written twice on purpose. This process is plain node with no
+ * TypeScript loader, so it cannot import that module, and both copies are
+ * pinned by tests.
+ */
+function countPatchLines(hunks) {
+  let linesAdded = 0
+  let linesRemoved = 0
+  for (const hunk of hunks) {
+    const lines = isRecord(hunk) && Array.isArray(hunk.lines) ? hunk.lines : []
+    for (const entry of lines) {
+      if (typeof entry !== 'string') continue
+      if (entry.startsWith('\\')) continue
+      // No header skip: see lib/tool-outcome.ts, same rule, same reason.
+      if (entry.startsWith('+')) linesAdded += 1
+      else if (entry.startsWith('-')) linesRemoved += 1
+    }
+  }
+  return { linesAdded, linesRemoved }
+}
+
+/**
+ * A tool response, reduced to what the mapper reads and nothing more.
+ *
+ * A failure arrives as a STRING whose FIRST line is the exit code, so that
+ * line is kept whole and the LAST 4096 characters of the rest follow it: the
+ * code and the tail of what the command printed both survive. A success
+ * arrives as an object, and only a handful of its fields are ever read: the
+ * two streams (their tails), whether the owner interrupted it, the runtime's
+ * own reading of a non zero exit, and the two line counts. The hunks become
+ * those counts and the file body becomes one number, because the body itself
+ * never reaches the wire and there is no reason to spool it.
+ */
+export function reduceToolResponse(response) {
+  if (typeof response === 'string') {
+    const newline = response.indexOf('\n')
+    if (newline === -1) return tailOf(response)
+    return `${response.slice(0, newline + 1)}${tailOf(response.slice(newline + 1))}`
+  }
+  if (!isRecord(response)) return undefined
+  const out = {}
+  if (typeof response.stdout === 'string') out.stdout = tailOf(response.stdout)
+  if (typeof response.stderr === 'string') out.stderr = tailOf(response.stderr)
+  if (typeof response.interrupted === 'boolean') out.interrupted = response.interrupted
+  if (typeof response.returnCodeInterpretation === 'string') {
+    out.returnCodeInterpretation = clipValue(response.returnCodeInterpretation)
+  }
+  if (Array.isArray(response.structuredPatch) && response.structuredPatch.length > 0) {
+    out.structuredPatch = countPatchLines(response.structuredPatch)
+  }
+  if (typeof response.type === 'string') out.type = clipValue(response.type)
+  // ONLY a create: the line count of a body is an addition only when the whole
+  // body is new. An update arrives with an empty patch whenever nothing
+  // changed, the diff timed out or the write was staged, and sending its body
+  // count made the row claim the entire file. lib/tool-outcome.ts gates on the
+  // same `type`, so the rule is one rule on both paths.
+  if (typeof response.content === 'string' && response.type === 'create') {
+    out.content = { lines: countContentLines(response.content) }
+  }
+  return out
+}
+
 /**
  * Reduce an oversized payload to what the mapper reads.
  *
@@ -136,6 +218,16 @@ const clipValue = (value) => {
  * file, an Edit carries both sides of the change. Neither ever reaches the
  * wire (the tool row's args field is 120 characters), so there is no reason to
  * spool megabytes of it. Small payloads pass through byte for byte.
+ *
+ * Stage 7 added the second big field, tool_response, and it is NOT dropped:
+ * the row's output, its exit code and an edit's counts are all read out of it,
+ * so it is reduced (reduceToolResponse above) instead. Dropping it would cost
+ * the owner exactly the rows a very large call produces.
+ *
+ * `error` goes through the SAME reducer, and not through the generic per field
+ * clipper, because the generic one keeps a head: a failing command's string
+ * carries its exit code on the first line and what it printed after that, and
+ * the end is the part the owner is looking for.
  */
 export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
   if (!isRecord(payload)) return {}
@@ -158,6 +250,21 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
       if (clipped !== undefined) input[key] = clipped
     }
     reduced.tool_input = input
+  }
+  if (typeof payload.error === 'string') {
+    // The kept keys loop above clipped this to its FIRST 200 characters, and a
+    // failure string is the one field whose end is the point: its first line
+    // carries the exit code and everything after it is what the command
+    // printed before it failed. The live failure shape carries NO
+    // tool_response at all, so this string is the only copy there is.
+    reduced.error = reduceToolResponse(payload.error)
+  }
+  if ('tool_response' in payload) {
+    // The kept keys loop above has no way to shrink an object, so it put the
+    // whole response in. Replace it with the reduced one, or drop it.
+    const response = reduceToolResponse(payload.tool_response)
+    if (response === undefined) delete reduced.tool_response
+    else reduced.tool_response = response
   }
   if (Array.isArray(payload.background_tasks)) {
     reduced.background_tasks = payload.background_tasks.slice(0, 10).map((task) => {
