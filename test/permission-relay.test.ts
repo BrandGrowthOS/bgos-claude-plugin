@@ -24,6 +24,7 @@ import {
   PERMISSION_POLL_FAST_MS,
   PERMISSION_POLL_FAST_WINDOW_MS,
   PERMISSION_POLL_SLOW_MS,
+  SWEEP_CLOCK_SKEW_MARGIN_MS,
   answeredPermissionChoice,
   buildPermissionRequestBody,
   cardMessageIdFrom,
@@ -39,6 +40,7 @@ import {
   permissionPollIntervalMs,
   permissionRowsReader,
   resolvePermissionClick,
+  senderUserIdCandidate,
   storedWaitSeconds,
   watchPermissionVerdict,
   type PendingPermissionLike,
@@ -940,15 +942,55 @@ test('the watch reads the tap off the card, and moves no cursor doing it', () =>
   )
 })
 
-test('a tap on the card is bound to the requester, the way the clicks are', () => {
-  // The finding: this arm compared no requester at all, while BOTH click
-  // intakes compared the clicker to the user who raised the request, and the
-  // watch's own doc claimed the three tightened together. They did not: a
-  // backend that starts stamping a clicker id would have closed two lanes and
-  // left this one open. The comparison is a no op today by construction
-  // (senderUserIdOf falls back to the owner), so what is pinned here is the
-  // SHAPE, which is the part that has to be right before the backend changes
-  // under it.
+test('the clicker read answers null when nobody stamped an id, and the id when someone did', () => {
+  // THE WHOLE FINDING IN ONE FUNCTION. server.ts's senderUserIdOf ends in the
+  // OWNER, which is right for an inbound message and wrong for an answer
+  // payload: through it the card read cannot tell "nobody stamped a tapper"
+  // apart from "the owner tapped", and on a shared assistant, where the
+  // requester is the person the agent was shared with, it would refuse every
+  // real tap and charge the owner a deny at the backstop for their own Allow.
+  const answer = { callbackData: `ea:once:${REQ}` }
+  assert.equal(senderUserIdCandidate(answer), null, 'a payload as the backend sends it today')
+  assert.equal(senderUserIdCandidate({}), null)
+  assert.equal(senderUserIdCandidate(null), null)
+  assert.equal(senderUserIdCandidate(undefined), null)
+  // An empty or non string id is no id, exactly the rule the owner fallback
+  // applied before it was split in two.
+  assert.equal(senderUserIdCandidate({ senderUserId: '' }), null)
+  assert.equal(senderUserIdCandidate({ senderUserId: 42 }), null)
+  // Every casing the inbound readers accept, so the null aware read and the
+  // owner falling one cannot disagree about what counts as an id on the day
+  // one starts arriving.
+  assert.equal(senderUserIdCandidate({ sender: { userId: 'u-nested' } }), 'u-nested')
+  assert.equal(senderUserIdCandidate({ senderUserId: 'u-flat' }), 'u-flat')
+  assert.equal(senderUserIdCandidate({ sender_user_id: 'u-snake' }), 'u-snake')
+  assert.equal(senderUserIdCandidate({ userId: 'u-legacy' }), 'u-legacy')
+  assert.equal(senderUserIdCandidate({ user_id: 'u-legacy-snake' }), 'u-legacy-snake')
+  assert.equal(
+    senderUserIdCandidate({ sender: { userId: 'u-nested' }, senderUserId: 'u-flat' }),
+    'u-nested',
+    'the nested sender wins, as it does on a WS payload',
+  )
+  assert.equal(
+    senderUserIdCandidate({ sender: 'user', senderUserId: 'u-flat' }),
+    'u-flat',
+    'a role string in `sender` is not a sender object',
+  )
+  // And server.ts keeps its owner fallback by ADDING it to this reader rather
+  // than by keeping a second copy of the chain to drift.
+  assert.ok(
+    SRC.includes('return senderUserIdCandidate(message) ?? USER_ID'),
+    'senderUserIdOf is this reader plus the owner fallback',
+  )
+})
+
+test('the card read takes an unstamped tap and drops a foreign one, in that order', () => {
+  // The finding this closes: the arm compared the tapper through the OWNER
+  // fallback, so on a shared assistant the comparison did not decide nothing,
+  // it decided wrongly, and every real tap became a backstop deny. The
+  // acceptance rule and its order are pinned on the source, because the arm is
+  // a closure inside waitForVerdict; the read it now uses is pinned on
+  // behaviour in the test above.
   const watch = SRC.slice(
     SRC.indexOf('async function waitForVerdict('),
     SRC.indexOf('async function retireOrphanedPermissionCards('),
@@ -958,26 +1000,36 @@ test('a tap on the card is bound to the requester, the way the clicks are', () =
     watch.indexOf('verdictFrom: (msg) => {'),
   )
   assert.ok(answeredOn.length > 0, 'the watch must wire answeredOn')
+  // THE CHOICE FIRST. Every tick re-reads this card and almost every read
+  // finds no answer on it, so asking who tapped before asking whether anyone
+  // did would burn the once per request log line on an untouched card.
+  const parsed = answeredOn.indexOf('answeredPermissionChoice(msg.message, requestId)')
+  const compared = answeredOn.indexOf('senderUserIdCandidate(msg.message.answerPayload)')
+  assert.ok(parsed > -1, 'the tap is read through the shared parser')
+  assert.ok(compared > parsed, 'who tapped is asked AFTER whether anyone did')
+  assert.match(
+    answeredOn.slice(parsed, compared),
+    /if \(!choice\) return null/,
+    'a card with no answer on it returns before the comparison',
+  )
   // Off the ANSWER PAYLOAD, not off the card row: the row's own sender is this
   // assistant, so reading the id there would compare the agent against the
   // user and refuse every tap there is.
+  assert.ok(compared > -1, 'the tapper id is read off the answer payload')
+  // AND AN UNSTAMPED TAP IS ACCEPTED. Null is not a user id to compare with:
+  // dropping this guard is the regression itself, a shared agent's owner
+  // denied their own approval.
   assert.ok(
-    answeredOn.includes('senderUserIdOf(msg.message.answerPayload)'),
-    'the clicker id is read off the answer payload',
+    answeredOn.includes('clickerUserId !== null && clickerUserId !== requesterUserId'),
+    'only a tap that NAMES a different user is dropped',
   )
-  assert.ok(
-    answeredOn.includes('clickerUserId !== requesterUserId'),
-    'and compared to the user who raised the request',
-  )
-  // A FOREIGN REQUESTER YIELDS NO VERDICT, which is this ordering: the arm
-  // returns null at the comparison, before the tap is ever parsed into a
-  // choice.
-  const compared = answeredOn.indexOf('clickerUserId !== requesterUserId')
-  const parsed = answeredOn.indexOf('answeredPermissionChoice(msg.message, requestId)')
-  assert.ok(compared > -1 && parsed > compared, 'the comparison comes first, or it decides nothing')
-  assert.match(answeredOn.slice(compared, parsed), /return null/)
-  // And it says so out loud, the way verdictFrom says it.
+  // The foreign one is dropped, and said once per request rather than once per
+  // look at a card that is re-read every tick.
+  assert.match(answeredOn.slice(compared), /return null/)
   assert.ok(answeredOn.includes('Ignoring permission tap on card'))
+  assert.ok(answeredOn.includes('if (!foreignTapLogged) {'))
+  // The accepted tap hands back the choice read above, not a second parse.
+  assert.ok(answeredOn.includes('return choice'))
 })
 
 // ── The cards a crash left behind ────────────────────────────────────────────
@@ -1067,6 +1119,27 @@ test('the boot sweep retires the live looking cards a stopped run left behind', 
     { id: 1, requestId: REQ },
   ])
 
+  // AND THE BOUND COMPARES TWO CLOCKS, the third limit and the third review's
+  // finding. The row's date is the BACKEND's stamp and the caller's bound is
+  // this host's Date.now(), so a host running ahead of the backend would read
+  // another daemon's fresh card as older than its own boot and retire it. The
+  // caller therefore sets the bound a margin BEHIND boot, which is the
+  // protective direction: a smaller bound skips more rows.
+  assert.equal(SWEEP_CLOCK_SKEW_MARGIN_MS, 60_000)
+  const skewed = bootMs - SWEEP_CLOCK_SKEW_MARGIN_MS
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: bootMs - 30_000 })], { createdBefore: skewed }),
+    [],
+    'a card from inside the margin is left alone, whichever clock is ahead',
+  )
+  // And the cost of that, said out loud rather than discovered: this daemon's
+  // OWN orphan from the same minute keeps its buttons until the server expires
+  // it. Older than the margin, and the sweep is the sweep again.
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: bootMs - 61_000 })], { createdBefore: skewed }),
+    [{ id: 1, requestId: REQ }],
+  )
+
   assert.deepEqual(orphanedPermissionCards([]), [])
   assert.deepEqual(orphanedPermissionCards(null), [])
 })
@@ -1085,8 +1158,8 @@ test('the boot sweep is wired into boot, on its own validator, and only strips b
   // And a card another daemon on the same pairing raised after this process
   // started is not an orphan either, which heldRequestIds cannot know.
   assert.ok(
-    sweep.includes('createdBefore: DAEMON_START_MS'),
-    'the sweep must be bounded by this process own boot instant',
+    sweep.includes('createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS'),
+    'the sweep must be bounded by this process own boot, a clock skew margin behind it',
   )
   assert.ok(
     sweep.includes('createdAt: sentDateToMs(m.message.sentDate)'),

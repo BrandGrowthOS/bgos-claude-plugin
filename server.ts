@@ -318,6 +318,7 @@ import {
 import {
   PERMISSION_CLICK_RE,
   PERMISSION_HOLD_SECONDS,
+  SWEEP_CLOCK_SKEW_MARGIN_MS,
   VERDICT_RE,
   answeredPermissionChoice,
   buildPermissionRequestBody,
@@ -330,6 +331,7 @@ import {
   permissionBackstopMs,
   permissionRowsReader,
   resolvePermissionClick,
+  senderUserIdCandidate,
   storedWaitSeconds,
   watchPermissionVerdict,
   type PermissionChoice,
@@ -1869,20 +1871,15 @@ void RESERVED_VALUE_PREFIXES
  * not a fixed account owner. Falls back through the legacy top-level userId
  * and finally the configured owner (USER_ID) for pre-Block-A backends or when
  * the field is absent, so older deployments keep working unchanged.
+ *
+ * The chain itself is `senderUserIdCandidate` in lib/permission-relay.ts,
+ * which answers NULL where this one answers the owner. One reader with two
+ * endings, because the card read in `waitForVerdict` has to tell "nobody
+ * stamped an id" apart from "the owner sent it", and a second hand copy of the
+ * chain would drift from this one the first time a backend added a casing.
  */
 function senderUserIdOf(message: unknown): string {
-  const m = message as Record<string, unknown> | null | undefined
-  // WS payloads carry a nested sender object; the REST poll message carries a
-  // flat senderUserId (its own `sender` field is the role string, not an
-  // object, so reading .userId off it is a harmless undefined).
-  const nestedSender = m?.sender as { userId?: unknown } | null | undefined
-  const candidate =
-    (nestedSender?.userId as string | undefined) ??
-    (m?.senderUserId as string | undefined) ??
-    (m?.sender_user_id as string | undefined) ??
-    (m?.userId as string | undefined) ??
-    (m?.user_id as string | undefined)
-  return typeof candidate === 'string' && candidate ? candidate : USER_ID
+  return senderUserIdCandidate(message) ?? USER_ID
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
@@ -2507,11 +2504,14 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
  * perfectly tappable.
  *
  * The verdict is bound to `requesterUserId`, the user who drove the session
- * that triggered this permission request. In a shared-assistant chat this
- * prevents an unrelated user from approving/denying a prompt that wasn't
- * theirs. The binding is only enforced when the resolving message carries a
- * comparable per-sender user id; if it doesn't (current backend), we fall back
- * to the existing `sender === 'user'` behavior (see TODO below).
+ * that triggered this permission request, so in a shared-assistant chat an
+ * unrelated user cannot approve or deny a prompt that was not theirs. The two
+ * arms below read that binding off DIFFERENT fields, and so they answer an
+ * unstamped one differently: a typed verdict is an inbound user message and a
+ * current backend stamps a real per-sender id on one of those, so
+ * `verdictFrom` compares and refuses; a TAP carries no id at all, so
+ * `answeredOn` accepts what nobody stamped rather than charging the owner a
+ * backstop deny for an Allow they really gave. Each arm says so where it is.
  */
 async function waitForVerdict(
   requestId: string,
@@ -2614,15 +2614,28 @@ async function waitForVerdict(
     answeredOn: (msg) => {
       const ours = cardMessageId !== null && msg.message.id === cardMessageId
       if (!ours) return null
-      // The requester binding, made the way both click intakes make theirs and
-      // for the same reason. The clicker id comes off the ANSWER PAYLOAD, not
-      // off the card row, whose own sender is this assistant. That payload
-      // carries no clicker id today, so senderUserIdOf falls back to the owner
-      // and this comparison decides nothing, which is exactly the state the
-      // intakes are in: the three lanes now tighten together the moment the
-      // backend stamps one, instead of this one staying open when they close.
-      const clickerUserId = senderUserIdOf(msg.message.answerPayload)
-      if (clickerUserId !== requesterUserId) {
+      // THE TAP FIRST, THE TAPPER SECOND, and the order is load bearing. Every
+      // tick re-reads this card, and on all but one of those reads there is no
+      // answer on it at all: asking who tapped before asking whether anyone
+      // did would burn the once per request log line below on a card nobody
+      // has touched.
+      const choice = answeredPermissionChoice(msg.message, requestId)
+      if (!choice) return null
+      // The requester binding, read off the ANSWER PAYLOAD rather than off the
+      // card row, whose own sender is this assistant. It is NULL AWARE here,
+      // and that is what makes this lane different from the two click intakes:
+      // no backend stamps a tapper id on an answer today, so read through
+      // senderUserIdOf's owner fallback an unstamped tap would compare unequal
+      // on a SHARED assistant, where the requester is the person the agent was
+      // shared with. The alternative to accepting it is a backstop deny of an
+      // approval the owner really gave, which is the exact failure this lane
+      // exists to remove. So an unstamped tap is ACCEPTED, a tap that NAMES a
+      // different user is dropped, and the intakes keep their stricter rule
+      // because a click they refuse is not lost: this read sees the same
+      // answer on the card a tick later. All three decide on the same field
+      // the day the backend stamps a tapper id on the answer.
+      const clickerUserId = senderUserIdCandidate(msg.message.answerPayload)
+      if (clickerUserId !== null && clickerUserId !== requesterUserId) {
         // Once per request, unlike verdictFrom's line. A user message is read
         // once and then left behind the cursor; the CARD is re-read on every
         // tick of a wait that can run half an hour, so logging per read would
@@ -2636,7 +2649,7 @@ async function waitForVerdict(
         }
         return null
       }
-      return answeredPermissionChoice(msg.message, requestId)
+      return choice
     },
     verdictFrom: (msg) => {
       if (msg.message.id <= baselineId) return null
@@ -2654,14 +2667,14 @@ async function waitForVerdict(
       // the request. We extract a per-sender user id from the message when
       // present and require it to equal requesterUserId.
       //
-      // TODO(backend): the chat-message payload does not yet carry a distinct
-      // per-sender user id (senderUserIdOf falls back to USER_ID), so in a
-      // multi-user shared-assistant chat this comparison is currently a
-      // no-op (USER_ID === USER_ID) and we still accept any user-sent verdict
-      //, the same as the pre-hardening behavior. Once the backend stamps a
-      // real sender user id, this binding tightens automatically with no
-      // further code change. The button-click path (resolvePermissionClick in
-      // pollChat) carries the same limitation and the same future fix.
+      // AND ON THIS ARM IT DECIDES. The row is an inbound user message, and a
+      // current backend stamps a real per-sender id on one of those, so on a
+      // shared assistant a second person's typed "yes <code>" is refused here.
+      // The owner fallback fires only on a backend old enough to stamp
+      // nothing, or on a row carrying no id, where the comparison is as loose
+      // as it was before. The TAP is the case that cannot be read this way at
+      // all, because no answer payload carries an id yet, which is why
+      // answeredOn above is null aware and this arm is not.
       const resolverUserId = senderUserIdOf(msg.message)
       if (resolverUserId !== requesterUserId) {
         log(
@@ -2726,6 +2739,15 @@ async function waitForVerdict(
  * booting daemon would strip the buttons off a card the other one was at that
  * moment still waiting on. `createdBefore` is the answer: a row written at or
  * after this process started is not a card this process left behind.
+ *
+ * AND THAT BOUND COMPARES TWO CLOCKS, which is the third review's finding. The
+ * row's date is the BACKEND's stamp and the bound is this host's `Date.now()`,
+ * so a host running ahead of the backend would read another daemon's fresh
+ * card as older than its own boot and strip its buttons anyway. The bound is
+ * therefore set SWEEP_CLOCK_SKEW_MARGIN_MS (a minute) behind boot, which is
+ * the protective direction: a smaller bound skips more rows. The cost falls on
+ * this daemon alone and is small, this run's own orphans from the last minute
+ * before it stopped, which keep their buttons until the server's expiry.
  */
 async function retireOrphanedPermissionCards(): Promise<void> {
   let retired = 0
@@ -2757,8 +2779,10 @@ async function retireOrphanedPermissionCards(): Promise<void> {
         heldRequestIds: new Set(pendingPermissions.keys()),
         // And one raised after this process started is not this process's to
         // retire at all: another daemon on the same pairing monitors the same
-        // chats, and heldRequestIds cannot see its requests.
-        createdBefore: DAEMON_START_MS,
+        // chats, and heldRequestIds cannot see its requests. A minute BEHIND
+        // boot rather than on it, because the row's date is the backend's
+        // clock and this is the host's (see SWEEP_CLOCK_SKEW_MARGIN_MS).
+        createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS,
       },
     )
     for (const card of orphans) {
@@ -7271,10 +7295,14 @@ async function pollChat(chatId: string): Promise<void> {
       // resolve now live in lib/permission-relay.ts so both transports share
       // one copy of them.
       //
-      // TODO(backend): the answer payload carries no clicker user id, so
-      // senderUserIdOf falls back to USER_ID and the binding is a no-op today
-      // (same limitation as the text-verdict path). It tightens automatically
-      // once the backend stamps a clicker user id.
+      // The answer payload carries no clicker user id on any backend today, so
+      // this read falls back to the owner: on a SHARED assistant, where the
+      // requester is the person the agent was shared with, their own click is
+      // refused here as foreign. That rule predates the card read and is left
+      // exactly as it is, because the tap is not lost when it happens: the
+      // watch reads the same answer off the card row a tick later, and THAT
+      // read is null aware (see answeredOn in waitForVerdict). Both decide on
+      // the same field the day the backend stamps a clicker user id.
       const permOutcome = resolvePermissionClick({
         callbackData,
         clickerUserId: senderUserIdOf(payload),

@@ -59,7 +59,13 @@ Notable changes to the HOAI Claude Code plugin.
     has the daemon's inbound intake shut. Both of those used to end in a deny
     at the backstop with the owner's Allow thrown away. The same tap can still
     arrive on the ordinary poll a cycle later; the request is settled exactly
-    once, and the late copy finds nothing to resolve.
+    once, and the late copy finds nothing to resolve. WHOSE tap it is comes off
+    the answer the backend stamps on the card, and no backend stamps a tapper
+    there yet: a tap nobody named is accepted, because the alternative on a
+    shared agent is to throw away an approval the owner really gave, and only a
+    tap that names a different person is refused. The two click intakes keep
+    their older, stricter rule, and a click they refuse is not a verdict lost,
+    because this read sees the same answer on the card a moment later.
   - **A parked request reads its chat on a budget, and the budget is the
     wait.** TWO loops read that chat while a request waits, and only counting
     one of them is how a half hour request got expensive. The verdict watch now
@@ -90,7 +96,11 @@ Notable changes to the HOAI Claude Code plugin.
     newest page of each chat it monitors, one log line each. A card a busy chat
     has already pushed off that page is still left to the server's expiry:
     reading further back on every boot would cost every daemon a great deal to
-    catch the rarest case.
+    catch the rarest case. A card posted in the last minute before this daemon
+    booted is left alone too: the row's date is the server's clock and the
+    cutoff is this machine's, so the sweep allows a minute for the two to
+    disagree rather than risk taking the buttons off a card another daemon is
+    at that moment waiting on.
   - **Known and not fixed here: a pending request holds an auto update's
     drain** for as long as it waits, because the handler runs inside the same
     message operation tracker that the drain waits on. Up to the owner's whole

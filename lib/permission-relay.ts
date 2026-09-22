@@ -234,6 +234,37 @@ export function answeredPermissionChoice(
   return parsePermissionChoice(callbackData, requestId)
 }
 
+/**
+ * The sender id an inbound shaped object CARRIES, or null when it carries
+ * none. server.ts's `senderUserIdOf` is this function plus `?? USER_ID`, so
+ * the owner fallback lives in exactly one place and the two readers cannot
+ * drift apart about what counts as an id.
+ *
+ * NULL IS THE POINT, and a re review is what found it missing. The card read
+ * in `waitForVerdict` compares the tapper against the user who raised the
+ * request, and it reads that tapper off the ANSWER PAYLOAD, which no backend
+ * stamps an id on today. Read through the owner fallback, an unstamped tap
+ * therefore reads as the OWNER, and on a SHARED assistant, where the requester
+ * is the person the agent was shared with, every real tap compares unequal and
+ * the owner's Allow becomes a deny at the backstop. Told apart, an unstamped
+ * tap can be taken for what it is, a tap nobody can attribute, and only a tap
+ * that NAMES a different user is dropped.
+ */
+export function senderUserIdCandidate(message: unknown): string | null {
+  const m = message as Record<string, unknown> | null | undefined
+  // A WS payload carries a nested sender object; a REST poll row carries a
+  // flat senderUserId (its own `sender` field is the role string, not an
+  // object, so reading .userId off it is a harmless undefined).
+  const nestedSender = m?.sender as { userId?: unknown } | null | undefined
+  const candidate =
+    (nestedSender?.userId as string | undefined) ??
+    (m?.senderUserId as string | undefined) ??
+    (m?.sender_user_id as string | undefined) ??
+    (m?.userId as string | undefined) ??
+    (m?.user_id as string | undefined)
+  return typeof candidate === 'string' && candidate !== '' ? candidate : null
+}
+
 // ── The card ─────────────────────────────────────────────────────────────────
 
 export interface PermissionOption {
@@ -547,6 +578,19 @@ export interface OrphanedPermissionCard {
 }
 
 /**
+ * How far BEHIND its own boot instant the sweep's caller sets `createdBefore`,
+ * and it is there because the two sides of that comparison come off DIFFERENT
+ * CLOCKS. The row's date is the BACKEND's stamp; the bound is this host's
+ * `Date.now()`. A host running a minute ahead of the backend would read
+ * another daemon's fresh card as older than its own boot and retire a card
+ * that daemon is still waiting on. A minute of margin makes the bound smaller,
+ * which is the protective direction: a smaller bound skips MORE rows, and the
+ * rows it skips are this daemon's own orphans from the last minute before it
+ * stopped, which keep their buttons until the server's own expiry.
+ */
+export const SWEEP_CLOCK_SKEW_MARGIN_MS = 60_000
+
+/**
  * The cards this daemon left live looking when it died mid wait.
  *
  * `pendingPermissions` is memory, so a crash or a manual restart takes every
@@ -581,10 +625,15 @@ export interface OrphanedPermissionCard {
  *     time bound the second review asked for: a row written at or after this
  *     process started cannot be a card THIS process left behind, so it is left
  *     alone whoever posted it. That covers every card another daemon raises
- *     from the moment this one boots. Two honest limits: a card another daemon
- *     raised BEFORE this boot still reads as an orphan, and a row with no
+ *     from the moment this one boots. Three honest limits: a card another
+ *     daemon raised BEFORE this boot still reads as an orphan; a row with no
  *     readable date is still swept, because the alternative is a sweep that
- *     silently does nothing on a backend that sends no date.
+ *     silently does nothing on a backend that sends no date; and the two sides
+ *     of the comparison come off DIFFERENT CLOCKS, the backend's stamp against
+ *     this host's, which is why the caller sets the bound a
+ *     SWEEP_CLOCK_SKEW_MARGIN_MS behind its own boot rather than on it, and
+ *     pays for that with its own orphans from the last minute before it
+ *     stopped.
  */
 export function orphanedPermissionCards(
   rows: readonly PermissionCardRowLike[] | null | undefined,
@@ -696,10 +745,16 @@ export type PermissionClickOutcome =
  * version of this each, which is how the two drifted far enough apart that the
  * stream path needed a log line for "the other one's regex did not re-parse".
  *
- * The requester binding is unchanged: only the user who drove the session that
- * raised the request may answer it. The comparison is still a no op on a
- * backend that stamps no per sender id (senderUserIdOf falls back to the
- * owner), and tightens by itself the moment one does.
+ * The requester binding is unchanged, and the caller still reads the clicker
+ * id through the OWNER FALLBACK: no click payload carries an id today, so it
+ * reads as the owner, and on a SHARED assistant, where the requester is the
+ * person the agent was shared with, their own click is refused here as
+ * foreign. That rule predates the card read and is deliberately left as it is,
+ * because a click refused here is not a verdict lost: the watch reads the same
+ * answer off the card row a tick later, and THAT read is null aware
+ * (`senderUserIdCandidate` above) precisely because its miss would cost the
+ * owner a real approval at the backstop. Both decide on the same field the day
+ * the backend stamps a clicker id on an answer.
  */
 export function resolvePermissionClick(opts: {
   callbackData: string
@@ -772,14 +827,15 @@ export interface VerdictWatch<T> {
    * answer HERE is the one lane that survives both. See
    * `answeredPermissionChoice`.
    *
-   * The requester binding is the CALLER's, and it is now made the same way
-   * both click intakes make theirs: the clicker id is read off the answer
-   * payload and compared to the user who raised the request. That payload
-   * carries no clicker id today, so the read falls back to the owner and the
-   * comparison decides nothing, exactly as it decides nothing on the intakes,
-   * which is the point of making it here too: all three tighten together the
-   * moment the backend stamps one, instead of this one staying open when the
-   * other two close.
+   * The requester binding is the CALLER's, and on this lane it is NULL AWARE.
+   * The tapper id is read off the answer payload, which carries no id on any
+   * backend today: read through the owner fallback an unstamped tap would
+   * compare unequal on a shared assistant and be thrown away, which is a
+   * backstop deny of an approval the owner really gave. So an unstamped tap is
+   * ACCEPTED, a tap that names a different user is dropped, and the two click
+   * intakes keep their stricter rule because a click they drop reaches this
+   * read anyway. All three decide on the same field the day the backend stamps
+   * one.
    */
   answeredOn: (row: T) => PermissionChoice | null
   /** Did the owner answer, on this row. Impure by design: the caller advances
