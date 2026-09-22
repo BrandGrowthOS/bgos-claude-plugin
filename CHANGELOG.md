@@ -64,8 +64,9 @@ Notable changes to the HOAI Claude Code plugin.
     there yet: a tap nobody named is accepted, because the alternative on a
     shared agent is to throw away an approval the owner really gave, and only a
     tap that names a different person is refused. The two click intakes keep
-    their older, stricter rule, and a click they refuse is not a verdict lost,
-    because this read sees the same answer on the card a moment later.
+    their older, stricter rule, and a click they refuse is not a verdict lost
+    whenever the card's id came back off the post, because this read then sees
+    the same answer on the card a moment later (with no id that read is off).
   - **A parked request reads its chat on a budget, and the budget is the
     wait.** TWO loops read that chat while a request waits, and only counting
     one of them is how a half hour request got expensive. The verdict watch now

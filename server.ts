@@ -2631,8 +2631,10 @@ async function waitForVerdict(
       // approval the owner really gave, which is the exact failure this lane
       // exists to remove. So an unstamped tap is ACCEPTED, a tap that NAMES a
       // different user is dropped, and the intakes keep their stricter rule
-      // because a click they refuse is not lost: this read sees the same
-      // answer on the card a tick later. All three decide on the same field
+      // because a click they refuse is not lost whenever the card's id came
+      // back off the post: this read then sees the same answer on the card a
+      // tick later (with no id this read is off, and the post site says so).
+      // All three decide on the same field
       // the day the backend stamps a tapper id on the answer.
       const clickerUserId = senderUserIdCandidate(msg.message.answerPayload)
       if (clickerUserId !== null && clickerUserId !== requesterUserId) {
@@ -7299,9 +7301,10 @@ async function pollChat(chatId: string): Promise<void> {
       // this read falls back to the owner: on a SHARED assistant, where the
       // requester is the person the agent was shared with, their own click is
       // refused here as foreign. That rule predates the card read and is left
-      // exactly as it is, because the tap is not lost when it happens: the
-      // watch reads the same answer off the card row a tick later, and THAT
-      // read is null aware (see answeredOn in waitForVerdict). Both decide on
+      // exactly as it is, because the tap is not lost when it happens, whenever
+      // the card's id came back off the post: the watch then reads the same
+      // answer off the card row a tick later, and THAT read is null aware (see
+      // answeredOn in waitForVerdict; with no card id that read is off). Both decide on
       // the same field the day the backend stamps a clicker user id.
       const permOutcome = resolvePermissionClick({
         callbackData,

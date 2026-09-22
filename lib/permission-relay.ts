@@ -750,8 +750,9 @@ export type PermissionClickOutcome =
  * reads as the owner, and on a SHARED assistant, where the requester is the
  * person the agent was shared with, their own click is refused here as
  * foreign. That rule predates the card read and is deliberately left as it is,
- * because a click refused here is not a verdict lost: the watch reads the same
- * answer off the card row a tick later, and THAT read is null aware
+ * because a click refused here is not a verdict lost whenever the card's id
+ * came back off the post: the watch then reads the same answer off the card
+ * row a tick later, and THAT read is null aware
  * (`senderUserIdCandidate` above) precisely because its miss would cost the
  * owner a real approval at the backstop. Both decide on the same field the day
  * the backend stamps a clicker id on an answer.
