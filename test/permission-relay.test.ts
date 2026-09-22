@@ -1,7 +1,7 @@
 /**
  * The permission relay, now on the platform's approval rail.
  *
- * Every pin here stands for a way the relay was invisible before 0.42.1. The
+ * Every pin here stands for a way the relay was invisible before 0.44.1. The
  * card only renders as a card when the message type, the options and the
  * approvalMeta all arrive together, so those three are pinned as a set; the
  * wait only works when the daemon stops running a clock of its own, so the
@@ -643,7 +643,7 @@ test('a retire that fails still denies, it is best effort', async () => {
 
 test('the callback format matches the sentence this plugin tells its own agent', () => {
   // lib/capabilities.ts has said this since the canon bootstrap shipped, and
-  // it was FALSE here until 0.42.1: the relay spoke perm:. Nothing pinned the
+  // it was FALSE here until 0.44.1: the relay spoke perm:. Nothing pinned the
   // two together, so the plugin's own ground truth could lie for months.
   const sentence = 'Approvals use the ea:{choice}:{id} callback format.'
   assert.ok(

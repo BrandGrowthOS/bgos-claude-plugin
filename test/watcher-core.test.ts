@@ -673,10 +673,31 @@ test('runWatcher create_agent: folder, preseed, pair (exact argv, cwd = folder),
   // pair: node <root>/bin/bgos-pair.mjs <code> --assistant-id 55 --backend <watcher backendUrl>, cwd = the folder.
   const pair = execCalls.find((c) => String(c.args[0]).endsWith('bgos-pair.mjs'))!
   assert.equal(pair.file, '/usr/local/bin/node')
-  assert.deepEqual(pair.args, [`${ROOT}/bin/bgos-pair.mjs`, PAIR_CODE, '--assistant-id', '55', '--backend', 'https://api.example.test'])
+  // --no-install-cli is load bearing, not decoration: this caller is a background
+  // daemon, and pairing's install-cli step writes ~/.local/bin and appends PATH
+  // lines to the owner's shell profiles. KC's ruling (2026-09-21) is that only
+  // the interactive pairing path, where the owner asked and is watching, may do
+  // that. If this flag is ever dropped, an app-driven "add agent" silently edits
+  // the owner's dotfiles from a daemon.
+  assert.deepEqual(pair.args, [
+    `${ROOT}/bin/bgos-pair.mjs`,
+    PAIR_CODE,
+    '--assistant-id',
+    '55',
+    '--backend',
+    'https://api.example.test',
+    '--no-install-cli',
+  ])
   assert.equal(pair.opts.cwd, folder)
   // preseed: trust entry for the folder + the bypass prompt suppressed.
-  const cfg = JSON.parse(fs.files.get(`${CONFIG}/.claude.json`)!)
+  //
+  // The two files are in DIFFERENT places, and this assertion used to get one
+  // of them wrong. This watcher runs with no CLAUDE_CONFIG_DIR in its env (the
+  // manifest here records none), so Claude Code reads $HOME/.claude.json, while
+  // settings.json really is inside $HOME/.claude. Asserting both against CONFIG
+  // is what let the config half be written to a file nothing ever opens.
+  assert.equal(fs.files.has(`${CONFIG}/.claude.json`), false, 'nothing must be written inside the config dir')
+  const cfg = JSON.parse(fs.files.get(`${HOME}/.claude.json`)!)
   assert.equal(cfg.projects[folder].hasTrustDialogAccepted, true)
   assert.equal(JSON.parse(fs.files.get(`${CONFIG}/settings.json`)!).skipDangerousModePermissionPrompt, true)
   // recipe written for the new agent, without a session id.

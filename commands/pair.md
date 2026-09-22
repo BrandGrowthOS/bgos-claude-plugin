@@ -33,6 +33,23 @@ Rules:
   BGOS_CREDENTIALS_PATH instruction and do not describe it as ready.
 - Exit 2 means the server refused the pairing. Relay the refusal without
   describing it as an unexpected crash.
+- Exit 4 means pairing refused BEFORE it ran, because this session was started
+  from the user's home directory or a filesystem root. Pairing bakes its pin
+  into the folder it runs in and that folder BECOMES the agent folder, launched
+  there with permissions skipped across everything under it, so a home
+  directory would hand the agent every key, document and repo on the machine.
+  THE PAIR CODE WAS NOT SPENT on a 4: it is untouched and still good for the
+  rest of its ten minutes. Never call a 4 a failure or a crash, and never send
+  the user to the HOAI app for a fresh code on a 4, because they do not need
+  one. Relay the refusal's own lines verbatim: they name the folder to create,
+  the `cd` into it, and the same pair command carrying the same code. The fix
+  is to run those lines, so make the folder and rerun the pairing there with
+  the code the user already gave you.
+- Only if the user says they really do mean this folder, rerun a 4 with
+  `--allow-home` appended to $ARGUMENTS and pairing proceeds. The warning about
+  what that folder becomes still prints, and relaying it is not optional: the
+  consequence outlives the terminal that chose it. Never reach for
+  `--allow-home` on your own to get past a 4.
 - On an account with several bound agents, pairing refuses to guess and lists
   the candidates; rerun with `--assistant-id <id>` appended to $ARGUMENTS.
 - If the code has expired, tell them to get a fresh code in the HOAI app

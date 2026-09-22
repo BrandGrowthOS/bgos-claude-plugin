@@ -32,6 +32,7 @@ import {
   WIN_WRAPPER_FILES,
   WRAPPER_BREADCRUMB_FILE,
   installWrapper,
+  inspectExistingShim,
   pathContainsDir,
   planWrapperInstall,
   profileNeedsPathLine,
@@ -300,6 +301,150 @@ test('installWrapper: a clone whose bin IS the bin dir is left alone, not linked
 })
 
 // -- PATH persistence ---------------------------------------------------------
+
+// -- Ask or announce, never silently replace (KC, 2026-09-21) -----------------
+//
+// Review found two ways this call could change something the owner never asked
+// it to change: pairing running it from a background daemon, and a clone
+// install re-pointing the shim of a marketplace install that was already
+// there. KC's ruling was to be conservative in the same direction in both
+// cases. Overwriting another install's shim reports success and silently
+// changes which install the owner's existing `hoai` command runs, which is the
+// same class of defect as a first install failing silently.
+
+test('installWrapper: a shim belonging to ANOTHER install is left alone and announced, never re-pointed', () => {
+  const OTHER = '/home/kc/some-other-checkout/bin/hoai'
+  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`])
+  const result = installWrapper({
+    pluginRoot: CLONE_ROOT,
+    platform: 'linux',
+    home: POSIX_HOME,
+    env: { PATH: `${POSIX_HOME}/.local/bin` },
+    effects: { ...fs.effects, readlink: () => OTHER },
+  })
+  assert.deepEqual(fs.linked, [], 'nothing may be linked over a foreign shim')
+  assert.deepEqual(result.wrote, [], 'a declined shim is not a written one')
+  assert.equal(result.kept.length, 1)
+  assert.equal(result.kept[0].path, `${POSIX_HOME}/.local/bin/hoai`)
+  assert.equal(result.kept[0].pointsAt, OTHER, 'the announcement names where the existing shim goes')
+  assert.equal(result.kept[0].wanted, `${CLONE_ROOT}/bin/hoai`, 'and where this install would have pointed it')
+  assert.equal(result.kept[0].reason, 'foreign-link')
+  assert.equal(result.ok, true, 'declining is the correct outcome, not a failure')
+})
+
+test('installWrapper: a regular file the owner put there is left alone too', () => {
+  // readlink answers null for "not a symlink" exactly as it does for "absent",
+  // so the presence check is what tells the two apart. Getting this backwards
+  // would delete a file the owner wrote.
+  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`, `${POSIX_HOME}/.local/bin/hoai`])
+  const result = installWrapper({
+    pluginRoot: CLONE_ROOT,
+    platform: 'linux',
+    home: POSIX_HOME,
+    env: { PATH: `${POSIX_HOME}/.local/bin` },
+    effects: fs.effects,
+  })
+  assert.deepEqual(fs.linked, [], "the owner's own file is not replaced")
+  assert.equal(result.kept.length, 1)
+  assert.equal(result.kept[0].reason, 'foreign-file')
+})
+
+test('installWrapper: a shim already pointing at THIS install is rewritten, so a re-run stays idempotent', () => {
+  // The rule must not cost the repair the module exists for: our own shim, and
+  // a broken one pointing at our own root, are both still (re)written.
+  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`])
+  const result = installWrapper({
+    pluginRoot: CLONE_ROOT,
+    platform: 'linux',
+    home: POSIX_HOME,
+    env: { PATH: `${POSIX_HOME}/.local/bin` },
+    effects: { ...fs.effects, readlink: () => `${CLONE_ROOT}/bin/hoai` },
+  })
+  assert.deepEqual(fs.linked, [{ target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` }])
+  assert.deepEqual(result.kept, [], 'our own shim is not a foreign one')
+})
+
+test('installWrapper: force re-points a foreign shim, because a deliberate ask is the escape hatch', () => {
+  const fs = fakeFs([`${CLONE_ROOT}/bin/hoai`])
+  const result = installWrapper({
+    pluginRoot: CLONE_ROOT,
+    platform: 'linux',
+    home: POSIX_HOME,
+    env: { PATH: `${POSIX_HOME}/.local/bin` },
+    effects: { ...fs.effects, readlink: () => '/home/kc/some-other-checkout/bin/hoai' },
+    force: true,
+  })
+  assert.deepEqual(fs.linked, [{ target: `${CLONE_ROOT}/bin/hoai`, link: `${POSIX_HOME}/.local/bin/hoai` }])
+  assert.deepEqual(result.kept, [], 'an explicit force is an ask, so nothing is declined')
+})
+
+test('installWrapper on win32: a breadcrumb naming ANOTHER plugin root stops the copies too', () => {
+  // win32 shims are COPIES, so there is no link to inspect: the breadcrumb is
+  // the only record of whose install owns this bin dir. Both shims and the
+  // breadcrumb itself must be declined together, or the bin dir ends up half
+  // one install and half the other.
+  const fs = fakeFs([
+    `${MARKETPLACE_ROOT_WIN}\\bin\\hoai.ps1`,
+    `${MARKETPLACE_ROOT_WIN}\\bin\\hoai.cmd`,
+  ])
+  const binDir = `${WIN_LOCAL_APP_DATA}\\hoai\\bin`
+  fs.files.set(`${binDir}\\hoai-plugin-root.txt`, 'C:\\Users\\x\\a-different-install\n')
+  const result = installWrapper({
+    pluginRoot: MARKETPLACE_ROOT_WIN,
+    platform: 'win32',
+    home: WIN_HOME,
+    env: { LOCALAPPDATA: WIN_LOCAL_APP_DATA, Path: binDir },
+    effects: fs.effects,
+    runPathHelper: () => true,
+  })
+  assert.deepEqual(fs.copied, [], 'no shim is copied over another install')
+  assert.equal(fs.written.has(`${binDir}\\hoai-plugin-root.txt`), false, 'the breadcrumb is not rewritten either')
+  assert.equal(result.kept.length, 3, 'both shims and the breadcrumb are announced')
+  for (const entry of result.kept) {
+    assert.equal(entry.reason, 'foreign-breadcrumb')
+    assert.equal(entry.pointsAt, 'C:\\Users\\x\\a-different-install')
+  }
+})
+
+test('installWrapper on win32: a breadcrumb naming THIS root is our own install, so it is refreshed', () => {
+  const fs = fakeFs([
+    `${MARKETPLACE_ROOT_WIN}\\bin\\hoai.ps1`,
+    `${MARKETPLACE_ROOT_WIN}\\bin\\hoai.cmd`,
+  ])
+  const binDir = `${WIN_LOCAL_APP_DATA}\\hoai\\bin`
+  fs.files.set(`${binDir}\\hoai-plugin-root.txt`, `${MARKETPLACE_ROOT_WIN}\n`)
+  const result = installWrapper({
+    pluginRoot: MARKETPLACE_ROOT_WIN,
+    platform: 'win32',
+    home: WIN_HOME,
+    env: { LOCALAPPDATA: WIN_LOCAL_APP_DATA, Path: binDir },
+    effects: fs.effects,
+    runPathHelper: () => true,
+  })
+  assert.equal(fs.copied.length, 2, 'our own install still refreshes its shims')
+  assert.deepEqual(result.kept, [])
+})
+
+test('inspectExistingShim: the four states, told apart without a new effect', () => {
+  const fx = (readlink: string | null, present: string[]) => ({
+    readlink: () => readlink,
+    exists: (path: string) => present.includes(path),
+  })
+  assert.deepEqual(inspectExistingShim('/l', '/want', fx(null, [])), {
+    state: 'absent',
+    pointsAt: '',
+    targetExists: false,
+  })
+  assert.equal(inspectExistingShim('/l', '/want', fx('/want', ['/want'])).state, 'ours')
+  assert.equal(inspectExistingShim('/l', '/want', fx('/want/', ['/want'])).state, 'ours', 'a trailing separator is the same path')
+  assert.equal(inspectExistingShim('/l', '/want', fx('/elsewhere', ['/elsewhere'])).state, 'foreign-link')
+  // A BROKEN link to somewhere else is still somewhere else: exists() follows
+  // the link, so it reads as absent, and readlink is what settles it.
+  const broken = inspectExistingShim('/l', '/want', fx('/gone', []))
+  assert.equal(broken.state, 'foreign-link')
+  assert.equal(broken.targetExists, false)
+  assert.equal(inspectExistingShim('/l', '/want', fx(null, ['/l'])).state, 'foreign-file')
+})
 
 test('profileNeedsPathLine: idempotent with the bootstrap, and a missing profile is skipped', () => {
   assert.equal(profileNeedsPathLine('# fresh profile\n'), true)

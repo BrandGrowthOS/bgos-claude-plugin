@@ -1,7 +1,7 @@
 /**
  * The permission relay's pure half.
  *
- * WHY THIS FILE EXISTS. Until 0.42.1 this daemon asked its owner for a tool
+ * WHY THIS FILE EXISTS. Until 0.44.1 this daemon asked its owner for a tool
  * permission on a rail of its very own: a PLAIN message carrying
  * `perm:<choice>:<id>` buttons, and a hard coded 120 s local wait. It looked
  * like the platform's approval card and was nothing like it. The consequences
@@ -83,9 +83,9 @@ export const APPROVAL_CALLBACK_RE = new RegExp(
 /**
  * The retired vocabulary. NEW prompts never send it, but a daemon that
  * updates while a prompt is still on the owner's screen would otherwise hang
- * that prompt forever, so one release of tolerance: 0.42.1 still RECOGNISES
+ * that prompt forever, so one release of tolerance: 0.44.1 still RECOGNISES
  * an incoming `perm:` click and resolves it. Drop this, and the two consumers
- * of it, once no 0.42.0 daemon is left in the fleet.
+ * of it, once no 0.44.0 or older daemon is left in the fleet.
  */
 export const PERMISSION_CALLBACK_RE = new RegExp(
   `^perm:(once|session|permanent|deny):${REQUEST_ID_PATTERN}$`,

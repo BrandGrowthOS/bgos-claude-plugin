@@ -252,6 +252,13 @@ export function decideDrain(input: { cursor: DrainCursor; text: string }): Drain
  */
 export const ID_LESS_EVENTS: readonly string[] = [
   'Stop',
+  // A SubagentStop carries no tool_use_id and no task_id, so two children
+  // stopping inside one prompt share their session, their event name and their
+  // prompt id: identical keys, and the second child's stop is dropped in
+  // silence. NEVER key it on agent_id instead: the runtime's own task
+  // notification says the same task may notify more than once, so a resumed
+  // child stopping twice would be the one deduped away.
+  'SubagentStop',
   'SessionStart',
   'SessionEnd',
   'PreCompact',

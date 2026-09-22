@@ -53,9 +53,12 @@ import {
   bakeMcpPin,
   bakeLaunchPin,
   launchFolderLiveSafe,
+  classifyPairCwd,
+  pairCwdRefusalLines,
   FOLDER_PIN_FILE_NAME,
 } from '../bin/bgos-pair.mjs'
 import { detectInstallMethod } from '../bin/bgos-install-method.mjs'
+import { runSetup } from '../bin/hoai-core.mjs'
 import { resolveCredentialsSelection } from '../lib/agent-credentials.ts'
 
 test('normalizeApiBase always yields a single /api/v1 suffix', () => {
@@ -457,6 +460,25 @@ function mkCreds(assistantId: number | string | null, token = 'pair_secret') {
   })
 }
 
+/**
+ * The install-cli step, stubbed. Every main() test injects one: the real step
+ * writes a shim and a PATH line into a home directory, and a test may never
+ * reach for a real one. Records its calls so a test can prove what pairing
+ * handed it.
+ */
+function fakeInstallCli(
+  result: { ok: boolean; binDir: string } | Error = { ok: true, binDir: '/tmp/fake-bin' },
+) {
+  const calls: Array<Record<string, unknown>> = []
+  const impl = async (opts: Record<string, unknown>) => {
+    calls.push(opts)
+    if (result instanceof Error) throw result
+    return result
+  }
+  impl.calls = calls
+  return impl
+}
+
 test('dedupeLegacyAfterWrite: unbound keeps, junk deletes, same agent deletes, another agent keeps', () => {
   // Rule 1: an unbound write (no assistantId) writes the legacy slot itself
   // and owns it; deleting here would eat its own write.
@@ -807,11 +829,15 @@ test('pairExitCode: a multi-agent host refuses to call an unpinned pairing a suc
 })
 
 test('pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning', () => {
+  // Each meaning gets its own number, never an overload: a caller (the app's
+  // one-click script, `hoai setup`) has to be able to tell "wrong folder,
+  // nothing spent" from "something broke" without reading the prose.
   assert.deepEqual(PAIR_EXIT_CODES, {
     DONE: 0,
     UNEXPECTED_ERROR: 1,
     SERVER_REFUSED: 2,
     PIN_REQUIRED: 3,
+    UNSAFE_FOLDER: 4,
   })
 })
 
@@ -835,13 +861,82 @@ test('pairExitCode: an explicit override lets an operator proceed knowingly', ()
   )
 })
 
+// --- pairing pre-seeds the one-time prompts (2026-09-21) ---------------------
+// bgos-pair ends by telling the user to run `hoai` in this folder. Until now
+// nothing on that path had ever pre-seeded Claude Code's one-time prompts:
+// preseedClaudeTrust's only production caller was the watcher's create-agent
+// job, which a hand-paired machine never runs. So the very next thing the user
+// was told to do stopped on a full-screen trust dialog, on a fresh install,
+// with every line printed above it reporting success.
+//
+// Driven against the REAL function and a real throwaway home, because the
+// point of the fix is that the unmocked production path does this.
+
+test('main: a completed pairing pre-seeds the one-time prompts for the folder it just pinned', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-preseed-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 77, user_id: 'user_mark' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          assistants: [{ assistant_id: 936, agent_route: 'claude', name: 'Mark' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = () => {}
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, cwd: folder, fetchImpl, isInteractive: () => true, installCliImpl: fakeInstallCli() },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+
+    // The trust entry is keyed on the folder the pin was baked into, byte for
+    // byte: any other key leaves the dialog exactly where it was.
+    const cfg = JSON.parse(await readFile(join(home, '.claude.json'), 'utf8'))
+    assert.equal(cfg.projects[folder].hasTrustDialogAccepted, true)
+    assert.equal(cfg.hasCompletedOnboarding, true)
+    // Written to the file Claude Code actually reads with CLAUDE_CONFIG_DIR
+    // unset, not to one inside the config dir.
+    assert.equal(existsSync(join(home, '.claude', '.claude.json')), false)
+    // The bypass warning's default answer is exit, so it is suppressed in
+    // settings.json, which really does live in the config dir.
+    const settings = JSON.parse(await readFile(join(home, '.claude', 'settings.json'), 'utf8'))
+    assert.equal(settings.skipDangerousModePermissionPrompt, true)
+    // And it SAYS so: a seed nobody can see is one nobody can check.
+    assert.match(output.join('\n'), /pre-seeded Claude Code's one-time prompts/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('main reaches the post-success pin check without a home ReferenceError', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bgos-pair-main-success-'))
+  // The agent's OWN folder, never $HOME itself: pairing from the home
+  // directory is refused before the exchange now (see the folder guard tests
+  // below), because the folder pairing runs in becomes the agent folder.
+  const folder = join(home, 'hoai-agents', 'mark')
   const output: string[] = []
   const errors: string[] = []
   const originalLog = console.log
   const originalError = console.error
   try {
+    await mkdir(folder, { recursive: true })
     await writeCredentialsFile(
       join(home, '.bgos-agent', 'credentials-935.json'),
       mkCreds(935, 'existing_agent_token'),
@@ -868,7 +963,7 @@ test('main reaches the post-success pin check without a home ReferenceError', as
 
     const code = await main(
       ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
-      { env: {}, home, cwd: home, fetchImpl },
+      { env: {}, home, cwd: folder, fetchImpl, isInteractive: () => true, installCliImpl: fakeInstallCli() },
     )
 
     // CONTRACT CHANGE (2026-08-23, MacBook-Air-2 one-click failure): a
@@ -888,7 +983,7 @@ test('main reaches the post-success pin check without a home ReferenceError', as
     )
     assert.equal(written.assistantId, 936)
     // The bake dropped a launch-folder pin so a bare launch from cwd resolves 936.
-    assert.equal((await readFile(join(home, FOLDER_PIN_FILE_NAME), 'utf8')).trim(), '936')
+    assert.equal((await readFile(join(folder, FOLDER_PIN_FILE_NAME), 'utf8')).trim(), '936')
     assert.match(output.join('\n'), /baked .*\.bgos-agent-id/)
 
     output.length = 0
@@ -896,7 +991,13 @@ test('main reaches the post-success pin check without a home ReferenceError', as
     requests.length = 0
     const safeCode = await main(
       ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
-      { env: { BGOS_ASSISTANT_ID: '936' }, home, cwd: home, fetchImpl },
+      {
+        env: { BGOS_ASSISTANT_ID: '936' },
+        home,
+        cwd: folder,
+        fetchImpl,
+        isInteractive: () => true, installCliImpl: fakeInstallCli(),
+      },
     )
     assert.equal(safeCode, PAIR_EXIT_CODES.DONE)
     assert.equal(requests.length, 4)
@@ -1319,11 +1420,799 @@ test('main still exits PIN_REQUIRED on a multi-agent host when the pin cannot ba
     console.error = (...values: unknown[]) => errors.push(values.join(' '))
     const code = await main(
       ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
-      { env: {}, home, cwd: fileAsCwd, fetchImpl },
+      { env: {}, home, cwd: fileAsCwd, fetchImpl, isInteractive: () => true, installCliImpl: fakeInstallCli() },
     )
     assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
     assert.match(errors.join('\n'), /NOT DONE/)
     assert.match(output.join('\n'), /REQUIRED: set BGOS_ASSISTANT_ID=936/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main: an exit-3 pairing still puts hoai on PATH, and prints the fallback when it cannot', async () => {
+  // F1 asked for install-cli to run as THE LAST STEP OF PAIRING, and the first
+  // cut put the call after the PIN_REQUIRED early return, so this path skipped
+  // it entirely. Exit 3 is "paired but not live-safe": the credentials file is
+  // written and verified and only the environment pin is missing. The user is
+  // sent off to set that pin and then run `hoai`, so leaving them with no such
+  // command, and no fallback line either, is the exact pre-fix state this
+  // release exists to end.
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-exit3-installcli-'))
+  const originalLog = console.log
+  const originalError = console.error
+  const output: string[] = []
+  const errors: string[] = []
+  try {
+    await writeCredentialsFile(
+      join(home, '.bgos-agent', 'credentials-935.json'),
+      mkCreds(935, 'existing_agent_token'),
+    )
+    const fileAsCwd = join(home, 'not-a-directory')
+    await writeFile(fileAsCwd, 'occupied')
+    const installCli = fakeInstallCli({ ok: false, binDir: '' })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 78, user_id: 'user_mark' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({
+          assistants: [{ assistant_id: 936, agent_route: 'claude', name: 'Mark' }],
+        })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, cwd: fileAsCwd, platform: 'linux', fetchImpl, isInteractive: () => true, installCliImpl: installCli },
+    )
+
+    assert.equal(code, PAIR_EXIT_CODES.PIN_REQUIRED)
+    // THE point: it ran, on the path that used to return before reaching it.
+    assert.equal(installCli.calls.length, 1)
+    assert.equal(installCli.calls[0]!.home, home)
+    const text = output.join('\n')
+    // And a failed install is a printed fallback here, because this path never
+    // reaches the restart block that carries one on the DONE path.
+    assert.match(text, /the hoai command could NOT be installed automatically/)
+    assert.match(text, /npx --yes --package github:BrandGrowthOS\/bgos-claude-plugin hoai install-cli/)
+    // Never fatal: the exit code is still the pin verdict, not an error.
+    assert.match(errors.join('\n'), /NOT DONE/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main: a pairing whose agent is not bound YET still puts hoai on PATH', async () => {
+  // The second path the first cut of F1 missed. A user who pairs before
+  // finishing "Add agent" in the app gets "paired, but no agent is bound yet"
+  // and exit 0, and is then told to go start Claude Code: a completed pairing,
+  // sent to a terminal, with nothing on PATH to type and no fallback printed.
+  //
+  // bindTimeoutMs is why this path had no test before: the bind poll is a
+  // wall-clock minute in production, so reaching the unbound branch meant
+  // waiting one out.
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-unbound-installcli-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const installCli = fakeInstallCli({ ok: true, binDir: join(home, '.local', 'bin') })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 94, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      // Nothing bound: the app has not finished "Add agent".
+      if (url.endsWith('/integrations/me')) return Response.json({ assistants: [] })
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = () => {}
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home,
+        cwd: folder,
+        platform: 'linux',
+        fetchImpl,
+        isInteractive: () => true, installCliImpl: installCli,
+        bindTimeoutMs: 0,
+      },
+    )
+
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+    const text = output.join('\n')
+    // The branch really is the unbound one, not the verified one.
+    assert.match(text, /paired, but no agent is bound yet/)
+    assert.doesNotMatch(text, /verified: this file resolves to assistant/)
+    // THE point: it ran here too, with the injected home.
+    assert.equal(installCli.calls.length, 1)
+    assert.equal(installCli.calls[0]!.home, home)
+    assert.deepEqual(installCli.calls[0]!.env, {})
+    assert.match(text, new RegExp(`the hoai command is on your PATH now \\(${join(home, '.local', 'bin')}\\)`))
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+// -- Ask or announce, never silently replace: the PATH half ------------------
+//
+// KC's ruling, 2026-09-21. Putting `hoai` on PATH writes ~/.local/bin and
+// appends a line to the owner's shell profiles. That is right when the owner
+// asked and is watching. It is wrong from the watcher's background
+// create-agent job, where nobody is at a terminal to read the notes and a
+// machine with generated profiles (nix home-manager, a managed image) silently
+// loses or reverts the write.
+
+async function installCliGateCase(
+  argv: string[],
+  isInteractive: () => boolean,
+): Promise<{ calls: number; text: string; code: number }> {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-gate-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const installCli = fakeInstallCli({ ok: true, binDir: join(home, '.local', 'bin') })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 91, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({ assistants: [{ assistant_id: 941, agent_route: 'claude', name: 'Ava' }] })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => output.push(values.join(' '))
+    const code = await main(argv, {
+      env: {},
+      home,
+      cwd: folder,
+      platform: 'linux',
+      fetchImpl,
+      isInteractive,
+      installCliImpl: installCli,
+    })
+    return { calls: installCli.calls.length, text: output.join('\n'), code }
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+}
+
+test('main: --no-install-cli pairs fully but never touches PATH, and says so with the remedy', async () => {
+  const seen = await installCliGateCase(
+    ['BGOS-7F3A-2K', '--backend', 'https://pair.test', '--no-install-cli'],
+    () => true,
+  )
+  assert.equal(seen.code, PAIR_EXIT_CODES.DONE, 'the pairing itself still succeeds')
+  assert.equal(seen.calls, 0, 'the daemon path must not write a shell profile')
+  assert.match(seen.text, /leaving your PATH alone/)
+  assert.match(seen.text, /--no-install-cli was passed/)
+  // Skipping is never silent: the one command that does it by hand is printed.
+  assert.match(seen.text, /npx --yes --package .* hoai install-cli/)
+})
+
+test('main: a pairing with no terminal attached skips the PATH step on its own', async () => {
+  // The belt to --no-install-cli's braces. A future non-interactive caller
+  // that nobody remembered to update still does not edit the owner's dotfiles.
+  const seen = await installCliGateCase(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], () => false)
+  assert.equal(seen.code, PAIR_EXIT_CODES.DONE)
+  assert.equal(seen.calls, 0)
+  assert.match(seen.text, /no terminal is attached/)
+  assert.match(seen.text, /npx --yes --package .* hoai install-cli/)
+})
+
+test('main: the owner at a terminal is the path that DOES install, so the gate cannot swallow everything', async () => {
+  // The control. Without this a gate that always skipped would look correct.
+  const seen = await installCliGateCase(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], () => true)
+  assert.equal(seen.calls, 1)
+  assert.doesNotMatch(seen.text, /leaving your PATH alone/)
+})
+
+test('parsePairArgs reads --no-install-cli without disturbing the other flags', () => {
+  const { args, errors } = parsePairArgs([
+    'BGOS-7F3A-2K',
+    '--no-install-cli',
+    '--assistant-id',
+    '941',
+    '--allow-unpinned',
+  ])
+  assert.deepEqual(errors, [])
+  assert.equal(args.noInstallCli, true)
+  assert.equal(args.assistantId, '941')
+  assert.equal(args.allowUnpinned, true)
+  assert.equal(args.code, 'BGOS-7F3A-2K')
+  // Absent means false, never undefined: the gate reads it directly.
+  assert.equal(parsePairArgs(['BGOS-7F3A-2K']).args.noInstallCli, false)
+})
+
+test('main: install-cli never runs on a pairing that FAILED outright', async () => {
+  // The other half of the contract. "Every path where the pairing succeeded"
+  // must not quietly become "every path": a server that refused the exchange
+  // wrote nothing, so there is no agent here to put a command on PATH for, and
+  // touching the user's shell profiles on the way out of a failure would be a
+  // side effect nobody asked for.
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    console.log = () => {}
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+    const installCli = fakeInstallCli()
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home: '/home/kc',
+        cwd: '/home/kc/hoai-agents/ava',
+        platform: 'linux',
+        fetchImpl: (async () => Response.json({ error: 'nope' }, { status: 403 })) as never,
+        isInteractive: () => true, installCliImpl: installCli,
+      },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.SERVER_REFUSED)
+    assert.equal(installCli.calls.length, 0)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+  }
+})
+
+// ── F1: after a marketplace install, `hoai` was not on the user's PATH ───────
+//
+// Claude Code injects a plugin's bin/ into its OWN session PATH (three official
+// plugins' bin dirs are on this machine's session PATH right now, all of the
+// form ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/bin), so `hoai`
+// resolved inside Claude Code and answered command not found in the terminal
+// the person actually types in. The only thing that puts it on the real PATH is
+// installWrapper, through installHoaiCli, and nothing on the plugin-install
+// path called it: pairing merely MENTIONED it, in a conditional footnote under
+// a line that had just declared setup complete, and charged a full npx round
+// trip to anyone who read that far. Pairing now runs it.
+
+test('main: pairing runs install-cli itself, with the injected home, and says where it landed', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-installcli-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const installCli = fakeInstallCli({ ok: true, binDir: join(home, '.local', 'bin') })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 91, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({ assistants: [{ assistant_id: 941, agent_route: 'claude', name: 'Ava' }] })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = () => {}
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      { env: {}, home, cwd: folder, platform: 'linux', fetchImpl, isInteractive: () => true, installCliImpl: installCli },
+    )
+
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+    // It RAN, once, rather than telling the user to run it.
+    assert.equal(installCli.calls.length, 1)
+    // And it ran against the injected home and env, never a real one.
+    assert.equal(installCli.calls[0]!.home, home)
+    assert.deepEqual(installCli.calls[0]!.env, {})
+    const text = output.join('\n')
+    assert.match(text, new RegExp(`the hoai command is on your PATH now \\(${join(home, '.local', 'bin')}\\)`))
+    // The closing block reports the install instead of handing back a chore.
+    assert.match(text, /was just installed for you in/)
+    assert.doesNotMatch(text, /hoai install-cli/)
+    // The hard-won warning is untouched: an alias freezes ONE channel spec and
+    // the wrong spec drops every inbound message in silence (2026-08-21).
+    assert.match(text, /Do NOT put a hoai alias in your/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main: an install-cli that fails is a printed fallback, never a failed pairing', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-installcli-fail-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  const output: string[] = []
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    await mkdir(folder, { recursive: true })
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 92, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({ assistants: [{ assistant_id: 942, agent_route: 'claude', name: 'Ava' }] })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+
+    // A shim that could not be written is a note, not a failure: the pairing
+    // above it is already written, verified and baked.
+    const refused = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home,
+        cwd: folder,
+        platform: 'linux',
+        fetchImpl,
+        isInteractive: () => true, installCliImpl: fakeInstallCli({ ok: false, binDir: '' }),
+      },
+    )
+    assert.equal(refused, PAIR_EXIT_CODES.DONE)
+    assert.match(output.join('\n'), /the hoai command could NOT be installed automatically/)
+    // The honest fallback, the npx line that has always been there, survives
+    // for exactly this case. install-cli, never a launch: under npx the
+    // install-method detection sees the temp dir and picks the wrong spec.
+    assert.match(output.join('\n'), /npx --yes --package \S+ hoai install-cli/)
+
+    // Same when it throws outright.
+    output.length = 0
+    errors.length = 0
+    const threw = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home,
+        cwd: folder,
+        platform: 'linux',
+        fetchImpl,
+        isInteractive: () => true, installCliImpl: fakeInstallCli(new Error('EACCES: read-only home')),
+      },
+    )
+    assert.equal(threw, PAIR_EXIT_CODES.DONE)
+    assert.match(errors.join('\n'), /could not install the hoai command \(EACCES: read-only home\)/)
+    assert.match(output.join('\n'), /npx --yes --package \S+ hoai install-cli/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('restartInstructions: reports what install-cli did instead of handing back a chore', () => {
+  const installed = restartInstructions(null, { ok: true, binDir: '/home/kc/.local/bin' }).join('\n')
+  assert.match(installed, /was just installed for you in \/home\/kc\/\.local\/bin/)
+  // Nothing left to run: the conditional footnote is gone on this branch.
+  assert.doesNotMatch(installed, /hoai install-cli/)
+  // A shell reads its PATH once, so the only real instruction left is said.
+  assert.match(installed, /open a new one/i)
+
+  // A failed install keeps the npx fallback, and so does no outcome at all.
+  for (const outcome of [{ ok: false, binDir: '' }, { ok: true, binDir: '' }, null]) {
+    const text = restartInstructions(null, outcome as never).join('\n')
+    assert.match(text, /npx --yes --package \S+ hoai install-cli/)
+    assert.doesNotMatch(text, /was just installed for you/)
+  }
+})
+
+test('hoai setup puts the hoai command on PATH BEFORE it pairs', async () => {
+  // `hoai setup` already did this (step 3 of 4) and needs no behaviour change;
+  // this pins the ORDER, which is the load-bearing part: pairing's closing
+  // instruction says "run hoai from this folder", so the command has to exist
+  // by the time that line is read. Asserted through the injected effects, so no
+  // marketplace, no plugin install and no real home is touched.
+  const order: string[] = []
+  const installCli = async (opts: Record<string, unknown>) => {
+    order.push('install-cli')
+    return { ok: true, binDir: String(opts.home ?? '') }
+  }
+  const spawnImpl = () => {
+    order.push('pair')
+    const child = {
+      on(event: string, handler: (...values: unknown[]) => void) {
+        if (event === 'exit') setTimeout(() => handler(0, null), 0)
+        return child
+      },
+    }
+    return child
+  }
+  const code = await runSetup(['BGOS-7F3A-2K'], {
+    platform: 'linux',
+    env: {},
+    home: '/tmp/not-a-real-home',
+    scriptDir: '/tmp/not-a-real-plugin/bin',
+    spawnImpl: spawnImpl as never,
+    spawnClaudeImpl: async () => 0,
+    // NOT isInteractive: runSetup does not take it and never consults it.
+    // `hoai setup` already ran install-cli at step 3 of 4, so the
+    // interactive gate belongs to bgos-pair's path, not this one.
+    installCliImpl: installCli as never,
+    ensureAutoUpdateImpl: () => ({ changed: false }) as never,
+    print: () => {},
+    // writeErr mirrors process.stderr.write, which answers a boolean. The
+    // double says true rather than void so it is the same shape as the thing
+    // it stands in for.
+    writeErr: () => true,
+  })
+  assert.equal(code, 0)
+  assert.deepEqual(order, ['install-cli', 'pair'])
+})
+
+// ── F9: pairing from $HOME made the whole home directory the agent folder ────
+//
+// bakeLaunchPin writes <cwd>/.bgos-agent-id and that folder becomes the agent
+// folder: `hoai` launches there and the session runs with permissions skipped
+// across everything under it. $HOME is exactly where someone is standing when
+// they paste the line the app gave them, so the default mistake handed a
+// permissions-skipped agent every key, document and repo on the machine.
+//
+// The guard is a pure classifier plus an EARLY refusal: a pair code is one time
+// use and expires in ten minutes, so refusing after spending it would be worse
+// than the defect.
+
+test('classifyPairCwd refuses home even when cwd and $HOME spell it differently', () => {
+  // The guard was FAILING OPEN here, found by running it rather than reading
+  // it. process.cwd() returns a realpath and os.homedir() returns $HOME
+  // verbatim, so on any machine whose home runs through a symlink the two
+  // describe ONE directory with two strings and a plain compare answers "not
+  // home". Reproduced on macOS with HOME under /tmp, whose realpath is
+  // /private/tmp: pairing from the home directory sailed straight through the
+  // check that exists to stop exactly that.
+  const resolvePath = (path: string) => (path.startsWith('/tmp/') ? path.replace('/tmp/', '/private/tmp/') : path)
+
+  // cwd already resolved, home still the symlinked spelling: the real case.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/private/tmp/kc', home: '/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: false, case: 'home' },
+  )
+  // And the mirror, in case the two are ever read the other way round.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/tmp/kc', home: '/private/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: false, case: 'home' },
+  )
+  // A symlinked ROOT is still a root.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/tmp/', home: '/home/kc', platform: 'darwin', resolvePath: () => '/' }),
+    { ok: false, case: 'root' },
+  )
+  // The hardening must not start refusing ordinary folders: a real subfolder
+  // of home resolves to a real subfolder of home and still pairs.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/private/tmp/kc/hoai-agents/ava', home: '/tmp/kc', platform: 'darwin', resolvePath }),
+    { ok: true, case: 'ok' },
+  )
+})
+
+test('classifyPairCwd survives a BARE throwing resolver on every path that consults it', () => {
+  // realpath fails on a path that does not exist or cannot be read. That must
+  // degrade to the literal compare, never to an exception in front of a user
+  // holding a ten minute code.
+  //
+  // THIS TEST WAS FAKE until 2026-09-21. It defined a throwing resolver, then
+  // wrapped it in the test's OWN try/catch and passed the safe wrapper to
+  // classifyPairCwd, so it exercised the wrapper and asserted nothing about
+  // production code. Meanwhile classifyPairCwd called resolvePath() unguarded,
+  // and resolvePath is an EXPORTED, DOCUMENTED parameter: only the default
+  // resolver had a try/catch, so any caller injecting a bare realpathSync (the
+  // obvious thing to inject) really did get an exception. The resolver is now
+  // passed bare, with no wrapper anywhere in this test.
+  const throwing = () => {
+    throw new Error('ENOENT')
+  }
+  assert.throws(() => throwing(), /ENOENT/)
+
+  // The home compare. Bare resolver, no wrapper: unguarded call sites throw
+  // here instead of returning a verdict.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/home/kc', home: '/home/kc', platform: 'linux', resolvePath: throwing }),
+    { ok: false, case: 'home' },
+  )
+  // The ROOT branch consults the resolver too, and it runs BEFORE the home
+  // compare, so it is a second unguarded call site and needs its own proof.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '/', home: '/home/kc', platform: 'linux', resolvePath: throwing }),
+    { ok: false, case: 'root' },
+  )
+  // Degrading must not start refusing the normal case: a folder of the agent's
+  // own still pairs when nothing can be resolved.
+  assert.deepEqual(
+    classifyPairCwd({
+      cwd: '/home/kc/hoai-agents/ava',
+      home: '/home/kc',
+      platform: 'linux',
+      resolvePath: throwing,
+    }),
+    { ok: true, case: 'ok' },
+  )
+  // And the degrade is PER CALL SITE, not a blanket bail: here the cwd cannot
+  // be resolved (it falls back to itself) while $HOME resolves through the
+  // symlink to that same directory, which is precisely the fail-open case the
+  // resolver was added for. It must still refuse.
+  const throwsOnCwd = (path: string) => {
+    if (path === '/private/tmp/kc') throw new Error('EACCES')
+    return path.startsWith('/tmp/') ? path.replace('/tmp/', '/private/tmp/') : path
+  }
+  assert.deepEqual(
+    classifyPairCwd({
+      cwd: '/private/tmp/kc',
+      home: '/tmp/kc',
+      platform: 'linux',
+      resolvePath: throwsOnCwd,
+    }),
+    { ok: false, case: 'home' },
+  )
+})
+
+test('classifyPairCwd refuses $HOME itself and every filesystem root, and passes a folder inside home', () => {
+  // The home directory itself, with and without a trailing separator.
+  assert.deepEqual(classifyPairCwd({ cwd: '/home/kc', home: '/home/kc', platform: 'linux' }), {
+    ok: false,
+    case: 'home',
+  })
+  assert.deepEqual(classifyPairCwd({ cwd: '/home/kc/', home: '/home/kc', platform: 'linux' }), {
+    ok: false,
+    case: 'home',
+  })
+  // A folder INSIDE home is the correct shape and is never refused.
+  for (const cwd of ['/home/kc/hoai-agents/ava', '/home/kc/.hidden', '/home/kc2']) {
+    assert.deepEqual(classifyPairCwd({ cwd, home: '/home/kc', platform: 'linux' }), {
+      ok: true,
+      case: 'ok',
+    })
+  }
+  // Roots, posix.
+  for (const cwd of ['/', '//']) {
+    assert.deepEqual(classifyPairCwd({ cwd, home: '/home/kc', platform: 'linux' }), {
+      ok: false,
+      case: 'root',
+    })
+  }
+  // Roots, win32: a drive in either spelling, and a UNC root (server or share).
+  for (const cwd of ['C:\\', 'C:/', 'C:', '\\\\server\\share', '\\\\server\\share\\', '\\\\server']) {
+    assert.deepEqual(classifyPairCwd({ cwd, home: 'C:\\Users\\kc', platform: 'win32' }), {
+      ok: false,
+      case: 'root',
+    })
+  }
+  // win32 compares case insensitively, because the filesystem does: this is
+  // the same folder, and a case-sensitive compare would wave it through.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: 'C:\\USERS\\KC\\', home: 'c:/users/kc', platform: 'win32' }),
+    { ok: false, case: 'home' },
+  )
+  // posix does not: two different folders can differ only in case.
+  assert.deepEqual(classifyPairCwd({ cwd: '/home/KC', home: '/home/kc', platform: 'linux' }), {
+    ok: true,
+    case: 'ok',
+  })
+  // A folder under a UNC share is a folder, not a root.
+  assert.deepEqual(
+    classifyPairCwd({ cwd: '\\\\server\\share\\ava', home: 'C:\\Users\\kc', platform: 'win32' }),
+    { ok: true, case: 'ok' },
+  )
+  // An unknown cwd is not evidence of a bad one.
+  assert.deepEqual(classifyPairCwd({ cwd: '', home: '/home/kc', platform: 'linux' }), {
+    ok: true,
+    case: 'ok',
+  })
+})
+
+test('pairCwdRefusalLines: the mkdir line is PowerShell-shaped on win32, posix-shaped elsewhere', () => {
+  // The win32 half of this split had NO test: a reviewer replaced the whole
+  // ternary with the posix form alone and the file stayed at 75 pass 0 fail,
+  // because the only assertion on it lived in a main() test pinned to linux.
+  // It matters because PowerShell's mkdir is New-Item, which creates
+  // intermediate directories and REJECTS -p outright, so a Windows owner
+  // pasting the refusal's very first line gets a red error on the one screen
+  // whose entire job is to be pasteable. The code comment beside the line
+  // calls that risk out; nothing held it.
+  const win = pairCwdRefusalLines({
+    verdict: 'home',
+    cwd: 'C:\\Users\\kc',
+    home: 'C:\\Users\\kc',
+    platform: 'win32',
+  })
+  const winText = win.join('\n')
+  assert.match(winText, /^ {2}mkdir C:\\Users\\kc\\hoai-agents\\my-agent$/m)
+  // The assertion that actually catches the collapse: no -p anywhere on win32.
+  assert.doesNotMatch(winText, /mkdir -p/)
+  // The separator is the platform's too, in the cd line and the naming hint.
+  assert.match(winText, /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m)
+  assert.match(winText, /hoai-agents\\<name>/)
+
+  // And the posix half is unchanged: mkdir there NEEDS -p, because the parent
+  // hoai-agents directory does not exist yet on a first pairing.
+  const posix = pairCwdRefusalLines({
+    verdict: 'home',
+    cwd: '/home/kc',
+    home: '/home/kc',
+    platform: 'linux',
+  })
+  const posixText = posix.join('\n')
+  assert.match(posixText, /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m)
+  assert.match(posixText, /^ {2}cd \/home\/kc\/hoai-agents\/my-agent$/m)
+
+  // A home with a space is quoted on both, or the paste breaks in two.
+  assert.match(
+    pairCwdRefusalLines({ verdict: 'home', home: 'C:\\Users\\Kc Smith', platform: 'win32' }).join('\n'),
+    /^ {2}mkdir "C:\\Users\\Kc Smith\\hoai-agents\\my-agent"$/m,
+  )
+  assert.match(
+    pairCwdRefusalLines({ verdict: 'home', home: '/home/kc smith', platform: 'linux' }).join('\n'),
+    /^ {2}mkdir -p "\/home\/kc smith\/hoai-agents\/my-agent"$/m,
+  )
+})
+
+test('main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-home-guard-'))
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  const requests: string[] = []
+  try {
+    console.log = () => {}
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home,
+        cwd: home,
+        platform: 'linux',
+        fetchImpl: (async (input: string | URL | Request) => {
+          requests.push(String(input))
+          return Response.json({})
+        }) as never,
+        isInteractive: () => true, installCliImpl: fakeInstallCli(),
+      },
+    )
+
+    assert.equal(code, PAIR_EXIT_CODES.UNSAFE_FOLDER)
+    // THE point: the exchange never happened, so the code is still good.
+    assert.deepEqual(requests, [])
+    assert.equal(existsSync(join(home, FOLDER_PIN_FILE_NAME)), false)
+    const text = errors.join('\n')
+    assert.match(text, /refusing to pair from/)
+    assert.match(text, /that is your home directory/)
+    assert.match(text, /pair code was NOT spent/)
+    // Actionable, not a scold: the exact folder, and the exact lines to paste.
+    assert.match(text, new RegExp(`mkdir -p ${join(home, 'hoai-agents', 'my-agent')}`))
+    assert.match(text, new RegExp(`cd ${join(home, 'hoai-agents', 'my-agent')}`))
+    // The same pair command, carrying the same code, ready to run there.
+    assert.match(text, /BGOS-7F3A-2K --backend https:\/\/pair\.test/)
+    assert.match(text, /--allow-home/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main refuses a filesystem root the same way, and exits the documented code', async () => {
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  const requests: string[] = []
+  try {
+    console.log = () => {}
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test'],
+      {
+        env: {},
+        home: '/home/kc',
+        cwd: '/',
+        platform: 'linux',
+        fetchImpl: (async (input: string | URL | Request) => {
+          requests.push(String(input))
+          return Response.json({})
+        }) as never,
+        isInteractive: () => true, installCliImpl: fakeInstallCli(),
+      },
+    )
+    assert.equal(code, PAIR_EXIT_CODES.UNSAFE_FOLDER)
+    assert.equal(PAIR_EXIT_CODES.UNSAFE_FOLDER, 4)
+    assert.deepEqual(requests, [])
+    assert.match(errors.join('\n'), /that is a filesystem root/)
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+  }
+})
+
+test('parsePairArgs reads --allow-home without disturbing the other flags', () => {
+  const a = parsePairArgs(['BGOS-7F3A-2K', '--allow-home'])
+  assert.equal(a.errors.length, 0)
+  assert.equal(a.args.allowHome, true)
+  assert.equal(a.args.allowUnpinned, false)
+  assert.equal(a.args.code, 'BGOS-7F3A-2K')
+  // Default off: the guard only yields when it is asked to.
+  assert.equal(parsePairArgs(['BGOS-7F3A-2K']).args.allowHome, false)
+  // And the two overrides are independent.
+  const b = parsePairArgs(['BGOS-7F3A-2K', '--allow-unpinned'])
+  assert.equal(b.args.allowHome, false)
+  assert.equal(b.args.allowUnpinned, true)
+})
+
+test('main --allow-home proceeds with the pairing and still warns what it means', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-allow-home-'))
+  const output: string[] = []
+  const errors: string[] = []
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: 'new_pair_token', pairing_id: 93, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) {
+        return Response.json({ assistants: [{ assistant_id: 943, agent_route: 'claude', name: 'Ava' }] })
+      }
+      return Response.json({})
+    }
+    console.log = (...values: unknown[]) => output.push(values.join(' '))
+    console.error = (...values: unknown[]) => errors.push(values.join(' '))
+
+    const code = await main(
+      ['BGOS-7F3A-2K', '--backend', 'https://pair.test', '--allow-home'],
+      { env: {}, home, cwd: home, platform: 'linux', fetchImpl, isInteractive: () => true, installCliImpl: fakeInstallCli() },
+    )
+
+    // It proceeds: the flag is an override, exactly like --allow-unpinned.
+    assert.equal(code, PAIR_EXIT_CODES.DONE)
+    assert.equal((await readFile(join(home, FOLDER_PIN_FILE_NAME), 'utf8')).trim(), '943')
+    // And it never suppresses the warning, because the consequence outlives
+    // the terminal that chose it.
+    const text = output.join('\n')
+    assert.match(text, /--allow-home: pairing from/)
+    assert.match(text, /which is your home directory/)
+    assert.match(text, /permissions skipped/)
+    assert.doesNotMatch(errors.join('\n'), /refusing to pair/)
   } finally {
     console.log = originalLog
     console.error = originalError

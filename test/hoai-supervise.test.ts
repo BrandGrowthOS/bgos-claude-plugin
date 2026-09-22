@@ -27,6 +27,7 @@ import {
   SESSION_ID_FILE_NAME,
   SUPERVISOR_FILE_NAME,
   buildGateAutoAcceptExpect,
+  readGateBlock,
   decideMarkerRelaunch,
   decideRelaunchRecovery,
   decideSupervisorArming,
@@ -185,7 +186,7 @@ test('relaunchNeedsGateAutoAccept: clone AND marketplace installs prompt on 2.1.
   assert.equal(relaunchNeedsGateAutoAccept('marketplace'), true)
 })
 
-test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-accepts the confirm gate', () => {
+test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args, embeds the shared gate block, hands off to interact', () => {
   const script = buildGateAutoAcceptExpect({
     claudePath: '/usr/bin/claude',
     args: ['--dangerously-load-development-channels', 'server:bgos', '--resume', 'abc'],
@@ -197,12 +198,61 @@ test('buildGateAutoAcceptExpect: spawns claude with brace-quoted args and auto-a
     ),
     true,
   )
-  // Sends Enter on the single-word "confirm" footer (the run.expect lesson).
-  assert.equal(/confirm/.test(script) && /send .\\r./.test(script), true)
-  // A SIGTERM trap kills the spawned claude so a supervisor kill never orphans it.
+  // The gate rules are the SHARED block, byte for byte, not a second hand-kept
+  // copy. Two copies is how the 2026-09-21 fix reached this script and never
+  // reached the supervisor desktop one-click installs.
+  assert.equal(script.includes(readGateBlock()), true)
+  // A SIGTERM trap kills the spawned claude so a supervisor kill never orphans
+  // it, and it is armed BEFORE the gate block can start waiting.
   assert.equal(/trap .* SIGTERM/.test(script) && script.includes('exp_pid'), true)
+  assert.ok(script.indexOf('SIGTERM') < script.indexOf('hoai_outcome'), script)
   // Hands off to interact so a human is still relayed and kill still ends it.
   assert.equal(script.includes('interact'), true)
+  assert.ok(script.lastIndexOf('interact') > script.indexOf('hoai_outcome'), script)
+})
+
+test('buildGateAutoAcceptExpect: the launcher itself never sends a key, only the gate block does, and only to a screen it read', () => {
+  // THE DEFECT THIS PINS (2026-09-21, measured against Claude Code 2.1.278).
+  // The script used to carry `-re {(?i)confirm} { sleep 1; send "\r" }`, on the
+  // theory that Enter accepts every gate. Folder trust and the bypass warning
+  // list "No, exit" FIRST, so that Enter DECLINED them: run against the real CLI
+  // on an unseeded folder it exited 1 after 2 seconds with no trust written and
+  // nothing printed. The earlier fix removed the Enter on timeout and left that
+  // one, so "never presses blind" held for the timeout branch only.
+  const block = 'set hoai_outcome live\nset hoai_answered {}\nset hoai_screen ""'
+  const script = buildGateAutoAcceptExpect({
+    claudePath: 'claude',
+    args: ['--dangerously-skip-permissions'],
+    gateBlock: block,
+  })
+  // With the block swapped for a stub, what is left is the launcher's own
+  // text, and it must contain no send at all and no bare "confirm" rule.
+  assert.doesNotMatch(script, /\bsend\b/, script)
+  assert.doesNotMatch(script, /confirm/, script)
+  // The stub landed where the block goes: after spawn and the trap, before the tail.
+  assert.ok(script.indexOf(block) > script.indexOf('SIGTERM'), script)
+  assert.ok(script.indexOf(block) < script.indexOf('interact'), script)
+})
+
+test('buildGateAutoAcceptExpect: a failed launch is never silent (F6)', () => {
+  const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: [] })
+  const tail = script.slice(script.indexOf(readGateBlock()) + readGateBlock().length)
+  // claude gone before its session was up: say so, name the gates that were
+  // answered first, exit nonzero. It used to be a bare `eof { exit 1 }`.
+  assert.match(tail, /\$hoai_outcome eq "exited-during-startup"/)
+  assert.match(tail, /puts stderr "[^"]*exited during startup[^"]*\$hoai_answered/)
+  assert.match(tail, /exit 1/)
+  // A screen the block will not answer: say which and what it says, press
+  // nothing, and still reach interact, because in a terminal a person may be
+  // right there to answer it.
+  assert.match(tail, /string match "gate-\*" \$hoai_outcome/)
+  assert.match(tail, /\$hoai_screen/)
+  assert.match(tail, /Nothing was pressed/)
+  assert.ok(tail.indexOf('interact') > tail.indexOf('Nothing was pressed'), tail)
+  // Tcl would run [hoai] as a command: every bracket in the messages is escaped.
+  for (const line of tail.split('\n').filter((l) => /puts stderr/.test(l))) {
+    assert.doesNotMatch(line.replace(/\\\[|\\\]/g, ''), /\[hoai\]/, line)
+  }
 })
 
 // -- superviseAssistantId -----------------------------------------------------

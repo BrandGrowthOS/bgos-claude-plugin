@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.42.1 (2026-09-21)
+## 0.44.1 (2026-09-22)
 
 - **A permission request now looks like one, and stops dying after two
   minutes.** When this agent needed an OK before running a tool, it posted a plain
@@ -76,7 +76,209 @@ Notable changes to the HOAI Claude Code plugin.
     this one.
   - **Nothing changes for an agent installed with auto approve on**, which is
     the default: that check still short circuits before any of this. And a
-    prompt left on screen by an 0.42.0 daemon still answers, for one release.
+    prompt left on screen by a 0.44.0 or older daemon still answers, for one
+    release.
+
+## 0.44.0 (2026-09-21)
+
+- **The helpers a turn hands work to get a row each, and the owner watches
+  them work.** Until now delegating was invisible: the card said an Agent tool
+  had run and finished in five milliseconds, which is how long the launch took
+  and not how long the child worked, and everything the child then did arrived
+  as unattributed rows in the middle of the parent's own. Now each child is a
+  row of its own, named by the kind of helper it is, carrying the one line
+  description it was given, a state, an elapsed time that ticks while it works,
+  what it is doing right now, and, when it finishes, its last message.
+  - **Every part of it comes from the runtime's own events, and each part is
+    drawn only where its datum exists.** The row opens when the launch is
+    asked for and its start is the moment the hook process stamped on that
+    line. The launch RESPONSE is what says a child was handed off rather than
+    a tool finished, so the five milliseconds the response took is never
+    written as a helper's time. The elapsed is the difference between two of
+    this host's own receipts. A child that never reports back carries no time
+    and no result at all, because absent means absent.
+  - **A card now stays open while a helper is still working, even after the
+    turn has ended.** A finished card folds, and a helper ticking behind a
+    fold helps nobody. So a turn that stops with a child still running leaves
+    its card behind and the child's own stop, minutes later, updates that same
+    card instead of posting a second one. The card settles when the last child
+    settles.
+  - **More than one card can be waiting, and none of them can be written over
+    by another.** A card a turn leaves behind is kept under a name of its own,
+    so a later turn cannot write over the card the owner is watching a helper
+    on, and a second turn that ends the same way keeps the first card as well
+    rather than abandoning it half done. The commands a child runs after that
+    point land on that same card, beside the helper row they belong to, so one
+    delegating turn is one card in the chat however long the child goes on
+    working. Every card still owed an update has its own place in the queue, so
+    what a helper is doing right now reaches its card while it is still working
+    instead of being dropped for whatever the parent drew a moment later.
+  - **The child's own commands are still there.** A helper's Bash row still
+    carries the command, what it printed and the code it exited with, exactly
+    as before, and the helper's row says which of them it is running right
+    now. Nothing was taken away to make room for this.
+  - **Nothing is promised that this runtime cannot give.** There is no token
+    count, because the host is never handed one for a child, and no way to
+    stop one helper: Claude Code offers no door for it, and a button that
+    cannot do what it says is worse than no button. Both are recorded as
+    blocked rather than postponed.
+  - **One new hook event, and only one.** `SubagentStop` is registered;
+    `SubagentStart` deliberately is not, because it carries no description and
+    no tool id, so it can name nothing and be joined to nothing. A stop whose
+    child this host never saw launched is ignored outright, which is what
+    keeps the composer's own suggestion generator from drawing helpers nobody
+    asked for.
+  - **Nothing here is new for an owner who keeps the switch off.** The card is
+    still hidden by the per agent "Show technical details" setting, still off
+    by default, and this daemon still never reads it: the plugin always sends,
+    and what is drawn is the owner's choice.
+
+## 0.43.0 (2026-09-21)
+
+- **The folded card after a turn stops saying "Used 5 tools" and starts saying
+  what happened.** How long the turn took, how many tools ran, how many failed
+  and how many files changed, and underneath it a shell row now carries what
+  the command printed and the code it exited with, and an edit row the lines it
+  added and removed. The owner opens a row and reads the output where before
+  they had to ask the agent what it saw.
+  - **Every number comes from the runtime's own events, and each part is drawn
+    only where its datum exists.** The turn's start and finish are the moments
+    the hook process stamped on its own receipts, never the moment this daemon
+    happened to read the spool file (idle polling delays that by two seconds
+    and an unproven session by up to a minute, so a card built on the later
+    clock can report minutes that are wrong by more than the turn was long).
+    A card with no clock shows no minutes. A row with no output has no chevron.
+    A grep that matched nothing reports no exit code at all, because zero would
+    be a lie and one would be a guess: it carries the runtime's own reading,
+    "No matches found", as its short qualifier instead.
+  - **What a command printed is masked before it is cut, and never leaves the
+    machine in full.** The plugin's secret scanner runs over the output first
+    and the tail is taken second, because cutting first can slice a token in
+    half and hand the scanner a value its pattern no longer matches. Then the
+    caps: the last 2048 characters and the last 200 lines of a row, and 8192
+    characters of output across a whole card, spent newest first. Those caps
+    are applied before EVERY write and not only the last one, because the whole
+    tool list rides every card update while a turn is live.
+  - **Nothing here is new for an owner who keeps the switch off.** The card is
+    still hidden by the per agent "Show technical details" setting, still off
+    by default, and this daemon still never reads it: the plugin always sends,
+    and what is drawn is the owner's choice.
+  - **No Undo button, and it is blocked rather than deferred.** Claude Code's
+    own `/rewind` is an interactive selector with no tool, no channel method
+    and no control request behind it, so a daemon cannot call it and a button
+    that cannot do what it says is worse than no button.
+
+## 0.42.3 (2026-09-22)
+
+Two live defects that 0.42.1 and 0.42.2 shipped, plus the startup gates.
+
+- **The doctor failed EVERY desktop one-click install.** 0.42.2 added a folder
+  trust row that GATES the preflight, and the desktop runs `hoai doctor
+  --preflight` from the owner's HOME with no `--workdir`, so it checked the
+  wrong folder and failed after the pair code was already spent. Measured from
+  HOME against 0.42.2: `FAIL Folder trust` then `preflight FAILED: trust`. The
+  row now reads UNPROVEN when no agent folder was named, carries its remedy in
+  the detail, and resolves the folder from a pin when there is one. It also
+  honours trust INHERITED from a trusted ancestor, which Claude Code does and
+  the exact-key lookup did not.
+- **The trust seed replaced an owner's `~/.claude.json` when it could not read
+  it.** A 0600 file it could not parse came back as a fresh five line config at
+  0644, no backup, and the function reported success. Measured, and the same
+  for a zero byte file, a non-object and EACCES. It now refuses and says so,
+  leaving the file exactly as it was; both call sites already treat the seed as
+  best effort, so a refusal costs nobody their install.
+- **The startup gate block answers a gate by READING it**, rather than pressing
+  a key it hopes is right. It waits for the screen to be quiet, identifies a
+  gate by its footer phrase rather than a bare word (a resumed transcript
+  saying "can you confirm" had made the supervisor kill a healthy agent), reads
+  where the selection marker actually sits after each Down, and sends nothing
+  at all on a screen it does not recognise, reporting what was on it instead.
+
+A timing note worth keeping, because it made a correct fix look broken: a key
+sent within about 100 ms of the trust gate painting is drawn but not honoured,
+and the Enter that follows still declines. From about 150 ms on the same bytes
+work. Two people measured opposite results from the same key for exactly that
+reason.
+
+## 0.42.2 (2026-09-21)
+
+The other half of the same install post-mortem, plus one defect found while
+verifying the fix that shipped in 0.42.1.
+
+- **`hoai` never reached the user's own PATH.** After a marketplace install the
+  command resolved inside Claude Code, which injects the plugin's `bin/` into
+  its session environment, and answered `command not found` in the user's
+  terminal. The remedy existed but pairing printed it as a conditional footnote
+  BELOW the line declaring setup complete. Pairing now RUNS `install-cli` as its
+  last step and says what it did, best effort and never fatal.
+- **`hoai doctor` passed while the agent could not start.** Twelve PASS rows and
+  one SKIP on a machine where every launch exited instantly, because the doctor
+  validated the channel and never the launch. Four rows now cover the launch
+  itself, and a check that never ran renders UNPROVEN rather than SKIP: the one
+  honest row in that report read SKIP, which a reader takes as "not applicable"
+  when it meant "unverified".
+- **`waitForIncumbent` blocked forever.** No deadline, no escape, and a process
+  whose cwd merely COULD NOT BE READ counted as blocking, so any claude under
+  the same uid that `lsof` could not inspect held every launch. Bounded at 90s
+  with the incumbent pid and how to clear it; an unreadable cwd is an absence of
+  evidence, not evidence of a conflict, so it warns and lets the launch through.
+- **Pairing from `$HOME` made the home directory the agent folder**, after which
+  the agent ran with permissions skipped across the whole home. Refused now,
+  before the code exchange, because a pair code is one-time and expires.
+- **The trust seed wrote a key Claude Code never looks up.** 0.42.1 fixed WHICH
+  FILE `preseedClaudeTrust` writes; this fixes the KEY inside it. Claude Code
+  keys `projects` on the RESOLVED cwd, and `/var` is a symlink to `/private/var`
+  on every Mac, so a seed for a folder under `/tmp` or `/var` reported success
+  and changed nothing. Measured on a fresh folder against the real CLI: seeding
+  the literal path left the trust dialog showing, seeding the resolved path made
+  it disappear. Both spellings are seeded now, and a realpath that throws still
+  seeds the literal cwd rather than skipping.
+
+Also, as a rule rather than a patch: a setup step never silently replaces
+anything. `install-cli` runs only on the interactive pairing path, never from
+the watcher's background daemon, and when it finds a shim pointing elsewhere it
+prints what it found and which one wins on PATH instead of re-pointing it.
+
+## 0.42.1 (2026-09-21)
+
+A first-time install on a fresh macOS user failed at four separate points, and
+every one of them failed SILENTLY. Compiled from a real debugging session, then
+each defect verified in source and on the host before it was touched.
+
+- **The trust pre-seed wrote to a file Claude Code never opens.**
+  `preseedClaudeTrust` derived its target by joining the config directory, so
+  with `CLAUDE_CONFIG_DIR` unset it wrote `~/.claude/.claude.json` while the CLI
+  reads `~/.claude.json`. The `settings.json` half of the same function resolved
+  correctly, which is why the failure read as a partial success rather than a
+  bug. A new `claudeConfigFilePath({env, home})` answers the question the config
+  directory cannot. Every existing test passed over this because all of them
+  inject an explicit `configDir`; the unset case now has its own test.
+
+- **Nothing on the hand-typed path ever pre-seeded anything.**
+  `preseedClaudeTrust` had exactly one production caller, the app's create-agent
+  flow, so running `hoai` by hand (the command pairing itself tells you to run)
+  seeded nothing. It is now called from pairing and from the launcher, the
+  second of which also repairs agents paired by older versions.
+
+- **The startup gate answered unknown screens with a blind Enter.** The posix
+  expect wrapper ended in `timeout { send "\r" }`. The bypass-permissions
+  warning defaults to DECLINE, so an unrecognised screen was answered by
+  quitting, instantly and with no output. It now falls through to `interact`
+  and lets the person decide. This file's own comment about the Windows helper
+  had already stated the rule it broke: never press blindly on a prompt with a
+  dangerous default.
+
+- **An unpaired daemon died before the handshake, so nothing could say why.**
+  The host could only report `CONNECTION_CLOSED` while the real reason went to
+  stderr where nobody reads it. An unpaired server now completes `initialize`
+  and offers a single `hoai_pair_required` tool carrying the instructions. A
+  degraded connected server is diagnosable from inside the session; a dead one
+  is not.
+
+Not fixed here, and named so they are not assumed: `hoai` still does not reach
+the user's own PATH after a marketplace install, `hoai doctor` still passes
+while the agent cannot start, `waitForIncumbent` still has no timeout, and
+pairing still accepts `$HOME` as an agent folder.
 
 ## 0.42.0 (2026-09-21)
 

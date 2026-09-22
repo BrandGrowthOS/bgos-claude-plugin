@@ -14,6 +14,25 @@
  *   - clipToolRows keeps the front rather than the tail -> the clip case red
  * Stage 6 added one line to that ledger:
  *   - emit goal_poll from PostToolUse too -> the "and nothing else" case red
+ * Stage 7 added three, on payloads copied from its own probe into
+ * test/fixtures/stage7-hooks.jsonl:
+ *   - branch on the event name alone      -> the Bash row case goes red
+ *   - derive the command fields for EVERY tool -> the Read case goes red
+ *   - drop clipCardOutput from cardEffect -> the card budget case goes red
+ * Task C2 added the turn's own clock, and six more:
+ *   - a PostToolUse card carries a finish -> the "only when the turn is over" case red
+ *   - the start reads lastActivityAt      -> the same case goes red
+ *   - drop the first PreToolUse fallback  -> the attached mid turn case goes red
+ *   - a turn end leaves the start set     -> the "cannot inherit it" case goes red
+ *   - a SessionEnd sends no finish        -> the SessionEnd case goes red
+ *   - a Stop always emits a done card     -> the "no tools" case goes red
+ * Stage 8 gave the Agent tool a child of its own to report on, and added three:
+ *   - keep 0.43.0's naming (the type in name, the description in detail)
+ *     -> the subagent row case goes red
+ *   - leave SubagentStop out of HOOK_EVENT_NAMES -> the parse case goes red
+ *   - emit a goal_poll from a child's stop -> the "and nothing else" case red
+ * The child row lifecycle itself lives in test/hook-subagent-rows.test.ts, on
+ * the payloads of the stage 8 probe.
  */
 
 import { strict as assert } from 'node:assert'
@@ -21,12 +40,15 @@ import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 
 import {
+  CARD_OUTPUT_BUDGET,
   COMPACT_DEDUPE_MS,
   HOOK_EVENT_NAMES,
   SKIPPED_TOOLS,
   STEPS_MAX_ROWS,
   STEPS_MAX_TEXT,
   TOOL_ARGS_MAX,
+  TOOL_OUTPUT_LINES_MAX,
+  TOOL_OUTPUT_MAX,
   TOOL_ROWS_MAX,
   applyHookEventToTurn,
   buildCardText,
@@ -86,6 +108,57 @@ const lastCard = (effects: Effect[]): ToolRow[] => {
   return cards[cards.length - 1]!.tools
 }
 
+/** The stage 7 probe: one live turn on 2026-09-21, copied verbatim out of
+ *  docs/reports/2026-09-21-turn-summary-card/probe/hooks.jsonl with the paths
+ *  scrubbed. The Pre and the Post of one call share a tool_use_id, so feeding
+ *  the pair is feeding the real thing. */
+const PROBE = readFileSync(new URL('./fixtures/stage7-hooks.jsonl', import.meta.url), 'utf8')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line !== '')
+  .map((line) => JSON.parse(line) as { hook: string; payload: Record<string, unknown> })
+
+const probeRecord = (
+  match: (record: { hook: string; payload: Record<string, unknown> }) => boolean,
+  what: string,
+): Record<string, unknown> => {
+  const record = PROBE.find(match)
+  assert.ok(record, `the probe has no ${what}`)
+  return record.payload
+}
+
+/** The Pre and the Post of the one call whose input carries this fragment. */
+const probeCall = (fragment: string): [Record<string, unknown>, Record<string, unknown>] => [
+  probeRecord(
+    (r) => r.hook === 'PreToolUse' && JSON.stringify(r.payload.tool_input ?? {}).includes(fragment),
+    `PreToolUse for ${fragment}`,
+  ),
+  probeRecord(
+    (r) =>
+      r.hook.startsWith('PostToolUse') &&
+      JSON.stringify(r.payload.tool_input ?? {}).includes(fragment),
+    `PostToolUse for ${fragment}`,
+  ),
+]
+
+/** The Pre and the Post of the turn's one call to this tool. */
+const probeToolCall = (name: string): [Record<string, unknown>, Record<string, unknown>] => [
+  probeRecord((r) => r.hook === 'PreToolUse' && r.payload.tool_name === name, `PreToolUse for ${name}`),
+  probeRecord(
+    (r) => r.hook.startsWith('PostToolUse') && r.payload.tool_name === name,
+    `PostToolUse for ${name}`,
+  ),
+]
+
+/** The one row a Pre and Post pair from the probe leaves on the card. */
+const probeRow = (pair: [Record<string, unknown>, Record<string, unknown>]): ToolRow => {
+  const opened = feed(emptyTurn(), pair[0])
+  const closed = feed(opened.next, pair[1])
+  const rows = lastCard(closed.effects)
+  assert.equal(rows.length, 1, 'the Post closes the row the Pre opened')
+  return rows[0]!
+}
+
 // ── parseHookEvent ───────────────────────────────────────────────────────────
 
 test('parseHookEvent accepts every payload the gate actually saw', () => {
@@ -133,9 +206,13 @@ test('parseHookEvent returns null for junk instead of throwing', () => {
     assert.equal(parseHookEvent(junk), null, `should refuse ${JSON.stringify(junk)}`)
   }
   assert.equal(
-    parseHookEvent(base('SubagentStop')),
+    parseHookEvent(base('SubagentStart')),
     null,
     'an event this release does not register is refused, not half mapped',
+  )
+  assert.ok(
+    parseHookEvent(base('SubagentStop', { agent_id: 'ae89978c2d1dd91df' })),
+    'and the one it does register parses, which is the other half of the rule',
   )
   assert.equal(parseHookEvent({ ...base('Stop'), session_id: '  ' }), null)
 })
@@ -263,7 +340,10 @@ test('every tool this daemon declares is in SKIPPED_TOOLS (drift guard)', () => 
 
 // ── Subagents ────────────────────────────────────────────────────────────────
 
-test('the Agent tool is a subagent row named by subagent_type', () => {
+test('the Agent tool is a subagent row named by subagent_type, with the job in args', () => {
+  // Stage 8 moved the description out of `detail` and into `args`, because a
+  // helper's `detail` is now what it is doing RIGHT NOW. The full lifecycle,
+  // on the real payloads, is test/hook-subagent-rows.test.ts.
   const opened = feed(emptyTurn(), base('PreToolUse', {
     tool_name: 'Agent',
     tool_input: {
@@ -276,19 +356,23 @@ test('the Agent tool is a subagent row named by subagent_type', () => {
   const row = lastCard(opened.effects)[0]!
   assert.equal(row.kind, 'subagent')
   assert.equal(row.name, 'code-reviewer')
-  assert.equal(row.detail, 'Review the diff on the activity branch')
+  assert.equal(row.args, 'Review the diff on the activity branch')
+  assert.equal(row.detail, undefined, 'detail is the running qualifier now, and it has not run yet')
   assert.equal(row.status, 'running')
+  assert.equal(row.startedAt, 1_000, 'and the row carries its own start')
 
-  const closed = feed(opened.next, base('PostToolUse', {
+  const launched = feed(opened.next, base('PostToolUse', {
     tool_name: 'Agent',
     tool_input: { subagent_type: 'code-reviewer', description: 'Review the diff' },
+    tool_response: { isAsync: true, status: 'async_launched', agentId: 'agent-1' },
     tool_use_id: 'toolu_agent',
-    duration_ms: 90_000,
+    duration_ms: 5,
   }))
-  const done = lastCard(closed.effects)[0]!
-  assert.equal(done.kind, 'subagent', 'the pair closes the row it opened, it does not retype it')
-  assert.equal(done.status, 'done')
-  assert.equal(done.durationMs, 90_000)
+  const live = lastCard(launched.effects)[0]!
+  assert.equal(live.kind, 'subagent', 'the pair keeps the row it opened, it does not retype it')
+  assert.equal(live.status, 'running', 'the child is only just starting')
+  assert.equal(live.durationMs, undefined, 'and 5 ms is how long the LAUNCH took')
+  assert.equal(live.id, 'agent-1')
 })
 
 // ── Steps, from the task tools ───────────────────────────────────────────────
@@ -498,6 +582,11 @@ test('goal_poll is emitted on Stop and on SessionStart, and on nothing else', ()
     PreCompact: base('PreCompact', { trigger: 'manual', custom_instructions: null }),
     PostCompact: base('PostCompact', { trigger: 'manual' }),
     SessionEnd: base('SessionEnd', { reason: 'clear' }),
+    SubagentStop: base('SubagentStop', {
+      agent_id: 'ae89978c2d1dd91df',
+      agent_type: 'general-purpose',
+      last_assistant_message: '3',
+    }),
   }
   assert.deepEqual(
     Object.keys(payloads).sort(),
@@ -521,6 +610,183 @@ test('goal_poll is emitted on Stop and on SessionStart, and on nothing else', ()
     1,
     'one wake per Stop, not one per row',
   )
+})
+
+// ── Stage 7: what the call did ───────────────────────────────────────────────
+
+test('a Bash row carries what the command printed and its exit code', () => {
+  const failed = probeRow(probeCall('exit 3'))
+  assert.equal(failed.status, 'error')
+  assert.equal(failed.exitCode, 3)
+  assert.equal(failed.output, undefined, 'exit 3 printed nothing, so there is nothing to open')
+  assert.equal(failed.durationMs, 310, 'a failure carries a duration too')
+
+  const printed = probeRow(probeCall('err line 1>&2'))
+  assert.equal(printed.exitCode, 2)
+  assert.equal(printed.output, 'out line\nerr line', 'the runtime merged the streams already')
+
+  const big = probeRow(probeCall('seq 1 3000'))
+  assert.equal(big.exitCode, 0)
+  assert.ok(big.output!.endsWith('3000'), 'the TAIL of 3000 lines is what survives')
+  assert.ok(big.output!.length <= TOOL_OUTPUT_MAX)
+  assert.ok(big.output!.split('\n').length <= TOOL_OUTPUT_LINES_MAX)
+
+  const quiet = probeRow(probeCall('grep zzz hay.txt'))
+  assert.equal(quiet.exitCode, undefined, 'grep exited 1 and the payload says no code at all')
+  assert.equal(quiet.detail, 'No matches found', 'the runtime\'s own reading goes to the qualifier')
+  assert.equal(quiet.output, undefined, 'it printed nothing')
+})
+
+test('an edit row carries its counts, and a Read row carries nothing new at all', () => {
+  const created = probeRow(probeToolCall('Write'))
+  assert.equal(created.linesAdded, 3, 'a create has no patch, so the content is the addition')
+  assert.equal(created.linesRemoved, undefined, 'a create removes nothing')
+  assert.equal(created.output, undefined)
+  assert.equal(created.exitCode, undefined, 'an edit is not a command')
+
+  const edited = probeRow(probeToolCall('Edit'))
+  assert.equal(edited.linesAdded, 1)
+  assert.equal(edited.linesRemoved, 1)
+
+  const seen = probeRow(probeToolCall('Read'))
+  assert.equal(seen.linesAdded, undefined)
+  assert.equal(seen.linesRemoved, undefined)
+  assert.equal(seen.output, undefined)
+  assert.equal(seen.exitCode, undefined, 'a Read draws exactly as it did yesterday')
+})
+
+test('the card output budget drops the OLDEST outputs and keeps the newest rows', () => {
+  let state = emptyTurn()
+  let rows: ToolRow[] = []
+  for (let n = 1; n <= 5; n++) {
+    const id = `toolu_out${n}`
+    const command = `echo ${n}`
+    state = feed(state, base('PreToolUse', {
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: id,
+    })).next
+    const closed = feed(state, base('PostToolUse', {
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_use_id: id,
+      duration_ms: 5,
+      tool_response: {
+        stdout: `${n} `.repeat(TOOL_OUTPUT_MAX),
+        stderr: '',
+        interrupted: false,
+      },
+    }))
+    state = closed.next
+    rows = lastCard(closed.effects)
+  }
+
+  assert.equal(rows.length, 5, 'the budget spends output, it never drops a row')
+  assert.equal(rows[0]!.output, undefined, 'the oldest output is the one that goes')
+  assert.equal(rows[0]!.exitCode, 0, 'and its exit code stays')
+  for (const index of [1, 2, 3, 4]) {
+    assert.equal(rows[index]!.output?.length, TOOL_OUTPUT_MAX, `row ${index} kept its output`)
+  }
+  const total = rows.reduce((sum, row) => sum + (row.output?.length ?? 0), 0)
+  assert.ok(total <= CARD_OUTPUT_BUDGET, `${total} characters of output rode the PATCH`)
+})
+
+// ── The turn's own clock (stage 7, task C2) ──────────────────────────────────
+
+test('the card carries the turn start, and a finish only when the turn is over', () => {
+  const prompt = feed(emptyTurn(), base('UserPromptSubmit', { prompt: 'run the tests' }), 1_000)
+  assert.equal(prompt.next.startedAt, 1_000, 'the prompt opens the turn')
+
+  const opened = feed(prompt.next, base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'yarn test' }, tool_use_id: 'toolu_c1',
+  }), 2_000)
+  const running = cardsOf(opened.effects)[0]!
+  assert.equal(running.state, 'running')
+  assert.equal(running.startedAt, 1_000, 'the running card already knows when the turn began')
+  assert.equal(running.finishedAt, undefined, 'a turn that is still running has no finish')
+
+  const closed = feed(opened.next, base('PostToolUse', {
+    tool_name: 'Bash',
+    tool_input: { command: 'yarn test' },
+    tool_use_id: 'toolu_c1',
+    duration_ms: 12,
+    tool_response: { stdout: 'ok', stderr: '', interrupted: false },
+  }), 3_000)
+  assert.equal(cardsOf(closed.effects)[0]!.finishedAt, undefined, 'a closed ROW is not a closed TURN')
+
+  const stopped = feed(closed.next, base('Stop', {
+    stop_hook_active: false, background_tasks: [], session_crons: [],
+  }), 5_000)
+  const done = cardsOf(stopped.effects)[0]!
+  assert.equal(done.state, 'done')
+  assert.equal(done.startedAt, 1_000, 'the start is the prompt receipt, never the Stop')
+  assert.equal(done.finishedAt, 5_000, 'and the finish is the Stop receipt')
+})
+
+test('a turn that opened with a tool takes that first PreToolUse as its start', () => {
+  // The daemon attached mid turn, so no UserPromptSubmit ever opened it. The
+  // start is still a moment the runtime reported, never a message timestamp.
+  const opened = feed(emptyTurn(), base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_c2',
+  }), 7_000)
+  assert.equal(opened.next.startedAt, 7_000)
+  assert.equal(cardsOf(opened.effects)[0]!.startedAt, 7_000)
+})
+
+test('a SessionStart opens no clock: the card dates the TURN, not the session', () => {
+  // The moment a session opened is not a moment any turn started. While
+  // SessionStart set the clock, a daemon that attached at boot and saw its
+  // first tool fifteen minutes later drew "Worked 15 min" for a turn that took
+  // seconds, and the PreToolUse fallback below could never run for the first
+  // turn of a session that had no prompt hook. The two sources are the prompt
+  // receipt and the first tool of the turn.
+  const started = feed(emptyTurn(), base('SessionStart', { source: 'startup' }), 1_000)
+  assert.equal(started.next.startedAt, 0, 'a session opening is not a turn opening')
+
+  const opened = feed(started.next, base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_c5',
+  }), 901_000)
+  assert.equal(opened.next.startedAt, 901_000)
+  assert.equal(
+    cardsOf(opened.effects)[0]!.startedAt,
+    901_000,
+    'the start is the first tool of the turn, not the fifteen minutes before it',
+  )
+})
+
+test('a turn end clears the start, so the next turn cannot inherit it', () => {
+  // Without this a turn the owner pushed from their phone (no prompt hook of
+  // its own) would report the minutes since the LAST typed prompt.
+  const prompt = feed(emptyTurn(), base('UserPromptSubmit', { prompt: 'first' }), 1_000)
+  const stopped = feed(prompt.next, base('Stop', {
+    stop_hook_active: false, background_tasks: [], session_crons: [],
+  }), 5_000)
+  assert.equal(stopped.next.startedAt, 0, 'the clock is the TURN\'s, not the session\'s')
+
+  const next = feed(stopped.next, base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_c3',
+  }), 900_000)
+  assert.equal(cardsOf(next.effects)[0]!.startedAt, 900_000, 'the new turn starts when it started')
+})
+
+test('a SessionEnd settles the card with the same two numbers', () => {
+  const prompt = feed(emptyTurn(), base('UserPromptSubmit', { prompt: 'go' }), 1_000)
+  const opened = feed(prompt.next, base('PreToolUse', {
+    tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 'toolu_c4',
+  }), 2_000)
+  const ended = feed(opened.next, base('SessionEnd', { reason: 'exit' }), 4_000)
+  const done = cardsOf(ended.effects)[0]!
+  assert.equal(done.state, 'done')
+  assert.equal(done.startedAt, 1_000)
+  assert.equal(done.finishedAt, 4_000)
+})
+
+test('a turn with no tools emits no done card, so it carries no clock either', () => {
+  const prompt = feed(emptyTurn(), base('UserPromptSubmit', { prompt: 'just answer me' }), 1_000)
+  const stopped = feed(prompt.next, base('Stop', {
+    stop_hook_active: false, background_tasks: [], session_crons: [],
+  }), 5_000)
+  assert.equal(cardsOf(stopped.effects).length, 0, 'no tools ran, so there is no card to date')
 })
 
 // ── The card text, the clip, the icons ───────────────────────────────────────

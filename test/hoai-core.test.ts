@@ -15,14 +15,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { MCP_CONFIG_FILE_NAME } from '../lib/service-supervision.mjs'
+import * as hoaiCore from '../bin/hoai-core.mjs'
 import {
   FOLDER_PIN_FILE,
   EXIT_NOT_FOUND,
+  EXIT_INCUMBENT_TIMEOUT,
+  INCUMBENT_WAIT_TIMEOUT_MS,
+  PROCESS_PROBE_TIMEOUT_MS,
+  defaultListProcesses,
+  selfAndAncestorPids,
+  incumbentBlocks,
   USAGE,
   channelNote,
   classifyRunFlag,
@@ -81,27 +88,30 @@ const noDir = () => [] as string[]
 // -- resolveHoaiAction --------------------------------------------------------
 
 test('resolveHoaiAction: the routing table', () => {
-  assert.deepEqual(resolveHoaiAction([]), { action: 'run', rest: [], fresh: false })
-  assert.deepEqual(resolveHoaiAction(['run']), { action: 'run', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction([]), { action: 'run', rest: [], fresh: false, force: false })
+  assert.deepEqual(resolveHoaiAction(['run']), { action: 'run', rest: [], fresh: false, force: false })
   assert.deepEqual(resolveHoaiAction(['doctor', '--verbose']), {
     action: 'doctor',
     rest: ['--verbose'],
     fresh: false,
+    force: false,
   })
   assert.deepEqual(resolveHoaiAction(['pair', 'BGOS-7F3A-2K']), {
     action: 'pair',
     rest: ['BGOS-7F3A-2K'],
     fresh: false,
+    force: false,
   })
-  assert.deepEqual(resolveHoaiAction(['logs']), { action: 'logs', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['logs']), { action: 'logs', rest: [], fresh: false, force: false })
   assert.deepEqual(resolveHoaiAction(['install-cli']), {
     action: 'install-cli',
     rest: [],
     fresh: false,
+    force: false,
   })
-  assert.deepEqual(resolveHoaiAction(['help']), { action: 'help', rest: [], fresh: false })
-  assert.deepEqual(resolveHoaiAction(['-h']), { action: 'help', rest: [], fresh: false })
-  assert.deepEqual(resolveHoaiAction(['--help']), { action: 'help', rest: [], fresh: false })
+  assert.deepEqual(resolveHoaiAction(['help']), { action: 'help', rest: [], fresh: false, force: false })
+  assert.deepEqual(resolveHoaiAction(['-h']), { action: 'help', rest: [], fresh: false, force: false })
+  assert.deepEqual(resolveHoaiAction(['--help']), { action: 'help', rest: [], fresh: false, force: false })
 })
 
 test('resolveHoaiAction: -c, --continue and --resume are synonyms of a bare hoai', () => {
@@ -118,9 +128,9 @@ test('resolveHoaiAction: -c, --continue and --resume are synonyms of a bare hoai
 })
 
 test('resolveHoaiAction: --new routes to run and asks for a fresh session', () => {
-  assert.deepEqual(resolveHoaiAction(['--new']), { action: 'run', rest: [], fresh: true })
-  assert.deepEqual(resolveHoaiAction(['run', '--new']), { action: 'run', rest: [], fresh: true })
-  assert.deepEqual(resolveHoaiAction(['--NEW']), { action: 'run', rest: [], fresh: true })
+  assert.deepEqual(resolveHoaiAction(['--new']), { action: 'run', rest: [], fresh: true, force: false })
+  assert.deepEqual(resolveHoaiAction(['run', '--new']), { action: 'run', rest: [], fresh: true, force: false })
+  assert.deepEqual(resolveHoaiAction(['--NEW']), { action: 'run', rest: [], fresh: true, force: false })
   // The resume synonyms are NOT fresh; that is the whole distinction.
   assert.equal(resolveHoaiAction(['-c']).fresh, false)
 })
@@ -140,12 +150,14 @@ test('resolveHoaiAction: a bare pair code routes to pair with itself prepended',
     action: 'pair',
     rest: ['BGOS-7F3A-2K'],
     fresh: false,
+    force: false,
   })
   // Case insensitive prefix, and trailing flags ride along after the code.
   assert.deepEqual(resolveHoaiAction(['oc-abc-12', '--backend', 'http://x']), {
     action: 'pair',
     rest: ['oc-abc-12', '--backend', 'http://x'],
     fresh: false,
+    force: false,
   })
 })
 
@@ -154,17 +166,20 @@ test('resolveHoaiAction: anything else routes to help, keeping the tokens', () =
     action: 'help',
     rest: ['status'],
     fresh: false,
+    force: false,
   })
   assert.deepEqual(resolveHoaiAction(['--nonsense', 'x']), {
     action: 'help',
     rest: ['--nonsense', 'x'],
     fresh: false,
+    force: false,
   })
   // A dashed token that is NOT a pair code is not mistaken for one.
   assert.deepEqual(resolveHoaiAction(['BOGUS-1234']), {
     action: 'help',
     rest: ['BOGUS-1234'],
     fresh: false,
+    force: false,
   })
   // An unknown flag that merely LOOKS like one of the new run flags still
   // reaches help rather than silently launching the agent.
@@ -172,6 +187,7 @@ test('resolveHoaiAction: anything else routes to help, keeping the tokens', () =
     action: 'help',
     rest: ['--continue-later'],
     fresh: false,
+    force: false,
   })
 })
 
@@ -470,10 +486,11 @@ test('resolveHoaiAction: setup routes with its argv intact', () => {
     action: 'setup',
     rest: ['BGOS-7F3A-2K'],
     fresh: false,
+    force: false,
   })
   assert.deepEqual(
     resolveHoaiAction(['SETUP', 'BGOS-7F3A-2K', '--assistant-id', '901']),
-    { action: 'setup', rest: ['BGOS-7F3A-2K', '--assistant-id', '901'], fresh: false },
+    { action: 'setup', rest: ['BGOS-7F3A-2K', '--assistant-id', '901'], fresh: false, force: false },
   )
 })
 
@@ -743,6 +760,106 @@ test('installHoaiCli: hands the resolved root to the installer and reports the b
   assert.equal(seen.pluginRoot, '/home/kc/bgos-claude-plugin')
   assert.ok(prints.some((line) => line.includes('/home/kc/.local/bin')))
   assert.ok(prints.some((line) => line.includes('.zshrc')))
+})
+
+// -- Ask or announce, never silently replace (KC, 2026-09-21) ----------------
+
+function installHoaiCliWith(kept: unknown[], force = false) {
+  const prints: string[] = []
+  const seen: { force?: boolean } = {}
+  return installHoaiCli({
+    platform: 'linux',
+    env: {},
+    home: POSIX_HOME,
+    scriptDir: CLONE_SCRIPT_DIR,
+    force,
+    resolveRoot: async () => '/home/kc/bgos-claude-plugin',
+    installImpl: ((opts: { force?: boolean }) => {
+      seen.force = opts.force
+      return {
+        ok: true,
+        binDir: '/home/kc/.local/bin',
+        wrote: kept.length > 0 ? [] : ['/home/kc/.local/bin/hoai'],
+        notes: [],
+        onPath: true,
+        profiles: [],
+        kept,
+      }
+    }) as never,
+    print: (line: string) => prints.push(line),
+  }).then((outcome) => ({ outcome, text: prints.join('\n'), seen }))
+}
+
+test('installHoaiCli: a shim left alone is ANNOUNCED, never passed over in silence', async () => {
+  // The whole failure mode this guards. installWrapper declines to re-point a
+  // shim another install owns, and the only write-side print is guarded on
+  // wrote.length, so without this block the command would report success,
+  // write nothing, say nothing, and leave the owner with no idea which install
+  // their `hoai` actually runs. Silence is the one unacceptable outcome here.
+  const { outcome, text } = await installHoaiCliWith([
+    {
+      path: '/home/kc/.local/bin/hoai',
+      pointsAt: '/home/kc/other-checkout/bin/hoai',
+      wanted: '/home/kc/bgos-claude-plugin/bin/hoai',
+      reason: 'foreign-link',
+    },
+  ])
+  assert.equal(outcome.ok, true, 'declining is not a failure')
+  assert.match(text, /already points at \/home\/kc\/other-checkout\/bin\/hoai/)
+  // It must say WHICH ONE WINS when the owner types the word.
+  assert.match(text, /typing hoai will NOT run it/)
+  assert.match(text, /\/home\/kc\/bgos-claude-plugin\/bin\/hoai/)
+  // And hand back the deliberate command rather than leaving them stuck.
+  assert.match(text, /hoai install-cli --force/)
+  assert.equal(outcome.kept.length, 1, 'the caller can see it too, not only the reader')
+})
+
+test("installHoaiCli: a file the owner wrote gets its own wording, not a link's", async () => {
+  const { text } = await installHoaiCliWith([
+    {
+      path: '/home/kc/.local/bin/hoai',
+      pointsAt: '/home/kc/.local/bin/hoai',
+      wanted: '/home/kc/bgos-claude-plugin/bin/hoai',
+      reason: 'foreign-file',
+    },
+  ])
+  assert.match(text, /is not a link this install made/)
+  assert.doesNotMatch(text, /already points at/)
+  assert.match(text, /hoai install-cli --force/)
+})
+
+test('installHoaiCli: nothing in the way means nothing is announced', async () => {
+  // The control: a gate that always announced would look identical above.
+  const { text, outcome } = await installHoaiCliWith([])
+  assert.doesNotMatch(text, /left alone/)
+  assert.doesNotMatch(text, /--force/)
+  assert.deepEqual(outcome.kept, [])
+})
+
+test('installHoaiCli: force is carried through to the installer, not swallowed', async () => {
+  assert.equal((await installHoaiCliWith([], true)).seen.force, true)
+  assert.equal((await installHoaiCliWith([], false)).seen.force, false)
+})
+
+test('main(): install-cli --force is the deliberate ask, and a bare install-cli is not', async () => {
+  const runs: boolean[] = []
+  const run = (argv: string[]) =>
+    main(argv, {
+      platform: 'linux',
+      env: {},
+      home: POSIX_HOME,
+      scriptDir: CLONE_SCRIPT_DIR,
+      installCliImpl: (async (o: { force?: boolean }) => {
+        runs.push(o.force === true)
+        return { ok: true, binDir: '/home/kc/.local/bin', kept: [] }
+      }) as never,
+    } as never)
+
+  assert.equal(await run(['install-cli']), 0)
+  assert.equal(await run(['install-cli', '--force']), 0)
+  assert.equal(await run(['install-cli', '--FORCE']), 0, 'the flag is not case sensitive')
+  // A bare install-cli must NEVER arrive as force: that is the whole rule.
+  assert.deepEqual(runs, [false, true, true])
 })
 
 test('installHoaiCli: no resolvable plugin root says so instead of writing a broken shim', async () => {
@@ -1564,9 +1681,11 @@ test('a fresh retry that stays up past the health window becomes the pinned sess
 // guard keyed only on supervisor.json, i.e. a live LAUNCHER; a hand-started
 // claude in the same folder was invisible to it, so a KeepAlive around hoai
 // spawned a second session on the same pinned id. The launcher now waits for
-// an incumbent claude in its cwd, by the three rules learned the hard way:
+// an incumbent claude in its cwd, by the four rules learned the hard way:
 // never pgrep (macOS omits the caller's ancestors), own uid only (only that uid
-// can resume the pin), and an unreadable cwd within the uid counts as occupied.
+// can resume the pin), an unreadable cwd within the uid is reported but does
+// NOT block (reversed 2026-09-21, see incumbentBlocks), and the caller's own
+// claude ancestry is never an incumbent (2026-09-21, see selfAndAncestorPids).
 
 test('findIncumbentClaude: same cwd, same uid, not our own pid', () => {
   const procs = [
@@ -1580,7 +1699,15 @@ test('findIncumbentClaude: same cwd, same uid, not our own pid', () => {
   assert.equal(findIncumbentClaude({ processes: procs, cwd: '/agents/c', uid: 501, ownPid: 99 }), null)
 })
 
-test('findIncumbentClaude: an unreadable cwd within our uid counts as occupied; another uid never does', () => {
+// The title and the comment here used to say an unreadable cwd "counts as
+// occupied". That rule was REVERSED on 2026-09-21 and the wording was left
+// behind, so the suite still taught the retired rule to whoever read it next
+// while every assertion below quietly passed. Nothing about the assertions
+// changed: findIncumbentClaude still REPORTS an unreadable hit (as the
+// fallback, once no same-cwd process has been found) and the uid scoping is
+// unchanged. What moved is only who decides: incumbentBlocks, tested just
+// below, is what says an unreadable hit does not hold a launch back.
+test('findIncumbentClaude: an unreadable cwd within our uid is still REPORTED; another uid never is', () => {
   const procs = [
     { pid: 20, uid: 502, comm: 'claude', cwd: null },
     { pid: 21, uid: 501, comm: 'claude', cwd: null },
@@ -1617,11 +1744,11 @@ test('waitForIncumbent: returns at once when the folder is clear, otherwise poll
     print: (l: string) => lines.push(l),
     pollMs: 250,
   })
-  assert.deepEqual(waited, { waited: true, polls: 3, lastPid: 10 })
+  assert.deepEqual(waited, { waited: true, polls: 3, lastPid: 10, timedOut: false })
   assert.deepEqual(sleeps, [250, 250])
   assert.ok(lines.some((l) => /waiting for an incumbent claude \(pid 10\)/.test(l)), lines.join('\n'))
   const clear = await waitForIncumbent({ cwd: '/agents/a', uid: 501, ownPid: 99, listProcesses: () => [], sleep: async () => {}, print: () => {}, pollMs: 250 })
-  assert.deepEqual(clear, { waited: false, polls: 1, lastPid: null })
+  assert.deepEqual(clear, { waited: false, polls: 1, lastPid: null, timedOut: false })
 })
 
 test('superviseClaude does not spawn while a hand-started claude owns the folder, and spawns once it exits', async () => {
@@ -1649,6 +1776,587 @@ test('superviseClaude does not spawn while a hand-started claude owns the folder
     assert.equal(code, 0)
     assert.equal(spawns.length, 1, 'exactly one launch, after the incumbent left')
     assert.ok(polls >= 3, `the incumbent was polled until it left (polls=${polls})`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The incumbent wait grows an end, a verdict and an escape hatch (2026-09-21).
+// As shipped, the wait was `while (true)` with no deadline, and an UNREADABLE
+// cwd counted as occupied. Together that stranded a first install: one claude
+// under the same uid whose cwd lsof would not show made every hoai launch wait
+// forever, reprinting the same notice every thirty seconds, on a machine with
+// no second session at all. Three things changed, one test group each: the
+// wait ends at INCUMBENT_WAIT_TIMEOUT_MS and says so, an unreadable cwd only
+// WARNS, and `hoai --force` skips the check outright. Every clock and every
+// sleep here is injected: none of these tests may cost a real second.
+
+test('incumbentBlocks: only a same-cwd hit holds a launch back', () => {
+  assert.equal(incumbentBlocks({ pid: 10, reason: 'same-cwd' }), true)
+  assert.equal(
+    incumbentBlocks({ pid: 11, reason: 'unreadable-cwd' }),
+    false,
+    'an unreadable cwd is an absence of evidence, not evidence of a conflict',
+  )
+  assert.equal(incumbentBlocks(null), false)
+})
+
+test('findIncumbentClaude: a real same-cwd process wins over an earlier unreadable one', () => {
+  // ps order is not ours to choose. If the unreadable process short-circuited
+  // the scan it would hide the genuine incumbent behind it, and the downgrade
+  // to a warning would hand back the double launch this check exists to stop.
+  const procs = [
+    { pid: 40, uid: 501, comm: 'claude', cwd: null },
+    { pid: 41, uid: 501, comm: 'claude', cwd: '/agents/a' },
+  ]
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid: 99 }), {
+    pid: 41,
+    reason: 'same-cwd',
+  })
+})
+
+test('waitForIncumbent: an unreadable cwd warns once, waits for nothing and lets the launch through', async () => {
+  const lines: string[] = []
+  const out = await waitForIncumbent({
+    cwd: '/agents/a',
+    uid: 501,
+    ownPid: 99,
+    listProcesses: () => [{ pid: 777, uid: 501, comm: 'claude', cwd: null }],
+    sleep: async () => assert.fail('a non-blocking hit must never sleep'),
+    print: (l: string) => lines.push(l),
+    pollMs: 250,
+    now: () => 0,
+  })
+  assert.deepEqual(out, { waited: false, polls: 1, lastPid: null, timedOut: false })
+  const warning = lines.find((l) => /WARNING/.test(l))
+  assert.ok(warning, `a launch that proceeds on an unknown must say so\n${lines.join('\n')}`)
+  assert.match(warning!, /pid 777/)
+  assert.equal(
+    lines.some((l) => /waiting for an incumbent claude/.test(l)),
+    false,
+    'nothing was waited for, so nothing may announce a wait',
+  )
+})
+
+test('waitForIncumbent: a same-cwd incumbent still holds the launch until it leaves', async () => {
+  const lines: string[] = []
+  const sleeps: number[] = []
+  let clock = 1_000
+  let polls = 0
+  const lists = [
+    [{ pid: 55, uid: 501, comm: 'claude', cwd: '/agents/a' }],
+    [{ pid: 55, uid: 501, comm: 'claude', cwd: '/agents/a' }],
+    [{ pid: 56, uid: 501, comm: 'claude', cwd: '/agents/b' }],
+  ]
+  const out = await waitForIncumbent({
+    cwd: '/agents/a',
+    uid: 501,
+    ownPid: 99,
+    listProcesses: () => lists[Math.min(polls++, lists.length - 1)]!,
+    sleep: async (ms: number) => {
+      sleeps.push(ms)
+      clock += ms
+    },
+    print: (l: string) => lines.push(l),
+    pollMs: 250,
+    now: () => clock,
+    timeoutMs: 90_000,
+  })
+  // The deadline is nowhere near: this is the ordinary "/exit, then hoai" case.
+  assert.deepEqual(out, { waited: true, polls: 3, lastPid: 55, timedOut: false })
+  assert.deepEqual(sleeps, [250, 250])
+  assert.ok(lines.some((l) => /waiting for an incumbent claude \(pid 55\)/.test(l)), lines.join('\n'))
+})
+
+test('waitForIncumbent: an incumbent that never leaves ends the wait at the deadline', async () => {
+  assert.ok(
+    INCUMBENT_WAIT_TIMEOUT_MS >= 60_000 && INCUMBENT_WAIT_TIMEOUT_MS <= 120_000,
+    `the wait must be bounded in minutes, not hours (got ${INCUMBENT_WAIT_TIMEOUT_MS})`,
+  )
+  const lines: string[] = []
+  let clock = 1_000
+  let calls = 0
+  const out = await waitForIncumbent({
+    cwd: '/agents/a',
+    uid: 501,
+    ownPid: 99,
+    listProcesses: () => {
+      calls += 1
+      // A wait with no end would spin here forever; turn that into a failure
+      // rather than a hung test run.
+      if (calls > 500) throw new Error('waitForIncumbent never gave up')
+      return [{ pid: 4242, uid: 501, comm: 'claude', cwd: '/agents/a' }]
+    },
+    sleep: async (ms: number) => {
+      clock += ms
+    },
+    print: (l: string) => lines.push(l),
+    pollMs: 1_000,
+    now: () => clock,
+    timeoutMs: INCUMBENT_WAIT_TIMEOUT_MS,
+  })
+  assert.equal(out.timedOut, true, 'the wait must report that it gave up')
+  assert.equal(out.lastPid, 4242, 'the caller needs the pid to name')
+  assert.equal(out.polls, INCUMBENT_WAIT_TIMEOUT_MS / 1_000 + 1)
+  assert.ok(lines.some((l) => /waiting for an incumbent claude \(pid 4242\)/.test(l)), lines.join('\n'))
+})
+
+test('main(): an incumbent hit at the deadline stops the launch with EXIT_INCUMBENT_TIMEOUT, naming the pid', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    const prints: string[] = []
+    const spawns: string[] = []
+    let clock = 5_000
+    let calls = 0
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 1_000,
+      incumbentTimeoutMs: 90_000,
+      now: () => clock,
+      listProcesses: () => {
+        calls += 1
+        if (calls > 500) throw new Error('the launch never gave up waiting')
+        return [{ pid: 4242, uid: process.getuid?.() ?? 0, comm: 'claude', cwd }]
+      },
+      sleep: async (ms: number) => {
+        clock += ms
+      },
+      print: (l: string) => prints.push(l),
+      spawnImpl: ((file: string) => {
+        spawns.push(file)
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, EXIT_INCUMBENT_TIMEOUT, `expected the give-up code\n${prints.join('\n')}`)
+    assert.equal(spawns.length, 0, 'nothing may be launched after declining to wait longer')
+    const stop = prints.find((l) => /STOPPING rather than launching/.test(l))
+    assert.ok(stop, prints.join('\n'))
+    // The message has to be actionable and honest about what it does not know.
+    assert.match(stop!, /pid 4242/)
+    assert.match(stop!, /ps -p 4242/)
+    assert.match(stop!, /kill 4242/)
+    assert.match(stop!, /reused pid could be an unrelated process/)
+    assert.match(stop!, /hoai --force/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): an incumbent whose cwd cannot be read no longer blocks the launch, it warns', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    const prints: string[] = []
+    const spawns: { file: string; args: string[] }[] = []
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 1_000,
+      listProcesses: () => [{ pid: 777, uid: process.getuid?.() ?? 0, comm: 'claude', cwd: null }],
+      sleep: async () => assert.fail('an unreadable cwd must not cost the user a single poll'),
+      print: (l: string) => prints.push(l),
+      spawnImpl: ((file: string, args: readonly string[]) => {
+        spawns.push({ file, args: [...args] })
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0)
+    assert.equal(spawns.length, 1, 'the launch the user asked for happens')
+    const warning = prints.find((l) => /WARNING/.test(l))
+    assert.ok(warning, prints.join('\n'))
+    assert.match(warning!, /pid 777/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The caller's own claude ANCESTOR is not an incumbent (2026-09-21).
+// findIncumbentClaude excluded only ownPid, the node process. But hoai and
+// `hoai doctor` are typed INTO a claude session, so the screening process has
+// a claude PARENT sitting in exactly the folder being screened. Measured live:
+// probeIncumbent({cwd: process.cwd()}) answered
+// {hit:{pid:77299,reason:'same-cwd'},blocks:true} where 77299 was the claude
+// running the probe, so the doctor printed a fix line telling the operator to
+// `kill` the pid they were typing into, and waitForIncumbent with the exact
+// arguments superviseClaude passes spent all ninety seconds on that parent and
+// returned {polls:91, lastPid:77299, timedOut:true}, i.e. an EXIT_INCUMBENT_TIMEOUT
+// naming the user's own window. The pid numbers used below are that measurement.
+
+test('selfAndAncestorPids: the walk collects self and every ancestor, and stops at the root', () => {
+  // The real chain behind a `hoai` typed into a claude session on this Mac.
+  const procs = [
+    { pid: 1, ppid: 0, comm: 'launchd' },
+    { pid: 945, ppid: 1, comm: 'tmux' },
+    { pid: 77299, ppid: 945, comm: '/Users/k/.local/bin/claude' },
+    { pid: 71597, ppid: 77299, comm: '-zsh' },
+    { pid: 71601, ppid: 71597, comm: 'node' },
+    { pid: 5555, ppid: 1, comm: 'claude' },
+  ]
+  const sorted = (s: Set<number>) => [...s].sort((a, b) => a - b)
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: procs, pid: 71601 })), [1, 945, 71597, 71601, 77299])
+  assert.equal(
+    selfAndAncestorPids({ processes: procs, pid: 71601 }).has(0),
+    false,
+    'pid 0 is the kernel placeholder for "no parent", never a process to exclude',
+  )
+  assert.equal(selfAndAncestorPids({ processes: procs, pid: 71601 }).has(5555), false, 'a sibling branch is not ours')
+  // A pid nobody lists is still itself: ps raced us, and the caller is at
+  // least allowed to not be its own incumbent.
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: procs, pid: 90001 })), [90001])
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: [], pid: 7 })), [7])
+})
+
+test('selfAndAncestorPids: a ppid cycle and a missing parent end the walk instead of spinning', () => {
+  // This walk sits inside the probe whose whole job is to NOT hang, so a table
+  // that loops (a reparent caught mid-flight, a wrapped pid) has to brake. If
+  // the brake were missing these two lines would spin forever rather than fail,
+  // which is the same shape of bug as the unbounded wait F8 had to end.
+  const sorted = (s: Set<number>) => [...s].sort((a, b) => a - b)
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: [{ pid: 5, ppid: 6 }, { pid: 6, ppid: 5 }], pid: 5 })), [5, 6])
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: [{ pid: 9, ppid: 9 }], pid: 9 })), [9])
+  // The parent exited between ps and us, so the chain simply ends there.
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: [{ pid: 30, ppid: 31 }], pid: 30 })), [30, 31])
+  // A row with no ppid at all (an injected list that predates the field) is a
+  // dead end, not a crash.
+  assert.deepEqual(sorted(selfAndAncestorPids({ processes: [{ pid: 40 }] as never, pid: 40 })), [40])
+})
+
+test('findIncumbentClaude: the claude we are running inside is not an incumbent; an unrelated one still is', () => {
+  const procs = [
+    { pid: 1, ppid: 0, uid: 501, comm: 'launchd', cwd: '/' },
+    { pid: 945, ppid: 1, uid: 501, comm: 'tmux', cwd: '/agents/a' },
+    { pid: 77299, ppid: 945, uid: 501, comm: 'claude', cwd: '/agents/a' },
+    { pid: 71597, ppid: 77299, uid: 501, comm: '-zsh', cwd: '/agents/a' },
+    { pid: 71601, ppid: 71597, uid: 501, comm: 'node', cwd: '/agents/a' },
+  ]
+  const ownPid = 71601
+  const ignorePids = selfAndAncestorPids({ processes: procs, pid: ownPid })
+  // This is the measured defect, kept as the control: excluding only ownPid
+  // hands back the operator's own session. `ownPid` on its own is unchanged.
+  assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid }), {
+    pid: 77299,
+    reason: 'same-cwd',
+  })
+  assert.equal(
+    findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid, ignorePids }),
+    null,
+    'the session running the probe is the caller, not a rival for the pin',
+  )
+  assert.equal(
+    findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid, ignorePids: [77299] }),
+    null,
+    'a plain array is accepted as well as a Set',
+  )
+  // A missing or malformed list means "ignore nothing", never a throw inside
+  // the launch path: every caller injects this, including the doctor's own
+  // ignorePidsFor seam.
+  for (const bad of [undefined, null, 0, {}] as never[]) {
+    assert.deepEqual(findIncumbentClaude({ processes: procs, cwd: '/agents/a', uid: 501, ownPid, ignorePids: bad }), {
+      pid: 77299,
+      reason: 'same-cwd',
+    })
+  }
+  // Excluding our chain must not disarm the guard: a claude nobody in our
+  // ancestry spawned is still a hard block, and it is the one named.
+  const withRival = [...procs, { pid: 5555, ppid: 1, uid: 501, comm: 'claude', cwd: '/agents/a' }]
+  assert.deepEqual(findIncumbentClaude({ processes: withRival, cwd: '/agents/a', uid: 501, ownPid, ignorePids }), {
+    pid: 5555,
+    reason: 'same-cwd',
+  })
+  // An ancestor whose cwd could not be read is ours too, so it is not even
+  // reported as the unreadable fallback.
+  const blindAncestor = procs.map((p) => (p.pid === 77299 ? { ...p, cwd: null } : p))
+  assert.equal(findIncumbentClaude({ processes: blindAncestor, cwd: '/agents/a', uid: 501, ownPid, ignorePids }), null)
+})
+
+test('main(): hoai typed inside a claude session in this folder launches at once instead of waiting it out', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    const prints: string[] = []
+    const spawns: string[] = []
+    const uid = process.getuid?.() ?? 0
+    // superviseClaude reads its ancestry with the REAL process.pid, so the
+    // injected table has to put this very process under a claude in this cwd,
+    // which is the shape measured live on 2026-09-21.
+    const table = [
+      { pid: 4242, ppid: 1, uid, comm: 'claude', cwd },
+      { pid: 4243, ppid: 4242, uid, comm: '-zsh', cwd },
+      { pid: process.pid, ppid: 4243, uid, comm: 'node', cwd },
+    ]
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 1_000,
+      incumbentTimeoutMs: 90_000,
+      now: () => 0,
+      listProcesses: () => table,
+      // Before the fix this fired on the first poll. It is an assertion rather
+      // than a counter so the regression fails in milliseconds instead of
+      // hanging the suite for ninety simulated seconds.
+      sleep: async () => assert.fail('the claude session running hoai must not cost it a single poll'),
+      print: (l: string) => prints.push(l),
+      spawnImpl: ((file: string) => {
+        spawns.push(file)
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0, `expected a launch, not the give-up code\n${prints.join('\n')}`)
+    assert.equal(spawns.length, 1, 'the launch the operator asked for happens')
+    assert.equal(
+      prints.some((l) => /waiting for an incumbent claude/.test(l)),
+      false,
+      `nothing was waited for, so nothing may announce a wait\n${prints.join('\n')}`,
+    )
+    assert.equal(
+      prints.some((l) => /STOPPING rather than launching/.test(l)),
+      false,
+      `the operator must never be told to kill the window they are typing into\n${prints.join('\n')}`,
+    )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): an unrelated claude in the folder still stops the launch, and names it and not our own ancestor', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    const prints: string[] = []
+    const spawns: string[] = []
+    const uid = process.getuid?.() ?? 0
+    let clock = 5_000
+    let calls = 0
+    const table = [
+      { pid: 4242, ppid: 1, uid, comm: 'claude', cwd },
+      { pid: 4243, ppid: 4242, uid, comm: '-zsh', cwd },
+      { pid: process.pid, ppid: 4243, uid, comm: 'node', cwd },
+      { pid: 5555, ppid: 1, uid, comm: 'claude', cwd },
+    ]
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 1_000,
+      incumbentTimeoutMs: 90_000,
+      now: () => clock,
+      listProcesses: () => {
+        calls += 1
+        if (calls > 500) throw new Error('the launch never gave up waiting')
+        return table
+      },
+      sleep: async (ms: number) => {
+        clock += ms
+      },
+      print: (l: string) => prints.push(l),
+      spawnImpl: ((file: string) => {
+        spawns.push(file)
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, EXIT_INCUMBENT_TIMEOUT, `expected the give-up code\n${prints.join('\n')}`)
+    assert.equal(spawns.length, 0, 'nothing may be launched beside a real incumbent')
+    const stop = prints.find((l) => /STOPPING rather than launching/.test(l))
+    assert.ok(stop, prints.join('\n'))
+    assert.match(stop!, /pid 5555/)
+    assert.equal(/4242/.test(stop!), false, `our own claude parent must never be the pid named\n${stop}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('defaultListProcesses: ps is asked for ppid, a comm with spaces stays whole, and our ancestry is kept', () => {
+  // ps output is column-aligned and comm is LAST because it is the only field
+  // that may contain spaces. Adding ppid made the parse a four-field one, and
+  // the trailing catch-all is what keeps "Terminal Helper (Plugin)" from
+  // shifting a pid into the comm.
+  const psOut = [
+    '    1     0   501 launchd',
+    '  945     1   501 tmux',
+    '77299   945   501 /Users/k/.local/bin/claude',
+    '71597 77299   501 Terminal Helper (Plugin)',
+    '71601 71597   501 node',
+    '88000     1   501 /Applications/My Tools/claude',
+    ' 3001     1   502 Google Chrome Helper (Renderer)',
+    'a line ps would never print',
+    '',
+  ].join('\n')
+  const calls: { file: string; args: string[] }[] = []
+  const rows = defaultListProcesses('darwin', {
+    selfPid: 71601,
+    spawn: ((file: string, args: readonly string[]) => {
+      calls.push({ file, args: [...args] })
+      if (file === 'ps') return { status: 0, stdout: psOut }
+      const pid = args[args.indexOf('-p') + 1]
+      return { status: 0, stdout: `p${pid}\nn/agents/${pid}\n` }
+    }) as never,
+  })
+  assert.deepEqual(calls[0]!.args, ['-Axo', 'pid=,ppid=,uid=,comm='], 'ppid has to be asked for to be walked')
+  // Every claude, plus our own ancestry whatever its comm: a claude-only list
+  // cannot bridge the shell between node and the claude that started it, which
+  // is why the ancestry walk found nothing when only claude rows were kept.
+  assert.deepEqual(
+    rows.map((r) => r.pid).sort((a, b) => a - b),
+    [1, 945, 71597, 71601, 77299, 88000],
+  )
+  assert.equal(rows.some((r) => r.pid === 3001), false, 'an unrelated non-claude process is still noise')
+  const helper = rows.find((r) => r.pid === 71597)!
+  assert.equal(helper.comm, 'Terminal Helper (Plugin)', 'the spaces belong to comm, not to a field boundary')
+  assert.equal(helper.ppid, 77299, 'a comm with spaces must not shift ppid')
+  assert.equal(helper.uid, 501)
+  const ours = rows.find((r) => r.pid === 77299)!
+  assert.deepEqual(ours, { pid: 77299, ppid: 945, uid: 501, comm: '/Users/k/.local/bin/claude', cwd: '/agents/77299' })
+  assert.equal(rows.find((r) => r.pid === 88000)!.cwd, '/agents/88000', 'a claude path with spaces is still a claude')
+  // The ancestry the caller now hands to findIncumbentClaude reaches the claude.
+  assert.equal(selfAndAncestorPids({ processes: rows, pid: 71601 }).has(77299), true)
+  // lsof is asked only about claude: every probe skipped is a probe that
+  // cannot wedge.
+  const probed = calls.filter((c) => c.file === 'lsof').map((c) => c.args[c.args.indexOf('-p') + 1])
+  assert.deepEqual(probed.sort(), ['77299', '88000'])
+})
+
+test('defaultListProcesses: ps and every lsof carry a deadline, and a timed-out lsof reads as an unreadable cwd', () => {
+  // `lsof -p <pid> -d cwd` blocks INDEFINITELY when any mount on the host is
+  // wedged (a dead NFS or FUSE server). Unbounded, that made `hoai doctor`
+  // inherit the very hang it exists to diagnose: not one row printed, and the
+  // bootstrap preflight stalled with no output at all (2026-09-21). A killed
+  // lsof leaves the cwd unreadable, which since the same day warns instead of
+  // blocking, so the timeout errs in the safe direction.
+  const seen: { file: string; timeout: unknown }[] = []
+  const rows = defaultListProcesses('darwin', {
+    selfPid: 1,
+    spawn: ((file: string, _args: readonly string[], opts: { timeout?: number }) => {
+      seen.push({ file, timeout: opts?.timeout })
+      if (file === 'ps') return { status: 0, stdout: '4242     1   501 claude\n' }
+      // What spawnSync hands back when it kills a child on timeout.
+      return { status: null, stdout: '', error: new Error('ETIMEDOUT') }
+    }) as never,
+  })
+  assert.ok(
+    PROCESS_PROBE_TIMEOUT_MS > 0 && PROCESS_PROBE_TIMEOUT_MS <= 10_000,
+    `the probe deadline must be seconds, not minutes or nothing (got ${PROCESS_PROBE_TIMEOUT_MS})`,
+  )
+  assert.deepEqual(
+    seen,
+    [
+      { file: 'ps', timeout: PROCESS_PROBE_TIMEOUT_MS },
+      { file: 'lsof', timeout: PROCESS_PROBE_TIMEOUT_MS },
+    ],
+    'both external commands must be bounded, not just one of them',
+  )
+  assert.deepEqual(rows, [{ pid: 4242, ppid: 1, uid: 501, comm: 'claude', cwd: null }])
+  assert.equal(
+    incumbentBlocks(findIncumbentClaude({ processes: rows, cwd: '/agents/a', uid: 501, ownPid: 9 })),
+    false,
+    'a probe that ran out of time must not become a blocking incumbent',
+  )
+  // A ps that times out reports status null too, and an empty list is the
+  // honest answer: no evidence of an incumbent.
+  assert.deepEqual(
+    defaultListProcesses('darwin', { spawn: (() => ({ status: null, stdout: '' })) as never }),
+    [],
+  )
+  assert.deepEqual(defaultListProcesses('win32', { spawn: (() => assert.fail('win32 must not shell out')) as never }), [])
+})
+
+test('the exit codes are pinned to their literal values, and no two of them collide', () => {
+  // The only assertion EXIT_INCUMBENT_TIMEOUT had was `assert.equal(code,
+  // EXIT_INCUMBENT_TIMEOUT)`, the constant compared with itself, so changing
+  // `= 5` to `= 3` left the whole file green while the thing the constant
+  // exists for quietly broke: its own JSDoc says a wrapper must be able to
+  // tell "waited, then declined" apart from EXIT_ALREADY_SUPERVISED and
+  // EXIT_CHANNEL_UNRESOLVED. These numbers are a contract with
+  // hoai-bootstrap.sh and the KeepAlive, so they are pinned as literals.
+  assert.equal(EXIT_INCUMBENT_TIMEOUT, 5)
+  assert.equal(hoaiCore.EXIT_ALREADY_SUPERVISED, 3)
+  assert.equal(hoaiCore.EXIT_CHANNEL_UNRESOLVED, 4)
+  assert.equal(EXIT_NOT_FOUND, 127)
+  // Collected from the module instead of hand-listed: an exit code added next
+  // year is checked for collisions without anyone remembering this test.
+  const exitCodes = Object.entries({ ...hoaiCore }).filter(([name]) => name.startsWith('EXIT_'))
+  assert.ok(exitCodes.length >= 4, `exit codes must be exported to be pinned (found ${exitCodes.length})`)
+  const byValue = new Map<number, string>()
+  for (const [name, value] of exitCodes) {
+    assert.equal(typeof value, 'number', `${name} must be a number to be an exit code`)
+    const code = value as number
+    assert.ok(Number.isInteger(code) && code >= 0 && code <= 255, `${name} = ${code} is not a process exit code`)
+    const clash = byValue.get(code)
+    assert.equal(clash, undefined, `${name} and ${clash} both exit ${code}; no wrapper can tell them apart`)
+    byValue.set(code, name)
+  }
+})
+
+test('resolveHoaiAction: --force routes to run, combines with --new, and lookalikes still reach help', () => {
+  const forced = { action: 'run', rest: [], fresh: false, force: true }
+  assert.deepEqual(resolveHoaiAction(['--force']), forced)
+  assert.deepEqual(resolveHoaiAction(['run', '--force']), forced)
+  assert.deepEqual(resolveHoaiAction(['--FORCE']), forced)
+  const both = { action: 'run', rest: [], fresh: true, force: true }
+  assert.deepEqual(resolveHoaiAction(['--new', '--force']), both)
+  assert.deepEqual(resolveHoaiAction(['--force', '--new']), both)
+  assert.deepEqual(resolveHoaiAction(['run', '--force', '--new']), both)
+  assert.equal(classifyRunFlag('--force'), 'force')
+  // The unknown-flag path must not swallow the new flag, and must still catch
+  // everything that merely looks like it.
+  assert.deepEqual(resolveHoaiAction(['--force-me']), {
+    action: 'help',
+    rest: ['--force-me'],
+    fresh: false,
+    force: false,
+  })
+  assert.match(USAGE, /hoai --force/, 'a flag nobody is told about is not an escape hatch')
+})
+
+test('main(): --force launches at once and never even asks what is running', async () => {
+  const { home, cwd } = tempAgentFolder()
+  try {
+    const prints: string[] = []
+    const spawns: { file: string; args: string[] }[] = []
+    let consulted = 0
+    const code = await main(['--force'], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      pollMs: 1_000,
+      listProcesses: () => {
+        consulted += 1
+        // A same-cwd incumbent: without --force this is a hard block.
+        return [{ pid: 4242, uid: process.getuid?.() ?? 0, comm: 'claude', cwd }]
+      },
+      sleep: async () => assert.fail('--force must not wait for anything'),
+      print: (l: string) => prints.push(l),
+      spawnImpl: ((file: string, args: readonly string[]) => {
+        spawns.push({ file, args: [...args] })
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0)
+    assert.equal(spawns.length, 1, 'the user asked to launch now, so it launches now')
+    assert.equal(consulted, 0, 'the wait is skipped entirely, not merely shortened to zero')
+    assert.equal(
+      prints.some((l) => /waiting for an incumbent claude/.test(l)),
+      false,
+      'no wait happened, so no wait notice',
+    )
+    assert.ok(prints.some((l) => /--force/.test(l)), prints.join('\n'))
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })
@@ -1684,6 +2392,105 @@ test('main(): the launch environment gains the task tools flag, and the hooks ar
       registered[0]!.settingsPath.replace(/\\/g, '/').endsWith('/.claude/settings.local.json'),
       registered[0]!.settingsPath,
     )
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+// --- the one-time-prompt preseed reaches a HAND-TYPED launch (2026-09-21) ----
+// preseedClaudeTrust had exactly ONE production caller, the watcher's
+// create-agent job. bin/hoai-core.mjs imported only ensureHookEntries and
+// ensureMarketplaceAutoUpdate from that module, so `hoai`, the command
+// bgos-pair prints for the user to run, seeded nothing at all and the first
+// launch stopped on the folder-trust dialog. These drive the REAL function
+// against a real (throwaway) home, so the seam being exercised is the one a
+// user gets, not an injected stand-in.
+
+test('main(): EVERY launch form pre-seeds the one-time prompts for the launch folder', async () => {
+  // Every spelling, not just the bare one: they all funnel into the same run
+  // path, and a seed that reached only some of them would leave the dialog
+  // standing for whichever one a given user happens to type.
+  for (const argv of [[], ['-c'], ['--continue'], ['--resume'], ['--new'], ['run', '--continue']]) {
+    const { home, cwd } = tempAgentFolder()
+    try {
+      const code = await main(argv, {
+        platform: 'linux',
+        env: {},
+        home,
+        cwd,
+        scriptDir: CLONE_SCRIPT_DIR,
+        spawnImpl: (() => scriptedChild(0)) as never,
+      } as never)
+      assert.equal(code, 0, argv.join(' '))
+      // The trust entry, in the file Claude Code reads when CLAUDE_CONFIG_DIR is
+      // unset: $HOME/.claude.json, NOT $HOME/.claude/.claude.json.
+      const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))
+      assert.equal(cfg.projects[cwd].hasTrustDialogAccepted, true, argv.join(' '))
+      assert.equal(cfg.hasCompletedOnboarding, true)
+      assert.equal(existsSync(join(home, '.claude', '.claude.json')), false, argv.join(' '))
+      // And the bypass warning, whose default answer is exit, suppressed in the
+      // settings file, which DOES live inside the config dir.
+      const settings = JSON.parse(readFileSync(join(home, '.claude', 'settings.json'), 'utf8'))
+      assert.equal(settings.skipDangerousModePermissionPrompt, true, argv.join(' '))
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
+  }
+})
+
+test('main(): the preseed runs BEFORE claude is spawned, and a preseed that throws never stops the launch', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const order: string[] = []
+  try {
+    const code = await main([], {
+      platform: 'linux',
+      env: {},
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      preseedTrust: () => {
+        order.push('preseed')
+        // A read-only config dir is the realistic failure, and it must cost the
+        // user a prompt, never their agent.
+        throw new Error('EACCES: read-only file system')
+      },
+      spawnImpl: (() => {
+        order.push('spawn')
+        return scriptedChild(0)
+      }) as never,
+    } as never)
+    assert.equal(code, 0, 'a seeding convenience may never cost the user their launch')
+    assert.deepEqual(order, ['preseed', 'spawn'], 'seeding after the spawn would seed nothing in time')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
+
+test('main(): the preseed is handed the LAUNCH folder and this host\'s config dir', async () => {
+  const { home, cwd } = tempAgentFolder()
+  const calls: Array<{ configDir: string; cwd: string; home: string }> = []
+  try {
+    await main([], {
+      platform: 'linux',
+      env: { CLAUDE_CONFIG_DIR: '/opt/agents/cfg' },
+      home,
+      cwd,
+      scriptDir: CLONE_SCRIPT_DIR,
+      preseedTrust: (args: { configDir: string; cwd: string; home: string }) => {
+        calls.push(args)
+        return { configPath: '', settingsPath: '', seededKeys: [] }
+      },
+      spawnImpl: (() => scriptedChild(0)) as never,
+    } as never)
+    assert.equal(calls.length, 1, 'a launch that seeds nothing is the defect this closes')
+    // The cwd is the identity here: seeding any other folder leaves the trust
+    // dialog exactly where it was.
+    assert.equal(calls[0]!.cwd, cwd)
+    assert.equal(calls[0]!.configDir, '/opt/agents/cfg')
+    assert.equal(calls[0]!.home, home)
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })

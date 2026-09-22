@@ -79,6 +79,19 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-hook.mjs"],
+            "timeout": 5,
+            "async": true
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "hooks": [

@@ -402,6 +402,7 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
+import { servePairRequired } from './lib/pair-required-server.mjs'
 import { installWatcherBundle } from './lib/watcher-bundle.mjs'
 import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
@@ -512,7 +513,23 @@ if (!AUTH.complete) {
     process.stderr.write(`[bgos] WARN ${PAIRING_REJECTION_WARN}\n`)
   }
   process.stderr.write(`[bgos] ${missingCredsMessage(AUTH)}\n`)
-  process.exit(1)
+  // NOT process.exit(1). Exiting here kills the transport BEFORE the initialize
+  // handshake, and all Claude Code can report for that is CONNECTION_CLOSED:
+  // the line above, which names the one thing the user has to do, is written to
+  // a stderr stream the session never shows. From inside that session "you have
+  // not paired yet" and "the daemon crashed" are the same symptom.
+  //
+  // So answer the handshake and serve a DEGRADED channel instead: one tool,
+  // hoai_pair_required, whose description and result carry the pairing steps
+  // (lib/pair-required-server.mjs). Nothing else is exposed, and no channel
+  // capability is declared, so nothing here can be mistaken for a live channel.
+  // The process ends when the host disconnects, and the rest of this module
+  // never runs, which is what the exit used to guarantee.
+  const served = await servePairRequired({
+    reason: missingCredsMessage(AUTH),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
 }
 
 function getApiBaseUrl(): string {
@@ -547,7 +564,6 @@ import {
   parseHookEvent,
   type Effect,
   type StepRow,
-  type ToolRow,
   type TurnState,
 } from './lib/hook-events.js'
 import {
@@ -555,7 +571,19 @@ import {
   hooksRoot,
   startHookIntake,
   type HookIntake,
+  type SpoolLine,
 } from './lib/hook-intake.js'
+// The card's wire body: the per card output budget and the turn clock as ISO
+// 8601, applied on EVERY write rather than only the last one (stage 7).
+import {
+  hookCardWireBody,
+  type HookCardPending,
+  type HookCardWireBody,
+} from './lib/hook-card-body.js'
+// One pending slot per CARD. A single slot dropped the repaint of a card a
+// working child outlived, because the mapper emits that repaint and the live
+// turn's own card in the same batch (stage 8).
+import { PendingCards, HOOK_CARD_PENDING_MAX } from './lib/hook-card-pending.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -2440,7 +2468,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
  * typed "yes <id>" / "no <id>" fallback), the SERVER's own
  * `approval_meta.expired` flag on the card, and a local backstop that sits 90
  * s behind the owner's whole wait and exists only for a server that never
- * answers at all. Before 0.42.1 this was a flat 120 s clock, which is how a
+ * answers at all. Before 0.44.1 this was a flat 120 s clock, which is how a
  * request could be declined here while the card in the owner's hand was still
  * perfectly tappable.
  *
@@ -6012,17 +6040,45 @@ const turnChat = createTurnChatTracker()
 
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
-/** Bumped on every turn end, so a card POST that lands after the turn finished
- *  cannot adopt an id the next turn would then PATCH. */
-let hookTurnToken = 0
-let hookCardId: string | null = null
-let hookCardPending: { state: 'running' | 'done'; tools: ToolRow[]; text: string } | null = null
+/**
+ * How many cards this daemon can still address at once.
+ *
+ * One for the live turn, plus the card of a turn whose child agent outlived
+ * it. Bounded for the same reason the intake's dedupe is (lib/hook-intake.ts):
+ * a map that only ever grows is a leak in a process that runs for weeks.
+ * Losing the oldest key means a very late update posts a second card instead
+ * of patching the first, which is the behaviour this stage replaced and not a
+ * failure of anything.
+ */
+const HOOK_CARD_ID_LIMIT = 8
+/**
+ * Which message each card became, keyed on the card's own key.
+ *
+ * This replaced a single id held for a single turn. A child agent that stops
+ * after its parent's turn has ended still has a card to patch, and this key is
+ * what reaches it. It is also the guard: a later turn carries a key of its own
+ * and cannot touch an older entry, which is why nothing else gates the write
+ * back any more.
+ */
+const hookCardIds = new Map<string, string>()
+/** The card states waiting to go out, one slot per card, including each turn's
+ *  own clock (stage 7). Epoch milliseconds here; the builder turns them into
+ *  ISO 8601 at the wire. */
+const hookCardPending = new PendingCards(HOOK_CARD_PENDING_MAX)
+/** The key of the card the LIVE turn is drawing, so the turn end sends THAT
+ *  card's state and never a carried card's repaint that happened to be waiting
+ *  in the queue beside it. */
+let hookTurnCardKey: string | null = null
 let hookCardTimer: ReturnType<typeof setTimeout> | null = null
 /** The card POST or PATCH currently on the wire, so the turn end can wait for
  *  it instead of racing it. It resolves to the card's id (a POST mints one),
  *  which is what lets the final update address a card the turn state no longer
  *  remembers. Null when nothing is in flight. */
 let hookCardFlight: Promise<string | null> | null = null
+/** The key of the card that write is about, so the turn end adopts the id it
+ *  mints only when it is the id of the card the turn end is itself sending.
+ *  With more than one card reachable, an id is no longer interchangeable. */
+let hookCardFlightKey: string | null = null
 let hookStepsSnapshot: StepRow[] | null = null
 let hookStepsTurnId: string | null = null
 let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
@@ -6082,12 +6138,62 @@ function createdMessageId(response: unknown): string | null {
   return null
 }
 
-/** The wire body of one card state. */
-function hookCardBody(pending: { state: 'running' | 'done'; tools: ToolRow[]; text: string }): {
-  text: string
-  toolProgress: { state: 'running' | 'done'; tools: ToolRow[] }
-} {
-  return { text: pending.text, toolProgress: { state: pending.state, tools: pending.tools } }
+/**
+ * The wire body of one card state.
+ *
+ * Everything that has to happen to every card, coalesced or final, happens in
+ * lib/hook-card-body.ts: the per card output budget (the whole tools array
+ * rides every PATCH, one per 600 ms while a turn is live) and the turn clock
+ * as ISO 8601. Both write paths call this, so neither can forget either.
+ */
+function hookCardBody(pending: HookCardPending): HookCardWireBody {
+  return hookCardWireBody(pending)
+}
+
+/**
+ * Remember which message a card became.
+ *
+ * Insertion ordered and bounded, in the shape of the intake's own dedupe: the
+ * oldest key falls out at the limit. A key written again keeps the place it
+ * already had, because a card that is being updated is the SAME card and its
+ * age is when it was opened.
+ */
+function rememberHookCardId(cardKey: string, id: string): void {
+  hookCardIds.set(cardKey, id)
+  while (hookCardIds.size > HOOK_CARD_ID_LIMIT) {
+    const oldest = hookCardIds.keys().next().value
+    if (oldest === undefined) break
+    hookCardIds.delete(oldest)
+  }
+}
+
+/**
+ * The key the card of an ENDING turn answers to from here on.
+ *
+ * A card whose child agent is still working is left behind under a key of its
+ * own, `carried:` plus the key the turn drew it under. It has to be a key no
+ * turn state can mint: every hook event a child sends carries the PARENT's
+ * prompt id, so the turn the child's own next tool re opens mints exactly the
+ * key that card had, and the child's rows would then be PATCHed onto the
+ * message the helper row is on. Null when this turn left no card behind.
+ */
+function carriedKeyFor(turnKey: string | null): string | null {
+  if (turnKey === null) return null
+  for (const carried of hookTurn.carried.values()) {
+    if (carried.turnKey === turnKey) return carried.cardKey
+  }
+  return null
+}
+
+/** Move the message each carried card was posted under onto the card's own
+ *  key, while the turn's key still names it, so the card is still addressable
+ *  once that key is forgotten. */
+function adoptCarriedCardIds(): void {
+  for (const carried of hookTurn.carried.values()) {
+    if (hookCardIds.has(carried.cardKey)) continue
+    const id = hookCardIds.get(carried.turnKey)
+    if (id !== undefined) rememberHookCardId(carried.cardKey, id)
+  }
 }
 
 /**
@@ -6095,17 +6201,23 @@ function hookCardBody(pending: { state: 'running' | 'done'; tools: ToolRow[]; te
  * one for a PATCH, so a caller that started the POST can hand the id to the
  * final update even after the turn state has been cleared.
  *
+ * The chat may be null, and only a POST cares: a PATCH addresses the message
+ * directly and never reads it. That is what lets a child agent that finished
+ * long after its parent's turn still land its result on the card it belongs
+ * to, when the turn's chat record has already been dropped as stale.
+ *
  * No assistantId: CreateMessageDto does not declare it, so the backend's
  * whitelist strips it and its unknown-field shadow interceptor logs a line for
  * every card this rail posts. The daemon's credentials already say which
  * assistant is speaking.
  */
 async function writeHookCard(
-  chatId: string,
+  chatId: string | null,
   cardId: string | null,
   card: ReturnType<typeof hookCardBody>,
 ): Promise<string | null> {
   if (cardId === null) {
+    if (chatId === null) return null
     const created = await bgosPost('messages', {
       chatId: Number(chatId),
       sender: 'assistant',
@@ -6119,22 +6231,25 @@ async function writeHookCard(
 }
 
 async function flushHookCard(): Promise<void> {
-  // One card write at a time. A caller that finds one in flight leaves its
-  // pending state where it is; the finally below re-schedules it, and the turn
-  // end awaits the flight before sending the final card itself.
+  // One card write at a time. A caller that finds one in flight leaves the
+  // queue where it is; the finally below re-schedules it, and the turn end
+  // awaits the flight before sending the final card itself.
   if (hookCardFlight !== null) return
-  const pending = hookCardPending
+  // Oldest first, and taken OUT here: a turn_end effect runs in the same
+  // synchronous loop as the final card flush and forgets the ending turn's
+  // own state, so a card still owed a write has to be out of the queue and in
+  // hand before the first await.
+  const pending = hookCardPending.take()
   if (pending === null) return
+  const cardKey = pending.cardKey ?? ''
+  const cardId = cardKey === '' ? null : (hookCardIds.get(cardKey) ?? null)
   const chatId = hookChatId()
-  if (chatId === null) {
-    hookCardPending = null
-    return
-  }
-  // Captured BEFORE the first await: a turn_end effect runs in the same
-  // synchronous loop as the final card flush and clears both of these.
-  const cardId = hookCardId
-  const token = hookTurnToken
-  hookCardPending = null
+  // A POST needs a chat and a PATCH does not, so a card is given up on only
+  // when it can be neither. The turn's chat record is dropped fifteen minutes
+  // after the turn ends, and a child agent that runs longer than that is
+  // exactly the case this lane exists for: bailing on the chat alone would
+  // throw away the update carrying that helper's result.
+  if (chatId === null && cardId === null) return
   const write = (async (): Promise<string | null> => {
     try {
       return await writeHookCard(chatId, cardId, hookCardBody(pending))
@@ -6144,12 +6259,17 @@ async function flushHookCard(): Promise<void> {
     }
   })()
   hookCardFlight = write
+  hookCardFlightKey = cardKey === '' ? null : cardKey
   try {
     const id = await write
-    if (id !== null && token === hookTurnToken) hookCardId = id
+    // Nothing gates this any more. The old guard refused a write back once the
+    // turn had ended, which is precisely when a card left behind for a working
+    // child learns the id it will be patched by.
+    if (id !== null && cardKey !== '') rememberHookCardId(cardKey, id)
   } finally {
     hookCardFlight = null
-    if (hookCardPending !== null) scheduleHookCard()
+    hookCardFlightKey = null
+    if (hookCardPending.size > 0) scheduleHookCard()
   }
 }
 
@@ -6249,40 +6369,91 @@ async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Prom
  * this one waits for the network would have its own fresh card state cleared
  * out from under it when the wait finally returned.
  */
-async function finishHookTurn(): Promise<void> {
+async function finishHookTurn(keepCard: boolean): Promise<void> {
   // Everything the last update needs, captured before anything is cleared.
-  const pending = hookCardPending
+  // The turn's summary fields (its start and its finish) ride on `pending`,
+  // which the clear below forgets, so this line is what puts them on the wire.
+  // It is the LIVE turn's own card: a card an earlier turn left behind can be
+  // waiting in the queue beside it, and that is not this turn's final card.
+  const pending = hookCardPending.get(hookTurnCardKey)
   const chatId = hookChatId()
   const flight = hookCardFlight
-  let cardId = hookCardId
-  endHookTurn()
+  const flightKey = hookCardFlightKey
+  const cardKey = pending?.cardKey ?? null
+  let cardId = cardKey === null ? null : (hookCardIds.get(cardKey) ?? null)
+  // The card this turn leaves behind for a working child answers to a key of
+  // its OWN from here on, and this write may be the POST that mints its id.
+  const carriedKey = keepCard ? carriedKeyFor(cardKey) : null
+  endHookTurn(keepCard)
   if (flight !== null) {
     try {
       // The write already on the wire must land first: it is what mints the
-      // card id, and an older list must not overwrite the final one.
+      // card id, and an older list must not overwrite the final one. Only when
+      // it is about THIS card, though: with a card left behind by an earlier
+      // turn also reachable, an id is no longer interchangeable, and adopting
+      // another card's would patch this turn's rows onto that message.
       const id = await flight
-      if (id !== null) cardId = id
+      if (id !== null && flightKey === cardKey) cardId = id
     } catch {
       /* the flush logs its own failure; the final card still goes out */
     }
   }
-  if (pending === null || chatId === null) return
+  if (pending === null) return
+  if (chatId === null && cardId === null) return
+  // The last write of a turn takes the SAME one at a time slot the coalescer
+  // uses. A card left behind for a working child can be waiting in the queue
+  // right now, and the id it will be patched by is the one this write mints:
+  // a flush that ran beside it would find no id and post a second card.
+  const write = (async (): Promise<string | null> => {
+    try {
+      return await writeHookCard(chatId, cardId, hookCardBody(pending))
+    } catch (err) {
+      log(`hook rail: final tool card update failed: ${err}`)
+      return null
+    }
+  })()
+  hookCardFlight = write
+  hookCardFlightKey = cardKey
   try {
-    await writeHookCard(chatId, cardId, hookCardBody(pending))
-  } catch (err) {
-    log(`hook rail: final tool card update failed: ${err}`)
+    const id = await write
+    // A card kept for a working child has to be findable again, and this write
+    // is often the POST that mints its id: a fast turn can end before the 600
+    // ms coalescer ever fired. Under the CARRIED key, never the turn's own: a
+    // later turn can mint the turn's key and would reach this message.
+    if (carriedKey !== null && id !== null) rememberHookCardId(carriedKey, id)
+  } finally {
+    hookCardFlight = null
+    hookCardFlightKey = null
+    if (hookCardPending.size > 0) scheduleHookCard()
   }
 }
 
-function endHookTurn(): void {
-  hookTurnToken += 1
+/**
+ * `keepCard` is the mapper's answer to "is a child agent still working".
+ *
+ * When it is true the card this turn leaves behind must stay addressable, so
+ * its message is moved onto the card's own key first. Then every other entry
+ * goes: they belonged to the turn that just ended, and an entry left under a
+ * turn's key is an entry a LATER turn can reach, because a child stamps its
+ * parent's prompt id on its own events and the turn one of those re opens
+ * mints that very key. What survives is the cards the mapper is still
+ * carrying, and nothing else.
+ */
+function endHookTurn(keepCard: boolean): void {
   hookTurnLive = false
-  hookCardId = null
-  hookCardPending = null
+  hookTurnCardKey = null
+  if (keepCard) adoptCarriedCardIds()
+  for (const key of [...hookCardIds.keys()]) {
+    if (!hookTurn.carried.has(key)) hookCardIds.delete(key)
+  }
+  hookCardPending.keepOnly(hookTurn.carried.keys())
   if (hookCardTimer !== null) {
     clearTimeout(hookCardTimer)
     hookCardTimer = null
   }
+  // A carried card still owed a repaint keeps its place in the queue, so the
+  // timer is re-armed rather than simply cleared.
+  if (hookCardPending.size > 0) scheduleHookCard()
   hookStepsSnapshot = null
   hookStepsTurnId = null
   stopHookStepsHeartbeat()
@@ -6293,7 +6464,24 @@ function runHookEffects(effects: Effect[]): void {
   for (const effect of effects) {
     switch (effect.kind) {
       case 'tool_card': {
-        hookCardPending = { state: effect.state, tools: effect.tools, text: effect.text }
+        // The clock rides the card state, so the turn end picks it up out of
+        // the queue with everything else it captures before clearing. One slot
+        // per card: a carried card's repaint and the live card arrive in the
+        // SAME batch, and a single slot wrote only the second of them.
+        hookCardPending.put({
+          state: effect.state,
+          tools: effect.tools,
+          text: effect.text,
+          cardKey: effect.cardKey,
+          startedAt: effect.startedAt,
+          finishedAt: effect.finishedAt,
+        })
+        // A card a turn left behind repainting because its child is working is
+        // NOT the turn coming back to life. Calling that live would hold the
+        // intake at its live cadence for the rest of the session, and would
+        // hand the turn end a carried repaint to send as its final card.
+        const carried = hookTurn.carried.has(effect.cardKey)
+        if (!carried) hookTurnCardKey = effect.cardKey
         if (effect.state === 'done') {
           if (hookCardTimer !== null) {
             clearTimeout(hookCardTimer)
@@ -6301,7 +6489,7 @@ function runHookEffects(effects: Effect[]): void {
           }
           void flushHookCard()
         } else {
-          hookTurnLive = true
+          if (!carried) hookTurnLive = true
           scheduleHookCard()
         }
         break
@@ -6333,17 +6521,27 @@ function runHookEffects(effects: Effect[]): void {
         break
       }
       case 'turn_end': {
-        void finishHookTurn()
+        void finishHookTurn(effect.keepCard)
         break
       }
     }
   }
 }
 
-/** One spooled hook payload. Never throws: the intake keeps draining. */
-function onHookPayload(payload: Record<string, unknown>): void {
+/**
+ * One spooled hook payload. Never throws: the intake keeps draining.
+ *
+ * `line` is the spool line the intake read, and its `receivedAt` was stamped
+ * inside the hook process at the moment the event happened. That is the clock
+ * the turn is measured on: Date.now() here is the moment this daemon DRAINED
+ * the file, which idle polling delays by 2 seconds and an unproven session by
+ * up to a minute, so a card built on it can report minutes that are wrong by
+ * more than the turn was long.
+ */
+function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void {
   const event = parseHookEvent(payload)
   if (event === null) return
+  const receivedAt = line?.receivedAt ?? Date.now()
   // The payload carries the CLI's own transcript_path, which is the strongest
   // binding evidence there is (lib/session-binding.ts). Feeding it here is what
   // lets the context gauge stop guessing.
@@ -6361,7 +6559,7 @@ function onHookPayload(payload: Record<string, unknown>): void {
     const matched = turnChat.matchDelivered(payload.prompt)
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
   }
-  const { next, effects } = applyHookEventToTurn(hookTurn, event, Date.now())
+  const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   runHookEffects(effects)
 }
@@ -6383,9 +6581,13 @@ function startHookIntakeIfHolder(): void {
     hookIntake = startHookIntake({
       stateRoot: root,
       projectDir: sessionBinder.projectDirectory,
-      onEvent: (payload) => onHookPayload(payload),
+      onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
-      isTurnLive: () => hookTurnLive,
+      // A child agent still working after its parent stopped keeps this true:
+      // its qualifier and its result arrive on the next drain, and the idle
+      // cadence is two seconds on a row whose whole point is that it moves
+      // while the owner watches it.
+      isTurnLive: () => hookTurnLive || hookTurn.carried.size > 0,
       // Proof a: the prompt carries a message this daemon delivered. Nothing
       // else on the machine could have that text in its prompt.
       provesDelivery: (prompt) => turnChat.matchDelivered(prompt) !== null,
@@ -6421,7 +6623,9 @@ function stopHookIntake(): void {
     clearTimeout(hookCardTimer)
     hookCardTimer = null
   }
-  hookCardPending = null
+  hookCardPending.clear()
+  hookTurnCardKey = null
+  hookCardIds.clear()
   stopHookStepsHeartbeat()
 }
 
@@ -8329,7 +8533,7 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 
 // The daemon's live drain counters (shared with SelfUpdater in main()).
 //
-// KNOWN, NOT YET DECIDED (0.42.1 review). A permission request holds BOTH
+// KNOWN, NOT YET DECIDED (0.44.1 review). A permission request holds BOTH
 // `activeOperations` (the handler body runs inside trackMessageOperation) and
 // `pendingPermissions` for as long as the owner has to answer, which used to
 // be at most two minutes and can now be half an hour. The scheduled update

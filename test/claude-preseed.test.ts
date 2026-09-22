@@ -9,25 +9,37 @@
  *                  warning's DEFAULT answer is exit, never blind-Enter it)
  * The ps1 seeds both slash spellings of a win32 cwd; so does this port.
  *
+ * The two files are NOT in the same directory, and every test here now says so
+ * explicitly: settings.json is inside the config dir, .claude.json is at
+ * $CLAUDE_CONFIG_DIR/.claude.json when that is set and $HOME/.claude.json when
+ * it is not. The UNSET case is the default install and the one that shipped
+ * broken, so it is pinned twice: once on the resolver and once end to end.
+ *
  * Run: npx tsx --test test/claude-preseed.test.ts
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  CLAUDE_CONFIG_FILE_NAME,
   HOOK_EVENT_NAMES,
   HOOK_TIMEOUT_SECONDS,
   TRUST_ENTRY_DEFAULTS,
   alternateSlashSpelling,
+  claudeConfigFilePath,
   ensureHookEntries,
   ensureMarketplaceAutoUpdate,
   readMarketplaceAutoUpdate,
   preseedClaudeTrust,
   seedProjectEntry,
+  resolvedPathOrNull,
 } from '../lib/claude-preseed.mjs'
+import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
 
 function memFs(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial))
@@ -80,9 +92,15 @@ test('alternateSlashSpelling mirrors the ps1 (flip every separator)', () => {
 
 test('preseedClaudeTrust: fresh config dir writes exactly the bootstrap output (posix cwd, one spelling)', () => {
   const fs = memFs()
-  const result = preseedClaudeTrust({ configDir: '/home/kc/.claude', cwd: '/home/kc/hoai-agents/ava', fs })
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+  })
   assert.deepEqual(result, {
-    configPath: '/home/kc/.claude/.claude.json',
+    configPath: '/home/kc/.claude.json',
     settingsPath: '/home/kc/.claude/settings.json',
     seededKeys: ['/home/kc/hoai-agents/ava'],
   })
@@ -91,7 +109,7 @@ test('preseedClaudeTrust: fresh config dir writes exactly the bootstrap output (
     theme: 'dark',
     projects: { '/home/kc/hoai-agents/ava': FULL_ENTRY },
   }
-  assert.equal(fs.files.get('/home/kc/.claude/.claude.json'), JSON.stringify(expectedCfg, null, 2))
+  assert.equal(fs.files.get('/home/kc/.claude.json'), JSON.stringify(expectedCfg, null, 2))
   assert.equal(
     fs.files.get('/home/kc/.claude/settings.json'),
     JSON.stringify({ skipDangerousModePermissionPrompt: true }, null, 2),
@@ -100,7 +118,7 @@ test('preseedClaudeTrust: fresh config dir writes exactly the bootstrap output (
 
 test('preseedClaudeTrust: merges over an existing config, never clobbers other projects or settings, keeps user theme', () => {
   const fs = memFs({
-    '/home/kc/.claude/.claude.json': JSON.stringify({
+    '/home/kc/.claude.json': JSON.stringify({
       theme: 'light',
       numStartups: 9,
       projects: {
@@ -110,8 +128,14 @@ test('preseedClaudeTrust: merges over an existing config, never clobbers other p
     }),
     '/home/kc/.claude/settings.json': JSON.stringify({ model: 'opus', enabledPlugins: { 'hoai@hoai': true } }),
   })
-  preseedClaudeTrust({ configDir: '/home/kc/.claude', cwd: '/home/kc/hoai-agents/ava', fs })
-  const cfg = JSON.parse(fs.files.get('/home/kc/.claude/.claude.json')!)
+  preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+  })
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json')!)
   assert.deepEqual(cfg, {
     theme: 'light',
     numStartups: 9,
@@ -132,34 +156,250 @@ test('preseedClaudeTrust: merges over an existing config, never clobbers other p
 test('preseedClaudeTrust: a win32 cwd seeds BOTH slash spellings (the ps1 rule), byte-exact keys', () => {
   const fs = memFs()
   const cwd = 'C:\\Users\\kc\\hoai-agents\\ava'
-  const result = preseedClaudeTrust({ configDir: 'C:\\Users\\kc\\.claude', cwd, fs })
+  const result = preseedClaudeTrust({
+    configDir: 'C:\\Users\\kc\\.claude',
+    cwd,
+    env: {},
+    home: 'C:\\Users\\kc',
+    fs,
+  })
   assert.deepEqual(result.seededKeys, [cwd, 'C:/Users/kc/hoai-agents/ava'])
-  assert.equal(result.configPath, 'C:\\Users\\kc\\.claude\\.claude.json')
-  const cfg = JSON.parse(fs.files.get('C:\\Users\\kc\\.claude\\.claude.json')!)
+  assert.equal(result.configPath, 'C:\\Users\\kc\\.claude.json')
+  const cfg = JSON.parse(fs.files.get('C:\\Users\\kc\\.claude.json')!)
   assert.deepEqual(Object.keys(cfg.projects), [cwd, 'C:/Users/kc/hoai-agents/ava'])
   assert.deepEqual(cfg.projects[cwd], FULL_ENTRY)
 })
 
 test('preseedClaudeTrust: idempotent (a second run produces identical bytes)', () => {
   const fs = memFs()
-  preseedClaudeTrust({ configDir: '/c', cwd: '/w', fs })
+  const env = { CLAUDE_CONFIG_DIR: '/c' }
+  preseedClaudeTrust({ configDir: '/c', cwd: '/w', env, home: '/home/kc', fs })
   const first = [fs.files.get('/c/.claude.json'), fs.files.get('/c/settings.json')]
-  preseedClaudeTrust({ configDir: '/c', cwd: '/w', fs })
+  preseedClaudeTrust({ configDir: '/c', cwd: '/w', env, home: '/home/kc', fs })
   assert.deepEqual([fs.files.get('/c/.claude.json'), fs.files.get('/c/settings.json')], first)
 })
 
-test('preseedClaudeTrust: corrupt existing files are treated as empty (the bootstrap load() rule)', () => {
-  const fs = memFs({ '/c/.claude.json': '{not json', '/c/settings.json': '' })
-  preseedClaudeTrust({ configDir: '/c', cwd: '/w', fs })
+test('preseedClaudeTrust: an owner config it cannot read is LEFT EXACTLY AS IT IS, and the seed says so', () => {
+  // THE DEFECT THIS PINS (measured 2026-09-22). This test used to assert the
+  // opposite: "corrupt existing files are treated as empty", and the write that
+  // followed replaced the owner's whole ~/.claude.json (account, every project,
+  // MCP servers) with a five line config. No backup, no log line, callers
+  // printed success. It ran on every pairing and every hoai launch, against a
+  // file live Claude Code sessions rewrite, so a torn read was enough.
+  for (const unreadable of ['{not json', '', '[]', '"a string"', 'null']) {
+    const fs = memFs({ '/c/.claude.json': unreadable })
+    assert.throws(
+      () => preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs }),
+      /left untouched/,
+      JSON.stringify(unreadable),
+    )
+    assert.equal(fs.files.get('/c/.claude.json'), unreadable, 'not one byte of the owner file may change')
+    assert.equal(fs.files.has('/c/settings.json'), false, 'nothing else is written once the seed has refused')
+  }
+})
+
+test('preseedClaudeTrust: a file that EXISTS but could not be read at all is refused too, not taken for a new machine', () => {
+  // EACCES and friends reach the seam as a null read. Only the exists() probe
+  // tells that apart from "no file yet".
+  const fs = { ...memFs(), exists: (p: string) => p === '/c/.claude.json' }
+  assert.throws(
+    () => preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs }),
+    /left untouched/,
+  )
+  assert.equal(fs.files.size, 0)
+})
+
+test('preseedClaudeTrust: no file yet is still a brand new machine, and gets its config created', () => {
+  const fs = memFs()
+  preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs })
   assert.equal(JSON.parse(fs.files.get('/c/.claude.json')!).projects['/w'].hasTrustDialogAccepted, true)
   assert.equal(JSON.parse(fs.files.get('/c/settings.json')!).skipDangerousModePermissionPrompt, true)
 })
 
-test('preseedClaudeTrust: refuses an empty cwd or config dir instead of seeding a junk key', () => {
+test('preseedClaudeTrust: the rename keeps the mode the owner file HAD, and a created file gets 0600', () => {
+  // 0640, not 0600: with the same value as the created-file fallback this test
+  // could not tell "preserve" from "always chmod 0600" (found by review).
+  const modes = new Map<string, number>([['/c/.claude.json', 0o640]])
+  const events: string[] = []
+  const base = memFs({ '/c/.claude.json': '{"numStartups":412}' })
+  const fs = {
+    ...base,
+    writeFile: (p: string, c: string, opts?: { mode?: number }) => {
+      events.push(`write ${p.replace(/\.\d+\.tmp$/, '.tmp')} mode=${opts?.mode === undefined ? 'none' : opts.mode.toString(8)}`)
+      base.files.set(p, c)
+    },
+    rename: (from: string, to: string) => {
+      events.push(`rename ${to}`)
+      base.files.set(to, base.files.get(from)!)
+      base.files.delete(from)
+    },
+    modeOf: (p: string) => modes.get(p) ?? null,
+    chmod: (p: string, mode: number) => {
+      events.push(`chmod ${p.replace(/\.\d+\.tmp$/, '.tmp')} ${mode.toString(8)}`)
+    },
+  }
+  preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs })
+  // The temp file is CREATED with the mode (never world readable, not even for an
+  // instant), chmodded for the case where the umask narrowed it, and only then renamed.
+  assert.deepEqual(events.slice(0, 3), ['write /c/.claude.json.tmp mode=640', 'chmod /c/.claude.json.tmp 640', 'rename /c/.claude.json'])
+  assert.equal(JSON.parse(base.files.get('/c/.claude.json')!).numStartups, 412, 'a readable config keeps every key it had')
+  // settings.json did not exist: it is created 0600 rather than at the umask default.
+  assert.deepEqual(events.slice(3), ['write /c/settings.json.tmp mode=600', 'chmod /c/settings.json.tmp 600', 'rename /c/settings.json'])
+})
+
+test('preseedClaudeTrust: an unreadable settings.json is left alone too, it is the owner file just as much', () => {
+  // Found by review: the config half refused, the settings half still replaced.
+  const fs = { ...memFs({ '/c/settings.json': '{"permissions": {"allow": [' }), exists: (p: string) => p === '/c/settings.json' }
+  assert.throws(
+    () => preseedClaudeTrust({ configDir: '/c', cwd: '/w', env: { CLAUDE_CONFIG_DIR: '/c' }, home: '/home/kc', fs }),
+    /left untouched/,
+  )
+  assert.equal(fs.files.get('/c/settings.json'), '{"permissions": {"allow": [')
+})
+
+test('preseedClaudeTrust on a REAL filesystem: garbage stays byte identical at its mode, a good config keeps its keys and its mode', () => {
+  // The default fs seam (exists, modeOf, chmod, writeFile with a mode) had no
+  // coverage at all: every other test here injects an in-memory one.
+  if (process.platform === 'win32') return
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-preseed-'))
+  const garbage = join(dir, 'garbage')
+  const good = join(dir, 'good')
+  mkdirSync(garbage)
+  mkdirSync(good)
+  writeFileSync(join(garbage, '.claude.json'), 'this is not json {{{', { mode: 0o600 })
+  writeFileSync(join(good, '.claude.json'), '{"numStartups":412,"oauthAccount":{"x":1}}', { mode: 0o640 })
+  chmodSync(join(good, '.claude.json'), 0o640)
+  assert.throws(() => preseedClaudeTrust({ configDir: garbage, cwd: dir, env: { CLAUDE_CONFIG_DIR: garbage }, home: dir }), /left untouched/)
+  assert.equal(readFileSync(join(garbage, '.claude.json'), 'utf8'), 'this is not json {{{')
+  assert.equal(statSync(join(garbage, '.claude.json')).mode & 0o777, 0o600)
+  preseedClaudeTrust({ configDir: good, cwd: dir, env: { CLAUDE_CONFIG_DIR: good }, home: dir })
+  const after = JSON.parse(readFileSync(join(good, '.claude.json'), 'utf8'))
+  assert.equal(after.numStartups, 412)
+  assert.deepEqual(after.oauthAccount, { x: 1 })
+  assert.equal(statSync(join(good, '.claude.json')).mode & 0o777, 0o640, 'the mode the owner file had, not the umask default')
+  assert.equal(statSync(join(good, 'settings.json')).mode & 0o777, 0o600, 'a created file is private')
+})
+
+// --- WHERE .claude.json lives (2026-09-21) ----------------------------------
+// The defect these pin: the config file was joined onto the config DIR, so an
+// install with CLAUDE_CONFIG_DIR unset wrote $HOME/.claude/.claude.json, a file
+// Claude Code never opens, and reported success. Every test above this block
+// passed throughout, because every one of them handed the function an explicit
+// config dir; the UNSET default was the one shape nobody asserted, and it is
+// the shape every ordinary install has. Measured on the failing machine:
+// $HOME/.claude.json 143,684 bytes with 34 projects, $HOME/.claude/.claude.json
+// absent, CLAUDE_CONFIG_DIR unset.
+
+test('claudeConfigFilePath: UNSET CLAUDE_CONFIG_DIR resolves the HOME-level file, not one inside the config dir', () => {
+  assert.equal(claudeConfigFilePath({ env: {}, home: '/home/kc' }), '/home/kc/.claude.json')
+  // The trap, spelled out: the config DIR resolver answers the directory, and
+  // joining the file name onto THAT is the bug. The two must not be equal.
+  assert.equal(claudeConfigDir({ env: {}, home: '/home/kc' }), '/home/kc/.claude')
+  assert.notEqual(
+    claudeConfigFilePath({ env: {}, home: '/home/kc' }),
+    `${claudeConfigDir({ env: {}, home: '/home/kc' })}/${CLAUDE_CONFIG_FILE_NAME}`,
+  )
+})
+
+test('claudeConfigFilePath: a SET CLAUDE_CONFIG_DIR puts the file inside that dir, and outranks home', () => {
+  assert.equal(
+    claudeConfigFilePath({ env: { CLAUDE_CONFIG_DIR: '/opt/agents/cfg' }, home: '/home/kc' }),
+    '/opt/agents/cfg/.claude.json',
+  )
+  // Including the case the config dir alone cannot tell apart from the unset
+  // one: same directory string, different file, and the env decides which.
+  assert.equal(
+    claudeConfigFilePath({ env: { CLAUDE_CONFIG_DIR: '/home/kc/.claude' }, home: '/home/kc' }),
+    '/home/kc/.claude/.claude.json',
+  )
+  assert.equal(claudeConfigFilePath({ env: {}, home: '/home/kc' }), '/home/kc/.claude.json')
+})
+
+test('claudeConfigFilePath: a win32 home keeps win32 separators, and blank whitespace is not an override', () => {
+  assert.equal(claudeConfigFilePath({ env: {}, home: 'C:\\Users\\kc' }), 'C:\\Users\\kc\\.claude.json')
+  assert.equal(
+    claudeConfigFilePath({ env: { CLAUDE_CONFIG_DIR: '   ' }, home: '/home/kc' }),
+    '/home/kc/.claude.json',
+  )
+  assert.throws(() => claudeConfigFilePath({ env: {}, home: '' }), /home directory/)
+})
+
+test('preseedClaudeTrust with CLAUDE_CONFIG_DIR UNSET seeds $HOME/.claude.json and NEVER $HOME/.claude/.claude.json', () => {
   const fs = memFs()
-  assert.throws(() => preseedClaudeTrust({ configDir: '/c', cwd: '', fs }), /cwd/)
-  assert.throws(() => preseedClaudeTrust({ configDir: '', cwd: '/w', fs }), /configDir/)
-  assert.equal(fs.files.size, 0)
+  // Exactly what a first-time macOS install hands in: the config dir resolver's
+  // own answer for an unset variable, which is the directory settings.json
+  // really does live in.
+  const configDir = claudeConfigDir({ env: {}, home: '/home/kc' })
+  const result = preseedClaudeTrust({
+    configDir,
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+  })
+  assert.equal(result.configPath, '/home/kc/.claude.json')
+  assert.equal(result.settingsPath, '/home/kc/.claude/settings.json')
+  // The file Claude Code actually reads carries the trust entry...
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json')!)
+  assert.equal(cfg.projects['/home/kc/hoai-agents/ava'].hasTrustDialogAccepted, true)
+  // ...and the decoy inside the config dir was never created. This assertion is
+  // the whole regression: it is the file the shipped code wrote.
+  assert.equal(fs.files.has('/home/kc/.claude/.claude.json'), false)
+  // The settings half was always right and must stay right.
+  assert.equal(
+    JSON.parse(fs.files.get('/home/kc/.claude/settings.json')!).skipDangerousModePermissionPrompt,
+    true,
+  )
+})
+
+test('preseedClaudeTrust with CLAUDE_CONFIG_DIR SET seeds inside that dir, beside settings.json', () => {
+  const fs = memFs()
+  const env = { CLAUDE_CONFIG_DIR: '/opt/agents/cfg' }
+  const result = preseedClaudeTrust({
+    configDir: claudeConfigDir({ env, home: '/home/kc' }),
+    cwd: '/home/kc/hoai-agents/ava',
+    env,
+    home: '/home/kc',
+    fs,
+  })
+  assert.equal(result.configPath, '/opt/agents/cfg/.claude.json')
+  assert.equal(result.settingsPath, '/opt/agents/cfg/settings.json')
+  assert.equal(
+    JSON.parse(fs.files.get('/opt/agents/cfg/.claude.json')!).projects['/home/kc/hoai-agents/ava']
+      .hasTrustDialogAccepted,
+    true,
+  )
+  // The home-level file belongs to a DIFFERENT install here, and seeding it
+  // would be the same bug pointed the other way.
+  assert.equal(fs.files.has('/home/kc/.claude.json'), false)
+})
+
+test('preseedClaudeTrust: an existing home-level config is MERGED, never replaced (the 143 KB file)', () => {
+  // The real machine's shape: a large live $HOME/.claude.json with startup
+  // counters and many projects. The seed must add one project key and leave
+  // everything else byte-identical, because this file is Claude Code's own
+  // state and losing it is worse than the prompt this seed removes.
+  const fs = memFs({
+    '/home/kc/.claude.json': JSON.stringify({
+      numStartups: 412,
+      firstStartTime: '2026-01-04T09:12:00.000Z',
+      theme: 'light',
+      projects: { '/home/kc/other': { allowedTools: ['Read'], hasTrustDialogAccepted: true } },
+    }),
+  })
+  preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+  })
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json')!)
+  assert.equal(cfg.numStartups, 412)
+  assert.equal(cfg.firstStartTime, '2026-01-04T09:12:00.000Z')
+  assert.equal(cfg.theme, 'light')
+  assert.deepEqual(cfg.projects['/home/kc/other'], { allowedTools: ['Read'], hasTrustDialogAccepted: true })
+  assert.equal(cfg.projects['/home/kc/hoai-agents/ava'].hasTrustDialogAccepted, true)
 })
 
 // --- marketplace auto-update enrolment (2026-08-30) --------------------------
@@ -725,4 +965,90 @@ test('every launch line the launchers write turns the task tools on', () => {
   const agent = launcher('../bin/bgos-agent')
   assert.match(agent, /<key>CLAUDE_CODE_ENABLE_TODO_TOOLS<\/key><string>1<\/string>/, 'launchd')
   assert.match(agent, /Environment=CLAUDE_CODE_ENABLE_TODO_TOOLS=1/, 'systemd')
+})
+
+/**
+ * THE KEY, NOT THE FILE. F4 fixed WHICH FILE this writes to. This is the KEY
+ * inside it, and it fails the same way: it reports success and changes nothing.
+ *
+ * Claude Code keys `projects` on the RESOLVED cwd. `/var` is a symlink to
+ * `/private/var` on every Mac, so a seed for a folder under `/tmp` or `/var`
+ * lands on a key the CLI never looks up. Measured on a fresh folder
+ * 2026-09-21, driving the real CLI over a PTY:
+ *
+ *   seeded /var/folders/.../x          -> the trust dialog STILL APPEARED
+ *   seeded /private/var/folders/.../x  -> the dialog was GONE
+ *
+ * Every existing test here survived the bug because they all use
+ * /home/kc/... paths, where no component is a symlink, which is also why
+ * `~/hoai-agents/<name>` was never affected in the field.
+ */
+test('resolvedPathOrNull: a symlinked path answers its resolved spelling', () => {
+  const resolve = (p: string) => (p.startsWith('/var/') ? p.replace('/var/', '/private/var/') : p)
+  assert.equal(resolvedPathOrNull('/var/folders/t/x', resolve), '/private/var/folders/t/x')
+})
+
+test('resolvedPathOrNull: a path that resolves to ITSELF answers null, so nothing is seeded twice', () => {
+  assert.equal(resolvedPathOrNull('/home/kc/ava', (p: string) => p), null)
+})
+
+test('resolvedPathOrNull: an unresolvable path answers null rather than throwing', () => {
+  // A folder that does not exist yet, or a permission that refuses the walk.
+  // Losing the resolved spelling is survivable; losing the seed is not.
+  assert.equal(
+    resolvedPathOrNull('/nope', () => {
+      throw new Error('ENOENT')
+    }),
+    null,
+  )
+  assert.equal(resolvedPathOrNull('', (p: string) => p), null)
+  assert.equal(resolvedPathOrNull(null as unknown as string, (p: string) => p), null)
+})
+
+test('preseedClaudeTrust: a symlinked cwd seeds BOTH spellings, literal first', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/var/folders/t/agent',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: (p: string) => p.replace('/var/', '/private/var/'),
+  })
+  assert.deepEqual(result.seededKeys, ['/var/folders/t/agent', '/private/var/folders/t/agent'])
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json') as string)
+  // BOTH keys carry the full entry: we cannot tell from here which one the CLI
+  // will look up, so seeding one and not the other is a coin flip.
+  assert.equal(cfg.projects['/var/folders/t/agent'].hasTrustDialogAccepted, true)
+  assert.equal(cfg.projects['/private/var/folders/t/agent'].hasTrustDialogAccepted, true)
+})
+
+test('preseedClaudeTrust: a cwd with no symlink in it still seeds exactly one key', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: (p: string) => p,
+  })
+  assert.deepEqual(result.seededKeys, ['/home/kc/hoai-agents/ava'])
+})
+
+test('preseedClaudeTrust: a realpath that THROWS still seeds the literal cwd', () => {
+  const fs = memFs()
+  const result = preseedClaudeTrust({
+    configDir: '/home/kc/.claude',
+    cwd: '/home/kc/hoai-agents/ava',
+    env: {},
+    home: '/home/kc',
+    fs,
+    realpath: () => {
+      throw new Error('EACCES')
+    },
+  })
+  assert.deepEqual(result.seededKeys, ['/home/kc/hoai-agents/ava'])
+  const cfg = JSON.parse(fs.files.get('/home/kc/.claude.json') as string)
+  assert.equal(cfg.projects['/home/kc/hoai-agents/ava'].hasTrustDialogAccepted, true)
 })

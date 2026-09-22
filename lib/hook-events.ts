@@ -8,6 +8,7 @@
  *   PreToolUse / PostToolUse / PostToolUseFailure -> tool_progress card rows
  *   PostToolUse on TaskCreate / TaskUpdate        -> the live Steps snapshot
  *   PreCompact / PostCompact / SessionStart       -> the context_compacted marker
+ *   SubagentStop                                  -> a child agent's row settles
  *   Stop                                          -> the card settles, Steps clear,
  *                                                    and the turn_continues marker
  *                                                    when background work is left
@@ -29,17 +30,49 @@
  * 3. THE OWN TOOLS ARE NOT WORK. The channel's own MCP tools (reply, the ask
  *    tool, the mission tools, the boards tools) and the task tools are plumbing
  *    or feed another lane, so they never draw a tool row.
+ * 4. A HELPER IS NOT A FINISHED TOOL CALL (stage 8). The Agent tool LAUNCHES a
+ *    child and answers in a few milliseconds; the child runs on its own and
+ *    reports at its own SubagentStop, which may arrive long after the parent's
+ *    turn ended. So a child row stays running across the launch response, it
+ *    is keyed on the agent id that response minted, and a turn that ends with a
+ *    child still working leaves its whole card behind in `carried` for that
+ *    child to finish into.
+ * 5. ONE DELEGATING TURN IS ONE CARD. A child goes on working after its
+ *    parent's Stop, and its own tool events carry the parent's prompt id, so
+ *    they used to re open a turn and post a SECOND card for the same piece of
+ *    work. A child's events belong to the card its helper row is on: the rows
+ *    go there, the qualifier goes there, and no live turn is opened for
+ *    them.
  *
  * Wire limits are the backend DTO's: tools[] max 50, icon 16, name 64, args
  * 120, path 200, detail 120; steps max 30 rows of 200 chars.
  */
 
+import {
+  RESULT_MAX,
+  clipResultHead,
+  helperQualifier,
+  isAsyncLaunch,
+  launchedAgentId,
+} from './helpers.ts'
 import { scanText } from './secret-scan.ts'
+import {
+  clipCardOutput,
+  clipOutputTail,
+  editCountsFor,
+  exitCodeFor,
+  interpretationFor,
+  outputFor,
+} from './tool-outcome.ts'
 
 // ── Limits (the backend DTOs own these numbers) ──────────────────────────────
 
 export const TOOL_ROWS_MAX = 50
 export const TOOL_NAME_MAX = 64
+/** A row's own identity. A value over the cap is DROPPED and never cut: half an
+ *  identity is not an identity, and the backend refuses a whole card over one
+ *  field this long, which would cost the owner every row on it. */
+export const TOOL_ID_MAX = 64
 export const TOOL_ARGS_MAX = 120
 export const TOOL_PATH_MAX = 200
 export const TOOL_DETAIL_MAX = 120
@@ -48,6 +81,17 @@ export const STEPS_MAX_TEXT = 200
 export const MARKER_WHAT_MAX = 80
 export const MARKER_REASON_MAX = 60
 export const MARKER_TOKENS_MAX = 16
+
+/**
+ * `output` is the only field in this file measured in kilobytes, and the whole
+ * tools array rides EVERY PATCH (one per 600 ms while a turn is live) and every
+ * WS frame to every viewer of a shared agent. So the per card budget matters
+ * more than the per row cap: at most 8192 characters of output on a card, spent
+ * newest first, on top of 2048 characters and 200 lines per row.
+ */
+export const TOOL_OUTPUT_MAX = 2048
+export const TOOL_OUTPUT_LINES_MAX = 200
+export const CARD_OUTPUT_BUDGET = 8192
 
 /** A second compaction inside this window is the same compaction, seen from
  *  another hook (PreCompact, then PostCompact, then SessionStart source
@@ -63,6 +107,7 @@ export const HOOK_EVENT_NAMES = [
   'PostToolUse',
   'PostToolUseFailure',
   'Stop',
+  'SubagentStop',
   'PreCompact',
   'PostCompact',
   'SessionEnd',
@@ -121,6 +166,28 @@ export interface ToolRow {
   pathCount?: number
   detail?: string
   durationMs?: number
+  /** The TAIL of what a command printed: stdout, then, only when stderr is not
+   *  empty, a line reading exactly `stderr:` and the stderr. One field, masked
+   *  before it is clipped, and never a second one (stage 7). */
+  output?: string
+  /** Minus one to 255. Absent when the runtime reported none, which is not the
+   *  same as zero: a grep that found nothing reports no code at all. */
+  exitCode?: number
+  linesAdded?: number
+  linesRemoved?: number
+  /** The sender's own stable identity for this row (stage 8). A child row
+   *  carries the runtime's agent id, which is what lets the app keep one row's
+   *  open state while the rows around it change. */
+  id?: string
+  /** Epoch milliseconds: the receipt of the line that OPENED this row, and the
+   *  only source of the elapsed time a running helper ticks. ISO on the wire,
+   *  converted once in lib/hook-card-body.ts, so the range guard lives in one
+   *  place and this module stays free of formatting. */
+  startedAt?: number
+  /** A child's last message when it finished, masked and then cut to its first
+   *  240 characters. Never `output`: output is what a command printed, it is
+   *  what the chevron opens, and it is what the per card output budget spends. */
+  result?: string
 }
 
 export type StepStatus = 'pending' | 'running' | 'done' | 'waiting'
@@ -137,16 +204,64 @@ export interface TaskRecord {
   status: StepStatus
 }
 
+/**
+ * The card of a turn that ENDED while a child agent was still working.
+ *
+ * It is a field of its own and not a set of live fields, because the live ones
+ * must still be cleared at a Stop: leaving them set is how a turn inherits the
+ * previous turn's start. The whole row list is kept, not only the children's,
+ * because the update that finally settles it REPLACES the card's rows and
+ * dropping the parent's work would erase what the owner is reading.
+ */
+export interface CarriedCard {
+  /** The card's OWN key, minted at the Stop from the key the turn drew it
+   *  under plus that Stop's receipt. The prefix is the whole point: a child
+   *  stamps the PARENT's prompt id on its own hook events, so any turn re
+   *  opened under that id would otherwise mint the very key this card had and
+   *  patch ITS rows onto the message the owner is watching this helper on. A
+   *  key no turn state can produce cannot be minted by accident. */
+  cardKey: string
+  /** The key the card answered to while its turn was live, which is the key
+   *  the message was posted under. The daemon moves the message onto `cardKey`
+   *  at the turn end, and this is what it moves it from. */
+  turnKey: string
+  toolOrder: string[]
+  tools: Map<string, ToolRow>
+  agentRows: Map<string, string>
+  startedAt: number
+  /** The receipt of the Stop that ended the parent's turn. The card's own
+   *  finish is the moment its LAST row settles, which is later than this. */
+  finishedAt: number
+}
+
 export interface TurnState {
   turnId: string | null
   toolOrder: string[]
   tools: Map<string, ToolRow>
   /** Session scoped, not turn scoped: Claude Code's task list outlives a turn. */
   tasks: Map<string, TaskRecord>
+  /** A child's agent id to the key of the row that launched it. Every later
+   *  event a child tags with that id finds its row through this. */
+  agentRows: Map<string, string>
+  /** The cards of turns that ended while a child agent was still working,
+   *  keyed on each card's own key, oldest first. More than one, because a
+   *  second turn can end the same way while the first card is still waiting:
+   *  a single slot dropped the older card without settling it, and the child
+   *  it was waiting for could then never close it. */
+  carried: Map<string, CarriedCard>
   startedAt: number
   lastActivityAt: number
   lastCompactMarkerAt: number | null
 }
+
+/** How many cards a turn state holds for working children at once.
+ *
+ * Half the daemon's own card id limit, which also has the live turn's card in
+ * it and keeps slack. Bounded for the reason every map in this rail is: a
+ * process that runs for weeks may not grow one for ever. Losing the oldest
+ * costs that one card its settle, which is what a single slot did to every
+ * card but the newest. */
+export const CARRIED_CARDS_MAX = 4
 
 export function emptyTurn(): TurnState {
   return {
@@ -154,6 +269,8 @@ export function emptyTurn(): TurnState {
     toolOrder: [],
     tools: new Map(),
     tasks: new Map(),
+    agentRows: new Map(),
+    carried: new Map(),
     startedAt: 0,
     lastActivityAt: 0,
     lastCompactMarkerAt: null,
@@ -163,7 +280,29 @@ export function emptyTurn(): TurnState {
 export type MarkerKind = 'context_compacted' | 'turn_continues'
 
 export type Effect =
-  | { kind: 'tool_card'; state: 'running' | 'done'; tools: ToolRow[]; text: string }
+  /**
+   * `startedAt` and `finishedAt` are epoch milliseconds and are the TURN's own
+   * clock, taken from the receipt the hook process stamped (stage 7). They are
+   * the only source of the minutes the card shows: nothing anywhere works them
+   * out from when a message was created. `startedAt` rides every card once the
+   * turn has opened; `finishedAt` exists only on the card a Stop or a
+   * SessionEnd settles, because that is the only moment a turn is over.
+   */
+  | {
+      kind: 'tool_card'
+      state: 'running' | 'done'
+      tools: ToolRow[]
+      text: string
+      /**
+       * Which card this is, for a daemon that may now be holding more than one:
+       * a turn whose child outlived it leaves a card behind, and a later update
+       * has to reach THAT message rather than post a second one. Stable for the
+       * life of a card and different for every turn.
+       */
+      cardKey: string
+      startedAt?: number
+      finishedAt?: number
+    }
   | { kind: 'steps'; turnId: string | null; steps: StepRow[] }
   | {
       kind: 'marker'
@@ -173,7 +312,9 @@ export type Effect =
       peek?: string
       payload: Record<string, unknown>
     }
-  | { kind: 'turn_end' }
+  /** `keepCard` is true when a child agent is still working: the turn is over,
+   *  its card is not, and the daemon must keep being able to address it. */
+  | { kind: 'turn_end'; keepCard: boolean }
   /**
    * A moment when a goal verdict may now exist. The mapper decides NOTHING
    * about the goal: Claude Code's own /goal writes its verdict into the
@@ -263,6 +404,23 @@ export function isTaskTool(name: string): boolean {
   return (TASK_TOOLS as readonly string[]).includes(baseToolName(name))
 }
 
+/** The tools that RUN something: a row of theirs can carry what it printed and
+ *  an exit code. PowerShell is the Windows agent's shell and its result shape
+ *  is Bash's, so leaving it out would give a Windows owner empty rows. */
+export const SHELL_TOOLS = ['Bash', 'PowerShell'] as const
+
+/** The tools that CHANGE a file: a row of theirs can carry its plus and minus
+ *  counts. Nothing else derives either pair, so a Read draws as it always did. */
+export const EDIT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const
+
+export function isShellTool(name: string): boolean {
+  return (SHELL_TOOLS as readonly string[]).includes(baseToolName(name))
+}
+
+export function isEditTool(name: string): boolean {
+  return (EDIT_TOOLS as readonly string[]).includes(baseToolName(name))
+}
+
 /** The subagent tool: one row per handoff, named by the subagent type. */
 export const SUBAGENT_TOOL = 'Agent'
 export const SUBAGENT_ICON = '🔀'
@@ -294,6 +452,20 @@ interface Span {
 const overlaps = (spans: Span[], start: number, end: number): boolean =>
   spans.some((s) => start < s.end && end > s.start)
 
+/** The one line a private key's body is collapsed into. */
+export const PRIVATE_KEY_BODY_PLACEHOLDER = '[private key removed]'
+
+/** The rule whose header opens a block, and a cheap reject so the scan below
+ *  only runs on a candidate line. The RULE is the authority: keeping a second
+ *  copy of its pattern here is how the two would drift apart. */
+const PRIVATE_KEY_RULE = 'private_key_block'
+const PRIVATE_KEY_HEADER_HINT = '-----BEGIN'
+const PRIVATE_KEY_FOOTER_HINT = '-----END'
+
+const opensPrivateKeyBlock = (line: string): boolean =>
+  line.includes(PRIVATE_KEY_HEADER_HINT) &&
+  scanText('hook', line).some((finding) => finding.rule === PRIVATE_KEY_RULE)
+
 /**
  * Mask every secret the scan finds, in place, as `[redacted:<rule>]`.
  *
@@ -302,13 +474,35 @@ const overlaps = (spans: Span[], start: number, end: number): boolean =>
  * of its token and verifying, by re-scanning, that the replacement actually
  * silenced that rule. A finding whose span cannot be located redacts the whole
  * line rather than shipping it: a finding always redacts.
+ *
+ * A private key is the one secret whose VALUE is not on the line that gives it
+ * away. Every rule here is line anchored, the header rule matches the
+ * `-----BEGIN ... PRIVATE KEY-----` line alone, and the base64 body lines that
+ * follow match nothing at all, so a pass that looked at one line at a time
+ * stored the key whole. A header therefore takes the WHOLE line with it and
+ * swallows everything up to and including the first `-----END` line, or the
+ * rest of the text when there is no END line, into one placeholder.
  */
 export function redactForWire(text: string): string {
   if (typeof text !== 'string' || text === '') return ''
-  return text
-    .split(/\r?\n/)
-    .map((line) => redactLine(line))
-    .join('\n')
+  const lines = text.split(/\r?\n/)
+  const out: string[] = []
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    if (!opensPrivateKeyBlock(line)) {
+      out.push(redactLine(line))
+      continue
+    }
+    // The whole header line, not just the matched span: a one line PEM carries
+    // its body on this same line, after the header the rule matched.
+    out.push(PLACEHOLDER(PRIVATE_KEY_RULE))
+    if (index + 1 >= lines.length) continue
+    let end = index + 1
+    while (end < lines.length && !lines[end]!.includes(PRIVATE_KEY_FOOTER_HINT)) end++
+    out.push(PRIVATE_KEY_BODY_PLACEHOLDER)
+    index = Math.min(end, lines.length - 1)
+  }
+  return out.join('\n')
 }
 
 /** Enough passes for a pathological line; the fail closed exit below covers
@@ -579,18 +773,31 @@ export function buildCardText(tools: ToolRow[], done: boolean): string {
  * The backend caps tools[] at 50. Keep the TAIL: the end of a long turn is what
  * the owner is looking at, and the first fifty things that happened are a
  * museum. One synthetic row says how many were dropped.
+ *
+ * With ONE exception, added in stage 8: a child agent that is still working is
+ * exempt from the front drop. It is the one old row whose state is still
+ * changing, and a helper that vanished from the card while it worked and came
+ * back at the end would read as a fault. It takes its slot out of the kept
+ * tail, so the total is still at most `max`: a card of 51 rows is refused by
+ * the backend outright.
  */
 export function clipToolRows(rows: ToolRow[], max: number = TOOL_ROWS_MAX): ToolRow[] {
   if (rows.length <= max) return rows
-  const kept = rows.slice(-(max - 1))
-  const dropped = rows.length - kept.length
+  const budget = max - 1
+  const tail = rows.slice(-budget)
+  const front = rows.slice(0, rows.length - tail.length)
+  const live = front
+    .filter((row) => row.kind === 'subagent' && row.status === 'running')
+    .slice(-budget)
+  const kept = tail.slice(live.length)
+  const dropped = rows.length - live.length - kept.length
   const earlier: ToolRow = {
     icon: '…',
     name: 'earlier',
     args: `${dropped} earlier tools not shown`,
     status: 'done',
   }
-  return [earlier, ...kept]
+  return [earlier, ...live, ...kept]
 }
 
 // ── Steps ────────────────────────────────────────────────────────────────────
@@ -651,11 +858,29 @@ export function taskDirFor(claudeHome: string, sessionId: string): string {
 
 // ── The turn machine ─────────────────────────────────────────────────────────
 
+const cloneCarried = (carried: CarriedCard): CarriedCard => ({
+  cardKey: carried.cardKey,
+  turnKey: carried.turnKey,
+  toolOrder: [...carried.toolOrder],
+  tools: new Map(carried.tools),
+  agentRows: new Map(carried.agentRows),
+  startedAt: carried.startedAt,
+  finishedAt: carried.finishedAt,
+})
+
+const cloneCarriedCards = (cards: Map<string, CarriedCard>): Map<string, CarriedCard> => {
+  const out = new Map<string, CarriedCard>()
+  for (const [key, card] of cards) out.set(key, cloneCarried(card))
+  return out
+}
+
 const cloneTurn = (state: TurnState): TurnState => ({
   turnId: state.turnId,
   toolOrder: [...state.toolOrder],
   tools: new Map(state.tools),
   tasks: new Map(state.tasks),
+  agentRows: new Map(state.agentRows),
+  carried: cloneCarriedCards(state.carried),
   startedAt: state.startedAt,
   lastActivityAt: state.lastActivityAt,
   lastCompactMarkerAt: state.lastCompactMarkerAt,
@@ -664,15 +889,190 @@ const cloneTurn = (state: TurnState): TurnState => ({
 const rowsOf = (state: TurnState): ToolRow[] =>
   state.toolOrder.map((key) => state.tools.get(key)).filter((r): r is ToolRow => r !== undefined)
 
-const cardEffect = (state: TurnState, done: boolean): Effect => {
-  const tools = clipToolRows(rowsOf(state))
-  return { kind: 'tool_card', state: done ? 'done' : 'running', tools, text: buildCardText(tools, done) }
+/**
+ * One card state, with the turn's own clock on it.
+ *
+ * `finishedAt` is a PARAMETER and not a field of the turn, because only the
+ * caller knows whether the turn is actually over: a closed ROW is not a closed
+ * TURN. Three moments end one, and no others: a Stop, a SessionEnd, and a
+ * prompt arriving while rows are still open, which is a turn no Stop is coming
+ * for (the owner interrupted it, or a child's own tools opened it after its
+ * parent had stopped) and whose rows that prompt is about to throw away.
+ */
+const cardFrom = (
+  rows: ToolRow[],
+  cardKey: string,
+  done: boolean,
+  startedAt: number,
+  finishedAt?: number,
+): Effect => {
+  const tools = clipCardOutput(clipToolRows(rows), CARD_OUTPUT_BUDGET)
+  return {
+    kind: 'tool_card',
+    state: done ? 'done' : 'running',
+    tools,
+    text: buildCardText(tools, done),
+    cardKey,
+    ...(startedAt > 0 ? { startedAt } : {}),
+    ...(typeof finishedAt === 'number' && finishedAt > 0 ? { finishedAt } : {}),
+  }
 }
 
-const rowKey = (raw: Record<string, unknown>, state: TurnState): string => {
+/**
+ * One card, for the life of one turn.
+ *
+ * The prompt id when there is one, the turn's own start when there is not (a
+ * daemon that attached mid turn), and the key of the FIRST row on the card
+ * when there is neither: a tool_use_id, which one call has and no other. Never
+ * a constant, which is what the last arm used to be: two turns that each
+ * opened on a tool the mapper could not date then shared one key, and the
+ * second turn's rows patched the first turn's message.
+ */
+const cardKeyOf = (state: TurnState): string => {
+  if (state.turnId) return state.turnId
+  if (state.startedAt > 0) return `turn:${state.startedAt}`
+  return `turn:${state.toolOrder[0] ?? state.lastActivityAt}`
+}
+
+/**
+ * The key a card answers to once its turn has ended with a child still working.
+ *
+ * Minted at the Stop, from the key the card was drawn under and that Stop's
+ * receipt. A card key identifies a CARD and never a prompt, and this prefix is
+ * what makes that true: every hook event a child sends carries the PARENT's
+ * prompt id, so a turn re opened under that id would mint exactly the key this
+ * card had, and its rows would land on the message the helper row is on. The
+ * child's OWN rows do land there, deliberately (header rule 5); a later turn's
+ * must not, and a key no turn state can produce is what stops them.
+ */
+const carriedKeyOf = (turnKey: string, finishedAt: number): string =>
+  `carried:${turnKey}:${finishedAt}`
+
+const cardEffect = (state: TurnState, done: boolean, finishedAt?: number): Effect =>
+  cardFrom(rowsOf(state), cardKeyOf(state), done, state.startedAt, finishedAt)
+
+const carriedRows = (carried: CarriedCard): ToolRow[] =>
+  carried.toolOrder
+    .map((key) => carried.tools.get(key))
+    .filter((row): row is ToolRow => row !== undefined)
+
+const carriedCard = (carried: CarriedCard, done: boolean, finishedAt?: number): Effect =>
+  cardFrom(carriedRows(carried), carried.cardKey, done, carried.startedAt, finishedAt)
+
+const isLiveHelper = (row: ToolRow): boolean => row.kind === 'subagent' && row.status === 'running'
+
+/** The child this payload belongs to, or empty for the parent's own work. */
+const childAgentId = (raw: Record<string, unknown>): string => str(raw.agent_id).trim()
+
+/** The card a turn left behind whose child this is, searched over every one of
+ *  them: two turns can each end with their own live helper, and each child has
+ *  to find the card its own row is on. */
+function carriedHolding(state: TurnState, agentId: string): CarriedCard | null {
+  for (const carried of state.carried.values()) {
+    if (carried.agentRows.has(agentId)) return carried
+  }
+  return null
+}
+
+/**
+ * The rows of one card: a live turn's, or a card an earlier turn left behind
+ * for a working child.
+ *
+ * Both hold the same three fields, and every row rule below is written against
+ * THIS rather than against either one. The row key, the launch link and the
+ * repaint are the same rules wherever the row lands, and the way two sets of
+ * rules drift apart is by being written twice.
+ */
+interface RowSink {
+  toolOrder: string[]
+  tools: Map<string, ToolRow>
+  agentRows: Map<string, string>
+}
+
+/** Where a child's own event belongs: the helper row it is working under, and
+ *  the card that row is on. */
+interface ChildOwner {
+  /** The card an earlier turn left behind, or null when the helper row is on
+   *  the LIVE turn's card. */
+  carried: CarriedCard | null
+  /** The key of the helper row itself, inside that card. */
+  rowKey: string
+}
+
+/**
+ * Resolve a child's own event to the helper row it belongs to.
+ *
+ * The LIVE turn first and then the cards earlier turns left behind, so a child
+ * that outlived its parent's turn is answered by the card it is actually on
+ * rather than by whatever the parent is doing now. Null for the parent's own
+ * work (no agent id at all) and for a child this daemon never saw launched:
+ * both keep the ordinary path.
+ */
+function childOwnerFor(state: TurnState, raw: Record<string, unknown>): ChildOwner | null {
+  const agentId = childAgentId(raw)
+  if (!agentId) return null
+  const liveKey = state.agentRows.get(agentId)
+  if (liveKey !== undefined) return { carried: null, rowKey: liveKey }
+  const carried = carriedHolding(state, agentId)
+  if (carried === null) return null
+  const key = carried.agentRows.get(agentId)
+  if (key === undefined) return null
+  return { carried, rowKey: key }
+}
+
+/**
+ * Say what a child is doing right now on the child's own row.
+ *
+ * True when the row actually moved, which is what tells the caller the card
+ * has to be repainted: a qualifier that did not change is not news.
+ */
+function noteChildQualifier(
+  tools: Map<string, ToolRow>,
+  key: string,
+  raw: Record<string, unknown>,
+  cwd: string,
+): boolean {
+  const row = tools.get(key)
+  if (row === undefined || row.status !== 'running') return false
+  const toolName = baseToolName(str(raw.tool_name))
+  const detail = clipForWire(
+    redactForWire(helperQualifier(toolName, summarizeToolArgs(toolName, raw.tool_input, cwd))),
+    TOOL_DETAIL_MAX,
+  )
+  if (!detail || row.detail === detail) return false
+  tools.set(key, { ...row, detail })
+  return true
+}
+
+/** A child has reported: its row closes, with what it said and how long it ran. */
+function settleChildRow(row: ToolRow, now: number, result: string): ToolRow {
+  const settled: ToolRow = { ...row, status: 'done' }
+  // The qualifier said what it WAS doing, and it is not doing it any more.
+  delete settled.detail
+  if (typeof row.startedAt === 'number' && row.startedAt > 0) {
+    const span = now - row.startedAt
+    if (Number.isFinite(span) && span >= 0) settled.durationMs = Math.round(span)
+  }
+  if (result) settled.result = result
+  return settled
+}
+
+/** Every child still working in this row list gives up, with no result: it
+ *  never said anything, and there is no moment to measure to either. */
+function abandonHelpers(order: string[], tools: Map<string, ToolRow>): void {
+  for (const key of order) {
+    const row = tools.get(key)
+    if (row === undefined || !isLiveHelper(row)) continue
+    const abandoned: ToolRow = { ...row, status: 'error' }
+    delete abandoned.detail
+    tools.set(key, abandoned)
+  }
+}
+
+const rowKey = (raw: Record<string, unknown>, sink: RowSink): string => {
   const id = str(raw.tool_use_id).trim()
   if (id) return id
-  return `anon:${str(raw.tool_name)}:${state.toolOrder.length}`
+  return `anon:${str(raw.tool_name)}:${sink.toolOrder.length}`
 }
 
 function buildRow(raw: Record<string, unknown>, cwd: string, status: ToolRowStatus): ToolRow {
@@ -686,8 +1086,11 @@ function buildRow(raw: Record<string, unknown>, cwd: string, status: ToolRowStat
       status,
       kind: 'subagent',
     }
-    const detail = isRecord(input) ? str(input.description).trim() : ''
-    if (detail) row.detail = clipForWire(redactForWire(detail), TOOL_DETAIL_MAX)
+    // The description is the row's ARGS, the way every other row carries what
+    // its call was about, which leaves `detail` free for the running qualifier:
+    // what this child is doing right now.
+    const args = isRecord(input) ? str(input.description).trim() : ''
+    if (args) row.args = clipForWire(redactForWire(args), TOOL_ARGS_MAX)
     return row
   }
   const row: ToolRow = {
@@ -705,6 +1108,93 @@ function buildRow(raw: Record<string, unknown>, cwd: string, status: ToolRowStat
 
 const sameRow = (a: ToolRow | undefined, b: ToolRow): boolean =>
   a !== undefined && JSON.stringify(a) === JSON.stringify(b)
+
+/**
+ * A tool call OPENING, as a row on whichever card it belongs to. True when the
+ * card has something new to say.
+ */
+function applyPreToolRow(
+  sink: RowSink,
+  raw: Record<string, unknown>,
+  cwd: string,
+  now: number,
+): boolean {
+  const key = rowKey(raw, sink)
+  const previous = sink.tools.get(key)
+  const row = buildRow(raw, cwd, 'running')
+  if (row.kind === 'subagent') {
+    // A helper's own start, the receipt of the line that opened it. It never
+    // moves afterwards: it is the number the app ticks from.
+    row.startedAt = previous?.startedAt ?? now
+    if (previous?.id) row.id = previous.id
+  }
+  if (sameRow(previous, row)) return false
+  if (!sink.tools.has(key)) sink.toolOrder.push(key)
+  sink.tools.set(key, row)
+  return true
+}
+
+/**
+ * A tool call CLOSING, on the same card and the same terms.
+ */
+function applyPostToolRow(
+  sink: RowSink,
+  raw: Record<string, unknown>,
+  cwd: string,
+  status: ToolRowStatus,
+): boolean {
+  const name = str(raw.tool_name)
+  const key = rowKey(raw, sink)
+  const previous = sink.tools.get(key)
+  const row: ToolRow = previous
+    ? { ...previous, status }
+    : { ...buildRow(raw, cwd, status), status }
+  // An async LAUNCH is not a finished call, and it is read off the RESPONSE:
+  // never off the tool name, never off the event name. The gate's two
+  // launches answered in 5 ms and 2 ms while their children ran for 4.6 and
+  // 3.9 seconds, so writing this duration would report a five millisecond
+  // helper.
+  const launch = isAsyncLaunch(raw.tool_response)
+  if (launch) {
+    row.status = 'running'
+    const agentId = launchedAgentId(raw.tool_response)
+    if (agentId) {
+      if (agentId.length <= TOOL_ID_MAX) row.id = agentId
+      // The link is this daemon's own, and it is kept whatever the wire
+      // would accept: the child still has to find its row. It is kept on the
+      // card the launch happened on, so a child launched BY a child finds the
+      // carried card its parent's row is on.
+      sink.agentRows.set(agentId, key)
+    }
+  }
+  const duration = raw.duration_ms
+  if (!launch && typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
+    row.durationMs = Math.round(duration)
+  }
+  // What the call actually did (stage 7). It lands BEFORE the sameRow check so
+  // the comparison sees the WHOLE row: a row that differs only in what it
+  // printed is a row the card still has to repaint.
+  if (isShellTool(name)) {
+    const interpretation = interpretationFor(raw)
+    if (interpretation) row.detail = clipForWire(redactForWire(interpretation), TOOL_DETAIL_MAX)
+    const printed = outputFor(raw)
+    if (printed) {
+      // REDACT BEFORE YOU CLIP (header rule 2), then the TAIL.
+      const tail = clipOutputTail(redactForWire(printed), TOOL_OUTPUT_MAX, TOOL_OUTPUT_LINES_MAX)
+      if (tail) row.output = tail
+    }
+    const code = exitCodeFor(raw)
+    if (code !== null) row.exitCode = code
+  } else if (isEditTool(name)) {
+    const { linesAdded, linesRemoved } = editCountsFor(raw)
+    if (typeof linesAdded === 'number') row.linesAdded = linesAdded
+    if (typeof linesRemoved === 'number') row.linesRemoved = linesRemoved
+  }
+  if (sameRow(previous, row)) return false
+  if (!previous) sink.toolOrder.push(key)
+  sink.tools.set(key, row)
+  return true
+}
 
 function applyTaskTool(state: TurnState, raw: Record<string, unknown>): boolean {
   const tool = baseToolName(str(raw.tool_name))
@@ -843,14 +1333,37 @@ export function applyHookEventToTurn(
       next.toolOrder = []
       next.tools = new Map()
       next.tasks = new Map()
-      next.startedAt = now
+      // The links ride with the rows they point at. `carried` does NOT: a
+      // resume keeps the session id, so a child that was working across it can
+      // still report, and the card it belongs to has to still be reachable.
+      next.agentRows = new Map()
+      // The clock belongs to the TURN, and a session opening is not a turn
+      // opening. Setting it here would hand the first turn of the session a
+      // start from whenever the daemon attached, and would stop the PreToolUse
+      // fallback below ever running for a turn that had no prompt hook.
+      next.startedAt = 0
       return { next, effects }
     }
 
     case 'UserPromptSubmit': {
+      // A card still open HERE is a card no Stop is coming for: a turn the
+      // owner interrupted, or the pseudo turn a child's own tools opened after
+      // its parent stopped. The reset below throws its rows away, so it is
+      // settled first rather than left reading "Working" for the rest of the
+      // session. A child still running on it never reported and never will:
+      // this prompt clears the link its stop would have resolved through.
+      if (next.toolOrder.length > 0) {
+        abandonHelpers(next.toolOrder, next.tools)
+        effects.push(cardEffect(next, true, now))
+      }
       next.turnId = event.promptId
       next.toolOrder = []
       next.tools = new Map()
+      next.agentRows = new Map()
+      // `carried` is deliberately untouched. Each child's completion is
+      // delivered to its parent as a prompt carrying a task notification, and
+      // that prompt resets the live turn: clearing the carried card here would
+      // land the child's own stop on a card that is about the notification.
       next.startedAt = now
       return { next, effects }
     }
@@ -858,12 +1371,35 @@ export function applyHookEventToTurn(
     case 'PreToolUse': {
       const name = str(raw.tool_name)
       if (isSkippedTool(name)) return { next, effects }
+      const owner = childOwnerFor(next, raw)
+      if (owner !== null && owner.carried !== null) {
+        // ONE DELEGATING TURN IS ONE CARD (header rule 5). This child's parent
+        // has already stopped, so its work belongs to the card its own helper
+        // row is on: the qualifier and the row both go there, and no live turn
+        // is opened. A live card here is a SECOND message for one turn, minted
+        // under the parent's prompt id, which is the id every event a child
+        // sends carries.
+        const card = owner.carried
+        const moved = noteChildQualifier(card.tools, owner.rowKey, raw, event.cwd)
+        const drew = applyPreToolRow(card, raw, event.cwd, now)
+        if (moved || drew) effects.push(carriedCard(card, false))
+        return { next, effects }
+      }
       if (next.turnId === null && event.promptId) next.turnId = event.promptId
-      const key = rowKey(raw, next)
-      const row = buildRow(raw, event.cwd, 'running')
-      if (sameRow(next.tools.get(key), row)) return { next, effects }
-      if (!next.tools.has(key)) next.toolOrder.push(key)
-      next.tools.set(key, row)
+      // The daemon attached mid turn, so no prompt ever opened it: the first
+      // tool of the turn is the earliest moment the runtime reported. Late by
+      // however long the model thought, and honest, which is the trade the
+      // stage's own rule asks for.
+      if (next.startedAt === 0) next.startedAt = now
+      // A child of the turn that is still live says what its helper is doing,
+      // and then goes on to draw its own row exactly as it does today: the
+      // command, what it printed and its exit code are what 0.43.0 shows and
+      // taking them away would be a visible loss for anyone who delegates
+      // heavily.
+      const moved =
+        owner === null ? false : noteChildQualifier(next.tools, owner.rowKey, raw, event.cwd)
+      const drew = applyPreToolRow(next, raw, event.cwd, now)
+      if (!moved && !drew) return { next, effects }
       effects.push(cardEffect(next, false))
       return { next, effects }
     }
@@ -871,27 +1407,38 @@ export function applyHookEventToTurn(
     case 'PostToolUse':
     case 'PostToolUseFailure': {
       const name = str(raw.tool_name)
-      if (next.turnId === null && event.promptId) next.turnId = event.promptId
+      const owner = childOwnerFor(next, raw)
+      const onCarried = owner !== null && owner.carried !== null
+      // A child whose parent has already stopped is not opening a turn. Its
+      // events carry the PARENT's prompt id, and adopting that here mints the
+      // very key the card its helper row is on was drawn under.
+      if (!onCarried && next.turnId === null && event.promptId) next.turnId = event.promptId
       if (isTaskTool(name)) {
+        // A child planning its own work is not the parent planning: the Steps
+        // strip is the PARENT's list, and a child's task tools used to push
+        // their rows into it.
+        if (childAgentId(raw)) return { next, effects }
         if (event.name === 'PostToolUse' && applyTaskTool(next, raw)) {
           effects.push({ kind: 'steps', turnId: next.turnId, steps: stepsFromTasks(next.tasks.values()) })
         }
         return { next, effects }
       }
       if (isSkippedTool(name)) return { next, effects }
-      const key = rowKey(raw, next)
       const status: ToolRowStatus = event.name === 'PostToolUseFailure' ? 'error' : 'done'
-      const previous = next.tools.get(key)
-      const row: ToolRow = previous
-        ? { ...previous, status }
-        : { ...buildRow(raw, event.cwd, status), status }
-      const duration = raw.duration_ms
-      if (typeof duration === 'number' && Number.isFinite(duration) && duration >= 0) {
-        row.durationMs = Math.round(duration)
+      if (owner !== null && owner.carried !== null) {
+        // The closing half of header rule 5, and it has to be its own site:
+        // this is the second place that reads the dead prompt id, and it would
+        // open that second card on its own.
+        const card = owner.carried
+        const moved = noteChildQualifier(card.tools, owner.rowKey, raw, event.cwd)
+        const drew = applyPostToolRow(card, raw, event.cwd, status)
+        if (moved || drew) effects.push(carriedCard(card, false))
+        return { next, effects }
       }
-      if (sameRow(previous, row)) return { next, effects }
-      if (!previous) next.toolOrder.push(key)
-      next.tools.set(key, row)
+      const moved =
+        owner === null ? false : noteChildQualifier(next.tools, owner.rowKey, raw, event.cwd)
+      const drew = applyPostToolRow(next, raw, event.cwd, status)
+      if (!moved && !drew) return { next, effects }
       effects.push(cardEffect(next, false))
       return { next, effects }
     }
@@ -903,25 +1450,106 @@ export function applyHookEventToTurn(
     }
 
     case 'Stop': {
-      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true))
+      // The turn is over HERE, so this is the one card that carries a finish.
+      // Unless a child agent is still working: a card folds when it settles,
+      // and a helper ticking behind a fold helps nobody.
+      const keepCard = rowsOf(next).some(isLiveHelper)
+      if (next.toolOrder.length > 0) {
+        effects.push(keepCard ? cardEffect(next, false) : cardEffect(next, true, now))
+      }
       if (next.tasks.size > 0) effects.push({ kind: 'steps', turnId: next.turnId, steps: [] })
       const marker = turnContinuesMarker(raw)
       if (marker) effects.push(marker)
       // Before turn_end, which every reader of this file may assume is last.
       effects.push({ kind: 'goal_poll' })
-      effects.push({ kind: 'turn_end' })
+      if (keepCard) {
+        const turnKey = cardKeyOf(next)
+        const carried: CarriedCard = {
+          cardKey: carriedKeyOf(turnKey, now),
+          turnKey,
+          toolOrder: [...next.toolOrder],
+          tools: new Map(next.tools),
+          agentRows: new Map(next.agentRows),
+          startedAt: next.startedAt,
+          finishedAt: now,
+        }
+        next.carried.set(carried.cardKey, carried)
+        // Oldest first, and a dropped card is the only card that loses its
+        // settle. A single slot did that to every card but the newest one.
+        while (next.carried.size > CARRIED_CARDS_MAX) {
+          const oldest = next.carried.keys().next().value
+          if (oldest === undefined) break
+          next.carried.delete(oldest)
+        }
+      }
+      effects.push({ kind: 'turn_end', keepCard })
       next.turnId = null
       next.toolOrder = []
       next.tools = new Map()
+      next.agentRows = new Map()
+      // The clock belongs to the TURN. Leaving it set would hand the next turn
+      // a start from the last one, and a turn the owner pushed from their
+      // phone (no prompt hook of its own) would then report the minutes since
+      // whatever was typed here last.
+      next.startedAt = 0
+      return { next, effects }
+    }
+
+    case 'SubagentStop': {
+      // RESOLVE THE ID OR RETURN, and it is the first thing this case does.
+      // The composer's suggestion generator fires two of these per turn with an
+      // empty agent_type, one of them carrying a prose apology as its last
+      // message and one carrying no last message at all. A row drawn for those
+      // is a helper the owner never asked for.
+      const agentId = childAgentId(raw)
+      if (!agentId) return { next, effects }
+      const liveKey = next.agentRows.get(agentId)
+      const carried = liveKey === undefined ? carriedHolding(next, agentId) : null
+      if (liveKey === undefined && carried === null) return { next, effects }
+      // MASK, THEN CUT (header rule 2), and the cut keeps the HEAD: an answer
+      // is worth reading from its first sentence.
+      const result = clipResultHead(redactForWire(str(raw.last_assistant_message)), RESULT_MAX)
+      if (liveKey !== undefined) {
+        const row = next.tools.get(liveKey)
+        if (row === undefined) return { next, effects }
+        next.tools.set(liveKey, settleChildRow(row, now, result))
+        effects.push(cardEffect(next, false))
+        return { next, effects }
+      }
+      // Not null here: the guard above returned when neither card held it.
+      const card = carried!
+      const carriedKey = card.agentRows.get(agentId)!
+      const row = card.tools.get(carriedKey)
+      if (row === undefined) return { next, effects }
+      card.tools.set(carriedKey, settleChildRow(row, now, result))
+      const over = !carriedRows(card).some(isLiveHelper)
+      effects.push(carriedCard(card, over, over ? now : undefined))
+      // The card is off the books only when its LAST helper has settled: a
+      // card waiting on a second child is still a card a later stop has to
+      // reach.
+      if (over) next.carried.delete(card.cardKey)
       return { next, effects }
     }
 
     case 'SessionEnd': {
-      if (next.toolOrder.length > 0) effects.push(cardEffect(next, true))
-      effects.push({ kind: 'turn_end' })
+      // The session is gone, so every child that never reported gives up here.
+      // A Stop does NOT do this: a live child after its parent stopped is the
+      // normal case this whole lane exists for.
+      for (const carried of next.carried.values()) {
+        abandonHelpers(carried.toolOrder, carried.tools)
+        effects.push(carriedCard(carried, true, now))
+      }
+      next.carried = new Map()
+      if (next.toolOrder.length > 0) {
+        abandonHelpers(next.toolOrder, next.tools)
+        effects.push(cardEffect(next, true, now))
+      }
+      effects.push({ kind: 'turn_end', keepCard: false })
       next.turnId = null
       next.toolOrder = []
       next.tools = new Map()
+      next.agentRows = new Map()
+      next.startedAt = 0
       return { next, effects }
     }
 
