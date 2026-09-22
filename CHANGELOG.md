@@ -2,6 +2,60 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.44.0 (2026-09-21)
+
+- **The helpers a turn hands work to get a row each, and the owner watches
+  them work.** Until now delegating was invisible: the card said an Agent tool
+  had run and finished in five milliseconds, which is how long the launch took
+  and not how long the child worked, and everything the child then did arrived
+  as unattributed rows in the middle of the parent's own. Now each child is a
+  row of its own, named by the kind of helper it is, carrying the one line
+  description it was given, a state, an elapsed time that ticks while it works,
+  what it is doing right now, and, when it finishes, its last message.
+  - **Every part of it comes from the runtime's own events, and each part is
+    drawn only where its datum exists.** The row opens when the launch is
+    asked for and its start is the moment the hook process stamped on that
+    line. The launch RESPONSE is what says a child was handed off rather than
+    a tool finished, so the five milliseconds the response took is never
+    written as a helper's time. The elapsed is the difference between two of
+    this host's own receipts. A child that never reports back carries no time
+    and no result at all, because absent means absent.
+  - **A card now stays open while a helper is still working, even after the
+    turn has ended.** A finished card folds, and a helper ticking behind a
+    fold helps nobody. So a turn that stops with a child still running leaves
+    its card behind and the child's own stop, minutes later, updates that same
+    card instead of posting a second one. The card settles when the last child
+    settles.
+  - **More than one card can be waiting, and none of them can be written over
+    by another.** A card a turn leaves behind is kept under a name of its own,
+    so a later turn cannot write over the card the owner is watching a helper
+    on, and a second turn that ends the same way keeps the first card as well
+    rather than abandoning it half done. The commands a child runs after that
+    point land on that same card, beside the helper row they belong to, so one
+    delegating turn is one card in the chat however long the child goes on
+    working. Every card still owed an update has its own place in the queue, so
+    what a helper is doing right now reaches its card while it is still working
+    instead of being dropped for whatever the parent drew a moment later.
+  - **The child's own commands are still there.** A helper's Bash row still
+    carries the command, what it printed and the code it exited with, exactly
+    as before, and the helper's row says which of them it is running right
+    now. Nothing was taken away to make room for this.
+  - **Nothing is promised that this runtime cannot give.** There is no token
+    count, because the host is never handed one for a child, and no way to
+    stop one helper: Claude Code offers no door for it, and a button that
+    cannot do what it says is worse than no button. Both are recorded as
+    blocked rather than postponed.
+  - **One new hook event, and only one.** `SubagentStop` is registered;
+    `SubagentStart` deliberately is not, because it carries no description and
+    no tool id, so it can name nothing and be joined to nothing. A stop whose
+    child this host never saw launched is ignored outright, which is what
+    keeps the composer's own suggestion generator from drawing helpers nobody
+    asked for.
+  - **Nothing here is new for an owner who keeps the switch off.** The card is
+    still hidden by the per agent "Show technical details" setting, still off
+    by default, and this daemon still never reads it: the plugin always sends,
+    and what is drawn is the owner's choice.
+
 ## 0.43.0 (2026-09-21)
 
 - **The folded card after a turn stops saying "Used 5 tools" and starts saying

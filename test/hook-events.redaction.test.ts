@@ -17,6 +17,9 @@
  * Two more mutations, from the stage 7 review:
  *   - drop the private key block branch  -> the PEM body line case goes red
  *   - mask a value with maskSecret        -> the short password case goes red
+ * Stage 8 adds the same case for the third string a row can carry, a child
+ * agent's last message, where the cut keeps the HEAD rather than the tail:
+ *   - cut the last message before masking it -> the helper result case goes red
  */
 
 import { strict as assert } from 'node:assert'
@@ -36,6 +39,7 @@ import {
   summarizeToolArgs,
   type Effect,
 } from '../lib/hook-events.ts'
+import { RESULT_MAX, clipResultHead } from '../lib/helpers.ts'
 import { clipOutputTail } from '../lib/tool-outcome.ts'
 
 const CWD = '/home/karim/work/bgos'
@@ -67,6 +71,49 @@ const rowForStdout = (stdout: string) => {
     1_100,
   )
   const card = closed.effects.find((e: Effect) => e.kind === 'tool_card')
+  assert.ok(card && card.kind === 'tool_card', 'expected a tool_card effect')
+  return card.tools[0]!
+}
+
+/** The row a child agent leaves behind when its last message said this. */
+const helperRowFor = (lastMessage: string) => {
+  const payload = (name: string, extra: Record<string, unknown>) => {
+    const event = parseHookEvent({
+      session_id: 'sess-redact',
+      transcript_path: '/home/kc/.claude/projects/-work/sess-redact.jsonl',
+      cwd: CWD,
+      prompt_id: 'p-1',
+      hook_event_name: name,
+      ...extra,
+    })
+    assert.ok(event, 'the payload should parse')
+    return event
+  }
+  const agent = {
+    tool_name: 'Agent',
+    tool_use_id: 'toolu_helper',
+    tool_input: { subagent_type: 'general-purpose', description: 'find the thing' },
+  }
+  const opened = applyHookEventToTurn(emptyTurn(), payload('PreToolUse', agent), 1_000)
+  const launched = applyHookEventToTurn(
+    opened.next,
+    payload('PostToolUse', {
+      ...agent,
+      duration_ms: 5,
+      tool_response: { isAsync: true, status: 'async_launched', agentId: 'agent-1' },
+    }),
+    1_005,
+  )
+  const stopped = applyHookEventToTurn(
+    launched.next,
+    payload('SubagentStop', {
+      agent_id: 'agent-1',
+      agent_type: 'general-purpose',
+      last_assistant_message: lastMessage,
+    }),
+    9_000,
+  )
+  const card = stopped.effects.find((e: Effect) => e.kind === 'tool_card')
   assert.ok(card && card.kind === 'tool_card', 'expected a tool_card effect')
   return card.tools[0]!
 }
@@ -289,4 +336,30 @@ test('shortenPathsInText leaves everything that is not a path alone', () => {
   )
   assert.equal(shortenPathsInText(`ls ${CWD}`, CWD), 'ls .', 'the cwd itself is "here"')
   assert.equal(shortenPathsInText('ls /etc/hosts', CWD), 'ls /etc/hosts', 'a system path is not private')
+})
+
+test('REDACT THEN CLIP: a secret straddling the 240 character result cut is still masked', () => {
+  // The third string a row can carry, and the one whose cut keeps the HEAD: a
+  // child agent's last message. The token is positioned so that a cut made
+  // first would leave twelve of its characters behind the prefix: too short for
+  // the rule to see, long enough to be the live head of a real key.
+  const token = `sk-ant-api03-${'A'.repeat(35)}`
+  const pad = 'padding '.repeat(27)
+  const message = `${pad}${token} is the key I used`
+  const head = token.slice(0, RESULT_MAX - 1 - pad.length)
+  assert.equal(head.length, 23, 'ten characters of the body: below what the rule can see')
+  assert.ok(message.indexOf(token) < RESULT_MAX, 'the fixture must start the token before the cut')
+  assert.ok(message.indexOf(token) + token.length > RESULT_MAX, 'and end it after the cut')
+
+  const result = helperRowFor(message).result ?? ''
+  assert.ok(result.length <= RESULT_MAX, 'the wire cap is 240')
+  assert.ok(result.includes('[redacted:anthropic'), 'what is left of the mask says what was there')
+  assert.ok(!result.includes(head), 'the head of the token reached the wire')
+
+  // The wrong order, spelled out: cutting first hides the token from the scan.
+  const cutFirst = redactForWire(clipResultHead(message, RESULT_MAX))
+  assert.ok(
+    cutFirst.includes(head),
+    'this fixture only proves the rule if the wrong order really does leak',
+  )
 })

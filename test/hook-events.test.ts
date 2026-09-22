@@ -26,6 +26,13 @@
  *   - a turn end leaves the start set     -> the "cannot inherit it" case goes red
  *   - a SessionEnd sends no finish        -> the SessionEnd case goes red
  *   - a Stop always emits a done card     -> the "no tools" case goes red
+ * Stage 8 gave the Agent tool a child of its own to report on, and added three:
+ *   - keep 0.43.0's naming (the type in name, the description in detail)
+ *     -> the subagent row case goes red
+ *   - leave SubagentStop out of HOOK_EVENT_NAMES -> the parse case goes red
+ *   - emit a goal_poll from a child's stop -> the "and nothing else" case red
+ * The child row lifecycle itself lives in test/hook-subagent-rows.test.ts, on
+ * the payloads of the stage 8 probe.
  */
 
 import { strict as assert } from 'node:assert'
@@ -199,9 +206,13 @@ test('parseHookEvent returns null for junk instead of throwing', () => {
     assert.equal(parseHookEvent(junk), null, `should refuse ${JSON.stringify(junk)}`)
   }
   assert.equal(
-    parseHookEvent(base('SubagentStop')),
+    parseHookEvent(base('SubagentStart')),
     null,
     'an event this release does not register is refused, not half mapped',
+  )
+  assert.ok(
+    parseHookEvent(base('SubagentStop', { agent_id: 'ae89978c2d1dd91df' })),
+    'and the one it does register parses, which is the other half of the rule',
   )
   assert.equal(parseHookEvent({ ...base('Stop'), session_id: '  ' }), null)
 })
@@ -329,7 +340,10 @@ test('every tool this daemon declares is in SKIPPED_TOOLS (drift guard)', () => 
 
 // ── Subagents ────────────────────────────────────────────────────────────────
 
-test('the Agent tool is a subagent row named by subagent_type', () => {
+test('the Agent tool is a subagent row named by subagent_type, with the job in args', () => {
+  // Stage 8 moved the description out of `detail` and into `args`, because a
+  // helper's `detail` is now what it is doing RIGHT NOW. The full lifecycle,
+  // on the real payloads, is test/hook-subagent-rows.test.ts.
   const opened = feed(emptyTurn(), base('PreToolUse', {
     tool_name: 'Agent',
     tool_input: {
@@ -342,19 +356,23 @@ test('the Agent tool is a subagent row named by subagent_type', () => {
   const row = lastCard(opened.effects)[0]!
   assert.equal(row.kind, 'subagent')
   assert.equal(row.name, 'code-reviewer')
-  assert.equal(row.detail, 'Review the diff on the activity branch')
+  assert.equal(row.args, 'Review the diff on the activity branch')
+  assert.equal(row.detail, undefined, 'detail is the running qualifier now, and it has not run yet')
   assert.equal(row.status, 'running')
+  assert.equal(row.startedAt, 1_000, 'and the row carries its own start')
 
-  const closed = feed(opened.next, base('PostToolUse', {
+  const launched = feed(opened.next, base('PostToolUse', {
     tool_name: 'Agent',
     tool_input: { subagent_type: 'code-reviewer', description: 'Review the diff' },
+    tool_response: { isAsync: true, status: 'async_launched', agentId: 'agent-1' },
     tool_use_id: 'toolu_agent',
-    duration_ms: 90_000,
+    duration_ms: 5,
   }))
-  const done = lastCard(closed.effects)[0]!
-  assert.equal(done.kind, 'subagent', 'the pair closes the row it opened, it does not retype it')
-  assert.equal(done.status, 'done')
-  assert.equal(done.durationMs, 90_000)
+  const live = lastCard(launched.effects)[0]!
+  assert.equal(live.kind, 'subagent', 'the pair keeps the row it opened, it does not retype it')
+  assert.equal(live.status, 'running', 'the child is only just starting')
+  assert.equal(live.durationMs, undefined, 'and 5 ms is how long the LAUNCH took')
+  assert.equal(live.id, 'agent-1')
 })
 
 // ── Steps, from the task tools ───────────────────────────────────────────────
@@ -564,6 +582,11 @@ test('goal_poll is emitted on Stop and on SessionStart, and on nothing else', ()
     PreCompact: base('PreCompact', { trigger: 'manual', custom_instructions: null }),
     PostCompact: base('PostCompact', { trigger: 'manual' }),
     SessionEnd: base('SessionEnd', { reason: 'clear' }),
+    SubagentStop: base('SubagentStop', {
+      agent_id: 'ae89978c2d1dd91df',
+      agent_type: 'general-purpose',
+      last_assistant_message: '3',
+    }),
   }
   assert.deepEqual(
     Object.keys(payloads).sort(),

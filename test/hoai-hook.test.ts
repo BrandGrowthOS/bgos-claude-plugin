@@ -277,6 +277,73 @@ test('an oversized payload is reduced to the fields the mapper reads, and nothin
   }
 })
 
+test('an oversized CHILD tool event keeps the two fields that say whose work it is', () => {
+  // Without these, a child's Bash result with a large stdout arrives with its
+  // agent_id gone and reads as the parent's own work: the helper row loses its
+  // qualifier and the card gains a row nobody can attribute.
+  const huge = payloadOf({
+    hook_event_name: 'PostToolUse',
+    agent_id: 'ae89978c2d1dd91df',
+    agent_type: 'general-purpose',
+    tool_response: { stdout: 'A'.repeat(PAYLOAD_MAX_BYTES + 10), stderr: '' },
+  })
+  const clipped = clipPayload(huge) as Record<string, any>
+  assert.equal(clipped.hoai_clipped, true)
+  assert.equal(clipped.agent_id, 'ae89978c2d1dd91df')
+  assert.equal(clipped.agent_type, 'general-purpose')
+  assert.equal(clipped.agent_transcript_path, undefined, 'nothing reads the child transcript')
+})
+
+test('an oversized LAUNCH response keeps the id that links the row to the child', () => {
+  // The Agent tool's response echoes the whole delegation prompt, so a long
+  // prompt is the realistic way this payload crosses the cap. agentId is the
+  // only place the child's id and the row's tool_use_id are ever seen together;
+  // isAsync and status are what say the call LAUNCHED rather than finished.
+  const huge = payloadOf({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Agent',
+    tool_use_id: 'toolu_01VxKNXBqVVmX6drsU2ibwdU',
+    tool_input: { subagent_type: 'general-purpose', description: 'Run wc -l on hay.txt' },
+    tool_response: {
+      isAsync: true,
+      status: 'async_launched',
+      agentId: 'ae89978c2d1dd91df',
+      prompt: 'P'.repeat(PAYLOAD_MAX_BYTES + 10),
+    },
+    duration_ms: 5,
+  })
+  const clipped = clipPayload(huge) as Record<string, any>
+  assert.equal(clipped.hoai_clipped, true)
+  assert.equal(clipped.tool_response.agentId, 'ae89978c2d1dd91df')
+  assert.equal(clipped.tool_response.isAsync, true)
+  assert.equal(clipped.tool_response.status, 'async_launched')
+  assert.equal(clipped.tool_response.prompt, undefined, 'the delegation prompt is not the point')
+})
+
+test('an oversized SubagentStop keeps the last message, clipped by the generic rule', () => {
+  // 200 characters is shorter than the 240 the wire keeps, so the generic clip
+  // is the right one here and the result line needs no reducer of its own.
+  const huge = payloadOf({
+    hook_event_name: 'SubagentStop',
+    tool_name: undefined,
+    tool_use_id: undefined,
+    tool_input: undefined,
+    agent_id: 'ae89978c2d1dd91df',
+    agent_type: 'general-purpose',
+    last_assistant_message: 'R'.repeat(600),
+    background_tasks: new Array(40).fill({ description: 'B'.repeat(PAYLOAD_MAX_BYTES / 20) }),
+  })
+  const clipped = clipPayload(huge) as Record<string, any>
+  assert.equal(clipped.hoai_clipped, true)
+  assert.equal(clipped.agent_id, 'ae89978c2d1dd91df')
+  assert.ok(typeof clipped.last_assistant_message === 'string')
+  assert.ok(
+    clipped.last_assistant_message.length <= 240,
+    'the kept message is already inside the wire cap',
+  )
+  assert.ok(clipped.last_assistant_message.startsWith('RRR'))
+})
+
 test('a payload under the cap passes through byte for byte', () => {
   const small = payloadOf()
   assert.equal(clipPayload(small), small, 'the same object, not a rebuilt copy')

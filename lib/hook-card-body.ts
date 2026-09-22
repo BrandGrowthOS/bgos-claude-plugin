@@ -25,6 +25,11 @@ export interface HookCardPending {
   state: 'running' | 'done'
   tools: ToolRow[]
   text: string
+  /** Which card this state belongs to (stage 8). A turn whose child agent
+   *  outlived it leaves its card behind, so the daemon can be holding more
+   *  than one, and the write has to reach the right message rather than post
+   *  a second card. Absent only for a caller that predates the field. */
+  cardKey?: string
   /** Epoch milliseconds. Absent until the turn has opened. */
   startedAt?: number
   /** Epoch milliseconds. Absent until a Stop or a SessionEnd ends the turn. */
@@ -38,11 +43,22 @@ export type HookCardWireBody = {
   text: string
   toolProgress: {
     state: 'running' | 'done'
-    tools: ToolRow[]
+    tools: WireToolRow[]
     startedAt?: string
     finishedAt?: string
   }
 }
+
+/**
+ * One row as the wire takes it.
+ *
+ * The only difference from the row the mapper holds is the row's own start: it
+ * is epoch milliseconds in the turn state, because a receipt difference is
+ * measured on numbers, and ISO 8601 on the wire, because that is what the
+ * platform's field takes. Everything else, the id and the result included,
+ * goes out exactly as it was built.
+ */
+export type WireToolRow = Omit<ToolRow, 'startedAt'> & { startedAt?: string }
 
 /**
  * The last millisecond of the year 9999. Past it `toISOString` answers in the
@@ -65,6 +81,21 @@ export function isoFromReceipt(value: unknown): string | null {
 }
 
 /**
+ * One row on its way out: its own clock as ISO 8601, dropped when the number
+ * cannot be a moment this row began.
+ *
+ * A COPY every time. The turn state holds these rows and goes on measuring a
+ * receipt difference against them, so a conversion in place would hand the
+ * next card a string where the mapper expects milliseconds and the elapsed
+ * time a helper ticks would stop moving.
+ */
+const wireRow = (row: ToolRow): WireToolRow => {
+  const { startedAt, ...rest } = row
+  const iso = isoFromReceipt(startedAt)
+  return iso === null ? rest : { ...rest, startedAt: iso }
+}
+
+/**
  * One card state as the body of a POST or a PATCH.
  *
  * The budget runs here, on the way out, rather than only where the card state
@@ -81,7 +112,7 @@ export function hookCardWireBody(
     text: pending.text,
     toolProgress: {
       state: pending.state,
-      tools: clipCardOutput(pending.tools, budget),
+      tools: clipCardOutput(pending.tools, budget).map(wireRow),
       ...(startedAt !== null ? { startedAt } : {}),
       ...(finishedAt !== null ? { finishedAt } : {}),
     },

@@ -643,6 +643,32 @@ takes its whole body with it, up to and including the `-----END` line. The two
 moments the card reports are the receipts the hook process stamped, not the
 moment this daemon read the spool file.
 
+**What a turn's helpers say (v0.44.0+).** A child agent the turn hands work to
+gets a row of its own: the kind of helper it is, the one line description it
+was given, a state, an elapsed time that ticks while it works, what it is doing
+right now, and its last message once it finishes. The row opens when the launch
+is asked for and stays open until the child's own stop, because the launch
+itself returns in a few milliseconds and that number is not how long the child
+worked. The elapsed time is the difference between two of this host's own
+receipts, and a child that never reports back carries no time and no result at
+all. The child's own commands still draw their ordinary rows, so nothing was
+taken away to make room for this, and helpers never count as tools in the
+folded head's count.
+
+**A card stays open while a helper is still working, even after the turn has
+ended.** A finished card folds, and a helper ticking behind a fold helps
+nobody. So a turn that stops with a child still running leaves its card behind
+and the child's stop, minutes later, updates that same card rather than posting
+a second one. That card is kept under a name of its own, so a later turn cannot
+write over it, and a second turn that ends the same way keeps the first card
+too. The commands the child runs after the turn has ended land on that same
+card, beside the helper row they belong to: one delegating turn is one card,
+however long the child goes on working. There is no token count for a child and
+no way to stop one: this runtime hands the host neither, and both are recorded
+as blocked rather than postponed. `SubagentStop` is the one new hook event;
+`SubagentStart` is deliberately not registered, because it carries no
+description and no tool id, so it can name nothing and be joined to nothing.
+
 **The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
 the payload as JSON on stdin. The forwarder appends one line to
 `<state>/hooks/<session_id>/events.jsonl` and exits 0, always. The daemon
@@ -665,8 +691,11 @@ therefore write the same entries into the workspace's
 absolute path (`${CLAUDE_PLUGIN_ROOT}` does not resolve outside a plugin's own
 hooks file). Each of them skips a marketplace install, which already has the
 rail, so no event fires twice. It is idempotent and `hoai` does it on EVERY
-launch, so an existing agent folder gains the rail the next time it starts. To
-do it by hand:
+launch, so an existing agent folder gains the rail the next time it starts. A
+release that registers a NEW event therefore reaches a clone install on its
+next launch and not at the moment it updates: the whole block is rewritten from
+one list, so the folder heals itself, but it heals when it next starts.
+To do it by hand:
 
 ```jsonc
 // <agent folder>/.claude/settings.local.json
@@ -679,7 +708,8 @@ do it by hand:
                      "timeout": 5, "async": true } ] }
     ]
     // ... the same entry for SessionStart, UserPromptSubmit, PostToolUse,
-    // PostToolUseFailure, Stop, PreCompact, PostCompact, SessionEnd
+    // PostToolUseFailure, Stop, PreCompact, PostCompact, SessionEnd,
+    // SubagentStop
   }
 }
 ```

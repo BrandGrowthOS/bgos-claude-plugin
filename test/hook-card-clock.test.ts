@@ -115,3 +115,91 @@ test('the builder never edits the card it was handed', () => {
     assert.equal(row.output?.length, 2048, 'the turn state keeps what it had')
   }
 })
+
+// ── Stage 8: a row's own clock, and the two fields that ride beside it ───────
+
+/** One helper row as the mapper holds it: the start is epoch milliseconds in
+ *  the turn state, because that is what a receipt difference is measured on. */
+const helperRow = (name: string, startedAt?: number): ToolRow => ({
+  icon: '🔀',
+  name,
+  args: 'Count the lines in hay.txt',
+  status: 'running',
+  kind: 'subagent',
+  ...(startedAt === undefined ? {} : { startedAt }),
+})
+
+test("a helper's own start reaches the wire as ISO 8601, beside the card's", () => {
+  // The row's start is not half of a pair and it is not the card's clock: it
+  // is the moment THIS row began, and it is the only source of the elapsed
+  // time a running helper ticks. Raw milliseconds here would be refused by the
+  // platform, which takes ISO 8601 on this field.
+  const body = hookCardWireBody({
+    state: 'running',
+    tools: [helperRow('general-purpose', STARTED)],
+    text: 'Working…',
+    startedAt: STARTED,
+  })
+  const row = body.toolProgress.tools[0]!
+  assert.equal(row.startedAt, '2026-09-21T09:15:00.000Z')
+  assert.equal(typeof row.startedAt, 'string', 'the wire takes a date, never a number')
+  assert.ok(String(row.startedAt).length <= 40, 'the field is capped at 40 characters')
+  assert.equal(body.toolProgress.startedAt, '2026-09-21T09:15:00.000Z', "the card's own clock stays")
+})
+
+test('a row whose start cannot be a moment carries no start at all', () => {
+  // Absent means absent: a row with no usable clock draws no elapsed time,
+  // and the card it rides on is never refused for it.
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 253_402_300_800_000]) {
+    const body = hookCardWireBody({
+      state: 'running',
+      tools: [helperRow('general-purpose', bad)],
+      text: 'Working…',
+    })
+    const row = body.toolProgress.tools[0]!
+    assert.equal('startedAt' in row, false, `${bad} is not a moment this row began`)
+    assert.equal(row.name, 'general-purpose', 'and the rest of the row is untouched')
+  }
+  const none = hookCardWireBody({
+    state: 'running',
+    tools: [helperRow('general-purpose')],
+    text: 'Working…',
+  })
+  assert.equal('startedAt' in none.toolProgress.tools[0]!, false)
+})
+
+test("a helper's id and its result ride to the wire untouched", () => {
+  // The builder converts the clock and spends the output budget. It decides
+  // nothing about these two: the id is the sender's own identity for the row
+  // and the result was masked and cut where it was read.
+  const body = hookCardWireBody({
+    state: 'done',
+    tools: [
+      {
+        ...helperRow('general-purpose', STARTED),
+        status: 'done',
+        id: 'ae89978c2d1dd91df',
+        result: '3',
+        durationMs: 4612,
+      },
+    ],
+    text: 'Used 0 tools',
+    startedAt: STARTED,
+    finishedAt: FINISHED,
+  })
+  const row = body.toolProgress.tools[0]!
+  assert.equal(row.id, 'ae89978c2d1dd91df')
+  assert.equal(row.result, '3')
+  assert.equal(row.durationMs, 4612)
+  assert.equal(row.kind, 'subagent')
+})
+
+test('the builder never turns the turn state own row clock into a string', () => {
+  // The turn state keeps these rows and goes on measuring a receipt difference
+  // against them. A conversion in place would hand the next card a string
+  // where the mapper expects milliseconds, and the elapsed would stop moving.
+  const tools = [helperRow('general-purpose', STARTED)]
+  hookCardWireBody({ state: 'running', tools, text: 'Working…', startedAt: STARTED })
+  assert.equal(tools[0]!.startedAt, STARTED, 'the mapper still holds milliseconds')
+  assert.equal(typeof tools[0]!.startedAt, 'number')
+})

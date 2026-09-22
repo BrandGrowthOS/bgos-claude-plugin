@@ -126,6 +126,14 @@ export const KEPT_PAYLOAD_KEYS = [
   'tool_response',
   'error',
   'is_interrupt',
+  // Stage 8 reads the child agents a turn spawns. agent_id says whose work a
+  // tool event is (a parent's own events carry none), agent_type is the child's
+  // kind word, and last_assistant_message is what the child replied when it
+  // stopped. agent_transcript_path is deliberately NOT here: nothing reads the
+  // child's own transcript, and keeping it invites something to start.
+  'agent_id',
+  'agent_type',
+  'last_assistant_message',
 ]
 
 /** Double the 2048 the wire keeps, so the mapper still has slack to mask the
@@ -200,6 +208,13 @@ export function reduceToolResponse(response) {
     out.structuredPatch = countPatchLines(response.structuredPatch)
   }
   if (typeof response.type === 'string') out.type = clipValue(response.type)
+  // The launch of a child agent (stage 8). agentId is the ONLY place the
+  // child's id and the row's tool_use_id are ever seen together, and isAsync
+  // and status are how a launch is told apart from a finished call: never the
+  // tool name, never the event name.
+  if (typeof response.agentId === 'string') out.agentId = clipValue(response.agentId)
+  if (typeof response.isAsync === 'boolean') out.isAsync = response.isAsync
+  if (typeof response.status === 'string') out.status = clipValue(response.status)
   // ONLY a create: the line count of a body is an addition only when the whole
   // body is new. An update arrives with an empty patch whenever nothing
   // changed, the diff timed out or the write was staged, and sending its body

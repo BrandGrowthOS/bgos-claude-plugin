@@ -102,6 +102,25 @@ test('the bundled fallback carries the served turn summary sentence, word for wo
   )
 })
 
+// The Claude channel's helper row sentence (Mission program stage 8, C-34),
+// copied BYTE FOR BYTE out of the served canon
+// (backend/src/integrations/capability-canon.ts, CLAUDE_HELPERS_SENTENCE,
+// gated at HELPERS_MIN_DAEMON.claude = 0.44.0).
+const SERVED_CLAUDE_HELPERS_SENTENCE =
+  "- When you delegate with the Agent tool, this host draws each child as its own row on your tool card and fills every part of that row from your own hook events: the child's type and the description you gave it when the launch returns, the tool the child is using right now from its own tagged events, its elapsed time from this host's receipt of the launch and of the child's stop, and its last message, masked and capped, as the row's result. You write none of it and you cannot add to it. Your card also stays open while a helper is still working, even after your turn has ended. So do not narrate what your helpers are doing, do not repeat a helper's result in prose, and do not report how many tokens a helper used: this host is not given a token count and shows none, and nothing here can stop one helper without stopping your whole turn."
+
+test('the bundled fallback carries the served helper rows sentence, word for word', () => {
+  // The third capability on this channel the model must not act on by itself:
+  // every part of a child's row is filled by this host from the session's own
+  // hook events, so narrating what a helper is doing, repeating its result in
+  // prose or reporting a token count nobody was given is a second, competing
+  // answer beside the card the owner is already reading.
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(SERVED_CLAUDE_HELPERS_SENTENCE),
+    'the offline copy has drifted from the served Claude delta; copy the sentence across verbatim',
+  )
+})
+
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
 })
