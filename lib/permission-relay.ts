@@ -465,10 +465,18 @@ export function permissionPollIntervalMs(ageMs: number): number {
  *
  * The number below is therefore not the bound, it is the leak guard: an entry
  * whose stored wait was never learned, and an entry some later path forgets to
- * delete, still cannot pin a chat past the longest wait the server could
- * possibly have stored.
+ * delete, still cannot pin a chat past the longest this daemon could still be
+ * listening to it.
+ *
+ * WHICH IS THE BACKSTOP, NOT THE WAIT, and the 90 s between the two is not a
+ * rounding. `permissionBackstopMs` sits that far behind the stored wait
+ * precisely so a server that never answers is still given every chance, and
+ * the watch goes on reading the card through all of it. A ceiling at the bare
+ * wait therefore cut the unclamped case 90 s short of the loop that was still
+ * listening, which is the one thing the paragraph above promises it cannot
+ * do.
  */
-export const PENDING_PERMISSION_FAST_MAX_MS = PERMISSION_HOLD_SECONDS * 1000
+export const PENDING_PERMISSION_FAST_MAX_MS = permissionBackstopMs(PERMISSION_HOLD_SECONDS)
 
 export function pendingPermissionFastChatIds(
   pending: Iterable<{ chatId: string; createdAt: number; waitMs?: number }>,
@@ -520,6 +528,11 @@ export interface PermissionCardRowLike {
   sender: string | null
   messageType?: string | null
   answeredAt?: string | null
+  /**
+   * When the row was written, epoch ms, or null on a row carrying no readable
+   * date. It is what `createdBefore` below is compared against.
+   */
+  createdAt?: number | null
   /** Does the row still carry its buttons, i.e. is it still tappable. */
   hasOptions: boolean
   approvalMeta?:
@@ -553,20 +566,33 @@ export interface OrphanedPermissionCard {
  *     same dead cards for ever.
  *   - the route is this daemon's own kind, so a Codex or Hermes approval in a
  *     shared chat is left strictly alone. It cannot tell one claude-code
- *     daemon from another, which is why the caller only ever hands it rows
- *     from the chats THIS pairing monitors.
+ *     daemon from ANOTHER, and the chats this pairing monitors are no defence
+ *     there, which is what the first version of this comment claimed: two
+ *     daemons on one pairing monitor the SAME chats, so on that clause alone a
+ *     booting daemon would strip the buttons off a card the other one is at
+ *     that moment still waiting on.
  *   - answered and expired rows are already settled, and an answered one is
  *     the owner's record of what they chose.
- *   - `heldRequestIds` is the live guard: the sweep runs after the MCP
- *     transport is up, so a request raised during boot is already being
- *     watched by this process and must not have its buttons taken away.
+ *   - `heldRequestIds` is the live guard for THIS process: the sweep runs
+ *     after the MCP transport is up, so a request raised during boot is
+ *     already being watched here and must not have its buttons taken away. It
+ *     knows nothing about any other process.
+ *   - `createdBefore` is the live guard for every other one, and it is the
+ *     time bound the second review asked for: a row written at or after this
+ *     process started cannot be a card THIS process left behind, so it is left
+ *     alone whoever posted it. That covers every card another daemon raises
+ *     from the moment this one boots. Two honest limits: a card another daemon
+ *     raised BEFORE this boot still reads as an orphan, and a row with no
+ *     readable date is still swept, because the alternative is a sweep that
+ *     silently does nothing on a backend that sends no date.
  */
 export function orphanedPermissionCards(
   rows: readonly PermissionCardRowLike[] | null | undefined,
-  opts?: { heldRequestIds?: ReadonlySet<string> },
+  opts?: { heldRequestIds?: ReadonlySet<string>; createdBefore?: number },
 ): OrphanedPermissionCard[] {
   if (!rows) return []
   const held = opts?.heldRequestIds
+  const createdBefore = opts?.createdBefore
   const out: OrphanedPermissionCard[] = []
   for (const row of rows) {
     if (row.sender !== 'assistant') continue
@@ -577,6 +603,16 @@ export function orphanedPermissionCards(
     if (meta === null || meta === undefined) continue
     if (meta.agent_route !== PERMISSION_AGENT_ROUTE) continue
     if (meta.expired === true) continue
+    // Not ours to retire: this process did not exist when the card was
+    // posted, so whoever is waiting on it, it is not a run that stopped.
+    if (
+      createdBefore !== undefined &&
+      typeof row.createdAt === 'number' &&
+      Number.isFinite(row.createdAt) &&
+      row.createdAt >= createdBefore
+    ) {
+      continue
+    }
     const rawId = meta.request_id
     const requestId = typeof rawId === 'string' && rawId !== '' ? rawId : null
     if (requestId !== null && held?.has(requestId)) continue
@@ -736,10 +772,14 @@ export interface VerdictWatch<T> {
    * answer HERE is the one lane that survives both. See
    * `answeredPermissionChoice`.
    *
-   * The requester binding is the same no op it is on the click intakes: the
-   * answer payload carries no clicker user id today, so neither path can tell
-   * one user's tap from another's, and both tighten together the moment the
-   * backend stamps one.
+   * The requester binding is the CALLER's, and it is now made the same way
+   * both click intakes make theirs: the clicker id is read off the answer
+   * payload and compared to the user who raised the request. That payload
+   * carries no clicker id today, so the read falls back to the owner and the
+   * comparison decides nothing, exactly as it decides nothing on the intakes,
+   * which is the point of making it here too: all three tighten together the
+   * moment the backend stamps one, instead of this one staying open when the
+   * other two close.
    */
   answeredOn: (row: T) => PermissionChoice | null
   /** Did the owner answer, on this row. Impure by design: the caller advances
@@ -769,9 +809,12 @@ export async function watchPermissionVerdict<T>(
     // The cadence lives in the loop, not at the call site: the reads this
     // saves are the loop's own looks at the chat.
     await w.sleep(permissionPollIntervalMs(w.now() - startedAt))
-    // Between two looks at the chat is the ONLY place this loop can learn the
-    // owner answered, because the click is settled on the other side of the
-    // race and leaves nothing here to read.
+    // ONE OF THE TWO WAYS AN ANSWER REACHES THIS LOOP: an intake settled the
+    // request on the other side of the race, so the entry is gone from the map
+    // and there is nothing left here to wait for. The other way is `answeredOn`
+    // on the rows read just below, for the tap no intake heard at all. This
+    // was the only way until that arm shipped, and the comment here went on
+    // saying so after it was no longer true.
     if (!w.stillPending()) return cancelled
     const rows = await w.rows()
     if (!rows) continue

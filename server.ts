@@ -2521,6 +2521,9 @@ async function waitForVerdict(
   requesterUserId: string,
 ): Promise<PermissionChoice> {
   const baselineId = chatLastSeen.get(chatId) ?? 0
+  // See answeredOn below: the card is re-read every tick, so its mismatch line
+  // is said once rather than once per look.
+  let foreignTapLogged = false
 
   const verdict = await watchPermissionVerdict<ChatMessage>({
     requestId,
@@ -2534,11 +2537,13 @@ async function waitForVerdict(
     now: () => performance.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log,
-    // The button click is settled on the other side of the race, and the
-    // server stamps the owner's answer on the CARD row without writing any
-    // user message, so nothing below can ever see it. Without this the loop
-    // polled on for the whole backstop after an answer that took five
-    // seconds, then stripped the buttons off the answered card.
+    // ONE OF THE TWO WAYS THIS LOOP LEARNS THE OWNER ANSWERED: a click intake
+    // settled the request on the other side of the race, the entry left the
+    // map, and this read is how the loop finds out. The other way is
+    // `answeredOn` below, which reads the tap off the card row itself when no
+    // intake heard it at all. Without THIS one the loop polled on for the
+    // whole backstop after an answer that took five seconds, then stripped
+    // the buttons off the answered card.
     stillPending: () => pendingPermissions.has(requestId),
     // The page, plus the card itself once the page stops carrying it. See
     // permissionRowsReader: this read is the NEWEST 50 rows, and a wait that
@@ -2606,10 +2611,33 @@ async function waitForVerdict(
     // deliberately NOT advanced here, unlike verdictFrom: the card is an
     // assistant row the delivery path never forwards, so moving the cursor
     // past it would skip whatever the owner typed alongside the tap.
-    answeredOn: (msg) =>
-      cardMessageId !== null && msg.message.id === cardMessageId
-        ? answeredPermissionChoice(msg.message, requestId)
-        : null,
+    answeredOn: (msg) => {
+      const ours = cardMessageId !== null && msg.message.id === cardMessageId
+      if (!ours) return null
+      // The requester binding, made the way both click intakes make theirs and
+      // for the same reason. The clicker id comes off the ANSWER PAYLOAD, not
+      // off the card row, whose own sender is this assistant. That payload
+      // carries no clicker id today, so senderUserIdOf falls back to the owner
+      // and this comparison decides nothing, which is exactly the state the
+      // intakes are in: the three lanes now tighten together the moment the
+      // backend stamps one, instead of this one staying open when they close.
+      const clickerUserId = senderUserIdOf(msg.message.answerPayload)
+      if (clickerUserId !== requesterUserId) {
+        // Once per request, unlike verdictFrom's line. A user message is read
+        // once and then left behind the cursor; the CARD is re-read on every
+        // tick of a wait that can run half an hour, so logging per read would
+        // be hundreds of copies of one sentence.
+        if (!foreignTapLogged) {
+          foreignTapLogged = true
+          log(
+            `Ignoring permission tap on card ${msg.message.id} [${requestId}] ` +
+              `from user ${clickerUserId} (request belongs to ${requesterUserId})`,
+          )
+        }
+        return null
+      }
+      return answeredPermissionChoice(msg.message, requestId)
+    },
     verdictFrom: (msg) => {
       if (msg.message.id <= baselineId) return null
       if (msg.message.sender !== 'user') return null
@@ -2691,6 +2719,13 @@ async function waitForVerdict(
  * Its own ETag key, for the same reason the watch has one: the ordinary chat
  * poll reads this path too, and sharing a validator would hand one of the two
  * a 304 and lose it a cycle.
+ *
+ * AND IT ONLY LOOKS BACKWARDS, found by the second review. Two daemons can
+ * share one pairing and therefore monitor the same chats, and the held set
+ * only knows the requests THIS process is holding, so on the clauses alone a
+ * booting daemon would strip the buttons off a card the other one was at that
+ * moment still waiting on. `createdBefore` is the answer: a row written at or
+ * after this process started is not a card this process left behind.
  */
 async function retireOrphanedPermissionCards(): Promise<void> {
   let retired = 0
@@ -2712,12 +2747,19 @@ async function retireOrphanedPermissionCards(): Promise<void> {
         sender: m.message.sender,
         messageType: m.message.messageType,
         answeredAt: m.message.answeredAt,
+        createdAt: sentDateToMs(m.message.sentDate),
         hasOptions: (m.messageOptions ?? []).length > 0,
         approvalMeta: m.message.approvalMeta,
       })),
-      // A request raised while this very boot was running is live, not an
-      // orphan, and must keep its buttons.
-      { heldRequestIds: new Set(pendingPermissions.keys()) },
+      {
+        // A request raised while this very boot was running is live, not an
+        // orphan, and must keep its buttons.
+        heldRequestIds: new Set(pendingPermissions.keys()),
+        // And one raised after this process started is not this process's to
+        // retire at all: another daemon on the same pairing monitors the same
+        // chats, and heldRequestIds cannot see its requests.
+        createdBefore: DAEMON_START_MS,
+      },
     )
     for (const card of orphans) {
       try {

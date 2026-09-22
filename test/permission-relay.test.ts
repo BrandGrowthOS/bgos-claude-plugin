@@ -264,7 +264,29 @@ test('a pending request keeps its chat fast for its OWN wait, not a flat ten min
   // A clock that stepped backwards reads as "not fresh", never as forever.
   assert.deepEqual(pendingPermissionFastChatIds([{ chatId: '7', createdAt: now + 5_000 }], now), [])
   assert.deepEqual(pendingPermissionFastChatIds([], now), [])
-  assert.equal(PENDING_PERMISSION_FAST_MAX_MS, PERMISSION_HOLD_SECONDS * 1000)
+
+  // AND THE CEILING IS THE DAEMON'S OWN BACKSTOP, not the bare wait. At
+  // PERMISSION_HOLD_SECONDS * 1000 it clamped the unclamped case 90 s short of
+  // the watch that was still reading the card, while the comment beside it and
+  // the changelog both said the scope lasts exactly as long as this daemon
+  // listens. Those 90 s are the whole gap between the two numbers.
+  assert.equal(PENDING_PERMISSION_FAST_MAX_MS, permissionBackstopMs(PERMISSION_HOLD_SECONDS))
+  assert.equal(PENDING_PERMISSION_FAST_MAX_MS, PERMISSION_HOLD_SECONDS * 1000 + 90_000)
+  // The minute and a half that used to be cut off: this daemon is still
+  // listening there, so the chat is still read fast.
+  assert.deepEqual(
+    pendingPermissionFastChatIds(
+      [
+        {
+          chatId: '7',
+          createdAt: now - (PERMISSION_HOLD_SECONDS * 1000 + 45_000),
+          waitMs: halfHour,
+        },
+      ],
+      now,
+    ),
+    ['7'],
+  )
 })
 
 test('the scheduler fast scope reads the bounded list, not the whole pending map', () => {
@@ -918,6 +940,46 @@ test('the watch reads the tap off the card, and moves no cursor doing it', () =>
   )
 })
 
+test('a tap on the card is bound to the requester, the way the clicks are', () => {
+  // The finding: this arm compared no requester at all, while BOTH click
+  // intakes compared the clicker to the user who raised the request, and the
+  // watch's own doc claimed the three tightened together. They did not: a
+  // backend that starts stamping a clicker id would have closed two lanes and
+  // left this one open. The comparison is a no op today by construction
+  // (senderUserIdOf falls back to the owner), so what is pinned here is the
+  // SHAPE, which is the part that has to be right before the backend changes
+  // under it.
+  const watch = SRC.slice(
+    SRC.indexOf('async function waitForVerdict('),
+    SRC.indexOf('async function retireOrphanedPermissionCards('),
+  )
+  const answeredOn = watch.slice(
+    watch.indexOf('answeredOn: (msg) =>'),
+    watch.indexOf('verdictFrom: (msg) => {'),
+  )
+  assert.ok(answeredOn.length > 0, 'the watch must wire answeredOn')
+  // Off the ANSWER PAYLOAD, not off the card row: the row's own sender is this
+  // assistant, so reading the id there would compare the agent against the
+  // user and refuse every tap there is.
+  assert.ok(
+    answeredOn.includes('senderUserIdOf(msg.message.answerPayload)'),
+    'the clicker id is read off the answer payload',
+  )
+  assert.ok(
+    answeredOn.includes('clickerUserId !== requesterUserId'),
+    'and compared to the user who raised the request',
+  )
+  // A FOREIGN REQUESTER YIELDS NO VERDICT, which is this ordering: the arm
+  // returns null at the comparison, before the tap is ever parsed into a
+  // choice.
+  const compared = answeredOn.indexOf('clickerUserId !== requesterUserId')
+  const parsed = answeredOn.indexOf('answeredPermissionChoice(msg.message, requestId)')
+  assert.ok(compared > -1 && parsed > compared, 'the comparison comes first, or it decides nothing')
+  assert.match(answeredOn.slice(compared, parsed), /return null/)
+  // And it says so out loud, the way verdictFrom says it.
+  assert.ok(answeredOn.includes('Ignoring permission tap on card'))
+})
+
 // ── The cards a crash left behind ────────────────────────────────────────────
 
 test('the boot sweep retires the live looking cards a stopped run left behind', () => {
@@ -971,6 +1033,40 @@ test('the boot sweep retires the live looking cards a stopped run left behind', 
     orphanedPermissionCards([mine()], { heldRequestIds: new Set(['zyxwv']) }),
     [{ id: 1, requestId: REQ }],
   )
+
+  // THE OTHER DAEMON'S LIVE CARD, and the guard above cannot see it: two
+  // daemons can share one pairing, which means they monitor the same chats,
+  // and heldRequestIds only knows the requests THIS process is holding. So the
+  // one that booted second retired a card the first was still waiting on. A
+  // row written at or after this process started is not a card this process
+  // left behind, whoever posted it.
+  const bootMs = 1_000_000
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: bootMs + 1 })], { createdBefore: bootMs }),
+    [],
+  )
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: bootMs })], { createdBefore: bootMs }),
+    [],
+    'a card written in the same millisecond as the boot is not ours either',
+  )
+  // A card from before the boot is exactly what the sweep exists for.
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: bootMs - 1 })], { createdBefore: bootMs }),
+    [{ id: 1, requestId: REQ }],
+  )
+  // Two honest limits, both pinned rather than left to be rediscovered: a row
+  // carrying no readable date is still swept, because the alternative is a
+  // sweep that silently does nothing on a backend that sends no date, and a
+  // caller that asks for no bound gets the old behaviour exactly.
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ createdAt: null })], { createdBefore: bootMs }),
+    [{ id: 1, requestId: REQ }],
+  )
+  assert.deepEqual(orphanedPermissionCards([mine({ createdAt: bootMs + 1 })]), [
+    { id: 1, requestId: REQ },
+  ])
+
   assert.deepEqual(orphanedPermissionCards([]), [])
   assert.deepEqual(orphanedPermissionCards(null), [])
 })
@@ -985,6 +1081,16 @@ test('the boot sweep is wired into boot, on its own validator, and only strips b
   assert.ok(
     sweep.includes('heldRequestIds: new Set(pendingPermissions.keys())'),
     'a request this boot is already holding is not an orphan',
+  )
+  // And a card another daemon on the same pairing raised after this process
+  // started is not an orphan either, which heldRequestIds cannot know.
+  assert.ok(
+    sweep.includes('createdBefore: DAEMON_START_MS'),
+    'the sweep must be bounded by this process own boot instant',
+  )
+  assert.ok(
+    sweep.includes('createdAt: sentDateToMs(m.message.sentDate)'),
+    'and the rows must carry the date that bound is compared against',
   )
   // Its own ETag key: the ordinary chat poll reads this path too, and sharing
   // a validator hands one of the two a 304 and loses it a cycle.
