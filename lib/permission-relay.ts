@@ -81,11 +81,19 @@ export const APPROVAL_CALLBACK_RE = new RegExp(
 )
 
 /**
- * The retired vocabulary. NEW prompts never send it, but a daemon that
- * updates while a prompt is still on the owner's screen would otherwise hang
- * that prompt forever, so one release of tolerance: 0.44.1 still RECOGNISES
- * an incoming `perm:` click and resolves it. Drop this, and the two consumers
- * of it, once no 0.44.0 or older daemon is left in the fleet.
+ * The retired vocabulary, kept for one release, and NOT for the reason the
+ * first version of this comment gave. It CANNOT carry a prompt across a
+ * restart: `pendingPermissions` is an in memory map, so the only process that
+ * can still hold an entry for a `perm:` card is the one that posted it, and a
+ * daemon that updated is not that process. A click on such a card resolves to
+ * nothing, whatever this pattern does.
+ *
+ * What it buys is quiet. Recognised here, an orphaned legacy click reads as a
+ * STALE permission click and both intakes swallow it; unrecognised, it would
+ * be forwarded to the model as an ordinary `[button_clicked]` event, which is
+ * a permission answer for a dead prompt arriving as chatter in the agent's
+ * context. Drop this, and the two consumers of it, once no 0.44.0 or older
+ * daemon is left in the fleet.
  */
 export const PERMISSION_CALLBACK_RE = new RegExp(
   `^perm:(once|session|permanent|deny):${REQUEST_ID_PATTERN}$`,
@@ -184,6 +192,48 @@ export function parsePermissionChoice(
   return null
 }
 
+/**
+ * The owner's tap, read off the CARD ROW itself.
+ *
+ * THIS IS THE CLICK TRANSPORT, and until 0.44.1 shipped it was missing. A tap
+ * on an approval card writes no user message at all: the backend stamps
+ * `answered_at` and an `answer_payload` on the card row and pushes the event
+ * to whichever daemon is paired for clicks. This one is not: it registers no
+ * inbound click listener, and its only other lane is the opt in update
+ * stream, off by default. So with the card off the newest page, or with the
+ * daemon draining for an update, the owner's Allow reached nothing and the
+ * request died at the backstop as a deny.
+ *
+ * Both halves are required. An `answer_payload` with no `answered_at` is not
+ * an answer, and `answered_at` with no callback is an answer this daemon
+ * cannot read; either way the wait goes on rather than inventing a verdict.
+ * The payload is the backend's camelCase shape, with the pre 2026-04-22 snake
+ * twin read as a fallback, and the callback goes through the same parser both
+ * click intakes use, so it accepts exactly what they accept and nothing else:
+ * the request id must be this request's.
+ */
+export function answeredPermissionChoice(
+  row:
+    | {
+        answeredAt?: string | null
+        answerPayload?:
+          | { callbackData?: string; callback_data?: string }
+          | null
+      }
+    | null
+    | undefined,
+  requestId: string,
+): PermissionChoice | null {
+  if (row === null || row === undefined) return null
+  const answeredAt = row.answeredAt
+  if (typeof answeredAt !== 'string' || answeredAt.trim() === '') return null
+  const payload = row.answerPayload
+  if (payload === null || typeof payload !== 'object') return null
+  const callbackData = payload.callbackData ?? payload.callback_data
+  if (typeof callbackData !== 'string' || callbackData === '') return null
+  return parsePermissionChoice(callbackData, requestId)
+}
+
 // ── The card ─────────────────────────────────────────────────────────────────
 
 export interface PermissionOption {
@@ -213,6 +263,13 @@ export function permissionApprovalOptions(requestId: string): PermissionOption[]
  * every read of the row.
  */
 export const APPROVAL_TOOL_MAX_CHARS = 2000
+
+/**
+ * Which agent framework raised the request, as the card's `approval_meta`
+ * carries it. It is also how the boot sweep below recognises a card this
+ * daemon's own kind posted, so the two must stay one constant.
+ */
+export const PERMISSION_AGENT_ROUTE = 'claude-code'
 
 /**
  * Cap the preview, AND SAY SO WHERE IT WAS CUT. The card's command panel is
@@ -270,7 +327,7 @@ export function buildPermissionRequestBody(
     options: permissionApprovalOptions(input.requestId),
     approvalMeta: {
       tool: preview ? capToolPreview(preview) : input.toolName,
-      agent_route: 'claude-code',
+      agent_route: PERMISSION_AGENT_ROUTE,
       // The CLI hands us no risk signal at all, so claiming low or high would
       // be an invention. The app hides the pill unless the owner turned
       // technical details on, so the value is an audit field here, not copy.
@@ -379,37 +436,56 @@ export function permissionPollIntervalMs(ageMs: number): number {
 }
 
 /**
- * How long a pending request keeps its chat on the scheduler's 2 s fast scope.
+ * The ceiling on how long a pending request can keep its chat on the
+ * scheduler's 2 s fast scope.
  *
  * THE SECOND LOOP, found in review after the first version of this lane
  * counted only the watch. `fastScopeChatIds` reads the pending map, so every
- * unanswered request pins its chat at the base tick (2 s) for the whole of its
- * life: 900 more reads of the same endpoint over half an hour, on top of the
- * watch's own 390. Unbounded, that is exactly the defect
+ * unanswered request pins its chat at the base tick (2 s) for as long as its
+ * entry lives. Unbounded, that is exactly the defect
  * BUTTON_PROMPT_FAST_WINDOW_MS exists to stop one loop over, in the same file,
  * for the same reason ("without a bound an abandoned prompt pins its chat at
  * 2s forever").
  *
- * Ten minutes, the same number the button prompt uses, and the same argument:
- * it covers a request at the default wait end to end, and a request parked
- * past it loses nothing. The tap arrives on the WebSocket when the socket is
- * up, and on the 10 s WS down cycle when it is not; the watch is still reading
- * the chat every 5 s either way; and the server's own expiry, not this loop,
- * is what ends a wait nobody answers.
+ * IT IS THE WAIT, NOT TEN MINUTES, and that is the correction a second review
+ * forced. The first version of this bound dropped the chat at ten minutes and
+ * argued that a tap past it still arrived "on the socket", with the watch
+ * reading every 5 s behind it. Neither was a mechanism: this daemon registers
+ * no inbound click listener at all (its only WebSocket click lane is the opt
+ * in update stream), and the watch could not see a tap either until
+ * `answeredPermissionChoice` above gave it one.
+ *
+ * What the scope really buys is the OTHER click lane: the ordinary poll reads
+ * `answered_at` flipping on the newest page, and a chat outside the fast scope
+ * is read on the five minute full sweep instead of every 2 s, so a tap could
+ * sit heard by nobody for five minutes. So the scope lasts as long as this
+ * daemon is still listening to the request: `waitMs`, the backstop built from
+ * the wait the SERVER stored, which is the owner's own per agent choice once
+ * the clamp is deployed and this daemon's hold until then.
+ *
+ * The number below is therefore not the bound, it is the leak guard: an entry
+ * whose stored wait was never learned, and an entry some later path forgets to
+ * delete, still cannot pin a chat past the longest wait the server could
+ * possibly have stored.
  */
-export const PENDING_PERMISSION_FAST_WINDOW_MS = 10 * 60_000
+export const PENDING_PERMISSION_FAST_MAX_MS = PERMISSION_HOLD_SECONDS * 1000
 
 export function pendingPermissionFastChatIds(
-  pending: Iterable<{ chatId: string; createdAt: number }>,
+  pending: Iterable<{ chatId: string; createdAt: number; waitMs?: number }>,
   nowMs: number,
-  windowMs: number = PENDING_PERMISSION_FAST_WINDOW_MS,
+  maxMs: number = PENDING_PERMISSION_FAST_MAX_MS,
 ): string[] {
   const out = new Set<string>()
   for (const p of pending) {
     const age = nowMs - p.createdAt
     // A backwards clock reads as "not fresh" rather than as forever, the same
     // rule activeButtonPromptChatIds applies to a prompt.
-    if (age < 0 || age >= windowMs) continue
+    if (age < 0) continue
+    // An entry that has not learned its wait yet (the card is posted after the
+    // entry exists) is treated as the longest it could be, which is also the
+    // ceiling, so the fast scope is never dropped while the post is in flight.
+    const windowMs = Math.min(p.waitMs ?? maxMs, maxMs)
+    if (age >= windowMs) continue
     out.add(String(p.chatId))
   }
   return [...out]
@@ -435,6 +511,78 @@ export function isApprovalExpired(
   row: { approvalMeta?: { expired?: unknown } | null } | null | undefined,
 ): boolean {
   return row?.approvalMeta?.expired === true
+}
+
+// ── The cards a crash left behind ────────────────────────────────────────────
+
+export interface PermissionCardRowLike {
+  id: number
+  sender: string | null
+  messageType?: string | null
+  answeredAt?: string | null
+  /** Does the row still carry its buttons, i.e. is it still tappable. */
+  hasOptions: boolean
+  approvalMeta?:
+    | { expired?: unknown; agent_route?: unknown; request_id?: unknown }
+    | null
+}
+
+export interface OrphanedPermissionCard {
+  id: number
+  /** `approval_meta.request_id`, when the row carries a readable one. */
+  requestId: string | null
+}
+
+/**
+ * The cards this daemon left live looking when it died mid wait.
+ *
+ * `pendingPermissions` is memory, so a crash or a manual restart takes every
+ * open request with it and nothing re-sends a verdict. The CARD does not go
+ * anywhere: its buttons are stripped by the watch's backstop, which died with
+ * the process, so the only thing left to retire it is the server's own expiry
+ * at `created_at + wait_seconds`. That used to be a minute. It is now up to
+ * half an hour of a card the owner can tap, whose tap the app will show as
+ * answered while nothing is listening.
+ *
+ * So the boot sweep retires them itself. Every clause here is a way to not
+ * touch a card that is not ours to touch:
+ *
+ *   - `hasOptions` is what makes this idempotent. A retired card is one with
+ *     no buttons left, and nothing in the retirement changes `answered_at` or
+ *     `expired`, so without this clause every boot would PATCH and log the
+ *     same dead cards for ever.
+ *   - the route is this daemon's own kind, so a Codex or Hermes approval in a
+ *     shared chat is left strictly alone. It cannot tell one claude-code
+ *     daemon from another, which is why the caller only ever hands it rows
+ *     from the chats THIS pairing monitors.
+ *   - answered and expired rows are already settled, and an answered one is
+ *     the owner's record of what they chose.
+ *   - `heldRequestIds` is the live guard: the sweep runs after the MCP
+ *     transport is up, so a request raised during boot is already being
+ *     watched by this process and must not have its buttons taken away.
+ */
+export function orphanedPermissionCards(
+  rows: readonly PermissionCardRowLike[] | null | undefined,
+  opts?: { heldRequestIds?: ReadonlySet<string> },
+): OrphanedPermissionCard[] {
+  if (!rows) return []
+  const held = opts?.heldRequestIds
+  const out: OrphanedPermissionCard[] = []
+  for (const row of rows) {
+    if (row.sender !== 'assistant') continue
+    if (row.messageType !== 'approval_request') continue
+    if (!row.hasOptions) continue
+    if (typeof row.answeredAt === 'string' && row.answeredAt.trim() !== '') continue
+    const meta = row.approvalMeta
+    if (meta === null || meta === undefined) continue
+    if (meta.agent_route !== PERMISSION_AGENT_ROUTE) continue
+    if (meta.expired === true) continue
+    const rawId = meta.request_id
+    const requestId = typeof rawId === 'string' && rawId !== '' ? rawId : null
+    if (requestId !== null && held?.has(requestId)) continue
+    out.push({ id: row.id, requestId })
+  }
+  return out
 }
 
 /**
@@ -563,19 +711,37 @@ export interface VerdictWatch<T> {
   /**
    * Is this request still ours to answer.
    *
-   * THE WATCH CANNOT SEE A BUTTON CLICK. The click resolves the request on
-   * the other side of the race, and the server stamps the answer on the CARD
-   * row without writing any user message, so `verdictFrom` below is blind to
-   * it for ever. Without this the loop polled on to the full backstop after
-   * the owner had answered in five seconds, then stripped the buttons off the
-   * answered card and logged that nobody had replied. Harmless at 120 s; not
-   * harmless at half an hour times a fleet of daemons.
+   * A click intake can settle the request on the OTHER side of the race, and
+   * when it does there is nothing left here to wait for. Without this the loop
+   * polled on to the full backstop after the owner had answered in five
+   * seconds, then stripped the buttons off the answered card and logged that
+   * nobody had replied. Harmless at 120 s; not harmless at half an hour times
+   * a fleet of daemons.
    */
   stillPending: () => boolean
   /** One look at the chat. Null means nothing new (a 304) or a failed look. */
   rows: () => Promise<readonly T[] | null>
   /** Has the SERVER declared this request dead. */
   expiredOn: (row: T) => boolean
+  /**
+   * Did the owner TAP, as stamped on the card row.
+   *
+   * THIS LOOP IS THE CLICK TRANSPORT, which is the whole of the second
+   * review's first finding. A tap writes no user message, so `verdictFrom`
+   * below can never see one, and the daemon's other two lanes both fail
+   * exactly when the wait is long: the ordinary chat poll reads the newest 50
+   * rows and stops seeing the card in a busy chat, and every intake is closed
+   * while an update drains. The read this loop already does is not drain
+   * gated and is anchored on the card once the page drops it, so reading the
+   * answer HERE is the one lane that survives both. See
+   * `answeredPermissionChoice`.
+   *
+   * The requester binding is the same no op it is on the click intakes: the
+   * answer payload carries no clicker user id today, so neither path can tell
+   * one user's tap from another's, and both tighten together the moment the
+   * backend stamps one.
+   */
+  answeredOn: (row: T) => PermissionChoice | null
   /** Did the owner answer, on this row. Impure by design: the caller advances
    *  its cursor here, exactly as it always did. */
   verdictFrom: (row: T) => PermissionChoice | null
@@ -611,6 +777,15 @@ export async function watchPermissionVerdict<T>(
     if (!rows) continue
 
     for (const row of rows) {
+      // THE TAP COMES FIRST, deliberately. The app's own rule is that an
+      // answered card is answered whatever else is stamped on it, and the
+      // owner's Allow must not lose a race with an expiry flag written in the
+      // same window.
+      const answered = w.answeredOn(row)
+      if (answered) {
+        w.log(`Permission [${w.requestId}]: the owner answered on the card (${answered})`)
+        return { choice: answered, via: 'answer' }
+      }
       if (w.expiredOn(row)) {
         w.log(`Permission [${w.requestId}]: the server retired this request, denying`)
         return { choice: 'deny', via: 'expired' }

@@ -17,16 +17,19 @@ import { readFileSync, readdirSync } from 'node:fs'
 
 import {
   APPROVAL_TOOL_MAX_CHARS,
-  PENDING_PERMISSION_FAST_WINDOW_MS,
+  PENDING_PERMISSION_FAST_MAX_MS,
+  PERMISSION_AGENT_ROUTE,
   PERMISSION_CLICK_RE,
   PERMISSION_HOLD_SECONDS,
   PERMISSION_POLL_FAST_MS,
   PERMISSION_POLL_FAST_WINDOW_MS,
   PERMISSION_POLL_SLOW_MS,
+  answeredPermissionChoice,
   buildPermissionRequestBody,
   cardMessageIdFrom,
   choiceToBehavior,
   isApprovalExpired,
+  orphanedPermissionCards,
   parsePermissionChoice,
   parsePermissionClick,
   pendingPermissionFastChatIds,
@@ -39,9 +42,15 @@ import {
   storedWaitSeconds,
   watchPermissionVerdict,
   type PendingPermissionLike,
+  type PermissionCardRowLike,
   type PermissionChoice,
 } from '../lib/permission-relay.ts'
 import { BGOS_CAPABILITIES_FALLBACK } from '../lib/capabilities.ts'
+
+const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(
+  /\r\n/g,
+  '\n',
+)
 
 const SRC = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
   /\r\n/g,
@@ -204,28 +213,49 @@ test('the poll slows down once a request is clearly parked', () => {
   assert.ok(fast + slow < 400, `a parked request should cost far under 1,200 reads, got ${fast + slow}`)
 })
 
-test('a pending request stops pinning its chat at 2 s once it is clearly parked', () => {
+test('a pending request keeps its chat fast for its OWN wait, not a flat ten minutes', () => {
   // THE SECOND LOOP, and the one the first version of this lane forgot to
   // count. fastScopeChatIds reads the pending map, so an unanswered request
   // holds its chat on the scheduler's base 2 s tick: 900 reads of the same
-  // endpoint over half an hour, on top of the watch's own. The button prompt
-  // beside it has been bounded since 2026-09-05 for exactly this reason.
-  const now = 10 * 60_000
+  // endpoint over half an hour, on top of the watch's own.
+  //
+  // The first bound was a flat ten minutes, defended by "the tap still arrives
+  // on the socket". It does not: this daemon registers no inbound click
+  // listener at all. So the bound is the request's own wait, and the constant
+  // is only the leak guard.
+  const now = 30 * 60_000
+  const halfHour = permissionBackstopMs(PERMISSION_HOLD_SECONDS)
+  const tenMinutes = permissionBackstopMs(600)
   const pending = [
-    { chatId: '7', createdAt: now - 1_000 },
-    { chatId: '9', createdAt: now - (PENDING_PERMISSION_FAST_WINDOW_MS - 1) },
-    { chatId: '11', createdAt: now - PENDING_PERMISSION_FAST_WINDOW_MS },
-    { chatId: '13', createdAt: now - 29 * 60_000 },
+    // Parked 12 minutes into a half hour wait: the old bound dropped this one
+    // while the owner's card was still perfectly tappable.
+    { chatId: '7', createdAt: now - 12 * 60_000, waitMs: halfHour },
+    { chatId: '9', createdAt: now - 60_000, waitMs: tenMinutes },
+    // Past its own ten minute wait AND the backstop behind it: nothing here is
+    // listening any more, so the chat has no reason to stay fast.
+    { chatId: '11', createdAt: now - 12 * 60_000, waitMs: tenMinutes },
+    // The card is still in flight, so the wait is not known yet. It reads as
+    // the longest it could be rather than as zero.
+    { chatId: '13', createdAt: now - 1_000 },
   ]
-  assert.deepEqual(pendingPermissionFastChatIds(pending, now), ['7', '9'])
+  assert.deepEqual(pendingPermissionFastChatIds(pending, now), ['7', '9', '13'])
 
+  // The leak guard: an entry claiming a wait longer than any the server could
+  // have stored is still dropped at the ceiling.
+  assert.deepEqual(
+    pendingPermissionFastChatIds(
+      [{ chatId: '7', createdAt: now - PENDING_PERMISSION_FAST_MAX_MS, waitMs: 99 * 60_000 }],
+      now,
+    ),
+    [],
+  )
   // Two requests in one chat are one chat, and a chat whose only request is
-  // parked drops out even while another chat's is fresh.
+  // finished drops out even while another chat's is fresh.
   assert.deepEqual(
     pendingPermissionFastChatIds(
       [
-        { chatId: '7', createdAt: now - 1_000 },
-        { chatId: '7', createdAt: now - 20 * 60_000 },
+        { chatId: '7', createdAt: now - 1_000, waitMs: tenMinutes },
+        { chatId: '7', createdAt: now - 20 * 60_000, waitMs: tenMinutes },
       ],
       now,
     ),
@@ -234,7 +264,7 @@ test('a pending request stops pinning its chat at 2 s once it is clearly parked'
   // A clock that stepped backwards reads as "not fresh", never as forever.
   assert.deepEqual(pendingPermissionFastChatIds([{ chatId: '7', createdAt: now + 5_000 }], now), [])
   assert.deepEqual(pendingPermissionFastChatIds([], now), [])
-  assert.equal(PENDING_PERMISSION_FAST_WINDOW_MS, 10 * 60_000)
+  assert.equal(PENDING_PERMISSION_FAST_MAX_MS, PERMISSION_HOLD_SECONDS * 1000)
 })
 
 test('the scheduler fast scope reads the bounded list, not the whole pending map', () => {
@@ -401,6 +431,8 @@ interface FakeRow {
   id: number
   approvalMeta?: { expired?: unknown } | null
   verdict?: PermissionChoice
+  /** The owner's tap, as the backend stamps it on the card row itself. */
+  answered?: PermissionChoice
 }
 
 function fakeWatch(opts: {
@@ -443,6 +475,7 @@ function fakeWatch(opts: {
         return polls.shift() ?? []
       },
       expiredOn: (row) => isApprovalExpired(row),
+      answeredOn: (row) => row.answered ?? null,
       verdictFrom: (row) => row.verdict ?? null,
       retireCard: async () => {
         retired += 1
@@ -486,11 +519,12 @@ test('the backstop denies and retires the card nobody is listening to', async ()
 
 test('a click on the other transport stops the watch dead', async () => {
   // Found in review, and it is the common case now that a wait can be half an
-  // hour: the button click wins the race in server.ts, but this loop knew
-  // nothing about it and could not learn. The owner's answer is stamped on the
-  // CARD row and writes no user message, so `verdictFrom` never sees it. It
-  // would poll on for the whole backstop, then strip the buttons off a card
-  // the owner had already answered and log that nobody answered.
+  // hour: a click intake wins the race in server.ts, and this loop had no way
+  // to know. It would poll on for the whole backstop, then strip the buttons
+  // off a card the owner had already answered and log that nobody answered.
+  // `answeredOn` below is the other half of the same problem: this is the
+  // ending for a tap somebody else heard first, that one is the ending for a
+  // tap nothing else heard at all.
   const w = fakeWatch({ polls: [], timeoutMs: 600_000, answeredDuringSleep: 2 })
   assert.deepEqual(await w.run(), { choice: 'deny', via: 'cancelled' })
   assert.equal(w.polled(), 1, 'it stops looking at the chat')
@@ -530,6 +564,149 @@ test('the watch itself slows down, so a parked request is not 1,200 reads', asyn
   // A flat fast cadence over the same 70 s would have been 47 looks.
   assert.equal(w.sleeps.length, 42)
   assert.equal(w.polled(), 42)
+})
+
+// ── The owner tap, read off the card ─────────────────────────────────────────
+
+test('the owner tap is read off the card row, and only when it really is one', () => {
+  const at = '2026-09-22T10:00:00.000Z'
+  // The shape the backend writes: answered_at plus a camelCase answer_payload
+  // carrying the callbackData of the button that was pressed.
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: at, answerPayload: { callbackData: `ea:once:${REQ}` } }, REQ),
+    'once',
+  )
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: at, answerPayload: { callbackData: `ea:deny:${REQ}` } }, REQ),
+    'deny',
+  )
+  // A card an older daemon posted, answered after this one took over the chat.
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: at, answerPayload: { callbackData: `perm:session:${REQ}` } }, REQ),
+    'session',
+  )
+  // The pre 2026-04-22 snake twin, for rows written before the migration.
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: at, answerPayload: { callback_data: `ea:once:${REQ}` } }, REQ),
+    'once',
+  )
+
+  // BOTH HALVES OR NOTHING. A payload with no stamp is not an answer, and a
+  // stamp with nothing this daemon can read is not a verdict it may invent.
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: null, answerPayload: { callbackData: `ea:once:${REQ}` } }, REQ),
+    null,
+  )
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: '', answerPayload: { callbackData: `ea:once:${REQ}` } }, REQ),
+    null,
+  )
+  assert.equal(answeredPermissionChoice({ answeredAt: at, answerPayload: null }, REQ), null)
+  assert.equal(answeredPermissionChoice({ answeredAt: at, answerPayload: {} }, REQ), null)
+  assert.equal(answeredPermissionChoice({ answeredAt: at }, REQ), null)
+  // And it is THIS request's card or nothing: another request's answer, and a
+  // foreign approval carrying a UUID, both read as no answer here.
+  assert.equal(
+    answeredPermissionChoice({ answeredAt: at, answerPayload: { callbackData: 'ea:once:zyxwv' } }, REQ),
+    null,
+  )
+  assert.equal(
+    answeredPermissionChoice(
+      { answeredAt: at, answerPayload: { callbackData: 'ea:once:9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f8' } },
+      REQ,
+    ),
+    null,
+  )
+  assert.equal(answeredPermissionChoice(null, REQ), null)
+  assert.equal(answeredPermissionChoice(undefined, REQ), null)
+})
+
+test('the watch itself carries the owner tap, which is the lane that always exists', async () => {
+  // THE LOAD BEARING ONE. A tap writes no user message: the backend stamps it
+  // on the card row and pushes the event to a daemon paired for clicks, which
+  // this one is not. So when the card falls off the newest 50, or while an
+  // update drain has every intake shut, the owner's Allow reached nothing at
+  // all and the request died at the backstop as a deny. This loop's read is
+  // anchored on the card and is not drain gated, so it is the one lane that
+  // survives both.
+  const w = fakeWatch({ polls: [[{ id: 1 }], [{ id: 100, answered: 'once' }]] })
+  assert.deepEqual(await w.run(), { choice: 'once', via: 'answer' })
+  assert.equal(w.retired(), 0, 'an answered card keeps its buttons')
+  assert.ok(w.logs.some((l) => l.includes('the owner answered on the card')))
+})
+
+test('a tap beats an expiry stamped in the same window', async () => {
+  // The app's own rule, and the owner's: an answered card is answered whatever
+  // else is written on it. The server sweep runs every 30 s, so a tap in the
+  // last seconds of a wait can be read on the same row as the expiry flag, and
+  // reading them in the other order would throw the owner's permission away.
+  const w = fakeWatch({
+    polls: [[{ id: 100, answered: 'once', approvalMeta: { expired: true } }]],
+  })
+  assert.deepEqual(await w.run(), { choice: 'once', via: 'answer' })
+})
+
+test('a tap the watch reads settles the request exactly once, whoever sees it second', async () => {
+  // The handler races the click intakes against this watch and then sends ONE
+  // verdict to the CLI. Now that the watch can read the tap too, the same tap
+  // can arrive twice: once here, once on the poll a cycle later. The second
+  // one must find nothing to resolve.
+  const taps: PermissionChoice[] = []
+  const verdicts: PermissionChoice[] = []
+  let resolveButton!: (choice: PermissionChoice) => void
+  const buttonChoice = new Promise<PermissionChoice>((resolve) => {
+    resolveButton = resolve
+  })
+  const pending = new Map<string, PendingPermissionLike>([
+    [
+      REQ,
+      {
+        requesterUserId: 'user-1',
+        resolve: (choice) => {
+          taps.push(choice)
+          resolveButton(choice)
+        },
+      },
+    ],
+  ])
+
+  const card = {
+    id: 100,
+    answeredAt: '2026-09-22T10:00:00.000Z',
+    answerPayload: { callbackData: `ea:once:${REQ}` },
+  }
+  let clock = 0
+  const watch = watchPermissionVerdict<typeof card>({
+    requestId: REQ,
+    timeoutMs: 600_000,
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms
+    },
+    stillPending: () => pending.has(REQ),
+    rows: async () => [card],
+    expiredOn: () => false,
+    answeredOn: (row) => answeredPermissionChoice(row, REQ),
+    verdictFrom: () => null,
+    retireCard: async () => {},
+    log: () => {},
+  })
+
+  // The handler's own ending, in the same order: the race settles, the entry
+  // leaves the map, one verdict goes to the CLI.
+  const choice = await Promise.race([buttonChoice, watch.then((v) => v.choice)])
+  pending.delete(REQ)
+  verdicts.push(choice)
+
+  // ... and the poll intake catches up with the same tap one cycle later.
+  const late = resolvePermissionClick({
+    callbackData: `ea:once:${REQ}`,
+    clickerUserId: 'user-1',
+    pending,
+  })
+  assert.equal(late.kind, 'stale', 'the late copy finds nothing to resolve')
+  assert.deepEqual(verdicts, ['once'], 'the CLI hears exactly one verdict')
+  assert.deepEqual(taps, [], 'and the intake never resolved it a second time')
 })
 
 // ── The card the page stopped carrying ───────────────────────────────────────
@@ -629,6 +806,7 @@ test('a retire that fails still denies, it is best effort', async () => {
     stillPending: () => true,
     rows: async () => [],
     expiredOn: () => false,
+    answeredOn: () => null,
     verdictFrom: () => null,
     retireCard: async () => {
       throw new Error('backend down')
@@ -659,21 +837,34 @@ test('the callback format matches the sentence this plugin tells its own agent',
   }
 })
 
-test('auto approve still short circuits before anything is posted', () => {
+test('auto approve answers FIRST, above the drain, and posts nothing', () => {
+  // Found in the second review. 0.44.1 put the new drain branch in front of
+  // this one, so a default auto approve install got a hard DENY for every tool
+  // raised inside an update drain, on a path that needs nothing the drain
+  // closes: no chat, no network, no intake, one notification straight back to
+  // the CLI. A drain recurs on every auto update, so it was a recurring
+  // refusal on the installs that asked for none, and the release note claimed
+  // the opposite.
   const handler = SRC.slice(
     SRC.indexOf('mcp.setNotificationHandler(PermissionRequestSchema'),
     SRC.indexOf('async function waitForVerdict('),
   )
   assert.ok(handler.length > 0)
-  const autoBranch = handler.slice(
-    handler.indexOf('if (AUTO_APPROVE) {'),
-    handler.indexOf('const chatId = monitoredChatIds[0]'),
-  )
+  const auto = handler.indexOf('if (AUTO_APPROVE) {')
+  const drain = handler.indexOf('if (updateDrainMode) {')
+  assert.ok(auto >= 0 && drain >= 0, 'both branches must still be here')
+  assert.ok(auto < drain, 'the drain deny is for INTERACTIVE mode only')
+
+  const autoBranch = handler.slice(auto, drain)
   assert.ok(autoBranch.includes("behavior: 'allow'"))
   assert.equal(autoBranch.includes('bgosPost'), false)
-  assert.ok(/\n\s+return\n/.test(autoBranch), 'auto approve must return, not fall through')
-  // The drain check stays in front of everything, auto approve included.
-  assert.ok(handler.includes('if (updateDrainMode) {'))
+  assert.ok(
+    autoBranch.includes('return mcp'),
+    'auto approve must answer and return, not fall through',
+  )
+  // And it is outside the operation tracker, which is what the drain waits on:
+  // an allow that needs no intake must not extend the drain it runs inside.
+  assert.ok(handler.indexOf('return trackMessageOperation(') > drain)
 })
 
 test('a request raised during an update drain is DENIED, never left hanging', () => {
@@ -690,13 +881,161 @@ test('a request raised during an update drain is DENIED, never left hanging', ()
     handler.indexOf('if (updateDrainMode) {'),
     handler.indexOf('return trackMessageOperation('),
   )
-  assert.ok(drainBranch.length > 0, 'the drain branch must still come first')
+  assert.ok(drainBranch.length > 0, 'the drain branch must still be in front of the card post')
   assert.ok(drainBranch.includes("behavior: 'deny'"), 'it must answer the CLI')
   assert.equal(
     handler.includes('if (updateDrainMode) return Promise.resolve()'),
     false,
     'a silent return leaves the CLI blocked for ever',
   )
+})
+
+test('the watch reads the tap off the card, and moves no cursor doing it', () => {
+  const watch = SRC.slice(
+    SRC.indexOf('async function waitForVerdict('),
+    SRC.indexOf('async function retireOrphanedPermissionCards('),
+  )
+  assert.ok(watch.length > 0, 'the watch must still be in server.ts')
+  const answeredOn = watch.slice(
+    watch.indexOf('answeredOn: (msg) =>'),
+    watch.indexOf('verdictFrom: (msg) => {'),
+  )
+  assert.ok(answeredOn.length > 0, 'the watch must wire answeredOn')
+  assert.ok(
+    answeredOn.includes('answeredPermissionChoice(msg.message, requestId)'),
+    'the tap is read through the shared parser, not a hand copy of it',
+  )
+  // Only OUR card, the same rule the expiry arm follows: another agent's
+  // answered approval in the same chat is none of this request's business.
+  assert.ok(answeredOn.includes('msg.message.id === cardMessageId'))
+  // And NOT the cursor, unlike verdictFrom: the card is an assistant row the
+  // delivery path never forwards, so moving the cursor past it would skip what
+  // the owner typed alongside the tap.
+  assert.equal(
+    answeredOn.includes('advanceChatCursor('),
+    false,
+    'reading an assistant row must not move the delivery cursor',
+  )
+})
+
+// ── The cards a crash left behind ────────────────────────────────────────────
+
+test('the boot sweep retires the live looking cards a stopped run left behind', () => {
+  const at = '2026-09-22T10:00:00.000Z'
+  const mine = (over: Partial<PermissionCardRowLike> = {}): PermissionCardRowLike => ({
+    id: 1,
+    sender: 'assistant',
+    messageType: 'approval_request',
+    hasOptions: true,
+    answeredAt: null,
+    approvalMeta: { agent_route: PERMISSION_AGENT_ROUTE, request_id: REQ },
+    ...over,
+  })
+
+  assert.deepEqual(orphanedPermissionCards([mine()]), [{ id: 1, requestId: REQ }])
+  // A card whose meta names no request id is still a live looking card.
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ approvalMeta: { agent_route: PERMISSION_AGENT_ROUTE } })]),
+    [{ id: 1, requestId: null }],
+  )
+
+  // IDEMPOTENCE, and it is the whole reason `hasOptions` is in the row shape.
+  // Retiring a card strips its buttons and changes neither `answered_at` nor
+  // `expired`, so without this clause every boot for the next half hour would
+  // PATCH and log the same dead cards again.
+  assert.deepEqual(orphanedPermissionCards([mine({ hasOptions: false })]), [])
+  // Settled one way or the other: an answered card is the owner's own record
+  // of what they chose, and an expired one the server has already retired.
+  assert.deepEqual(orphanedPermissionCards([mine({ answeredAt: at })]), [])
+  assert.deepEqual(
+    orphanedPermissionCards([
+      mine({ approvalMeta: { agent_route: PERMISSION_AGENT_ROUTE, expired: true } }),
+    ]),
+    [],
+  )
+  // Someone else's card in a shared chat: another framework's approval, an
+  // ordinary agent prompt with buttons, and a user row.
+  assert.deepEqual(
+    orphanedPermissionCards([mine({ approvalMeta: { agent_route: 'codex', request_id: REQ } })]),
+    [],
+  )
+  assert.deepEqual(orphanedPermissionCards([mine({ messageType: 'standard' })]), [])
+  assert.deepEqual(orphanedPermissionCards([mine({ approvalMeta: null })]), [])
+  assert.deepEqual(orphanedPermissionCards([mine({ sender: 'user' })]), [])
+
+  // THE LIVE GUARD. The sweep runs after the MCP transport is up, so a request
+  // raised during this very boot is being watched right now: taking its
+  // buttons away would be the daemon orphaning its own live card.
+  assert.deepEqual(orphanedPermissionCards([mine()], { heldRequestIds: new Set([REQ]) }), [])
+  assert.deepEqual(
+    orphanedPermissionCards([mine()], { heldRequestIds: new Set(['zyxwv']) }),
+    [{ id: 1, requestId: REQ }],
+  )
+  assert.deepEqual(orphanedPermissionCards([]), [])
+  assert.deepEqual(orphanedPermissionCards(null), [])
+})
+
+test('the boot sweep is wired into boot, on its own validator, and only strips buttons', () => {
+  const sweep = SRC.slice(
+    SRC.indexOf('async function retireOrphanedPermissionCards('),
+    SRC.indexOf('// ── Tools ──'),
+  )
+  assert.ok(sweep.length > 0, 'the sweep must be in server.ts')
+  assert.ok(sweep.includes('orphanedPermissionCards('), 'the selection is the pure one')
+  assert.ok(
+    sweep.includes('heldRequestIds: new Set(pendingPermissions.keys())'),
+    'a request this boot is already holding is not an orphan',
+  )
+  // Its own ETag key: the ordinary chat poll reads this path too, and sharing
+  // a validator hands one of the two a 304 and loses it a cycle.
+  assert.ok(sweep.includes('cacheKey: `perm-sweep:${chatId}`'))
+  // It retires, it does not answer: the row keeps its words, its answer and
+  // its expiry, and only the buttons come off.
+  assert.ok(sweep.includes('bgosPatch(`messages/${card.id}`, { options: [] })'))
+  assert.equal(sweep.includes('bgosPost('), false, 'the sweep posts nothing')
+  // And it is called at boot, after discovery has filled monitoredChatIds.
+  assert.ok(
+    SRC.includes("void phase('permission card sweep', () => retireOrphanedPermissionCards())"),
+    'the sweep must run at boot',
+  )
+  assert.ok(
+    SRC.indexOf("await phase('boot poll sweep'") <
+      SRC.indexOf("void phase('permission card sweep'"),
+  )
+})
+
+test('boot says out loud which backend half these requests need', () => {
+  // The dependency was prose in a changelog, and the failure mode on a host
+  // that takes this plugin early is silent: requests wait the whole offer and
+  // ring nobody. A line in the log is what an early host actually reads.
+  assert.ok(SRC.includes('BGOS #1556'), 'the boot log must name the backend dependency')
+  const line = SRC.slice(
+    SRC.indexOf('Permission requests depend on the BGOS backend half'),
+    SRC.indexOf('Permission requests depend on the BGOS backend half') + 400,
+  )
+  assert.ok(line.includes('clamp'), 'it names the wait clamp')
+  assert.ok(line.includes('push'), 'and the missing device push')
+  // In main(), beside the other identity lines, so it is printed once per boot
+  // rather than once per request.
+  assert.ok(SRC.indexOf('async function main(') < SRC.indexOf('BGOS #1556'))
+})
+
+test('the README documents the wait that ships, not the clock that was removed', () => {
+  // The owner facing page still described a 120 s auto deny and four grey
+  // chips after the behaviour was gone, which is worse than no documentation:
+  // it tells the owner their card is dead while it is still tappable.
+  const section = README.slice(
+    README.indexOf('### Permission Modes'),
+    README.indexOf('## Slash Commands'),
+  )
+  assert.ok(section.length > 0, 'the Permission Modes section must still exist')
+  assert.equal(/120\s*s/i.test(section), false, 'the 120 s auto deny is gone')
+  assert.ok(section.includes('approval card'), 'it is a real approval card now')
+  assert.ok(
+    section.includes(String(PERMISSION_HOLD_SECONDS)),
+    'and the wait it documents is the offer this daemon actually sends',
+  )
+  assert.ok(section.includes('90'), 'with the local backstop behind it')
 })
 
 test('the watch owns its own ETag validator, and says when the expiry arm is off', () => {

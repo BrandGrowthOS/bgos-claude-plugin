@@ -49,18 +49,30 @@ Notable changes to the HOAI Claude Code plugin.
     before it hit a request the daemon had already declined. And a request
     raised while an auto update is draining the daemon is answered with a no
     instead of hanging the CLI on a question nothing was left to answer.
-  - **A parked request stopped costing 2,100 reads of one chat.** TWO loops
-    read that chat while a request waits, and only counting one of them is how
-    a half hour request got expensive. The verdict watch now looks every 1.5 s
-    for the first minute, where an answer usually lands, then every 5 s: about
-    390 looks over half an hour rather than 1,200. And the daemon's own 2 s
-    fast scope, which a pending request used to hold for as long as it waited,
-    is bounded at ten minutes exactly the way an abandoned button prompt
-    already was: about 300 reads rather than 900. Half an hour of waiting is
-    about 700 reads in total, per waiting daemon, and every one of them still
-    carries an If-None-Match. A request parked past the ten minutes loses
-    nothing: the tap still arrives on the socket, and its own watch is still
-    reading the chat every 5 s.
+  - **The tap is read off the card, which is what makes the answer arrive at
+    all.** Pressing Allow writes no message into the chat: the backend stamps
+    the answer onto the card row and pushes the event to whichever daemon is
+    paired for clicks, and this one is not paired for them. So the wait now
+    reads the owner's answer off the card row it is already watching. That is
+    the lane that exists in the two cases where the others do not: when the
+    card has slid off the newest page of a busy chat, and while a self update
+    has the daemon's inbound intake shut. Both of those used to end in a deny
+    at the backstop with the owner's Allow thrown away. The same tap can still
+    arrive on the ordinary poll a cycle later; the request is settled exactly
+    once, and the late copy finds nothing to resolve.
+  - **A parked request reads its chat on a budget, and the budget is the
+    wait.** TWO loops read that chat while a request waits, and only counting
+    one of them is how a half hour request got expensive. The verdict watch now
+    looks every 1.5 s for the first minute, where an answer usually lands, then
+    every 5 s: about 390 looks over half an hour rather than 1,200. The
+    daemon's own 2 s fast scope stays on the chat for exactly as long as this
+    daemon is still listening to the request, which is about 300 reads at the
+    ten minute wait the clamp will make the default and about 900 at the
+    unclamped half hour. It is NOT cut shorter than that, and a first attempt
+    to cut it at ten minutes was wrong: that scope is what keeps the ordinary
+    poll's own click intake prompt, and a chat dropped out of it is read on the
+    five minute sweep instead, so a tap could sit unheard for five minutes.
+    Every one of these reads still carries an If-None-Match.
   - **The expiry reaches a request in a busy chat.** The watch reads a PAGE of
     the chat, the newest 50 messages, and a card posted into a chat with
     several people talking can slide off that page during a wait that now
@@ -68,16 +80,40 @@ Notable changes to the HOAI Claude Code plugin.
     row, so once the row was off the page nothing ended the wait but the local
     backstop, with the CLI blocked the whole time. The card is now read on its
     own, anchored, the moment the page stops carrying it.
+  - **A daemon that stops mid wait no longer leaves a live looking card.**
+    The requests a process is holding live in its memory, so a crash, a kill or
+    an ordinary restart takes them with it: nothing answers the CLI, and, worse
+    for the owner, nothing takes the buttons off the card. It sat there
+    tappable until the server expired it, which used to be a minute and is now
+    up to the whole wait, and a tap on it showed as answered while nothing was
+    listening. On boot the daemon now retires its own unanswered cards on the
+    newest page of each chat it monitors, one log line each. A card a busy chat
+    has already pushed off that page is still left to the server's expiry:
+    reading further back on every boot would cost every daemon a great deal to
+    catch the rarest case.
   - **Known and not fixed here: a pending request holds an auto update's
     drain** for as long as it waits, because the handler runs inside the same
     message operation tracker that the drain waits on. Up to the owner's whole
     wait once the backend clamp is deployed, and up to the full 30 minutes
     until then. Bounding the drain belongs to the self update lane, not to
-    this one.
+    this one. What DOES end such a request while the daemon drains: the owner's
+    tap, heard through the watch only (both click intakes are shut in a drain),
+    a typed `yes <code>`, the server's own expiry, or the local backstop.
   - **Nothing changes for an agent installed with auto approve on**, which is
-    the default: that check still short circuits before any of this. And a
-    prompt left on screen by a 0.44.0 or older daemon still answers, for one
-    release.
+    the default: that check answers first, ahead of everything else in the
+    handler, including the drain. It needs no chat, no network and no intake,
+    so an update drain must not turn it into a refusal. The drain deny above is
+    for interactive mode, where the card genuinely cannot be posted or heard.
+  - **A prompt left on screen by a 0.44.0 or older daemon** is still
+    recognised, for one release, though not for the reason the first draft of
+    this note gave. It cannot be ANSWERED across the update: the pending
+    request died with the process that posted it. What the tolerance buys is
+    that such a click is swallowed as a stale permission click rather than
+    forwarded to the model as ordinary chatter.
+  - **The daemon says which backend it needs, at boot.** One line naming the
+    two halves above, so a host that takes this release ahead of the backend
+    reads it in the log instead of wondering why requests wait the full offer
+    and ring nobody.
 
 ## 0.44.0 (2026-09-21)
 

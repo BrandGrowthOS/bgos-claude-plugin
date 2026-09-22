@@ -317,11 +317,14 @@ import {
 } from './lib/stream-apply.js'
 import {
   PERMISSION_CLICK_RE,
+  PERMISSION_HOLD_SECONDS,
   VERDICT_RE,
+  answeredPermissionChoice,
   buildPermissionRequestBody,
   cardMessageIdFrom,
   choiceToBehavior,
   isApprovalExpired,
+  orphanedPermissionCards,
   parsePermissionChoice,
   pendingPermissionFastChatIds,
   permissionBackstopMs,
@@ -1812,6 +1815,14 @@ interface PendingPermission {
   // message (falls back to the configured account owner USER_ID).
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
+  /**
+   * How long this daemon is still listening to this request: the backstop
+   * built from the wait the SERVER stored, written once the card comes back.
+   * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
+   * absent until the post returns, which reads as the longest it could be
+   * (see pendingPermissionFastChatIds).
+   */
+  waitMs?: number
 }
 
 // Tracks the user_id of the most recent inbound USER message per chat. Used to
@@ -1835,8 +1846,11 @@ const pendingPermissions = new Map<string, PendingPermission>()
 // dropped instead of counting. The same request also holds its chat on THIS
 // file's 2 s fast scope, because fastScopeChatIds reads pendingPermissions:
 // another ~900 reads of the same endpoint over the same half hour. That half
-// is bounded now too (PENDING_PERMISSION_FAST_WINDOW_MS, at the tick), so a
-// parked request costs about 700 reads rather than 2,100.
+// is bounded too, by the request's OWN wait rather than by a flat window
+// (PENDING_PERMISSION_FAST_MAX_MS is only the leak guard), because that scope
+// is what keeps this poll's click intake at 2 s instead of the five minute
+// sweep. About 300 of those reads at the ten minute wait the clamp will make
+// the default, about 900 at the unclamped half hour.
 
 // ── Button-value namespace isolation ─────────────────────────────────────────
 // escapeAgentButtonValue / unescapeAgentButtonValue / collidesWithReserved and
@@ -2300,6 +2314,31 @@ const PermissionRequestSchema = z.object({
 })
 
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
+  const { request_id, tool_name, description, input_preview } = params
+
+  log(`Permission request: ${tool_name} [${request_id}], ${description}`)
+
+  if (AUTO_APPROVE) {
+    // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
+    // 0.44.1 put the drain branch in front of this one, so a default auto
+    // approve install got a hard DENY for every tool raised inside an update
+    // drain, on a path that needs nothing the drain closes: no chat, no
+    // network, no intake, one notification back to the CLI it came from. A
+    // drain window recurs on every auto update, so that was a recurring,
+    // unnecessary refusal on the installs that asked for none. The drain deny
+    // below is for INTERACTIVE mode only, where the card really cannot be
+    // posted or heard.
+    log(`Auto-approving: ${tool_name} [${request_id}]`)
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'allow' },
+      })
+      .catch((err) => {
+        log(`Failed to send auto-approve verdict: ${err}`)
+      })
+  }
+
   if (updateDrainMode) {
     // An update is draining this daemon: inbound intake is closed, so nobody
     // here can post a card or hear the answer to one. This used to return with
@@ -2308,36 +2347,25 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     // while the local clock was 120 s; it is not now that a request can hold a
     // drain open for half an hour. Fail closed, the same as every other dead
     // end in this handler: one step is skipped and the agent carries on.
+    //
+    // A request that was ALREADY open when the drain started is a different
+    // case and is not lost: its watch's read is not drain gated, so the
+    // owner's tap on that card still ends it. See the drain counter note.
     log(
       `Permission request during an update drain, denying: ` +
-        `${params.tool_name} [${params.request_id}]`,
+        `${tool_name} [${request_id}]`,
     )
     return mcp
       .notification({
         method: 'notifications/claude/channel/permission',
-        params: { request_id: params.request_id, behavior: 'deny' },
+        params: { request_id, behavior: 'deny' },
       })
       .catch((err) => {
         log(`Failed to send the drain deny verdict: ${err}`)
       })
   }
+
   return trackMessageOperation(async () => {
-  const { request_id, tool_name, description, input_preview } = params
-
-  log(`Permission request: ${tool_name} [${request_id}], ${description}`)
-
-  if (AUTO_APPROVE) {
-    // Auto-approve mode: immediately allow all tool usage
-    log(`Auto-approving: ${tool_name} [${request_id}]`)
-    await mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
-    }).catch((err) => {
-      log(`Failed to send auto-approve verdict: ${err}`)
-    })
-    return
-  }
-
   // Interactive mode: post a real BGOS approval card. The typed yes/no
   // fallback below stays for old clients, or if a button-click event is not
   // materialized in chat history.
@@ -2406,6 +2434,12 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     // Null means the response did not say, and the backstop falls back to the
     // hold, which is the longest it could have been.
     const storedWait = storedWaitSeconds(posted)
+    // Now that the wait is known, bound the chat's 2 s fast scope by it rather
+    // than by a flat ten minutes: the entry stays fast for as long as this
+    // daemon is still listening to the request. Until this line runs the entry
+    // states no wait, which reads as the longest it could be.
+    const held = pendingPermissions.get(request_id)
+    if (held) held.waitMs = permissionBackstopMs(storedWait)
 
     log(
       `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
@@ -2560,6 +2594,22 @@ async function waitForVerdict(
       cardMessageId !== null &&
       msg.message.id === cardMessageId &&
       isApprovalExpired(msg.message),
+    // THE OWNER'S TAP, off the card row, and this loop is the only lane that
+    // always carries it. A tap writes no user message, so verdictFrom below
+    // cannot see one; the poll's click intake stops seeing the card once it
+    // falls off the newest 50, and every intake is shut while an update
+    // drains. This read is anchored on the card and is not drain gated, so an
+    // Allow that used to be lost, and charged to the owner as a deny at the
+    // backstop, now ends the request.
+    //
+    // Only OUR card, the same rule as the expiry above. And the chat cursor is
+    // deliberately NOT advanced here, unlike verdictFrom: the card is an
+    // assistant row the delivery path never forwards, so moving the cursor
+    // past it would skip whatever the owner typed alongside the tap.
+    answeredOn: (msg) =>
+      cardMessageId !== null && msg.message.id === cardMessageId
+        ? answeredPermissionChoice(msg.message, requestId)
+        : null,
     verdictFrom: (msg) => {
       if (msg.message.id <= baselineId) return null
       if (msg.message.sender !== 'user') return null
@@ -2613,6 +2663,79 @@ async function waitForVerdict(
   })
 
   return verdict.choice
+}
+
+/**
+ * The request cards a previous run of this daemon left looking live.
+ *
+ * `pendingPermissions` is memory. A crash, a kill or an ordinary restart in
+ * the middle of a wait takes the request with it: nothing re-sends a verdict
+ * to the CLI, and, worse for the owner, nothing retires the CARD. Its buttons
+ * came off at the watch's backstop, and the watch died with the process, so
+ * the row sat there tappable until the server's own expiry at
+ * `created_at + wait_seconds`. That was 60 s before 0.44.1 and is up to half
+ * an hour now, during which a tap tells the owner the request was approved
+ * while nothing at all is listening.
+ *
+ * So this sweep retires them on boot: the buttons come off, the card stops
+ * inviting an answer, and the row keeps its words and its history.
+ *
+ * THE NEWEST PAGE IS THE LIMIT, and it is the honest cost of doing this in one
+ * read per chat. `chats/<id>/messages` with no cursor is the newest 50 rows,
+ * so a card that a busy chat has already pushed off that page is left to the
+ * server's expiry, exactly as it was before. That is the bounded case: the
+ * sweep is a boot time courtesy, not a guarantee, and paging back through a
+ * chat's history on every boot would cost every daemon a great deal to catch
+ * the rarest orphan.
+ *
+ * Its own ETag key, for the same reason the watch has one: the ordinary chat
+ * poll reads this path too, and sharing a validator would hand one of the two
+ * a 304 and lose it a cycle.
+ */
+async function retireOrphanedPermissionCards(): Promise<void> {
+  let retired = 0
+  for (const chatId of monitoredChatIds) {
+    let messages: ChatMessage[]
+    try {
+      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+        cacheKey: `perm-sweep:${chatId}`,
+      })
+      if (isNotModified(raw)) continue
+      messages = (raw as ChatHistoryResponse).messages ?? []
+    } catch (err) {
+      log(`Permission boot sweep: could not read chat ${chatId} (ignored): ${err}`)
+      continue
+    }
+    const orphans = orphanedPermissionCards(
+      messages.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        messageType: m.message.messageType,
+        answeredAt: m.message.answeredAt,
+        hasOptions: (m.messageOptions ?? []).length > 0,
+        approvalMeta: m.message.approvalMeta,
+      })),
+      // A request raised while this very boot was running is live, not an
+      // orphan, and must keep its buttons.
+      { heldRequestIds: new Set(pendingPermissions.keys()) },
+    )
+    for (const card of orphans) {
+      try {
+        await bgosPatch(`messages/${card.id}`, { options: [] })
+        retired += 1
+        log(
+          `Permission boot sweep: retired card ${card.id} in chat ${chatId} ` +
+            `[${card.requestId ?? 'no request id'}], left live by a run that ` +
+            `stopped mid wait`,
+        )
+      } catch (err) {
+        log(`Permission boot sweep: could not retire card ${card.id} (ignored): ${err}`)
+      }
+    }
+  }
+  if (retired === 0) {
+    log('Permission boot sweep: no cards were left live by a previous run')
+  }
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -5338,11 +5461,16 @@ interface ChatMessage {
     messageType?: string | null
     answeredAt?: string | null
     answerPayload?: AnswerPayload | null
-    // The approval card's own metadata, echoed back on every read. The
-    // permission relay watches ONE field of it: `expired`, which the server
-    // sets when a request outlives its wait. That flag, not a local clock, is
-    // what ends the wait (lib/permission-relay.ts).
-    approvalMeta?: { expired?: unknown } | null
+    // The approval card's own metadata, echoed back on every read (the
+    // backend hands the whole JSONB value back, so what was sent comes back).
+    // The permission relay reads three fields of it: `expired`, which the
+    // server sets when a request outlives its wait and which, not a local
+    // clock, is what ends the wait; and `agent_route` plus `request_id`,
+    // which are how the boot sweep recognises a card this daemon's own kind
+    // left behind (lib/permission-relay.ts).
+    approvalMeta?:
+      | { expired?: unknown; agent_route?: unknown; request_id?: unknown }
+      | null
     renderMode?: 'inline' | 'modal' | string | null
     commandName?: string | null
     commandArgs?: string | null
@@ -8544,6 +8672,17 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 // but the length of the drain itself belongs to the update machinery and is
 // deliberately not changed from here: dropping pendingPermissions alone would
 // do nothing, because activeOperations is held by the very same handler.
+//
+// WHAT ENDS AN ALREADY OPEN REQUEST WHILE THIS DAEMON DRAINS, in full, because
+// the first version of this note left the owner out of it. Both click intakes
+// are shut: pollChat returns immediately in drain mode, and every entry into
+// the update stream consumer is gated the same way. What is NOT gated is the
+// watch's own read of the chat, so the owner's tap is heard through the WATCH
+// ONLY (it reads the answer off the card row), alongside a typed "yes <id>",
+// the server's expiry and the local backstop. Before the watch could read that
+// row the tap was heard by nothing at all, and a drain that began during a
+// request held every inbound message for up to the whole wait while the owner
+// pressed a button that did nothing.
 function updateDrainSnapshot() {
   return {
     activeOperations: messageActivity.activeOperations,
@@ -10870,6 +11009,20 @@ async function main(): Promise<void> {
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
+  // THE BACKEND HALF THIS RELEASE LEANS ON, said out loud once per boot. Two
+  // things a permission request needs live on one BGOS branch (#1556): the per
+  // agent wait clamp, without which the server stores this daemon's whole
+  // offer and every request waits the maximum whatever the owner chose, and
+  // the device push on the messages route, without which a request raised
+  // while the app is closed rings nobody. A host that takes this plugin ahead
+  // of that backend gets both silently, which is exactly the kind of thing a
+  // sentence in a changelog does not prevent.
+  log(
+    `Permission requests depend on the BGOS backend half (BGOS #1556: the per ` +
+      `agent wait clamp and the approval push on POST /messages). Without it a ` +
+      `request waits the full ${PERMISSION_HOLD_SECONDS}s offer and sends no ` +
+      `device notification.`,
+  )
   log(`Require confirmed dispatch: ${REQUIRE_CONFIRMED_DISPATCH}`)
   log(`Log file: ${LOG_FILE}`)
 
@@ -11198,6 +11351,16 @@ async function main(): Promise<void> {
     // bounded, so it cannot stall forever either.
     await phase('boot poll sweep', () => pollAllChats())
 
+    // The request cards a previous run left looking live (see
+    // retireOrphanedPermissionCards). NOT awaited: it is one read per
+    // monitored chat plus a PATCH per orphan, it moves no cursor and nothing
+    // about delivery depends on it, so it must inform the boot rather than
+    // hold it. It runs AFTER the sweep above for one reason: monitoredChatIds
+    // has to be populated, which discoverChats did.
+    void phase('permission card sweep', () => retireOrphanedPermissionCards()).catch(
+      (err) => log(`Permission boot sweep gave up: ${err}`),
+    )
+
     // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
     // on disk), ask the session to greet its owner via the reply tool. The
     // greeting is the user-visible "your agent is alive" moment AND the
@@ -11445,12 +11608,19 @@ async function main(): Promise<void> {
         streamSchedulerTick(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
-          // BOUNDED, like the button prompt beside it. Every entry in this map
-          // used to pin its chat at the base 2 s tick until the request was
-          // answered, which was fine at 120 s and is 900 extra reads of one
-          // chat at half an hour. See PENDING_PERMISSION_FAST_WINDOW_MS: a
-          // request parked past the window still hears the tap on the socket,
-          // and its own watch is still reading the chat every 5 s.
+          // BOUNDED, like the button prompt beside it, but bounded by the
+          // REQUEST'S OWN WAIT rather than by a flat ten minutes. Every entry
+          // in this map used to pin its chat at the base 2 s tick until the
+          // request was answered, which was fine at 120 s and is 900 extra
+          // reads of one chat at half an hour. The first bound dropped the
+          // chat at ten minutes and said a later tap still arrived "on the
+          // socket": it does not, this daemon registers no inbound click
+          // listener (see the drain counter note). What the scope really buys
+          // is THIS poll's own click intake, which reads answered_at on the
+          // newest page: a chat outside it is read on the five minute sweep,
+          // so a tap could sit unheard for five minutes. So the scope lasts as
+          // long as this daemon is still listening, and the constant is only
+          // the leak guard. See PENDING_PERMISSION_FAST_MAX_MS.
           pendingPermissionChatIds: pendingPermissionFastChatIds(
             pendingPermissions.values(),
             Date.now(),
