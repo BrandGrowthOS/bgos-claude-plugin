@@ -32,20 +32,36 @@ export const SESSION_MODES: readonly SessionMode[] = ['plan', 'default']
 export const CLAUDE_SESSION_MODE_ENFORCED = false
 
 /**
- * The route, in both auth shapes, mirroring slashCommandSyncPath exactly: a
- * pairing daemon is scoped under `integrations/`, an API key daemon is not.
- * The Steps route carries the same pair (@Put on both spellings in
- * backend/src/steps/steps.controller.ts), which is the precedent this follows.
+ * The route, or NULL when this connection has no route to report on.
+ *
+ * THERE IS ONE SPELLING AND IT IS PAIRING SCOPED. This function used to mint
+ * an API key twin, `assistants/:id/chats/:chatId/session-mode`, on the
+ * precedent of slashCommandSyncPath and the Steps route, both of which really
+ * do carry a user scoped @Put beside the pairing one. Session mode does not:
+ * backend/src/session-mode/session-mode.controller.ts declares the
+ * `integrations/` path ALONE, and its header says why in as many words, which
+ * is the part that makes this a decision rather than a gap. Only the HOST can
+ * know whether the host is in plan mode, so a route the app (or any API key
+ * holder) could call would let something other than the daemon put a mode on
+ * screen that the host is not in, which is the exact dishonesty C-13 exists to
+ * avoid. Design spec section 4 says pairing scoped too.
+ *
+ * So the API key branch pointed at nothing. It was not an error anyone would
+ * see: the PATCH 404s, the caller swallows it, and the chip simply never
+ * appears for an API key daemon while the log line blames the backend. Null is
+ * returned instead, so the one caller skips the request rather than firing a
+ * doomed one per plan event, and a future user scoped route is a change here
+ * and nowhere else.
  */
 export function sessionModePath(
   authMode: 'pairing' | 'apikey',
   assistantId: string | number,
   chatId: string | number,
-): string {
+): string | null {
+  if (authMode !== 'pairing') return null
   const encodedAssistant = encodeURIComponent(String(assistantId))
   const encodedChat = encodeURIComponent(String(chatId))
-  const tail = `assistants/${encodedAssistant}/chats/${encodedChat}/session-mode`
-  return authMode === 'pairing' ? `integrations/${tail}` : tail
+  return `integrations/assistants/${encodedAssistant}/chats/${encodedChat}/session-mode`
 }
 
 export function buildSessionModeBody(

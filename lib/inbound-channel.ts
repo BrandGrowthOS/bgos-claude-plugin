@@ -88,10 +88,18 @@ export const PLAN_POLICY_MARKER_PREFIX = '[Plan level for this agent, set by its
 /**
  * Read the plan level off an inbound envelope, in either spelling.
  *
- * The backend ships `planPolicy` on the camelCase socket lane and
- * `plan_policy` on the snake_case ones, exactly as `senderGuardrail` /
- * `sender_guardrail` does, so both are accepted here and the three transports
- * call one reader rather than each guessing.
+ * WHAT THE BACKEND ACTUALLY SENDS IS `planPolicy`, ON BOTH LANES. It is
+ * spread by one helper (backend/src/services/plan-policy.ts, planPolicySpread)
+ * into the socket payload and into each poll row, and the poll row carries it
+ * in camelCase even though the sender block beside it is snake_case, because
+ * the level describes the AGENT and not the speaker. So this is not the
+ * `senderGuardrail` / `sender_guardrail` pair the comment here used to claim
+ * it was; `plan_policy` is accepted as tolerance for a server that ever sends
+ * it, and the three transports call one reader rather than each guessing.
+ *
+ * The VALUE is the server's whole labelled sentence, never the bare enum. It
+ * is passed through to the model as sent (buildPlanPolicyMarker) precisely so
+ * that the wording of a level lives on the server.
  */
 export function readPlanPolicyField(payload: unknown): string | null {
   if (payload == null || typeof payload !== 'object') return null

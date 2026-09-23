@@ -57,12 +57,25 @@ export const PLAN_AGENT_ROUTE = 'claude-code'
  */
 export const PLAN_ENFORCED_ON_THIS_CHANNEL = false
 
-/** Caps, from the design spec, section 4. Prose is clamped; structure refuses. */
+/**
+ * Caps, from the design spec section 4 and the renderables manifest. Prose is
+ * clamped; structure refuses.
+ *
+ * PLAN_CHECK_MAX AND PLAN_STEP_CHECK_MAX ARE TWO DIFFERENT NUMBERS, and the
+ * served schema is where that is decided: in
+ * backend/src/renderables/renderables-manifest.ts the card's own check line is
+ * maxLength 300 while a per STEP check is 200, the same 200 every other string
+ * on a step gets. This file clamped both at 300, which is not a crash and is
+ * invisible on screen; it is a payload the schema an agent DISCOVERS
+ * (GET /api/v1/renderables) calls invalid, so the one reader that validates
+ * would refuse a card no test here would have caught.
+ */
 export const PLAN_TITLE_MAX = 120
 export const PLAN_SUMMARY_MAX = 500
 export const PLAN_STEP_TEXT_MAX = 200
 export const PLAN_STEP_FILE_MAX = 200
 export const PLAN_CHECK_MAX = 300
+export const PLAN_STEP_CHECK_MAX = 200
 export const PLAN_NOTE_MAX = 300
 export const PLAN_STEPS_MAX = 30
 export const PLAN_FILES_MAX = 30
@@ -153,7 +166,7 @@ export function planCardOptions(): PlanCardOption[] {
   return [
     { text: 'Go ahead', callbackData: PLAN_CHIP_GO, style: 'success' },
     { text: 'Change the plan', callbackData: PLAN_CHIP_CHANGE, style: 'default' },
-    { text: 'Do not do this', callbackData: PLAN_CHIP_NO, style: 'danger' },
+    { text: "Don't do this", callbackData: PLAN_CHIP_NO, style: 'danger' },
   ]
 }
 
@@ -269,7 +282,7 @@ export function describePlanClick(input: {
     const typed = (input.customText ?? '').trim()
     return typed ? `Change the plan: ${typed}` : 'Change the plan (no words given)'
   }
-  return `Clicked: ${choice === 'go' ? 'Go ahead' : 'Do not do this'}`
+  return `Clicked: ${choice === 'go' ? 'Go ahead' : "Don't do this"}`
 }
 
 /**
@@ -369,7 +382,7 @@ export function buildPlanCardPayload(
     const step: PlanCardStep = { text }
     const file = clamp(row.file, PLAN_STEP_FILE_MAX)
     if (file) step.file = file
-    const check = clamp(row.check, PLAN_CHECK_MAX)
+    const check = clamp(row.check, PLAN_STEP_CHECK_MAX)
     if (check) step.check = check
     const tag = typeof row.tag === 'string' ? row.tag.trim().toLowerCase() : ''
     if (tag) {

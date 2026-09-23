@@ -108,6 +108,23 @@ test('the three transports all arm the verifier off the delivery, not off the ra
   assert.match(SERVER, /delivery\.meta\.command_name !== 'plan'/)
 })
 
+test('the Plan mode chip belongs to the TYPED door, never to a decided card', () => {
+  // Design spec section 4: this channel reports `plan` when it delivers a
+  // /plan DIRECTIVE and `default` when the plan is answered or /code arrives.
+  // propose_plan reported `plan` for EVERY card, so a plan the agent chose to
+  // show under its owner's level wrote a session mode onto an ordinary chat:
+  // the composer grew a Plan mode chip and a gold ring the owner never asked
+  // for, and an unanswered card left them up until a hand typed /code. Codex
+  // gates its own three mode effects on the same distinction (planModeChat).
+  const at = SERVER.indexOf("reportSessionMode(planChatId, 'plan')")
+  assert.ok(at > 0, 'propose_plan must still report the mode for a typed plan')
+  const line = SERVER.slice(SERVER.lastIndexOf('\n', at) + 1, at)
+  assert.match(line, /payload\.door === 'typed'/)
+  // The directive delivery is the other half and is unconditional: that is
+  // where a typed /plan lights the chip, before any card exists.
+  assert.match(SERVER, /reportSessionMode\(chatId, 'plan'\)/)
+})
+
 // ── /code, the chip's close ──────────────────────────────────────────────────
 
 test('/code is the chip close and is answered by the daemon, never by the model', () => {

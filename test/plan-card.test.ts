@@ -27,7 +27,9 @@ import {
   PLAN_ENFORCED_ON_THIS_CHANNEL,
   PLAN_STATUS_TEXT,
   PLAN_STATUS_TTL_MINUTES,
+  PLAN_CHECK_MAX,
   PLAN_STEPS_MAX,
+  PLAN_STEP_CHECK_MAX,
   PLAN_STEP_TEXT_MAX,
   PLAN_TITLE_MAX,
   buildPlanCardBody,
@@ -119,8 +121,16 @@ test('the three chips are codes with tiers, not words the plugin chose', () => {
     options.map((o) => o.style),
     ['success', 'default', 'danger'],
   )
+  // The English text is only what an app that predates the codes draws, and
+  // it is SPEC SECTION 1's three words exactly: an app that cannot relabel
+  // must still show the owner the buttons the design names. It read "Do not do
+  // this" here, which is nobody's wording but this file's.
+  assert.deepEqual(
+    options.map((o) => o.text),
+    ['Go ahead', 'Change the plan', "Don't do this"],
+  )
   // The codes are namespaced so the app can relabel them in the owner's own
-  // language; the English text is only what an app that predates them draws.
+  // language.
   for (const option of options) {
     assert.ok(option.callbackData.startsWith('plan:'), option.callbackData)
     assert.ok(option.text.length > 0)
@@ -178,6 +188,22 @@ test('prose over its cap is clamped rather than losing the whole plan', () => {
   })
   assert.equal(payload.title.length, PLAN_TITLE_MAX)
   assert.equal(payload.steps[0]!.text.length, PLAN_STEP_TEXT_MAX)
+})
+
+test("a STEP's check is clamped at 200, which is not the card's 300", () => {
+  // Two caps, and the served schema is where they are decided:
+  // backend/src/renderables/renderables-manifest.ts caps steps.items.check at
+  // 200 and the card's own check at 300. This file used one number for both,
+  // so a long per step check shipped a payload the schema an agent discovers
+  // calls invalid. Nothing on screen would have shown it.
+  assert.equal(PLAN_STEP_CHECK_MAX, 200)
+  assert.equal(PLAN_CHECK_MAX, 300)
+  const payload = payloadOf({
+    check: 'c'.repeat(PLAN_CHECK_MAX + 80),
+    steps: [{ text: 'a', check: 'v'.repeat(PLAN_CHECK_MAX + 80) }],
+  })
+  assert.equal(payload.steps[0]!.check!.length, PLAN_STEP_CHECK_MAX)
+  assert.equal(payload.check!.length, PLAN_CHECK_MAX)
 })
 
 test('an unknown step tag is refused, and the three real ones are kept', () => {
@@ -350,9 +376,9 @@ test('a plan answer is named off the CODE, so a relabelled chip stays readable',
   // The app relabels these chips in the owner's own language, so the
   // button_text that comes back can be Arabic. That is right on screen and
   // useless in a transcript a model reads to decide what to do next, where
-  // "Clicked: <arabic>" cannot tell Go ahead from Do not do this.
+  // "Clicked: <arabic>" cannot tell Go ahead from Don't do this.
   assert.equal(describePlanClick({ choice: 'go' }), 'Clicked: Go ahead')
-  assert.equal(describePlanClick({ choice: 'no' }), 'Clicked: Do not do this')
+  assert.equal(describePlanClick({ choice: 'no' }), "Clicked: Don't do this")
   assert.equal(describePlanClick({ choice: null }), null)
 })
 

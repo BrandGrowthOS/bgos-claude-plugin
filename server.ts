@@ -4549,7 +4549,17 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         void bgosPatch(`assistants/${ASSISTANT_ID}/status`, planStatusBody()).catch((err) => {
           log(`plan status line failed: ${err}`)
         })
-        reportSessionMode(planChatId, 'plan')
+        // THE CHIP BELONGS TO THE TYPED DOOR ONLY. Design spec section 4:
+        // Claude Code reports `plan` when it delivers a /plan DIRECTIVE, and
+        // `default` when the plan is answered or /code arrives. A card raised
+        // through the DECIDED door is a plan the agent chose to show inside an
+        // ordinary chat the owner never put in plan mode, and reporting `plan`
+        // there writes a session mode onto that chat row: the composer grows a
+        // Plan mode chip and a gold ring nobody asked for, and if the card is
+        // never answered nothing takes them down but a hand typed /code. Codex
+        // gates its three mode effects on the same distinction and for the
+        // same reason (planModeChat in its adapter).
+        if (payload.door === 'typed') reportSessionMode(planChatId, 'plan')
 
         // The /plan directive, if there was one, got its plan.
         const cancelled = cancelPlanVerifiers(planVerifiers)
@@ -6588,10 +6598,15 @@ function mintPlanId(): string {
  */
 function reportSessionMode(chatId: string | number, mode: SessionMode): void {
   const key = String(chatId)
+  // No route for this connection (an API key daemon; the route is pairing
+  // scoped and deliberately has no user scoped twin, see lib/session-mode.ts).
+  // Checked BEFORE the dedupe write, so nothing is remembered as reported.
+  const path = sessionModePath(AUTH.mode, ASSISTANT_ID, key)
+  if (path === null) return
   if (!shouldReportSessionMode(lastSessionModeByChat.get(key), mode)) return
   lastSessionModeByChat.set(key, mode)
   void bgosPatch(
-    sessionModePath(AUTH.mode, ASSISTANT_ID, key),
+    path,
     buildSessionModeBody(mode),
   ).catch((err) => {
     // Forget what we claimed to have reported, so the next attempt tries again

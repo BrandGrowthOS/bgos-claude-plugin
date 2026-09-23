@@ -23,16 +23,38 @@ import {
 } from '../lib/session-mode.ts'
 import { slashCommandSyncPath } from '../lib/slash-catalog.ts'
 
-test('the route is pairing scoped, and mirrors the sync path exactly', () => {
+test('the route is pairing scoped, and there is no API key twin to send to', () => {
   assert.equal(
     sessionModePath('pairing', 9, 412),
     'integrations/assistants/9/chats/412/session-mode',
   )
-  assert.equal(sessionModePath('apikey', 9, 412), 'assistants/9/chats/412/session-mode')
-  // The same pairing prefix rule the slash catalog already follows, so one
-  // daemon never sends half its writes to one scope and half to the other.
+  // NULL, NOT A SECOND SPELLING. This asserted
+  // 'assistants/9/chats/412/session-mode' on the slash catalog's precedent,
+  // and the backend serves no such route: session-mode.controller.ts declares
+  // the integrations path alone, on purpose, because only the HOST may say
+  // what mode the host is in. The old branch produced a PATCH that 404s and a
+  // log line blaming the backend, per plan event, for every API key daemon.
+  assert.equal(sessionModePath('apikey', 9, 412), null)
+  // The slash catalog really does carry both spellings (the backend declares
+  // @Put on each), which is why the shape was copied. It is the difference
+  // that matters, so it is pinned here beside it.
   assert.ok(slashCommandSyncPath('pairing', '9').startsWith('integrations/'))
   assert.ok(!slashCommandSyncPath('apikey', '9').startsWith('integrations/'))
+})
+
+test('an API key daemon reports nothing, and remembers nothing it did not send', () => {
+  // The skip is BEFORE the dedupe write in server.ts, so a daemon that cannot
+  // report never records a mode as reported: if that connection were ever
+  // paired, the first real report would still go out.
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const fn = server.slice(
+    server.indexOf('function reportSessionMode('),
+    server.indexOf('function clearPlanStatusLine('),
+  )
+  const skipAt = fn.indexOf('if (path === null) return')
+  const rememberAt = fn.indexOf('lastSessionModeByChat.set(key, mode)')
+  assert.ok(skipAt > 0, 'reportSessionMode must skip when there is no route')
+  assert.ok(rememberAt > skipAt, 'the skip must come before the dedupe write')
 })
 
 test('ids are encoded, so a hostile chat id cannot walk the path', () => {
