@@ -118,8 +118,17 @@ test('the Plan mode chip belongs to the TYPED door, never to a decided card', ()
   // gates its own three mode effects on the same distinction (planModeChat).
   const at = SERVER.indexOf("reportSessionMode(planChatId, 'plan')")
   assert.ok(at > 0, 'propose_plan must still report the mode for a typed plan')
-  const line = SERVER.slice(SERVER.lastIndexOf('\n', at) + 1, at)
-  assert.match(line, /payload\.door === 'typed'/)
+  const gate = SERVER.slice(SERVER.lastIndexOf('if (', at), at)
+  assert.match(gate, /payload\.door === 'typed'/)
+  // AND the door is checked against the daemon's own record of the same fact.
+  // `door` is a free field the model fills, so `typed` alone is the model's
+  // word for "the owner typed /plan": believed, it PATCHes a persisted session
+  // mode and puts a chip, a gold ring and a changed placeholder on a chat
+  // nobody switched. The verifier is armed at DELIVERY of a real /plan and is
+  // cancelled a few lines below, so it is still armed here on a genuine typed
+  // door. Codex resolves the same question from two sources for the same
+  // reason (planModeChat reads the payload AND the host's store).
+  assert.match(gate, /isPlanVerifierArmed\(planVerifiers, planChatId\)/)
   // The directive delivery is the other half and is unconditional: that is
   // where a typed /plan lights the chip, before any card exists.
   assert.match(SERVER, /reportSessionMode\(chatId, 'plan'\)/)
@@ -328,6 +337,44 @@ test('a plan answer settles the wait: status down, scope released, chip reported
   assert.match(fn, /reportSessionMode\(chatId, 'default'\)/)
 })
 
+test('the chip only comes DOWN on a chat something could have put it UP on', () => {
+  // `shouldReportSessionMode(undefined, 'default')` returns true by design, so
+  // an unconditional report here fired a PATCH on the first answer of a
+  // DECIDED door card in an ordinary chat and wrote chats.session_mode to the
+  // NULL it already held. That is not free: chats_sidebar_bump_trigger carries
+  // no column list, so the write bumps the owner's sidebar version and every
+  // connected client refetches assistants-with-chats for a field that did not
+  // change. The lane's own migration says so in as many words. Codex gates all
+  // three of its mode effects the same way (inPlanMode in handlePlanClick).
+  const fn = SERVER.slice(
+    SERVER.indexOf('function settlePlan('),
+    SERVER.indexOf('function applyPlanAnswer('),
+  )
+  assert.match(fn, /function settlePlan\(chatId: string, wasPlanMode: boolean\)/)
+  assert.match(
+    fn,
+    /if \(wasPlanMode \|\| lastSessionModeByChat\.get\(chatId\) === 'plan'\)/,
+    'the default report must be gated on a door that could have lit the chip',
+  )
+  // The answer to "could it have" is read off the ANSWERED ROW, so a restarted
+  // daemon still takes the chip down: this process's record first, the row's
+  // own payload second, which is the pair that survives a restart.
+  const caller = SERVER.slice(
+    SERVER.indexOf('function applyPlanAnswer('),
+    SERVER.indexOf('/** Post the daemon'),
+  )
+  assert.match(caller, /openPlansByChat\.get\(input\.chatId\)\?\.payload\.door/)
+  assert.match(caller, /isPlanCardPayload\(input\.eventMetaPayload\)/)
+  assert.match(caller, /settlePlan\(input\.chatId, answeredDoor !== undefined && answeredDoor !== 'decided'\)/)
+  // The explicit /code path is NOT gated: there the owner asked for it.
+  const off = SERVER.slice(
+    SERVER.indexOf('function onPlanModeOff('),
+    SERVER.indexOf('function onPlanModeOff(') + 400,
+  )
+  assert.match(off, /reportSessionMode\(chatId, 'default'\)/)
+  assert.ok(!/wasPlanMode/.test(off), '/code reports unconditionally')
+})
+
 test('the two reports survive a restart: only the map delete is conditional', () => {
   // THE FINDING. `if (!openPlansByChat.delete(chatId)) return` gated the two
   // things the OWNER can see (the status line beside the agent and the session
@@ -344,7 +391,51 @@ test('the two reports survive a restart: only the map delete is conditional', ()
     'an early return on the local record is what broke the restart case',
   )
   const body = fn.slice(fn.indexOf('{'))
-  assert.ok(!body.includes('return'), 'nothing in settlePlan may bail out early')
+  // A STATEMENT, not the substring: prose in the comments says "returns true
+  // by design" about shouldReportSessionMode, and a substring check read that
+  // as an early return and went red on a comment.
+  assert.ok(
+    !/^\s*return\b/m.test(body),
+    'nothing in settlePlan may bail out early',
+  )
+})
+
+test('a /plan that produced no plan takes its own chip back down', () => {
+  // THE FINDING. onPlanDirectiveDelivered reports `plan` on delivery, which is
+  // what lights the composer chip and the gold ring. The only two things that
+  // ever cleared it were an answered card (settlePlan) and a typed /code
+  // (onPlanModeOff), and neither can happen on this ending: the definition of
+  // this ending is that no card exists. So the chat kept a "Plan mode" chip
+  // over nothing pending, across restarts, and PLAN_VERIFIER_MESSAGE never
+  // mentions /code, so the owner was not told the exit either.
+  const fn = SERVER.slice(
+    SERVER.indexOf('function onPlanVerifierExpired('),
+    SERVER.indexOf("/** Post the daemon's own line"),
+  )
+  assert.ok(fn.length > 0, 'onPlanVerifierExpired must be declared before postPlanVerifierLine')
+  assert.match(fn, /postPlanVerifierLine\(chatId\)/)
+  assert.match(
+    fn,
+    /reportSessionMode\(chatId, 'default'\)/,
+    'the directive is spent, so the mode it announced is spent too',
+  )
+})
+
+test('both verifier fire sites end through that one function', () => {
+  // Same reason the click intake has one plan half: the Stop hook settles this
+  // where the hook rail is installed and the poll tick settles it where it is
+  // not, so a rule written into whichever site somebody was looking at is a
+  // chip that clears or does not clear depending on the install.
+  assert.equal(
+    (SERVER.match(/onPlanVerifierExpired\(due\.chatId\)/g) ?? []).length,
+    2,
+    'the turn end and the poll tick must both go through onPlanVerifierExpired',
+  )
+  // And neither of them may reach past it to the bare POST.
+  assert.ok(
+    !/postPlanVerifierLine\(due\.chatId\)/.test(SERVER),
+    'a fire site that posts the line directly leaves the chip up',
+  )
 })
 
 test('the plan half of a click runs on BOTH transports, from one function', () => {

@@ -351,6 +351,7 @@ import {
   nextPlanIdentity,
   parsePlanSupersedes,
   pendingPlanFastChatIds,
+  planCardChatRefusal,
   planAnswerDirective,
   planChipFor,
   planStatusClearBody,
@@ -366,6 +367,7 @@ import {
   disarmPlanVerifier,
   duePlanVerifiers,
   endTurnPlanVerifiers,
+  isPlanVerifierArmed,
 } from './lib/plan-verifier.js'
 import {
   buildSessionModeBody,
@@ -4437,6 +4439,26 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (!planAuth.ok) return planAuth.error
       const planChatId = String(planAuth.chatId)
 
+      // WHICH CHAT, and not only whether the daemon may write into it.
+      // `resolveAuthorizedChat` answers membership, and the monitored set
+      // GROWS with every inbound, so an a2a side thread and a seated meeting
+      // room are both accepted targets. Neither is a chat the owner can
+      // answer a card in: a2a is excluded from the chat list entirely and a
+      // room is addressed at everybody in it, while the status line below
+      // would still block this agent for a day on an answer that can never
+      // come. The backend refuses the same two kinds on the write (its
+      // services/plan-card.ts carries the per-kind record); this refusal
+      // exists so the MODEL is told where the plan belongs instead of being
+      // handed a 403. See planCardChatRefusal.
+      const wrongChat = planCardChatRefusal({
+        isPeerSideThread: peerConvByChat.has(planChatId),
+        isMeetingRoom: meetingChatIds.has(planChatId),
+      })
+      if (wrongChat) {
+        log(`propose_plan refused in chat ${planChatId}: not the owner's agent chat`)
+        return { content: [{ type: 'text', text: wrongChat }], isError: true }
+      }
+
       // The revision chain. `supersedes` is what decides it, not whatever this
       // process happens to be holding: a daemon restarted mid wait has no
       // record of the plan it is revising, and nextPlanIdentity says what
@@ -4559,7 +4581,24 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // never answered nothing takes them down but a hand typed /code. Codex
         // gates its three mode effects on the same distinction and for the
         // same reason (planModeChat in its adapter).
-        if (payload.door === 'typed') reportSessionMode(planChatId, 'plan')
+        //
+        // AND THE DOOR IS THE MODEL'S WORD, so it is checked against this
+        // daemon's own record of the same fact. `door` is a free field the
+        // model fills; a model that passes `typed` in a chat where nobody
+        // typed anything would otherwise PATCH a persisted session mode and
+        // put a Plan mode chip, a gold ring and a changed placeholder on a
+        // chat nobody switched, standing until the card is answered or the
+        // owner hand types /code. The verifier is armed by
+        // onPlanDirectiveDelivered when a /plan is actually DELIVERED and is
+        // cancelled three lines below, so at this point it is still armed for
+        // a genuine typed door. On that door this report is also redundant:
+        // the delivery already reported `plan`, and the dedupe drops it. That
+        // is the honest shape, a second confirmation rather than a first
+        // claim, which is what Codex does too (it resolves the question from
+        // the payload AND the host's store, never from the payload alone).
+        if (payload.door === 'typed' && isPlanVerifierArmed(planVerifiers, planChatId)) {
+          reportSessionMode(planChatId, 'plan')
+        }
 
         // The /plan directive, if there was one, got its plan.
         const cancelled = cancelPlanVerifiers(planVerifiers)
@@ -6628,7 +6667,7 @@ function clearPlanStatusLine(): void {
  * the card is no longer open, the status line comes down, the chat leaves the
  * fast scope, and the app is told the mode is back to default so the chip goes.
  *
- * NOTHING HERE IS GATED ON THIS PROCESS HOLDING A RECORD, and that is the
+ * NOTHING HERE BAILS OUT ON THIS PROCESS HOLDING A RECORD, and that is the
  * whole point of the shape. `openPlansByChat` is per process and is lost on a
  * restart (see the block comment above it), but the two things the OWNER can
  * see are server side: the status line beside the agent, and the session mode
@@ -6637,16 +6676,32 @@ function clearPlanStatusLine(): void {
  * before the restart and approved after it left `Waiting for your go ahead`
  * standing for its full day and a Plan mode chip that only a hand typed /code
  * could clear. The delete is the only part that has anything to say about
- * local state, so the delete is the only part that is conditional.
+ * local state, so the delete is the only part that is conditional on it.
  *
- * `reportSessionMode` needs no extra state for the post restart case:
- * `shouldReportSessionMode` always reports when the last value it knows is
- * unknown, which is exactly what a fresh process holds.
+ * The mode report is conditional on something ELSE, and on nothing local: the
+ * answered row's own door, which a restart does not lose because it is read
+ * back off the row. See the note on the call.
  */
-function settlePlan(chatId: string): void {
+function settlePlan(chatId: string, wasPlanMode: boolean): void {
   openPlansByChat.delete(chatId)
   clearPlanStatusLine()
-  reportSessionMode(chatId, 'default')
+  // GATED, for the same reason the `plan` report is gated on the typed door.
+  // `shouldReportSessionMode(undefined, 'default')` returns true by design (an
+  // unknown last value always reports), so an unconditional call here fired a
+  // PATCH on the first answer of a DECIDED door card in an ordinary chat,
+  // setting chats.session_mode to the NULL it already held. That write is not
+  // free: chats_sidebar_bump_trigger has no column list, so it bumps the
+  // owner's sidebar version and every connected client refetches
+  // assistants-with-chats for a field that did not change (the lane's own
+  // migration says so, backend/migrations/2026-09-23-chat-session-mode.sql).
+  // So the chip only comes DOWN where something could have put it up: a card
+  // whose door is not `decided`, which survives a restart because it is read
+  // off the answered row, or a `plan` this process reported itself. The
+  // explicit /code path (onPlanModeOff) still reports unconditionally, which
+  // is right: there the owner asked.
+  if (wasPlanMode || lastSessionModeByChat.get(chatId) === 'plan') {
+    reportSessionMode(chatId, 'default')
+  }
 }
 
 /**
@@ -6689,7 +6744,14 @@ function applyPlanAnswer(input: {
   // say) is still an answer: the wait is over and the status line must come
   // down, even though there is no directive to give.
   if (choice === null && !onPlanCard) return none
-  settlePlan(input.chatId)
+  // The DOOR of the row being answered, from this process's record first and
+  // the row's own payload second, which is the pair that survives a restart.
+  // Anything but `decided` is a door that could have lit the chip, and that is
+  // the only case where taking it down is worth a write. See settlePlan.
+  const answeredDoor =
+    openPlansByChat.get(input.chatId)?.payload.door ??
+    (isPlanCardPayload(input.eventMetaPayload) ? input.eventMetaPayload.door : undefined)
+  settlePlan(input.chatId, answeredDoor !== undefined && answeredDoor !== 'decided')
   if (choice === null) return none
   return {
     summary: describePlanClick({ choice, customText: input.customText }),
@@ -6700,6 +6762,36 @@ function applyPlanAnswer(input: {
     // `plan:change`. See planChipFor.
     callbackData: planChipFor(choice),
   }
+}
+
+/**
+ * THE VERIFIER'S ENDING, WHOLE: the line goes out AND the mode it announced
+ * comes back down.
+ *
+ * `onPlanDirectiveDelivered` reports `plan` the moment a /plan is delivered,
+ * which is what lights the composer chip and the gold ring. Only two things
+ * ever took that back down, `settlePlan` (a card was answered) and
+ * `onPlanModeOff` (the owner typed /code), and NEITHER can happen on this
+ * ending: the whole definition of this ending is that no card exists. So the
+ * two fire sites used to post the line and stop, leaving a chat wearing a
+ * "Plan mode" chip over nothing pending, across restarts, while every later
+ * turn ran normally. PLAN_VERIFIER_MESSAGE does not mention /code, so the
+ * owner was not even told the one thing that cleared it.
+ *
+ * ONE FUNCTION FOR BOTH FIRE SITES (the Stop hook's turn end and the poll
+ * tick's timeout), for the same reason the click intake has one: a rule
+ * written into whichever site somebody was looking at is a chip that clears or
+ * does not clear depending on whether the hook rail happened to be installed.
+ *
+ * The report is NOT gated the way settlePlan's is. There the door is a model
+ * filled field and a `decided` card never lit anything; here the arm itself is
+ * this daemon's own record that it reported `plan` for this chat, so there is
+ * always something to take down. A daemon with no route (an API key
+ * connection) is refused inside reportSessionMode and nothing is written.
+ */
+function onPlanVerifierExpired(chatId: string): void {
+  postPlanVerifierLine(chatId)
+  reportSessionMode(chatId, 'default')
 }
 
 /** Post the daemon's own line when a /plan produced no plan. */
@@ -7280,7 +7372,7 @@ async function finishHookTurn(keepCard: boolean): Promise<void> {
       `plan verifier fired on turn end (chat ${due.chatId}, /plan message ${due.messageId}): ` +
         'the turn finished without a plan',
     )
-    postPlanVerifierLine(due.chatId)
+    onPlanVerifierExpired(due.chatId)
   }
   const flight = hookCardFlight
   const flightKey = hookCardFlightKey
@@ -12498,7 +12590,7 @@ async function main(): Promise<void> {
             `plan verifier fired (chat ${due.chatId}, /plan message ${due.messageId}): ` +
               'no plan was proposed within the window',
           )
-          postPlanVerifierLine(due.chatId)
+          onPlanVerifierExpired(due.chatId)
         }
         let plan = planPollCycle({
           now: Date.now(),

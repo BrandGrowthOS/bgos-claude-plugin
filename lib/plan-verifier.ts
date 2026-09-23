@@ -81,6 +81,24 @@ export function armPlanVerifier(
 }
 
 /**
+ * Is a /plan verifier armed for this chat right now?
+ *
+ * Asked by the daemon before it reports session mode `plan` off a card. The
+ * card's `door` field is filled by the MODEL, and `typed` is a claim that the
+ * owner typed /plan. This state is the daemon's own record of the same fact,
+ * written when the directive was DELIVERED, so a model that says `typed` in a
+ * chat where nobody typed anything cannot put a Plan mode chip on that chat.
+ * Read only: arming and disarming stay with the three functions that own them.
+ */
+export function isPlanVerifierArmed(
+  state: PlanVerifierState,
+  chatId: string | number | null | undefined,
+): boolean {
+  if (chatId == null || chatId === '') return false
+  return state.has(String(chatId))
+}
+
+/**
  * The first propose_plan call settles it, silently.
  *
  * It settles EVERY armed chat, not only the one the plan was posted in, and

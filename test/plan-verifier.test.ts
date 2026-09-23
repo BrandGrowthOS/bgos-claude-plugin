@@ -23,6 +23,7 @@ import {
   disarmPlanVerifier,
   duePlanVerifiers,
   endTurnPlanVerifiers,
+  isPlanVerifierArmed,
 } from '../lib/plan-verifier.ts'
 
 const T0 = 1_700_000_000_000
@@ -121,4 +122,26 @@ test('the line the daemon posts claims nothing about the working tree', () => {
     'the daemon must not claim the tree is untouched; it cannot know',
   )
   assert.ok(PLAN_VERIFIER_MESSAGE.length < 200, 'one line, read on a phone')
+})
+
+test('the armed question answers for the chat that asked, and for nothing else', () => {
+  // This is what the daemon checks before it believes a card's `typed` door.
+  // The door is a free field the model fills; this state is written when a
+  // /plan was actually DELIVERED, so it is the daemon's own record of the same
+  // claim. A model saying `typed` in a chat nobody typed in must not be able
+  // to PATCH a persisted session mode and put a Plan mode chip on it.
+  const state = createPlanVerifierState()
+  armPlanVerifier(state, { chatId: 12, messageId: 501, nowMs: T0 })
+  assert.equal(isPlanVerifierArmed(state, 12), true)
+  assert.equal(isPlanVerifierArmed(state, '12'), true, 'the key is the string form')
+  assert.equal(isPlanVerifierArmed(state, 13), false, 'another chat never borrows it')
+  // The empty answers, which is the honest direction: no record, no claim.
+  assert.equal(isPlanVerifierArmed(state, null), false)
+  assert.equal(isPlanVerifierArmed(state, undefined), false)
+  assert.equal(isPlanVerifierArmed(state, ''), false)
+  // And it is READ ONLY: asking never arms, disarms or extends anything.
+  assert.equal(state.size, 1)
+  assert.equal(state.get('12')!.messageId, 501)
+  disarmPlanVerifier(state, 12)
+  assert.equal(isPlanVerifierArmed(state, 12), false)
 })
