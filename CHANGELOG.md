@@ -2,6 +2,34 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+- **An agent's own browser, on the machine the agent lives on.** New
+  `bin/hoai-browser-host.mjs`, run with node. It connects one socket per
+  pairing on this machine with the `browser_host` handshake the backend
+  already serves (the pairing token in the query; the role, only that
+  pairing's agents and the device label in the auth), answers each
+  `browser_rpc` frame through the desktop's own engine (Playwright's
+  `BrowserBackend` over the same filtered roster, so `tools/list` is byte
+  identical to the desktop's) and posts the answer to
+  `/api/v1/browser/rpc/<rpcId>/result` with the same pairing token and the
+  socket the frame arrived on. A notification is never posted.
+  - **It drives a real, installed Chrome or Chromium** over CDP
+    (`--remote-debugging-port`, `--user-data-dir`), headless by default. It
+    never downloads a browser; when none is installed it says so at startup
+    and in every call that needs one.
+  - **The profile is keyed by principal, not by agent:**
+    `~/.bgos-agent/<assistantId>/browser/<principal>/`, `owner` when the frame
+    names none. Two different principals always get two directories, on a
+    case-insensitive disk too, and a principal the host cannot read is
+    refused rather than served from the owner's profile. A test with a real
+    Chromium proves one principal's cookie is never sent for another.
+  - Adds `playwright-core` 1.63.0 (the desktop's pin) as a dependency and
+    `socket.io` as a dev dependency for the fake relay the tests drive.
+  - Two existing tests skipped with `t.skip()` or the `skip` option, which
+    bun's `node:test` does not honour, now also return early, so `bun test`
+    is green as well as `npm test`.
+
 ## 0.44.0 (2026-09-21)
 
 - **The helpers a turn hands work to get a row each, and the owner watches
