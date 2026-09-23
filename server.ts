@@ -38,6 +38,8 @@ import {
   escapeAgentButtonValue,
   unescapeAgentButtonValue,
   collidesWithReserved,
+  REPLY_BUTTON_STYLES,
+  normalizeButtonStyle,
   protectBackslashesForMarkdown,
   buildEventMeta,
 } from './lib/message-text.js'
@@ -46,6 +48,7 @@ import {
   type AgentOriginLike,
   isAgentInbound,
   isSelfAuthoredAgentOrigin,
+  readPlanPolicyField,
 } from './lib/inbound-channel.js'
 import {
   buildMeetingCard,
@@ -336,6 +339,37 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
+import {
+  PENDING_PLAN_FAST_MAX_MS,
+  buildPlanCardBody,
+  buildPlanCardPayload,
+  buildPlanSupersedeBody,
+  describePlanClick,
+  nextPlanIdentity,
+  parsePlanSupersedes,
+  pendingPlanFastChatIds,
+  planAnswerDirective,
+  planChoiceOf,
+  planStatusBody,
+  planStatusClearBody,
+  type PendingPlan,
+  type PlanChoice,
+} from './lib/plan-card.js'
+import {
+  PLAN_VERIFIER_MESSAGE,
+  armPlanVerifier,
+  cancelPlanVerifiers,
+  createPlanVerifierState,
+  disarmPlanVerifier,
+  duePlanVerifiers,
+  endTurnPlanVerifiers,
+} from './lib/plan-verifier.js'
+import {
+  buildSessionModeBody,
+  sessionModePath,
+  shouldReportSessionMode,
+  type SessionMode,
+} from './lib/session-mode.js'
 import {
   authSnapshot,
   resolveAuthRecheckIntervalMs,
@@ -2167,12 +2201,41 @@ const mcp = new Server(
       '    the free text as a normal user message right before/after, treat',
       '    them as correlated by message_id.',
       '',
+      '## Proposing a Plan',
+      '',
+      'Use `propose_plan` to show the user your plan as its own card, with',
+      'Go ahead / Change the plan / Do not do this. Propose when they type',
+      '`/plan`, when the owner\'s plan level for this agent asks you to (it',
+      'arrives as a line at the top of the turn), or on your own before a job',
+      'that touches several files or would be awkward to undo.',
+      '',
+      'It returns IMMEDIATELY with "pending" and the card id, and the turn ends.',
+      'Do not poll and do not re-ask with `reply`. The answer comes back later as',
+      'a `button_clicked` event that starts a NEW turn:',
+      '  - `plan:go`, carry out the plan you proposed.',
+      '  - `plan:change`, their words are in `meta.custom_text`. Revise and call',
+      '    `propose_plan` again with `supersedes` set to the old card id, which',
+      '    dims the old card so two live plans never sit in the chat.',
+      '  - `plan:no`, stop. Do not propose a replacement unasked.',
+      '',
+      'NOTHING IN THIS CHANNEL ENFORCES THE WAIT, and you should know exactly',
+      'what that means. This agent runs with permissions skipped: no tool call',
+      'is blocked, no hook can stop one, and this plugin cannot prevent you',
+      'editing a file one second after you propose. The card on the user\'s',
+      'screen says "Nothing changes until you answer", so an edit before their',
+      'answer makes that line untrue. It is a promise, not a lock. Keep it.',
+      '',
       '## Slash Commands From the User',
       '',
       'Users can pick slash commands from the BGOS app\'s composer. When they',
       'type `/`, the app shows an autocomplete picker populated from the catalog',
-      'this plugin syncs on boot (built-in commands like `/help`, `/clear`,',
-      '`/cost`, plus your user/project/plugin commands).',
+      'this plugin syncs on boot (built-in commands like `/help`, `/plan` and',
+      '`/status`, plus your user/project/plugin commands).',
+      '`/clear` and `/cost` are NOT in that catalog and have not been since',
+      '0.31: nothing here can reset a context window or read client-side',
+      'accounting, and both used to produce a confident answer that was false.',
+      'If a user asks for either, say plainly that it is a terminal command you',
+      'cannot run from a chat.',
       '',
       'A slash-command turn arrives as a `<channel source="bgos">` event with',
       '`meta.event_type = "slash_command"`, the selected command and arguments,',
@@ -2881,6 +2944,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               properties: {
                 label: { type: 'string', description: 'Visible button text (user-facing).' },
                 value: { type: 'string', description: 'Stable identifier returned to you in the click callback_data.' },
+                style: {
+                  type: 'string',
+                  enum: ['default', 'primary', 'success', 'danger'],
+                  description:
+                    'Optional colour tier for this one chip: "default" (neutral, and what you get ' +
+                    'if you omit it), "primary" (the emphasised choice), "success" (go ahead, ' +
+                    'confirm), "danger" (destructive, decline). Use it only when one choice is ' +
+                    'genuinely different in kind from the others; three chips all styled the same ' +
+                    'is three plain chips with extra noise. An app that predates the tier renders ' +
+                    'every chip neutral, so never carry meaning in colour alone.',
+                },
               },
               required: ['label', 'value'],
             },
@@ -2913,6 +2987,111 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['chat_id'],
+      },
+    },
+    {
+      name: 'propose_plan',
+      description:
+        'Show the user your PLAN as its own card in the chat, with three buttons: ' +
+        'Go ahead, Change the plan, Do not do this. Use it before a job that ' +
+        'touches several files or would be awkward to undo, when the user typed ' +
+        '/plan, or whenever the owner\'s plan level for this agent asks you to. ' +
+        'It returns IMMEDIATELY with "pending" and the card id; the turn then ' +
+        'ends. The answer comes back later as an ordinary channel event that ' +
+        'starts a NEW turn: a click with callback_data "plan:go", "plan:change" ' +
+        '(the user\'s words arrive with it as custom_text) or "plan:no". Do not ' +
+        'poll, do not wait, do not call reply to ask the same question again. ' +
+        'CHANGE NOTHING UNTIL GO AHEAD, and understand what that means here: ' +
+        'NOTHING IN THIS CHANNEL ENFORCES IT. This agent runs with permissions ' +
+        'skipped, so no tool call is blocked, no hook can stop one, and this ' +
+        'plugin cannot prevent you editing a file the moment after you propose. ' +
+        'The card tells the user "Nothing changes until you answer", so every ' +
+        'edit before their answer makes that line a lie. The wait is a promise ' +
+        'you are making. Keep it.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat to post the plan in. Pass back the chat_id (or session_handle) ' +
+              'from the channel event you are answering.',
+          },
+          title: {
+            type: 'string',
+            description:
+              'What this plan does, in one line the user can read on a phone (<=120 chars). ' +
+              'Name the outcome, not the activity: "Cache the boards list so it opens warm", ' +
+              'not "Work on caching".',
+          },
+          summary: {
+            type: 'string',
+            description:
+              'Optional. One short paragraph (<=500 chars) on the approach and anything ' +
+              'about it the user would want to push back on BEFORE you start.',
+          },
+          steps: {
+            type: 'array',
+            description:
+              'The numbered steps you intend to take, in order, 1 to 30. Each step is one ' +
+              'action the user could recognise, not a tool call. Give the file it touches ' +
+              'wherever there is one: the file line is most of what makes a plan reviewable.',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'The step, one line (<=200 chars).' },
+                file: { type: 'string', description: 'The file this step touches, if any.' },
+                check: { type: 'string', description: 'Optional: how this one step is verified.' },
+                tag: {
+                  type: 'string',
+                  enum: ['unchanged', 'changed', 'dropped'],
+                  description:
+                    'ONLY on a revision (when you pass supersedes): how this step differs from ' +
+                    'the plan you are replacing, so the user can see what their feedback changed.',
+                },
+              },
+              required: ['text'],
+            },
+          },
+          files: {
+            type: 'array',
+            description:
+              'Optional. Every file the whole plan touches, up to 30. The card counts them ' +
+              'in its one line summary, which is how a user judges the size of what they are ' +
+              'approving.',
+            items: { type: 'string' },
+          },
+          check: {
+            type: 'string',
+            description:
+              'Optional. One sentence on how the user will know the whole job worked: the test ' +
+              'you will run, the screen they should look at (<=300 chars).',
+          },
+          door: {
+            type: 'string',
+            enum: ['typed', 'decided'],
+            description:
+              'Why there is a plan at all: "typed" when the user sent /plan, "decided" when you ' +
+              'chose to plan first. The card says which, in the user\'s own words, under the ' +
+              'title. Defaults to "decided".',
+          },
+          supersedes: {
+            type: 'number',
+            description:
+              'ONLY on a revision: the message id of the plan card this one replaces (it came ' +
+              'back from the previous propose_plan call, and is the message_id on the click ' +
+              'event). The old card loses its buttons, dims, and reads "Superseded by the plan ' +
+              'below", so the user is never looking at two live plans.',
+          },
+          note: {
+            type: 'string',
+            description:
+              'ONLY on a revision: one line on what changed and why (<=300 chars), shown under ' +
+              'the kicker. "Dropped the migration, kept the index" tells the user their feedback ' +
+              'landed.',
+          },
+        },
+        required: ['chat_id', 'title', 'steps'],
       },
     },
     {
@@ -4050,7 +4229,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         url?: string; path?: string; file_name?: string; mime_type?: string
       }> | undefined
       const buttonsInput = rawArgs.buttons as Array<{
-        label?: string; value?: string
+        label?: string; value?: string; style?: string
       }> | undefined
       const renderModeRaw = rawArgs.render_mode as string | undefined
       const renderMode: 'inline' | 'modal' | undefined =
@@ -4107,7 +4286,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
 
       // Button validation, inline mode caps at 6 choices (backend rejects >6).
-      let options: Array<{ text: string; callbackData: string }> = []
+      let options: Array<{ text: string; callbackData: string; style?: string }> = []
       if (buttonsInput?.length) {
         if (buttonsInput.length > 6) {
           return {
@@ -4135,7 +4314,24 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
                 `namespace, escaping with "${AGENT_VALUE_PREFIX}" sentinel`,
             )
           }
-          options.push({ text: b.label, callbackData: escapeAgentButtonValue(b.value) })
+          // The colour tier, when the agent asked for one. An UNKNOWN value is
+          // dropped rather than refused: the backend's DTO would 400 the whole
+          // reply over one bad enum, and losing a message because a chip wanted
+          // a colour that does not exist is the wrong trade. The chip then
+          // renders neutral, which is what every app did before the tier
+          // existed anyway.
+          const style = normalizeButtonStyle(b.style)
+          if (b.style && !style) {
+            log(
+              `reply: ignoring unknown button style "${b.style}" ` +
+                `(known: ${REPLY_BUTTON_STYLES.join(', ')})`,
+            )
+          }
+          options.push({
+            text: b.label,
+            callbackData: escapeAgentButtonValue(b.value),
+            ...(style ? { style } : {}),
+          })
         }
       }
 
@@ -4226,6 +4422,152 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed to send: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'propose_plan': {
+      const chat_id = rawArgs.chat_id as string | undefined
+      if (!chat_id) {
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
+      }
+      const planAuth = resolveAuthorizedChat(chat_id)
+      if (!planAuth.ok) return planAuth.error
+      const planChatId = String(planAuth.chatId)
+
+      // The revision chain. `supersedes` is what decides it, not whatever this
+      // process happens to be holding: a daemon restarted mid wait has no
+      // record of the plan it is revising, and nextPlanIdentity says what
+      // happens then (a new plan id, revision 1, the old card still retired).
+      const openPlan = openPlansByChat.get(planChatId) ?? null
+      const parsedSupersedes = parsePlanSupersedes(rawArgs.supersedes)
+      if (!parsedSupersedes.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${parsedSupersedes.error}` }],
+          isError: true,
+        }
+      }
+      const identity = nextPlanIdentity({
+        supersedes: parsedSupersedes.supersedes,
+        open: openPlan,
+        mintPlanId,
+      })
+      const built = buildPlanCardPayload(
+        {
+          title: rawArgs.title,
+          summary: rawArgs.summary,
+          steps: rawArgs.steps,
+          files: rawArgs.files,
+          check: rawArgs.check,
+          door: rawArgs.door,
+          note: rawArgs.note,
+          supersedes: rawArgs.supersedes,
+        },
+        identity,
+      )
+      if (!built.ok) {
+        return { content: [{ type: 'text', text: `Error: ${built.error}` }], isError: true }
+      }
+      const payload = built.payload
+
+      const bodyBuild = buildPlanCardBody({
+        chatId: planAuth.chatId,
+        payload,
+        sessionHandle: planAuth.sessionHandle,
+      })
+      if (!bodyBuild.ok) {
+        return { content: [{ type: 'text', text: `Error: ${bodyBuild.error}` }], isError: true }
+      }
+
+      // RETIRE FIRST, POST SECOND. If the order were reversed a failed retire
+      // would leave two live plan cards in the chat, both answerable, and a tap
+      // on the older one would approve a plan the agent has already withdrawn.
+      // A failed retire here costs the new card, which the model can retry.
+      if (payload.supersedes !== undefined && openPlan?.messageId === payload.supersedes) {
+        try {
+          await bgosPatch(
+            `messages/${payload.supersedes}`,
+            buildPlanSupersedeBody(openPlan.payload),
+          )
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Failed to retire the plan being replaced (message ${payload.supersedes}): ` +
+                  `${errMsg}. Nothing was posted, so the user still sees exactly one plan. Retry.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      try {
+        const posted = await bgosPost(
+          'messages',
+          bodyBuild.body as unknown as Record<string, unknown>,
+        )
+        const cardMessageId = cardMessageIdFrom(posted)
+        if (cardMessageId === null) {
+          // Worth its own line: with no id there is no row to supersede on the
+          // next revision and no way to tie the answer back to this plan.
+          log(`propose_plan: the messages route returned no id (chat ${planChatId})`)
+        } else {
+          openPlansByChat.set(planChatId, {
+            chatId: planChatId,
+            messageId: cardMessageId,
+            planId: payload.plan_id,
+            revision: payload.revision,
+            postedAtMs: Date.now(),
+            payload,
+          })
+          // The CLI writes this tool result verbatim into the transcript, so
+          // the minted id is proof of which transcript is ours, exactly as a
+          // reply's is.
+          sessionBinder.recordReplyMessageId(cardMessageId)
+        }
+
+        // The status line and the chip: both are reports, neither gates
+        // anything, and both are fire and forget.
+        void bgosPatch(`assistants/${ASSISTANT_ID}/status`, planStatusBody()).catch((err) => {
+          log(`plan status line failed: ${err}`)
+        })
+        reportSessionMode(planChatId, 'plan')
+
+        // The /plan directive, if there was one, got its plan.
+        const cancelled = cancelPlanVerifiers(planVerifiers)
+        if (cancelled.length > 0) {
+          log(`propose_plan: ${cancelled.length} plan verifier(s) cancelled, a plan arrived`)
+        }
+
+        log(
+          `plan card posted to chat ${planChatId} (message ${cardMessageId ?? 'unknown'}, ` +
+            `${payload.steps.length} step(s), revision ${payload.revision}` +
+            `${payload.supersedes !== undefined ? `, supersedes ${payload.supersedes}` : ''})`,
+        )
+        reportContextPct()
+        clearInbound(planAuth.chatId)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `pending (message_id: ${cardMessageId ?? 'unknown'}). The plan is on the user's ` +
+                'screen with Go ahead, Change the plan and Do not do this. This turn is over: ' +
+                'stop here, change nothing, and wait. Their answer arrives as a new channel ' +
+                'event with callback_data plan:go, plan:change (their words in custom_text) or ' +
+                'plan:no. Nothing here enforces the wait, so it is yours to keep.',
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to post the plan: ${errMsg}` }],
+          isError: true,
+        }
       }
     }
 
@@ -6176,6 +6518,123 @@ const chatUnansweredButtons = new Map<string, Set<number>>()
  * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
  */
 const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
+
+// ── The plan card's state, all of it in memory and all of it per process ─────
+//
+// A plan wait has NO END, which is what makes this different from every other
+// wait in this daemon. A restart therefore loses the open plan, and that is
+// accepted rather than papered over: the CARD stays live on the owner's screen
+// and is still answerable, because the answer is a row fact (answeredAt) the
+// app writes, not a promise this process holds. What the restart costs is the
+// revision chain (a revised plan after a restart starts at revision 1, see
+// nextPlanIdentity) and the fast poll scope, which a running daemon re-earns
+// only when a new plan is posted. No sweep retires a plan card: the permission
+// boot sweep refuses any row that is not `approval_request`, so a plan card is
+// invisible to it by construction, which is exactly the behaviour wanted.
+
+/** The newest unanswered plan this daemon posted, per chat. */
+const openPlansByChat = new Map<string, PendingPlan>()
+
+/** Armed /plan verifiers, per chat. See lib/plan-verifier.ts. */
+const planVerifiers = createPlanVerifierState()
+
+/** The last session mode this daemon reported, per chat, to avoid re-PATCHing. */
+const lastSessionModeByChat = new Map<string, SessionMode>()
+
+/**
+ * Mint a plan id. Not a uuid dependency for one field: the assistant id plus
+ * the clock plus four random characters is unique enough for a value whose only
+ * job is to tie a revision to the plan it revises inside one chat.
+ */
+function mintPlanId(): string {
+  return `p${ASSISTANT_ID}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+/**
+ * Report the session mode for a chat. Fire and forget, and deliberately so: the
+ * chip above the composer is cosmetic, the route may not exist yet on an older
+ * backend, and nothing in this daemon behaves differently because of the mode.
+ * A failure is one log line.
+ */
+function reportSessionMode(chatId: string | number, mode: SessionMode): void {
+  const key = String(chatId)
+  if (!shouldReportSessionMode(lastSessionModeByChat.get(key), mode)) return
+  lastSessionModeByChat.set(key, mode)
+  void bgosPatch(
+    sessionModePath(AUTH.mode, ASSISTANT_ID, key),
+    buildSessionModeBody(mode),
+  ).catch((err) => {
+    // Forget what we claimed to have reported, so the next attempt tries again
+    // rather than deduping against a value the server never received.
+    if (lastSessionModeByChat.get(key) === mode) lastSessionModeByChat.delete(key)
+    log(`session mode report failed (chat ${key}, mode ${mode}): ${err}`)
+  })
+}
+
+/** Clear the "Waiting for your go ahead" line this daemon wrote. */
+function clearPlanStatusLine(): void {
+  void bgosPatch(`assistants/${ASSISTANT_ID}/status`, planStatusClearBody()).catch((err) => {
+    log(`plan status clear failed: ${err}`)
+  })
+}
+
+/**
+ * Everything that has to happen when a plan is answered, whichever chip it was:
+ * the card is no longer open, the status line comes down, the chat leaves the
+ * fast scope, and the app is told the mode is back to default so the chip goes.
+ */
+function settlePlan(chatId: string): void {
+  if (!openPlansByChat.delete(chatId)) return
+  clearPlanStatusLine()
+  reportSessionMode(chatId, 'default')
+}
+
+/** Post the daemon's own line when a /plan produced no plan. */
+function postPlanVerifierLine(chatId: string): void {
+  void bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text: PLAN_VERIFIER_MESSAGE,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+    options: [],
+  }).catch((err) => log(`plan verifier line failed (chat ${chatId}): ${err}`))
+}
+
+/**
+ * The owner typed /plan. Arm the verifier, and tell the app so the chip
+ * appears. `enforced` is false and says so on screen: see lib/session-mode.ts.
+ */
+function onPlanDirectiveDelivered(chatId: string, messageId: number): void {
+  armPlanVerifier(planVerifiers, { chatId, messageId, nowMs: Date.now() })
+  reportSessionMode(chatId, 'plan')
+  log(`/plan directive delivered (chat ${chatId}, message ${messageId}); verifier armed`)
+}
+
+/** The owner closed the Plan mode chip. Nothing to undo locally; report it. */
+function onPlanModeOff(chatId: string): void {
+  disarmPlanVerifier(planVerifiers, chatId)
+  lastSessionModeByChat.delete(chatId)
+  reportSessionMode(chatId, 'default')
+  log(`/code received (chat ${chatId}); session mode reported default`)
+}
+
+/**
+ * Was this slash delivery a /plan? Called on all three transports, off the
+ * delivery's own meta rather than off the raw payload, so an alias resolved by
+ * the registry is recognised the same way the model sees it.
+ */
+function noteSlashPlanDelivery(
+  delivery: { meta: Record<string, string> } | null,
+  chatId: string | number | null | undefined,
+  messageId: unknown,
+): void {
+  if (!delivery || delivery.meta.command_name !== 'plan') return
+  if (chatId == null || chatId === '') return
+  onPlanDirectiveDelivered(String(chatId), Number(messageId) || 0)
+}
 let monitoredChatIds: string[] = []
 
 // ── Chat membership authority ────────────────────────────────────────────────
@@ -6573,6 +7032,25 @@ async function finishHookTurn(keepCard: boolean): Promise<void> {
   // waiting in the queue beside it, and that is not this turn's final card.
   const pending = hookCardPending.get(hookTurnCardKey)
   const chatId = hookChatId()
+  // THE TURN ENDED. If a /plan was armed for the chat this turn belonged to and
+  // no propose_plan cancelled it, that is an OBSERVED fact rather than a five
+  // minute guess, so the line goes out now instead of waiting out the window.
+  //
+  // turnChat.current is read directly, NOT hookChatId(), because hookChatId
+  // falls back to the first monitored chat when the turn cannot be attributed,
+  // and a guess here would post "no plan arrived" into a chat that never asked
+  // for one. An unattributed turn end settles nothing and the timer keeps its
+  // job (endTurnPlanVerifiers refuses a null chat id for this reason).
+  for (const due of endTurnPlanVerifiers(
+    planVerifiers,
+    turnChat.current(Date.now())?.chatId ?? null,
+  )) {
+    log(
+      `plan verifier fired on turn end (chat ${due.chatId}, /plan message ${due.messageId}): ` +
+        'the turn finished without a plan',
+    )
+    postPlanVerifierLine(due.chatId)
+  }
   const flight = hookCardFlight
   const flightKey = hookCardFlightKey
   const cardKey = pending?.cardKey ?? null
@@ -7332,6 +7810,25 @@ async function pollChat(chatId: string): Promise<void> {
       // and pass through untouched.
       const agentCallbackData = unescapeAgentButtonValue(callbackData)
 
+      // A PLAN ANSWER, if it is one. Three things separate it from an ordinary
+      // click and all three are here rather than in the generic wording below.
+      //   1. Change the plan arrives as a click carrying the owner's typed
+      //      words in `custom_text`, deliberately, so one stimulus reaches the
+      //      agent instead of a click plus a message. The generic wording would
+      //      render that as `Clicked: "make it shorter"`, which reads as a
+      //      button label rather than as what the owner said.
+      //   2. The click is the whole instruction on this channel: nothing here
+      //      starts a turn, flips a mode or blocks a tool, so what to do next
+      //      has to travel with the answer.
+      //   3. The wait is over either way, so the status line comes down, the
+      //      chat leaves the fast scope and the chip is reported off.
+      const planChoice: PlanChoice | null = planChoiceOf(agentCallbackData)
+      if (planChoice !== null) settlePlan(chatId)
+      const planSummary = describePlanClick({
+        callbackData: agentCallbackData,
+        customText,
+      })
+
       const kind =
         agentCallbackData === '__skip__'
           ? 'Skipped'
@@ -7339,15 +7836,17 @@ async function pollChat(chatId: string): Promise<void> {
             ? 'Custom reply'
             : 'Clicked'
       const summary =
-        customText
+        planSummary ??
+        (customText
           ? `${kind}: "${customText}"`
           : buttonText
             ? `${kind}: ${buttonText}`
-            : `${kind}: ${agentCallbackData}`
+            : `${kind}: ${agentCallbackData}`)
       const contentLines = [
         `[button_clicked] ${summary}`,
         `(in reply to message_id=${mm.id})`,
       ]
+      if (planChoice !== null) contentLines.push(planAnswerDirective(planChoice))
       if (mm.text && mm.text.trim().length > 0) {
         const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
         contentLines.push(`Original question: ${quoted}`)
@@ -7499,6 +7998,11 @@ async function pollChat(chatId: string): Promise<void> {
         peerConversationId: pollPeerConversationId,
         turnState: pollTurnState,
         sessionHandle: pollSessionHandle,
+        // The owner's plan level, as the backend labelled it. All three
+        // transports pass it: a level delivered on one rail only would change
+        // the agent's behaviour depending on whether the socket happened to be
+        // healthy, which is the worst kind of intermittent.
+        planPolicy: readPlanPolicyField(msg.message),
         backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
@@ -7545,9 +8049,17 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
+      // The plan chip's close. Daemon answered and never forwarded, like
+      // /compact: there is no mode here to leave, only a report to send.
+      if (slashRoute.kind === 'plan_mode_off') {
+        onPlanModeOff(chatId)
+        continue
+      }
+
       const slashDelivery = slashRoute.kind === 'directive'
         ? slashRoute.delivery
         : null
+      noteSlashPlanDelivery(slashDelivery, chatId, msg.message.id)
       const content = slashDelivery?.content ?? originalContent
 
       if (!content) continue
@@ -9144,6 +9656,7 @@ async function forwardStreamInbound(
     peerConversationId: view.peerConversationId,
     turnState: view.turnState,
     sessionHandle: view.sessionHandle,
+    planPolicy: readPlanPolicyField(view.raw),
   })
   const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
@@ -9179,7 +9692,12 @@ async function forwardStreamInbound(
     }
     return
   }
+  if (slashRoute.kind === 'plan_mode_off') {
+    onPlanModeOff(chatId)
+    return
+  }
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
+  noteSlashPlanDelivery(slashDelivery, chatId, view.messageId)
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
 
@@ -10097,6 +10615,7 @@ function connectWebsocket(): void {
         peerConversationId: wsPeerConversationId,
         turnState: wsTurnState,
         sessionHandle: wsSessionHandle,
+        planPolicy: readPlanPolicyField(payload),
         extraMeta: {
           ...(payload?.sender?.displayName
             ? { sender_display_name: String(payload.sender.displayName) }
@@ -10139,9 +10658,14 @@ function connectWebsocket(): void {
         }
         return
       }
+      if (slashRoute.kind === 'plan_mode_off') {
+        if (chatId) onPlanModeOff(chatId)
+        return
+      }
       const slashDelivery = slashRoute.kind === 'directive'
         ? slashRoute.delivery
         : null
+      noteSlashPlanDelivery(slashDelivery, chatId, messageId)
       const content = slashDelivery?.content ?? originalContent
       if (!content) return
 
@@ -11699,7 +12223,26 @@ async function main(): Promise<void> {
             Date.now(),
           ),
           buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now()),
+          // A plan wait has no end, so this one is bounded by a flat half hour
+          // and nothing else; PENDING_PLAN_FAST_MAX_MS writes out the trade.
+          // A tap after that lands on the five minute sweep, and the PR says so.
+          pendingPlanChatIds: pendingPlanFastChatIds(
+            openPlansByChat.values(),
+            Date.now(),
+            PENDING_PLAN_FAST_MAX_MS,
+          ),
         })
+        // The /plan verifier's fallback ending. The Stop hook settles it first
+        // where the hook rail is installed; this is the tick for the installs
+        // where it is not (a clone install gets hooks only after
+        // ensureHookEntries has run, and one launch late at that).
+        for (const due of duePlanVerifiers(planVerifiers, Date.now())) {
+          log(
+            `plan verifier fired (chat ${due.chatId}, /plan message ${due.messageId}): ` +
+              'no plan was proposed within the window',
+          )
+          postPlanVerifierLine(due.chatId)
+        }
         let plan = planPollCycle({
           now: Date.now(),
           lastFullCycleAt,

@@ -2,6 +2,71 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.45.0 (2026-09-23)
+
+- **The agent can now show you its PLAN before it touches anything, and you
+  answer with a button.** `propose_plan` posts a real card into the chat: a
+  title, one line saying how many steps and files, the numbered steps each with
+  the file it touches, a check line, and three buttons, Go ahead, Change the
+  plan and Do not do this. The tool returns immediately and the turn ends; your
+  answer arrives later as an ordinary click and starts a new turn. Nothing
+  parks a watchdog and nothing times out, so a plan answered tomorrow still
+  works.
+  - **The wait on this channel is a CONVENTION, and everything says so.** Every
+    HOAI agent is launched with permissions skipped and the shipped manifest
+    auto approves, so no tool call is blocked, no hook can stop one, and this
+    plugin cannot prevent an edit one second after a plan is proposed. The card
+    carries `enforced: false`, which is what puts "will propose before it
+    changes anything" on your screen instead of "read only until approved"; the
+    tool description, the `/plan` procedure and the agent instructions each say
+    it in as many words. Codex, which has a real read only mode, sends `true`.
+  - **A revision retires the plan it replaces, in that order.** Pass
+    `supersedes` and the older card loses its buttons and dims BEFORE the new
+    one is posted, so two live plans never sit in one chat and a tap on the old
+    one cannot approve a plan the agent has withdrawn.
+  - **Change the plan carries your words, not a button label.** The app sends
+    the typed revision as `custom_text` on the click itself, one stimulus
+    instead of a click plus a message, and the agent reads
+    `Change the plan: <what you typed>`.
+  - **Where a tap lands fast, and where it does not.** A click reaches this
+    plugin on the poll and nowhere else, so a chat with an open plan is polled
+    every two seconds for thirty minutes. A tap inside that window lands in
+    seconds; a later one arrives on the five minute sweep. That is the honest
+    trade rather than pinning a chat at two seconds for a plan nobody may
+    answer until tomorrow.
+- **`/plan` is a real command now, with a procedure behind it.** It reaches the
+  model as an actionable directive whose first step is `propose_plan`, and the
+  daemon arms a verifier when it delivers one: cancelled by the first
+  `propose_plan` call, fired by the turn's Stop hook when the turn ended without
+  a plan, and by a five minute timer where the hook rail is not installed. If no
+  plan came, you get one line saying so instead of silence.
+- **The Plan mode chip, and its close.** The daemon reports the chat's session
+  mode (`plan` when it delivers a `/plan`, `default` when the plan is answered
+  or you close the chip) so the app can draw the chip above the composer. The
+  close arrives as `/code` and is answered by the daemon, never handed to the
+  model, which would otherwise have told you your own close button was
+  unavailable.
+- **The owner's plan level reaches the agent on every transport.** The per agent
+  setting ("Only when I ask", "For bigger or risky jobs", "Always before it
+  changes anything") rides the inbound envelope as a labelled sentence and is
+  rendered into the turn the model reads, on the poll, the stream and the
+  socket alike. The daemon never reads the setting itself: the server decides,
+  the daemon renders what it is handed.
+- **Reply buttons can ask for a colour.** `reply`'s `buttons[]` gains an
+  optional `style` (`default | primary | success | danger`). An unknown value is
+  dropped rather than refused, because losing a whole message over a colour is
+  the wrong trade. Until now only approval cards sent a tier and every agent
+  authored chip rendered neutral.
+- **Fixed: the agent instructions advertised `/clear` and `/cost`.** Both were
+  removed from the catalog on 2026-08-30, because nothing here can reset a
+  context window or read client side accounting, so the model was being handed
+  two commands that come back unavailable. The instructions now say that
+  plainly.
+- **Hardened: `plan:` is a reserved button namespace.** An agent authored reply
+  button whose value was `plan:go` would have come back through the same intake
+  as a real approval on a plan card. It is now escaped like any other agent
+  value.
+
 ## 0.44.1 (2026-09-22)
 
 - **A permission request now looks like one, and stops dying after two

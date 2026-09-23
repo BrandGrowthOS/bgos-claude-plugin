@@ -425,11 +425,19 @@ export function fastScopeChatIds(opts: {
   pendingPermissionChatIds: Iterable<string>
   /** Chats with a fresh inline-button prompt (see activeButtonPromptChatIds). */
   buttonPromptChatIds?: Iterable<string>
+  /**
+   * Chats with an unanswered plan card (see pendingPlanFastChatIds in
+   * lib/plan-card.ts). A plan wait has no end, so unlike the three above this
+   * one is bounded by a flat half hour and nothing else: the honest trade is
+   * written out at PENDING_PLAN_FAST_MAX_MS.
+   */
+  pendingPlanChatIds?: Iterable<string>
 }): string[] {
   const out = new Set<string>()
   for (const id of opts.meetingChatIds) out.add(String(id))
   for (const id of opts.pendingPermissionChatIds) out.add(String(id))
   for (const id of opts.buttonPromptChatIds ?? []) out.add(String(id))
+  for (const id of opts.pendingPlanChatIds ?? []) out.add(String(id))
   return [...out]
 }
 

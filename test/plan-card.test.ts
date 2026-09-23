@@ -1,0 +1,386 @@
+/**
+ * The plan card: the wire shape, the three chips, the revision chain, and the
+ * one sentence this channel is not allowed to leave out.
+ *
+ * Every pin here stands for something that would be wrong on the owner's
+ * screen rather than merely wrong in the code. The card is an `event` row with
+ * options, so an app that has never heard of `plan_card` still shows chips that
+ * work; the chips are CODES, so the app relabels them and Arabic comes free;
+ * `enforced` is false, because nothing on this channel can stop an edit; and a
+ * revision retires the card it replaces, because two live plans in one chat is
+ * the failure the supersede exists to prevent.
+ *
+ * Run with: npx tsx --test test/plan-card.test.ts
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+import {
+  PENDING_PLAN_FAST_MAX_MS,
+  PLAN_AGENT_ROUTE,
+  PLAN_CARD_KIND,
+  PLAN_CARD_PAYLOAD_VERSION,
+  PLAN_CHIP_CHANGE,
+  PLAN_CHIP_GO,
+  PLAN_CHIP_NO,
+  PLAN_ENFORCED_ON_THIS_CHANNEL,
+  PLAN_STATUS_TEXT,
+  PLAN_STATUS_TTL_MINUTES,
+  PLAN_STEPS_MAX,
+  PLAN_STEP_TEXT_MAX,
+  PLAN_TITLE_MAX,
+  buildPlanCardBody,
+  buildPlanCardPayload,
+  buildPlanSupersedeBody,
+  describePlanClick,
+  nextPlanIdentity,
+  parsePlanSupersedes,
+  pendingPlanFastChatIds,
+  planAnswerDirective,
+  planCardOptions,
+  planCardPeek,
+  planCardText,
+  planChoiceOf,
+  planStatusBody,
+  planStatusClearBody,
+  type PendingPlan,
+  type PlanCardPayload,
+} from '../lib/plan-card.ts'
+
+const ID = { planId: 'p9-abc-0001', revision: 1 }
+
+function goodInput(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    title: 'Cache the boards list so it opens warm',
+    summary: 'Keep the query and stop unmounting the pane.',
+    steps: [
+      { text: 'Hoist the board query to the chat root', file: 'src/boards/useBoards.ts' },
+      { text: 'Keep the pane mounted when the chat switches', file: 'src/chat/ChatPane.tsx' },
+    ],
+    files: ['src/boards/useBoards.ts', 'src/chat/ChatPane.tsx'],
+    check: 'Open a board, switch chats, come back: no spinner, same scroll position.',
+    ...over,
+  }
+}
+
+function payloadOf(over: Record<string, unknown> = {}): PlanCardPayload {
+  const built = buildPlanCardPayload(goodInput(over), ID)
+  assert.ok(built.ok, `expected a payload, got ${built.ok ? '' : built.error}`)
+  return built.payload
+}
+
+// ── The shape on the wire ────────────────────────────────────────────────────
+
+test('the card is an event row with the plan_card kind AND the chips under it', () => {
+  // Both halves together are the whole design: the kind is what draws the card,
+  // and the options are what an app that does not know the kind falls back to.
+  // Drop either and the plan is unanswerable on some installed version.
+  const body = buildPlanCardBody({ chatId: 77, payload: payloadOf() })
+  assert.ok(body.ok)
+  assert.equal(body.body.messageType, 'event')
+  assert.equal(body.body.eventMeta.payload.kind, PLAN_CARD_KIND)
+  assert.equal(body.body.eventMeta.payload.v, PLAN_CARD_PAYLOAD_VERSION)
+  assert.equal(body.body.options.length, 3)
+  assert.equal(body.body.renderMode, 'inline')
+  assert.equal(body.body.sender, 'assistant')
+  assert.equal(body.body.chatId, 77)
+})
+
+test('the body never carries assistantId (the route resolves the author from the credential)', () => {
+  // The backend whitelist shadow log caught exactly this field arriving from a
+  // daemon on the messages route. buildPermissionRequestBody omits it for the
+  // same reason and this body follows.
+  const body = buildPlanCardBody({ chatId: 77, payload: payloadOf() })
+  assert.ok(body.ok)
+  assert.ok(!('assistantId' in body.body), 'assistantId must not be sent')
+})
+
+test('enforced is FALSE, because nothing on this channel can stop an edit', () => {
+  // The app picks the chip's words off this flag. `true` would put "read only
+  // until approved" on screen over an agent launched with permissions skipped.
+  assert.equal(PLAN_ENFORCED_ON_THIS_CHANNEL, false)
+  assert.equal(payloadOf().enforced, false)
+})
+
+test('the three chips are codes with tiers, not words the plugin chose', () => {
+  const options = planCardOptions()
+  assert.deepEqual(
+    options.map((o) => o.callbackData),
+    [PLAN_CHIP_GO, PLAN_CHIP_CHANGE, PLAN_CHIP_NO],
+  )
+  assert.deepEqual(
+    options.map((o) => o.style),
+    ['success', 'default', 'danger'],
+  )
+  // The codes are namespaced so the app can relabel them in the owner's own
+  // language; the English text is only what an app that predates them draws.
+  for (const option of options) {
+    assert.ok(option.callbackData.startsWith('plan:'), option.callbackData)
+    assert.ok(option.text.length > 0)
+  }
+})
+
+test('an agent-authored button can never forge a plan answer', () => {
+  // `plan:` is a reserved prefix, so an agent `reply` button whose value is
+  // "plan:go" is escaped to "u:plan:go" and cannot be mistaken on the way back
+  // for the owner approving a real plan.
+  const source = readFileSync(new URL('../lib/message-text.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(source, /RESERVED_VALUE_PREFIXES\s*=\s*\[[^\]]*'plan:'/)
+})
+
+test('the canonical text carries the plan itself, for every surface without the card', () => {
+  const text = planCardText(payloadOf())
+  assert.match(text, /Cache the boards list/)
+  assert.match(text, /1\. Hoist the board query/)
+  assert.match(text, /src\/chat\/ChatPane\.tsx/)
+  assert.match(text, /Check\. Open a board/)
+  assert.match(text, /Nothing changes until you answer\./)
+})
+
+test('the peek counts what the owner is approving', () => {
+  assert.equal(
+    planCardPeek(payloadOf()),
+    '2 steps, 2 files. Nothing changes until you answer.',
+  )
+  assert.equal(
+    planCardPeek(payloadOf({ steps: [{ text: 'One thing' }], files: undefined })),
+    '1 step. Nothing changes until you answer.',
+  )
+})
+
+// ── Validation: structure refuses, prose clamps ──────────────────────────────
+
+test('a plan with no steps is refused, not posted half formed', () => {
+  const noSteps = buildPlanCardPayload(goodInput({ steps: [] }), ID)
+  assert.equal(noSteps.ok, false)
+  const noTitle = buildPlanCardPayload(goodInput({ title: '   ' }), ID)
+  assert.equal(noTitle.ok, false)
+})
+
+test('more than thirty steps is refused by number, so the model can fix it', () => {
+  const many = Array.from({ length: PLAN_STEPS_MAX + 1 }, (_, i) => ({ text: `step ${i}` }))
+  const built = buildPlanCardPayload(goodInput({ steps: many }), ID)
+  assert.equal(built.ok, false)
+  assert.match(built.ok ? '' : built.error, /30 or fewer/)
+})
+
+test('prose over its cap is clamped rather than losing the whole plan', () => {
+  const payload = payloadOf({
+    title: 'x'.repeat(PLAN_TITLE_MAX + 40),
+    steps: [{ text: 'y'.repeat(PLAN_STEP_TEXT_MAX + 40) }],
+  })
+  assert.equal(payload.title.length, PLAN_TITLE_MAX)
+  assert.equal(payload.steps[0]!.text.length, PLAN_STEP_TEXT_MAX)
+})
+
+test('an unknown step tag is refused, and the three real ones are kept', () => {
+  const bad = buildPlanCardPayload(goodInput({ steps: [{ text: 'a', tag: 'maybe' }] }), ID)
+  assert.equal(bad.ok, false)
+  const good = payloadOf({
+    steps: [
+      { text: 'a', tag: 'unchanged' },
+      { text: 'b', tag: 'CHANGED' },
+      { text: 'c', tag: 'dropped' },
+    ],
+  })
+  assert.deepEqual(good.steps.map((s) => s.tag), ['unchanged', 'changed', 'dropped'])
+})
+
+test('door "mode" is refused on this channel, because no mode was switched', () => {
+  // Codex has a real read only plan mode and sends it. A Claude Code daemon
+  // that claimed it would put "Plan mode is on" under a card nothing enforced.
+  const built = buildPlanCardPayload(goodInput({ door: 'mode' }), ID)
+  assert.equal(built.ok, false)
+  assert.equal(payloadOf({ door: 'typed' }).door, 'typed')
+  assert.equal(payloadOf().door, 'decided')
+})
+
+test('the payload names its own route, so a sweep can tell whose card it is', () => {
+  assert.equal(payloadOf().agent_route, PLAN_AGENT_ROUTE)
+})
+
+// ── The revision chain ───────────────────────────────────────────────────────
+
+test('supersedes is read before the payload, and a bad one is refused', () => {
+  assert.deepEqual(parsePlanSupersedes(undefined), { ok: true })
+  assert.deepEqual(parsePlanSupersedes(''), { ok: true })
+  assert.deepEqual(parsePlanSupersedes(412), { ok: true, supersedes: 412 })
+  assert.equal(parsePlanSupersedes(0).ok, false)
+  assert.equal(parsePlanSupersedes('later').ok, false)
+})
+
+test('a revision keeps the plan id and counts up', () => {
+  const open: PendingPlan = {
+    chatId: '5',
+    messageId: 900,
+    planId: 'p9-first',
+    revision: 2,
+    postedAtMs: 0,
+    payload: payloadOf(),
+  }
+  assert.deepEqual(
+    nextPlanIdentity({ supersedes: 900, open, mintPlanId: () => 'MINTED' }),
+    { planId: 'p9-first', revision: 3 },
+  )
+})
+
+test('a revision after a restart starts a new plan, and never claims revision 2', () => {
+  // The daemon that posted the first card is gone, so there is nothing to count
+  // from. Inventing revision 2 off a number the model supplied would label the
+  // card with a history this process cannot vouch for.
+  assert.deepEqual(
+    nextPlanIdentity({ supersedes: 900, open: null, mintPlanId: () => 'MINTED' }),
+    { planId: 'MINTED', revision: 1 },
+  )
+  // A supersedes that does not match the open card is the same situation.
+  const open: PendingPlan = {
+    chatId: '5',
+    messageId: 901,
+    planId: 'p9-first',
+    revision: 1,
+    postedAtMs: 0,
+    payload: payloadOf(),
+  }
+  assert.deepEqual(
+    nextPlanIdentity({ supersedes: 900, open, mintPlanId: () => 'MINTED' }),
+    { planId: 'MINTED', revision: 1 },
+  )
+})
+
+test('the supersede PATCH strips the chips AND flips the payload to superseded', () => {
+  // Both halves matter: without the empty options the old card stays tappable
+  // and a tap approves a plan the agent has withdrawn; without the state the
+  // app cannot dim it or say what replaced it.
+  const previous = payloadOf()
+  const body = buildPlanSupersedeBody(previous)
+  assert.deepEqual(body.options, [])
+  const meta = body.eventMeta as { payload: PlanCardPayload }
+  assert.equal(meta.payload.state, 'superseded')
+  assert.equal(meta.payload.kind, PLAN_CARD_KIND)
+  // The steps survive: a superseded card keeps what it said.
+  assert.deepEqual(meta.payload.steps, previous.steps)
+  // And the original object is untouched.
+  assert.equal(previous.state, 'proposed')
+})
+
+// ── The answer ───────────────────────────────────────────────────────────────
+
+test('only the three plan codes are plan answers', () => {
+  assert.equal(planChoiceOf(PLAN_CHIP_GO), 'go')
+  assert.equal(planChoiceOf(PLAN_CHIP_CHANGE), 'change')
+  assert.equal(planChoiceOf(PLAN_CHIP_NO), 'no')
+  assert.equal(planChoiceOf('u:plan:go'), null)
+  assert.equal(planChoiceOf('__custom__'), null)
+  assert.equal(planChoiceOf(undefined), null)
+})
+
+test('Change the plan reads as what the owner SAID, not as a button label', () => {
+  // The app posts the typed revision as custom_text on the click, so the
+  // generic wording would render it `Clicked: "make it shorter"`, which reads
+  // as a label. This is the whole reason the plan wording exists.
+  assert.equal(
+    describePlanClick({
+      callbackData: PLAN_CHIP_CHANGE,
+      customText: 'drop step 2, it is not needed',
+    }),
+    'Change the plan: drop step 2, it is not needed',
+  )
+  assert.equal(
+    describePlanClick({ callbackData: PLAN_CHIP_CHANGE }),
+    'Change the plan (no words given)',
+  )
+})
+
+test('a plan answer is named off the CODE, so a relabelled chip stays readable', () => {
+  // The app relabels these chips in the owner's own language, so the
+  // button_text that comes back can be Arabic. That is right on screen and
+  // useless in a transcript a model reads to decide what to do next, where
+  // "Clicked: <arabic>" cannot tell Go ahead from Do not do this.
+  assert.equal(describePlanClick({ callbackData: PLAN_CHIP_GO }), 'Clicked: Go ahead')
+  assert.equal(describePlanClick({ callbackData: PLAN_CHIP_NO }), 'Clicked: Do not do this')
+  assert.equal(describePlanClick({ callbackData: 'u:something' }), null)
+})
+
+test('each answer carries what to do next, because the click is the whole instruction', () => {
+  assert.match(planAnswerDirective('go'), /Carry it out now/)
+  assert.match(planAnswerDirective('change'), /Do NOT start work/)
+  assert.match(planAnswerDirective('change'), /supersedes/)
+  assert.match(planAnswerDirective('no'), /wait for new instructions/)
+})
+
+// ── The wait ─────────────────────────────────────────────────────────────────
+
+test('the status line asks for the longest TTL the server will store', () => {
+  // A plan wait has no end, so the honest choice is the DTO ceiling rather than
+  // the two hour default that would leave the line gone and the card live.
+  assert.equal(PLAN_STATUS_TTL_MINUTES, 1440)
+  assert.deepEqual(planStatusBody(), {
+    statusText: PLAN_STATUS_TEXT,
+    ttlMinutes: 1440,
+  })
+  assert.deepEqual(planStatusClearBody(), { statusText: '' })
+})
+
+test('a chat with an open plan is fast polled for half an hour, and then is not', () => {
+  // The honest asymmetry: a click has one transport on this plugin and it is
+  // the poll. Inside the scope a tap lands in seconds, outside it on the five
+  // minute sweep. Thirty minutes is the bound and the test says the number.
+  assert.equal(PENDING_PLAN_FAST_MAX_MS, 30 * 60_000)
+  const now = 10_000_000
+  const open = [
+    { chatId: '1', postedAtMs: now - 60_000 },
+    { chatId: '2', postedAtMs: now - PENDING_PLAN_FAST_MAX_MS - 1 },
+    { chatId: '3', postedAtMs: now + 5_000 },
+  ]
+  assert.deepEqual(pendingPlanFastChatIds(open, now), ['1'])
+})
+
+test('the chat id resolves to a number or the body is refused', () => {
+  assert.equal(buildPlanCardBody({ chatId: 'handle-abc', payload: payloadOf() }).ok, false)
+  assert.equal(buildPlanCardBody({ chatId: 0, payload: payloadOf() }).ok, false)
+})
+
+test('a session handle is preferred on the way back when there is one', () => {
+  const body = buildPlanCardBody({ chatId: 5, payload: payloadOf(), sessionHandle: 'sh_x' })
+  assert.ok(body.ok)
+  assert.equal(body.body.sessionHandle, 'sh_x')
+  const bare = buildPlanCardBody({ chatId: 5, payload: payloadOf() })
+  assert.ok(bare.ok)
+  assert.ok(!('sessionHandle' in bare.body))
+})
+
+// ── The sentence that cannot be dropped ──────────────────────────────────────
+
+test('the tool description and the instructions both say nothing enforces the wait', () => {
+  // This is the claim Kc signed off on and the one a later edit would quietly
+  // lose: the card promises "Nothing changes until you answer" and this channel
+  // cannot keep that promise for the agent. If either surface stops saying so,
+  // the honest framing is gone and only this test notices.
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const toolBlock = server.slice(
+    server.indexOf("name: 'propose_plan'"),
+    server.indexOf("name: 'edit_message'"),
+  )
+  assert.ok(toolBlock.length > 0, 'propose_plan must be declared before edit_message')
+  const flat = toolBlock.replace(/'\s*\+\s*'/g, '')
+  assert.match(flat, /NOTHING IN THIS CHANNEL ENFORCES IT/)
+  assert.match(flat, /runs with permissions skipped/)
+  assert.match(flat, /The wait is a promise you are making/)
+  // And the same sentence in the instructions string the model reads at start.
+  const instructions = server.replace(/',\s*'/g, '')
+  assert.match(instructions, /NOTHING IN THIS CHANNEL ENFORCES THE WAIT/)
+})
+
+test('the stale /clear and /cost advertisement is gone from the instructions', () => {
+  // The instructions told the model /clear and /cost were in the catalog. They
+  // were removed from BUILTIN_COMMANDS on 2026-08-30 and pinned as removed by
+  // test/slash-catalog.test.ts, so the model was being handed a list of
+  // commands that would come back "unavailable".
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  assert.ok(
+    !server.includes("'this plugin syncs on boot (built-in commands like `/help`, `/clear`,'"),
+    'the instructions must not advertise /clear as a synced builtin',
+  )
+  assert.match(server, /`\/clear` and `\/cost` are NOT in that catalog/)
+})
