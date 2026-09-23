@@ -12,6 +12,15 @@
  * fixture is covered without touching an assertion. And the things a process
  * needs (PATH, HOME) must positively survive, so returning nothing cannot
  * pass.
+ *
+ * A NAME ONLY TESTS A MATCHER IF IT EXERCISES IT. The allow-list matches the
+ * locale family by pattern (LC_<letters>) and every other entry by exact
+ * name, so the fixture carries the names a slip in either rule would let in:
+ * the code-execution family (LD_PRELOAD and friends, which a one character
+ * widening of the locale pattern admits), names that share a prefix with an
+ * allowed one (a prefix slip admits them), and a boundary table for the
+ * locale pattern itself. The mutations that prove it widen the PATTERN, not
+ * the list.
  */
 
 import { test } from 'node:test'
@@ -57,6 +66,24 @@ const FIXTURE: Record<string, string> = {
   HOAI_BROWSER_EXECUTABLE: '/opt/chrome',
   HOAI_BROWSER_HOST_AGENTS: '900',
   NODE_EXTRA_CA_CERTS: '/etc/ssl/corp.pem',
+  // Code execution in the process that loads untrusted pages, and a proxy
+  // pair that silently redirects every request the browser makes.
+  LD_PRELOAD: '/tmp/evil.so',
+  LD_LIBRARY_PATH: '/tmp/evil',
+  DYLD_INSERT_LIBRARIES: '/tmp/evil.dylib',
+  DYLD_LIBRARY_PATH: '/tmp/evil',
+  NODE_OPTIONS: '--require /tmp/evil.js',
+  GIT_SSH_COMMAND: 'ssh -i /tmp/key',
+  http_proxy: 'http://attacker:8080',
+  HTTPS_PROXY: 'http://attacker:8080',
+  // Names that share a prefix with an allowed one: only an exact match keeps
+  // them out.
+  HOMEBREW_PREFIX: '/opt/homebrew',
+  LANGSMITH_ENDPOINT: 'https://example.test',
+  TZDIR: '/tmp/zoneinfo',
+  USERNAME: 'kc',
+  TEMPLATE_DIR: '/tmp/templates',
+  PATH_TRANSLATED: '/tmp/x',
 }
 
 const CHROME_ALLOWED = new Set(['PATH', 'HOME', 'TMPDIR', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TZ'])
@@ -97,6 +124,18 @@ test('on windows the system folders pass, matched whatever their case', () => {
   const win = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\kc', LOCALAPPDATA: 'C:\\Users\\kc\\AppData\\Local', 'ProgramFiles(x86)': 'C:\\Program Files (x86)', SSH_AUTH_SOCK: '\\\\.\\pipe\\openssh-ssh-agent', GH_PAT: 'marker' }
   const out = chromeEnv(win, { platform: 'win32' })
   assert.deepEqual(Object.keys(out).sort(), ['LOCALAPPDATA', 'Path', 'ProgramFiles(x86)', 'SystemRoot', 'USERPROFILE'])
+})
+
+test('the locale family is exactly LC_ followed by letters: every near miss stays out, the real categories pass', () => {
+  const mustPass = ['LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_TIME', 'LC_NUMERIC', 'LC_COLLATE', 'LC_MONETARY', 'LC_PAPER']
+  const mustNot = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LC_', 'LC', 'LCALL', 'LC_1', 'LC_ALL1', 'LC__ALL', 'LC_ALL_X', 'XLC_ALL', 'L_ALL', 'LANG_OVERRIDE', 'LOGNAMEX', 'LESSOPEN', 'LDFLAGS']
+  const env: Record<string, string> = { PATH: '/usr/bin', HOME: '/h' }
+  for (const n of [...mustPass, ...mustNot]) env[n] = 'x'
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    const out = chromeEnv(env, { platform, headed: true })
+    for (const n of mustPass) assert.ok(n in out, `${n} is a locale category and passes on ${platform}`)
+    for (const n of mustNot) assert.ok(!(n in out), `${n} is not a locale category and must not reach Chrome on ${platform}`)
+  }
 })
 
 test('anything else is the owner opting in by name, and even then a credential-looking name stays out', () => {
