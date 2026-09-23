@@ -73,6 +73,49 @@ test('the Stop hook fires the line at once for the chat the turn belonged to', (
   assert.equal(state.size, 1, 'the other chat keeps its own verifier')
 })
 
+test('the Stop of a turn that was ALREADY RUNNING when /plan arrived does not fire it', () => {
+  // THE FINDING. The verifier is armed when the directive is DELIVERED, and an
+  // agent is very often mid turn at that moment. Matching on the chat id alone,
+  // the in flight turn's Stop fired the line seconds after the owner asked: the
+  // chip and the gold ring came down, and the queued /plan turn then posted a
+  // real card with NO chip, because propose_plan's own `plan` report is gated
+  // on the arm the premature fire had just cleared.
+  const state = createPlanVerifierState()
+  const turnStarted = T0
+  armPlanVerifier(state, { chatId: 12, messageId: 501, nowMs: turnStarted + 4_000 })
+  assert.deepEqual(endTurnPlanVerifiers(state, '12', turnStarted), [])
+  assert.equal(state.size, 1, 'the arm waits for its OWN turn, or for the timer')
+  // And the fallback still works, so nothing is stranded.
+  assert.equal(
+    duePlanVerifiers(state, turnStarted + 4_000 + PLAN_VERIFIER_WINDOW_MS).length,
+    1,
+  )
+})
+
+test("the /plan turn's own Stop fires it, including when the two stamps are equal", () => {
+  const own = createPlanVerifierState()
+  armPlanVerifier(own, { chatId: 12, messageId: 501, nowMs: T0 })
+  assert.deepEqual(
+    endTurnPlanVerifiers(own, '12', T0 + 1_000).map((e) => e.chatId),
+    ['12'],
+  )
+  // Delivered and picked up inside the same millisecond: the directive DID
+  // belong to this turn, so equality fires.
+  const same = createPlanVerifierState()
+  armPlanVerifier(same, { chatId: 12, messageId: 501, nowMs: T0 })
+  assert.equal(endTurnPlanVerifiers(same, '12', T0).length, 1)
+})
+
+test('an unknown turn start applies no guard at all', () => {
+  // The caller only has a start time while a turn is live. Off a turn a
+  // refusal would strand the entry on the five minute fallback for nothing.
+  for (const start of [null, undefined, Number.NaN]) {
+    const state = createPlanVerifierState()
+    armPlanVerifier(state, { chatId: 12, messageId: 501, nowMs: T0 + 9_999 })
+    assert.equal(endTurnPlanVerifiers(state, '12', start).length, 1)
+  }
+})
+
 test('an UNATTRIBUTED turn end settles nothing, and the timer keeps its job', () => {
   // hookChatId() falls back to the first monitored chat when a turn cannot be
   // attributed. Firing on that guess would post "no plan arrived" into a chat

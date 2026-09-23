@@ -28,9 +28,11 @@ import {
   PLAN_POLICY_MARKER_PREFIX,
   buildInboundChannel,
   buildPlanPolicyMarker,
+  createPlanPolicyMemo,
   readPlanPolicyField,
 } from '../lib/inbound-channel.ts'
 import { REPLY_BUTTON_STYLES, normalizeButtonStyle } from '../lib/message-text.ts'
+import { planSettlement } from '../lib/plan-card.ts'
 import { fastScopeChatIds } from '../lib/poll-core.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout (core.autocrlf)
@@ -256,15 +258,93 @@ test('a peer or system turn keeps its own marker at the top, with the level abov
   assert.match(peer.content, /have a look at this/)
 })
 
-test('all three transports pass the level, so behaviour never depends on socket health', () => {
+test('the POLL ROW does not carry the level, and a row shaped like a real one proves it', () => {
+  // THE FINDING, and the reason the old guard here was a call site count. The
+  // poll rail reads `GET /chats/:chatId/messages`, which is the app's chat
+  // history projection: GetMessageDto and MessageDto declare no `planPolicy`
+  // and no `senderGuardrail`, so the read returned null on EVERY poll delivery
+  // and an owner on `risky_jobs` or `always` got an agent planning at the
+  // default for every turn the poll won. Counting three call sites and
+  // asserting the poll one reads `msg.message` could never see that, because
+  // it never asked what `msg.message` can hold.
+  const pollRow = {
+    // Exactly the fields the daemon reads off one entry of that envelope.
+    id: 9001,
+    chatId: 12,
+    text: 'refactor the uploader',
+    sender: 'user',
+    sentDate: '2026-09-23T10:00:00.000Z',
+    messageType: 'text',
+    answeredAt: null,
+    eventMeta: null,
+  }
+  assert.equal(readPlanPolicyField(pollRow), null)
+  const delivered = buildInboundChannel({
+    chatId: 12,
+    messageId: 9001,
+    userId: 'u1',
+    assistantId: 4,
+    transport: 'poll',
+    text: pollRow.text,
+    planPolicy: readPlanPolicyField(pollRow),
+  })
+  assert.equal(delivered.content, 'refactor the uploader')
+  assert.ok(!('plan_policy' in delivered.meta))
+})
+
+test('the memo carries the level onto the poll rail, so one turn is one behaviour', () => {
+  const memo = createPlanPolicyMemo()
+  // Nothing learned yet: the poll says nothing rather than inventing a level.
+  assert.equal(memo.recall(), null)
+  // A rail that CARRIES the field teaches it.
   assert.equal(
-    (SERVER.match(/planPolicy: readPlanPolicyField\(/g) ?? []).length,
-    3,
-    'poll, stream and ws must each pass the level',
+    memo.learn({ planPolicy: 'This agent shows a plan first, every time.' }),
+    'This agent shows a plan first, every time.',
   )
-  assert.match(SERVER, /planPolicy: readPlanPolicyField\(msg\.message\)/)
-  assert.match(SERVER, /planPolicy: readPlanPolicyField\(view\.raw\)/)
-  assert.match(SERVER, /planPolicy: readPlanPolicyField\(payload\)/)
+  const pollDelivery = buildInboundChannel({
+    chatId: 12,
+    messageId: 9002,
+    userId: 'u1',
+    assistantId: 4,
+    transport: 'poll',
+    text: 'refactor the uploader',
+    planPolicy: readPlanPolicyField({ id: 9002, text: 'x' }) ?? memo.recall(),
+  })
+  assert.ok(pollDelivery.content.startsWith(PLAN_POLICY_MARKER_PREFIX))
+  assert.match(pollDelivery.content, /every time/)
+})
+
+test('ABSENCE on a carrying rail is an observation, so a level turned back down stops', () => {
+  // The backend OMITS the key at the default level. If absence were treated as
+  // "nothing new to learn", an owner who moved from `always` back to the
+  // default would keep the old sentence on every poll turn for ever.
+  const memo = createPlanPolicyMemo()
+  memo.learn({ planPolicy: 'This agent shows a plan first, every time.' })
+  assert.equal(memo.learn({ id: 7 }), null)
+  assert.equal(memo.recall(), null)
+})
+
+test('the poll reads the ROW FIRST, so a backend that ever adds the field wins', () => {
+  const memo = createPlanPolicyMemo()
+  memo.learn({ planPolicy: 'The stale one.' })
+  assert.equal(
+    readPlanPolicyField({ id: 1, planPolicy: 'The row is authoritative.' }) ??
+      memo.recall(),
+    'The row is authoritative.',
+  )
+})
+
+test('each transport is wired to the reader that suits its rail', () => {
+  // Kept as a source assertion because it is about WHICH function each call
+  // site uses, which no unit test of a pure function can see. The behaviour of
+  // each function is pinned above.
+  assert.match(
+    SERVER,
+    /planPolicy: readPlanPolicyField\(msg\.message\) \?\? planPolicyMemo\.recall\(\)/,
+    'the poll rail reads the row, then the memo',
+  )
+  assert.match(SERVER, /planPolicy: planPolicyMemo\.learn\(view\.raw\)/)
+  assert.match(SERVER, /planPolicy: planPolicyMemo\.learn\(payload\)/)
 })
 
 test('the daemon never reads the owner level from the server, it renders what it is handed', () => {
@@ -351,9 +431,14 @@ test('the chip only comes DOWN on a chat something could have put it UP on', () 
     SERVER.indexOf('function applyPlanAnswer('),
   )
   assert.match(fn, /function settlePlan\(chatId: string, wasPlanMode: boolean\)/)
+  // The gate itself is pinned behaviourally on planSettlement above. What this
+  // asserts is that settlePlan still ASKS it, with both of the inputs the rule
+  // needs, rather than reporting on its own.
+  assert.match(fn, /wasPlanMode,/)
+  assert.match(fn, /lastReportedMode: lastSessionModeByChat\.get\(chatId\)/)
   assert.match(
     fn,
-    /if \(wasPlanMode \|\| lastSessionModeByChat\.get\(chatId\) === 'plan'\)/,
+    /if \(settlement\.reportDefaultMode\) reportSessionMode\(chatId, 'default'\)/,
     'the default report must be gated on a door that could have lit the chip',
   )
   // The answer to "could it have" is read off the ANSWERED ROW, so a restarted
@@ -375,13 +460,51 @@ test('the chip only comes DOWN on a chat something could have put it UP on', () 
   assert.ok(!/wasPlanMode/.test(off), '/code reports unconditionally')
 })
 
-test('the two reports survive a restart: only the map delete is conditional', () => {
-  // THE FINDING. `if (!openPlansByChat.delete(chatId)) return` gated the two
-  // things the OWNER can see (the status line beside the agent and the session
-  // mode the composer chip is drawn from) on a map this process loses on every
-  // restart. A plan posted before a restart and approved after it left
-  // "Waiting for your go ahead" standing for its full day and a Plan mode chip
-  // nothing but a hand typed /code could clear.
+test('the two reports survive a restart, and the DECISION says so, not a regex', () => {
+  // THE FINDING, twice over. `if (!openPlansByChat.delete(chatId)) return`
+  // gated the two things the OWNER can see (the status line beside the agent
+  // and the session mode the composer chip is drawn from) on a map this
+  // process loses on every restart. Then the guard written for it was two
+  // source assertions, and a RECORDED MUTATION walked straight through them:
+  // `if (!openPlansByChat.has(chatId)) return` as the first statement of
+  // settlePlan reproduced the whole regression with the plan suites green,
+  // because `return` was not at the start of its line.
+  //
+  // So the rule is a pure function now and this is a behavioural case: a
+  // daemon that holds NO record still takes both of the owner's things down.
+  const restarted = planSettlement({ hasLocalRecord: false, wasPlanMode: true })
+  assert.equal(restarted.forgetLocalRecord, false, 'there is nothing to delete')
+  assert.equal(restarted.clearStatusLine, true, 'the line is server side')
+  assert.equal(restarted.reportDefaultMode, true, 'so is the chip')
+
+  // And the gate on the report, which is about the DOOR and nothing local: a
+  // `decided` card answered in an ordinary chat writes nothing, because the
+  // sidebar bump trigger has no column list and the write is not free.
+  assert.equal(
+    planSettlement({ hasLocalRecord: true, wasPlanMode: false }).reportDefaultMode,
+    false,
+  )
+  // Unless this process reported `plan` for the chat itself, which is the
+  // /plan directive's own chip.
+  assert.equal(
+    planSettlement({
+      hasLocalRecord: true,
+      wasPlanMode: false,
+      lastReportedMode: 'plan',
+    }).reportDefaultMode,
+    true,
+  )
+  assert.equal(
+    planSettlement({
+      hasLocalRecord: true,
+      wasPlanMode: false,
+      lastReportedMode: 'default',
+    }).reportDefaultMode,
+    false,
+  )
+})
+
+test('settlePlan still has no early return, on a guard a one line return cannot pass', () => {
   const fn = SERVER.slice(
     SERVER.indexOf('function settlePlan('),
     SERVER.indexOf('function applyPlanAnswer('),
@@ -390,14 +513,15 @@ test('the two reports survive a restart: only the map delete is conditional', ()
     !/if \(!openPlansByChat\.delete\(chatId\)\) return/.test(fn),
     'an early return on the local record is what broke the restart case',
   )
-  const body = fn.slice(fn.indexOf('{'))
-  // A STATEMENT, not the substring: prose in the comments says "returns true
-  // by design" about shouldReportSessionMode, and a substring check read that
-  // as an early return and went red on a comment.
-  assert.ok(
-    !/^\s*return\b/m.test(body),
-    'nothing in settlePlan may bail out early',
-  )
+  // COMMENTS STRIPPED, then ANY `return` token, not a line anchored one. The
+  // anchored version was green on `if (!openPlansByChat.has(chatId)) return`,
+  // and the substring version was red on the word "returns" in the prose, so
+  // neither half of this can be dropped.
+  const body = fn
+    .slice(fn.indexOf('{'))
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+  assert.ok(!/\breturn\b/.test(body), 'nothing in settlePlan may bail out early')
 })
 
 test('a /plan that produced no plan takes its own chip back down', () => {

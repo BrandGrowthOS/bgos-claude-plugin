@@ -784,3 +784,45 @@ export function nextPlanIdentity(input: {
   }
   return { planId: input.mintPlanId(), revision: 1 }
 }
+
+/**
+ * WHAT SETTLING A PLAN ACTUALLY DOES, as a decision with no side effects.
+ *
+ * It exists because the rule it holds was only ever pinned by a source grep
+ * over `settlePlan`'s body, and a source grep cannot see the case it was
+ * written for. The regression it guards is a RESTART: `openPlansByChat` is per
+ * process, so a plan posted before a restart and approved after it reaches a
+ * daemon holding no record at all. An early return on that missing record left
+ * the two things the OWNER can see standing, because both are server side: the
+ * "Waiting for your go ahead" status line beside the agent, and the session
+ * mode the composer chip is drawn from. The line then stood for its full day
+ * and only a hand typed /code cleared the chip.
+ *
+ * So `clearStatusLine` is UNCONDITIONAL and says so here rather than in a
+ * regex. The local record decides one thing only: whether there is an entry to
+ * delete.
+ *
+ * `reportDefaultMode` is conditional on something else, and on nothing local.
+ * `shouldReportSessionMode(undefined, 'default')` returns true by design, so
+ * an unconditional report fired a PATCH on the first answer of a `decided`
+ * door card in an ordinary chat, writing the NULL the row already held, and
+ * `chats_sidebar_bump_trigger` has no column list, so that write bumps the
+ * owner's sidebar version and makes every connected client refetch. The chip
+ * therefore comes down only where something could have put it up: a card whose
+ * door is not `decided` (read off the answered row, so a restart keeps it), or
+ * a `plan` this process reported itself.
+ */
+export function planSettlement(input: {
+  /** Does this process still hold the card's record? */
+  hasLocalRecord: boolean
+  /** Was the answered card's door one that could have lit the chip? */
+  wasPlanMode: boolean
+  /** The last mode this process reported for the chat, if any. */
+  lastReportedMode?: 'plan' | 'default'
+}): { forgetLocalRecord: boolean; clearStatusLine: boolean; reportDefaultMode: boolean } {
+  return {
+    forgetLocalRecord: input.hasLocalRecord,
+    clearStatusLine: true,
+    reportDefaultMode: input.wasPlanMode || input.lastReportedMode === 'plan',
+  }
+}

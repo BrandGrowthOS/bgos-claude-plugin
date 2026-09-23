@@ -46,6 +46,7 @@ import {
 import {
   buildInboundChannel,
   type AgentOriginLike,
+  createPlanPolicyMemo,
   isAgentInbound,
   isSelfAuthoredAgentOrigin,
   readPlanPolicyField,
@@ -354,6 +355,7 @@ import {
   planCardChatRefusal,
   planAnswerDirective,
   planChipFor,
+  planSettlement,
   planStatusClearBody,
   planStatusBody,
   resolvePlanChoice,
@@ -6616,6 +6618,15 @@ const openPlansByChat = new Map<string, PendingPlan>()
 
 /** Armed /plan verifiers, per chat. See lib/plan-verifier.ts. */
 const planVerifiers = createPlanVerifierState()
+/**
+ * The owner's plan level, remembered off the rails that carry it.
+ *
+ * The WS event and the agent update stream both carry `planPolicy`; the chat
+ * history route this daemon polls does not (lib/inbound-channel.ts says which
+ * is which and why). Those two teach it, the poll reads it back, and the
+ * agent's behaviour stops depending on which rail happened to win the race.
+ */
+const planPolicyMemo = createPlanPolicyMemo()
 
 /** The last session mode this daemon reported, per chat, to avoid re-PATCHing. */
 const lastSessionModeByChat = new Map<string, SessionMode>()
@@ -6683,25 +6694,23 @@ function clearPlanStatusLine(): void {
  * back off the row. See the note on the call.
  */
 function settlePlan(chatId: string, wasPlanMode: boolean): void {
-  openPlansByChat.delete(chatId)
-  clearPlanStatusLine()
-  // GATED, for the same reason the `plan` report is gated on the typed door.
-  // `shouldReportSessionMode(undefined, 'default')` returns true by design (an
-  // unknown last value always reports), so an unconditional call here fired a
-  // PATCH on the first answer of a DECIDED door card in an ordinary chat,
-  // setting chats.session_mode to the NULL it already held. That write is not
-  // free: chats_sidebar_bump_trigger has no column list, so it bumps the
-  // owner's sidebar version and every connected client refetches
-  // assistants-with-chats for a field that did not change (the lane's own
-  // migration says so, backend/migrations/2026-09-23-chat-session-mode.sql).
-  // So the chip only comes DOWN where something could have put it up: a card
-  // whose door is not `decided`, which survives a restart because it is read
-  // off the answered row, or a `plan` this process reported itself. The
-  // explicit /code path (onPlanModeOff) still reports unconditionally, which
-  // is right: there the owner asked.
-  if (wasPlanMode || lastSessionModeByChat.get(chatId) === 'plan') {
-    reportSessionMode(chatId, 'default')
-  }
+  // THE DECISION IS A PURE FUNCTION (lib/plan-card.ts, planSettlement) and it
+  // carries the whole reasoning, including why nothing here may bail out on
+  // this process holding a record. It lives there because the rule was pinned
+  // by a source grep over this body, and a grep is green on a defect it cannot
+  // see: a one line `if (!openPlansByChat.has(chatId)) return` inserted here
+  // reproduced the restart regression with every plan suite still passing.
+  // The unit test on planSettlement is what fails now.
+  const settlement = planSettlement({
+    hasLocalRecord: openPlansByChat.has(chatId),
+    wasPlanMode,
+    lastReportedMode: lastSessionModeByChat.get(chatId),
+  })
+  if (settlement.forgetLocalRecord) openPlansByChat.delete(chatId)
+  if (settlement.clearStatusLine) clearPlanStatusLine()
+  // The explicit /code path (onPlanModeOff) still reports unconditionally,
+  // which is right: there the owner asked.
+  if (settlement.reportDefaultMode) reportSessionMode(chatId, 'default')
 }
 
 /**
@@ -7364,9 +7373,20 @@ async function finishHookTurn(keepCard: boolean): Promise<void> {
   // and a guess here would post "no plan arrived" into a chat that never asked
   // for one. An unattributed turn end settles nothing and the timer keeps its
   // job (endTurnPlanVerifiers refuses a null chat id for this reason).
+  //
+  // AND WHEN THE TURN BEGAN, because the chat id alone named the wrong turn.
+  // `/plan` typed into a chat that already has a turn running arms the
+  // verifier mid flight, and that turn's Stop then fired it. While the turn is
+  // LIVE the record's clock is the moment it began (turnChat.beginTurn stamps
+  // it at UserPromptSubmit), which is exactly the comparison the verifier
+  // needs. Off a turn that clock has been refreshed by turnChat.end and says
+  // nothing about any turn's start, so nothing is passed and the old
+  // behaviour stands.
+  const endingTurn = turnChat.current(Date.now())
   for (const due of endTurnPlanVerifiers(
     planVerifiers,
-    turnChat.current(Date.now())?.chatId ?? null,
+    endingTurn?.chatId ?? null,
+    turnChat.live() ? (endingTurn?.at ?? null) : null,
   )) {
     log(
       `plan verifier fired on turn end (chat ${due.chatId}, /plan message ${due.messageId}): ` +
@@ -8323,11 +8343,16 @@ async function pollChat(chatId: string): Promise<void> {
         peerConversationId: pollPeerConversationId,
         turnState: pollTurnState,
         sessionHandle: pollSessionHandle,
-        // The owner's plan level, as the backend labelled it. All three
-        // transports pass it: a level delivered on one rail only would change
-        // the agent's behaviour depending on whether the socket happened to be
-        // healthy, which is the worst kind of intermittent.
-        planPolicy: readPlanPolicyField(msg.message),
+        // The owner's plan level, as the backend labelled it. A level
+        // delivered on one rail only would change the agent's behaviour
+        // depending on whether the socket happened to be healthy, which is the
+        // worst kind of intermittent, so the poll carries it too. IT IS NOT ON
+        // THE ROW: `GET /chats/:chatId/messages` is the app's chat history
+        // projection and declares no `planPolicy` at all, so the field read
+        // here has always been null and this call site was dead. The row is
+        // still read first, so a backend that ever adds the field wins, and
+        // the memo the socket and the stream fill answers when it does not.
+        planPolicy: readPlanPolicyField(msg.message) ?? planPolicyMemo.recall(),
         backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
@@ -9981,7 +10006,10 @@ async function forwardStreamInbound(
     peerConversationId: view.peerConversationId,
     turnState: view.turnState,
     sessionHandle: view.sessionHandle,
-    planPolicy: readPlanPolicyField(view.raw),
+    // This rail CARRIES the field, so it teaches the memo, absence included:
+    // an omitted key is the backend saying "the default level", which is what
+    // stops a stale sentence outliving a level the owner turned back down.
+    planPolicy: planPolicyMemo.learn(view.raw),
   })
   const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
@@ -10956,7 +10984,8 @@ function connectWebsocket(): void {
         peerConversationId: wsPeerConversationId,
         turnState: wsTurnState,
         sessionHandle: wsSessionHandle,
-        planPolicy: readPlanPolicyField(payload),
+        // Carries the field, so it teaches the memo. See the stream site.
+        planPolicy: planPolicyMemo.learn(payload),
         extraMeta: {
           ...(payload?.sender?.displayName
             ? { sender_display_name: String(payload.sender.displayName) }

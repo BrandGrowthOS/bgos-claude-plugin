@@ -88,14 +88,21 @@ export const PLAN_POLICY_MARKER_PREFIX = '[Plan level for this agent, set by its
 /**
  * Read the plan level off an inbound envelope, in either spelling.
  *
- * WHAT THE BACKEND ACTUALLY SENDS IS `planPolicy`, ON BOTH LANES. It is
- * spread by one helper (backend/src/services/plan-policy.ts, planPolicySpread)
- * into the socket payload and into each poll row, and the poll row carries it
- * in camelCase even though the sender block beside it is snake_case, because
- * the level describes the AGENT and not the speaker. So this is not the
- * `senderGuardrail` / `sender_guardrail` pair the comment here used to claim
- * it was; `plan_policy` is accepted as tolerance for a server that ever sends
- * it, and the three transports call one reader rather than each guessing.
+ * WHICH RAILS ACTUALLY CARRY IT, and the correction that this comment is.
+ * `planPolicy` is spread by one backend helper
+ * (backend/src/services/plan-policy.ts, planPolicySpread) into
+ * `emitInboundMessage`, which is the socket event and the agent update
+ * STREAM, and into the rows of the integrations inbound poll
+ * (integrations.controller.ts). It is NOT on `GET /chats/:chatId/messages`,
+ * which is the route THIS daemon polls: that projection is the app's own chat
+ * history envelope (GetMessageDto / MessageDto) and it declares neither
+ * `planPolicy` nor `senderGuardrail`. This comment claimed the poll row
+ * carried it, the poll call site was written on that claim, and the read
+ * returned null on every poll delivery.
+ *
+ * So the reader stays tolerant of both spellings on every rail, and the poll
+ * rail answers from `planPolicyMemo` instead (below) rather than from a field
+ * that is not there.
  *
  * The VALUE is the server's whole labelled sentence, never the bare enum. It
  * is passed through to the model as sent (buildPlanPolicyMarker) precisely so
@@ -108,6 +115,55 @@ export function readPlanPolicyField(payload: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed === '' ? null : trimmed
+}
+
+/**
+ * THE LEVEL THE LAST RAIL THAT CARRIES ONE SAID, so the poll rail can say it
+ * too.
+ *
+ * The poll route has no `planPolicy` field at all (see the reader above), and
+ * two of the three transports do. Without this the SAME turn changed the
+ * agent's behaviour depending on which rail won the dedupe race, which is the
+ * intermittent the call sites claim to have prevented, and it bites hardest
+ * during a plan wait: a chat with an open plan is pinned to the two second
+ * poll for half an hour, so the poll is the rail most likely to win exactly
+ * while the level matters most.
+ *
+ * ABSENCE IS AN OBSERVATION, NOT A GAP, and that is the rule that makes this
+ * safe. The backend OMITS the key at the default level, so an envelope from a
+ * rail that carries the field and does not carry a value is positive evidence
+ * that the owner is on the default. `learn` therefore stores null as readily
+ * as it stores a sentence, and an owner who moves from `always` back to the
+ * default stops getting the marker on the next socket delivery rather than
+ * keeping a stale one for ever. Only a rail KNOWN to carry the field may
+ * teach it; feeding the poll row in here would teach it null every time.
+ *
+ * WHAT IT STILL CANNOT DO: a daemon that boots with a dead socket and drains
+ * a backlog over the poll has learned nothing yet, and those turns carry no
+ * level. That is the status quo for every poll delivery today, so the memo
+ * only ever narrows the gap, never widens it. The real fix is the field on the
+ * chat history projection, which is a backend change.
+ */
+export interface PlanPolicyMemo {
+  /** Record what a rail that carries the field said, INCLUDING nothing. */
+  learn(payload: unknown): string | null
+  /** The last thing a carrying rail said, or null if none ever has. */
+  recall(): string | null
+}
+
+export function createPlanPolicyMemo(): PlanPolicyMemo {
+  let last: string | null = null
+  let learned = false
+  return {
+    learn(payload) {
+      last = readPlanPolicyField(payload)
+      learned = true
+      return last
+    },
+    recall() {
+      return learned ? last : null
+    },
+  }
 }
 
 export function buildPlanPolicyMarker(labelled: string): string {

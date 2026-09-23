@@ -123,15 +123,40 @@ export function cancelPlanVerifiers(state: PlanVerifierState): PlanVerifierEntry
  * that case nothing is settled and the timer keeps its job, because firing on
  * every armed chat off an unattributed turn end would post the line into chats
  * whose plan is still coming.
+ *
+ * `turnStartedAtMs` IS THE SECOND HALF OF "THE CHAT THAT TURN BELONGED TO",
+ * and leaving it out was a real misfire rather than a nicety. The verifier is
+ * armed when the directive is DELIVERED, not when the model picks it up, and
+ * an agent is very often mid turn at that moment: the owner types `/plan` in
+ * chat X while a turn is already running in chat X, the directive arms, and
+ * the Stop of that IN FLIGHT turn, which was never about the plan, matched on
+ * the chat id alone and fired. The owner then got "You asked for a plan and
+ * none arrived" seconds after asking, the chip and the gold ring came down,
+ * and the queued /plan turn posted its card with no chip at all, because
+ * `propose_plan`'s own `plan` report is gated on the arm the premature fire
+ * had just cleared. An entry armed AFTER the ending turn began therefore
+ * survives this Stop and waits for its own, or for the timer.
+ *
+ * Unknown (null or undefined) means no guard, which is the old behaviour: the
+ * caller only has a start time while a turn is live, and off a turn a refusal
+ * to fire would strand the entry on the five minute fallback for nothing.
  */
 export function endTurnPlanVerifiers(
   state: PlanVerifierState,
   chatId: string | number | null | undefined,
+  turnStartedAtMs?: number | null,
 ): PlanVerifierEntry[] {
   if (chatId == null || chatId === '') return []
   const key = String(chatId)
   const entry = state.get(key)
   if (!entry) return []
+  if (
+    typeof turnStartedAtMs === 'number' &&
+    Number.isFinite(turnStartedAtMs) &&
+    entry.armedAtMs > turnStartedAtMs
+  ) {
+    return []
+  }
   state.delete(key)
   return [entry]
 }

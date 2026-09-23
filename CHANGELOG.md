@@ -56,7 +56,11 @@ Notable changes to the HOAI Claude Code plugin.
   daemon arms a verifier when it delivers one: cancelled by the first
   `propose_plan` call, fired by the turn's Stop hook when the turn ended without
   a plan, and by a five minute timer where the hook rail is not installed. If no
-  plan came, you get one line saying so instead of silence.
+  plan came, you get one line saying so instead of silence. Typing `/plan` at an
+  agent that is ALREADY WORKING no longer fires it early: the verifier only
+  answers to the end of a turn that began after you asked, so the turn already
+  in flight can finish without taking your chip down and telling you no plan
+  arrived seconds after you asked for one.
 - **The Plan mode chip, and its close.** The daemon reports the chat's session
   mode (`plan` when it delivers a `/plan`, `default` when the plan is answered
   or you close the chip) so the app can draw the chip above the composer. The
@@ -69,6 +73,15 @@ Notable changes to the HOAI Claude Code plugin.
   rendered into the turn the model reads, on the poll, the stream and the
   socket alike. The daemon never reads the setting itself: the server decides,
   the daemon renders what it is handed.
+  - **The poll rail gets it from the socket, because the poll route does not
+    carry it.** The backend puts the level on the socket event and on the agent
+    update stream. The chat history route this daemon polls is the app's own
+    projection and has no such field, so the poll read nothing on every delivery
+    and an owner on "Always" got an agent planning at the default for every turn
+    the poll won, which during a plan wait is most of them. The daemon now
+    remembers what the last carrying rail said, absence included, and the poll
+    answers from that. A level the owner turns back DOWN therefore stops on the
+    next socket delivery rather than lingering.
 - **Reply buttons can ask for a colour.** `reply`'s `buttons[]` gains an
   optional `style` (`default | primary | success | danger`). An unknown value is
   dropped rather than refused, because losing a whole message over a colour is
