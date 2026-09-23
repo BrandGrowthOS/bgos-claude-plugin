@@ -2,7 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.46.0
+
+**Runs ungated on purpose, by the owner's decision (2026-09-23).** A
+daemon-placed agent's browser raises NO permission strip: a new site, a write
+on a signed-in site, a download, an upload and every sensitive action just run,
+where the desktop Agent Browser stops and asks. The owner was shown that
+difference and chose it for now. Moving the gates into the host is the
+follow-up, and the served capability canon is corrected in the same breath so
+no agent is told it will be asked when it will not be.
+
 
 - **An agent's own browser, on the machine the agent lives on.** New
   `bin/hoai-browser-host.mjs`, run with node. It connects one socket per
