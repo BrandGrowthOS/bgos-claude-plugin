@@ -301,6 +301,57 @@ export function planAnswerDirective(choice: PlanChoice): string {
   }
 }
 
+/**
+ * WHICH CHAT A PLAN CARD MAY BE POSTED INTO.
+ *
+ * `resolveAuthorizedChat` admits any id in the monitored set, and that set
+ * GROWS with every inbound: an a2a side thread the daemon was handed a peer
+ * turn in is an accepted target, as is a meeting room the agent is seated in.
+ * Nothing else on the path refused them. The card would then be posted into a
+ * chat the owner cannot open (a2a is excluded from the chat list) or one
+ * addressed at several people, while the daemon wrote a day long
+ * "Waiting for your go ahead" beside the agent and the backend moved the agent
+ * wide status to blocked. The owner saw a blocked agent and a status line with
+ * no card to answer.
+ *
+ * THE REACHABLE TRIGGER IS THE PLAN LEVEL, which rides a peer turn on purpose
+ * (see buildPlanPolicyMarker in lib/inbound-channel.ts and the backend's
+ * services/plan-policy.ts): an owner on `always` whose agent is asked by a
+ * PEER to change files is being told to propose a plan first, and the only
+ * chat that turn names is the side thread.
+ *
+ * So this is asked before anything is posted. The daemon knows both facts
+ * locally: `peerConvByChat` holds every side thread it has seen a peer turn
+ * in, and `meetingChatIds` holds every room it is seated in. Pure, so the rule
+ * is testable without a daemon.
+ *
+ * The refusal is a PLAIN SENTENCE to the model, not an error about ids: the
+ * model did nothing wrong, it was answering the turn it was given, and the
+ * useful thing to tell it is where the plan belongs instead.
+ */
+export function planCardChatRefusal(input: {
+  isPeerSideThread: boolean
+  isMeetingRoom: boolean
+}): string | null {
+  if (input.isPeerSideThread) {
+    return (
+      'A plan card belongs in your owner\'s chat with you, and this chat is a ' +
+      'side thread with another agent: your owner never opens it, so nobody ' +
+      'could tap the buttons. Reply to the peer in words instead, and if this ' +
+      'work needs your owner\'s go ahead, propose the plan in their chat.'
+    )
+  }
+  if (input.isMeetingRoom) {
+    return (
+      'A plan card belongs in your owner\'s chat with you, and this chat is a ' +
+      'room with several people in it: a card saying nothing changes until you ' +
+      'answer would be shown to people who cannot answer it. Say what you mean ' +
+      'to do in words here, and propose the plan in your owner\'s chat.'
+    )
+  }
+  return null
+}
+
 function clamp(value: unknown, max: number): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()

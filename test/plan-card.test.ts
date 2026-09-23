@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import {
   PENDING_PLAN_FAST_MAX_MS,
   PLAN_AGENT_ROUTE,
+  planCardChatRefusal,
   PLAN_CARD_KIND,
   PLAN_CARD_PAYLOAD_VERSION,
   PLAN_CHIP_CHANGE,
@@ -510,6 +511,60 @@ test('the tool description and the instructions both say nothing enforces the wa
   // And the same sentence in the instructions string the model reads at start.
   const instructions = server.replace(/',\s*'/g, '')
   assert.match(instructions, /NOTHING IN THIS CHANNEL ENFORCES THE WAIT/)
+})
+
+test('a plan card is refused in a chat the owner cannot answer it in', () => {
+  // THE FINDING. resolveAuthorizedChat answers membership, and the monitored
+  // set GROWS with every inbound, so the a2a side thread the model was just
+  // handed is an accepted target. Posting there blocked the agent for a day on
+  // an answer nobody could give: the owner never opens an a2a chat (it is
+  // excluded from the chat list), the needs you queue filters on kind, and the
+  // push follows the chat owner. The reachable trigger is the plan LEVEL,
+  // which rides a peer turn on purpose.
+  const side = planCardChatRefusal({ isPeerSideThread: true, isMeetingRoom: false })
+  assert.ok(typeof side === 'string' && side.length > 0)
+  assert.match(side!, /side thread/)
+  assert.match(side!, /owner/)
+  const room = planCardChatRefusal({ isPeerSideThread: false, isMeetingRoom: true })
+  assert.ok(typeof room === 'string' && room.length > 0)
+  assert.match(room!, /room/)
+  // The owner's own chat is neither, and is the only chat a card belongs in.
+  assert.equal(
+    planCardChatRefusal({ isPeerSideThread: false, isMeetingRoom: false }),
+    null,
+  )
+})
+
+test('the refusal tells the model where the plan belongs, not that an id was bad', () => {
+  // The model did nothing wrong: it answered the turn it was given, in the one
+  // chat that turn named. An error about ids would read as a bug and be
+  // retried; a sentence about where a plan belongs is actionable.
+  for (const message of [
+    planCardChatRefusal({ isPeerSideThread: true, isMeetingRoom: false })!,
+    planCardChatRefusal({ isPeerSideThread: false, isMeetingRoom: true })!,
+  ]) {
+    assert.match(message, /propose the plan in (their|your owner's) chat/)
+    assert.ok(!/chat_id/.test(message), 'not an error about identifiers')
+  }
+})
+
+test('propose_plan asks the question before it posts anything', () => {
+  // A refusal after the POST is not a refusal. The check must sit between the
+  // authorization and the payload build, so a refused card leaves no row, no
+  // status line and no fast scope entry behind.
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const tool = server.slice(
+    server.indexOf("case 'propose_plan': {"),
+    server.indexOf('const built = buildPlanCardPayload('),
+  )
+  assert.ok(tool.length > 0, 'propose_plan must build its payload after the gates')
+  assert.match(tool, /planCardChatRefusal\(\{/)
+  assert.match(tool, /isPeerSideThread: peerConvByChat\.has\(planChatId\)/)
+  assert.match(tool, /isMeetingRoom: meetingChatIds\.has\(planChatId\)/)
+  assert.ok(
+    tool.indexOf('planCardChatRefusal') < tool.indexOf('nextPlanIdentity('),
+    'the chat question is asked before a plan id is minted',
+  )
 })
 
 test('the stale /clear and /cost advertisement is gone from the instructions', () => {
