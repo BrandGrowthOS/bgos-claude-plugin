@@ -455,9 +455,9 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
   conn.stop()
 })
 
-test('Chrome is started with no BGOS_ or HOAI_ setting and nothing named like a credential', async () => {
-  const env = { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8', HOAI_BROWSER_HOST_PAIRING_TOKEN: 'pair-secret', BGOS_API_KEY: 'k1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3' }
-  assert.deepEqual(chromeEnv(env), { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8' })
+test('Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)', async () => {
+  const env = { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8', SSH_AUTH_SOCK: '/tmp/agent.sock', HOAI_BROWSER_HOST_PAIRING_TOKEN: 'pair-secret', BGOS_API_KEY: 'k1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3' }
+  assert.deepEqual(chromeEnv(env, { platform: 'linux', headed: false }), { PATH: '/usr/bin', HOME: '/h', LANG: 'en_US.UTF-8' })
   let seen: any = null
   const fakeChrome = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 1, kill() {} })
   const launched = launchChromium({
@@ -472,6 +472,7 @@ test('Chrome is started with no BGOS_ or HOAI_ setting and nothing named like a 
   fakeChrome.stderr.emit('data', Buffer.from('DevTools listening on ws://127.0.0.1:1/devtools/browser/x\n'))
   await launched
   assert.ok(!Object.values(seen.env).includes('pair-secret'), 'the pairing token never reaches Chrome')
+  assert.ok(!('SSH_AUTH_SOCK' in seen.env), 'nor the ssh-agent socket')
   assert.ok(!Object.values(seen.env).some((v) => ['k1', 'k2', 'k3'].includes(String(v))))
 })
 

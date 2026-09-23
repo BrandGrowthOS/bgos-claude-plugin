@@ -59,6 +59,7 @@ import {
   releasePairingLock,
   type LockIo,
 } from './pairing-lock.js'
+import { hostEnv } from './browser-env.mjs'
 
 /** The kill switch. `off` (or 0, false, no; any case) skips the spawn. */
 export const BROWSER_HOST_KILL_SWITCH_ENV = 'HOAI_BROWSER_HOST'
@@ -66,23 +67,14 @@ export const BROWSER_HOST_KILL_SWITCH_ENV = 'HOAI_BROWSER_HOST'
 /** How often a daemon without the host lock checks whether it can take it. */
 export const BROWSER_HOST_RECHECK_MS = 15_000
 
-/** Names that look like a credential; the host is given none of them. */
-const SECRET_ENV_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE_?KEY)/i
-
 /**
- * The daemon's environment as the host gets it: without the daemon's own
- * BGOS_ settings and without anything named like a credential. The host
- * needs PATH, HOME and its own HOAI_ settings; the one secret it needs, the
- * pairing token, is added explicitly by the caller.
+ * The daemon's environment as the host gets it is an ALLOW-LIST
+ * (lib/browser-env.mjs): what node and Chrome need plus the host's own
+ * HOAI_BROWSER_ settings, never the daemon's keys, tokens or handles such
+ * as SSH_AUTH_SOCK. The one secret the host needs, the pairing token, is
+ * added explicitly below.
  */
-export function hostEnv(env: Env): Env {
-  const out: Env = {}
-  for (const [k, v] of Object.entries(env)) {
-    if (v === undefined || /^BGOS_/i.test(k) || SECRET_ENV_NAME.test(k)) continue
-    out[k] = v
-  }
-  return out
-}
+export { hostEnv }
 
 /** The host's log is rotated to `.1` once it passes this at spawn time. */
 export const BROWSER_HOST_LOG_MAX_BYTES = 5 * 1024 * 1024

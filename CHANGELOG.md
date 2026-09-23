@@ -46,9 +46,16 @@ Notable changes to the HOAI Claude Code plugin.
     is gone. A holder that is alive but late (a machine waking from sleep) is
     given a full recheck to beat again before its lock is taken, and a daemon
     whose lock was taken stands its host down and waits to take it back.
-  - The host never sees the daemon's BGOS_ settings or anything named like a
-    credential except its own pairing token, which it drops from its
-    environment once read; Chrome is started with none of them.
+  - **Chrome and the host get an ALLOW-LISTED environment**
+    (`lib/browser-env.mjs`), not a deny-list by name: a name rule cannot
+    see `SSH_AUTH_SOCK`, a live handle to the user's ssh-agent. Chrome gets
+    PATH, HOME, TMPDIR/TMP/TEMP, USER/LOGNAME, LANG/LANGUAGE/LC_*, TZ, the
+    Windows system folders on Windows, and on linux the display and session
+    variables only when it is shown. The host gets that plus its own
+    `HOAI_BROWSER_*` settings, `NODE_EXTRA_CA_CERTS` and its pairing token,
+    which it drops from its environment once read. Anything else is opt-in
+    by name in `HOAI_BROWSER_CHROME_ENV`, and a credential-looking name is
+    dropped even then.
   - **It can never take the daemon down.** A missing node, a spawn that
     fails, or a host that crashes is one log line; the daemon carries on and
     does not restart that host.

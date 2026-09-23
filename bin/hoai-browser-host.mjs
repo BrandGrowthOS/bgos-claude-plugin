@@ -70,6 +70,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { io as socketIoClient } from 'socket.io-client'
 
+import { chromeEnv } from '../lib/browser-env.mjs'
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Every log line this host writes starts here, so it is attributable. */
@@ -543,24 +545,14 @@ export function handshakeOptions(pairing, deviceLabel) {
   }
 }
 
-/** Names that look like a credential. None of them is Chrome's business. */
-export const SECRET_ENV_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE_?KEY)/i
-
 /**
- * The environment Chrome is started with: this host's minus every BGOS_ and
- * HOAI_ variable and anything named like a credential. Chrome's helper and
- * renderer processes inherit the browser's environment, and a renderer runs
- * untrusted pages, so the pairing token and the daemon's keys must not ride
- * along.
+ * The environment Chrome is started with is an ALLOW-LIST
+ * (lib/browser-env.mjs): Chrome's helper and renderer processes inherit the
+ * browser's environment and a renderer runs untrusted pages, so nothing
+ * passes that Chrome does not need; above all no handle such as
+ * SSH_AUTH_SOCK, which no rule about names could have caught.
  */
-export function chromeEnv(env = process.env) {
-  const out = {}
-  for (const [k, v] of Object.entries(env)) {
-    if (v === undefined || /^(BGOS_|HOAI_)/i.test(k) || SECRET_ENV_NAME.test(k)) continue
-    out[k] = v
-  }
-  return out
-}
+export { chromeEnv }
 
 /**
  * The one pairing a daemon started this host for, or null when it was run by
@@ -758,7 +750,7 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
   return new Promise((resolve, reject) => {
     let child
     try {
-      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'], env: chromeEnv(env) })
+      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'], env: chromeEnv(env, { platform, headed: !headless }) })
     } catch (err) {
       reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
       return

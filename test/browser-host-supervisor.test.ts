@@ -198,12 +198,13 @@ test('a live holder that is only late (a machine waking from sleep) keeps its lo
   b.sup.stop()
 })
 
-test('the host gets the daemon environment without its BGOS_ settings or anything named like a credential, plus its own pairing token', () => {
-  const env = { PATH: '/usr/bin', HOME: '/home/kc', DISPLAY: ':0', XAUTHORITY: '/x', HOAI_BROWSER_EXECUTABLE: '/c', BGOS_API_KEY: 'k1', BGOS_PAIRING_TOKEN: 't1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3', AWS_SECRET_ACCESS_KEY: 'k4', DB_PASSWORD: 'k5' }
-  assert.deepEqual(hostEnv(env), { PATH: '/usr/bin', HOME: '/home/kc', DISPLAY: ':0', XAUTHORITY: '/x', HOAI_BROWSER_EXECUTABLE: '/c' })
+test('the daemon starts the host with the allow-listed environment plus its own pairing token (the list itself: test/browser-env.test.ts)', () => {
+  const env = { PATH: '/usr/bin', HOME: '/home/kc', DISPLAY: ':0', XAUTHORITY: '/x', HOAI_BROWSER_EXECUTABLE: '/c', SSH_AUTH_SOCK: '/tmp/agent.sock', GH_PAT: 'k6', BGOS_API_KEY: 'k1', BGOS_PAIRING_TOKEN: 't1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3', AWS_SECRET_ACCESS_KEY: 'k4', DB_PASSWORD: 'k5' }
+  assert.deepEqual(hostEnv(env, { platform: 'linux' }), { PATH: '/usr/bin', HOME: '/home/kc', HOAI_BROWSER_EXECUTABLE: '/c' })
   const h = harness({ env })
   const spawned = h.calls[0].options.env
-  for (const secret of ['k1', 't1', 'k2', 'k3', 'k4', 'k5']) assert.ok(!Object.values(spawned).includes(secret), `${secret} is not handed to the host`)
+  assert.ok(!('SSH_AUTH_SOCK' in spawned), 'the ssh-agent socket is not handed to the host')
+  for (const secret of ['k1', 't1', 'k2', 'k3', 'k4', 'k5', 'k6']) assert.ok(!Object.values(spawned).includes(secret), `${secret} is not handed to the host`)
   assert.equal(spawned[HOST_ENV.pairingToken], 'tok-1', 'the one secret it needs, explicitly')
   assert.equal(spawned.HOAI_BROWSER_EXECUTABLE, '/c')
   h.sup.stop()
