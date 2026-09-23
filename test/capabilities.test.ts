@@ -6,6 +6,9 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   pickCapabilities,
@@ -195,4 +198,35 @@ test('a malformed token is dropped rather than costing the whole canon, and the 
   assert.equal(sent.length, 32)
   assert.equal(sent[0], 'cap_0')
   assert.equal(sent[31], 'cap_31')
+})
+
+// The ONE caller (W1 close 2, review T4). Every case above tests the pure
+// helper; the call that runs it at boot is in server.ts, which no pure test
+// imports. A merge that takes the 0.44.0 template back (plugin PRs that touch
+// server.ts may land first) would pass all of them and leave every 0.45.0
+// daemon untold on its first boot, so the call is pinned as a source
+// contract, the house style for server.ts behaviour
+// (test/startup-reaches-poll.test.ts).
+//
+// MUTATION PROOF (applied to server.ts, confirmed red, restored from one
+// pristine copy): the fetch path back to the 0.44.0 template
+// `integrations/capabilities?channel=claude&daemonVersion=${...}` -> "the
+// canon fetch carries boards_playbook" fails.
+
+test('the canon fetch carries boards_playbook', () => {
+  const server = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'),
+    'utf8',
+  )
+  const start = server.indexOf('async function loadServedCapabilities(')
+  assert.ok(start > 0, 'loadServedCapabilities is gone from server.ts')
+  const end = server.indexOf('\n}\n', start)
+  const body = server.slice(start, end)
+  assert.match(
+    body,
+    /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false \}\)\s*,?\s*\)/,
+  )
+  assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
+  // The declared list the fetch sends holds the token the gate reads.
+  assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_playbook'))
 })

@@ -1480,6 +1480,27 @@ test('update_schema lists the table ops when the op is unknown', async () => {
 //     later assignment would silently win).
 //  7. ENUMS. Dropped the `WAITS_ON.includes` check -> "an enum refusal names
 //     the allowed values" fails, and "owner" would reach the server as a fact.
+//
+// W1 close 2 (review R3; each applied to lib/boards-tools.ts, confirmed red,
+// restored from one pristine copy byte for byte):
+//
+//  8. THE OLD FILED SENTENCE. Put back "The owner confirmed this board, so
+//     your change ... was saved as a suggestion for the owner" -> "a filed
+//     change is reported, not claimed" and "a filed sentence never claims a
+//     confirmation or a suggestion" fail. The server also files on an
+//     unconfirmed board, over a line the owner wrote, and nothing shows a
+//     suggestion to him in this release.
+//  9. THE SAVED SENTENCE UNNAMED. The `saved` clause never taken -> "a filed
+//     sentence never claims ..." fails: the answer would say the column kept
+//     its setting about words that changed.
+// 10. SUGGESTION IN THE LINES TEXT. The `lines` description back to "kept as
+//     a suggestion for the owner" -> "set_column_lines is an op, and the tool
+//     roster is still the 12" and "no text the boards tools declare says
+//     suggestion" fail.
+// 11. A RESTACK PROMISED. The `workflow` description back to "marks this
+//     select as the board's workflow, the one the Kanban stacks by" -> the
+//     roster case fails: an agent's flag stacks nothing until the owner
+//     confirms.
 
 const LINES_BASE = { board: 'decisions', op: 'set_column_lines', field_key: 'status' }
 
@@ -1505,8 +1526,14 @@ test('set_column_lines is an op, and the tool roster is still the 12', () => {
     assert.equal(typeof props[key]?.description, 'string', `${key} is declared`)
   }
   // The confirmed table qualifier travels with the lines argument (E4), so
-  // the model knows before it writes that a structural change can be filed.
-  assert.ok(props.lines!.description!.includes('suggestion for the owner'))
+  // the model knows before it writes that a structural change can be filed,
+  // and it names the second case a filing happens in: a column whose line the
+  // owner wrote, on a board he never confirmed (W1 close 2, review R3).
+  assert.ok(props.lines!.description!.includes('On a confirmed board'))
+  assert.ok(props.lines!.description!.includes('whose line the owner wrote'))
+  assert.ok(!props.lines!.description!.includes('suggestion'))
+  // An agent's workflow flag restacks nothing until the owner confirms.
+  assert.ok(props.workflow!.description!.includes('once the owner confirms'))
   assert.ok(decl('boards_update_schema').description.includes('set_column_lines'))
   assert.ok(decl('boards_update_schema').description.includes('nothing you write there starts work'))
 })
@@ -1891,9 +1918,8 @@ test('a filed change is reported, not claimed', async () => {
   assert.equal(r.isError, undefined, 'the call itself landed')
   assert.equal(
     textOf(r),
-    'The owner confirmed this board, so your change to "Done" was saved as a ' +
-      'suggestion for the owner and the column keeps its current setting. Do ' +
-      'not send it again.',
+    'The owner decides how "Done" works, so your change to it was not ' +
+      'applied and the column keeps its current setting. Do not send it again.',
   )
   assert.ok(!textOf(r).includes('"playbook"'), 'the body is not handed over as a success')
 
@@ -1903,5 +1929,65 @@ test('a filed change is reported, not claimed', async () => {
     { ...LINES_BASE, lines: { Done: { rest: 'parked' } }, clear_lines: ['Dropped'] },
     two.deps,
   )
-  assert.ok(textOf(r2).includes('your change to "Done", "Dropped" was saved'), textOf(r2))
+  assert.equal(
+    textOf(r2),
+    'The owner decides how "Done", "Dropped" work, so your change to them was ' +
+      'not applied and those columns keep their current setting. Do not send ' +
+      'them again.',
+  )
+})
+
+test('a filed sentence never claims a confirmation or a suggestion, and names the sentence it saved (W1 close 2, review R3)', async () => {
+  // The server files a change in two cases: the owner confirmed the board,
+  // or the owner wrote that column's line on a board he never confirmed. The
+  // answer is true in both, and a sentence sent for a filed column landed.
+  const f = fakeDeps({ patch: playbookEcho(['Done']) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Done: { means: 'Shipped and checked.', rest: 'parked' },
+        Doing: { means: 'In hand.' },
+      },
+      workflow: true,
+    },
+    f.deps,
+  )
+  const t = textOf(r)
+  assert.equal(
+    t,
+    'The owner decides how "Done" works, so your change to it was not ' +
+      'applied and the column keeps its current setting, except the sentence ' +
+      '(means) you sent for "Done", which was saved. Do not send the rest ' +
+      'again. Everything else in this call was saved.',
+  )
+  assert.ok(!t.includes('confirmed'), t)
+  assert.ok(!t.toLowerCase().includes('suggest'), t)
+
+  // A sentence of spaces is no sentence: the server drops it, so it is not
+  // claimed as saved.
+  const g = fakeDeps({ patch: playbookEcho(['Done']) })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { means: '   ', rest: 'parked' } } },
+    g.deps,
+  )
+  assert.ok(!textOf(r2).includes('which was saved'), textOf(r2))
+})
+
+test('no text the boards tools declare says suggestion (W1 close 2, review R3)', () => {
+  // Nothing shows a suggestion to the owner in this release (spec 16.2), and
+  // the tool text is what the model repeats to him.
+  const strings: string[] = []
+  const walk = (value: unknown) => {
+    if (typeof value === 'string') strings.push(value)
+    else if (Array.isArray(value)) value.forEach(walk)
+    else if (value && typeof value === 'object') Object.values(value).forEach(walk)
+  }
+  walk(BOARDS_TOOL_DECLS)
+  assert.ok(strings.length > 100, `walked ${strings.length} strings`)
+  for (const s of strings) {
+    assert.ok(!s.toLowerCase().includes('suggestion'), s)
+  }
 })

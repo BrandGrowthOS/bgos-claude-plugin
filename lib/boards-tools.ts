@@ -470,11 +470,13 @@ export const BOARDS_TOOL_DECLS = [
           },
           description:
             'set_column_lines only: option name to the line that describes ' +
-            'that column. Before the owner confirms the board, each line you ' +
-            'send replaces that column\'s line; after that only the sentence ' +
-            '(means) changes directly, and any other change is kept as a ' +
-            'suggestion for the owner. Columns you leave out keep theirs. A ' +
-            'line only describes the board: nothing you write here starts ' +
+            'that column. Until the owner confirms the board, a line you ' +
+            'send replaces your own line for that column. On a confirmed ' +
+            'board, or on a column whose line the owner wrote, only the ' +
+            'sentence (means) changes directly: any other change you send is ' +
+            'not applied and the owner\'s setting stays, and a part you leave ' +
+            'out keeps its current value. Columns you leave out keep theirs. ' +
+            'A line only describes the board: nothing you write here starts ' +
             'work or sends a message.',
         },
         clear_lines: {
@@ -485,8 +487,9 @@ export const BOARDS_TOOL_DECLS = [
         workflow: {
           type: 'boolean',
           description:
-            'set_column_lines only: true marks this select as the board\'s ' +
-            'workflow, the one the Kanban stacks by. At most one select per table.',
+            'set_column_lines only: true proposes this select as the board\'s ' +
+            'workflow; the Kanban stacks by it once the owner confirms the ' +
+            'board. At most one select per table.',
         },
         position: {
           type: 'number',
@@ -1193,28 +1196,59 @@ function readOptionRenames(
  * that predates them strips optionRules and workflow in its whitelist and
  * answers 200 with the field alone, so a missing `playbook` means nothing was
  * stored, and the tool says so instead of reporting a success. A non empty
- * `filed` means the owner confirmed the board and the structural part of the
- * change became a suggestion; reporting that as a plain success would have the
- * model send the same change again on every run.
+ * `filed` means the owner decides those columns (he confirmed the board, OR
+ * he wrote that column's line himself, on a board he never confirmed), so
+ * everything but a sentence was not applied; reporting that as a plain success
+ * would have the model send the same change again on every run.
+ *
+ * The answer says only what happened (W1 close 2, review R3). Never "the
+ * owner confirmed this board", which is false for a column he wrote on an
+ * unconfirmed one, and never "suggestion": nothing shows a suggestion to the
+ * owner in this release (spec 16.2), so an agent relaying "I left you a
+ * suggestion" would send him looking for something that is not there. A
+ * sentence the agent sent for a filed column WAS saved (only the sentence
+ * changes directly), so the answer says that too rather than "keeps its
+ * current setting" about words that changed.
  */
-function columnLinesAnswer(data: unknown): { ok: true; data: unknown } | Fail {
+function columnLinesAnswer(
+  data: unknown,
+  sent: Record<string, unknown>,
+): { ok: true; data: unknown } | Fail {
   if (!isPlainObject(data) || !('playbook' in data)) {
     return fail(COLUMN_LINES_UNSUPPORTED)
   }
   const filed = Array.isArray(data.filed)
     ? data.filed.filter((o): o is string => typeof o === 'string')
     : []
-  if (filed.length) {
-    return {
-      ok: true,
-      data:
-        `The owner confirmed this board, so your change to ` +
-        `${filed.map((o) => JSON.stringify(o)).join(', ')} was saved as a ` +
-        'suggestion for the owner and the column keeps its current setting. ' +
-        'Do not send it again.',
-    }
-  }
+  if (filed.length) return { ok: true, data: filedAnswer(filed, sent) }
   return { ok: true, data }
+}
+
+/** The one sentence a filed write reads as (see `columnLinesAnswer`). */
+function filedAnswer(filed: string[], sent: Record<string, unknown>): string {
+  const quote = (options: string[]) =>
+    options.map((o) => JSON.stringify(o)).join(', ')
+  const rules = isPlainObject(sent.optionRules) ? sent.optionRules : {}
+  const lineOf = (option: string) =>
+    Object.prototype.hasOwnProperty.call(rules, option) ? rules[option] : undefined
+  const saved = filed.filter((option) => {
+    const line = lineOf(option)
+    return isPlainObject(line) && typeof line.means === 'string' && line.means.trim() !== ''
+  })
+  const more =
+    Object.keys(rules).some((option) => !filed.includes(option)) ||
+    typeof sent.workflow === 'boolean'
+  const one = filed.length === 1
+  let text =
+    `The owner decides how ${quote(filed)} ${one ? 'works' : 'work'}, so ` +
+    `your change to ${one ? 'it' : 'them'} was not applied and ` +
+    `${one ? 'the column keeps its' : 'those columns keep their'} current setting`
+  text += saved.length
+    ? `, except the sentence (means) you sent for ${quote(saved)}, which was ` +
+      'saved. Do not send the rest again.'
+    : `. Do not send ${one ? 'it' : 'them'} again.`
+  if (more) text += ' Everything else in this call was saved.'
+  return text
 }
 
 // ── Path building (nothing raw ever reaches a URL) ───────────────────────────
@@ -2111,7 +2145,7 @@ async function updateSchema(
   } else if (op.value === 'set_column_lines') {
     const lines = compileColumnLines(name, args)
     if (!lines.ok) return lines
-    return columnLinesAnswer(await deps.bgosPatch(fieldPath, lines.body))
+    return columnLinesAnswer(await deps.bgosPatch(fieldPath, lines.body), lines.body)
   } else if (op.value === 'move_field') {
     const position = readInt(name, args, 'position', 0, 200, true)
     if (!position.ok) return position

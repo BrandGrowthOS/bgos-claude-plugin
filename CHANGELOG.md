@@ -13,17 +13,19 @@ Notable changes to the HOAI Claude Code plugin.
   else or nobody), whether it is open, parked, finished or dropped, which
   field sorts it, and, for a column that waits on the owner, up to four
   answers the owner can give. `clear_lines` removes a line and `workflow`
-  marks the select the Kanban stacks by.
+  proposes the select as the board's workflow, which the Kanban stacks by
+  once the owner confirms the board.
   - **The lines only describe the board.** Nothing an agent writes there
     starts work, sends a message or is read to decide anything; the tool's
     own description says so, and the tool refuses the server owned keys
     (`v`, `writtenBy`, `at`, `does`) as unknown ones.
-  - **A write that became a suggestion is reported as one.** Once the owner
-    confirms the board, only the sentence changes directly and any other
-    change is kept for the owner. The server lists those columns in `filed`,
-    and the tool answers with one sentence naming them and saying not to send
-    the change again, instead of a success the model would retry on every
-    run.
+  - **A change the owner decides is reported as not applied.** Once the
+    owner confirms the board, or on a column whose line the owner wrote, only
+    the sentence changes directly; any other change is not applied and the
+    owner's setting stays. The server lists those columns in `filed`, and the
+    tool answers with one sentence naming them, saying which sentence was
+    saved and not to send the rest again, instead of a success the model
+    would retry on every run.
   - **A server that cannot store a line says so.** A BGOS server from before
     column lines drops the new keys and answers 200 with the field alone, so
     the tool checks the answer for its `playbook` and, when it is missing,
