@@ -51,11 +51,15 @@
  * Env: HOAI_BROWSER_EXECUTABLE (a Chrome or Chromium to use),
  *      HOAI_BROWSER_HEADED=1 (show the window; headless by default),
  *      HOAI_BROWSER_HOST_AGENTS=900,901 (serve only these agents).
+ * Set by the daemon that starts it (lib/browser-host-supervisor.ts), to serve
+ * that daemon's pairing only and to stop when the daemon is gone:
+ *      HOAI_BROWSER_HOST_PAIRING_TOKEN, HOAI_BROWSER_HOST_BACKEND_URL,
+ *      HOAI_BROWSER_HOST_ASSISTANT_ID, HOAI_BROWSER_HOST_PARENT_PID.
  */
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, hostname } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -116,6 +120,8 @@ export const REFUSED_RETRY_MIN_MS = 60_000
 export const REFUSED_RETRY_MAX_MS = 15 * 60_000
 /** A pairing added or removed on this machine is noticed within this. */
 export const CREDENTIALS_RESCAN_MS = 60_000
+/** How often a daemon-started host checks that its daemon is still alive. */
+export const PARENT_CHECK_MS = 2_000
 
 /** The desktop's default cap set (engine.js DEFAULT_CAPS). */
 export const DEFAULT_CAPS = ['pdf']
@@ -537,6 +543,50 @@ export function handshakeOptions(pairing, deviceLabel) {
   }
 }
 
+/**
+ * The one pairing a daemon started this host for, or null when it was run by
+ * hand (then it serves every pairing on the machine).
+ */
+export function scopeFromEnv(env = process.env) {
+  const token = String(env.HOAI_BROWSER_HOST_PAIRING_TOKEN ?? '').trim()
+  if (!token) return null
+  return {
+    token,
+    backendUrl: backendBase(env.HOAI_BROWSER_HOST_BACKEND_URL),
+    assistantId: assistantIdOrNull(env.HOAI_BROWSER_HOST_ASSISTANT_ID),
+    parentPid: assistantIdOrNull(env.HOAI_BROWSER_HOST_PARENT_PID),
+  }
+}
+
+/**
+ * Narrows the machine's pairings to the daemon's own: the credentials that
+ * carry its token, plus the daemon's own agent even when no file on disk
+ * names it (a daemon paired through the environment). Nothing else.
+ */
+export function scopePairings(pairings, scope) {
+  if (!scope) return pairings
+  const mine = pairings.filter((p) => p.token === scope.token)
+  let pairing = mine[0]
+  if (!pairing) {
+    if (!/^https?:\/\//i.test(scope.backendUrl) || scope.assistantId === null) return []
+    pairing = { key: `${scope.backendUrl}|scoped`, pairingId: null, backendUrl: scope.backendUrl, token: scope.token, staleTokens: 0, assistantIds: [] }
+  }
+  const ids = new Set(mine.flatMap((p) => p.assistantIds))
+  if (scope.assistantId !== null) ids.add(scope.assistantId)
+  return [{ ...pairing, assistantIds: [...ids].sort((a, b) => a - b).slice(0, MAX_AGENTS_PER_PAIRING) }]
+}
+
+/** Signal 0: is that process still there. EPERM means it exists. */
+export function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return err?.code === 'EPERM'
+  }
+}
+
 // ── An installed Chrome or Chromium ──────────────────────────────────────────
 
 /** Every place this host looks, in order, for the platform. */
@@ -571,16 +621,56 @@ export function chromeCandidates({ platform = process.platform, env = process.en
   return [...pathDirs.flatMap((d) => names.map((n) => join(d, n))), ...fixed].filter((p) => !seen.has(p) && seen.add(p))
 }
 
+/** The first bytes of a file, or null. Enough to tell a script from a binary. */
+function readHead(path, bytes = 4096) {
+  let fd = null
+  try {
+    fd = openSync(path, 'r')
+    const buf = Buffer.alloc(bytes)
+    return buf.toString('utf8', 0, readSync(fd, buf, 0, bytes, 0))
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {}
+    }
+  }
+}
+
+/**
+ * A Snap-confined Chromium: /snap/bin/chromium, or a wrapper script that
+ * hands off to snap (Ubuntu's chromium-browser). Snap confinement keeps it out
+ * of hidden folders in the home directory, so it cannot open a profile under
+ * ~/.bgos-agent, and its failure reads like a profile lock.
+ */
+export function isSnapChromium(path, head = readHead) {
+  if (String(path).startsWith('/snap/')) return true
+  const text = head(path)
+  return typeof text === 'string' && text.startsWith('#!') && /\bsnap\b/.test(text)
+}
+
 /**
  * The browser this host will launch. HOAI_BROWSER_EXECUTABLE wins when set
- * (and must exist); otherwise the first installed candidate. Never downloads.
+ * (and must exist); otherwise the first installed candidate that can use a
+ * profile under ~/.bgos-agent (on linux, not a Snap Chromium). Never
+ * downloads.
  */
-export function resolveChromeExecutable({ platform = process.platform, env = process.env, home = homedir(), exists = existsSync } = {}) {
+export function resolveChromeExecutable({ platform = process.platform, env = process.env, home = homedir(), exists = existsSync, isSnap = isSnapChromium } = {}) {
   const override = String(env.HOAI_BROWSER_EXECUTABLE ?? '').trim()
-  if (override) return { path: exists(override) ? override : null, tried: [override], via: 'HOAI_BROWSER_EXECUTABLE' }
+  if (override) return { path: exists(override) ? override : null, tried: [override], via: 'HOAI_BROWSER_EXECUTABLE', snapSkipped: [] }
   const tried = chromeCandidates({ platform, env, home })
-  const path = tried.find((p) => exists(p)) ?? null
-  return { path, tried, via: 'search' }
+  const snapSkipped = []
+  for (const p of tried) {
+    if (!exists(p)) continue
+    if (platform === 'linux' && isSnap(p)) {
+      snapSkipped.push(p)
+      continue
+    }
+    return { path: p, tried, via: 'search', snapSkipped }
+  }
+  return { path: null, tried, via: 'search', snapSkipped }
 }
 
 /** The plain sentence an owner or an agent reads when there is no browser. */
@@ -588,7 +678,10 @@ export function browserNotFoundMessage(resolution) {
   if (resolution.via === 'HOAI_BROWSER_EXECUTABLE') {
     return `HOAI_BROWSER_EXECUTABLE is set to ${resolution.tried[0]}, which does not exist on this machine. Point it at an installed Chrome or Chromium, or unset it to search the usual places. This host never downloads a browser.`
   }
-  return `No installed Chrome or Chromium was found on this machine, so this agent's browser cannot start. Install Google Chrome or Chromium, or set HOAI_BROWSER_EXECUTABLE to one. This host never downloads a browser. Looked in: ${resolution.tried.join(', ')}.`
+  const snap = resolution.snapSkipped?.length
+    ? ` Skipped ${resolution.snapSkipped.join(', ')}: a Snap Chromium cannot open a profile under ~/.bgos-agent; install Google Chrome from its .deb, or a Chromium that is not a Snap.`
+    : ''
+  return `No installed Chrome or Chromium was found on this machine, so this agent's browser cannot start. Install Google Chrome or Chromium, or set HOAI_BROWSER_EXECUTABLE to one. This host never downloads a browser. Looked in: ${resolution.tried.join(', ')}.${snap}`
 }
 
 /** A failure the agent should read with its own code. */
@@ -675,7 +768,7 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
         new HostError(
           'browser_start_failed',
           inUse
-            ? `Chrome refused ${profileDir}: another Chrome that this host cannot reach is using that profile. Close it and try again.`
+            ? `Chrome could not lock ${profileDir}: another Chrome that this host cannot reach is using that profile, or this Chrome may not write there (a sandboxed build such as a Snap). ${lastLines(tail)}`
             : `Chrome exited before it was ready (code ${code}, signal ${signal}). ${lastLines(tail)}`,
         ),
       )
@@ -856,10 +949,13 @@ export class ChromiumEngine {
       const { child, endpoint } = await launchChromium({ executable: this._executable, profileDir: this.profileDir, headless: this._headless })
       this._child = child
       child.on('exit', () => this._gone())
-      const engine = this._newEngine(endpoint)
+      // Bounded: a connect that hangs after Chrome printed its endpoint would
+      // otherwise hold this principal's launch, and every call behind it.
+      const engine = this._newEngine(endpoint, BROWSER_START_TIMEOUT_MS)
       try {
         await engine.start()
       } catch (err) {
+        await engine.stop().catch(() => {})
         await this._killChild()
         throw err
       }
@@ -984,7 +1080,6 @@ export class BrowserPool {
   async release(ctx) {
     const slot = this._slots.get(this.slotKey(ctx))
     if (!slot) return false
-    if (slot.starting) await slot.starting.catch(() => {})
     return this._stopSlot(slot)
   }
 
@@ -998,6 +1093,9 @@ export class BrowserPool {
   }
 
   async _stopSlot(slot) {
+    // A launch in flight finishes first: stopping before it lands would find
+    // no engine, and the Chrome it then started would outlive the stop.
+    if (slot.starting) await slot.starting.catch(() => {})
     this._clearIdle(slot)
     const engine = slot.engine
     slot.engine = null
@@ -1130,6 +1228,15 @@ function relayError(code, message) {
 }
 
 /**
+ * A JSON-RPC id as a waiter key. The type is part of it: the backend keys
+ * `1` and `"1"` as two calls, so both can be in flight on one session, and a
+ * bare String() would hand the first reply to the second frame.
+ */
+function rpcIdKey(id) {
+  return `${typeof id}:${String(id)}`
+}
+
+/**
  * local-mcp.js relay(), adapted: a frame carries one JSON-RPC message, which
  * enters an in-memory MCP server, and the response of the same id comes back
  * as `{ ok: true, message }` (`{}` for a notification) or
@@ -1180,7 +1287,7 @@ export class RelaySessions {
         await entry.clientTransport.send(message)
         return { ok: true, message: {} }
       }
-      const key = String(message.id)
+      const key = rpcIdKey(message.id)
       return await new Promise((resolve) => {
         const settle = (value) => {
           const waiter = entry.pending.get(key)
@@ -1215,7 +1322,7 @@ export class RelaySessions {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     const entry = { key, clientId, ctx, clientTransport, serverTransport, server: null, pending: new Map(), lastSeenAt: Date.now(), ready: null }
     clientTransport.onmessage = (msg) => {
-      const id = msg && msg.id !== undefined && msg.id !== null ? String(msg.id) : null
+      const id = msg && msg.id !== undefined && msg.id !== null ? rpcIdKey(msg.id) : null
       const waiter = id ? entry.pending.get(id) : null
       if (waiter) waiter.resolve(msg)
     }
@@ -1465,8 +1572,10 @@ export class BrowserHost {
     rescanMs = CREDENTIALS_RESCAN_MS,
     listDir = defaultListDir,
     readText = defaultReadText,
+    scope = scopeFromEnv(env),
   }) {
     this.agentRoot = agentRoot
+    this.scope = scope
     this.deviceLabel = deviceLabel
     this._env = env
     this._io = io
@@ -1493,7 +1602,9 @@ export class BrowserHost {
 
   /** Brings the live sockets in line with the credentials on disk. */
   reconcile() {
-    const { pairings, skipped } = readPairings({ agentRoot: this.agentRoot, allow: this._allow, listDir: this._listDir, readText: this._readText })
+    const read = readPairings({ agentRoot: this.agentRoot, allow: this._allow, listDir: this._listDir, readText: this._readText })
+    const pairings = scopePairings(read.pairings, this.scope)
+    const skipped = read.skipped
     const wanted = new Map(pairings.map((p) => [p.key, p]))
     for (const [key, conn] of [...this.connections]) {
       const next = wanted.get(key)
@@ -1548,7 +1659,11 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
   if (chrome.path) log(`browser: ${chrome.path} (${chrome.via === 'search' ? 'found installed' : 'from HOAI_BROWSER_EXECUTABLE'}), ${headless ? 'headless' : 'headed'}`)
   else log(`browser: NONE. ${browserNotFoundMessage(chrome)}`)
 
-  const { pairings, skipped } = readPairings({ agentRoot, allow: parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS) })
+  const scope = scopeFromEnv(env)
+  const read = readPairings({ agentRoot, allow: parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS) })
+  const pairings = scopePairings(read.pairings, scope)
+  const skipped = read.skipped
+  if (scope) log(`started by the daemon with pid ${scope.parentPid ?? '?'} for its pairing only`)
   for (const p of pairings) log(`pairing ${p.pairingId ?? '(no id)'} on ${p.backendUrl}: agents [${p.assistantIds.join(', ')}]`)
   for (const s of skipped) log(`skipped ${s.file}: ${s.reason}`)
   if (!pairings.length) log(`no paired agent found in ${agentRoot}`)
@@ -1568,18 +1683,36 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
     if (!found.path) throw new HostError('browser_not_installed', browserNotFoundMessage(found))
     return new ChromiumEngine({ executable: found.path, profileDir, outputDir, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
-  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools, createEngine, log }).start()
+  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools, createEngine, log, scope }).start()
 
   return await new Promise((resolve) => {
+    // The retry, rescan and parent timers are unref'd so an embedder (and a
+    // test) can drop a host without waiting on them. The PROCESS must not
+    // drain on them either: with no live socket (no credentials yet, or the
+    // gateway refused this host) nothing else holds the event loop, and the
+    // host would exit 0 instead of waiting out its backoff. This holds it.
+    const keepAlive = setInterval(() => {}, 60_000)
     let stopping = false
-    const stop = (sig) => {
+    const stop = (why) => {
       if (stopping) return
       stopping = true
-      log(`${sig}: closing the browsers (profiles stay) and the sockets`)
+      clearInterval(keepAlive)
+      log(`${why}: closing the browsers (profiles stay) and the sockets`)
       host.stop().finally(() => resolve(0))
     }
     onSignal('SIGINT', () => stop('SIGINT'))
     onSignal('SIGTERM', () => stop('SIGTERM'))
+    // The daemon stops this host with SIGTERM when it exits. If the daemon is
+    // killed outright it cannot, so the host checks that the daemon's pid is
+    // still alive. Liveness of that pid, not "my parent changed": the daemon
+    // keeps its pid when it is reparented, which is what made a ppid
+    // watchdog misfire in the daemon itself (test/process-lifecycle.test.ts).
+    if (scope?.parentPid) {
+      const watch = setInterval(() => {
+        if (!pidAlive(scope.parentPid)) stop(`the daemon (pid ${scope.parentPid}) is gone`)
+      }, PARENT_CHECK_MS)
+      watch.unref?.()
+    }
   })
 }
 

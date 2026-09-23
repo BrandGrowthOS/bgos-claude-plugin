@@ -289,6 +289,7 @@ import {
   formatPassiveBanner,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
+import { startBrowserHostSupervisor, type BrowserHostSupervisor } from './lib/browser-host-supervisor.js'
 import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
 import {
@@ -584,6 +585,9 @@ const LOG_FILE = resolveLogPath({
 ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
+// This machine's browser host for this daemon's pairing (started in main, see
+// lib/browser-host-supervisor.ts); stopped by shutdown() and the exit hook.
+let browserHost: BrowserHostSupervisor | null = null
 // The heartbeat handle, once armed in main (pairing mode only): the
 // update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
 // the backend immediately instead of on the next 6h tick.
@@ -10842,6 +10846,7 @@ async function main(): Promise<void> {
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
     process.exit(code)
   }
   // Sync backstop for any exit that did NOT route through shutdown() (a natural
@@ -10852,6 +10857,7 @@ async function main(): Promise<void> {
     stopHookIntake()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
   })
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -10932,6 +10938,29 @@ async function main(): Promise<void> {
       flushChatCursors()
     } catch {}
     process.exit(1)
+  })
+
+  // ── This machine's browser host for this pairing ──────────────────────────
+  // Started on every paired daemon, with no flag to remember: the backend
+  // elects an agent host ONLY for an agent whose browser placement is
+  // `daemon` (agent-browser-relay.service.ts :690 and :786), so a
+  // desktop-placed agent's host never receives a frame, and Chromium launches
+  // only on the first frame, so an idle host costs one socket. One host per
+  // pairing on the machine (a per-pairing lib/pairing-lock.ts lock), stdio
+  // detached, stopped by shutdown() and the exit hook above, and it can never
+  // take this daemon down. HOAI_BROWSER_HOST=off skips it entirely.
+  browserHost = startBrowserHostSupervisor({
+    env: process.env,
+    auth: AUTH,
+    agentRoot: pathDirname(DEFAULT_CREDENTIALS_FILE),
+    hostScript: pathJoin(PLUGIN_ROOT, 'bin', 'hoai-browser-host.mjs'),
+    nodePath: resolveNodePath({
+      env: process.env,
+      platform: process.platform,
+      execPath: process.execPath,
+      exists: existsSync,
+    }),
+    log,
   })
 
   // ── Single-instance pairing lock (0.38.6, board 01a05185) ──────────────────

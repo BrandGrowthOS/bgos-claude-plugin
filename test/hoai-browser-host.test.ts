@@ -24,6 +24,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -48,6 +49,7 @@ import {
   chromeCandidates,
   handshakeOptions,
   hostInstructions,
+  isSnapChromium,
   listTools,
   principalDirName,
   readDevToolsActivePort,
@@ -381,6 +383,74 @@ test('resultBody and resultUrl match the backend route and DTO limits', () => {
   assert.equal((long as any).error.message.length, 2000)
 })
 
+test('relay: ids 1 and "1" in flight together each get their own answer', async () => {
+  const { factory } = fakeEngines({ callDelayMs: 50 })
+  const relay = relayOver(new BrowserPool({ agentRoot: ROOT, createEngine: factory }))
+  const call = (id: unknown) =>
+    relay.relay({ clientId: 'c1', assistantId: 900, principal: 'user-a', message: { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_navigate', arguments: { url: `https://x.test/${typeof id}` } } } })
+  const [numeric, text] = await Promise.all([call(1), call('1')])
+  assert.equal(numeric.ok, true)
+  assert.equal(text.ok, true)
+  assert.equal(numeric.message.id, 1)
+  assert.equal(text.message.id, '1')
+  relay.close()
+})
+
+test('the pool: stopping during a launch waits for it and stops the browser it started', async () => {
+  const { factory, stops } = fakeEngines({ startDelayMs: 100 })
+  const pool = new BrowserPool({ agentRoot: ROOT, createEngine: factory })
+  const acquiring = pool.acquire({ assistantId: 900, principal: 'user-a' }).catch(() => null)
+  await new Promise((r) => setTimeout(r, 10))
+  await pool.stopAll()
+  await acquiring
+  assert.equal(stops.length, 1, 'the browser that finished launching after the stop was stopped')
+  assert.deepEqual(pool.running(), [])
+})
+
+test('postResult: a 5xx or a network failure is retried, a 4xx is final', { timeout: 30_000 }, async () => {
+  const run = async (answers: Array<number | 'throw'>) => {
+    const seen: number[] = []
+    const fetchImpl = async () => {
+      const next = answers[seen.length] ?? 200
+      seen.push(seen.length)
+      if (next === 'throw') throw new Error('ECONNRESET')
+      return { ok: next >= 200 && next < 300, status: next } as Response
+    }
+    const conn = new PairingConnection({ pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [900] }, deviceLabel: 'box', relay: null as any, fetchImpl: fetchImpl as any })
+    const result = await conn.postResult('rpc-1', { socketId: 's', ok: true, message: {} })
+    return { result, calls: seen.length }
+  }
+  assert.deepEqual(await run([503, 200]), { result: { accepted: true, status: 200 }, calls: 2 })
+  assert.deepEqual(await run(['throw', 200]), { result: { accepted: true, status: 200 }, calls: 2 })
+  assert.deepEqual(await run([404]), { result: { accepted: false, status: 404 }, calls: 1 }, 'a 404 is the backend saying no; never re-posted')
+  assert.deepEqual(await run([400]), { result: { accepted: false, status: 400 }, calls: 1 })
+})
+
+test('the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer', async () => {
+  const socket = Object.assign(new EventEmitter(), { id: 'socket-at-arrival', connect() {}, disconnect() {} })
+  const posted: any[] = []
+  let release!: () => void
+  const gate = new Promise<void>((r) => (release = r))
+  const relay = { relay: async () => (await gate, { ok: true, message: { jsonrpc: '2.0', id: 1, result: {} } }) }
+  const conn = new PairingConnection({
+    pairing: { key: 'k', pairingId: 1, backendUrl: 'https://api.test', token: 'tok', assistantIds: [900] },
+    deviceLabel: 'box',
+    relay: relay as any,
+    io: (() => socket) as any,
+    fetchImpl: (async (_url: string, init: any) => {
+      posted.push(JSON.parse(init.body))
+      return { ok: true, status: 200 }
+    }) as any,
+  }).start()
+  socket.emit('browser_rpc', { rpcId: 'r1', clientId: 'c', assistantId: 900, message: { jsonrpc: '2.0', id: 1, method: 'ping' } })
+  socket.id = 'socket-after-reconnect'
+  release()
+  await new Promise((r) => setTimeout(r, 20))
+  assert.equal(posted.length, 1)
+  assert.equal(posted[0].socketId, 'socket-at-arrival')
+  conn.stop()
+})
+
 // ── 4. The roster and the browser ────────────────────────────────────────────
 
 test('the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise', { timeout: 60_000 }, async () => {
@@ -418,6 +488,27 @@ test('resolveChromeExecutable: an installed browser is found, none is said plain
   assert.match(browserNotFoundMessage(override), /HOAI_BROWSER_EXECUTABLE is set to \/opt\/x\/chrome, which does not exist/)
 })
 
+test('a Snap Chromium is skipped on linux, and the message says why', () => {
+  assert.equal(isSnapChromium('/snap/bin/chromium'), true)
+  assert.equal(isSnapChromium('/usr/bin/chromium-browser', () => '#!/bin/sh\nexec /snap/bin/chromium "$@"\n'), true)
+  assert.equal(isSnapChromium('/usr/bin/chromium', () => '\u007fELF\u0002\u0001'), false)
+  const snapOnly = resolveChromeExecutable({
+    platform: 'linux',
+    env: { PATH: '/usr/bin' },
+    exists: (p: any) => p === '/usr/bin/chromium-browser',
+    isSnap: (p: any) => p === '/usr/bin/chromium-browser',
+  })
+  assert.equal(snapOnly.path, null)
+  assert.match(browserNotFoundMessage(snapOnly), /Skipped \/usr\/bin\/chromium-browser: a Snap Chromium cannot open a profile under ~\/.bgos-agent/)
+  const both = resolveChromeExecutable({
+    platform: 'linux',
+    env: { PATH: '/usr/bin' },
+    exists: (p: any) => p === '/usr/bin/chromium-browser' || p === '/opt/google/chrome/chrome',
+    isSnap: (p: any) => p === '/usr/bin/chromium-browser',
+  })
+  assert.equal(both.path, '/opt/google/chrome/chrome', 'a usable Chrome behind a Snap one is still found')
+})
+
 test('chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked', () => {
   const args = chromeArgs({ profileDir: '/p/owner', headless: true, platform: 'linux' })
   assert.ok(args.includes('--remote-debugging-port=0'))
@@ -435,7 +526,42 @@ test('readDevToolsActivePort: only a well formed endpoint is reattached to', () 
   assert.equal(readDevToolsActivePort(dir), null)
 })
 
-// ── 5. A real Chromium, driven through real browser_rpc frames ───────────────
+// ── 5. The real process ──────────────────────────────────────────────────────
+
+const nodeOnPath = spawnSync('node', ['--version']).status === 0
+
+test('the host process stays up with no live socket: no credentials yet, or refused by the gateway', { timeout: 60_000, skip: nodeOnPath ? false : 'node is not on PATH' }, async () => {
+  if (!nodeOnPath) return
+  const waitExit = (child: ReturnType<typeof spawn>, ms: number) =>
+    Promise.race([new Promise<number | null>((r) => child.once('exit', (code) => r(code))), new Promise<'alive'>((r) => setTimeout(() => r('alive'), ms))])
+  // No credentials at all: it waits for a pairing instead of exiting.
+  const empty = mkdtempSync(join(tmpdir(), 'bh-empty-'))
+  const idle = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: empty, USERPROFILE: empty }, stdio: 'ignore' })
+  // Refused by the gateway: it waits out its backoff instead of exiting.
+  const relay = await startFakeRelay({ token: 'tok-refused', admissible: [] })
+  const refusedHome = mkdtempSync(join(tmpdir(), 'bh-refused-'))
+  const refused = spawn('node', [HOST_BIN], {
+    env: { ...process.env, HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' },
+    stdio: 'ignore',
+  })
+  try {
+    const deadline = Date.now() + 20_000
+    while (!relay.handshakes.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    assert.equal(relay.handshakes[0]?.refused, true, 'the gateway refused it')
+    assert.equal(await waitExit(idle, 2_500), 'alive', 'a host with no pairing yet stays up')
+    assert.equal(await waitExit(refused, 1_000), 'alive', 'a refused host stays up for its retry')
+    idle.kill('SIGTERM')
+    refused.kill('SIGTERM')
+    assert.equal(await waitExit(idle, 10_000), 0, 'and still stops cleanly on SIGTERM')
+    assert.equal(await waitExit(refused, 10_000), 0)
+  } finally {
+    idle.kill('SIGKILL')
+    refused.kill('SIGKILL')
+    await relay.close()
+  }
+})
+
+// ── 6. A real Chromium, driven through real browser_rpc frames ───────────────
 
 const chrome = resolveChromeExecutable()
 const nodeOk = spawnSync('node', ['--version']).status === 0
@@ -512,8 +638,14 @@ test(
       await relay.close()
       site.server.close()
     }
-    // No Chrome is left running on any of these profiles.
-    const left = spawnSync('pgrep', ['-f', home], { encoding: 'utf8' }).stdout.trim()
+    // No Chrome is left running on any of these profiles. Chrome's helper
+    // processes can take a moment to follow the browser out, so poll.
+    let left = ''
+    for (let i = 0; i < 50; i++) {
+      left = spawnSync('pgrep', ['-f', home], { encoding: 'utf8' }).stdout.trim()
+      if (!left) break
+      await new Promise((r) => setTimeout(r, 200))
+    }
     assert.equal(left, '', `no browser left behind: ${left}`)
   },
 )
@@ -524,8 +656,9 @@ function navigateTool() {
   return { name: 'browser_navigate', description: 'Navigate', inputSchema: { type: 'object', properties: { url: { type: 'string' } } } }
 }
 
-function fakeEngines() {
+function fakeEngines({ startDelayMs = 0, callDelayMs = 0 } = {}) {
   const launched: string[] = []
+  const stops: string[] = []
   const calls: Array<{ profileDir: string; name: string; args: any }> = []
   const factory = ({ profileDir }: { profileDir: string }) => {
     launched.push(profileDir)
@@ -533,6 +666,7 @@ function fakeEngines() {
       alive: false,
       onGone: null,
       async start() {
+        if (startDelayMs) await new Promise((r) => setTimeout(r, startDelayMs))
         this.alive = true
       },
       pages() {
@@ -540,14 +674,16 @@ function fakeEngines() {
       },
       async callTool(name: string, args: any) {
         calls.push({ profileDir, name, args })
-        return { content: [{ type: 'text', text: `${name} ran in ${profileDir}` }] }
+        if (callDelayMs) await new Promise((r) => setTimeout(r, callDelayMs))
+        return { content: [{ type: 'text', text: `${name} ran in ${profileDir} for ${args?.url ?? ''}` }] }
       },
       async stop() {
+        stops.push(profileDir)
         this.alive = false
       },
     }
   }
-  return { factory, launched, calls }
+  return { factory, launched, calls, stops }
 }
 
 function fakePool() {

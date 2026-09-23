@@ -29,6 +29,32 @@ Notable changes to the HOAI Claude Code plugin.
   - Two existing tests skipped with `t.skip()` or the `skip` option, which
     bun's `node:test` does not honour, now also return early, so `bun test`
     is green as well as `npm test`.
+- **The daemon starts that host itself.** `server.ts` spawns
+  `bin/hoai-browser-host.mjs` under node on every paired daemon
+  (`lib/browser-host-supervisor.ts`), scoped to the daemon's own pairing, with
+  its output in `~/.bgos-agent/browser-host-<digest>.log` and never on the
+  daemon's stdio, and stops it when the daemon exits (the host also stops
+  itself if the daemon is killed outright).
+  - **Unconditional, and safe by construction:** the backend elects an agent
+    host only for an agent whose browser placement is `daemon`, so a
+    desktop-placed agent's host never receives a frame, and Chromium only
+    launches on the first frame; an idle host costs one socket.
+  - **One host per pairing on a machine,** through the reclaimable lock of
+    `lib/pairing-lock.ts` at a per-pairing path: a second daemon of the same
+    pairing waits, and takes the host over when the first daemon or its host
+    is gone.
+  - **It can never take the daemon down.** A missing node, a spawn that
+    fails, or a host that crashes is one log line; the daemon carries on and
+    does not restart that host.
+  - **Kill switch: `HOAI_BROWSER_HOST=off`** (also `0`, `false`, `no`) skips
+    the spawn entirely.
+  - Review fixes to the host: it no longer exits when it has no live socket
+    (no credentials yet, or refused by the gateway), a stop during a Chrome
+    launch now stops that Chrome, JSON-RPC ids `1` and `"1"` no longer share a
+    waiter, the CDP connect after a launch is bounded, and a Snap Chromium
+    (which cannot open a profile under `~/.bgos-agent`) is skipped with a
+    message that says so. `package-lock.json` now carries the new
+    dependencies.
 
 ## 0.44.0 (2026-09-21)
 
