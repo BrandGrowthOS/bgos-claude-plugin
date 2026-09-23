@@ -37,12 +37,18 @@ Notable changes to the HOAI Claude Code plugin.
   itself if the daemon is killed outright).
   - **Unconditional, and safe by construction:** the backend elects an agent
     host only for an agent whose browser placement is `daemon`, so a
-    desktop-placed agent's host never receives a frame, and Chromium only
-    launches on the first frame; an idle host costs one socket.
+    desktop-placed agent's host never receives a frame, and Chromium and
+    playwright-core load only on the first frame; an idle host is one node
+    process (about 80 MB resident on macOS) holding one socket.
   - **One host per pairing on a machine,** through the reclaimable lock of
     `lib/pairing-lock.ts` at a per-pairing path: a second daemon of the same
     pairing waits, and takes the host over when the first daemon or its host
-    is gone.
+    is gone. A holder that is alive but late (a machine waking from sleep) is
+    given a full recheck to beat again before its lock is taken, and a daemon
+    whose lock was taken stands its host down and waits to take it back.
+  - The host never sees the daemon's BGOS_ settings or anything named like a
+    credential except its own pairing token, which it drops from its
+    environment once read; Chrome is started with none of them.
   - **It can never take the daemon down.** A missing node, a spawn that
     fails, or a host that crashes is one log line; the daemon carries on and
     does not restart that host.

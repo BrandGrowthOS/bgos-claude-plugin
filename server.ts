@@ -10944,8 +10944,9 @@ async function main(): Promise<void> {
   // Started on every paired daemon, with no flag to remember: the backend
   // elects an agent host ONLY for an agent whose browser placement is
   // `daemon` (agent-browser-relay.service.ts :690 and :786), so a
-  // desktop-placed agent's host never receives a frame, and Chromium launches
-  // only on the first frame, so an idle host costs one socket. One host per
+  // desktop-placed agent's host never receives a frame, and Chromium and
+  // playwright-core load only on the first frame, so an idle host is one node
+  // process holding one socket. One host per
   // pairing on the machine (a per-pairing lib/pairing-lock.ts lock), stdio
   // detached, stopped by shutdown() and the exit hook above, and it can never
   // take this daemon down. HOAI_BROWSER_HOST=off skips it entirely.

@@ -47,6 +47,10 @@ import {
   browserPathsFor,
   chromeArgs,
   chromeCandidates,
+  chromeEnv,
+  launchChromium,
+  scopeFromEnv,
+  scopePairings,
   handshakeOptions,
   hostInstructions,
   isSnapChromium,
@@ -451,6 +455,66 @@ test('the answer names the socket the frame ARRIVED on, even when the socket rec
   conn.stop()
 })
 
+test('Chrome is started with no BGOS_ or HOAI_ setting and nothing named like a credential', async () => {
+  const env = { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8', HOAI_BROWSER_HOST_PAIRING_TOKEN: 'pair-secret', BGOS_API_KEY: 'k1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3' }
+  assert.deepEqual(chromeEnv(env), { PATH: '/usr/bin', HOME: '/h', DISPLAY: ':0', XAUTHORITY: '/x', LANG: 'en_US.UTF-8' })
+  let seen: any = null
+  const fakeChrome = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), pid: 1, kill() {} })
+  const launched = launchChromium({
+    executable: '/c',
+    profileDir: '/p',
+    env,
+    spawnImpl: ((_cmd: string, _args: string[], options: any) => {
+      seen = options
+      return fakeChrome
+    }) as any,
+  })
+  fakeChrome.stderr.emit('data', Buffer.from('DevTools listening on ws://127.0.0.1:1/devtools/browser/x\n'))
+  await launched
+  assert.ok(!Object.values(seen.env).includes('pair-secret'), 'the pairing token never reaches Chrome')
+  assert.ok(!Object.values(seen.env).some((v) => ['k1', 'k2', 'k3'].includes(String(v))))
+})
+
+test('scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine', () => {
+  const scope = scopeFromEnv({ HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tokA', HOAI_BROWSER_HOST_BACKEND_URL: 'https://api.test/api/v1', HOAI_BROWSER_HOST_ASSISTANT_ID: '905', HOAI_BROWSER_HOST_PARENT_PID: '123' })
+  assert.deepEqual(scope, { token: 'tokA', backendUrl: 'https://api.test', assistantId: 905, parentPid: 123 })
+  assert.equal(scopeFromEnv({}), null, 'run by hand: every pairing')
+  const onDisk = [
+    { key: 'a', pairingId: 39, backendUrl: 'https://api.test', token: 'tokA', staleTokens: 0, assistantIds: [900] },
+    { key: 'b', pairingId: 68, backendUrl: 'https://api.test', token: 'tokB', staleTokens: 0, assistantIds: [901] },
+  ]
+  const scoped = scopePairings(onDisk, scope)
+  assert.equal(scoped.length, 1)
+  assert.equal(scoped[0].token, 'tokA')
+  assert.deepEqual(scoped[0].assistantIds, [900, 905], 'its pairing agents on disk plus its own')
+  assert.deepEqual(scopePairings(onDisk, null), onDisk)
+  const envOnly = scopePairings([onDisk[1]], scope)
+  assert.equal(envOnly.length, 1, 'a daemon paired through its environment, with no file on disk')
+  assert.equal(envOnly[0].token, 'tokA')
+  assert.deepEqual(envOnly[0].assistantIds, [905])
+  assert.deepEqual(scopePairings([onDisk[1]], { ...scope, assistantId: null }), [], 'nothing to serve without its agent')
+})
+
+test('the browser_ roster is loaded on first use, once, and a failed load is retried', async () => {
+  let loads = 0
+  let fail = true
+  const core = new BrowserHostCore({
+    pool: fakePool().pool,
+    deviceLabel: 'box',
+    browserTools: async () => {
+      loads += 1
+      if (fail) throw new Error('playwright-core missing')
+      return [navigateTool()]
+    },
+  })
+  assert.equal(loads, 0, 'nothing loaded before a frame')
+  await assert.rejects(core.roster(), /playwright-core missing/)
+  fail = false
+  assert.equal((await core.roster()).length, 5)
+  await core.roster()
+  assert.equal(loads, 2, 'loaded once after the failure, then cached')
+})
+
 // ── 4. The roster and the browser ────────────────────────────────────────────
 
 test('the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise', { timeout: 60_000 }, async () => {
@@ -491,7 +555,8 @@ test('resolveChromeExecutable: an installed browser is found, none is said plain
 test('a Snap Chromium is skipped on linux, and the message says why', () => {
   assert.equal(isSnapChromium('/snap/bin/chromium'), true)
   assert.equal(isSnapChromium('/usr/bin/chromium-browser', () => '#!/bin/sh\nexec /snap/bin/chromium "$@"\n'), true)
-  assert.equal(isSnapChromium('/usr/bin/chromium', () => '\u007fELF\u0002\u0001'), false)
+  assert.equal(isSnapChromium('/usr/bin/chromium', () => '\u007fELF\u0002\u0001', (p: string) => p), false)
+  assert.equal(isSnapChromium('/usr/bin/chromium', () => '\u007fELF\u0002\u0001', () => '/snap/chromium/current/usr/lib/chromium/chrome'), true, 'a link into /snap is a Snap too')
   const snapOnly = resolveChromeExecutable({
     platform: 'linux',
     env: { PATH: '/usr/bin' },
@@ -532,18 +597,27 @@ const nodeOnPath = spawnSync('node', ['--version']).status === 0
 
 test('the host process stays up with no live socket: no credentials yet, or refused by the gateway', { timeout: 60_000, skip: nodeOnPath ? false : 'node is not on PATH' }, async () => {
   if (!nodeOnPath) return
-  const waitExit = (child: ReturnType<typeof spawn>, ms: number) =>
-    Promise.race([new Promise<number | null>((r) => child.once('exit', (code) => r(code))), new Promise<'alive'>((r) => setTimeout(() => r('alive'), ms))])
+  // Exits are recorded from the moment of spawn, so a host that died before a
+  // wait began still reads as exited, never as alive.
+  const exits = new Map<ReturnType<typeof spawn>, number | null>()
+  const track = (child: ReturnType<typeof spawn>) => (child.once('exit', (code) => exits.set(child, code)), child)
+  const waitExit = async (child: ReturnType<typeof spawn>, ms: number): Promise<number | null | 'alive'> => {
+    const deadline = Date.now() + ms
+    while (!exits.has(child) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
+    return exits.has(child) ? exits.get(child)! : 'alive'
+  }
   // No credentials at all: it waits for a pairing instead of exiting.
   const empty = mkdtempSync(join(tmpdir(), 'bh-empty-'))
-  const idle = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: empty, USERPROFILE: empty }, stdio: 'ignore' })
+  const idle = track(spawn('node', [HOST_BIN], { env: { ...process.env, HOME: empty, USERPROFILE: empty }, stdio: 'ignore' }))
   // Refused by the gateway: it waits out its backoff instead of exiting.
   const relay = await startFakeRelay({ token: 'tok-refused', admissible: [] })
   const refusedHome = mkdtempSync(join(tmpdir(), 'bh-refused-'))
-  const refused = spawn('node', [HOST_BIN], {
-    env: { ...process.env, HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' },
-    stdio: 'ignore',
-  })
+  const refused = track(
+    spawn('node', [HOST_BIN], {
+      env: { ...process.env, HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' },
+      stdio: 'ignore',
+    }),
+  )
   try {
     const deadline = Date.now() + 20_000
     while (!relay.handshakes.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
@@ -558,6 +632,31 @@ test('the host process stays up with no live socket: no credentials yet, or refu
     idle.kill('SIGKILL')
     refused.kill('SIGKILL')
     await relay.close()
+  }
+})
+
+test('a daemon-started host connects only its daemon pairing, even with another pairing on disk', { timeout: 60_000, skip: nodeOnPath ? false : 'node is not on PATH' }, async () => {
+  if (!nodeOnPath) return
+  const mine = await startFakeRelay({ token: 'tok-mine', admissible: [900, 905] })
+  const other = await startFakeRelay({ token: 'tok-other', admissible: [901] })
+  const home = mkdtempSync(join(tmpdir(), 'bh-scope-'))
+  const agentRoot = join(home, '.bgos-agent')
+  mkdirSync(agentRoot, { recursive: true })
+  writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: mine.backendUrl, pairingToken: 'tok-mine', pairingId: 1, assistantId: 900 }))
+  writeFileSync(join(agentRoot, 'credentials-901.json'), JSON.stringify({ backendUrl: other.backendUrl, pairingToken: 'tok-other', pairingId: 2, assistantId: 901 }))
+  const host = spawn('node', [HOST_BIN], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-mine', HOAI_BROWSER_HOST_BACKEND_URL: mine.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '905' },
+    stdio: 'ignore',
+  })
+  try {
+    await mine.waitForHost(30_000)
+    assert.deepEqual(mine.handshakes[0].auth.agents, [900, 905], 'its pairing agent on disk, and its own')
+    await new Promise((r) => setTimeout(r, 2_000))
+    assert.equal(other.handshakes.length, 0, 'the other pairing on this machine is left to its own daemon')
+  } finally {
+    host.kill('SIGTERM')
+    await mine.close()
+    await other.close()
   }
 })
 

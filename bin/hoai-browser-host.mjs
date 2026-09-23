@@ -543,6 +543,25 @@ export function handshakeOptions(pairing, deviceLabel) {
   }
 }
 
+/** Names that look like a credential. None of them is Chrome's business. */
+export const SECRET_ENV_NAME = /(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|CREDENTIAL|PRIVATE_?KEY)/i
+
+/**
+ * The environment Chrome is started with: this host's minus every BGOS_ and
+ * HOAI_ variable and anything named like a credential. Chrome's helper and
+ * renderer processes inherit the browser's environment, and a renderer runs
+ * untrusted pages, so the pairing token and the daemon's keys must not ride
+ * along.
+ */
+export function chromeEnv(env = process.env) {
+  const out = {}
+  for (const [k, v] of Object.entries(env)) {
+    if (v === undefined || /^(BGOS_|HOAI_)/i.test(k) || SECRET_ENV_NAME.test(k)) continue
+    out[k] = v
+  }
+  return out
+}
+
 /**
  * The one pairing a daemon started this host for, or null when it was run by
  * hand (then it serves every pairing on the machine).
@@ -621,6 +640,14 @@ export function chromeCandidates({ platform = process.platform, env = process.en
   return [...pathDirs.flatMap((d) => names.map((n) => join(d, n))), ...fixed].filter((p) => !seen.has(p) && seen.add(p))
 }
 
+function realpathOrSelf(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
 /** The first bytes of a file, or null. Enough to tell a script from a binary. */
 function readHead(path, bytes = 4096) {
   let fd = null
@@ -645,8 +672,8 @@ function readHead(path, bytes = 4096) {
  * of hidden folders in the home directory, so it cannot open a profile under
  * ~/.bgos-agent, and its failure reads like a profile lock.
  */
-export function isSnapChromium(path, head = readHead) {
-  if (String(path).startsWith('/snap/')) return true
+export function isSnapChromium(path, head = readHead, real = realpathOrSelf) {
+  if (String(path).startsWith('/snap/') || String(real(path)).startsWith('/snap/')) return true
   const text = head(path)
   return typeof text === 'string' && text.startsWith('#!') && /\bsnap\b/.test(text)
 }
@@ -727,11 +754,11 @@ export function readDevToolsActivePort(profileDir, readText = defaultReadText) {
  * Starts Chrome on one profile and resolves its browser CDP endpoint, read
  * from the "DevTools listening on" line Chrome prints for port 0.
  */
-export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, spawnImpl = spawn, platform = process.platform }) {
+export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
   return new Promise((resolve, reject) => {
     let child
     try {
-      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'] })
+      child = spawnImpl(executable, chromeArgs({ profileDir, headless, platform }), { stdio: ['ignore', 'ignore', 'pipe'], env: chromeEnv(env) })
     } catch (err) {
       reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
       return
@@ -1149,16 +1176,36 @@ export function toolResult(result) {
  * principal).
  */
 export class BrowserHostCore {
+  /**
+   * `browserTools` is the served browser_ roster, or a function that loads
+   * it. The host passes the function: playwright-core is large (about 80 MB
+   * resident), and an idle host that never receives a frame should not pay
+   * for it, so it is loaded on the first tools/list or tools/call.
+   */
   constructor({ pool, browserTools, deviceLabel, log = () => {} }) {
     this.pool = pool
-    this.browserTools = browserTools
+    this._browserTools = browserTools
+    this._loaded = Array.isArray(browserTools) ? Promise.resolve(browserTools) : null
     this.deviceLabel = deviceLabel
     this._log = log
-    this._served = new Set(browserTools.map((t) => t.name))
   }
 
-  roster() {
-    return [...SESSION_TOOLS, ...this.browserTools]
+  /** The browser_ roster, loaded once; a failed load is retried next time. */
+  browserTools() {
+    if (!this._loaded) {
+      this._loaded = Promise.resolve()
+        .then(() => this._browserTools())
+        .catch((err) => {
+          this._loaded = null
+          this._log(`could not load the browser tools: ${err?.message ?? err}`)
+          throw err
+        })
+    }
+    return this._loaded
+  }
+
+  async roster() {
+    return [...SESSION_TOOLS, ...(await this.browserTools())]
   }
 
   async callTool(ctx, name, args, signal) {
@@ -1212,7 +1259,8 @@ export class BrowserHostCore {
       const gateId = typeof args.gate_id === 'string' ? args.gate_id.trim() : ''
       return errorResult('tool_error', `No permission request "${gateId}" is waiting or held: this host raises no permission gates.`)
     }
-    if (!this._served.has(name)) return errorResult('tool_error', `Unknown tool "${name}"`)
+    const served = await this.browserTools()
+    if (!served.some((t) => t.name === name)) return errorResult('tool_error', `Unknown tool "${name}"`)
     // wait_seconds is the gate's, never the engine's (host.js callTool).
     const { wait_seconds: _waitSeconds, ...engineArgs } = args
     const slot = await this.pool.acquire(ctx)
@@ -1345,7 +1393,7 @@ export class RelaySessions {
 
   _makeServer(entry) {
     const server = new Server(this._serverInfo, { capabilities: { tools: {} }, instructions: this._instructions })
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this._core.roster() }))
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: await this._core.roster() }))
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) =>
       this._core.callTool(entry.ctx, request.params.name, request.params.arguments || {}, extra?.signal),
     )
@@ -1660,6 +1708,9 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
   else log(`browser: NONE. ${browserNotFoundMessage(chrome)}`)
 
   const scope = scopeFromEnv(env)
+  // Read once, then gone from this process, so nothing it starts inherits
+  // the pairing token (Chrome gets chromeEnv on top of this).
+  delete env.HOAI_BROWSER_HOST_PAIRING_TOKEN
   const read = readPairings({ agentRoot, allow: parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS) })
   const pairings = scopePairings(read.pairings, scope)
   const skipped = read.skipped
@@ -1668,22 +1719,26 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
   for (const s of skipped) log(`skipped ${s.file}: ${s.reason}`)
   if (!pairings.length) log(`no paired agent found in ${agentRoot}`)
 
-  let browserTools
+  // playwright-core is only LOCATED here, not loaded: loading it costs about
+  // 80 MB resident, and a host that never receives a frame never needs it.
   try {
-    browserTools = servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(agentRoot, 'browser-host') }))
+    createRequire(import.meta.url).resolve('playwright-core')
   } catch (err) {
-    log(`playwright-core could not be loaded (${err?.message ?? err}); run bun install in the plugin folder`)
+    log(`playwright-core is not installed next to this host (${err?.message ?? err}); run bun install in the plugin folder`)
     return 1
   }
-  log(`tools: ${SESSION_TOOLS.length} session tools and ${browserTools.length} browser_ tools`)
-  if (check) return chrome.path ? 0 : 1
+  const loadBrowserTools = async () => servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(agentRoot, 'browser-host') }))
+  if (check) {
+    log(`tools: ${SESSION_TOOLS.length} session tools and ${(await loadBrowserTools()).length} browser_ tools`)
+    return chrome.path ? 0 : 1
+  }
 
   const createEngine = ({ profileDir, outputDir }) => {
     const found = resolveChromeExecutable({ env })
     if (!found.path) throw new HostError('browser_not_installed', browserNotFoundMessage(found))
     return new ChromiumEngine({ executable: found.path, profileDir, outputDir, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
-  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools, createEngine, log, scope }).start()
+  const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, log, scope }).start()
 
   return await new Promise((resolve) => {
     // The retry, rescan and parent timers are unref'd so an embedder (and a

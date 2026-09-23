@@ -36,6 +36,7 @@ import {
   browserHostKillSwitchOn,
   browserHostLockPath,
   browserHostPairingKey,
+  hostEnv,
   startBrowserHostSupervisor,
   type BrowserHostSupervisor,
   type BrowserHostSupervisorOptions,
@@ -162,12 +163,50 @@ test('a second daemon of the same pairing does not spawn a second host, and take
   c.sup.stop()
 })
 
-test('a daemon whose pairing lock was reclaimed stands its host down', async () => {
+test('a daemon whose pairing lock was taken stands its host down, then takes the host back when it can', async () => {
   const h = harness()
+  // Another live daemon (our parent stands in for it) holds the lock now.
   writeFileSync(h.lockPath, JSON.stringify({ pid: process.ppid, heartbeatAt: Date.now() }))
-  await until('the stand down', () => h.sup.state === 'ended')
-  assert.deepEqual(h.calls[0].child.signals, ['SIGTERM'])
-  assert.ok(h.logs.some((l) => /took this pairing's host over/.test(l)))
+  await until('the stand down', () => h.sup.state === 'waiting')
+  assert.deepEqual(h.calls[0].child.signals, ['SIGTERM'], 'its host went: two hosts for one pairing is what the lock stops')
+  assert.ok(h.logs.some((l) => /took this pairing's host over; stopping ours and waiting to take it back/.test(l)))
+  // The old host exiting later does not end this daemon's part.
+  h.calls[0].child.emit('exit', null, 'SIGTERM')
+  assert.equal(h.sup.state, 'waiting')
+  // That other holder goes: this daemon takes the pairing's host back.
+  writeFileSync(h.lockPath, JSON.stringify({ pid: OTHER_DAEMON_PID, heartbeatAt: Date.now() }))
+  await until('the take back', () => h.calls.length === 2)
+  assert.equal(h.sup.state, 'running')
+  h.sup.stop()
+})
+
+test('a live holder that is only late (a machine waking from sleep) keeps its lock; one that stays silent loses it', async () => {
+  const agentRoot = mkdtempSync(join(tmpdir(), 'bh-sleep-'))
+  const lockPath = browserHostLockPath(agentRoot, browserHostPairingKey(AUTH.backendUrl, AUTH.pairingToken))
+  // The holder is alive (this very process) but its last beat is 60 s old.
+  const lastBeat = Date.now() - 60_000
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, heartbeatAt: lastBeat }))
+  const b = harness({ agentRoot, selfPid: OTHER_DAEMON_PID, recheckMs: 300 })
+  assert.equal(b.calls.length, 0, 'not taken at first sight')
+  // The holder's own timer fires on wake before the next recheck.
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, heartbeatAt: Date.now() }))
+  await sleep(1_000)
+  assert.equal(b.calls.length, 0, 'a holder that beat again keeps its host')
+  // Now it goes silent for good: the same stale beat, a recheck apart.
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, heartbeatAt: Date.now() - 60_000 }))
+  await until('the reclaim', () => b.calls.length === 1, 5_000)
+  b.sup.stop()
+})
+
+test('the host gets the daemon environment without its BGOS_ settings or anything named like a credential, plus its own pairing token', () => {
+  const env = { PATH: '/usr/bin', HOME: '/home/kc', DISPLAY: ':0', XAUTHORITY: '/x', HOAI_BROWSER_EXECUTABLE: '/c', BGOS_API_KEY: 'k1', BGOS_PAIRING_TOKEN: 't1', OPENAI_API_KEY: 'k2', GITHUB_TOKEN: 'k3', AWS_SECRET_ACCESS_KEY: 'k4', DB_PASSWORD: 'k5' }
+  assert.deepEqual(hostEnv(env), { PATH: '/usr/bin', HOME: '/home/kc', DISPLAY: ':0', XAUTHORITY: '/x', HOAI_BROWSER_EXECUTABLE: '/c' })
+  const h = harness({ env })
+  const spawned = h.calls[0].options.env
+  for (const secret of ['k1', 't1', 'k2', 'k3', 'k4', 'k5']) assert.ok(!Object.values(spawned).includes(secret), `${secret} is not handed to the host`)
+  assert.equal(spawned[HOST_ENV.pairingToken], 'tok-1', 'the one secret it needs, explicitly')
+  assert.equal(spawned.HOAI_BROWSER_EXECUTABLE, '/c')
+  h.sup.stop()
 })
 
 // ── 3. It survives the child crashing ───────────────────────────────────────
