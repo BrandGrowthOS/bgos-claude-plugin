@@ -103,6 +103,20 @@ export interface PlanCardPayload {
 }
 
 /**
+ * Is this `eventMeta.payload` a plan card THIS framework posted?
+ *
+ * The discriminator is the JSONB pair the design settled on instead of a new
+ * MessageType, and `agent_route` is the same field the permission sweep uses
+ * to tell one daemon's kind of card from another's. Both are read defensively:
+ * the payload comes back off the wire as `unknown`.
+ */
+export function isPlanCardPayload(payload: unknown): payload is PlanCardPayload {
+  if (payload === null || typeof payload !== 'object') return false
+  const row = payload as Record<string, unknown>
+  return row.kind === PLAN_CARD_KIND && row.agent_route === PLAN_AGENT_ROUTE
+}
+
+/**
  * The chip CODES. `callbackData` is a code the app relabels, exactly as `ea:`
  * codes are relabelled today, so this plugin never chooses the words the owner
  * reads and Arabic comes for free. The `text` here is only what an OLD app,
@@ -111,6 +125,21 @@ export interface PlanCardPayload {
 export const PLAN_CHIP_GO = 'plan:go'
 export const PLAN_CHIP_CHANGE = 'plan:change'
 export const PLAN_CHIP_NO = 'plan:no'
+
+/**
+ * The sentinel the app ACTUALLY posts for Change the plan, and the reason
+ * resolvePlanChoice below needs the card as well as the code.
+ *
+ * `plan:change` is the chip's callbackData on the wire out, but it never comes
+ * back: tapping it does not answer the card, it ARMS the composer, and the
+ * Send that follows posts `POST /messages/:id/callback { sentinel: 'custom',
+ * customText }` with NO optionId. The backend stores exactly that shape as
+ * `__custom__` (message.service.ts, the `else` after `hasOption` and
+ * `sentinel === 'skip'`), so `__custom__` plus the owner's words is what a
+ * revision looks like on the way in. A step's Comment arms the same way and
+ * arrives the same way, which is why both read as "change the plan".
+ */
+export const PLAN_CUSTOM_SENTINEL = '__custom__'
 
 export type PlanChoice = 'go' | 'change' | 'no'
 
@@ -128,7 +157,19 @@ export function planCardOptions(): PlanCardOption[] {
   ]
 }
 
-/** Which plan answer a callback code is, or null when it is not one at all. */
+/**
+ * Which plan answer a callback CODE is, or null when it is not one at all.
+ *
+ * FEED THIS THE RAW callbackData, never the value an agent's own button
+ * unescapes to. Every agent authored button is namespaced on the way out
+ * (`escapeAgentButtonValue`, `u:` + the agent's value) precisely so its value
+ * can never be mistaken for one of this plugin's control codes, and that
+ * protection only holds while the classification happens BEFORE the unescape.
+ * Read `u:plan:go` here and the answer is null, which is the point; unescape
+ * first and an agent's own button would settle a real plan and tell the model
+ * the owner approved it. The permission intake has always classified off the
+ * raw value for the same reason.
+ */
 export function planChoiceOf(callbackData: unknown): PlanChoice | null {
   switch (typeof callbackData === 'string' ? callbackData : '') {
     case PLAN_CHIP_GO:
@@ -140,6 +181,59 @@ export function planChoiceOf(callbackData: unknown): PlanChoice | null {
     default:
       return null
   }
+}
+
+/**
+ * The code that NAMES a resolved plan answer, whatever sentinel it arrived
+ * under.
+ *
+ * The tool description, the instructions and the served canon all tell the
+ * model its answer comes back as `callback_data` `plan:go`, `plan:change` or
+ * `plan:no`. Two of the three do. The third arrives as `__custom__`, because
+ * the chip arms the composer rather than answering (see PLAN_CUSTOM_SENTINEL),
+ * so the daemon puts the promised code back on the meta it hands the model.
+ * That is a relabel of one field, not an invention: the choice was resolved
+ * from the card plus the sentinel first, and the summary line beside it says
+ * the same thing in words.
+ */
+export function planChipFor(choice: PlanChoice): string {
+  switch (choice) {
+    case 'go':
+      return PLAN_CHIP_GO
+    case 'change':
+      return PLAN_CHIP_CHANGE
+    case 'no':
+      return PLAN_CHIP_NO
+  }
+}
+
+/**
+ * Which plan answer a click is, reading the code AND the row it landed on.
+ *
+ * Two of the three chips are ordinary chips: a tap on Go ahead or Do not do
+ * this carries its option, so the option's own `callbackData` (`plan:go` /
+ * `plan:no`) comes back and the code alone is enough. The third does not exist
+ * on the way in at all, for the reason written above PLAN_CUSTOM_SENTINEL: the
+ * app arms the composer and posts the owner's words as a custom callback, so a
+ * revision arrives as `__custom__` and is indistinguishable, on the code alone,
+ * from the in-card Custom reply of any other message. Only the CARD tells them
+ * apart, so the card is an input here.
+ *
+ * `onPlanCard` must mean "the answered row is a plan card of this daemon's
+ * own kind", resolved by the caller from the open plan it is holding or from
+ * the row's own `eventMeta.payload` (isPlanCardPayload). It is NOT enough on
+ * its own: a card answered with some other sentinel is still not a choice.
+ */
+export function resolvePlanChoice(input: {
+  /** The RAW callbackData, before any `u:` unescape. See planChoiceOf. */
+  callbackData: unknown
+  onPlanCard: boolean
+}): PlanChoice | null {
+  const raw = typeof input.callbackData === 'string' ? input.callbackData : ''
+  const direct = planChoiceOf(raw)
+  if (direct !== null) return direct
+  if (!input.onPlanCard) return null
+  return raw === PLAN_CUSTOM_SENTINEL ? 'change' : null
 }
 
 /**
@@ -165,10 +259,11 @@ export function planChoiceOf(callbackData: unknown): PlanChoice | null {
  * wording exactly as it was for every other button in the app.
  */
 export function describePlanClick(input: {
-  callbackData: unknown
+  /** The choice resolvePlanChoice settled on, or null for a non plan click. */
+  choice: PlanChoice | null
   customText?: string | null
 }): string | null {
-  const choice = planChoiceOf(input.callbackData)
+  const choice = input.choice
   if (choice === null) return null
   if (choice === 'change') {
     const typed = (input.customText ?? '').trim()
@@ -443,6 +538,24 @@ export function buildPlanCardBody(input: {
  * is the direct PATCH the permission relay's backstop and boot sweep already
  * use, which is what this body is for.
  */
+/**
+ * The retire a revision can still make when this process has NO record of the
+ * plan being replaced: a restart mid wait, or a model naming an older card.
+ *
+ * It is the permission backstop's PATCH, `{ options: [] }`, and it is the half
+ * that actually matters: stripping the chips is what makes the old card
+ * unanswerable, so a tap can never approve a plan the agent has withdrawn.
+ * What is lost without the previous payload is the dimmed `state: 'superseded'`
+ * presentation, because that body can only be rebuilt from the payload this
+ * process no longer holds. Degrading to a chipless card is honest; skipping
+ * the retire entirely, which is what happened before, left TWO live plan cards
+ * in one chat, which is exactly what the retire-first ordering exists to
+ * prevent.
+ */
+export function buildPlanRetireBody(): Record<string, unknown> {
+  return { options: [] }
+}
+
 export function buildPlanSupersedeBody(
   previous: PlanCardPayload,
 ): Record<string, unknown> {
@@ -527,6 +640,62 @@ export function pendingPlanFastChatIds(
   return [...out]
 }
 
+// The answer that landed while nobody was listening ------------------------
+
+/**
+ * A plan answered while this daemon was DOWN is the plan wait's own failure
+ * mode, and it needs a sweep because the ordinary click detector cannot see it.
+ *
+ * `selectClickTransitions` announces a tap only on a live transition: it must
+ * have seen that id UNANSWERED on a previous poll. After a restart the
+ * unanswered map is empty and an already answered row never enters it either,
+ * so the tap is never announced, with no error and no log line. For a ten
+ * minute button prompt that was a benign property. A plan card is designed to
+ * be answered tomorrow (PLAN_STATUS_TTL_MINUTES is a day), which turns it into
+ * the main way a plan wait can end in silence: the owner sees Approved and the
+ * agent never hears.
+ *
+ * IDEMPOTENCE WITHOUT A NEW STORE, which is the part worth reading. The sweep
+ * takes only an answered plan card that STILL CARRIES ITS CHIPS, and the caller
+ * strips them (buildPlanRetireBody) as it announces. So a card is swept at most
+ * once, ever, across any number of restarts, without persisting a thing. The
+ * owner loses nothing: their app collapses the chips on `answeredAt` already,
+ * so a settled card looks the same with or without them.
+ *
+ * `createdBefore` is the permission sweep's bound, for the permission sweep's
+ * reason: two daemons can share one pairing and monitor the same chats, so a
+ * row written at or after this process started is not this process's to speak
+ * for. Set it a clock skew margin BEHIND boot, because the row's stamp is the
+ * backend's clock and the bound is this host's.
+ */
+export interface PlanSweepRow {
+  id: number
+  sender?: string | null
+  messageType?: string | null
+  answeredAt?: string | null
+  /** The backend stamp in ms, or null when it did not parse. */
+  createdAt: number | null
+  hasOptions: boolean
+  eventMeta?: { payload?: unknown } | null
+}
+
+export function missedPlanAnswers(
+  rows: readonly PlanSweepRow[],
+  opts: { createdBefore: number },
+): PlanSweepRow[] {
+  const out: PlanSweepRow[] = []
+  for (const row of rows) {
+    if (row.sender !== 'assistant') continue
+    if (row.messageType !== 'event') continue
+    if (!row.hasOptions) continue
+    if (!row.answeredAt) continue
+    if (row.createdAt === null || row.createdAt >= opts.createdBefore) continue
+    if (!isPlanCardPayload(row.eventMeta?.payload)) continue
+    out.push(row)
+  }
+  return out
+}
+
 /**
  * The identity of the next card in a chat: a revision keeps its plan's id and
  * counts up, a fresh plan starts at 1.
@@ -534,8 +703,11 @@ export function pendingPlanFastChatIds(
  * The `supersedes` id is what decides it, NOT whatever happens to be open,
  * because a daemon that restarted mid wait has no record of the plan it is
  * revising. In that case the revision starts a new plan id and still PATCHes
- * the row the model named, which is the honest degradation: the old card dims,
- * the new one is not labelled revision 2.
+ * the row the model named, which is the honest degradation: the old card loses
+ * its chips through buildPlanRetireBody, so it can never be answered again,
+ * but it keeps its ordinary look rather than the dimmed "Superseded by the
+ * plan below" one, which can only be rebuilt from the payload this process no
+ * longer holds. The new card is not labelled revision 2 either.
  */
 export function nextPlanIdentity(input: {
   supersedes?: number

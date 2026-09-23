@@ -20,20 +20,37 @@ Notable changes to the HOAI Claude Code plugin.
     changes anything" on your screen instead of "read only until approved"; the
     tool description, the `/plan` procedure and the agent instructions each say
     it in as many words. Codex, which has a real read only mode, sends `true`.
-  - **A revision retires the plan it replaces, in that order.** Pass
-    `supersedes` and the older card loses its buttons and dims BEFORE the new
-    one is posted, so two live plans never sit in one chat and a tap on the old
-    one cannot approve a plan the agent has withdrawn.
+  - **A revision retires the plan it replaces, in that order, whatever this
+    daemon happens to remember.** Pass `supersedes` and the older card loses
+    its buttons BEFORE the new one is posted, so two live plans never sit in
+    one chat and a tap on the old one cannot approve a plan the agent has
+    withdrawn. When this process still holds the old plan the card also dims
+    and says what replaced it; when it does not (a restart mid wait, or a model
+    naming an older card) the buttons still come off, which is the half that
+    matters.
   - **Change the plan carries your words, not a button label.** The app sends
     the typed revision as `custom_text` on the click itself, one stimulus
     instead of a click plus a message, and the agent reads
-    `Change the plan: <what you typed>`.
+    `Change the plan: <what you typed>`. It arrives under the `__custom__`
+    sentinel rather than `plan:change`, because the chip arms your composer
+    instead of answering, so the daemon reads it off the card it landed on and
+    hands the agent the `plan:change` code every one of its instructions names.
+  - **Your answer settles the wait even if the agent restarted while you were
+    thinking.** The status line beside the agent and the Plan mode chip above
+    your composer are both taken down on any answer, and no longer depend on
+    the daemon still holding the plan in memory. If it was not even running
+    when you tapped, it finds the answer on its next boot and acts on it once.
   - **Where a tap lands fast, and where it does not.** A click reaches this
     plugin on the poll and nowhere else, so a chat with an open plan is polled
     every two seconds for thirty minutes. A tap inside that window lands in
     seconds; a later one arrives on the five minute sweep. That is the honest
     trade rather than pinning a chat at two seconds for a plan nobody may
     answer until tomorrow.
+  - **A button an agent wrote can never be read as a plan answer.** Every agent
+    authored button value is namespaced on the way out, and the plan
+    classification now happens before that namespace is stripped, so a reply
+    button whose value happens to start `plan:` is an ordinary button both
+    ways.
 - **`/plan` is a real command now, with a procedure behind it.** It reaches the
   model as an actionable directive whose first step is `propose_plan`, and the
   daemon arms a verifier when it delivers one: cancelled by the first

@@ -32,12 +32,17 @@ import {
   PLAN_TITLE_MAX,
   buildPlanCardBody,
   buildPlanCardPayload,
+  buildPlanRetireBody,
   buildPlanSupersedeBody,
   describePlanClick,
+  isPlanCardPayload,
+  missedPlanAnswers,
   nextPlanIdentity,
   parsePlanSupersedes,
   pendingPlanFastChatIds,
   planAnswerDirective,
+  planChipFor,
+  resolvePlanChoice,
   planCardOptions,
   planCardPeek,
   planCardText,
@@ -47,6 +52,7 @@ import {
   type PendingPlan,
   type PlanCardPayload,
 } from '../lib/plan-card.ts'
+import { escapeAgentButtonValue, unescapeAgentButtonValue } from '../lib/message-text.ts'
 
 const ID = { planId: 'p9-abc-0001', revision: 1 }
 
@@ -275,21 +281,69 @@ test('only the three plan codes are plan answers', () => {
   assert.equal(planChoiceOf(undefined), null)
 })
 
+test('an agent authored plan:go button is NOT a plan answer, in the real order', () => {
+  // THE ORDER IS THE TEST. An agent CAN author a reply button and give it any
+  // value it likes. Every agent value goes out namespaced (`u:` + the value)
+  // exactly so it cannot come back as one of this plugin's control codes, and
+  // that protection is worth nothing if the intake unescapes BEFORE it
+  // classifies: `u:plan:go` becomes `plan:go` and settles a real plan the
+  // owner never answered. So this runs the whole wire round trip rather than
+  // asserting on a string the intake never produces.
+  const onTheWire = escapeAgentButtonValue('plan:go')
+  assert.equal(onTheWire, 'u:plan:go')
+  assert.equal(
+    resolvePlanChoice({ callbackData: onTheWire, onPlanCard: false }),
+    null,
+    'classified off the RAW value, an agent button is not a plan answer',
+  )
+  // And the value the agent authored still reaches it intact afterwards.
+  assert.equal(unescapeAgentButtonValue(onTheWire), 'plan:go')
+  // The mistake this replaces, written out: unescape first and the answer is
+  // a real approval.
+  assert.equal(planChoiceOf(unescapeAgentButtonValue(onTheWire)), 'go')
+})
+
+test('the typed revision arrives as __custom__, so the CARD is what names it', () => {
+  // THE WHOLE CHANGE ARM AGAINST THE REAL WIRE. `plan:change` never comes
+  // back: the chip arms the composer, and Send posts
+  // `{ sentinel: 'custom', customText }` with no optionId, which the backend
+  // stores as `__custom__`. Classified on the code alone the revision was read
+  // as an ordinary custom reply: no settle, no directive, and the model read
+  // `Custom reply: "drop step 2"`.
+  assert.equal(resolvePlanChoice({ callbackData: '__custom__', onPlanCard: true }), 'change')
+  // And only on the card. Every other message in the app has a Custom reply
+  // affordance and none of them is a plan.
+  assert.equal(resolvePlanChoice({ callbackData: '__custom__', onPlanCard: false }), null)
+  // The two ordinary chips carry their option, so the code alone is enough.
+  assert.equal(resolvePlanChoice({ callbackData: PLAN_CHIP_GO, onPlanCard: false }), 'go')
+  assert.equal(resolvePlanChoice({ callbackData: PLAN_CHIP_NO, onPlanCard: true }), 'no')
+  // A card answered with some other sentinel is not one of the three.
+  assert.equal(resolvePlanChoice({ callbackData: '__skip__', onPlanCard: true }), null)
+})
+
+test('the answer carries the code the model was promised, not the sentinel', () => {
+  // Every surface that tells the model what to expect (the tool description,
+  // the instructions, the canon) names plan:go / plan:change / plan:no. Two of
+  // the three arrive that way; the revision arrives as __custom__ because the
+  // chip arms the composer instead of answering. The daemon puts the promised
+  // code back on the meta rather than leaving the model to reconcile the two.
+  assert.equal(planChipFor('go'), PLAN_CHIP_GO)
+  assert.equal(planChipFor('change'), PLAN_CHIP_CHANGE)
+  assert.equal(planChipFor('no'), PLAN_CHIP_NO)
+})
+
 test('Change the plan reads as what the owner SAID, not as a button label', () => {
   // The app posts the typed revision as custom_text on the click, so the
-  // generic wording would render it `Clicked: "make it shorter"`, which reads
-  // as a label. This is the whole reason the plan wording exists.
+  // generic wording would render it `Custom reply: "make it shorter"`, which
+  // reads as a label. This is the whole reason the plan wording exists.
   assert.equal(
     describePlanClick({
-      callbackData: PLAN_CHIP_CHANGE,
+      choice: 'change',
       customText: 'drop step 2, it is not needed',
     }),
     'Change the plan: drop step 2, it is not needed',
   )
-  assert.equal(
-    describePlanClick({ callbackData: PLAN_CHIP_CHANGE }),
-    'Change the plan (no words given)',
-  )
+  assert.equal(describePlanClick({ choice: 'change' }), 'Change the plan (no words given)')
 })
 
 test('a plan answer is named off the CODE, so a relabelled chip stays readable', () => {
@@ -297,9 +351,69 @@ test('a plan answer is named off the CODE, so a relabelled chip stays readable',
   // button_text that comes back can be Arabic. That is right on screen and
   // useless in a transcript a model reads to decide what to do next, where
   // "Clicked: <arabic>" cannot tell Go ahead from Do not do this.
-  assert.equal(describePlanClick({ callbackData: PLAN_CHIP_GO }), 'Clicked: Go ahead')
-  assert.equal(describePlanClick({ callbackData: PLAN_CHIP_NO }), 'Clicked: Do not do this')
-  assert.equal(describePlanClick({ callbackData: 'u:something' }), null)
+  assert.equal(describePlanClick({ choice: 'go' }), 'Clicked: Go ahead')
+  assert.equal(describePlanClick({ choice: 'no' }), 'Clicked: Do not do this')
+  assert.equal(describePlanClick({ choice: null }), null)
+})
+
+// The answer that landed while nobody was listening -------------------------
+
+test('a plan card is recognised from its own payload, and nothing else is', () => {
+  assert.equal(isPlanCardPayload(payloadOf()), true)
+  assert.equal(isPlanCardPayload({ ...payloadOf(), agent_route: 'codex' }), false)
+  assert.equal(isPlanCardPayload({ kind: 'approval_request', agent_route: PLAN_AGENT_ROUTE }), false)
+  assert.equal(isPlanCardPayload(null), false)
+  assert.equal(isPlanCardPayload('plan_card'), false)
+})
+
+test('a plan answered while the daemon was down is found, once, and only ours', () => {
+  // A tap is announced only on a live transition (seen unanswered on a
+  // previous poll), and after a restart nothing was seen unanswered, so an
+  // answer that landed while this daemon was down reached the model never.
+  // A plan is designed to be answered tomorrow, so this is the plan wait's
+  // main way of ending in silence.
+  const boot = 5_000_000
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 11,
+    sender: 'assistant',
+    messageType: 'event',
+    answeredAt: '2026-09-23T09:00:00.000Z',
+    createdAt: boot - 60_000,
+    hasOptions: true,
+    eventMeta: { payload: payloadOf() },
+    ...over,
+  })
+  assert.deepEqual(
+    missedPlanAnswers([row()], { createdBefore: boot }).map((r) => r.id),
+    [11],
+  )
+  // Unanswered: the ordinary live path will announce it, this must not.
+  assert.deepEqual(missedPlanAnswers([row({ answeredAt: null })], { createdBefore: boot }), [])
+  // ALREADY SWEPT. The chips are what make it findable, and the caller strips
+  // them as it announces, so no second boot can announce the same answer.
+  // That is the idempotence, and it needs no new file on disk.
+  assert.deepEqual(missedPlanAnswers([row({ hasOptions: false })], { createdBefore: boot }), [])
+  // Another daemon's card, and another kind of card entirely.
+  assert.deepEqual(
+    missedPlanAnswers([row({ eventMeta: { payload: { kind: 'plan_card', agent_route: 'codex' } } })], {
+      createdBefore: boot,
+    }),
+    [],
+  )
+  assert.deepEqual(missedPlanAnswers([row({ eventMeta: null })], { createdBefore: boot }), [])
+  // Written after this process started: not this process's to speak for.
+  assert.deepEqual(missedPlanAnswers([row({ createdAt: boot + 1 })], { createdBefore: boot }), [])
+  assert.deepEqual(missedPlanAnswers([row({ createdAt: null })], { createdBefore: boot }), [])
+  // And the owner's own message, which carries no cards at all.
+  assert.deepEqual(missedPlanAnswers([row({ sender: 'user' })], { createdBefore: boot }), [])
+})
+
+test('a retire with no payload to rebuild still takes the chips off', () => {
+  // The fallback a revision uses when this process has no record of the card
+  // it is replacing (a restart mid wait, or a model naming an older card).
+  // Stripping the chips is the half that matters: it is what stops a tap
+  // approving a plan the agent has withdrawn.
+  assert.deepEqual(buildPlanRetireBody(), { options: [] })
 })
 
 test('each answer carries what to do next, because the click is the whole instruction', () => {

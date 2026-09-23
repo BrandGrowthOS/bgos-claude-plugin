@@ -303,19 +303,103 @@ test('a plan answer settles the wait: status down, scope released, chip reported
   // leave the agent reading "Waiting for your go ahead" forever.
   const fn = SERVER.slice(
     SERVER.indexOf('function settlePlan('),
-    SERVER.indexOf('function postPlanVerifierLine('),
+    SERVER.indexOf('function applyPlanAnswer('),
   )
-  assert.ok(fn.length > 0, 'settlePlan must be declared before postPlanVerifierLine')
+  assert.ok(fn.length > 0, 'settlePlan must be declared before applyPlanAnswer')
   assert.match(fn, /openPlansByChat\.delete\(chatId\)/)
   assert.match(fn, /clearPlanStatusLine\(\)/)
   assert.match(fn, /reportSessionMode\(chatId, 'default'\)/)
-  // And the intake calls it on any of the three codes, not just Go ahead.
-  assert.match(SERVER, /if \(planChoice !== null\) settlePlan\(chatId\)/)
 })
 
-test('the plan wording replaces the generic click wording, and only for plan codes', () => {
-  assert.match(SERVER, /const summary =\n\s*planSummary \?\?/)
-  assert.match(SERVER, /if \(planChoice !== null\) contentLines\.push\(planAnswerDirective\(planChoice\)\)/)
+test('the two reports survive a restart: only the map delete is conditional', () => {
+  // THE FINDING. `if (!openPlansByChat.delete(chatId)) return` gated the two
+  // things the OWNER can see (the status line beside the agent and the session
+  // mode the composer chip is drawn from) on a map this process loses on every
+  // restart. A plan posted before a restart and approved after it left
+  // "Waiting for your go ahead" standing for its full day and a Plan mode chip
+  // nothing but a hand typed /code could clear.
+  const fn = SERVER.slice(
+    SERVER.indexOf('function settlePlan('),
+    SERVER.indexOf('function applyPlanAnswer('),
+  )
+  assert.ok(
+    !/if \(!openPlansByChat\.delete\(chatId\)\) return/.test(fn),
+    'an early return on the local record is what broke the restart case',
+  )
+  const body = fn.slice(fn.indexOf('{'))
+  assert.ok(!body.includes('return'), 'nothing in settlePlan may bail out early')
+})
+
+test('the plan half of a click runs on BOTH transports, from one function', () => {
+  // There are two complete click intakes and they are mutually exclusive per
+  // click: whichever arrives first marks the id in the shared announced set
+  // and the other stays silent. So a plan rule in one of them only is not a
+  // dormant duplicate, it is a plan that settles or does not settle depending
+  // on whether the socket happened to be healthy. Counted the way
+  // noteSlashPlanDelivery is counted, for the same reason.
+  assert.equal(
+    (SERVER.match(/applyPlanAnswer\(/g) ?? []).length,
+    4,
+    'one declaration plus exactly three call sites (poll, stream, boot sweep)',
+  )
+  // And each intake hands it the RAW callbackData plus the row, never the
+  // agent-unescaped value.
+  assert.match(SERVER, /callbackData,\n\s*customText,\n\s*eventMetaPayload: mm\.eventMeta\?\.payload,/)
+  assert.match(
+    SERVER,
+    /callbackData: answer\.callbackData,\n\s*customText: answer\.customText,\n\s*eventMetaPayload: view\.eventMetaRaw\?\.payload,/,
+  )
+})
+
+test('the plan classification happens BEFORE the agent unescape, on both rails', () => {
+  // The reserved `plan:` namespace protects nothing if the intake unescapes
+  // first: every agent button goes out as `u:` + its value, so `u:plan:go`
+  // would be turned back into `plan:go` and read as the owner approving a real
+  // plan. The permission intake has always classified off the raw value; these
+  // two now do the same, and the ORDER is the guard.
+  const poll = SERVER.slice(
+    SERVER.indexOf('const permOutcome = resolvePermissionClick({'),
+    SERVER.indexOf('const kind ='),
+  )
+  assert.ok(poll.length > 0)
+  assert.ok(
+    poll.indexOf('applyPlanAnswer({') < poll.indexOf('unescapeAgentButtonValue('),
+    'the poll must classify the plan answer before it unescapes',
+  )
+  const stream = SERVER.slice(
+    SERVER.indexOf('const planAnswer = applyPlanAnswer({\n    chatId,'),
+    SERVER.indexOf('const contentLines = [\n    `[button_clicked] ${summary}`'),
+  )
+  assert.ok(stream.length > 0, 'the stream rail must call applyPlanAnswer')
+  assert.ok(
+    stream.indexOf('applyPlanAnswer({') < stream.indexOf('unescapeAgentButtonValue('),
+    'the stream must classify the plan answer before it unescapes',
+  )
+})
+
+test('the plan wording and the directive replace the generic ones everywhere', () => {
+  assert.equal(
+    (SERVER.match(/planAnswer\.summary \?\?/g) ?? []).length,
+    3,
+    'the poll, the stream and the boot sweep must all prefer the plan wording',
+  )
+  assert.equal(
+    (SERVER.match(/if \(planAnswer\.directive\) contentLines\.push\(planAnswer\.directive\)/g) ?? [])
+      .length,
+    3,
+    'the poll, the stream and the boot sweep must all carry the directive',
+  )
+})
+
+test('all three deliveries put the promised plan code back on the meta', () => {
+  // A revision arrives under the __custom__ sentinel, so without this the
+  // model would be handed callback_data __custom__ on an event every one of
+  // its instructions calls plan:change.
+  assert.equal(
+    (SERVER.match(/planAnswer\.callbackData \?\?/g) ?? []).length,
+    3,
+    'the poll, the stream and the boot sweep must all relabel the code',
+  )
 })
 
 test('a revision retires the old card BEFORE it posts the new one', () => {
@@ -331,4 +415,56 @@ test('a revision retires the old card BEFORE it posts the new one', () => {
   const postAt = block.indexOf('bgosPost(')
   assert.ok(retireAt > 0 && postAt > 0, 'both calls must be present')
   assert.ok(retireAt < postAt, 'the retire PATCH must run before the post')
+})
+
+test('a revision retires whenever supersedes is given, record or no record', () => {
+  // THE FINDING. Gating the PATCH on `openPlan?.messageId === supersedes`
+  // meant that the two cases the retire exists for, a daemon restarted mid
+  // wait and a model naming an older card, skipped it silently and posted the
+  // new card anyway: two answerable plans in one chat. The fallback strips the
+  // chips without the dimmed payload, which is the half that matters.
+  const block = SERVER.slice(
+    SERVER.indexOf("case 'propose_plan': {"),
+    SERVER.indexOf("case 'edit_message': {"),
+  )
+  assert.match(block, /if \(payload\.supersedes !== undefined\) \{/)
+  assert.ok(
+    !/payload\.supersedes !== undefined && openPlan\?\.messageId === payload\.supersedes/.test(block),
+    'the retire must not be gated on the in-memory record',
+  )
+  // And the full body is used only for the card this process can actually
+  // rebuild, never the other way round.
+  assert.match(
+    block,
+    /openPlan\?\.messageId === payload\.supersedes\n\s*\? buildPlanSupersedeBody\(openPlan\.payload\)\n\s*: buildPlanRetireBody\(\)/,
+  )
+})
+
+// The answer that landed while nobody was listening -------------------------
+
+test('boot sweeps for plan answers this daemon was not running to hear', () => {
+  // A tap is announced only on a live transition, so an answer that landed
+  // while the daemon was down reached the model never: no error, no log line,
+  // the owner sees Approved. A plan is designed to be answered tomorrow, which
+  // is what turns a benign property into the plan wait's main silent failure.
+  const fn = SERVER.slice(
+    SERVER.indexOf('async function announceMissedPlanAnswers('),
+    SERVER.indexOf('function noteSlashPlanDelivery('),
+  )
+  assert.ok(fn.length > 0, 'the sweep must be declared before noteSlashPlanDelivery')
+  assert.match(fn, /missedPlanAnswers\(/)
+  assert.match(fn, /createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS/)
+  assert.match(fn, /cacheKey: `plan-sweep:\$\{chatId\}`/)
+  // The chips come off BEFORE the announce, which is what makes the sweep
+  // idempotent across restarts with nothing persisted: a card with no chips is
+  // no longer found. A failed announce costs one delivery; a failed strip
+  // after a successful announce would repeat it on every boot.
+  const retireAt = fn.indexOf('buildPlanRetireBody()')
+  const announceAt = fn.indexOf('mcp.notification(')
+  assert.ok(retireAt > 0 && announceAt > 0)
+  assert.ok(retireAt < announceAt, 'strip the chips before announcing')
+  assert.match(fn, /rememberAnnouncedClick\(row\.id\)/)
+  // And it is wired into the boot, after discovery, unawaited like the
+  // permission sweep it sits beside.
+  assert.match(SERVER, /void phase\('plan answer sweep', \(\) => announceMissedPlanAnswers\(\)\)/)
 })
