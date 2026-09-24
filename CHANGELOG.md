@@ -69,7 +69,30 @@ card only to a daemon that declares `permission_card` or `plan_card`
     (kept at LF by `.gitattributes`), not only its data.
   - **Clone installs too.** The launchers now write the floor hook's entry into
     `.claude/settings.local.json` beside the forwarder, so a clone agent has the
-    same floor as a marketplace one from its next launch.
+    same floor as a marketplace one from its next launch through a launcher.
+    An always on agent that `bgos-agent update` moves to this release gets the
+    entry too: the update re-registers a clone workspace's hooks before it
+    restarts the service (a service starts `claude` directly, so nothing else
+    would have written it). And the daemon never takes the hook on trust: it
+    looks at boot for the blocking entry in the files the CLI reads for its
+    session and declares `hard_floor` only when it finds one, so a session
+    with no floor hook is not told a hook stops a listed action.
+  - **Long commands keep what makes them listed.** The hook's record keeps the
+    whole matched command, and the relay fits it to the floor check's 4000
+    characters and to the card's lead by dropping arguments, never the
+    operator, with a marker saying how many went: `echo "K=<4000 characters>"
+    > .env`, a `--force` after hundreds of branch names, `-rf` after hundreds
+    of folders and a `cp` of hundreds of files into `.git/hooks/` used to be
+    cut from their head, read as harmless and auto approved with the switch
+    on, or held on a card the server could not stamp. A held edit whose path
+    the preview lost now leads its card with the path. If the listed part
+    cannot fit at all, a `hold: false` about the cut body does not auto
+    approve it: you are asked.
+  - **Only a tap allows a held action.** A typed `yes <id>`, the `Yes, this
+    once` label or a callback pasted as text no longer settles a request the
+    floor holds (a typed no still does): the server cannot tell a person from
+    the agent's own credential on such a message, and the person only gate is
+    on the tap.
   - **Not covered, on purpose or for now:** a legacy API key connection and a
     backend without the route (both auto approve a listed action as before,
     and say so in the log), and a delete done by a script, an alias, a
