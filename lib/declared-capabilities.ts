@@ -81,14 +81,24 @@
  * fresh array each call, so a caller that mutates what it was given cannot
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
+ *
+ * The canon gated tokens (permission_card and plan_card) are NOT spelled
+ * here. They come from lib/claude-capability-tokens.ts, a byte-for-byte copy
+ * of the BGOS file the canon gates on
+ * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
+ * repos pin in a test (here test/claude-capability-tokens.pin.test.ts), so a
+ * token renamed on one side only turns that side red instead of leaving the
+ * agent silently untold.
  */
+
+import { PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 
 /** Declared wherever this plugin runs, on every host. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
-  'permission_card',
-  'plan_card',
+  PERMISSION_CARD,
+  PLAN_CARD,
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
