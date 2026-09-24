@@ -117,7 +117,7 @@ export const HARD_FLOOR_FIXTURE_RULES: HardFloorFixtureRule[] = [
   },
   {
     id: "acts_on_owners_behalf",
-    words: "sending, posting or paying on your behalf",
+    words: "sending, posting, paying or deleting on your behalf",
   },
 ];
 
@@ -1954,4 +1954,4 @@ export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE_RULES). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_RULES_DIGEST =
-  "5e1a1d280b70eaab889899dd83da5b81603b1362030c0b91b537624506237573";
+  "15ad13aa06d250721c6982382132b05f9f351f59944923bf6b8e29c4a37bd359";

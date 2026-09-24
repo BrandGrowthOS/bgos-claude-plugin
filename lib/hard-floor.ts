@@ -10,7 +10,7 @@
  *   git_dir_write          changing a file inside .git
  *   env_file_write         changing an .env file
  *   home_dotfile_write     changing a settings file in your home folder
- *   acts_on_owners_behalf  sending, posting or paying on your behalf
+ *   acts_on_owners_behalf  sending, posting, paying or deleting on your behalf
  *
  * THE LIST ITSELF LIVES IN lib/hard-floor-core.mjs, and this file re-exports
  * it with types. That is deliberate and it is the whole reason there are two
