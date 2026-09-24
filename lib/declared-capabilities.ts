@@ -87,7 +87,11 @@
  *                       tells the canon's floor sentence (a hook stops a
  *                       listed action and the relay holds it) only to a
  *                       connection that declares this token WITH
- *                       permission_card, never by version.
+ *                       permission_card, never by version. PAIRING
+ *                       CONNECTIONS ONLY: the floor check route is pairing
+ *                       scoped, so on a legacy API key connection the relay
+ *                       cannot hold anything and this token is not declared
+ *                       (DECLARED_CAPABILITIES_PAIRING).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -107,14 +111,32 @@
 
 import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 
-/** Declared wherever this plugin runs, on every host. */
+/** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   PERMISSION_CARD,
   PLAN_CARD,
-  HARD_FLOOR_TOKEN,
 ])
+
+/**
+ * Declared only on a PAIRING connection (AUTH.mode === 'pairing').
+ *
+ * hard_floor promises that a listed action is held for the owner, and the
+ * hold is the floor check route, which is pairing scoped: floorCheckPath
+ * answers null for an API key connection, consultFloor then reads
+ * `unsupported` and the relay auto approves as before the floor
+ * (lib/floor-check.ts). The canon fetch carries this list, and the backend
+ * counts the fetch's own list for a caller with no pairing, so an API key
+ * daemon that declared it would be told "a hook stops a listed action and the
+ * relay holds it" while its relay let the same action through. Fail closed:
+ * declare it only where the hold is real.
+ *
+ * permission_card and plan_card do NOT have this flaw and stay in the base:
+ * the card is a POST to `messages` and propose_plan is a typed tool, both of
+ * which an API key connection can do.
+ */
+export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
@@ -130,9 +152,18 @@ export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
  * an install with no tmux target declares the read half and the owner is
  * offered neither the Keep working switch nor Pause, rather than being offered
  * a control that would quietly do nothing.
+ *
+ * `authMode` is AUTH.mode, and it is REQUIRED so no call site can forget it:
+ * hard_floor is declared only on a pairing connection (see
+ * DECLARED_CAPABILITIES_PAIRING).
  */
-export function declaredCapabilities(input: { canInjectGoal: boolean }): readonly string[] {
-  return input.canInjectGoal === true
-    ? [...DECLARED_CAPABILITIES_BASE, ...DECLARED_CAPABILITIES_INJECTOR]
-    : [...DECLARED_CAPABILITIES_BASE]
+export function declaredCapabilities(input: {
+  canInjectGoal: boolean
+  authMode: 'pairing' | 'apikey'
+}): readonly string[] {
+  return [
+    ...DECLARED_CAPABILITIES_BASE,
+    ...(input.authMode === 'pairing' ? DECLARED_CAPABILITIES_PAIRING : []),
+    ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
+  ]
 }

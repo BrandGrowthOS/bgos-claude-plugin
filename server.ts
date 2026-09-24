@@ -354,6 +354,7 @@ import {
 } from './lib/floor-check.js'
 import {
   clearFloorAttached,
+  daemonFloorFolders,
   floorKey,
   floorStateRoot,
   markFloorAttached,
@@ -1087,7 +1088,10 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     let data: unknown = null
     try {
       data = await bgosGetCapped(
-        capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', declaredCapabilities({ canInjectGoal: false })),
+        capabilitiesFetchPath(
+          RUNNING_VERSION ?? '0.0.0',
+          declaredCapabilities({ canInjectGoal: false, authMode: AUTH.mode }),
+        ),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
         // fallback, so waiting longer than a few seconds buys nothing.
@@ -2702,14 +2706,20 @@ function settleFloorRequest(
 }
 
 /**
- * The folders this daemon's floor marker and the hook's records are keyed by:
- * its own working folder, which is the session's project folder, and the
- * CLI's CLAUDE_PROJECT_DIR when it passed one down.
+ * The folders this daemon's floor marker and the hook's records are keyed by
+ * (lib/floor-state.mjs daemonFloorFolders): LAUNCH_CWD first, because
+ * bin/bgos-launch.mjs moves this process's working folder to the plugin folder
+ * and only LAUNCH_CWD still names the session's project folder, then the CLI's
+ * CLAUDE_PROJECT_DIR when it passed one down, then the process's own folder.
+ * Keyed by process.cwd() and CLAUDE_PROJECT_DIR alone, a launcher start
+ * depended on CLAUDE_PROJECT_DIR, and where that was lost the floor did not ask.
  */
 const FLOOR_STATE_ROOT = floorStateRoot(process.env)
-const FLOOR_FOLDERS = [process.cwd(), process.env.CLAUDE_PROJECT_DIR ?? ''].filter(
-  (folder) => folder.trim() !== '',
-)
+const FLOOR_FOLDERS: string[] = daemonFloorFolders({
+  launchCwd: LAUNCH_CWD,
+  cwd: process.cwd(),
+  env: process.env,
+})
 const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
 let floorMarkerKeys: string[] = []
 
@@ -13126,7 +13136,9 @@ async function main(): Promise<void> {
       // the four tokens depend on whether this daemon can type into its own
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
-      capabilities: () => [...declaredCapabilities({ canInjectGoal: compactTarget !== null })],
+      capabilities: () => [
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, authMode: AUTH.mode }),
+      ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would

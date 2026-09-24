@@ -15,7 +15,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,6 +24,7 @@ import {
   FLOOR_RECORD_STALE_MS,
   buildFloorRecord,
   clearFloorAttached,
+  daemonFloorFolders,
   findAttachedKey,
   floorAsksDir,
   floorKey,
@@ -39,6 +40,7 @@ import {
 } from '../lib/floor-state.mjs'
 import { classifyToolCall } from '../lib/hard-floor.ts'
 import { stateRoot as forwarderStateRoot } from '../bin/hoai-hook.mjs'
+import { decideFloorHook, floorDeps, loadFloorCore, loadFloorState } from '../bin/hoai-floor-hook.mjs'
 import { hookStateRoot } from '../lib/hook-intake.ts'
 
 /** Claude Code 2.1.281's preview (see test/floor-check.test.ts for the source). */
@@ -211,4 +213,109 @@ test('a record carries only what the relay needs: the rule, the matched command,
   ])
   assert.equal(record.evidence, 'rm -rf build', 'the matched command, not the whole input')
   assert.equal(JSON.stringify(record).includes('Bearer'), false)
+})
+
+/**
+ * The attached marker is keyed by the LAUNCH folder (P2 stage 6, wave B1b Fix).
+ *
+ * The defect: server.ts keyed the marker by [process.cwd(),
+ * CLAUDE_PROJECT_DIR]. bin/bgos-launch.mjs moves bun's working folder to the
+ * PLUGIN folder, so process.cwd() never names the project and the floor
+ * rested on CLAUDE_PROJECT_DIR alone. The live proof lost that variable across
+ * the WSL hop and the floor silently did not ask. The launcher passes the
+ * operator's folder through as BGOS_LAUNCH_CWD (server.ts LAUNCH_CWD), and the
+ * marker is now keyed by it first; the hook reads BGOS_LAUNCH_CWD too.
+ *
+ * MUTATION PROOF (applied to lib/floor-state.mjs, confirmed red, restored):
+ * daemonFloorFolders dropped `launchCwd` from its list -> "a launcher start
+ * with no CLAUDE_PROJECT_DIR still asks, and the relay takes the record" and
+ * "the daemon's folders: the launch folder first" red.
+ */
+const PLUGIN_CACHE = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.49.0'
+const PROJECT_WIN = 'E:\\agents\\hoai-dev'
+const PROJECT_WSL = '/mnt/e/agents/hoai-dev'
+
+test('the daemon\'s folders: the launch folder first, then CLAUDE_PROJECT_DIR, then its own cwd, each once', () => {
+  assert.deepEqual(daemonFloorFolders({ launchCwd: PROJECT_WIN, cwd: PLUGIN_CACHE, env: {} }), [PROJECT_WIN, PLUGIN_CACHE])
+  assert.deepEqual(
+    daemonFloorFolders({ launchCwd: PROJECT_WIN, cwd: PLUGIN_CACHE, env: { CLAUDE_PROJECT_DIR: PROJECT_WSL } }),
+    [PROJECT_WIN, PLUGIN_CACHE],
+    'the same folder spelled the WSL way is one key, kept once',
+  )
+  assert.deepEqual(
+    daemonFloorFolders({ launchCwd: PROJECT_WIN, cwd: PLUGIN_CACHE, env: { CLAUDE_PROJECT_DIR: '/w/other' } }),
+    [PROJECT_WIN, '/w/other', PLUGIN_CACHE],
+  )
+  // A start without the launcher: LAUNCH_CWD falls back to the cwd, one key.
+  assert.deepEqual(daemonFloorFolders({ launchCwd: '/w/agent', cwd: '/w/agent', env: { CLAUDE_PROJECT_DIR: '  ' } }), ['/w/agent'])
+  assert.deepEqual(daemonFloorFolders({}), [])
+})
+
+test('the hook reads BGOS_LAUNCH_CWD too, after CLAUDE_PROJECT_DIR and before the payload cwd', () => {
+  const folders = sessionFolders({ cwd: '/w/agent/src' }, { CLAUDE_PROJECT_DIR: '/w/proj', BGOS_LAUNCH_CWD: '/w/launch' })
+  assert.deepEqual(folders.slice(0, 3), ['/w/proj', '/w/launch', '/w/agent/src'])
+  assert.deepEqual(sessionFolders({}, { BGOS_LAUNCH_CWD: PROJECT_WIN }), [PROJECT_WIN])
+  assert.deepEqual(sessionFolders({}, { BGOS_LAUNCH_CWD: '   ' }), [])
+})
+
+test('a launcher start with no CLAUDE_PROJECT_DIR still asks, and the relay takes the record', async () => {
+  const root = tempRoot()
+  try {
+    // The daemon, as bin/bgos-launch.mjs starts it: its cwd is the plugin
+    // cache, BGOS_LAUNCH_CWD names the project, and CLAUDE_PROJECT_DIR was
+    // lost on the way (the live proof's WSL hop).
+    const daemonFolders = daemonFloorFolders({ launchCwd: PROJECT_WIN, cwd: PLUGIN_CACHE, env: {} })
+    const written = markFloorAttached({ root, folders: daemonFolders, pid: process.pid })
+    assert.ok(written.includes(floorKey(PROJECT_WIN)))
+
+    // The hook, in the WSL session on the same project, with no
+    // CLAUDE_PROJECT_DIR either: only the payload's cwd names the folder.
+    const core = await loadFloorCore()
+    const state = await loadFloorState()
+    const payload = {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf build' },
+      cwd: PROJECT_WSL,
+    }
+    const out = decideFloorHook(JSON.stringify(payload), core, floorDeps(state, { env: { BGOS_PLUGIN_STATE_DIR: root } }))
+    assert.match(out, /"permissionDecision":"ask"/, 'the hook found the marker by the launch folder and asked')
+
+    // The relay reads records by the same keys the marker was written under.
+    const relayKeys = [...new Set(daemonFolders.map((f: string) => floorKey(f)).filter(Boolean))]
+    const record = takeFloorRecord({
+      root,
+      keys: relayKeys,
+      toolName: 'Bash',
+      inputPreview: JSON.stringify({ command: 'rm -rf build' }),
+    })
+    assert.ok(record, 'the relay took the hook\'s record')
+    assert.equal(record.ruleId, 'recursive_delete')
+
+    // The keys before this fix ([process.cwd(), CLAUDE_PROJECT_DIR]) name
+    // only the plugin cache here, and the same hook call stays silent.
+    const before = tempRoot()
+    try {
+      markFloorAttached({ root: before, folders: [PLUGIN_CACHE], pid: process.pid })
+      assert.equal(decideFloorHook(JSON.stringify(payload), core, floorDeps(state, { env: { BGOS_PLUGIN_STATE_DIR: before } })), '')
+    } finally {
+      rmSync(before, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('server.ts keys the floor by daemonFloorFolders with LAUNCH_CWD, the folder bgos-launch hands through', () => {
+  const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(
+    server,
+    /const FLOOR_FOLDERS: string\[\] = daemonFloorFolders\(\{\s*launchCwd: LAUNCH_CWD,\s*cwd: process\.cwd\(\),\s*env: process\.env,?\s*\}\)/,
+  )
+  assert.match(server, /const LAUNCH_CWD = process\.env\.BGOS_LAUNCH_CWD\?\.trim\(\) \|\| process\.cwd\(\)/)
+  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS \}\)/)
+  assert.match(server, /const FLOOR_KEYS = \[\.\.\.new Set\(FLOOR_FOLDERS\.map/)
+  // And the launcher still hands the folder through under that name.
+  const launcher = readFileSync(join(import.meta.dirname, '..', 'bin', 'bgos-launch.mjs'), 'utf8')
+  assert.match(launcher, /BGOS_LAUNCH_CWD: env\.BGOS_LAUNCH_CWD \|\| process\.cwd\(\)/)
 })

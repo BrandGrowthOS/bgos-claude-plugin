@@ -96,7 +96,11 @@ import {
   PERMISSION_CARD,
   PLAN_CARD,
 } from '../lib/claude-capability-tokens.ts'
-import { DECLARED_CAPABILITIES_BASE, declaredCapabilities } from '../lib/declared-capabilities.ts'
+import {
+  DECLARED_CAPABILITIES_BASE,
+  DECLARED_CAPABILITIES_PAIRING,
+  declaredCapabilities,
+} from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
 const SHA256 = 'a14ba628606269e463c38ac820f96860b1c2731a07ef088371bed6c24080ad75'
@@ -147,10 +151,14 @@ test('every token the file names is either declared by this release or named as 
 })
 
 test('this release declares permission_card, plan_card and hard_floor, from the file, on every host', () => {
+  // hard_floor is declared on a pairing connection only (its hold is the
+  // pairing scoped floor check route; lib/declared-capabilities.ts), so the
+  // home of each token is the base or the pairing half.
+  const declaredLists = [...DECLARED_CAPABILITIES_BASE, ...DECLARED_CAPABILITIES_PAIRING]
   for (const token of DECLARED_BY_THIS_RELEASE) {
-    assert.ok(DECLARED_CAPABILITIES_BASE.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE`)
+    assert.ok(declaredLists.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE and _PAIRING`)
     for (const canInjectGoal of [true, false]) {
-      assert.ok(declaredCapabilities({ canInjectGoal }).includes(token))
+      assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes(token))
     }
   }
   // Taken from the file, not spelled again: a second literal would agree with
@@ -168,7 +176,7 @@ test('nothing the file names is left undeclared by this release, and nothing it 
   for (const token of Object.keys(DECLARED_LATER)) {
     for (const canInjectGoal of [true, false]) {
       assert.ok(
-        !declaredCapabilities({ canInjectGoal }).includes(token),
+        !declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes(token),
         `${token} is declared, but ${DECLARED_LATER[token]} carries the code it promises`,
       )
     }
