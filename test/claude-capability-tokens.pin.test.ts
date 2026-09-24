@@ -158,7 +158,7 @@ test('this release declares permission_card, plan_card and hard_floor, from the 
   for (const token of DECLARED_BY_THIS_RELEASE) {
     assert.ok(declaredLists.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE and _PAIRING`)
     for (const canInjectGoal of [true, false]) {
-      assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes(token))
+      assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes(token))
     }
   }
   // Taken from the file, not spelled again: a second literal would agree with
@@ -176,7 +176,7 @@ test('nothing the file names is left undeclared by this release, and nothing it 
   for (const token of Object.keys(DECLARED_LATER)) {
     for (const canInjectGoal of [true, false]) {
       assert.ok(
-        !declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes(token),
+        !declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes(token),
         `${token} is declared, but ${DECLARED_LATER[token]} carries the code it promises`,
       )
     }

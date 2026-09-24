@@ -360,14 +360,14 @@ describe('declared capabilities on the heartbeat', () => {
         return {}
       },
       log: () => {},
-      capabilities: () => [...declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })],
+      capabilities: () => [...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })],
     })
     await Bun.sleep(0)
     handle!.sendNow()
     await Bun.sleep(0)
     expect(calls.length).toBe(2)
     for (const body of calls) {
-      expect(body.capabilities).toEqual([...declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })])
+      expect(body.capabilities).toEqual([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })])
     }
     clearInterval(handle!.timer)
   })
@@ -387,7 +387,7 @@ describe('declared capabilities on the heartbeat', () => {
     // plain node script and its hold rides the permission relay. It is
     // declared on a pairing connection only, and only a pairing connection
     // beats (shouldSendVersionHeartbeat), so every beat carries it.
-    expect([...declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })]).toEqual([
+    expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'permission_card',
@@ -396,7 +396,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_goal_loop',
       'mission_pause',
     ])
-    expect([...declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' })]).toEqual([
+    expect([...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'permission_card',

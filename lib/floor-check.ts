@@ -51,6 +51,14 @@
  * was cut cannot be checked, and the only answer that is not a guess is the
  * owner's.
  *
+ * A BODY THE LIST NO LONGER READS. The body is fitted to the route's 4000
+ * characters by dropping arguments, never the operator
+ * (lib/floor-evidence.mjs). When even that cannot fit the listed part (an
+ * essential word thousands of characters long), what is sent is a head the
+ * list does not read as any action, and a `hold: false` about it is an answer
+ * about a different, harmless command. consultFloor re-reads its own body and
+ * floorRouteFor sends such a proceed to the owner instead of auto approving.
+ *
  * WITH AUTO APPROVE OFF (floorRouteFor's second argument). Every request is
  * interactive there already, so the question is asked only for a request the
  * hook's record vouches for, and it changes one thing: when the owner has not
@@ -70,10 +78,12 @@ import {
   FLOOR_SHELL_TOOLS,
   classifyCommand,
   classifyPath,
+  classifyPermissionRequest,
   hardFloorWords,
   previewIsElided,
   readToolInput,
 } from './hard-floor.js'
+import { compactFloorEvidence } from './floor-evidence.mjs'
 
 /** The route's own limits (spec 4.4); a body over either is a 400. */
 export const FLOOR_CHECK_TOOL_NAME_MAX = 200
@@ -222,6 +232,30 @@ export function buildFloorCheckBody(
     reduced.command = evidence
     rendered = JSON.stringify(reduced)
   }
+  // Still over: fit the field the rule reads by dropping ARGUMENTS, never the
+  // operator (lib/floor-evidence.mjs). A head cut here was the hole the
+  // review found: the redirect or the `--force` at the END of a long simple
+  // command went, the server read a harmless command and answered hold:false.
+  if (rendered.length > FLOOR_CHECK_INPUT_PREVIEW_MAX && ruleId) {
+    const key = (['command', 'file_path', 'notebook_path'] as const).find(
+      (k) => typeof reduced[k] === 'string' && reduced[k]!.length > 0,
+    )
+    if (key) {
+      const others = { ...reduced }
+      delete others[key]
+      const fitted = compactFloorEvidence({
+        toolName: String(toolName ?? ''),
+        ruleId,
+        evidence: reduced[key]!,
+        max: FLOOR_CHECK_INPUT_PREVIEW_MAX,
+        measure: (text: string) => JSON.stringify({ ...others, [key]: text }).length,
+      })
+      if (fitted.fits) {
+        reduced[key] = fitted.evidence
+        rendered = JSON.stringify(reduced)
+      }
+    }
+  }
   while (rendered.length > FLOOR_CHECK_INPUT_PREVIEW_MAX) {
     // Still over (a path or an evidence segment of thousands of characters):
     // cut the longest field and re-render, so what is sent is always JSON.
@@ -280,13 +314,19 @@ export function readFloorCheckResponse(response: { status: number; text: string 
  */
 export function floorRouteFor(
   answer: FloorAnswer,
-  context: { autoApprove?: boolean; permissionMode?: string | null } = {},
+  context: { autoApprove?: boolean; permissionMode?: string | null; bodyReadable?: boolean } = {},
 ): FloorRoute {
   const autoApprove = context.autoApprove ?? true
   switch (answer.kind) {
     case 'hold':
       return 'hold'
     case 'proceed':
+      // A hold:false about a body the list itself no longer reads (the
+      // listed part could not be fitted into the route's limit) is an answer
+      // about a DIFFERENT, harmless command, not about this one. It is not a
+      // reason to let a listed action through, so the owner decides.
+      if (context.bodyReadable === false) return 'owner'
+    // falls through
     case 'unsupported':
       if (autoApprove) return 'auto_approve'
       return context.permissionMode === 'bypassPermissions' ? 'auto_approve' : 'owner'
@@ -340,6 +380,10 @@ export async function consultFloor(opts: {
   }
   const timeoutMs = opts.timeoutMs ?? FLOOR_CHECK_TIMEOUT_MS
   const body = buildFloorCheckBody(toolName, opts.inputPreview, match)
+  // Does the list still read an action in what is sent? When it does not, the
+  // server's answer cannot be about this action (see floorRouteFor).
+  const bodyReadable = classifyPermissionRequest(toolName, body.inputPreview) !== null
+  const routeContext = { ...context, bodyReadable }
   let timer: ReturnType<typeof setTimeout> | undefined
   let answer: FloorAnswer
   try {
@@ -356,7 +400,7 @@ export async function consultFloor(opts: {
   } finally {
     if (timer) clearTimeout(timer)
   }
-  const route = floorRouteFor(answer, context)
+  const route = floorRouteFor(answer, routeContext)
   const line =
     route === 'hold'
       ? `Floor HOLDS ${where} for the owner: the card waits for their answer`
@@ -364,7 +408,9 @@ export async function consultFloor(opts: {
         ? `Floor check could not decide ${where}, REFUSING it: ${
             answer.kind === 'error' ? answer.reason : answer.kind
           }`
-        : route === 'owner'
+        : route === 'owner' && answer.kind === 'proceed' && !bodyReadable
+          ? `Floor check for ${where}: the listed part did not fit the check's limit, so its answer is not about this action; asking the owner`
+          : route === 'owner'
           ? `Floor check for ${where} (auto approve off): ${
               answer.kind === 'error' ? `could not decide, ${answer.reason}` : 'not held'
             }; asking the owner as this install always does`

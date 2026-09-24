@@ -53,7 +53,8 @@
  * answers at all.
  */
 
-import { previewIsElided } from './hard-floor.js'
+import { classifyToolCall, previewIsElided } from './hard-floor.js'
+import { compactFloorEvidence } from './floor-evidence.mjs'
 
 export type PermissionBehavior = 'allow' | 'deny'
 export type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
@@ -192,6 +193,34 @@ export function parsePermissionChoice(
   if (normalized === 'do not allow' || normalized === 'deny' || normalized === 'not allowed') return 'deny'
 
   return null
+}
+
+/**
+ * The verdict a TYPED message may give a request, which is narrower for a
+ * request the hard floor HOLDS: there, only a deny.
+ *
+ * WHY. The typed lane (`yes <id>`, the `Yes, this once` label, a callback
+ * replayed as text) reads a chat row whose sender is 'user' and whose sender
+ * id is the requester. The server does NOT tell a person from a machine on
+ * that row: a pairing principal posting sender='user' is only warned about
+ * unless REJECT_PAIRING_USER_SENDER is set, and an API key principal may
+ * always post one, and either way the row is attributed to the owner. So on
+ * this lane the agent's own credential (a background job, a subagent) could
+ * say yes to its own held `rm -rf`, which is exactly what the floor exists to
+ * prevent, and what the canon tells the agent is refused. The server's person
+ * only gate is on the CALLBACK route (a tap), so a held request is allowed
+ * only by a tap, read off the card row or a click intake (answeredOn,
+ * resolvePermissionClick). A typed deny is still taken: refusing can only
+ * fail closed.
+ */
+export function typedPermissionVerdict(
+  text: string,
+  requestId: string,
+  floorHeld: boolean,
+): { choice: PermissionChoice | null; refused: PermissionChoice | null } {
+  const choice = parsePermissionChoice(text, requestId)
+  if (choice !== null && floorHeld && choice !== 'deny') return { choice: null, refused: choice }
+  return { choice, refused: null }
 }
 
 /**
@@ -353,13 +382,15 @@ export const FLOOR_EVIDENCE_LEAD_MAX = 1500
  *     carried only the arguments (`{ "to": "a@b.c", ... }`) was a held send
  *     the server could not recognise: no pill, no line, and no rule that only
  *     a person may allow it.
- *   - a shell command the floor holds whose match the card would not show:
- *     the preview was longer than the cap (cut from its head), or the CLI had
- *     already cut its middle out. The card then LEADS with the matched command
- *     as `{"command":"<evidence>"}` on its own line, then the preview, so the
+ *   - a shell command or an edit the floor holds whose match the card would
+ *     not show: the preview was longer than the cap (cut from its head), or
+ *     the CLI had already cut its middle out. The card then LEADS with the
+ *     match as `{"command":"<evidence>"}` (an edit: `{"file_path":...}` or
+ *     `{"notebook_path":...}`) on its own line, then the preview, so the
  *     owner sees the delete or the force push first and the server's card
- *     reader (which reads the first `command` key of a text that is not JSON)
- *     matches it.
+ *     reader (which reads the first such key of a text that is not JSON)
+ *     matches it. The lead is fitted to FLOOR_EVIDENCE_LEAD_MAX by dropping
+ *     arguments, never the operator, with a marker saying how many went.
  *   - anything else: the preview, capped, as before.
  */
 export function permissionCardTool(input: {
@@ -372,13 +403,64 @@ export function permissionCardTool(input: {
   if (name.startsWith('mcp__')) return capToolPreview(preview ? `${name} ${preview}` : name)
   if (!preview) return name
   const evidence = (input.floorEvidence ?? '').trim()
-  const shell = name === 'Bash' || name === 'PowerShell'
+  const key = floorLeadKey(name)
   const hidden = preview.length > APPROVAL_TOOL_MAX_CHARS || previewIsElided(preview)
-  if (shell && evidence && hidden) {
-    const lead = JSON.stringify({ command: evidence.slice(0, FLOOR_EVIDENCE_LEAD_MAX) })
+  if (key && evidence && hidden) {
+    // Fitted by dropping ARGUMENTS, never the operator: a head cut of a long
+    // simple command lost the redirect, the `-rf` or the `.git` destination
+    // at its end, so the server stamped nothing (lib/floor-evidence.mjs).
+    const ruleId = floorLeadRule(name, key, evidence)
+    const fitted = ruleId
+      ? compactFloorEvidence({
+          toolName: name,
+          ruleId,
+          evidence,
+          max: FLOOR_EVIDENCE_LEAD_MAX,
+          measure: (text: string) => JSON.stringify({ [key]: text }).length,
+        }).evidence
+      : evidence.slice(0, FLOOR_EVIDENCE_LEAD_MAX)
+    const writeKey = FLOOR_LEAD_WRITE_KEY[name]
+    const lead = JSON.stringify(writeKey ? { [key]: fitted, [writeKey]: '...' } : { [key]: fitted })
     return capToolPreview(`${lead}\n${preview}`)
   }
   return capToolPreview(preview)
+}
+
+/**
+ * The key a held card's lead carries its evidence under: a shell tool's
+ * `command`, a notebook edit's `notebook_path`, any other edit tool's
+ * `file_path` (the server's card reader takes the first of each, and reads a
+ * `file_path` as a write because the preview after it carries the tool's own
+ * write key). Null for every other tool, which is never led.
+ *
+ * An edit tool used to be left out, and that was the review's case: a Write
+ * whose `content` comes before `file_path` and runs past the 2000 cap shows
+ * no path at all, so a held `.env` write carried no floor block.
+ */
+function floorLeadKey(name: string): 'command' | 'file_path' | 'notebook_path' | null {
+  if (name === 'Bash' || name === 'PowerShell') return 'command'
+  if (name === 'NotebookEdit') return 'notebook_path'
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') return 'file_path'
+  return null
+}
+
+/**
+ * The write key a held edit's lead names beside its path, its value elided.
+ * The server's card reader counts a `file_path` as a WRITE only when a write
+ * shaped key rides in the same text (a `Read` carries a path alone), and the
+ * preview's own write key can sit past the card's 2000 cap behind a long path,
+ * which left such a card unstamped. A notebook edit needs none: its
+ * `notebook_path` is always a write.
+ */
+const FLOOR_LEAD_WRITE_KEY: Record<string, string> = {
+  Write: 'content',
+  Edit: 'new_string',
+  MultiEdit: 'edits',
+}
+
+/** The rule the evidence itself reads as, which is what the fitting keeps. */
+function floorLeadRule(name: string, key: string, evidence: string): string | null {
+  return classifyToolCall(name, { [key]: evidence })?.ruleId ?? null
 }
 
 /**

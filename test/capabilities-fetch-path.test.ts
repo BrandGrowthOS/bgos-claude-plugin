@@ -41,7 +41,7 @@ test('the fetch path carries the channel, the version and the declared list', ()
 })
 
 test('the daemon\'s own base declaration reaches the fetch, permission_card included', () => {
-  const path = capabilitiesFetchPath('0.47.0', declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' }))
+  const path = capabilitiesFetchPath('0.47.0', declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }))
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   assert.equal(query.get('channel'), 'claude')
   assert.equal(query.get('daemonVersion'), '0.47.0')
@@ -52,7 +52,7 @@ test('the plan card token reaches the fetch too (0.48.0)', () => {
   // The canon's plan card sentences are gated on plan_card exactly as the
   // permission card sentence is on permission_card, so the fetch at connect
   // must carry it for the same reason.
-  const path = capabilitiesFetchPath('0.48.0', declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' }))
+  const path = capabilitiesFetchPath('0.48.0', declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }))
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   assert.ok(query.get('capabilities')!.split(',').includes('plan_card'))
 })
@@ -61,7 +61,7 @@ test('the hard floor token reaches the fetch too (0.49.0)', () => {
   // The canon's floor sentence is gated on hard_floor (with permission_card),
   // so the fetch at connect, which runs before the first heartbeat, must carry
   // it or a fresh boot is told nothing about the hook it installed.
-  const path = capabilitiesFetchPath('0.49.0', declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' }))
+  const path = capabilitiesFetchPath('0.49.0', declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }))
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   const sent = query.get('capabilities')!.split(',')
   assert.ok(sent.includes('hard_floor'))
@@ -119,8 +119,8 @@ test('the canon fetch at connect carries the declared list', () => {
   const body = server.slice(start, end)
   assert.match(
     body,
-    /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false, authMode: AUTH\.mode \}\)\s*,?\s*\)/,
+    /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)\s*,?\s*\)/,
   )
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
-  assert.ok(declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' }).includes('permission_card'))
+  assert.ok(declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }).includes('permission_card'))
 })

@@ -24,6 +24,12 @@ import {
 import { capabilitiesFetchPath } from '../lib/capabilities.ts'
 import { consultFloor, floorCheckPath } from '../lib/floor-check.ts'
 import { classifyToolCall } from '../lib/hard-floor.ts'
+import {
+  floorHookPresence,
+  registersFloorHook,
+  type FloorHookPresenceInput,
+} from '../lib/floor-hook-presence.ts'
+import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 
 /** backend/src/dto/integrations/pair-exchange.dto.ts:25 */
 const CAPABILITY_TOKEN_REGEX = /^[a-z][a-z0-9_]{0,63}$/
@@ -34,7 +40,7 @@ const SHAPES = [true, false] as const
 
 test('every declared token matches the grammar the backend accepts', () => {
   for (const canInjectGoal of SHAPES) {
-    const declared = declaredCapabilities({ canInjectGoal, authMode: 'pairing' })
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
     assert.ok(Array.isArray(declared))
     assert.ok(declared.length > 0, 'declaring nothing hides every capability')
     for (const token of declared) {
@@ -45,7 +51,7 @@ test('every declared token matches the grammar the backend accepts', () => {
 
 test('the list stays inside the backend ArrayMaxSize of 32', () => {
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).length <= 32)
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).length <= 32)
   }
 })
 
@@ -56,7 +62,7 @@ test('the base is frozen, so no call site can push a token onto it at runtime', 
 
 test('mission_events is declared on every host: this daemon hears the owner decision', () => {
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes('mission_events'))
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('mission_events'))
   }
 })
 
@@ -66,12 +72,12 @@ test('mission_goal_checks is declared on every host, because the checker is the 
   // on Mac, Linux and Windows alike. Reporting those verdicts needs no tmux,
   // so this token is not gated on the injector.
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes('mission_goal_checks'))
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('mission_goal_checks'))
   }
 })
 
 test('the goal loop and the pause are declared ONLY where the daemon can type', () => {
-  const canType = declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })
+  const canType = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })
   assert.ok(canType.includes('mission_goal_loop'))
   assert.ok(canType.includes('mission_pause'))
 })
@@ -83,7 +89,7 @@ test('a host that cannot type declares the READ half only', () => {
   // on such an agent sees no Keep working switch and no Pause button, which is
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
-    [...declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' })],
+    [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
     ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor'],
   )
 })
@@ -106,11 +112,11 @@ test('a host that cannot type declares the READ half only', () => {
  */
 test('permission_card is declared on every host, because the relay has no platform limit', () => {
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes('permission_card'))
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('permission_card'))
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('permission_card'))
   assert.deepEqual(
-    [...declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })],
+    [...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })],
     ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor', 'mission_goal_loop', 'mission_pause'],
   )
 })
@@ -131,7 +137,7 @@ test('permission_card is declared on every host, because the relay has no platfo
  */
 test('plan_card is declared on every host, because propose_plan is a typed tool with no platform limit', () => {
   for (const canInjectGoal of SHAPES) {
-    assert.ok(declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).includes('plan_card'))
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('plan_card'))
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('plan_card'))
 })
@@ -159,7 +165,7 @@ test('plan_card is declared on every host, because propose_plan is a typed tool 
  */
 test('hard_floor is declared on every host of a pairing connection, because the hook and the hold have no platform limit', () => {
   for (const canInjectGoal of SHAPES) {
-    const declared = declaredCapabilities({ canInjectGoal, authMode: 'pairing' })
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
     assert.ok(declared.includes('hard_floor'))
     // The canon tells the floor sentence only beside the relay it names.
     assert.ok(declared.includes('permission_card'))
@@ -175,7 +181,7 @@ test('hard_floor is declared on every host of a pairing connection, because the 
 test('no token is declared twice, on either host or either connection', () => {
   for (const canInjectGoal of SHAPES) {
     for (const authMode of ['pairing', 'apikey'] as const) {
-      const declared = declaredCapabilities({ canInjectGoal, authMode })
+      const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode })
       assert.equal(new Set(declared).size, declared.length)
     }
   }
@@ -202,13 +208,13 @@ test('no token is declared twice, on either host or either connection', () => {
  */
 test('an API key connection does not declare hard_floor, on either host, and keeps both cards', () => {
   for (const canInjectGoal of SHAPES) {
-    const declared = declaredCapabilities({ canInjectGoal, authMode: 'apikey' })
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'apikey' })
     assert.equal(declared.includes('hard_floor'), false, 'an API key relay cannot hold a listed action')
     assert.ok(declared.includes('permission_card'))
     assert.ok(declared.includes('plan_card'))
     assert.deepEqual(
       [...declared],
-      declaredCapabilities({ canInjectGoal, authMode: 'pairing' }).filter((t) => t !== 'hard_floor'),
+      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor'),
     )
     // And the canon fetch at connect, which is what the backend counts for
     // a caller with no pairing, does not carry it either.
@@ -237,7 +243,7 @@ test('hard_floor is declared exactly where the relay can really hold a listed ac
     const holds = decision.route === 'hold'
     for (const canInjectGoal of SHAPES) {
       assert.equal(
-        declaredCapabilities({ canInjectGoal, authMode }).includes('hard_floor'),
+        declaredCapabilities({ canInjectGoal, floorHook: true, authMode }).includes('hard_floor'),
         holds,
         `${authMode}: declares hard_floor ${!holds} but the relay ${holds ? 'holds' : 'answers ' + decision.route}`,
       )
@@ -245,19 +251,137 @@ test('hard_floor is declared exactly where the relay can really hold a listed ac
   }
 })
 
-test('server.ts passes the live AUTH.mode at every declaration, never a literal', () => {
+test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at every declaration, never a literal', () => {
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
   assert.equal(calls.length, 2, 'the canon fetch and the heartbeat, and nothing else')
-  for (const call of calls) assert.match(call, /authMode: AUTH\.mode \}\)$/)
+  for (const call of calls) {
+    assert.match(call, /authMode: AUTH\.mode \}\)$/)
+    assert.match(call, /floorHook: FLOOR_HOOK\.registered,/)
+  }
+  // And the lookup is the real one, over the session's own folders.
+  assert.match(server, /const FLOOR_HOOK: FloorHookPresence = \(\(\) => \{\n\s*try \{\n\s*return floorHookPresence\(\{/)
+  assert.match(server, /folders: FLOOR_FOLDERS,/)
+})
+
+// ── hard_floor only where the floor hook is REALLY registered (review) ───────
+
+/**
+ * THE REVIEW: hard_floor was declared on every pairing whether or not the
+ * session's CLI carried the blocking hook. A clone gets the entry only when a
+ * launcher or bgos-agent install writes it into a settings file; an always on
+ * agent installed at 0.48.0 and moved to 0.49.0 by `bgos-agent update` starts
+ * `claude` from its service with 0.48.0's settings, so no request is ever
+ * raised for `rm -rf` under --dangerously-skip-permissions, while the canon
+ * told its agent (and the owner turned the switch on believing) a hook stops
+ * it. Now the daemon looks at boot and declares only what it found.
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): the `&& input.floorHook === true` removed from the pairing
+ * condition -> the first case below red, 1 of 19.
+ */
+test('a pairing whose session has no floor hook does not declare hard_floor, and keeps everything else', () => {
+  for (const canInjectGoal of SHAPES) {
+    const without = declaredCapabilities({ canInjectGoal, floorHook: false, authMode: 'pairing' })
+    assert.equal(without.includes('hard_floor'), false)
+    assert.deepEqual(
+      [...without],
+      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor'),
+    )
+    const path = capabilitiesFetchPath('0.49.0', without)
+    const sent = new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('capabilities')!.split(',')
+    assert.equal(sent.includes('hard_floor'), false, 'nor does the canon fetch carry it')
+  }
+})
+
+const memFs = (files: Record<string, string>) => ({
+  readFile: (p: string) => {
+    const text = files[p.replace(/\\/g, '/')]
+    if (text === undefined) throw new Error(`ENOENT ${p}`)
+    return text
+  },
+  exists: (p: string) => files[p.replace(/\\/g, '/')] !== undefined,
+})
+const presence = (over: Partial<FloorHookPresenceInput> & { files: Record<string, string> }) => {
+  const fs = memFs(over.files)
+  return floorHookPresence({
+    installMethod: 'clone',
+    pluginRoot: '/p',
+    folders: ['/agent'],
+    configDir: '/home/kc/.claude',
+    env: {},
+    join: (...parts: string[]) => parts.join('/'),
+    ...fs,
+    ...over,
+  })
+}
+
+/** What the clone launchers write today (ensureHookEntries, 0.49.0), read back. */
+function cloneSettings(floorHookPath?: string | null): string {
+  let text = ''
+  const fs = {
+    readFile: () => (text ? text : null),
+    writeFile: (_p: string, c: string) => {
+      text = c
+    },
+  }
+  ensureHookEntries({
+    settingsPath: '/agent/.claude/settings.local.json',
+    forwarderPath: '/p/bin/hoai-hook.mjs',
+    floorHookPath,
+    fs,
+  })
+  return text
+}
+
+test('the floor hook is found in the plugin\'s own hooks file on a marketplace install', () => {
+  const hooksJson = readFileSync(join(import.meta.dirname, '..', 'hooks', 'hooks.json'), 'utf8')
+  assert.equal(presence({ installMethod: 'marketplace', files: { '/p/hooks/hooks.json': hooksJson } }).registered, true)
+  // The same file on a CLONE is never read by the CLI, so it does not count.
+  assert.equal(presence({ installMethod: 'clone', files: { '/p/hooks/hooks.json': hooksJson } }).registered, false)
+})
+
+test('a clone counts only the settings entry the launchers write, and only while its script exists', () => {
+  const written = cloneSettings()
+  assert.match(written, /hoai-floor-hook\.mjs/)
+  assert.equal(
+    presence({ files: { '/agent/.claude/settings.local.json': written, '/p/bin/hoai-floor-hook.mjs': '' } }).registered,
+    true,
+  )
+  // The script moved or was deleted: the entry runs nothing.
+  assert.equal(presence({ files: { '/agent/.claude/settings.local.json': written } }).registered, false)
+  // THE REVIEW'S CASE: a 0.48.0 workspace, the forwarder entries and no floor entry.
+  const old = cloneSettings(null)
+  assert.doesNotMatch(old, /hoai-floor-hook/)
+  assert.equal(
+    presence({ files: { '/agent/.claude/settings.local.json': old, '/p/bin/hoai-floor-hook.mjs': '' } }).registered,
+    false,
+  )
+  // No settings at all.
+  assert.equal(presence({ files: {} }).registered, false)
+})
+
+test('an async floor entry cannot stop anything and does not count; a user or project settings file does', () => {
+  const asyncEntry = JSON.stringify({
+    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node', args: ['/p/bin/hoai-floor-hook.mjs'], async: true }] }] },
+  })
+  const syncEntry = asyncEntry.replace('"async":true', '"async":false')
+  const script = { '/p/bin/hoai-floor-hook.mjs': '' }
+  assert.equal(presence({ files: { '/agent/.claude/settings.local.json': asyncEntry, ...script } }).registered, false)
+  assert.equal(presence({ files: { '/agent/.claude/settings.json': syncEntry, ...script } }).registered, true)
+  assert.equal(presence({ files: { '/home/kc/.claude/settings.json': syncEntry, ...script } }).registered, true)
+  // ${CLAUDE_PLUGIN_ROOT} is expanded only in a plugin's own hooks file.
+  const variable = syncEntry.replace('/p/bin', '${CLAUDE_PLUGIN_ROOT}/bin')
+  assert.equal(registersFloorHook(JSON.parse(variable), { exists: () => true, pluginRootVariable: false }), false)
+  assert.equal(registersFloorHook(JSON.parse(variable), { exists: () => true, pluginRootVariable: true }), true)
 })
 
 test('a late tmux upgrade changes the answer, because it is computed per beat', () => {
   // lib/compact-capability.ts can upgrade the target up to thirty minutes
   // after boot, and the heartbeat sends a THUNK, so the same process must be
   // able to answer differently on a later beat. A frozen constant could not.
-  const before = declaredCapabilities({ canInjectGoal: false, authMode: 'pairing' })
-  const after = declaredCapabilities({ canInjectGoal: true, authMode: 'pairing' })
+  const before = declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })
+  const after = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })
   assert.ok(!before.includes('mission_goal_loop'))
   assert.ok(after.includes('mission_goal_loop'))
 })

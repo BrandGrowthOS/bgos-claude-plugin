@@ -45,6 +45,7 @@ import {
   resolvePermissionClick,
   senderUserIdCandidate,
   storedWaitSeconds,
+  typedPermissionVerdict,
   watchPermissionVerdict,
   type PendingPermissionLike,
   type PermissionCardRowLike,
@@ -1604,4 +1605,53 @@ test('the daemon no longer runs a clock of its own', () => {
   assert.match(handler, /bgosPost\(\s*'messages',/)
   assert.equal(/bgosPost\(\s*'send-message'/.test(handler), false)
   assert.ok(handler.includes('buildPermissionRequestBody({'))
+})
+
+// ── A request the hard floor HOLDS takes no typed yes (P2 stage 6 review) ────
+
+/**
+ * THE REVIEW: a held floor request was settled by waitForVerdict's
+ * verdictFrom too, which takes any sender='user' row with the requester's id
+ * whose text is `yes <id>` or just the label `Yes, this once`. The server does
+ * not tell a person from a machine on that row (a pairing principal posting
+ * sender='user' is only warned about unless REJECT_PAIRING_USER_SENDER is set,
+ * an API key principal may always post one), so the agent's own credential,
+ * from a background job or a subagent, could say yes to its own held
+ * `rm -rf build`. The person only gate lives on the callback route (the tap),
+ * so a held request takes only a deny on the typed lane.
+ *
+ * MUTATION PROOF (applied to lib/permission-relay.ts, confirmed red,
+ * restored): typedPermissionVerdict's refusal line
+ * `if (choice !== null && floorHeld && choice !== 'deny') return ...` removed
+ * -> the first case below red, 1 of 54.
+ */
+test('a request the floor holds takes no typed or label yes, from anyone; a typed no still ends it', () => {
+  const id = 'abcde'
+  for (const text of [`yes ${id}`, `y ${id}`, 'Yes, this once', 'Allow once', `ea:once:${id}`, 'allow for session']) {
+    const verdict = typedPermissionVerdict(text, id, true)
+    assert.equal(verdict.choice, null, text)
+    assert.notEqual(verdict.refused, null, text)
+  }
+  for (const text of [`no ${id}`, `ea:deny:${id}`, 'Deny']) {
+    assert.deepEqual(typedPermissionVerdict(text, id, true), { choice: 'deny', refused: null }, text)
+  }
+})
+
+test('a request the floor does not hold reads a typed verdict exactly as before', () => {
+  const id = 'abcde'
+  for (const text of [`yes ${id}`, 'Yes, this once', `no ${id}`, 'hello', `yes zzzzz`]) {
+    assert.deepEqual(typedPermissionVerdict(text, id, false), {
+      choice: parsePermissionChoice(text, id),
+      refused: null,
+    }, text)
+  }
+})
+
+test('server.ts: the typed lane asks typedPermissionVerdict with the request\'s floorHeld, and only a HOLD sets it', () => {
+  const verdictFrom = SRC.slice(SRC.indexOf('    verdictFrom: (msg) => {'), SRC.indexOf('    retireCard: async () => {'))
+  assert.match(verdictFrom, /typedPermissionVerdict\(text, requestId, floorHeld\)/)
+  assert.doesNotMatch(verdictFrom, /parsePermissionChoice\(/, 'the typed lane must not bypass the floor check')
+  assert.match(SRC, /case 'hold':[\s\S]{0,400}?return relayPermissionToOwner\(params, match\.evidence, true\)/)
+  assert.match(SRC, /case 'owner':[\s\S]{0,300}?return relayPermissionToOwner\(params, match\.evidence\)\n/)
+  assert.match(SRC, /permissionBackstopMs\(storedWait\),\n\s*requesterUserId,\n\s*floorHeld,\n/)
 })

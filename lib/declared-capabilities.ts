@@ -91,7 +91,12 @@
  *                       CONNECTIONS ONLY: the floor check route is pairing
  *                       scoped, so on a legacy API key connection the relay
  *                       cannot hold anything and this token is not declared
- *                       (DECLARED_CAPABILITIES_PAIRING).
+ *                       (DECLARED_CAPABILITIES_PAIRING). AND ONLY WHERE THE
+ *                       HOOK IS REGISTERED: a marketplace install always has
+ *                       it, a clone only once a launcher or bgos-agent wrote
+ *                       it into a settings file the CLI reads, so the daemon
+ *                       looks at boot (lib/floor-hook-presence.ts) and does
+ *                       not declare a stop its session cannot make.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -155,15 +160,24 @@ export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
  *
  * `authMode` is AUTH.mode, and it is REQUIRED so no call site can forget it:
  * hard_floor is declared only on a pairing connection (see
- * DECLARED_CAPABILITIES_PAIRING).
+ * DECLARED_CAPABILITIES_PAIRING), and only where the floor hook is really
+ * registered for the session (`floorHook`, found once at boot).
  */
 export function declaredCapabilities(input: {
   canInjectGoal: boolean
+  /**
+   * Is the blocking floor hook registered for this session
+   * (lib/floor-hook-presence.ts)? REQUIRED for the same reason as authMode.
+   * With no hook the CLI never raises a request for a listed action, so the
+   * relay has nothing to hold, and hard_floor would promise a stop that
+   * cannot happen: an always on clone updated in place is the case.
+   */
+  floorHook: boolean
   authMode: 'pairing' | 'apikey'
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
-    ...(input.authMode === 'pairing' ? DECLARED_CAPABILITIES_PAIRING : []),
+    ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
   ]
 }

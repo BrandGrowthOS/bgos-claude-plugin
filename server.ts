@@ -185,6 +185,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -333,6 +334,7 @@ import {
   isApprovalExpired,
   orphanedPermissionCards,
   parsePermissionChoice,
+  typedPermissionVerdict,
   pendingPermissionFastChatIds,
   permissionBackstopMs,
   permissionRowsReader,
@@ -1090,7 +1092,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
           RUNNING_VERSION ?? '0.0.0',
-          declaredCapabilities({ canInjectGoal: false, authMode: AUTH.mode }),
+          declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
         ),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
@@ -1885,6 +1887,11 @@ interface PendingPermission {
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
   /**
+   * True when the hard floor HOLDS this request for the owner (0.49.0): only a
+   * tap may allow it, never a typed verdict (typedPermissionVerdict).
+   */
+  floorHeld?: boolean
+  /**
    * How long this daemon is still listening to this request: the backstop
    * built from the wait the SERVER stored, written once the card comes back.
    * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
@@ -2483,6 +2490,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 function relayPermissionToOwner(
   params: PermissionRequestParams,
   floorEvidence?: string,
+  floorHeld = false,
 ): Promise<void> {
   const { request_id, tool_name, description, input_preview } = params
 
@@ -2544,6 +2552,7 @@ function relayPermissionToOwner(
     createdAt: Date.now(),
     requesterUserId,
     resolve: resolveButtonChoice,
+    floorHeld,
   })
 
   // Post a REAL approval card: messageType approval_request, two ea: options
@@ -2618,6 +2627,7 @@ function relayPermissionToOwner(
         cardMessageId,
         permissionBackstopMs(storedWait),
         requesterUserId,
+        floorHeld,
       ),
     ])
     const behavior = choiceToBehavior(choice)
@@ -2672,8 +2682,9 @@ function settleFloorRequest(
         // The whole interactive path: its drain and no chat exits refuse a
         // held request exactly as they refuse any other request there. The
         // matched command rides along so the card shows it and the server can
-        // stamp the floor on it even when the preview lost it.
-        return relayPermissionToOwner(params, match.evidence)
+        // stamp the floor on it even when the preview lost it. HELD: only a
+        // tap may allow it, never a typed yes (typedPermissionVerdict).
+        return relayPermissionToOwner(params, match.evidence, true)
       case 'owner':
         // Auto approve off, and the owner's floor does not hold it: the card
         // this install always posts, nothing more.
@@ -2822,6 +2833,7 @@ async function waitForVerdict(
   cardMessageId: number | null,
   timeoutMs: number,
   requesterUserId: string,
+  floorHeld = false,
 ): Promise<PermissionChoice> {
   const baselineId = chatLastSeen.get(chatId) ?? 0
   // See answeredOn below: the card is re-read every tick, so its mismatch line
@@ -2990,7 +3002,18 @@ async function waitForVerdict(
       }
 
       const text = msg.message.text ?? ''
-      const choice = parsePermissionChoice(text, requestId)
+      // A request the floor HOLDS takes only a deny on this lane: the row's
+      // sender is not proven to be a person (lib/permission-relay.ts,
+      // typedPermissionVerdict), and the person only gate is on the tap.
+      const { choice, refused } = typedPermissionVerdict(text, requestId, floorHeld)
+      if (refused) {
+        log(
+          `Ignoring typed ${refused} for [${requestId}] in message ${msg.message.id}: ` +
+            `the hard floor holds this request, so only a tap on its card can allow it`,
+        )
+        advanceChatCursor(chatId, msg.message.id)
+        return null
+      }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
@@ -9809,6 +9832,30 @@ const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
+/**
+ * Is the blocking floor hook registered for this session? Looked up ONCE, at
+ * boot, because the CLI reads its hooks when it launches, and hard_floor is
+ * declared only when it is (lib/floor-hook-presence.ts): a clone updated in
+ * place has no floor entry until a launcher or bgos-agent writes one, and an
+ * agent told that a hook stops a listed action when none does is the defect.
+ */
+const FLOOR_HOOK: FloorHookPresence = (() => {
+  try {
+    return floorHookPresence({
+      installMethod: INSTALL_METHOD,
+      pluginRoot: PLUGIN_ROOT,
+      folders: FLOOR_FOLDERS,
+      configDir: CLAUDE_CONFIG_DIR,
+      env: process.env,
+      readFile: (path) => readFileSync(path, 'utf8'),
+      exists: (path) => existsSync(path),
+      join: pathJoin,
+    })
+  } catch (err) {
+    return { registered: false, where: `could not look (${err})` }
+  }
+})()
+
 function safeUsername(): string {
   try {
     return osUserInfo().username
@@ -12270,6 +12317,13 @@ async function main(): Promise<void> {
   // process and, unbounded, the one most likely to strand a daemon that could
   // otherwise have polled. loadServedCapabilities is single-flight, so a tool
   // call arriving while this is in flight joins it rather than refetching.
+  log(
+    FLOOR_HOOK.registered
+      ? `floor: the blocking floor hook is registered (${FLOOR_HOOK.where}); declaring the floor capability on a pairing`
+      : `floor: the blocking floor hook is NOT registered for this session (${FLOOR_HOOK.where}); ` +
+          'the floor capability is not declared, so the agent is not told a hook stops a listed action. ' +
+          'Relaunch through a launcher or run bgos-agent update to write it',
+  )
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.
@@ -13137,7 +13191,7 @@ async function main(): Promise<void> {
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
       capabilities: () => [
-        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, authMode: AUTH.mode }),
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
       ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
