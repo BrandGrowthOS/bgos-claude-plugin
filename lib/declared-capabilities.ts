@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The four tokens, and what each one PROMISES the owner:
+ * The five tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -41,6 +41,13 @@
  *                       skipSlashCommands, see
  *                       docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
  *                       and the model has no tool for it.
+ *   mission_set_goals   the model has set_mission_goals, which writes the
+ *                       mini goals of an open mission that has none yet
+ *                       (every /goal mission starts that way). The backend
+ *                       arms a Keep working wake on a goal-less mission only
+ *                       for a daemon declaring this, because that wake asks
+ *                       the agent to write its goals. Every host: it is a
+ *                       plain HTTP write the model makes itself.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -63,6 +70,7 @@
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
+  'mission_set_goals',
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
