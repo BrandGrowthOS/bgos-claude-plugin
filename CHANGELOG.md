@@ -134,6 +134,13 @@ card only to a daemon that declares `permission_card` or `plan_card`
   sentence only to a daemon that declares it together with `permission_card`.
   The floor-check limits (200 and 4000) are pinned as literals beside the ones
   BGOS pins on its route.
+- The log says what the floor really does. The boot line reads "declared" off
+  the declaration itself, so a daemon on an API key, where `hard_floor` is
+  never declared, now says plainly that the floor is not declared and why,
+  instead of "declaring the floor capability on a pairing". And a typed yes
+  the floor refuses, or a verdict from another user, is logged once per row
+  per request rather than on every poll tick (the final live proof counted
+  57 copies in 37 s).
 
 ## 0.48.0 (2026-09-24)
 

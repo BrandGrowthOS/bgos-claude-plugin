@@ -25,6 +25,7 @@ import { capabilitiesFetchPath } from '../lib/capabilities.ts'
 import { consultFloor, floorCheckPath } from '../lib/floor-check.ts'
 import { classifyToolCall } from '../lib/hard-floor.ts'
 import {
+  floorBootLine,
   floorHookPresence,
   registersFloorHook,
   type FloorHookPresenceInput,
@@ -384,4 +385,57 @@ test('a late tmux upgrade changes the answer, because it is computed per beat', 
   const after = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })
   assert.ok(!before.includes('mission_goal_loop'))
   assert.ok(after.includes('mission_goal_loop'))
+})
+
+// ── The boot line says what is really declared (final live proof) ───────────
+
+/**
+ * THE FINAL LIVE PROOF'S SECOND PLUGIN MINOR. The boot line depended on the
+ * hook alone, so an API key daemon whose hook was found said "declaring the
+ * floor capability on a pairing" while declaring nothing at all: hard_floor
+ * needs a pairing as well (DECLARED_CAPABILITIES_PAIRING). Now the line reads
+ * "declared" off declaredCapabilities itself, and on an API key it says
+ * plainly that the floor is not declared.
+ *
+ * MUTATION PROOF (applied to lib/floor-hook-presence.ts, confirmed red,
+ * restored): floorBootLine's `declared` replaced with `presence.registered`
+ * (the old rule, the hook alone) -> the first two tests below red, 2 of 79 in
+ * this run (the API key daemon with the hook said "is declared on this
+ * pairing" again).
+ */
+test('the floor boot line says declared exactly when the declaration carries hard_floor, in every auth mode and hook state', () => {
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    for (const registered of [true, false]) {
+      const line = floorBootLine({ registered, where: '/x/hooks.json' }, authMode)
+      const declared = declaredCapabilities({ canInjectGoal: false, floorHook: registered, authMode }).includes('hard_floor')
+      const label = `${authMode}, hook ${registered ? 'found' : 'missing'}`
+      assert.equal(/\bis declared on this pairing\b/.test(line), declared, `${label}: ${line}`)
+      assert.equal(/is NOT declared/.test(line), !declared, `${label}: ${line}`)
+      // It names where the hook was looked for, and whether it was found.
+      assert.ok(line.includes('/x/hooks.json'), label)
+      assert.equal(line.includes('hook is NOT registered'), !registered, label)
+      // And never the old sentence, which claimed a declaration by the hook alone.
+      assert.ok(!line.includes('declaring the floor capability'), label)
+    }
+  }
+})
+
+test('on an API key the boot line says plainly that the floor is not declared, and why', () => {
+  const withHook = floorBootLine({ registered: true, where: 'plugin hooks.json' }, 'apikey')
+  assert.match(withHook, /API key/)
+  assert.match(withHook, /floor capability \(hard_floor\) is NOT declared/)
+  assert.match(withHook, /not held for the owner/)
+  assert.match(withHook, /Pair the agent/)
+  const noHook = floorBootLine({ registered: false, where: 'no entry' }, 'apikey')
+  assert.match(noHook, /API key/)
+  assert.match(noHook, /is NOT declared/)
+  assert.match(noHook, /pair the agent, then relaunch/)
+  // A pairing with no hook still points at the launcher, as before.
+  assert.match(floorBootLine({ registered: false, where: 'no entry' }, 'pairing'), /Relaunch through a launcher/)
+})
+
+test('server.ts logs the floor boot line from the live AUTH.mode and the boot time lookup', () => {
+  const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(server, /log\(floorBootLine\(FLOOR_HOOK, AUTH\.mode\)\)/)
+  assert.ok(!server.includes('declaring the floor capability on a pairing'), 'the hook only sentence is gone')
 })

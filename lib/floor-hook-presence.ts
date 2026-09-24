@@ -36,6 +36,9 @@
  * Pure: every file read is injected, so the tests hold each case in place.
  */
 
+import { declaredCapabilities } from './declared-capabilities.js'
+import { HARD_FLOOR_TOKEN } from './claude-capability-tokens.js'
+
 /** The floor hook's script name, the one thing every registration shares. */
 export const FLOOR_HOOK_SCRIPT = 'hoai-floor-hook.mjs'
 
@@ -137,4 +140,48 @@ export function registersFloorHook(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The daemon's one boot line about the floor, which says what the declaration
+ * REALLY carries.
+ *
+ * WHY IT DEPENDS ON THE AUTH MODE. hard_floor is declared only on a pairing
+ * AND only where the hook is found (lib/declared-capabilities.ts). The line
+ * used to depend on the hook alone, so an API key daemon with the hook said
+ * "declaring the floor capability on a pairing" while declaring nothing: the
+ * final live proof read it on exactly such a daemon. Now "declared" in this
+ * line is read off declaredCapabilities itself, so the two cannot disagree,
+ * and an API key daemon is told plainly that the floor is not declared and
+ * why (the floor check route is pairing scoped, so nothing is held).
+ */
+export function floorBootLine(presence: FloorHookPresence, authMode: 'pairing' | 'apikey'): string {
+  const declared = declaredCapabilities({
+    canInjectGoal: false,
+    floorHook: presence.registered,
+    authMode,
+  }).includes(HARD_FLOOR_TOKEN)
+  if (declared) {
+    return (
+      `floor: the blocking floor hook is registered (${presence.where}); ` +
+      `the floor capability (${HARD_FLOOR_TOKEN}) is declared on this pairing`
+    )
+  }
+  const hook = presence.registered
+    ? `floor: the blocking floor hook is registered (${presence.where})`
+    : `floor: the blocking floor hook is NOT registered for this session (${presence.where})`
+  if (authMode === 'apikey') {
+    return (
+      `${hook}, but this daemon connects with an API key, so the floor capability ` +
+      `(${HARD_FLOOR_TOKEN}) is NOT declared: the floor check is pairing only, a listed action ` +
+      'is not held for the owner, and the agent is not told a hook stops one. ' +
+      (presence.registered
+        ? 'Pair the agent to get the floor'
+        : 'The floor needs a pairing and the hook: pair the agent, then relaunch through a launcher or run bgos-agent update')
+    )
+  }
+  return (
+    `${hook}; the floor capability (${HARD_FLOOR_TOKEN}) is NOT declared, so the agent is not told ` +
+    'a hook stops a listed action. Relaunch through a launcher or run bgos-agent update to write it'
+  )
 }

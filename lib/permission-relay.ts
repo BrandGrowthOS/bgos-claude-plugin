@@ -224,6 +224,30 @@ export function typedPermissionVerdict(
 }
 
 /**
+ * A "say it once" latch keyed by chat row id, for the lines waitForVerdict
+ * writes when it REFUSES a row on the typed lane.
+ *
+ * WHY. `verdictFrom` skips rows at or below a `baselineId` fixed when the wait
+ * STARTS, not at the chat cursor, so a row it refuses is read again on every
+ * poll tick until the wait ends. Refusing it again is correct; saying so again
+ * is not. The final live proof logged "Ignoring typed once" 57 times in 37 s
+ * for two refused rows, and a hold can last half an hour. So each refused row
+ * is said ONCE per request, the way `foreignTapLogged` says a foreign tap once.
+ *
+ * Returns true the first time a row id is seen and false every time after.
+ * One latch per request (make it inside the wait), so a later request that
+ * reads the same row still says why it refused it.
+ */
+export function oncePerRow(): (rowId: number) => boolean {
+  const said = new Set<number>()
+  return (rowId) => {
+    if (said.has(rowId)) return false
+    said.add(rowId)
+    return true
+  }
+}
+
+/**
  * The owner's tap, read off the CARD ROW itself.
  *
  * THIS IS THE CLICK TRANSPORT, and until 0.47.0 shipped it was missing. A tap

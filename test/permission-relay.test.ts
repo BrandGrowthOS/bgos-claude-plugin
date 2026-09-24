@@ -46,6 +46,7 @@ import {
   senderUserIdCandidate,
   storedWaitSeconds,
   typedPermissionVerdict,
+  oncePerRow,
   watchPermissionVerdict,
   type PendingPermissionLike,
   type PermissionCardRowLike,
@@ -1654,4 +1655,96 @@ test('server.ts: the typed lane asks typedPermissionVerdict with the request\'s 
   assert.match(SRC, /case 'hold':[\s\S]{0,400}?return relayPermissionToOwner\(params, match\.evidence, true\)/)
   assert.match(SRC, /case 'owner':[\s\S]{0,300}?return relayPermissionToOwner\(params, match\.evidence\)\n/)
   assert.match(SRC, /permissionBackstopMs\(storedWait\),\n\s*requesterUserId,\n\s*floorHeld,\n/)
+})
+
+// ── A refused row is said once, not once per tick ───────────────────────────
+
+/**
+ * The final live proof's first plugin minor. verdictFrom skips rows at or below
+ * a baselineId fixed when the wait starts, so a row it REFUSES (a typed yes on
+ * a held request, or a verdict from another user) is read again on every poll
+ * tick, and the daemon logged "Ignoring typed once" 57 times in 37 s for two
+ * rows. Refusing it again is right; saying so again is noise that buries the
+ * one line the owner needs. Now each refused row is said once per request.
+ *
+ * MUTATION PROOF (applied to lib/permission-relay.ts, confirmed red,
+ * restored): oncePerRow's `if (said.has(rowId)) return false` removed -> the
+ * first two tests below red, 2 of 79 in this run (the wait logged 40 lines for
+ * the two refused rows instead of 2).
+ */
+test('a refused typed yes on a held request is logged once per row across every tick of the wait', async () => {
+  const id = 'abcde'
+  interface TypedRow { id: number; text: string }
+  const rows: TypedRow[] = [
+    { id: 10, text: `yes ${id}` },
+    { id: 11, text: 'Yes, this once' },
+    { id: 12, text: 'hello' },
+  ]
+  const runOnce = async () => {
+    let clock = 0
+    const logs: string[] = []
+    const firstRefusalOf = oncePerRow()
+    const verdict = await watchPermissionVerdict<TypedRow>({
+      requestId: id,
+      // Twenty ticks at the fast cadence, every one re-serving the same page,
+      // which is what a baseline fixed at the start of the wait does.
+      timeoutMs: PERMISSION_POLL_FAST_MS * 20,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      stillPending: () => true,
+      rows: async () => rows,
+      expiredOn: () => false,
+      answeredOn: () => null,
+      verdictFrom: (row) => {
+        const { choice, refused } = typedPermissionVerdict(row.text, id, true)
+        if (refused) {
+          if (firstRefusalOf(row.id)) logs.push(`Ignoring typed ${refused} in message ${row.id}`)
+          return null
+        }
+        return choice
+      },
+      retireCard: async () => {},
+      log: (line) => logs.push(line),
+    })
+    return { verdict, refusals: logs.filter((l) => l.startsWith('Ignoring typed')) }
+  }
+  const first = await runOnce()
+  // Still refused on every tick: the wait ran to its backstop, nothing allowed it.
+  assert.equal(first.verdict.via, 'backstop')
+  assert.deepEqual(first.refusals, ['Ignoring typed once in message 10', 'Ignoring typed once in message 11'])
+  // A NEW request gets a new latch, so it still says why it refused the same rows.
+  const second = await runOnce()
+  assert.equal(second.refusals.length, 2)
+})
+
+test('oncePerRow answers true the first time a row id is seen and false after', () => {
+  const first = oncePerRow()
+  assert.equal(first(7), true)
+  assert.equal(first(7), false)
+  assert.equal(first(8), true)
+  assert.equal(first(7), false)
+  assert.equal(oncePerRow()(7), true, 'each latch is its own')
+})
+
+test('server.ts: both of verdictFrom\'s refusal lines are behind the once per request latch', () => {
+  const watch = SRC.slice(
+    SRC.indexOf('async function waitForVerdict('),
+    SRC.indexOf('async function retireOrphanedPermissionCards('),
+  )
+  // Made inside the wait, so the latch is per request.
+  assert.match(watch, /const firstRefusalOf = oncePerRow\(\)/)
+  const verdictFrom = watch.slice(watch.indexOf('    verdictFrom: (msg) => {'), watch.indexOf('    retireCard: async () => {'))
+  assert.match(
+    verdictFrom,
+    /if \(firstRefusalOf\(msg\.message\.id\)\) \{\n\s*log\(\n\s*`Ignoring permission verdict for/,
+  )
+  assert.match(
+    verdictFrom,
+    /if \(firstRefusalOf\(msg\.message\.id\)\) \{\n\s*log\(\n\s*`Ignoring typed \$\{refused\}/,
+  )
+  // And no unguarded copy of either line is left behind.
+  assert.equal(verdictFrom.split('Ignoring typed').length - 1, 1)
+  assert.equal(verdictFrom.split('Ignoring permission verdict').length - 1, 1)
 })

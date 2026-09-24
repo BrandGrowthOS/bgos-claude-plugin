@@ -185,7 +185,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
-import { floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
+import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -335,6 +335,7 @@ import {
   orphanedPermissionCards,
   parsePermissionChoice,
   typedPermissionVerdict,
+  oncePerRow,
   pendingPermissionFastChatIds,
   permissionBackstopMs,
   permissionRowsReader,
@@ -2882,6 +2883,10 @@ async function waitForVerdict(
   // See answeredOn below: the card is re-read every tick, so its mismatch line
   // is said once rather than once per look.
   let foreignTapLogged = false
+  // The same rule for verdictFrom's two refusal lines: a refused row sits above
+  // baselineId, so every tick reads it again, and it is said once per request
+  // (lib/permission-relay.ts oncePerRow).
+  const firstRefusalOf = oncePerRow()
 
   const verdict = await watchPermissionVerdict<ChatMessage>({
     requestId,
@@ -3037,10 +3042,12 @@ async function waitForVerdict(
       // answeredOn above is null aware and this arm is not.
       const resolverUserId = senderUserIdOf(msg.message)
       if (resolverUserId !== requesterUserId) {
-        log(
-          `Ignoring permission verdict for [${requestId}] from user ` +
-            `${resolverUserId} (request belongs to ${requesterUserId})`,
-        )
+        if (firstRefusalOf(msg.message.id)) {
+          log(
+            `Ignoring permission verdict for [${requestId}] from user ` +
+              `${resolverUserId} (request belongs to ${requesterUserId})`,
+          )
+        }
         return null
       }
 
@@ -3050,10 +3057,12 @@ async function waitForVerdict(
       // typedPermissionVerdict), and the person only gate is on the tap.
       const { choice, refused } = typedPermissionVerdict(text, requestId, floorHeld)
       if (refused) {
-        log(
-          `Ignoring typed ${refused} for [${requestId}] in message ${msg.message.id}: ` +
-            `the hard floor holds this request, so only a tap on its card can allow it`,
-        )
+        if (firstRefusalOf(msg.message.id)) {
+          log(
+            `Ignoring typed ${refused} for [${requestId}] in message ${msg.message.id}: ` +
+              `the hard floor holds this request, so only a tap on its card can allow it`,
+          )
+        }
         advanceChatCursor(chatId, msg.message.id)
         return null
       }
@@ -12360,13 +12369,9 @@ async function main(): Promise<void> {
   // process and, unbounded, the one most likely to strand a daemon that could
   // otherwise have polled. loadServedCapabilities is single-flight, so a tool
   // call arriving while this is in flight joins it rather than refetching.
-  log(
-    FLOOR_HOOK.registered
-      ? `floor: the blocking floor hook is registered (${FLOOR_HOOK.where}); declaring the floor capability on a pairing`
-      : `floor: the blocking floor hook is NOT registered for this session (${FLOOR_HOOK.where}); ` +
-          'the floor capability is not declared, so the agent is not told a hook stops a listed action. ' +
-          'Relaunch through a launcher or run bgos-agent update to write it',
-  )
+  // What the declaration REALLY carries, which needs a pairing as well as the
+  // hook (lib/floor-hook-presence.ts floorBootLine).
+  log(floorBootLine(FLOOR_HOOK, AUTH.mode))
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.
