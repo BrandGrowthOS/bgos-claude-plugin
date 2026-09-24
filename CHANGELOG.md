@@ -2,6 +2,26 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.48.0
+
+**set_mission_goals: the agent writes the goals of a mission that has none.**
+Every /goal mission, and every mission an owner starts from the app, begins
+with no mini goals. Keep working ON now wakes the agent about every 30 minutes
+while a goal is unticked (HOAI #1635), and on a goal-less mission that wake
+asks the agent to write its goals first (KC, 2026-09-24).
+
+- **New tool `set_mission_goals`** (`mini_goals`, optional `mission_id` and
+  `chat_id`): `PUT integrations/assistants/:id/missions/:missionId/goals`. It
+  writes 2 to 12 `{ name, done_when }` goals into the OPEN mission that has
+  NONE, and keeps the same mission, so its Keep working switch and wake stay
+  with it. `create_mission` would have replaced it. A mission that already has
+  goals is refused: tick those instead. It validates goals with the same rule
+  as `create_mission`, now shared, so the two can never disagree.
+- **Declares `mission_set_goals` on every host.** The backend arms the
+  goal-less Keep working wake only for a daemon declaring it, so an agent is
+  never woken every 30 minutes to do something it has no tool for. It is a
+  plain HTTP write, so unlike the goal loop it needs no tmux.
+
 ## 0.47.1
 
 **The agent's own browser asks its owner, as a card, and waits.** 0.46.0 shipped

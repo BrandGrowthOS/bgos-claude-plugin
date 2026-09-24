@@ -360,6 +360,7 @@ export const OWN_MCP_TOOLS = [
   'cancel_schedule',
   'create_mission',
   'tick_mini_goal',
+  'set_mission_goals',
   'complete_mission',
   'log_health_event',
   'list_health_events',

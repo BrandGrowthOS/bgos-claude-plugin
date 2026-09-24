@@ -383,12 +383,14 @@ describe('declared capabilities on the heartbeat', () => {
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
+      'mission_set_goals',
       'mission_goal_loop',
       'mission_pause',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false })]).toEqual([
       'mission_events',
       'mission_goal_checks',
+      'mission_set_goals',
     ])
   })
 
