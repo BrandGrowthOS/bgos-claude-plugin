@@ -151,7 +151,7 @@ export function getFileCategory(mime: string): string | null {
 
 export const AGENT_VALUE_PREFIX = 'u:'
 export const RESERVED_VALUE_SENTINELS = new Set(['__skip__', '__custom__'])
-// `plan:` joined this list with the plan card (0.45.0). An agent CAN author a
+// `plan:` joined this list with the plan card (0.48.0). An agent CAN author a
 // reply button, and a button whose value were the bare string `plan:go` would
 // come back through the same click intake as a real Go ahead on a plan card and
 // be read by the daemon as the owner approving one: the status line cleared,
@@ -177,7 +177,7 @@ export function unescapeAgentButtonValue(callbackData: string): string {
  * message, not a dropped field, and a bare array literal in server.ts would not
  * be traceable to the DTO that enforces it.
  *
- * Until 0.45.0 only the two approval builders sent a style and the app dropped
+ * Until 0.48.0 only the two approval builders sent a style and the app dropped
  * it for an ordinary inline options row anyway, so every agent authored chip
  * rendered neutral. Both halves changed in the same release.
  */

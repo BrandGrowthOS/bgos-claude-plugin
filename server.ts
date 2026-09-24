@@ -293,6 +293,7 @@ import {
   formatPassiveBanner,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
+import { startBrowserHostSupervisor, type BrowserHostSupervisor } from './lib/browser-host-supervisor.js'
 import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
 import {
@@ -646,6 +647,9 @@ const LOG_FILE = resolveLogPath({
 ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
+// This machine's browser host for this daemon's pairing (started in main, see
+// lib/browser-host-supervisor.ts); stopped by shutdown() and the exit hook.
+let browserHost: BrowserHostSupervisor | null = null
 // The heartbeat handle, once armed in main (pairing mode only): the
 // update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
 // the backend immediately instead of on the next 6h tick.
@@ -2387,7 +2391,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 
   if (AUTO_APPROVE) {
     // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
-    // 0.44.1 put the drain branch in front of this one, so a default auto
+    // 0.47.0 put the drain branch in front of this one, so a default auto
     // approve install got a hard DENY for every tool raised inside an update
     // drain, on a path that needs nothing the drain closes: no chat, no
     // network, no intake, one notification back to the CLI it came from. A
@@ -2569,7 +2573,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
  * typed "yes <id>" / "no <id>" fallback), the SERVER's own
  * `approval_meta.expired` flag on the card, and a local backstop that sits 90
  * s behind the owner's whole wait and exists only for a server that never
- * answers at all. Before 0.44.1 this was a flat 120 s clock, which is how a
+ * answers at all. Before 0.47.0 this was a flat 120 s clock, which is how a
  * request could be declined here while the card in the owner's hand was still
  * perfectly tappable.
  *
@@ -2786,7 +2790,7 @@ async function waitForVerdict(
  * to the CLI, and, worse for the owner, nothing retires the CARD. Its buttons
  * came off at the watch's backstop, and the watch died with the process, so
  * the row sat there tappable until the server's own expiry at
- * `created_at + wait_seconds`. That was 60 s before 0.44.1 and is up to half
+ * `created_at + wait_seconds`. That was 60 s before 0.47.0 and is up to half
  * an hour now, during which a tap tells the owner the request was approved
  * while nothing at all is listening.
  *
@@ -9596,7 +9600,7 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 
 // The daemon's live drain counters (shared with SelfUpdater in main()).
 //
-// KNOWN, NOT YET DECIDED (0.44.1 review). A permission request holds BOTH
+// KNOWN, NOT YET DECIDED (0.47.0 review, drafted as 0.44.1). A permission request holds BOTH
 // `activeOperations` (the handler body runs inside trackMessageOperation) and
 // `pendingPermissions` for as long as the owner has to answer, which used to
 // be at most two minutes and can now be half an hour. The scheduled update
@@ -12088,6 +12092,7 @@ async function main(): Promise<void> {
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
     process.exit(code)
   }
   // Sync backstop for any exit that did NOT route through shutdown() (a natural
@@ -12098,6 +12103,7 @@ async function main(): Promise<void> {
     stopHookIntake()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
   })
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -12178,6 +12184,30 @@ async function main(): Promise<void> {
       flushChatCursors()
     } catch {}
     process.exit(1)
+  })
+
+  // ── This machine's browser host for this pairing ──────────────────────────
+  // Started on every paired daemon, with no flag to remember: the backend
+  // elects an agent host ONLY for an agent whose browser placement is
+  // `daemon` (agent-browser-relay.service.ts :690 and :786), so a
+  // desktop-placed agent's host never receives a frame, and Chromium and
+  // playwright-core load only on the first frame, so an idle host is one node
+  // process holding one socket. One host per
+  // pairing on the machine (a per-pairing lib/pairing-lock.ts lock), stdio
+  // detached, stopped by shutdown() and the exit hook above, and it can never
+  // take this daemon down. HOAI_BROWSER_HOST=off skips it entirely.
+  browserHost = startBrowserHostSupervisor({
+    env: process.env,
+    auth: AUTH,
+    agentRoot: pathDirname(DEFAULT_CREDENTIALS_FILE),
+    hostScript: pathJoin(PLUGIN_ROOT, 'bin', 'hoai-browser-host.mjs'),
+    nodePath: resolveNodePath({
+      env: process.env,
+      platform: process.platform,
+      execPath: process.execPath,
+      exists: existsSync,
+    }),
+    log,
   })
 
   // ── Single-instance pairing lock (0.38.6, board 01a05185) ──────────────────
