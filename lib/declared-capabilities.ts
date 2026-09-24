@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The five tokens, and what each one PROMISES the owner:
+ * The six tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -65,6 +65,15 @@
  *                       by version: a release number cannot be reserved in
  *                       this repo, so a floor naming one would promise the
  *                       card to whichever release happened to take it.
+ *   plan_card           this daemon has the propose_plan tool and posts the
+ *                       plan card (an `event` row whose payload kind is
+ *                       `plan_card`, with Go ahead, Change the plan and Do
+ *                       not do this) in the owner's agent chat (0.48.0,
+ *                       lib/plan-card.ts). Every host: it is a typed MCP tool
+ *                       with no platform limit. Gated exactly like
+ *                       permission_card: the backend tells the canon's plan
+ *                       card sentences only to a connection that declares
+ *                       this token, never by version.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -79,6 +88,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'permission_card',
+  'plan_card',
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */

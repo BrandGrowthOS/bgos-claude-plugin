@@ -48,6 +48,15 @@ test('the daemon\'s own base declaration reaches the fetch, permission_card incl
   assert.ok(query.get('capabilities')!.split(',').includes('permission_card'))
 })
 
+test('the plan card token reaches the fetch too (0.48.0)', () => {
+  // The canon's plan card sentences are gated on plan_card exactly as the
+  // permission card sentence is on permission_card, so the fetch at connect
+  // must carry it for the same reason.
+  const path = capabilitiesFetchPath('0.48.0', declaredCapabilities({ canInjectGoal: false }))
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  assert.ok(query.get('capabilities')!.split(',').includes('plan_card'))
+})
+
 test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
   assert.ok(
     capabilitiesFetchPath('0.47.0-rc.1+build 7', ['permission_card']).includes(

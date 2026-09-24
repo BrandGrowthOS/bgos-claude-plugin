@@ -7,8 +7,10 @@ Notable changes to the HOAI Claude Code plugin.
 **Renumbered from 0.45.0.** This release was prepared as 0.45.0, but the
 plugin's main was released as 0.46.0 by another program without this work, so
 it ships as 0.48.0, stacked on 0.47.0 (the permission request card, prepared
-as 0.44.1). The HOAI backend floor for the plan card
-(`PLAN_CARD_MIN_DAEMON.claude`) moves to 0.48.0 with it.
+as 0.44.1). The HOAI canon no longer ties the plan card to a release number:
+it tells propose_plan and the plan card only to a daemon that DECLARES the
+`plan_card` capability (BGOS #1624), which this one now does, so the number is
+whatever release is free when this merges.
 
 - **The agent can now show you its PLAN before it touches anything, and you
   answer with a button.** `propose_plan` posts a real card into the chat: a
@@ -102,6 +104,10 @@ as 0.44.1). The HOAI backend floor for the plan card
   button whose value was `plan:go` would have come back through the same intake
   as a real approval on a plan card. It is now escaped like any other agent
   value.
+- **This daemon declares `plan_card`.** On every heartbeat and on the
+  capabilities fetch at connect, on every host, because `propose_plan` is a
+  typed tool with no platform limit. It is what tells the canon to describe
+  the tool and the card to this agent.
 
 ## 0.47.0 (2026-09-24)
 
