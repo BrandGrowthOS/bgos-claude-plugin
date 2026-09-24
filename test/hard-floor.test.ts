@@ -287,6 +287,49 @@ test('tool names: the words, the own channel exemption by EXACT name, and nothin
   assert.equal(classifyToolName('mcp__x__publish_post'), 'acts_on_owners_behalf')
 })
 
+/**
+ * The own channel exemption is tied to the plugin's OWN manifest (P2 stage 6,
+ * wave B1b Fix). HOAI_OWN_SERVERS spells the channel's server names by hand,
+ * and nothing tied them to `.claude-plugin/plugin.json`: rename the plugin
+ * (`hoai`) or its channel server key (`bgos`) and the CLI names the tools
+ * `mcp__plugin_<new>_<server>__reply`, which the exact list no longer
+ * matches, so every reply, send_to_peer and meeting_reply of the channel
+ * itself would become a floor match and ask the owner about talking to the
+ * owner. This derives the names the CLI will use from the manifest.
+ *
+ * MUTATION PROOF (applied to .claude-plugin/plugin.json, confirmed red,
+ * restored): "name": "hoai" -> "hoaix" -> this test red
+ * (mcp__plugin_hoaix_bgos__reply classified as acts_on_owners_behalf).
+ */
+test('the plugin manifest\'s own channel server is exempt under the name the CLI gives its tools', () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'),
+  ) as { name: string; mcpServers: Record<string, unknown>; channels: Array<{ server: string }> }
+  assert.equal(typeof manifest.name, 'string')
+  assert.ok(manifest.channels.length > 0, 'the manifest declares its channel')
+  for (const { server } of manifest.channels) {
+    assert.ok(Object.hasOwn(manifest.mcpServers, server), `channel server ${server} is not an MCP server of the manifest`)
+    // The plugin install (mcp__plugin_<plugin>_<server>__<tool>) and the
+    // standalone install (mcp__<server>__<tool>, the README's .mcp.json).
+    const pluginServer = `plugin_${manifest.name}_${server}`.toLowerCase()
+    for (const id of [pluginServer, server.toLowerCase()]) {
+      assert.ok(isOwnChannelServer(id), `${id} is this channel's own server and is not in HOAI_OWN_SERVERS`)
+      for (const tool of ['reply', 'send_to_peer', 'meeting_reply', 'voice_consult_reply']) {
+        assert.equal(classifyToolName(`mcp__${id}__${tool}`), null, `mcp__${id}__${tool} would ask the owner`)
+      }
+    }
+    // The control: the same tool on a server that is not this channel's IS a
+    // match, so the null above comes from the exemption and not the words.
+    assert.equal(classifyToolName(`mcp__plugin_${manifest.name}x_${server}__reply`), 'acts_on_owners_behalf')
+  }
+  // The other servers the manifest ships (the browser) act on the owner's
+  // behalf and are NOT exempt.
+  for (const server of Object.keys(manifest.mcpServers)) {
+    if (manifest.channels.some((c) => c.server === server)) continue
+    assert.equal(isOwnChannelServer(`plugin_${manifest.name}_${server}`.toLowerCase()), false, `${server} is not the channel`)
+  }
+})
+
 test('tool calls: shell by command, edit by path, MCP by name, everything else never', () => {
   assert.equal(classifyToolCall('PowerShell', { command: 'Remove-Item -r x' })?.ruleId, 'recursive_delete')
   assert.equal(classifyToolCall('NotebookEdit', { notebook_path: '/r/.git/n.ipynb' })?.ruleId, 'git_dir_write')

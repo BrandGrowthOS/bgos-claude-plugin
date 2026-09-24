@@ -74,13 +74,26 @@ card only to a daemon that declares `permission_card` or `plan_card`
     backend without the route (both auto approve a listed action as before,
     and say so in the log), and a delete done by a script, an alias, a
     variable or `python -c` (the list reads text, not intent).
+- The daemon's attached marker, which the floor hook asks behind, is keyed by
+  the folder the agent was LAUNCHED from as well (`BGOS_LAUNCH_CWD`, which
+  `bin/bgos-launch.mjs` hands through when it moves the server to the plugin
+  folder), and the hook reads that key too. Before, a launcher start rested on
+  `CLAUDE_PROJECT_DIR` alone, and where that was lost (a WSL hop) the floor
+  silently did not ask.
+- A test ties the channel's own server exemption to the plugin manifest's name
+  and channel server, so renaming either cannot turn the channel's own replies
+  into floor matches.
 - The plan card's own words no longer claim that no hook can stop a tool call:
   an ordinary edit is still never blocked, and the wait is still a promise.
 - The bundled offline capability text carries the floor's three core canon
   sentences and the Claude delta sentence, so a model whose canon fetch failed
   is not told the opposite.
 - **This daemon declares `hard_floor`.** On every heartbeat and on the canon
-  fetch at connect, on every host, taken from `lib/claude-capability-tokens.ts`
+  fetch at connect, on every host of a PAIRING connection (a legacy API key
+  connection does not declare it: its relay has no floor check to ask and
+  auto approves a listed action, so it must not be told a hook holds one;
+  `permission_card` and `plan_card` stay declared there, both work on an API
+  key), taken from `lib/claude-capability-tokens.ts`
   (now naming three tokens), the file BGOS pins byte for byte, both sides
   pinning the same new sha256. The token promises the blocking floor hook and
   the relay's hold before any auto approve; the served canon tells the floor
