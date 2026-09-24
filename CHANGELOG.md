@@ -2,11 +2,52 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.47.0
+## 0.47.1
 
-**The daemon host now HAS the desktop's permission rules, though it does not
-yet ask with them.** Groundwork for moving the gates into the host, which 0.46.0
-named as the follow-up to shipping it ungated.
+**The agent's own browser asks its owner, as a card, and waits.** 0.46.0 shipped
+that browser UNGATED and named the gates as the follow-up; this is it. The
+0.47.0 entry below was written when only the rules had landed and said the host
+"does not yet ask with them". It does now, so that heading is folded into this
+one rather than left to read as the shipped state of something it describes
+half of. 0.47.0 was never released.
+
+- **Permission gates, using the desktop's rules.** Every browser_ call is
+  classified and decided by the vendored `policy.js`, so an agent is judged by
+  the same rules wherever its browser runs. A new site, any write on one, a
+  download, an upload, running scripts and every sensitive action is asked
+  about; a password or a code is never remembered by any answer.
+- **The card is the only surface, and it is posted immediately.** The desktop
+  opens a gate as a strip with a 60 second countdown and only PARKS an
+  unanswered one into the owner's chat. There is no pane on the agent's
+  machine and nobody is sitting at it, so there is no strip: the card goes to
+  the owner's chat with that agent the moment the gate is raised.
+- **The host ASKS what the owner answered**, on `GET /api/v1/browser/gate/:gateId`.
+  `browser_gate_answer` is emitted to the owner's person room and never to an
+  agent socket, and this host joins only `browser-host:<assistantId>`, so it
+  could otherwise post a card and then wait out the whole park for a frame that
+  cannot reach it. The read is scoped to the account AND to the assistant the
+  host serves, so a host serving one agent cannot read another's decision.
+- **The action runs at most once**, whichever call returns it. A gate that
+  outlives its call parks with a gate id, and `hoai_browser_wait_gate`
+  re-attaches to the same held run rather than starting a second.
+- **An ordinary gate answers inside the call that asked.** The attach budget
+  sits under the relay's call cap and over the default 60 second wait, and a
+  guard pins that ordering: it shipped inverted for one commit, and every gate
+  would have parked five seconds before its own deadline.
+- **Fail closed on every path that is not an explicit allow**: a card that could
+  not be posted, a gate the server no longer has, an expired card, a park that
+  runs out, an answer whose choice cannot be read, a gate kind the card route
+  cannot carry, and a host with no way to reach the owner at all.
+- **A group's browser is its own.** A room's frame carries `group-<chatId>`
+  rather than the acting human's principal, and a test with a real Chromium
+  shows the group sees neither the owner's nor either member's cookie, and that
+  its own does not leak back.
+- **`profiles.js` joins the vendored tier**, so "Always allow" and "Trust this
+  site" are stored in the shape the desktop reads. Both sides of the pin now
+  DERIVE the file set from disk instead of naming it, after a third file was
+  vendored, hashed, and silently checked by nothing.
+
+## 0.47.0 (never released, folded into 0.47.1)
 
 - **`lib/browser-host-core/` holds byte-identical copies of the BGOS rule tier**
   (`policy.js` and `settings.js`): what counts as a read, a write, a sensitive
