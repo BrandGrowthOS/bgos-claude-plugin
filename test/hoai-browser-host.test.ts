@@ -101,6 +101,16 @@ const DISTINCT_PRINCIPALS: Array<[string, string]> = [
   ['USER-X', 'user-x'],
   ['con', 'p_con'],
   ['group-7', 'user-7'],
+  // A GROUP is a principal in its own right, not a person (design 9.2: the
+  // backend sends `group-<chatId>` for a room instead of the acting human's
+  // principal). So a group's browser must be its own, separate from the
+  // owner's AND from every member's, or one member's login in a group chat
+  // becomes the group's, and the group's becomes everyone's.
+  ['group-7', 'owner'],
+  ['group-7', 'group-70'],
+  ['group-7', 'user-user_2Alice'],
+  ['group-7', 'GROUP-7'],
+  ['group-a b', 'group-a_b'],
 ]
 
 test('PROFILE ISOLATION: two different principal values never resolve to one profile directory', () => {
@@ -735,7 +745,7 @@ test(
       // reads the cookie. So the owner turns it on for each of the three
       // profiles, which is also the only coverage that the host READS that
       // file at all.
-      for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner']) {
+      for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner', GROUP]) {
         const dir = browserPathsFor({ agentRoot, assistantId: 900, principal }).profileDir
         mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, allowEvaluate: true }))
@@ -751,6 +761,19 @@ test(
       await tool('user-user_2Bob', 'browser_navigate', { url: `${site.url}/set?v=bob` })
       assert.match(await cookieSeenBy('user-user_2Bob'), /cookie: who=bob/)
       // A frame with no principal is the owner's, a third profile.
+      assert.match(await cookieSeenBy(undefined), /cookie: none/)
+      // A GROUP is a fourth, and it is the case design 9.2 turns on: a room's
+      // frame carries `group-<chatId>` INSTEAD of the acting human's
+      // principal, so the group's browsing must be neither the owner's nor
+      // any member's. Alice and Bob are both members here and both signed in
+      // above; the group has seen neither.
+      const groupFirst = await cookieSeenBy(GROUP)
+      assert.match(groupFirst, /cookie: none/, `the group must not inherit a member's login: ${groupFirst}`)
+      assert.doesNotMatch(groupFirst, /alice|bob/)
+      await tool(GROUP, 'browser_navigate', { url: `${site.url}/set?v=team` })
+      assert.match(await cookieSeenBy(GROUP), /cookie: who=team/)
+      // And the group's own login does not leak back to a member or the owner.
+      assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
       assert.match(await cookieSeenBy(undefined), /cookie: none/)
       // Alice's browser closes and reopens: her login is on disk, still hers.
       assert.match(await tool('user-user_2Alice', 'hoai_browser_close_session'), /Session closed/)
@@ -769,13 +792,26 @@ test(
       assert.ok(Array.isArray(first.choices) && first.choices.includes('deny'), 'the owner must be able to say no')
       assert.ok(Number(first.waitSeconds) >= 1 && Number(first.waitSeconds) <= 1800, 'waitSeconds must satisfy @Min(1) @Max(1800)')
       // And the session grant it left behind means the same origin is not
-      // asked about again: three profiles browsed, and the cards are one per
-      // profile and origin rather than one per call.
-      assert.ok(relay.gateCards.length <= 6, `asked ${relay.gateCards.length} times; an allow_session must stop the repeat asks`)
+      // asked about again. FOUR profiles browsed this site, and a grant is
+      // per browser AND per gate kind, so the ceiling is two cards each: one
+      // navigate and one evaluate (allow_session on a navigate does not cover
+      // running scripts, which is the whole point of them being separate
+      // kinds). Anything above that is a grant failing to stick; anything at
+      // or below it is the repeat asks being suppressed.
+      const principals = 4
+      assert.ok(
+        relay.gateCards.length <= principals * 2,
+        `asked ${relay.gateCards.length} times for ${principals} profiles; an allow_session must stop the repeat asks`,
+      )
+      // And a floor, so the ceiling cannot pass by nobody being asked at all.
+      assert.ok(relay.gateCards.length >= principals, `only ${relay.gateCards.length} cards for ${principals} profiles; each new browser must ask`)
+      // Each profile asked about the site on its OWN account: a grant that
+      // leaked across profiles would show up as fewer cards than profiles.
+      assert.equal(new Set(relay.gateCards.map((c) => String(c.gateId))).size, relay.gateCards.length, 'every card carries its own gate id')
 
       const browserDir = join(agentRoot, '900', 'browser')
       const profiles = readdirSync(browserDir).sort()
-      assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob')].sort())
+      assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
       for (const p of profiles) assert.ok(existsSync(join(browserDir, p, 'Local State')), `${p} is a real Chrome profile`)
       assert.equal(site.hits.filter((h) => h.includes('who=alice')).length >= 2, true)
     } finally {
@@ -864,6 +900,9 @@ function relayOver(pool: any) {
   const core = new BrowserHostCore({ pool, browserTools: [navigateTool()], deviceLabel: 'test-box', gates: alwaysAllows() as never })
   return new RelaySessions({ core, serverInfo: { name: 'hoai-agent-browser', version: '0.0.0' }, instructions: hostInstructions('test-box') })
 }
+
+/** A room's principal, as the backend sends it (browser-principal.ts). */
+const GROUP = 'group-4242'
 
 /** Poll a condition rather than guess a sleep. Throws with what it wanted. */
 async function waitFor(ok: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
