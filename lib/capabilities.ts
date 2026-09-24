@@ -31,6 +31,8 @@
  * exists retries a refused delete or wraps it in a script to get it through.
  */
 
+import { HARD_FLOOR_TOKEN, PERMISSION_CARD } from './claude-capability-tokens.js';
+
 /** Compact frozen fallback used only when the served canon cannot be fetched. */
 export const BGOS_CAPABILITIES_FALLBACK = `# BGOS Channel Agent Capabilities (bundled fallback)
 
@@ -125,11 +127,43 @@ export const MAX_CAPABILITIES_BYTES = 256 * 1024;
 export const CAPABILITIES_MARKERS = ['BGOS Channel', 'Agent Capabilities'] as const;
 
 /**
- * Validate a /capabilities response body. Returns the served text when it is
- * well-formed (carries both markers), otherwise the bundled fallback. Never
- * throws, so the caller can pass the raw fetch result (or null on error).
+ * The Claude delta sentence of the hard floor, the one sentence the served
+ * canon tells ONLY a daemon that declares `hard_floor` AND `permission_card`
+ * (hardFloorTold in capability-canon.ts).
  */
-export function pickCapabilities(data: unknown): ServedCapabilities {
+export const CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE =
+  'From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.';
+
+/**
+ * The bundled fallback for THIS daemon, gated the way the served canon gates
+ * it (the stage 6 backend review). The canon tells the hook sentence only to
+ * a daemon that declares `hard_floor` and `permission_card`, and this plugin
+ * declares `hard_floor` only on a pairing whose session has the floor hook
+ * registered (declaredCapabilities). An API key install, or a clone without
+ * the hook, whose fetch failed was still told that a hook stops a listed
+ * action while its relay reads the floor check as unsupported and auto
+ * approves it: the agent believed in a guard that was not there. Without both
+ * tokens the sentence is taken out; the core floor sentences, which say only
+ * what the server enforces for every runtime, stay.
+ */
+export function capabilitiesFallbackFor(declared: readonly string[]): string {
+  if (declared.includes(HARD_FLOOR_TOKEN) && declared.includes(PERMISSION_CARD)) {
+    return BGOS_CAPABILITIES_FALLBACK;
+  }
+  return BGOS_CAPABILITIES_FALLBACK.replace(` ${CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE}`, '');
+}
+
+/**
+ * Validate a /capabilities response body. Returns the served text when it is
+ * well-formed (carries both markers), otherwise the bundled fallback for the
+ * capabilities this daemon declares (capabilitiesFallbackFor; none declared
+ * is the copy that promises least). Never throws, so the caller can pass the
+ * raw fetch result (or null on error).
+ */
+export function pickCapabilities(
+  data: unknown,
+  declared: readonly string[] = [],
+): ServedCapabilities {
   if (
     data !== null &&
     typeof data === 'object' &&
@@ -149,7 +183,7 @@ export function pickCapabilities(data: unknown): ServedCapabilities {
     }
   }
   return {
-    text: BGOS_CAPABILITIES_FALLBACK,
+    text: capabilitiesFallbackFor(declared),
     version: 'bundled',
     source: 'fallback',
   };

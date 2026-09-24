@@ -100,6 +100,13 @@ export const FLOOR_CHECK_TIMEOUT_MS = 10_000
 export interface FloorCheckBody {
   toolName: string
   inputPreview: string
+  /**
+   * True only for a shell request the CLI cut in the middle with no floor
+   * record naming it (consultElidedFloor): the relay cannot read what was
+   * cut, so it asks whether the owner's switch would hold what it cannot see.
+   * The server holds such a request exactly when the switch is on.
+   */
+  elided?: boolean
 }
 
 export type FloorAnswer =
@@ -130,7 +137,7 @@ export interface FloorRecord {
 /** How the relay treats one permission request, before any network. */
 export type FloorPlan =
   | { action: 'consult'; match: HardFloorMatch; source: 'record' | 'preview'; record: FloorRecord | null }
-  | { action: 'owner'; reason: string }
+  | { action: 'ask_elided'; reason: string }
   | { action: 'none' }
 
 /**
@@ -163,8 +170,12 @@ export function planFloorRequest(input: {
     return { action: 'consult', source: 'preview', record: null, match: input.previewMatch }
   }
   if (FLOOR_SHELL_TOOLS.includes(input.toolName) && previewIsElided(input.inputPreview)) {
+    // NOT straight to the owner (the stage 6 backend review): that posted a
+    // card for every long unlisted command on an install whose owner never
+    // turned the switch on. The server is asked whether the owner's floor
+    // holds a request it cannot read (consultElidedFloor).
     return {
-      action: 'owner',
+      action: 'ask_elided',
       reason:
         'the command was cut in the middle by the CLI and no floor record names it, so what was cut cannot be checked',
     }
@@ -420,4 +431,90 @@ export async function consultFloor(opts: {
                 context.autoApprove ? 'auto approving' : 'allowing it, as it ran before the floor (full access)'
               }`
   return { route, answer, line }
+}
+
+/**
+ * THE CUT SHELL COMMAND NO RECORD NAMES (planFloorRequest's `ask_elided`, the
+ * stage 6 backend review). The CLI cut the preview in the middle, so the list
+ * cannot read what was cut, and the floor hook left no record, which it does
+ * when it matched, so either nothing listed was in the command or the hook
+ * did not run (it fails open on a crash or its own budget). This used to go
+ * straight to the owner whatever the switch said, so an install that auto
+ * approves posted a card for every long unlisted command although its owner
+ * had never touched the switch: the one change spec section 8 forbids with
+ * the switch off.
+ *
+ * So the server is asked with `elided: true`, and it holds the request
+ * exactly when the owner's switch is on (what was cut cannot be checked, so
+ * the owner decides). hold takes the owner's card, held, so only a tap allows
+ * it; proceed (the switch is off) and an API key connection or a backend
+ * without the route auto approve as before this release; an error goes to
+ * the owner, the answer this branch always gave, rather than a silent allow.
+ */
+export async function consultElidedFloor(opts: {
+  toolName: string
+  inputPreview: string | undefined
+  requestId: string
+  path: string | null
+  send: (path: string, body: FloorCheckBody) => Promise<{ status: number; text: string }>
+  timeoutMs?: number
+}): Promise<FloorDecision> {
+  const where = `${opts.toolName} [${opts.requestId}] (a cut command no floor record names)`
+  if (opts.path === null) {
+    const answer: FloorAnswer = {
+      kind: 'unsupported',
+      reason: 'an API key connection has no pairing scoped floor check',
+    }
+    return {
+      route: 'auto_approve',
+      answer,
+      line: `Floor check skipped for ${where}: ${answer.reason}; auto approving as before`,
+    }
+  }
+  const timeoutMs = opts.timeoutMs ?? FLOOR_CHECK_TIMEOUT_MS
+  const body: FloorCheckBody = {
+    ...buildFloorCheckBody(opts.toolName, opts.inputPreview, { evidence: '' }),
+    elided: true,
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let answer: FloorAnswer
+  try {
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs)
+    })
+    const sent = opts.send(opts.path, body)
+    sent.catch(() => {})
+    answer = readFloorCheckResponse(await Promise.race([sent, deadline]))
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    answer = { kind: 'error', reason: `the floor check failed: ${reason}` }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+  switch (answer.kind) {
+    case 'hold':
+      return {
+        route: 'hold',
+        answer,
+        line: `Floor HOLDS ${where} for the owner: the switch is on and what was cut cannot be checked`,
+      }
+    case 'proceed':
+      return {
+        route: 'auto_approve',
+        answer,
+        line: `Floor check for ${where}: the owner has not asked to hold anything; auto approving as before`,
+      }
+    case 'unsupported':
+      return {
+        route: 'auto_approve',
+        answer,
+        line: `Floor check unavailable for ${where}: ${answer.reason}; auto approving as before`,
+      }
+    default:
+      return {
+        route: 'owner',
+        answer,
+        line: `Floor check could not decide ${where}: ${answer.reason}; asking the owner`,
+      }
+  }
 }

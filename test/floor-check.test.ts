@@ -24,6 +24,7 @@ import {
   FLOOR_CHECK_TIMEOUT_MS,
   FLOOR_CHECK_TOOL_NAME_MAX,
   buildFloorCheckBody,
+  consultElidedFloor,
   consultFloor,
   floorCheckPath,
   floorRouteFor,
@@ -140,12 +141,12 @@ test('so the relay decides from the hook record, and the server is sent the matc
   }
 })
 
-test('with no record, a cut shell preview goes to the owner rather than auto approve', () => {
+test('with no record, a cut shell preview asks the server about what was cut rather than auto approve', () => {
   const [, command] = LONG_COMMANDS[0]
   const preview = cliPreview({ command, description: 'Clean up' })
   assert.deepEqual(
     planFloorRequest({ autoApprove: true, toolName: 'Bash', inputPreview: preview, record: null, previewMatch: null }).action,
-    'owner',
+    'ask_elided',
   )
   // A cut preview of anything else is not the floor's business (an MCP tool is judged by name).
   assert.equal(
@@ -438,7 +439,7 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   const plan = handler.indexOf('const floorPlan = planFloorRequest({')
   const classify = handler.indexOf('classifyPermissionRequest(tool_name, input_preview)')
   const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)")
-  const owner = handler.indexOf("if (floorPlan.action === 'owner') {")
+  const owner = handler.indexOf("if (floorPlan.action === 'ask_elided') {")
   const auto = handler.indexOf('if (AUTO_APPROVE) {')
   assert.ok(record > 0 && plan > 0 && classify > 0 && settle > 0 && owner > 0 && auto > 0, 'all must be in the handler')
   assert.ok(record < plan && plan < auto, 'the record and the plan are read before auto approve')
@@ -447,8 +448,15 @@ test('the floor is asked BEFORE the auto approve branch, from the hook record fi
   assert.match(handler, /floorRecord === null && AUTO_APPROVE\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
   assert.match(handler, /autoApprove: AUTO_APPROVE,/)
   const ownerExit = handler.slice(owner, auto)
-  assert.ok(ownerExit.includes('return relayPermissionToOwner(params)'), 'a cut preview with no record goes to the owner')
+  assert.ok(ownerExit.includes('return settleElidedFloorRequest(params)'), 'a cut preview with no record asks the server')
   assert.equal(ownerExit.includes("behavior: 'allow'"), false)
+  // The stage 6 backend review: the cut command waits for the owner only when
+  // the server says the switch holds it, and then only a tap allows it.
+  const elided = bodyOf('function settleElidedFloorRequest(', '\n/**')
+  assert.ok(elided.includes('return trackMessageOperation(async () => {'))
+  assert.ok(elided.includes('path: floorCheckPath(AUTH.mode, ASSISTANT_ID)'))
+  assert.match(elided, /case 'hold':\s*return relayPermissionToOwner\(params, undefined, true\)/)
+  assert.match(elided, /case 'auto_approve':[\s\S]*behavior: 'allow'/)
 })
 
 test('the record is read synchronously, from this daemon folder keys, before any await', () => {
@@ -542,4 +550,43 @@ test('no daemon file reads, stores or caches the owner switch', () => {
   assert.ok(tokenFile, 'the shared token file was scanned')
   assert.equal(tokenFile[1].split(TOKEN_STATEMENT).length, 2)
   assert.equal(code('x.ts', "const on = row.hardFloor === true"), "const on = row.hardFloor === true")
+})
+
+// THE STAGE 6 BACKEND REVIEW: a cut shell command no floor record names went
+// straight to the owner whatever the switch said, so an auto approve install
+// whose owner never touched the switch posted a card for every long unlisted
+// command. It now asks the server with elided:true, and waits only on hold.
+test('a cut command no record names: the switch decides, the body says elided, and only an error falls back to the owner', async () => {
+  const [, command] = LONG_COMMANDS[0]
+  const preview = cliPreview({ command, description: 'Clean up' })
+  const sent: FloorCheckBody[] = []
+  const ask = (reply: () => Promise<{ status: number; text: string }>, path: string | null = 'integrations/assistants/9/floor-check') =>
+    consultElidedFloor({
+      toolName: 'Bash',
+      inputPreview: preview,
+      requestId: 'r1',
+      path,
+      send: async (_path, body) => {
+        sent.push(body)
+        return reply()
+      },
+      timeoutMs: 200,
+    })
+  const hold = await ask(async () => answer(200, { hold: true, rulesVersion: 1 }))
+  assert.equal(hold.route, 'hold')
+  assert.equal(sent[0].elided, true)
+  assert.equal(sent[0].toolName, 'Bash')
+  assert.ok(sent[0].inputPreview.length <= FLOOR_CHECK_INPUT_PREVIEW_MAX)
+  assert.equal(typeof JSON.parse(sent[0].inputPreview).command, 'string', 'the body is JSON the server reads')
+  // The switch is off: auto approve, exactly as before this release.
+  assert.equal((await ask(async () => answer(200, { hold: false, rulesVersion: 1 }))).route, 'auto_approve')
+  // A backend without the route cannot have the switch on.
+  assert.equal((await ask(async () => answer(404, 'Not Found'))).route, 'auto_approve')
+  // An API key connection has nowhere to ask, and asks nothing.
+  const before = sent.length
+  assert.equal((await ask(async () => answer(200, { hold: true }), null)).route, 'auto_approve')
+  assert.equal(sent.length, before)
+  // An answer that cannot be read is the owner's, never a silent allow.
+  assert.equal((await ask(async () => answer(500, 'boom'))).route, 'owner')
+  assert.equal((await ask(() => new Promise(() => {}))).route, 'owner')
 })

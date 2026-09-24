@@ -346,6 +346,7 @@ import {
 } from './lib/permission-relay.js'
 import { classifyPermissionRequest } from './lib/hard-floor.js'
 import {
+  consultElidedFloor,
   consultFloor,
   floorCheckPath,
   planFloorRequest,
@@ -1088,11 +1089,15 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
   if (capabilitiesInFlight) return capabilitiesInFlight
   capabilitiesInFlight = (async () => {
     let data: unknown = null
+    // ONE declared list for the fetch AND the offline copy, so a fetch that
+    // fails tells the agent no more than the served canon would have told
+    // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
         capabilitiesFetchPath(
           RUNNING_VERSION ?? '0.0.0',
-          declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
+          declared,
         ),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
@@ -1111,7 +1116,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
           : `Capability canon fetch failed (${reason}); using bundled fallback`,
       )
     }
-    cachedCapabilities = pickCapabilities(data)
+    cachedCapabilities = pickCapabilities(data, declared)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -2451,9 +2456,9 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         : null,
   })
   if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
-  if (floorPlan.action === 'owner') {
-    log(`Floor sends ${tool_name} [${request_id}] to the owner: ${floorPlan.reason}`)
-    return relayPermissionToOwner(params)
+  if (floorPlan.action === 'ask_elided') {
+    log(`Floor asks about ${tool_name} [${request_id}]: ${floorPlan.reason}`)
+    return settleElidedFloorRequest(params)
   }
 
   if (AUTO_APPROVE) {
@@ -2712,6 +2717,44 @@ function settleFloorRequest(
             log(`Failed to send the floor refusal verdict: ${err}`)
           })
         return
+    }
+  })
+}
+
+/**
+ * A cut shell command no floor record names (lib/floor-check.ts
+ * consultElidedFloor, the stage 6 backend review): the server says whether
+ * the owner's switch holds what the relay cannot read. hold is the owner's
+ * card, held, so only a tap allows it; proceed and an API key connection
+ * auto approve as before; an error asks the owner, never a silent allow.
+ */
+function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  return trackMessageOperation(async () => {
+    const decision = await consultElidedFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+    })
+    log(decision.line)
+    switch (decision.route) {
+      case 'hold':
+        return relayPermissionToOwner(params, undefined, true)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      default:
+        return relayPermissionToOwner(params)
     }
   })
 }

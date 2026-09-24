@@ -117,10 +117,15 @@ test('the canon fetch at connect carries the declared list', () => {
   assert.ok(start > 0, 'loadServedCapabilities is gone from server.ts')
   const end = server.indexOf('\n}\n', start)
   const body = server.slice(start, end)
+  // One declared list, computed once, for the fetch AND the offline copy
+  // (the stage 6 backend review: a failed fetch tells no more than the
+  // served canon would have told this daemon).
   assert.match(
     body,
-    /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)\s*,?\s*\)/,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)/,
   )
+  assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
+  assert.match(body, /pickCapabilities\(data, declared\)/)
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
   assert.ok(declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }).includes('permission_card'))
 })

@@ -10,6 +10,8 @@ import assert from 'node:assert/strict'
 import {
   pickCapabilities,
   BGOS_CAPABILITIES_FALLBACK,
+  CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE,
+  capabilitiesFallbackFor,
   MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
 
@@ -33,7 +35,26 @@ test('falls back to the bundled copy on null (fetch failed)', () => {
   const r = pickCapabilities(null)
   assert.equal(r.source, 'fallback')
   assert.equal(r.version, 'bundled')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
+})
+
+test('the offline copy tells the hook sentence only to a daemon that declares hard_floor AND permission_card (the stage 6 backend review)', () => {
+  // The served canon's gate (hardFloorTold). This plugin declares hard_floor
+  // only on a pairing with the floor hook registered, so an API key install
+  // whose fetch failed must not be told that a hook stops a listed action
+  // while its relay auto approves it.
+  const both = pickCapabilities(null, ['mission_events', 'permission_card', 'hard_floor'])
+  assert.equal(both.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.ok(both.text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE))
+  for (const declared of [[], ['permission_card'], ['hard_floor'], ['mission_events', 'permission_card', 'plan_card']]) {
+    const text = pickCapabilities(null, declared).text
+    assert.equal(text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE), false, declared.join(','))
+    assert.equal(text.includes('From this release a hook'), false)
+    // The core floor sentences (what the SERVER enforces) stay, and the
+    // bullet still ends on its own sentence.
+    assert.ok(text.includes('never split, rename or wrap the action to step around the list.\n'))
+  }
+  assert.equal(capabilitiesFallbackFor([]).length, BGOS_CAPABILITIES_FALLBACK.length - CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE.length - 1)
 })
 
 test('falls back when the served canon exceeds the size cap (DoS/injection guard)', () => {
@@ -41,7 +62,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
     '# BGOS Channel Agent Capabilities\n' + 'x'.repeat(MAX_CAPABILITIES_BYTES + 1)
   const r = pickCapabilities({ text: oversized, version: 'evil' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
   // A canon right at the cap with valid markers is still accepted.
   const marker = '# BGOS Channel Agent Capabilities\n'
   const atCap = marker + 'y'.repeat(MAX_CAPABILITIES_BYTES - marker.length)
@@ -51,7 +72,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
 test('falls back when the response is missing the markers', () => {
   const r = pickCapabilities({ text: 'some unrelated body', version: '9' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
 })
 
 test('falls back when text is not a string', () => {

@@ -27,7 +27,12 @@ card only to a daemon that declares `permission_card` or `plan_card`
   one (`list_payment_intents`, `get_charge`) is not; and the HOAI Agent
   Browser's own tools are left to the browser's own gate, which already asks
   you before every sensitive action in the page, so clearing a value from the
-  agent's own browser storage no longer asks.
+  agent's own browser storage no longer asks. A shell command the CLI cut in
+  the middle that no floor record names waits for you only when your switch
+  is on (the relay asks the server with `elided: true`); with it off it runs
+  as it did before. And if this daemon cannot fetch the canon, its offline
+  copy tells the agent that a hook stops a listed action only when it
+  declares `hard_floor`, the served canon's own rule.
   - **A blocking hook, and only one.** `bin/hoai-floor-hook.mjs` is a second
     `PreToolUse` entry with `async: false`, a matcher for the shell, edit and
     MCP tools and a 3 second timeout. For a listed action it answers `ask`,
