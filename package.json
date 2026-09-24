@@ -1,6 +1,6 @@
 {
   "name": "claude-channel-bgos",
-  "version": "0.44.0",
+  "version": "0.46.0",
   "description": "HOAI channel plugin for Claude Code, chat with Claude Code through the HOAI desktop and mobile app",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,12 +23,14 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "playwright-core": "1.63.0",
     "socket.io-client": "^4.8.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "@types/node": "^25.5.2",
+    "socket.io": "^4.8.1",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   }

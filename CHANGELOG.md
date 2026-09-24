@@ -2,6 +2,82 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.46.0
+
+**Runs ungated on purpose, by the owner's decision (2026-09-23).** A
+daemon-placed agent's browser raises NO permission strip: a new site, a write
+on a signed-in site, a download, an upload and every sensitive action just run,
+where the desktop Agent Browser stops and asks. The owner was shown that
+difference and chose it for now. Moving the gates into the host is the
+follow-up, and the served capability canon is corrected in the same breath so
+no agent is told it will be asked when it will not be.
+
+
+- **An agent's own browser, on the machine the agent lives on.** New
+  `bin/hoai-browser-host.mjs`, run with node. It connects one socket per
+  pairing on this machine with the `browser_host` handshake the backend
+  already serves (the pairing token in the query; the role, only that
+  pairing's agents and the device label in the auth), answers each
+  `browser_rpc` frame through the desktop's own engine (Playwright's
+  `BrowserBackend` over the same filtered roster, so `tools/list` is byte
+  identical to the desktop's) and posts the answer to
+  `/api/v1/browser/rpc/<rpcId>/result` with the same pairing token and the
+  socket the frame arrived on. A notification is never posted.
+  - **It drives a real, installed Chrome or Chromium** over CDP
+    (`--remote-debugging-port`, `--user-data-dir`), headless by default. It
+    never downloads a browser; when none is installed it says so at startup
+    and in every call that needs one.
+  - **The profile is keyed by principal, not by agent:**
+    `~/.bgos-agent/<assistantId>/browser/<principal>/`, `owner` when the frame
+    names none. Two different principals always get two directories, on a
+    case-insensitive disk too, and a principal the host cannot read is
+    refused rather than served from the owner's profile. A test with a real
+    Chromium proves one principal's cookie is never sent for another.
+  - Adds `playwright-core` 1.63.0 (the desktop's pin) as a dependency and
+    `socket.io` as a dev dependency for the fake relay the tests drive.
+  - Two existing tests skipped with `t.skip()` or the `skip` option, which
+    bun's `node:test` does not honour, now also return early, so `bun test`
+    is green as well as `npm test`.
+- **The daemon starts that host itself.** `server.ts` spawns
+  `bin/hoai-browser-host.mjs` under node on every paired daemon
+  (`lib/browser-host-supervisor.ts`), scoped to the daemon's own pairing, with
+  its output in `~/.bgos-agent/browser-host-<digest>.log` and never on the
+  daemon's stdio, and stops it when the daemon exits (the host also stops
+  itself if the daemon is killed outright).
+  - **Unconditional, and safe by construction:** the backend elects an agent
+    host only for an agent whose browser placement is `daemon`, so a
+    desktop-placed agent's host never receives a frame, and Chromium and
+    playwright-core load only on the first frame; an idle host is one node
+    process (about 80 MB resident on macOS) holding one socket.
+  - **One host per pairing on a machine,** through the reclaimable lock of
+    `lib/pairing-lock.ts` at a per-pairing path: a second daemon of the same
+    pairing waits, and takes the host over when the first daemon or its host
+    is gone. A holder that is alive but late (a machine waking from sleep) is
+    given a full recheck to beat again before its lock is taken, and a daemon
+    whose lock was taken stands its host down and waits to take it back.
+  - **Chrome and the host get an ALLOW-LISTED environment**
+    (`lib/browser-env.mjs`), not a deny-list by name: a name rule cannot
+    see `SSH_AUTH_SOCK`, a live handle to the user's ssh-agent. Chrome gets
+    PATH, HOME, TMPDIR/TMP/TEMP, USER/LOGNAME, LANG/LANGUAGE/LC_*, TZ, the
+    Windows system folders on Windows, and on linux the display and session
+    variables only when it is shown. The host gets that plus its own
+    `HOAI_BROWSER_*` settings, `NODE_EXTRA_CA_CERTS` and its pairing token,
+    which it drops from its environment once read. Anything else is opt-in
+    by name in `HOAI_BROWSER_CHROME_ENV`, and a credential-looking name is
+    dropped even then.
+  - **It can never take the daemon down.** A missing node, a spawn that
+    fails, or a host that crashes is one log line; the daemon carries on and
+    does not restart that host.
+  - **Kill switch: `HOAI_BROWSER_HOST=off`** (also `0`, `false`, `no`) skips
+    the spawn entirely.
+  - Review fixes to the host: it no longer exits when it has no live socket
+    (no credentials yet, or refused by the gateway), a stop during a Chrome
+    launch now stops that Chrome, JSON-RPC ids `1` and `"1"` no longer share a
+    waiter, the CDP connect after a launch is bounded, and a Snap Chromium
+    (which cannot open a profile under `~/.bgos-agent`) is skipped with a
+    message that says so. `package-lock.json` now carries the new
+    dependencies.
+
 ## 0.44.0 (2026-09-21)
 
 - **The helpers a turn hands work to get a row each, and the owner watches
