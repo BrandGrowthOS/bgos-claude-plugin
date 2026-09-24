@@ -72,6 +72,22 @@ import { io as socketIoClient } from 'socket.io-client'
 
 import { chromeEnv } from '../lib/browser-env.mjs'
 
+/**
+ * The permission rules, byte-identical copies of the desktop Agent Browser's
+ * (lib/browser-host-core/, pinned in its vendor.json and in BGOS's own
+ * hostCoreVendorPin test). They are CommonJS, hence createRequire; the nested
+ * package.json there declares that, because this package is type=module.
+ *
+ * They are shared rather than re-written for one reason: an agent must be
+ * judged by the SAME rules wherever its browser happens to run. A second
+ * hand-written copy is how two hosts come to disagree about what counts as a
+ * credential, and the disagreement shows up as an agent doing something here
+ * that the desktop would have stopped.
+ */
+const hostCoreRequire = createRequire(import.meta.url)
+export const policy = hostCoreRequire('../lib/browser-host-core/policy.js')
+export const hostSettings = hostCoreRequire('../lib/browser-host-core/settings.js')
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Every log line this host writes starts here, so it is attributable. */
