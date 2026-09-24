@@ -380,15 +380,20 @@ describe('declared capabilities on the heartbeat', () => {
     // answer on a machine that cannot type into its own session, and the
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
     // upgrade starts declaring without a restart.
+    // permission_card (0.47.0) rides every beat on every host: the relay
+    // speaks the channel's own permission notification, which has no
+    // platform limit.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
+      'permission_card',
       'mission_goal_loop',
       'mission_pause',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false })]).toEqual([
       'mission_events',
       'mission_goal_checks',
+      'permission_card',
     ])
   })
 

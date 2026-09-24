@@ -56,6 +56,44 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
 - Your tool rows now carry what your commands printed, their exit codes and your edits' line counts, and this host fills every one of them from your own hook events: it takes the output tail from the tool result, masks secrets in it, caps it, reads the exit code off the runtime's own failure line, and counts the plus and minus lines off the patch. You write none of it and you cannot add to it. So do not paste command output into your reply, do not restate an exit code or a line count in prose, and do not close a turn with a summary of what you did: the folded card already says how long the turn took, how many tools ran, how many failed and how many files changed, and saying it again reads to your owner as a second, competing answer.
 - When you delegate with the Agent tool, this host draws each child as its own row on your tool card and fills every part of that row from your own hook events: the child's type and the description you gave it when the launch returns, the tool the child is using right now from its own tagged events, its elapsed time from this host's receipt of the launch and of the child's stop, and its last message, masked and capped, as the row's result. You write none of it and you cannot add to it. Your card also stays open while a helper is still working, even after your turn has ended. So do not narrate what your helpers are doing, do not repeat a helper's result in prose, and do not report how many tokens a helper used: this host is not given a token count and shows none, and nothing here can stop one helper without stopping your whole turn.`;
 
+/**
+ * The backend's capability token grammar and list cap
+ * (backend/src/dto/integrations/pair-exchange.dto.ts). The capabilities query
+ * DTO refuses the WHOLE fetch on a malformed list, and a refused fetch costs
+ * the agent the live canon, so a token outside the grammar is dropped here
+ * rather than sent.
+ */
+const CAPABILITY_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
+const MAX_DECLARED_ON_FETCH = 32;
+
+/**
+ * The path of the canon fetch: channel, the running version, and this
+ * daemon's own declared list.
+ *
+ * The declared list rides the fetch itself (Kanban phase 1, E3) because the
+ * heartbeat that also carries it may not have landed yet at connect, and the
+ * canon's column lines sentence is served only to a connection that declares
+ * `boards_playbook`. Comma joined, then percent encoded, so the commas travel
+ * as %2C. An empty list sends no `capabilities` key at all, which the backend
+ * reads exactly as a pre 0.45.0 fetch.
+ *
+ *   capabilitiesFetchPath('0.45.0', ['mission_events', 'boards_playbook'])
+ *     === 'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=mission_events%2Cboards_playbook'
+ */
+export function capabilitiesFetchPath(
+  runningVersion: string | null,
+  declared: readonly string[],
+): string {
+  const version = encodeURIComponent(runningVersion ?? '0.0.0');
+  const tokens = declared
+    .filter((t) => CAPABILITY_TOKEN.test(t))
+    .slice(0, MAX_DECLARED_ON_FETCH);
+  const base = `integrations/capabilities?channel=claude&daemonVersion=${version}`;
+  return tokens.length
+    ? `${base}&capabilities=${encodeURIComponent(tokens.join(','))}`
+    : base;
+}
+
 export interface ServedCapabilities {
   text: string;
   version: string;
