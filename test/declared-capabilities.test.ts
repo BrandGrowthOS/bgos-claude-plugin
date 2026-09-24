@@ -13,6 +13,8 @@
 
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   DECLARED_CAPABILITIES_BASE,
@@ -77,7 +79,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card'],
+    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor'],
   )
 })
 
@@ -104,7 +106,7 @@ test('permission_card is declared on every host, because the relay has no platfo
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('permission_card'))
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true })],
-    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'mission_goal_loop', 'mission_pause'],
+    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor', 'mission_goal_loop', 'mission_pause'],
   )
 })
 
@@ -127,6 +129,41 @@ test('plan_card is declared on every host, because propose_plan is a typed tool 
     assert.ok(declaredCapabilities({ canInjectGoal }).includes('plan_card'))
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('plan_card'))
+})
+
+/**
+ * hard_floor (0.49.0, the Always ask floor: the blocking hook and the hold).
+ *
+ * The promise: this daemon installs the blocking floor hook
+ * (bin/hoai-floor-hook.mjs, registered in hooks/hooks.json) and holds an
+ * action on the owner's Always ask list for the owner before any auto
+ * approve (lib/floor-check.ts, asked by the relay first). The BGOS canon
+ * tells the floor sentence only to a daemon that declares this token beside
+ * permission_card (BGOS hardFloorTold), with no version floor, so the
+ * declaration IS the gate. The hook ships in hooks/hooks.json on every host,
+ * so the token is in the base, not the injector half.
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): removed HARD_FLOOR_TOKEN from DECLARED_CAPABILITIES_BASE -> five
+ * red among the node files: this test, the read half pin above, the
+ * permission_card case's full pin, test/capabilities-fetch-path.test.ts's
+ * "the hard floor token reaches the fetch too" and
+ * test/claude-capability-tokens.pin.test.ts's "this release declares
+ * permission_card, plan_card and hard_floor" (test/version-heartbeat.test.ts's
+ * "what rides the beat", a bun file, pins the same list).
+ */
+test('hard_floor is declared on every host, because the hook and the hold have no platform limit', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal })
+    assert.ok(declared.includes('hard_floor'))
+    // The canon tells the floor sentence only beside the relay it names.
+    assert.ok(declared.includes('permission_card'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('hard_floor'))
+  // The promise is only true while the hook this token vouches for is really
+  // registered as a blocking PreToolUse hook.
+  const hooks = readFileSync(join(import.meta.dirname, '..', 'hooks', 'hooks.json'), 'utf8')
+  assert.match(hooks, /hoai-floor-hook\.mjs/)
 })
 
 test('no token is declared twice, on either host', () => {

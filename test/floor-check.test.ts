@@ -215,6 +215,27 @@ test('the body carries what the list reads, as JSON, inside the route limits', (
   assert.equal(long.toolName.length, FLOOR_CHECK_TOOL_NAME_MAX)
 })
 
+/**
+ * THE ROUTE'S LIMITS, PINNED AS LITERALS (cross repo, Ares's note of 15:10 on
+ * 2026-09-24). BGOS backend/src/dto/floor-check.dto.ts declares
+ * FLOOR_CHECK_TOOL_NAME_MAX = 200 and FLOOR_CHECK_INPUT_PREVIEW_MAX = 4000 and
+ * its hard-floor.controller.spec.ts pins both as literals. A body over either
+ * is a 400, which the relay reads as an error and REFUSES, so a limit raised
+ * here alone would turn a long command into a refused one. Each repo pins the
+ * same two numbers; a change in one tree only is red in that tree.
+ *
+ * MUTATION PROOF (applied to lib/floor-check.ts, confirmed red, restored):
+ * FLOOR_CHECK_TOOL_NAME_MAX set to 256
+ * -> this case red, 1 of 52; FLOOR_CHECK_INPUT_PREVIEW_MAX set to 4096 -> this
+ * case red, 1 of 52. And the owner switch guard below, narrowed to exempt the
+ * token statement: a code line reading `row.hardFloor` appended to
+ * lib/floor-check.ts -> that guard red, 1 of 52.
+ */
+test('the route limits are the two numbers the BGOS DTO pins, 200 and 4000', () => {
+  assert.equal(FLOOR_CHECK_TOOL_NAME_MAX, 200)
+  assert.equal(FLOOR_CHECK_INPUT_PREVIEW_MAX, 4000)
+})
+
 test('a command too long to send whole is sent as the segment that matched', () => {
   const command = `echo ${'y'.repeat(9000)} && git push --force origin main`
   const preview = JSON.stringify({ command, description: 'long' })
@@ -498,6 +519,27 @@ test('no daemon file reads, stores or caches the owner switch', () => {
     }
   }
   assert.ok(files.length > 60, `the whole tree was scanned (${files.length})`)
-  const offenders = files.filter(([, src]) => /\bhardFloor\b|\bhard_floor\b/.test(src)).map(([n]) => n)
+  // ONE spelling of `hard_floor` is not the switch: the capability TOKEN this
+  // daemon declares (P2 stage 6), defined once in the shared token file BGOS
+  // pins by sha256 and imported everywhere else as HARD_FLOOR_TOKEN. So that
+  // exact statement is exempt, and so is documentation (a JSDoc block or a
+  // whole line comment), which names the token without reading anything.
+  // Everything else still counts: a `hardFloor` field or a `hard_floor`
+  // literal in code anywhere is an offender.
+  const TOKEN_STATEMENT = "export const HARD_FLOOR_TOKEN = 'hard_floor';"
+  const code = (name: string, src: string): string => {
+    let out = src.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+    if (name === 'lib/claude-capability-tokens.ts') out = out.split(TOKEN_STATEMENT).join('')
+    return out
+  }
+  const offenders = files
+    .filter(([name, src]) => /\bhardFloor\b|\bhard_floor\b/.test(code(name, src)))
+    .map(([n]) => n)
   assert.deepEqual(offenders, [])
+  // The exemption is the token and nothing more: the token file defines it
+  // exactly once, and the declared list takes it from there.
+  const tokenFile = files.find(([n]) => n === 'lib/claude-capability-tokens.ts')
+  assert.ok(tokenFile, 'the shared token file was scanned')
+  assert.equal(tokenFile[1].split(TOKEN_STATEMENT).length, 2)
+  assert.equal(code('x.ts', "const on = row.hardFloor === true"), "const on = row.hardFloor === true")
 })

@@ -57,6 +57,17 @@ test('the plan card token reaches the fetch too (0.48.0)', () => {
   assert.ok(query.get('capabilities')!.split(',').includes('plan_card'))
 })
 
+test('the hard floor token reaches the fetch too (0.49.0)', () => {
+  // The canon's floor sentence is gated on hard_floor (with permission_card),
+  // so the fetch at connect, which runs before the first heartbeat, must carry
+  // it or a fresh boot is told nothing about the hook it installed.
+  const path = capabilitiesFetchPath('0.49.0', declaredCapabilities({ canInjectGoal: false }))
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  const sent = query.get('capabilities')!.split(',')
+  assert.ok(sent.includes('hard_floor'))
+  assert.ok(sent.includes('permission_card'))
+})
+
 test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
   assert.ok(
     capabilitiesFetchPath('0.47.0-rc.1+build 7', ['permission_card']).includes(

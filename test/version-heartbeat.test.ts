@@ -383,12 +383,14 @@ describe('declared capabilities on the heartbeat', () => {
     // permission_card (0.47.0) rides every beat on every host: the relay
     // speaks the channel's own permission notification, which has no
     // platform limit. plan_card (0.48.0) likewise: propose_plan is a typed
-    // tool on every host.
+    // tool on every host. hard_floor (0.49.0) likewise: the floor hook is a
+    // plain node script and its hold rides the permission relay.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'permission_card',
       'plan_card',
+      'hard_floor',
       'mission_goal_loop',
       'mission_pause',
     ])
@@ -397,6 +399,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_goal_checks',
       'permission_card',
       'plan_card',
+      'hard_floor',
     ])
   })
 

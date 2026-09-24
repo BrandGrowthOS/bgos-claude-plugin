@@ -79,6 +79,14 @@ card only to a daemon that declares `permission_card` or `plan_card`
 - The bundled offline capability text carries the floor's three core canon
   sentences and the Claude delta sentence, so a model whose canon fetch failed
   is not told the opposite.
+- **This daemon declares `hard_floor`.** On every heartbeat and on the canon
+  fetch at connect, on every host, taken from `lib/claude-capability-tokens.ts`
+  (now naming three tokens), the file BGOS pins byte for byte, both sides
+  pinning the same new sha256. The token promises the blocking floor hook and
+  the relay's hold before any auto approve; the served canon tells the floor
+  sentence only to a daemon that declares it together with `permission_card`.
+  The floor-check limits (200 and 4000) are pinned as literals beside the ones
+  BGOS pins on its route.
 
 ## 0.48.0 (2026-09-24)
 
