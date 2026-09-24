@@ -20,7 +20,7 @@
  *    PostToolBatch. A telemetry forwarder that can block the agent is a defect,
  *    not a feature, so every path here, a crash included, ends at exit code 0
  *    and writes nothing to stdout.
- *    THE ONE BLOCKING HOOK IS NOT THIS FILE (0.46.0). The plugin registers a
+ *    THE ONE BLOCKING HOOK IS NOT THIS FILE (0.49.0). The plugin registers a
  *    second PreToolUse script, bin/hoai-floor-hook.mjs, with `async: false`,
  *    because the owner's "Always ask before risky actions" needs a listed
  *    action (a recursive delete, a force push, a change inside .git, to an

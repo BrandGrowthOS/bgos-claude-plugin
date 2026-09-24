@@ -813,7 +813,7 @@ test('a moved checkout replaces our old entry instead of stacking a dead one bes
   assert.equal(JSON.stringify(settingsOf(fs)).includes('/old/place/'), false, 'nothing of the old checkout is left')
 })
 
-// ── The floor hook on the clone rail (0.46.0) ────────────────────────────────
+// ── The floor hook on the clone rail (0.49.0) ────────────────────────────────
 //
 // A clone reads its checkout's hooks/hooks.json no more for the floor than for
 // the forwarder, so without this entry a clone agent had no floor at all while
@@ -843,7 +843,7 @@ test('the clone rail registers the floor hook exactly as hooks/hooks.json does, 
     const flat = settingsOf(fs).hooks[name].flatMap((m: any) => m.hooks)
     assert.equal(flat.some((h: any) => String(h.args?.[0]).includes('hoai-floor-hook')), false, name)
   }
-  // A folder provisioned before 0.46.0 (forwarder only) is not "already" done.
+  // A folder provisioned before 0.49.0 (forwarder only) is not "already" done.
   const old = memFs({
     '/agent/.claude/settings.local.json': JSON.stringify({
       hooks: Object.fromEntries(

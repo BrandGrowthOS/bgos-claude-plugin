@@ -125,7 +125,7 @@ test('the bundled fallback carries the hard floor sentences, word for word (spec
   // The core floor sentence and the Claude delta sentence of the served
   // canon's approvals section, as the stage 6 spec writes them. A fetch that
   // failed must not leave the model believing nothing can stop a tool call:
-  // since 0.46.0 a listed action is held for the owner or refused.
+  // since 0.49.0 a listed action is held for the owner or refused.
   const core =
     'Some actions ALWAYS ask the owner when the owner has turned on Always ask before risky ' +
     'actions for you: a recursive delete, a force push, a change inside .git, a change to an ' +

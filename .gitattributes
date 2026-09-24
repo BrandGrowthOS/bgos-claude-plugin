@@ -9,3 +9,7 @@ bin/hoai-browser-mcp.mjs text eol=lf
 # backend/src/services/hard-floor-fixture.ts, pinned by the sha256 of its
 # bytes on both sides, so it must not pick up CRLF on a Windows checkout.
 lib/hard-floor-fixture.ts text eol=lf
+# lib/claude-capability-tokens.ts is a byte-identical copy of the BGOS file
+# backend/src/integrations/claude-capability-tokens.ts, pinned by sha256 on
+# both sides, so it must not pick up CRLF on a Windows checkout.
+lib/claude-capability-tokens.ts text eol=lf
