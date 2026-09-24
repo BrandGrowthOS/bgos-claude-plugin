@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The five tokens, and what each one PROMISES the owner:
+ * The six tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -61,6 +61,17 @@
  *                       heartbeat or on the capabilities fetch itself
  *                       (lib/capabilities.ts, capabilitiesFetchPath), so an
  *                       agent is never told about a tool it does not have.
+ *   boards_playbook_does the same set_column_lines op takes a line's
+ *                       instruction part (`does`, 0.50.0, Kanban phase 2):
+ *                       what the agent a card is handed to should do. The
+ *                       server files an agent's instruction as a suggestion
+ *                       the owner approves word for word in the app, and
+ *                       this daemon reads the echo's `suggested` and
+ *                       `declined` lists back to its model. Every host, for
+ *                       the reason boards_playbook is. The backend serves the
+ *                       canon's instruction sentence only to a connection
+ *                       that declares this token, beside the phase 1
+ *                       sentence and independently of it.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -75,6 +86,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'boards_playbook',
+  'boards_playbook_does',
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */

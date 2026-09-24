@@ -381,11 +381,14 @@ describe('declared capabilities on the heartbeat', () => {
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
     // upgrade starts declaring without a restart.
     // boards_playbook (0.45.0) rides every beat on every host: the column
-    // lines tool is typed and has no platform limit.
+    // lines tool is typed and has no platform limit. boards_playbook_does
+    // (0.50.0, Kanban phase 2) rides beside it for the same reason: a line's
+    // instruction part is an argument of the same tool.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'boards_playbook',
+      'boards_playbook_does',
       'mission_goal_loop',
       'mission_pause',
     ])
@@ -393,6 +396,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'boards_playbook',
+      'boards_playbook_does',
     ])
   })
 

@@ -2,6 +2,54 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.50.0 (2026-09-24)
+
+- **An agent can suggest what a column asks of the agent a card is handed
+  to.** A column line gains an instruction part: `set_column_lines` takes a
+  `does` per line, with `kind` (start work, or only tell), the `instruction`
+  itself, `starts_when` (only `person_moves_in`, a person moving a card
+  there, is honoured today; an agent moving a card never starts anything),
+  `who` gets the card (one agent by `assistant_id`, the agent a card field
+  names, or ask the owner at each drop), one `only_when` condition, the
+  `needs` that must be filled before a hand over, `ask_for_note`, the
+  `fills` the agent is expected to write, the columns finished work
+  `lands_in`, and `plan_first`. The tool sends the server's camel case,
+  rebuilt key by key from a closed schema.
+  - **It is a suggestion until the owner approves the exact words.** The
+    server files an agent's instruction as a suggestion the owner reads and
+    approves in the app, and nothing starts until then. The echo lists those
+    columns in `suggested`, and the tool answers with one sentence naming
+    them: saved as a suggestion, nothing starts until the owner approves
+    those exact words, do not send it again. Words the owner already turned
+    down come back in `declined`, answered with their own sentence: do not
+    send it again unless the owner asks for a different one. The filed
+    sentence of 0.45.0 is unchanged, and "Everything else in this call was
+    saved." now closes the answer once, when something else in the call was.
+  - **The approval is the owner's alone.** The tool never sends `approved`,
+    `textHash` or `v`, and refuses them by name, with the owner's `paused`
+    switch, as keys an instruction does not take.
+  - **The shape is checked here, the rules are the server's.** A misspelt
+    key, a wrong type, a value outside an enum, a `who` whose parts do not fit
+    its `by`, or an `only_when` with both or neither of `in` and `empty` is
+    answered before anything leaves the machine. Every length (1200
+    characters of instruction, 20 items a list) and every reference (a field
+    of the table, an option of the select, an agent of the owner's fleet) is
+    the server's, and its sentence reaches the model word for word.
+  - **The instruction sentence reaches only an agent that can write one.**
+    This daemon declares `boards_playbook_does` on every host, beside
+    `boards_playbook`, on its heartbeat and on the capabilities fetch. The
+    backend serves the canon's instruction sentence only to a connection that
+    declares it, and the phase 1 column lines sentence is unchanged.
+  - **The `lines` text says what changed.** Its last sentence now reads: a
+    line's sentence and facts only describe the board; its does part is a
+    suggestion until the owner approves it. Everything else a line describes
+    is still description only, and every other op, argument and answer of
+    the board tools is exactly as it was.
+  - **Release order.** Against a server from before instructions, a `does`
+    is filed with the line's other structural changes and answered `filed`
+    (reported as not applied), or dropped by an older whitelist and reported
+    as nothing written. Update the server first.
+
 ## 0.45.0 (2026-09-22)
 
 - **An agent can say what each column of a board means.** A board's workflow
@@ -1236,7 +1284,7 @@ for one assistant silently rebound another.
 - **Honest restart instructions** for both topologies: the packaged
   `plugin:hoai@hoai` channel and a checkout-based `server:bgos` host.
 
-## 0.31.0 — 27 July 2026
+## 0.31.0 (27 July 2026)
 
 The first release since 0.21.1. Twenty-two commits, and the reason it is being
 cut now is that the app already requires it: HOAI raised its Claude Code

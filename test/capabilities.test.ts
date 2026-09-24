@@ -159,6 +159,9 @@ test('the fetch path carries the channel, the version and the declared list', ()
 })
 
 test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
+  // boards_playbook_does (0.50.0, Kanban phase 2) rides the same fetch: the
+  // served canon's instruction sentence is gated on it, on the heartbeat or
+  // on this fetch, exactly as the phase 1 sentence is on boards_playbook.
   const path = capabilitiesFetchPath('0.45.0', declaredCapabilities({ canInjectGoal: false }))
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   assert.equal(query.get('channel'), 'claude')
@@ -167,6 +170,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'mission_events',
     'mission_goal_checks',
     'boards_playbook',
+    'boards_playbook_does',
   ])
 })
 
@@ -227,6 +231,7 @@ test('the canon fetch carries boards_playbook', () => {
     /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false \}\)\s*,?\s*\)/,
   )
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
-  // The declared list the fetch sends holds the token the gate reads.
+  // The declared list the fetch sends holds the tokens the gates read.
   assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_playbook'))
+  assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_playbook_does'))
 })

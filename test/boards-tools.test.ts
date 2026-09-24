@@ -199,8 +199,8 @@ test('descriptions carry the etiquette the canon promises', () => {
 test('no em dashes or en dashes anywhere in the shipped copy or the module', () => {
   const scan = (node: unknown, path: string) => {
     if (typeof node === 'string') {
-      assert.ok(!node.includes('—'), `em dash in ${path}`)
-      assert.ok(!node.includes('–'), `en dash in ${path}`)
+      assert.ok(!node.includes('\u2014'), `em dash in ${path}`)
+      assert.ok(!node.includes('\u2013'), `en dash in ${path}`)
       return
     }
     if (!node || typeof node !== 'object') return
@@ -214,8 +214,8 @@ test('no em dashes or en dashes anywhere in the shipped copy or the module', () 
     fileURLToPath(new URL('../lib/boards-tools.ts', import.meta.url)),
     'utf8',
   )
-  assert.ok(!src.includes('—'), 'em dash in lib/boards-tools.ts')
-  assert.ok(!src.includes('–'), 'en dash in lib/boards-tools.ts')
+  assert.ok(!src.includes('\u2014'), 'em dash in lib/boards-tools.ts')
+  assert.ok(!src.includes('\u2013'), 'en dash in lib/boards-tools.ts')
 })
 
 // ── Argument validation ──────────────────────────────────────────────────────
@@ -1496,7 +1496,11 @@ test('update_schema lists the table ops when the op is unknown', async () => {
 // 10. SUGGESTION IN THE LINES TEXT. The `lines` description back to "kept as
 //     a suggestion for the owner" -> "set_column_lines is an op, and the tool
 //     roster is still the 12" and "no text the boards tools declare says
-//     suggestion" fail.
+//     suggestion" fail. Re proved in 0.50.0, where the roster case pins the
+//     new last sentence instead: "any other change you send is kept as a
+//     suggestion for the owner" put into the lines text -> "no text the
+//     boards tools declare says suggestion, outside the instruction part"
+//     fails (one red), so the descriptive half still never says it.
 // 11. A RESTACK PROMISED. The `workflow` description back to "marks this
 //     select as the board's workflow, the one the Kanban stacks by" -> the
 //     roster case fails: an agent's flag stacks nothing until the owner
@@ -1531,7 +1535,18 @@ test('set_column_lines is an op, and the tool roster is still the 12', () => {
   // owner wrote, on a board he never confirmed (W1 close 2, review R3).
   assert.ok(props.lines!.description!.includes('On a confirmed board'))
   assert.ok(props.lines!.description!.includes('whose line the owner wrote'))
-  assert.ok(!props.lines!.description!.includes('suggestion'))
+  // Changed ON PURPOSE in 0.50.0 (Kanban phase 2, plan 3.7): the lines text
+  // now ends by saying the does part is a suggestion until the owner approves
+  // it, because from phase 2 the owner is shown that suggestion. The
+  // descriptive half still never says it ("no text the boards tools declare
+  // says suggestion, outside the instruction part").
+  assert.ok(
+    props.lines!.description!.endsWith(
+      'A line\'s sentence and facts only describe the board; its does part ' +
+        'is a suggestion until the owner approves it.',
+    ),
+    props.lines!.description,
+  )
   // An agent's workflow flag restacks nothing until the owner confirms.
   assert.ok(props.workflow!.description!.includes('once the owner confirms'))
   assert.ok(decl('boards_update_schema').description.includes('set_column_lines'))
@@ -1586,9 +1601,15 @@ test('set_column_lines sends exactly optionRules and workflow, in camel case', a
 })
 
 test('set_column_lines never sends a key the server owns', async () => {
-  // v, writtenBy, at and does are the server's (does is phase 2's half and is
-  // always filed): the tool refuses them as unknown keys of a line.
-  for (const key of ['v', 'writtenBy', 'at', 'does', 'waitsOn']) {
+  // v, writtenBy, at, approved and textHash are the server's: the tool
+  // refuses them as unknown keys of a line. Changed ON PURPOSE in 0.50.0
+  // (Kanban phase 2, plan 3.7): `does` left this list because it is now the
+  // agent's own key (its instruction, filed as a suggestion), and `approved`
+  // and `textHash` joined it, because the owner's approval and the hash of
+  // the words he approved are the server's alone and an agent that could send
+  // them could approve its own instruction. The camel case spelling of a line
+  // key is still refused (the tool takes snake case only).
+  for (const key of ['v', 'writtenBy', 'at', 'approved', 'textHash', 'waitsOn']) {
     const f = fakeDeps({ patch: playbookEcho() })
     const r = await handleBoardsTool(
       'boards_update_schema',
@@ -1976,18 +1997,512 @@ test('a filed sentence never claims a confirmation or a suggestion, and names th
   assert.ok(!textOf(r2).includes('which was saved'), textOf(r2))
 })
 
-test('no text the boards tools declare says suggestion (W1 close 2, review R3)', () => {
-  // Nothing shows a suggestion to the owner in this release (spec 16.2), and
-  // the tool text is what the model repeats to him.
+test('no text the boards tools declare says suggestion, outside the instruction part (W1 close 2, review R3; retargeted in 0.50.0)', () => {
+  // The descriptive half (a line's sentence and facts, a filed change, every
+  // other tool) is never a suggestion: the owner is shown none for it, and the
+  // tool text is what the model repeats to him. Retargeted ON PURPOSE in
+  // 0.50.0 (Kanban phase 2, plan 3.7): the instruction part (`does`) IS a
+  // suggestion the owner is shown and approves, so its own schema and the one
+  // sentence of the lines text that names it are left out of this walk, and
+  // the next case pins that they DO say it.
+  const lines = linesSchema()
+  const skipped = new Set<unknown>([lines.additionalProperties.properties.does])
   const strings: string[] = []
   const walk = (value: unknown) => {
+    if (skipped.has(value)) return
     if (typeof value === 'string') strings.push(value)
     else if (Array.isArray(value)) value.forEach(walk)
     else if (value && typeof value === 'object') Object.values(value).forEach(walk)
   }
   walk(BOARDS_TOOL_DECLS)
   assert.ok(strings.length > 100, `walked ${strings.length} strings`)
+  const doesSentence =
+    'A line\'s sentence and facts only describe the board; its does part is ' +
+    'a suggestion until the owner approves it.'
   for (const s of strings) {
-    assert.ok(!s.toLowerCase().includes('suggestion'), s)
+    const descriptive = s === lines.description ? s.replace(doesSentence, '') : s
+    assert.ok(!descriptive.toLowerCase().includes('suggestion'), s)
   }
+})
+
+// ── The instruction part: a line's does (0.50.0) ─────────────────────────────
+//
+// Kanban phase 2 (plan 3.7, P2.13): a column line may carry a standing
+// instruction for the agent a card is handed to. The tool takes it in snake
+// case and sends the server's camel case, rebuilt key by key from a closed
+// schema; the server files an agent's instruction as a SUGGESTION the owner
+// approves word for word in the app, and answers the PATCH with the options it
+// filed that way (`suggested`) and the ones whose words the owner already
+// turned down (`declined`). The tool turns each list into one sentence the
+// model reads, so it neither reports a suggestion as a working instruction nor
+// sends the same words again. The server keeps every length and every
+// reference; its refusal reaches the model verbatim.
+//
+// MUTATION PROOFS (each applied to lib/boards-tools.ts, confirmed red,
+// restored from one pristine copy byte for byte):
+//
+// 12. SNAKE CASE THROUGH. Sent the model's `does` object as it came instead
+//     of the rebuilt camel case one -> "set_column_lines with a does sends
+//     exactly the camel case does", "ask_for_note maps to askForNote" and "the
+//     compiled does body equals the golden fixture" fail (three red). The
+//     server's rebuild refuses a snake key, so every instruction would be
+//     refused.
+// 13. THE NOTE LEFT OUT. Dropped the ask_for_note assignment -> "ask_for_note
+//     maps to askForNote", "set_column_lines with a does sends exactly the
+//     camel case does" and the golden fixture case fail (three red).
+// 14. AN OPEN SCHEMA. Dropped the stray key check of the does object ->
+//     "an unknown does key is refused by name, the server owned ones
+//     included" fails (one red): `approved` and `textHash` would reach the
+//     wire.
+// 15. SUGGESTED IGNORED. Stopped reading `suggested` from the echo -> "a
+//     suggested instruction is answered with one sentence naming the
+//     column", "filed, suggested and declined answer together", the golden
+//     fixture case and "the does description, the lines text and the
+//     suggested sentence DO say suggestion" fail (four red): the model would
+//     read the raw echo as an instruction that works and send it again.
+// 16. DECLINED IGNORED. Stopped reading `declined` -> "a declined
+//     instruction is answered with the declined sentence" and the combined
+//     case fail (two red).
+// 17. A LATE STARTS WHEN. Allowed every value of starts_when through ->
+//     "a does shape or enum outside the schema is refused before the
+//     network" fails (one red) on agent_moves_in, which nothing honours
+//     today.
+// 18. THE REST UNSAID. Never added "Everything else in this call was saved."
+//     -> the suggested case fails on the line that also carried a sentence
+//     (means), which WAS saved, and so do the combined case and phase 1's "a
+//     filed sentence never claims a confirmation or a suggestion" (three red):
+//     the closing sentence moved out of the filed sentence to be said once.
+
+/** The `lines` property of boards_update_schema, as declared. */
+function linesSchema(): {
+  description: string
+  additionalProperties: {
+    properties: Record<string, unknown> & {
+      does: {
+        type: string
+        additionalProperties: boolean
+        description: string
+        properties: Record<string, Record<string, unknown>>
+      }
+    }
+  }
+} {
+  const props = (decl('boards_update_schema').inputSchema as unknown as {
+    properties: Record<string, unknown>
+  }).properties
+  return props.lines as ReturnType<typeof linesSchema>
+}
+
+function doesEcho(lists: { filed?: string[]; suggested?: string[]; declined?: string[] }) {
+  return async () => ({
+    field: { key: 'status', label: 'Status', type: 'select' },
+    playbook: { status: { workflow: true, lines: {} } },
+    filed: lists.filed ?? [],
+    suggested: lists.suggested ?? [],
+    ...(lists.declined ? { declined: lists.declined } : {}),
+  })
+}
+
+/** The canonical does case: the args behind the golden fixture. */
+const CANONICAL_DOES_LINES = {
+  Ready: {
+    does: {
+      kind: 'start',
+      instruction: 'Draft the brief from the card, then move it to Review.',
+      starts_when: ['person_moves_in'],
+      who: { by: 'ask_at_drop' },
+      needs: [{ field_key: 'brief' }],
+      ask_for_note: 'offer',
+      lands_in: ['Review'],
+      plan_first: 'ask',
+    },
+  },
+}
+
+const SUGGESTED_READY =
+  'Your instruction for "Ready" is saved as a suggestion. Nothing starts ' +
+  'until your owner approves those exact words in the app. Do not send it again.'
+
+const DECLINED_READY =
+  'Your owner turned down that instruction for "Ready". Do not send it ' +
+  'again unless your owner asks for a different one.'
+
+test('the does schema is closed and says what the plan says', () => {
+  const does = linesSchema().additionalProperties.properties.does
+  assert.equal(does.type, 'object')
+  assert.equal(does.additionalProperties, false)
+  assert.deepEqual(Object.keys(does.properties), [
+    'kind',
+    'instruction',
+    'starts_when',
+    'who',
+    'only_when',
+    'needs',
+    'ask_for_note',
+    'fills',
+    'lands_in',
+    'plan_first',
+  ])
+  assert.deepEqual(does.properties.kind!.enum, ['start', 'tell'])
+  assert.deepEqual(
+    (does.properties.starts_when!.items as { enum: string[] }).enum,
+    ['person_moves_in'],
+  )
+  const who = does.properties.who as {
+    additionalProperties: boolean
+    required: string[]
+    properties: { by: { enum: string[] } }
+  }
+  assert.equal(who.additionalProperties, false)
+  assert.deepEqual(who.required, ['by'])
+  assert.deepEqual(who.properties.by.enum, ['agent', 'card_field', 'ask_at_drop'])
+  assert.deepEqual(does.properties.ask_for_note!.enum, ['offer', 'require'])
+  assert.deepEqual(does.properties.plan_first!.enum, ['ask', 'always', 'never'])
+  for (const key of ['approved', 'textHash', 'text_hash', 'v', 'paused']) {
+    assert.equal(key in does.properties, false, `${key} is declared`)
+  }
+})
+
+test('the does description, the lines text and the suggested sentence DO say suggestion', async () => {
+  const lines = linesSchema()
+  assert.ok(lines.additionalProperties.properties.does.description.includes('suggestion'))
+  assert.ok(
+    lines.additionalProperties.properties.does.description.includes(
+      'nothing starts until the owner approves these exact words in the app',
+    ),
+  )
+  assert.ok(lines.description.includes('its does part is a suggestion'))
+  const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: CANONICAL_DOES_LINES },
+    f.deps,
+  )
+  assert.ok(textOf(r).includes('saved as a suggestion'), textOf(r))
+})
+
+test('set_column_lines with a does sends exactly the camel case does', async () => {
+  const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready', 'Review', 'Parked'] }) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Ready: {
+          means: 'Cards an agent can start on.',
+          does: {
+            kind: 'start',
+            instruction: 'Draft the brief.',
+            starts_when: ['person_moves_in'],
+            who: { by: 'agent', assistant_id: 3 },
+            only_when: { field_key: 'priority', in: ['High', 'Medium'] },
+            needs: [{ field_key: 'brief' }, { field_key: 'area', in: ['Ads'] }],
+            ask_for_note: 'require',
+            fills: ['brief', 'due'],
+            lands_in: ['Review', 'Done'],
+            plan_first: 'always',
+          },
+        },
+        Review: {
+          does: {
+            kind: 'tell',
+            instruction: 'Tell the owner of the card it is in review.',
+            who: { by: 'card_field', field_key: 'owner' },
+            only_when: { field_key: 'due', empty: true },
+          },
+        },
+        Parked: { does: { kind: 'tell', who: { by: 'ask_at_drop' }, plan_first: 'never' } },
+      },
+    },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined, textOf(r))
+  assert.equal(f.calls.length, 1)
+  assert.deepEqual(f.calls[0]!.body, {
+    optionRules: {
+      Ready: {
+        means: 'Cards an agent can start on.',
+        does: {
+          kind: 'start',
+          instruction: 'Draft the brief.',
+          startsWhen: ['person_moves_in'],
+          who: { by: 'agent', assistantId: 3 },
+          onlyWhen: { fieldKey: 'priority', in: ['High', 'Medium'] },
+          needs: [{ fieldKey: 'brief' }, { fieldKey: 'area', in: ['Ads'] }],
+          askForNote: 'require',
+          fills: ['brief', 'due'],
+          landsIn: ['Review', 'Done'],
+          planFirst: 'always',
+        },
+      },
+      Review: {
+        does: {
+          kind: 'tell',
+          instruction: 'Tell the owner of the card it is in review.',
+          who: { by: 'card_field', fieldKey: 'owner' },
+          onlyWhen: { fieldKey: 'due', empty: true },
+        },
+      },
+      Parked: { does: { kind: 'tell', who: { by: 'ask_at_drop' }, planFirst: 'never' } },
+    },
+  })
+  // The plugin never sends the owner's approval, the hash of the words he
+  // approved, a version stamp or the owner's pause, anywhere in the body.
+  const wire = JSON.stringify(f.calls[0]!.body)
+  for (const key of ['approved', 'textHash', '"v"', 'paused', 'writtenBy']) {
+    assert.equal(wire.includes(key), false, `${key} on the wire: ${wire}`)
+  }
+  // And no snake case key anywhere (values such as person_moves_in are the
+  // server's own enum spellings and stay as they are).
+  const keys: string[] = []
+  const walkKeys = (value: unknown) => {
+    if (Array.isArray(value)) value.forEach(walkKeys)
+    else if (value && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value)) {
+        keys.push(k)
+        walkKeys(v)
+      }
+    }
+  }
+  walkKeys(f.calls[0]!.body)
+  for (const k of keys) {
+    if (k === 'Ready' || k === 'Review' || k === 'Parked') continue
+    assert.equal(k.includes('_'), false, `snake case key ${k} on the wire`)
+  }
+})
+
+test('ask_for_note maps to askForNote', async () => {
+  for (const value of ['offer', 'require']) {
+    const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { ...LINES_BASE, lines: { Ready: { does: { kind: 'start', ask_for_note: value } } } },
+      f.deps,
+    )
+    assert.equal(r.isError, undefined, textOf(r))
+    assert.deepEqual(f.calls[0]!.body, {
+      optionRules: { Ready: { does: { kind: 'start', askForNote: value } } },
+    })
+  }
+})
+
+test('an unknown does key is refused by name, the server owned ones included', async () => {
+  for (const key of ['approved', 'textHash', 'v', 'paused', 'writtenBy', 'askForNote', 'note']) {
+    const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      {
+        ...LINES_BASE,
+        lines: { Ready: { does: { kind: 'start', instruction: 'Go.', [key]: 'x' } } },
+      },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted ${key}`)
+    const t = textOf(r)
+    assert.ok(t.includes(`"${key}"`), t)
+    assert.ok(t.includes('lines.Ready.does'), t)
+    assert.ok(
+      t.includes(
+        'kind, instruction, starts_when, who, only_when, needs, ask_for_note, ' +
+          'fills, lands_in, plan_first',
+      ),
+      t,
+    )
+    assert.equal(f.calls.length, 0)
+  }
+})
+
+test('a does shape or enum outside the schema is refused before the network', async () => {
+  const cases: Array<[unknown, string]> = [
+    ['Draft the brief.', 'lines.Ready.does'],
+    [{}, 'is empty'],
+    [{ kind: 'begin' }, 'start, tell'],
+    [{ instruction: 42 }, 'lines.Ready.does.instruction'],
+    [{ starts_when: 'person_moves_in' }, 'lines.Ready.does.starts_when'],
+    [{ starts_when: ['agent_moves_in'] }, 'person_moves_in'],
+    [{ starts_when: ['card_created_here'] }, 'person_moves_in'],
+    [{ who: 'Nova' }, 'lines.Ready.does.who'],
+    [{ who: {} }, 'agent, card_field, ask_at_drop'],
+    [{ who: { by: 'someone' } }, 'agent, card_field, ask_at_drop'],
+    [{ who: { by: 'agent' } }, 'assistant_id'],
+    [{ who: { by: 'agent', assistant_id: '3' } }, 'assistant_id'],
+    [{ who: { by: 'agent', assistant_id: 0 } }, 'assistant_id'],
+    [{ who: { by: 'agent', assistant_id: 1.5 } }, 'assistant_id'],
+    [{ who: { by: 'agent', assistant_id: 3, field_key: 'owner' } }, '"field_key"'],
+    [{ who: { by: 'card_field' } }, 'field_key'],
+    [{ who: { by: 'card_field', field_key: 'owner', assistant_id: 3 } }, '"assistant_id"'],
+    [{ who: { by: 'ask_at_drop', assistant_id: 3 } }, '"assistant_id"'],
+    [{ who: { by: 'agent', assistant_id: 3, name: 'Nova' } }, '"name"'],
+    [{ only_when: { in: ['High'] } }, 'field_key'],
+    [{ only_when: { field_key: 'priority' } }, 'in or empty'],
+    [{ only_when: { field_key: 'priority', in: ['High'], empty: true } }, 'in or empty'],
+    [{ only_when: { field_key: 'priority', empty: false } }, 'empty'],
+    [{ only_when: { field_key: 'priority', in: 'High' } }, 'lines.Ready.does.only_when.in'],
+    [{ only_when: { field_key: 'priority', is: ['High'] } }, '"is"'],
+    [{ needs: { field_key: 'brief' } }, 'lines.Ready.does.needs'],
+    [{ needs: ['brief'] }, 'lines.Ready.does.needs[0]'],
+    [{ needs: [{ in: ['x'] }] }, 'field_key'],
+    [{ needs: [{ field_key: 'brief', filled: true }] }, '"filled"'],
+    [{ needs: [{ field_key: 'area', in: [1] }] }, 'lines.Ready.does.needs[0].in'],
+    [{ ask_for_note: 'always' }, 'offer, require'],
+    [{ fills: 'brief' }, 'lines.Ready.does.fills'],
+    [{ lands_in: [1] }, 'lines.Ready.does.lands_in'],
+    [{ plan_first: 'sometimes' }, 'ask, always, never'],
+  ]
+  for (const [does, needle] of cases) {
+    const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+    const r = await handleBoardsTool(
+      'boards_update_schema',
+      { ...LINES_BASE, lines: { Ready: { does } } },
+      f.deps,
+    )
+    assert.equal(r.isError, true, `accepted ${JSON.stringify(does)}`)
+    assert.ok(textOf(r).includes(needle), `${needle} not in ${textOf(r)}`)
+    assert.equal(f.calls.length, 0, `reached the server with ${JSON.stringify(does)}`)
+  }
+})
+
+test('lengths and references in a does are the server\'s, and its sentence reaches the model verbatim', async () => {
+  const body =
+    '{"statusCode":400,"error":"boards.validation","message":"The instruction for \\"Ready\\" is longer than 1200 characters."}'
+  const f = fakeDeps({
+    patch: async () => {
+      throw new Error(`PATCH 400: ${body}`)
+    },
+  })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Ready: {
+          does: {
+            kind: 'start',
+            instruction: 'x'.repeat(2000),
+            needs: Array.from({ length: 25 }, (_, i) => ({ field_key: `f${i}` })),
+            lands_in: ['Nowhere'],
+            who: { by: 'agent', assistant_id: 999999 },
+          },
+        },
+      },
+    },
+    f.deps,
+  )
+  assert.equal(f.calls.length, 1, 'reached the server')
+  assert.equal(r.isError, true)
+  assert.equal(textOf(r), body)
+})
+
+test('the compiled does body equals the golden fixture', async () => {
+  // S2-VIS's PLG-01 posts these exact bytes to the phase 2 server's agent
+  // route and reads `suggested` back, so the fixture must be what the tool
+  // really compiles, never a hand written guess.
+  const golden = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL('./fixtures/set-column-lines-does.json', import.meta.url)),
+      'utf8',
+    ),
+  ) as unknown
+  const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: CANONICAL_DOES_LINES },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined, textOf(r))
+  assert.equal(f.calls[0]!.method, 'PATCH')
+  assert.equal(f.calls[0]!.path, `${BASE}/decisions/fields/status`)
+  assert.deepEqual(f.calls[0]!.body, golden)
+  assert.equal(textOf(r), SUGGESTED_READY)
+})
+
+test('a suggested instruction is answered with one sentence naming the column', async () => {
+  const f = fakeDeps({ patch: doesEcho({ suggested: ['Ready'] }) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: CANONICAL_DOES_LINES },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined, 'the call itself landed')
+  assert.equal(textOf(r), SUGGESTED_READY)
+  assert.ok(!textOf(r).includes('"playbook"'), 'the echo is not handed over as a working instruction')
+
+  // Two columns, quoted and comma joined; a sentence sent beside the
+  // instruction WAS saved, and the answer says so.
+  const two = fakeDeps({ patch: doesEcho({ suggested: ['Ready', 'Review'] }) })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Ready: { means: 'Cards an agent can start on.', does: { kind: 'start', instruction: 'Go.' } },
+        Review: { does: { kind: 'tell', instruction: 'Look.' } },
+      },
+    },
+    two.deps,
+  )
+  assert.equal(
+    textOf(r2),
+    'Your instruction for "Ready", "Review" is saved as a suggestion. Nothing ' +
+      'starts until your owner approves those exact words in the app. Do not ' +
+      'send it again. Everything else in this call was saved.',
+  )
+
+  // An instruction equal to the approved one is in neither list: the echo is
+  // rendered like any other schema write.
+  const same = fakeDeps({ patch: doesEcho({}) })
+  const r3 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: CANONICAL_DOES_LINES },
+    same.deps,
+  )
+  assert.ok(textOf(r3).includes('"playbook"'), textOf(r3))
+  assert.ok(!textOf(r3).includes('suggestion'), textOf(r3))
+})
+
+test('a declined instruction is answered with the declined sentence', async () => {
+  const f = fakeDeps({ patch: doesEcho({ declined: ['Ready'] }) })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: CANONICAL_DOES_LINES },
+    f.deps,
+  )
+  assert.equal(r.isError, undefined)
+  assert.equal(textOf(r), DECLINED_READY)
+  assert.ok(!textOf(r).includes('saved as a suggestion'), textOf(r))
+})
+
+test('filed, suggested and declined answer together, in that order', async () => {
+  const f = fakeDeps({
+    patch: doesEcho({ filed: ['Done'], suggested: ['Ready'], declined: ['Review'] }),
+  })
+  const r = await handleBoardsTool(
+    'boards_update_schema',
+    {
+      ...LINES_BASE,
+      lines: {
+        Done: { rest: 'parked' },
+        Ready: CANONICAL_DOES_LINES.Ready,
+        Review: { does: { kind: 'tell', instruction: 'Look.' } },
+      },
+    },
+    f.deps,
+  )
+  assert.equal(
+    textOf(r),
+    'The owner decides how "Done" works, so your change to it was not ' +
+      'applied and the column keeps its current setting. Do not send it again. ' +
+      SUGGESTED_READY +
+      ' Your owner turned down that instruction for "Review". Do not send it ' +
+      'again unless your owner asks for a different one.',
+  )
+
+  // A workflow flag sent beside them was saved, and is said once, last.
+  const g = fakeDeps({ patch: doesEcho({ filed: ['Done'], suggested: ['Ready'] }) })
+  const r2 = await handleBoardsTool(
+    'boards_update_schema',
+    { ...LINES_BASE, lines: { Done: { rest: 'parked' }, ...CANONICAL_DOES_LINES }, workflow: true },
+    g.deps,
+  )
+  assert.ok(textOf(r2).endsWith(`${SUGGESTED_READY} Everything else in this call was saved.`), textOf(r2))
 })
