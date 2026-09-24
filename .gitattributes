@@ -5,3 +5,5 @@ bin/hoai text eol=lf
 # not pick up CRLF on a Windows checkout.
 bin/hoai-browser-mcp.mjs text eol=lf
 *.sh text eol=lf
+lib/browser-host-core/policy.js text eol=lf
+lib/browser-host-core/settings.js text eol=lf
