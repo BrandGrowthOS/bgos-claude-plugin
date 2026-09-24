@@ -1,14 +1,22 @@
 /**
  * Cross-repo anti-drift test for the hard floor (rules_version 1).
  *
- * The platform backend runs its own spec over the SAME file
- * (backend/src/services/hard-floor-fixture.ts, byte identical to
- * lib/hard-floor-fixture.ts) against ITS classifier. If either side changes a
+ * lib/hard-floor-fixture.ts is COPIED BYTE FOR BYTE from the platform
+ * backend's backend/src/services/hard-floor-fixture.ts, whose own spec runs
+ * the same cases through the server's classifier. If either side changes a
  * rule id, a word, the version, or how any named case classifies, without the
  * other following, one of the two suites goes red. That matters in both
  * directions: a case the plugin misses is an action the hook never asks about
  * and the relay never holds, whatever the owner's switch says; a case only the
- * plugin catches is a round trip the server then waves on.
+ * plugin catches is a round trip, a terminal prompt and, when the check
+ * errors, a refused call for an action the server does not list.
+ *
+ * WHAT THIS SUITE CANNOT SEE: the backend repo. So the digests are pinned
+ * TWICE, in the fixture file and as literals below, the same two literals the
+ * backend's hard-floor-fixture.spec.ts pins: regenerating the data and its
+ * digest together turns this red until the literals move too, a visible diff
+ * in both repos, and the reconciliation step byte compares the two files and
+ * reads the two pairs of literals side by side.
  *
  * Run with: npx tsx --test test/hard-floor-fixture.test.ts
  */
@@ -45,9 +53,21 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
   )
 })
 
-test('pins the fixture data and the rules (regenerate BOTH repos when this changes)', () => {
-  assert.equal(sha256(JSON.stringify(HARD_FLOOR_FIXTURE)), HARD_FLOOR_FIXTURE_DIGEST)
-  assert.equal(sha256(JSON.stringify(HARD_FLOOR_FIXTURE_RULES)), HARD_FLOOR_RULES_DIGEST)
+/**
+ * The digests, as literals, equal to the backend spec's PINNED_FIXTURE_DIGEST
+ * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
+ * afresh from the backend.
+ */
+const PINNED_FIXTURE_DIGEST = '9524af5c3f2b10e89775e484f24c7470c6c1719257219cc26bebb933308deb46'
+const PINNED_RULES_DIGEST = '5e1a1d280b70eaab889899dd83da5b81603b1362030c0b91b537624506237573'
+
+test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
+  const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))
+  const rules = sha256(JSON.stringify(HARD_FLOOR_FIXTURE_RULES))
+  assert.equal(fixture, HARD_FLOOR_FIXTURE_DIGEST)
+  assert.equal(rules, HARD_FLOOR_RULES_DIGEST)
+  assert.equal(fixture, PINNED_FIXTURE_DIGEST, 'the data changed: copy the backend file afresh and move the literal')
+  assert.equal(rules, PINNED_RULES_DIGEST)
 })
 
 test('every named case classifies exactly as the fixture says', () => {

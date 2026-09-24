@@ -11,13 +11,15 @@
  *   - it keeps a hard BUDGET under two seconds, inside the manifest's 3 s.
  * And the contract itself: for every case of the shared fixture that a hook
  * can see, the ask line with the rule's words on a match and nothing
- * otherwise.
+ * otherwise; ONLY in a session a HOAI daemon is attached to (its marker for
+ * the session's folder, with a live pid), and with a floor record left for
+ * the relay before the ask.
  *
  * Run with: npx tsx --test test/hoai-floor-hook.test.ts
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +35,12 @@ import {
   main,
 } from '../bin/hoai-floor-hook.mjs'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
+import {
+  attachedMarkerPath,
+  floorAsksDir,
+  floorKey,
+  markFloorAttached,
+} from '../lib/floor-state.mjs'
 
 const HOOK_PATH = fileURLToPath(new URL('../bin/hoai-floor-hook.mjs', import.meta.url))
 const DELETE_WORDS = 'deleting a folder and everything in it'
@@ -53,6 +61,23 @@ const hookInput = (toolName: string, toolInput: unknown) =>
   JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: toolInput })
 
 const stdinOf = (text: string) => Readable.from([Buffer.from(text, 'utf8')])
+
+/** A plugin state folder in which a live daemon (this test's own pid) is attached to `folder`. */
+const attachedRoot = (folder: string, pid = process.pid) => {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-floor-state-'))
+  markFloorAttached({ root, folders: [folder], pid })
+  return root
+}
+
+/** The records the hook left under a folder's key. */
+const recordsIn = (root: string, folder: string) => {
+  try {
+    const dir = floorAsksDir(root, floorKey(folder))
+    return readdirSync(dir).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')))
+  } catch {
+    return []
+  }
+}
 
 test('a listed action prints exactly the ask line, with the rule words as the reason', () => {
   const out = decideFloorHook(JSON.stringify(D1_PAYLOAD), core)
@@ -159,30 +184,123 @@ test('fails open: a classifier that throws, or answers nonsense, prints nothing'
 })
 
 test('main: a match is written once, and the exit code is 0', async () => {
-  const written: string[] = []
-  process.exitCode = 3
-  const out = await main({
-    stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
-    write: async (text: string) => {
-      written.push(text)
-    },
-  })
-  assert.equal(out, floorAskOutput(DELETE_WORDS))
-  assert.deepEqual(written, [floorAskOutput(DELETE_WORDS)])
-  assert.equal(process.exitCode, 0)
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const written: string[] = []
+    process.exitCode = 3
+    const out = await main({
+      stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
+      env: {},
+      stateRoot: root,
+      write: async (text: string) => {
+        written.push(text)
+      },
+    })
+    assert.equal(out, floorAskOutput(DELETE_WORDS))
+    assert.deepEqual(written, [floorAskOutput(DELETE_WORDS)])
+    assert.equal(process.exitCode, 0)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: with NO HOAI daemon attached to the session, a listed action asks nothing', async () => {
+  // Spec 2 moment 1 and spec 8: a plain `claude` on a machine that has the
+  // plugin enabled, or a headless `claude -p`, must not get a prompt it never
+  // had. Only a session whose folder a live daemon marked is a HOAI session.
+  const empty = mkdtempSync(join(tmpdir(), 'hoai-floor-state-'))
+  const elsewhere = attachedRoot('/srv/some/other/agent')
+  const dead = attachedRoot(D1_PAYLOAD.cwd, 2 ** 31 - 3)
+  try {
+    for (const root of [empty, elsewhere, dead]) {
+      const written: string[] = []
+      const out = await main({
+        stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
+        env: {},
+        stateRoot: root,
+        write: async (text: string) => {
+          written.push(text)
+        },
+      })
+      assert.equal(out, '', root)
+      assert.deepEqual(written, [])
+      assert.deepEqual(recordsIn(root, D1_PAYLOAD.cwd), [], 'and leaves no record')
+    }
+  } finally {
+    for (const root of [empty, elsewhere, dead]) rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: attached through CLAUDE_PROJECT_DIR, or through a folder above the cwd', async () => {
+  const project = '/mnt/e/agents/hoai-dev'
+  const root = attachedRoot(project)
+  try {
+    const inSub = { ...D1_PAYLOAD, cwd: `${project}/packages/web/src` }
+    const viaCwd = await main({ stdin: stdinOf(JSON.stringify(inSub)), env: {}, stateRoot: root, write: async () => {} })
+    assert.equal(viaCwd, floorAskOutput(DELETE_WORDS), 'an agent that cd-ed into a subfolder is still attached')
+    const noCwd = { ...D1_PAYLOAD, cwd: undefined }
+    const viaEnv = await main({
+      stdin: stdinOf(JSON.stringify(noCwd)),
+      // The Windows spelling of the same folder: a Windows daemon behind a WSL session.
+      env: { CLAUDE_PROJECT_DIR: 'E:\\agents\\hoai-dev' },
+      stateRoot: root,
+      write: async () => {},
+    })
+    assert.equal(viaEnv, floorAskOutput(DELETE_WORDS))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: the ask leaves a floor record for the relay, with what the hook saw whole', async () => {
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    const command = `echo ${'a'.repeat(2500)} ; rm -rf ~/work ; echo ${'b'.repeat(2000)}`
+    const payload = { ...D1_PAYLOAD, tool_input: { command, description: 'Clean up' } }
+    const out = await main({ stdin: stdinOf(JSON.stringify(payload)), env: {}, stateRoot: root, write: async () => {} })
+    assert.equal(out, floorAskOutput(DELETE_WORDS))
+    const records = recordsIn(root, D1_PAYLOAD.cwd)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].ruleId, 'recursive_delete')
+    assert.equal(records[0].evidence, 'rm -rf ~/work', 'the command in the middle, not the head')
+    assert.equal(records[0].toolName, 'Bash')
+    assert.equal(records[0].permissionMode, 'bypassPermissions')
+    assert.equal(records[0].toolUseId, D1_PAYLOAD.tool_use_id)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('main: a record that cannot be written still asks', async () => {
+  const root = attachedRoot(D1_PAYLOAD.cwd)
+  try {
+    // A FILE where the records folder must go: every write under it fails.
+    writeFileSync(join(root, 'floor', 'asks'), 'not a folder')
+    const out = await main({ stdin: stdinOf(JSON.stringify(D1_PAYLOAD)), env: {}, stateRoot: root, write: async () => {} })
+    assert.equal(out, floorAskOutput(DELETE_WORDS))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('main: stdin is read as bytes, so a multi byte path is not garbled', async () => {
-  const payload = hookInput('Write', { file_path: '/home/kc/.ssh/clés', content: '☃' })
-  const bytes = Buffer.from(payload, 'utf8')
-  // Split the stream inside a multi byte character: a text mode read that
-  // decoded chunk by chunk would mangle it.
-  const cut = bytes.indexOf(0xc3) + 1
-  const out = await main({
-    stdin: Readable.from([bytes.subarray(0, cut), bytes.subarray(cut)]),
-    write: async () => {},
-  })
-  assert.equal(out, floorAskOutput('changing a settings file in your home folder'))
+  const root = attachedRoot('/w/agent')
+  try {
+    const payload = hookInput('Write', { file_path: '/home/kc/.ssh/clés', content: '☃' })
+    const bytes = Buffer.from(payload, 'utf8')
+    // Split the stream inside a multi byte character: a text mode read that
+    // decoded chunk by chunk would mangle it.
+    const cut = bytes.indexOf(0xc3) + 1
+    const out = await main({
+      stdin: Readable.from([bytes.subarray(0, cut), bytes.subarray(cut)]),
+      env: { CLAUDE_PROJECT_DIR: '/w/agent' },
+      stateRoot: root,
+      write: async () => {},
+    })
+    assert.equal(out, floorAskOutput('changing a settings file in your home folder'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 const failOpenRuns: Array<[string, Parameters<typeof main>[0]]> = [
@@ -203,6 +321,13 @@ const failOpenRuns: Array<[string, Parameters<typeof main>[0]]> = [
     {
       stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
       loadCore: () => Promise.reject(new Error('ERR_MODULE_NOT_FOUND')),
+    },
+  ],
+  [
+    'a state module that will not load',
+    {
+      stdin: stdinOf(JSON.stringify(D1_PAYLOAD)),
+      loadState: () => Promise.reject(new Error('ERR_MODULE_NOT_FOUND')),
     },
   ],
   [
@@ -287,14 +412,36 @@ test('the budget is under two seconds and inside the manifest timeout', () => {
 
 // ── The real process, the way the CLI runs it ─────────────────────────────────
 
-const runHook = (input: string) =>
-  spawnSync(process.execPath, [HOOK_PATH], { input, encoding: 'utf8', timeout: 10_000 })
+/** The real process, with the plugin state folder the test chose. */
+const runHook = (input: string, root = PROCESS_ROOT) =>
+  spawnSync(process.execPath, [HOOK_PATH], {
+    input,
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: { ...process.env, BGOS_PLUGIN_STATE_DIR: root, CLAUDE_PROJECT_DIR: '' },
+  })
+
+/** A daemon that stays alive for the whole file: this test process. */
+const PROCESS_ROOT = attachedRoot(D1_PAYLOAD.cwd)
+process.on('exit', () => rmSync(PROCESS_ROOT, { recursive: true, force: true }))
 
 test('as a process: a listed action prints the ask line and exits 0', () => {
   const run = runHook(JSON.stringify(D1_PAYLOAD))
   assert.equal(run.status, 0, run.stderr)
   assert.equal(run.stdout, floorAskOutput(DELETE_WORDS))
   assert.equal(run.stderr, '')
+})
+
+test('as a process: with no daemon attached, a listed action prints nothing', () => {
+  const empty = mkdtempSync(join(tmpdir(), 'hoai-floor-state-'))
+  try {
+    const run = runHook(JSON.stringify(D1_PAYLOAD), empty)
+    assert.equal(run.status, 0, run.stderr)
+    assert.equal(run.stdout, '')
+    assert.ok(attachedMarkerPath(empty, floorKey(D1_PAYLOAD.cwd)).length > 0)
+  } finally {
+    rmSync(empty, { recursive: true, force: true })
+  }
 })
 
 test('as a process: an unlisted action and junk print nothing and exit 0', () => {

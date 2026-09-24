@@ -14,9 +14,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
+import { classifyCommand, classifyToolName, readToolInput } from '../lib/hard-floor.ts'
 
 import {
   APPROVAL_TOOL_MAX_CHARS,
+  FLOOR_EVIDENCE_LEAD_MAX,
   PENDING_PERMISSION_FAST_MAX_MS,
   PERMISSION_AGENT_ROUTE,
   PERMISSION_CLICK_RE,
@@ -37,6 +39,7 @@ import {
   permissionApprovalOptions,
   permissionBackstopMs,
   permissionCardText,
+  permissionCardTool,
   permissionPollIntervalMs,
   permissionRowsReader,
   resolvePermissionClick,
@@ -152,6 +155,63 @@ test('approvalMeta.tool is the input preview when there is one, else the tool na
   // can see what they are allowing, and a silent prefix reads as a complete,
   // shorter command: the owner would approve a tail they never saw.
   assert.ok(huge.approvalMeta.tool.endsWith('...'))
+})
+
+test('an MCP tool card carries `<tool_name> <input_preview>`, so the server can stamp a held send (spec 3)', () => {
+  const send = buildPermissionRequestBody({
+    chatId: 1,
+    requestId: REQ,
+    toolName: 'mcp__gmail__send_email',
+    description: 'ask',
+    inputPreview: '{ "to": "a@b.c", "body": "hi" }',
+  }) as { approvalMeta: { tool: string } }
+  assert.equal(send.approvalMeta.tool, 'mcp__gmail__send_email { "to": "a@b.c", "body": "hi" }')
+  // The server reads an MCP card by its first word; the arguments alone named no tool.
+  assert.equal(classifyToolName(send.approvalMeta.tool.split(/\s+/, 1)[0]), 'acts_on_owners_behalf')
+  assert.equal(
+    permissionCardTool({ toolName: 'mcp__stripe__create_payment', inputPreview: '  ' }),
+    'mcp__stripe__create_payment',
+    'the bare name when there is no preview',
+  )
+  const long = permissionCardTool({ toolName: 'mcp__x__post_note', inputPreview: `{ "body": "${'z'.repeat(5000)}" }` })
+  assert.equal(long.length, APPROVAL_TOOL_MAX_CHARS)
+  assert.ok(long.startsWith('mcp__x__post_note { "body"'))
+})
+
+test('a held long command LEADS with the matched command, so the owner sees it and the server reads it', () => {
+  // Capped from its head: the rm sits past the 2000 characters the card keeps.
+  const capped = `{ "command": "echo ${'y'.repeat(2000)} && rm -rf build", "description": "d" }`
+  const fromHead = permissionCardTool({ toolName: 'Bash', inputPreview: capped })
+  assert.equal(classifyCommand(readToolInput('Bash', fromHead).command), null, 'without the lead the card shows no rm')
+  const led = permissionCardTool({ toolName: 'Bash', inputPreview: capped, floorEvidence: 'rm -rf build' })
+  assert.ok(led.startsWith('{"command":"rm -rf build"}\n{ "command": "echo yyy'))
+  assert.equal(led.length, APPROVAL_TOOL_MAX_CHARS)
+  // The server's card reader takes the FIRST command key of a text that is not JSON.
+  assert.equal(classifyCommand(readToolInput('Bash', led).command), 'recursive_delete')
+
+  // Cut in the middle by the CLI, short enough to fit the card whole.
+  const elided = `{ "command": "echo aa\n\u22EF 2600 code points elided \u22EF\necho bb", "description": "d" }`
+  const ledElided = permissionCardTool({ toolName: 'PowerShell', inputPreview: elided, floorEvidence: 'rm -rf ~/work' })
+  assert.ok(ledElided.startsWith('{"command":"rm -rf ~/work"}\n'))
+  assert.equal(classifyCommand(readToolInput('Bash', ledElided).command), 'recursive_delete')
+
+  // A preview the card shows whole is left exactly as it was.
+  const whole = '{ "command": "rm -rf doomed", "description": "d" }'
+  assert.equal(permissionCardTool({ toolName: 'Bash', inputPreview: whole, floorEvidence: 'rm -rf doomed' }), whole)
+  // The lead is bounded, and stays JSON.
+  const lead = permissionCardTool({ toolName: 'Bash', inputPreview: capped, floorEvidence: `rm -rf ${'p'.repeat(4000)}` })
+  const firstLine = lead.split('\n', 1)[0]
+  assert.doesNotThrow(() => JSON.parse(firstLine))
+  assert.ok(JSON.parse(firstLine).command.length <= FLOOR_EVIDENCE_LEAD_MAX)
+  // And the body carries the lead through.
+  const body = buildPermissionRequestBody({
+    chatId: 1,
+    requestId: REQ,
+    toolName: 'Bash',
+    inputPreview: capped,
+    floorEvidence: 'rm -rf build',
+  }) as { approvalMeta: { tool: string } }
+  assert.equal(body.approvalMeta.tool, led)
 })
 
 // ── The wait the SERVER stored ───────────────────────────────────────────────

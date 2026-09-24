@@ -340,13 +340,23 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
-import { classifyPermissionRequest, type HardFloorMatch } from './lib/hard-floor.js'
+import { classifyPermissionRequest } from './lib/hard-floor.js'
 import {
   consultFloor,
   floorCheckPath,
+  planFloorRequest,
   FLOOR_CHECK_TIMEOUT_MS,
   type FloorCheckBody,
+  type FloorPlan,
+  type FloorRecord,
 } from './lib/floor-check.js'
+import {
+  clearFloorAttached,
+  floorKey,
+  floorStateRoot,
+  markFloorAttached,
+  takeFloorRecord,
+} from './lib/floor-state.mjs'
 import {
   PENDING_PLAN_FAST_MAX_MS,
   buildPlanCardBody,
@@ -2401,16 +2411,34 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
   // and the auto approve branch below would answer `allow` to it in
   // milliseconds without looking at it (map part 24, run D3). So a request
-  // whose tool and input match the list asks the server first whether this
-  // agent's owner wants it held: hold takes the interactive path even with
-  // auto approve on, proceed auto approves exactly as below, and a check that
-  // cannot be answered REFUSES the action (lib/floor-check.ts has the whole
-  // contract). With auto approve off every request is interactive already,
-  // so the question would buy nothing and is not asked.
-  const floorMatch = AUTO_APPROVE
-    ? classifyPermissionRequest(tool_name, input_preview)
-    : null
-  if (floorMatch) return settleFloorRequest(params, floorMatch)
+  // the list matches asks the server first whether this agent's owner wants
+  // it held: hold takes the interactive path even with auto approve on,
+  // proceed auto approves exactly as below, and a check that cannot be
+  // answered REFUSES the action (lib/floor-check.ts has the whole contract).
+  //
+  // WHAT MATCHED IS THE HOOK'S RECORD FIRST, read synchronously here: the
+  // hook saw the whole tool input, and the preview below is a copy the CLI
+  // cuts in the middle when a value is long, so a listed action in the middle
+  // of a long command is not in it. The preview is read only when there is no
+  // record, and a cut shell preview with neither goes to the owner. With auto
+  // approve off only a request the record vouches for is asked about, so a
+  // floor the owner left off does not turn every hook ask into a card.
+  const floorRecord = takeOwnFloorRecord(tool_name, input_preview)
+  const floorPlan = planFloorRequest({
+    autoApprove: AUTO_APPROVE,
+    toolName: tool_name,
+    inputPreview: input_preview,
+    record: floorRecord,
+    previewMatch:
+      floorRecord === null && AUTO_APPROVE
+        ? classifyPermissionRequest(tool_name, input_preview)
+        : null,
+  })
+  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
+  if (floorPlan.action === 'owner') {
+    log(`Floor sends ${tool_name} [${request_id}] to the owner: ${floorPlan.reason}`)
+    return relayPermissionToOwner(params)
+  }
 
   if (AUTO_APPROVE) {
     // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
@@ -2443,7 +2471,10 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
  * a request the hard floor HOLDS, so a held request meets the same two
  * refusals as any other here and the same card as any other.
  */
-function relayPermissionToOwner(params: PermissionRequestParams): Promise<void> {
+function relayPermissionToOwner(
+  params: PermissionRequestParams,
+  floorEvidence?: string,
+): Promise<void> {
   const { request_id, tool_name, description, input_preview } = params
 
   if (updateDrainMode) {
@@ -2534,6 +2565,7 @@ function relayPermissionToOwner(params: PermissionRequestParams): Promise<void> 
         toolName: tool_name,
         description,
         inputPreview: input_preview,
+        floorEvidence,
       }),
     )
     const cardMessageId = cardMessageIdFrom(posted)
@@ -2602,17 +2634,18 @@ function relayPermissionToOwner(params: PermissionRequestParams): Promise<void> 
 }
 
 /**
- * A request the hard floor matched, on an install that auto approves: ask the
- * server whether this agent's owner holds it, then hold it for the owner,
- * auto approve it as before, or refuse it (lib/floor-check.ts). Tracked like
- * the interactive path, so an update drain waits for the answer instead of
- * cutting it off halfway.
+ * A request the hard floor matched: ask the server whether this agent's owner
+ * holds it, then hold it for the owner, allow it as before, refuse it, or
+ * (auto approve off) send it to the owner as that install always did
+ * (lib/floor-check.ts). Tracked like the interactive path, so an update drain
+ * waits for the answer instead of cutting it off halfway.
  */
 function settleFloorRequest(
   params: PermissionRequestParams,
-  match: HardFloorMatch,
+  plan: Extract<FloorPlan, { action: 'consult' }>,
 ): Promise<void> {
   const { request_id, tool_name, input_preview } = params
+  const { match } = plan
   return trackMessageOperation(async () => {
     const decision = await consultFloor({
       toolName: tool_name,
@@ -2621,13 +2654,21 @@ function settleFloorRequest(
       match,
       path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
       send: postFloorCheck,
+      autoApprove: AUTO_APPROVE,
+      permissionMode: plan.record?.permissionMode ?? null,
     })
-    log(decision.line)
+    log(`${decision.line} (from the ${plan.source === 'record' ? "hook's floor record" : 'preview'})`)
     switch (decision.route) {
       case 'hold':
         // The whole interactive path: its drain and no chat exits refuse a
-        // held request exactly as they refuse any other request there.
-        return relayPermissionToOwner(params)
+        // held request exactly as they refuse any other request there. The
+        // matched command rides along so the card shows it and the server can
+        // stamp the floor on it even when the preview lost it.
+        return relayPermissionToOwner(params, match.evidence)
+      case 'owner':
+        // Auto approve off, and the owner's floor does not hold it: the card
+        // this install always posts, nothing more.
+        return relayPermissionToOwner(params, match.evidence)
       case 'auto_approve':
         log(`Auto-approving: ${tool_name} [${request_id}]`)
         await mcp
@@ -2653,6 +2694,60 @@ function settleFloorRequest(
         return
     }
   })
+}
+
+/**
+ * The folders this daemon's floor marker and the hook's records are keyed by:
+ * its own working folder, which is the session's project folder, and the
+ * CLI's CLAUDE_PROJECT_DIR when it passed one down.
+ */
+const FLOOR_STATE_ROOT = floorStateRoot(process.env)
+const FLOOR_FOLDERS = [process.cwd(), process.env.CLAUDE_PROJECT_DIR ?? ''].filter(
+  (folder) => folder.trim() !== '',
+)
+const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
+let floorMarkerKeys: string[] = []
+
+/**
+ * Say to the floor hook that a HOAI daemon is attached to this project folder,
+ * so a listed action here asks (bin/hoai-floor-hook.mjs asks nowhere else).
+ * Written while this daemon holds its pairing lock, taken down when it stands
+ * down or exits. Never throws.
+ */
+function markFloorAttachedIfHolder(): void {
+  if (!lockHeld) return
+  try {
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS })
+    if (floorMarkerKeys.length === 0) {
+      log('floor: could not write the attached marker; the floor hook stays silent in this session')
+    }
+  } catch (err) {
+    log(`floor: could not write the attached marker (${err})`)
+  }
+}
+
+function clearFloorAttachedMarker(): void {
+  try {
+    clearFloorAttached({ root: FLOOR_STATE_ROOT, keys: floorMarkerKeys })
+  } catch {
+    /* gone already */
+  }
+  floorMarkerKeys = []
+}
+
+/** The hook's floor record for this request, taken synchronously, or null. */
+function takeOwnFloorRecord(toolName: string, inputPreview: string | undefined): FloorRecord | null {
+  try {
+    return takeFloorRecord({
+      root: FLOOR_STATE_ROOT,
+      keys: FLOOR_KEYS,
+      toolName,
+      inputPreview: inputPreview ?? '',
+    }) as FloorRecord | null
+  } catch (err) {
+    log(`floor: could not read the floor records (${err}); reading the preview instead`)
+    return null
+  }
 }
 
 /**
@@ -7717,6 +7812,8 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
  */
 function startHookIntakeIfHolder(): void {
   if (!lockHeld) return
+  // The floor's attached marker rides the same holder rule as the intake.
+  markFloorAttachedIfHolder()
   if (hookIntake !== null) return
   try {
     const root = hookStateRoot()
@@ -7761,6 +7858,7 @@ function stopHookIntake(): void {
     /* already closed */
   }
   hookIntake = null
+  clearFloorAttachedMarker()
   if (hookCardTimer !== null) {
     clearTimeout(hookCardTimer)
     hookCardTimer = null

@@ -22,6 +22,21 @@
  * gets the card and nothing runs until they answer; if not, the relay allows
  * it as it always did. Anything else: nothing on stdout, and the call runs.
  *
+ * ONLY IN A SESSION A HOAI DAEMON IS ATTACHED TO. The plugin's hooks run in
+ * every session on a machine that has it enabled, and an ask with no relay
+ * behind it is a terminal prompt (or, headless, a call nobody can answer)
+ * that the owner never switched on. So a match asks only when the daemon's
+ * attached marker for this session's folder is present and its pid alive
+ * (lib/floor-state.mjs); anywhere else the hook prints nothing, exactly as
+ * before 0.46.0.
+ *
+ * AND IT LEAVES A RECORD FOR THE RELAY. Before it asks, it writes a floor
+ * record (the rule, the matched command, the session's permission mode) under
+ * the plugin state folder, because the request the CLI then sends the relay
+ * carries the input only as a preview the CLI cuts in the middle when it is
+ * long, and the relay must hold what the hook matched, not what survived the
+ * cut. A record that cannot be written does not stop the ask.
+ *
  * Rules this file exists to hold:
  *
  * 1. IT ONLY EVER ASKS. It never prints `deny` and never exits 2. A deny is a
@@ -38,7 +53,8 @@
  *    stdin cannot hold a tool call.
  * 4. IT OPENS NO SOCKET AND READS NO CREDENTIALS, like the forwarder. It does
  *    not know the owner's switch and does not try to: the relay asks the
- *    server. It knows the list and nothing else.
+ *    server. It knows the list, and it reads and writes two small files under
+ *    the plugin state folder (the attached marker, its own floor record).
  * 5. IT READS STDIN AS BYTES and decodes UTF-8 itself (the forwarder's rule 2:
  *    a Windows console code page once crashed a text mode read).
  *
@@ -66,6 +82,36 @@ export function loadFloorCore() {
   return import('../lib/hard-floor-core.mjs')
 }
 
+/** The marker and record files, loaded the same way. */
+export function loadFloorState() {
+  return import('../lib/floor-state.mjs')
+}
+
+/**
+ * The two host side steps, bound to one state root and environment: is a
+ * HOAI daemon attached to this session, and leave the relay the record.
+ * Each fails on its own terms: an unreadable marker is not attached (the
+ * hook stays silent, as before 0.46.0); an unwritable record still asks.
+ */
+export function floorDeps(state, { env = process.env, root } = {}) {
+  const stateRoot = root ?? state.floorStateRoot(env)
+  return {
+    attachedKey: (payload) =>
+      state.findAttachedKey({ root: stateRoot, folders: state.sessionFolders(payload, env) }),
+    recordAsk: (key, payload, match) =>
+      state.writeFloorRecord({
+        root: stateRoot,
+        key,
+        record: state.buildFloorRecord({
+          toolName: payload.tool_name,
+          toolInput: payload.tool_input,
+          match,
+          payload,
+        }),
+      }),
+  }
+}
+
 /** The exact line printed for a match. Pure. */
 export function floorAskOutput(words) {
   return JSON.stringify({
@@ -81,10 +127,17 @@ export function floorAskOutput(words) {
  * What to print for one hook payload: the ask line, or '' for nothing.
  * Never throws: every failure is ''.
  *
+ * `deps` is the host side (floorDeps): with it, a match asks only in a
+ * session a HOAI daemon is attached to, and leaves its floor record first.
+ * main() always passes it; without it this is the bare list contract the
+ * tests pin rule by rule.
+ *
  * @param {string} text the raw stdin
  * @param {{ classifyToolCall: (name: unknown, input: unknown) => { words: string } | null }} core
+ * @param {{ attachedKey: (payload: any) => string | null,
+ *   recordAsk: (key: string, payload: any, match: any) => unknown }} [deps]
  */
-export function decideFloorHook(text, core) {
+export function decideFloorHook(text, core, deps) {
   try {
     const trimmed = String(text ?? '').trim()
     if (!trimmed) return ''
@@ -94,6 +147,15 @@ export function decideFloorHook(text, core) {
     if (event !== undefined && event !== 'PreToolUse') return ''
     const match = core.classifyToolCall(payload.tool_name, payload.tool_input)
     if (!match || typeof match.words !== 'string' || !match.words) return ''
+    if (deps) {
+      const key = deps.attachedKey(payload)
+      if (!key) return ''
+      try {
+        deps.recordAsk(key, payload, match)
+      } catch {
+        /* the record is the relay's aid; the ask stands without it */
+      }
+    }
     return floorAskOutput(match.words)
   } catch {
     return ''
@@ -129,12 +191,14 @@ function writeOut(text) {
  * printed ('' for nothing). Never rejects.
  *
  * @param {{ stdin?: AsyncIterable<Buffer|string>, write?: (text: string) => Promise<void>,
- *   budgetMs?: number, loadCore?: () => Promise<any>, maxBytes?: number }} [opts]
+ *   budgetMs?: number, loadCore?: () => Promise<any>, loadState?: () => Promise<any>,
+ *   env?: Record<string, string | undefined>, stateRoot?: string, maxBytes?: number }} [opts]
  */
 export async function main(opts = {}) {
   const budgetMs = opts.budgetMs ?? FLOOR_HOOK_BUDGET_MS
   const write = opts.write ?? writeOut
   const loadCore = opts.loadCore ?? loadFloorCore
+  const loadState = opts.loadState ?? loadFloorState
   let timer
   const budget = new Promise((resolve) => {
     timer = setTimeout(() => resolve(BUDGET_SPENT), budgetMs)
@@ -142,12 +206,17 @@ export async function main(opts = {}) {
   let out = ''
   try {
     const work = (async () => {
-      const [text, core] = await Promise.all([
+      const [text, core, state] = await Promise.all([
         readStdinBytes(opts.stdin ?? process.stdin, opts.maxBytes),
         loadCore(),
+        loadState(),
       ])
       if (text === null) return ''
-      return decideFloorHook(text, core)
+      return decideFloorHook(
+        text,
+        core,
+        floorDeps(state, { env: opts.env ?? process.env, root: opts.stateRoot }),
+      )
     })()
     // A late failure of the losing side must not surface as an unhandled
     // rejection after the race is decided.

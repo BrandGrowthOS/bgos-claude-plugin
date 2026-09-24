@@ -27,8 +27,10 @@ import {
   consultFloor,
   floorCheckPath,
   floorRouteFor,
+  planFloorRequest,
   readFloorCheckResponse,
   type FloorCheckBody,
+  type FloorRecord,
 } from '../lib/floor-check.ts'
 import {
   classifyPermissionRequest,
@@ -47,6 +49,141 @@ const D1_MATCH = classifyPermissionRequest('Bash', D1_PREVIEW) as HardFloorMatch
 const answer = (status: number, body: unknown) => ({
   status,
   text: typeof body === 'string' ? body : JSON.stringify(body),
+})
+
+/**
+ * The CLI's own preview, as Claude Code 2.1.281 renders it (truncateForPreview,
+ * functions Rjr, T and I in the shipped binary; constants G=3500, E=2000,
+ * w=1500): each key and each JSON rendered value has runs of whitespace
+ * folded, and a rendered value over 3500 code points keeps its first 2000 and
+ * its last 1500 with a line saying how many were cut, INSIDE the JSON string.
+ * (Its character replacement and secret redaction are left out: neither
+ * touches the letters these cases turn on.)
+ */
+const G = 3500
+const E = 2000
+const W = 1500
+function cliElide(text: string): string {
+  const points = Array.from(text)
+  if (points.length <= G) return text
+  const cut = points.length - E - W
+  return `${points.slice(0, E).join('')}\n\u22EF ${cut} ${cut === 1 ? 'code point' : 'code points'} elided \u22EF\n${points.slice(points.length - W).join('')}`
+}
+const cliT = (text: string) => cliElide(text.replace(/\s{2,}/g, ' '))
+function cliPreview(input: Record<string, unknown>): string {
+  return `{ ${Object.entries(input)
+    .map(([k, v]) => `${cliT(JSON.stringify(k))}: ${cliT(JSON.stringify(v))}`)
+    .join(', ')} }`
+}
+
+/** The review's three long commands: the listed action sits in the part the CLI cuts out. */
+const LONG_COMMANDS: Array<[string, string, string]> = [
+  ['middle', `echo ${'a'.repeat(2500)} ; rm -rf ~/work ; echo ${'b'.repeat(2000)}`, 'recursive_delete'],
+  [
+    'heredoc script',
+    `bash <<'EOF'\n${'echo step\n'.repeat(300)}rm -rf build\n${'echo more\n'.repeat(200)}EOF`,
+    'recursive_delete',
+  ],
+  [
+    'force push after a long commit',
+    `git add -A && git commit -m "${'x'.repeat(2600)}" && git push --force origin main && echo ${'y'.repeat(1600)}`,
+    'force_push',
+  ],
+]
+
+const recordFrom = (toolName: string, input: Record<string, unknown>, permissionMode = 'bypassPermissions'): FloorRecord => {
+  const match = classifyToolCall(toolName, input) as HardFloorMatch
+  return {
+    v: 1,
+    at: 1,
+    toolName,
+    ruleId: match.ruleId,
+    rulesVersion: match.rulesVersion,
+    evidence: match.evidence,
+    permissionMode,
+    sessionId: 's',
+    toolUseId: 't',
+  }
+}
+
+test('THE REVIEW: a listed action cut out of the preview by the CLI is invisible to the preview alone', () => {
+  for (const [label, command, rule] of LONG_COMMANDS) {
+    const input = { command, description: 'Clean up' }
+    const preview = cliPreview(input)
+    assert.ok(preview.includes('code points elided'), `${label}: the CLI really cut it`)
+    assert.equal(classifyToolCall('Bash', input)?.ruleId, rule, `${label}: the hook sees it whole`)
+    assert.equal(classifyPermissionRequest('Bash', preview), null, `${label}: the preview has lost it`)
+  }
+})
+
+test('so the relay decides from the hook record, and the server is sent the matched command', () => {
+  for (const [label, command, rule] of LONG_COMMANDS) {
+    const input = { command, description: 'Clean up' }
+    const preview = cliPreview(input)
+    const record = recordFrom('Bash', input)
+    const plan = planFloorRequest({
+      autoApprove: true,
+      toolName: 'Bash',
+      inputPreview: preview,
+      record,
+      previewMatch: classifyPermissionRequest('Bash', preview),
+    })
+    assert.equal(plan.action, 'consult', label)
+    if (plan.action !== 'consult') continue
+    assert.equal(plan.source, 'record')
+    assert.equal(plan.match.ruleId, rule)
+    const body = buildFloorCheckBody('Bash', preview, plan.match)
+    assert.ok(body.inputPreview.length <= FLOOR_CHECK_INPUT_PREVIEW_MAX)
+    // The server reads the body with the same list: it must see the rule,
+    // not the head and tail the CLI kept.
+    assert.equal(classifyPermissionRequest('Bash', body.inputPreview)?.ruleId, rule, `${label}: ${body.inputPreview.slice(0, 120)}`)
+  }
+})
+
+test('with no record, a cut shell preview goes to the owner rather than auto approve', () => {
+  const [, command] = LONG_COMMANDS[0]
+  const preview = cliPreview({ command, description: 'Clean up' })
+  assert.deepEqual(
+    planFloorRequest({ autoApprove: true, toolName: 'Bash', inputPreview: preview, record: null, previewMatch: null }).action,
+    'owner',
+  )
+  // A cut preview of anything else is not the floor's business (an MCP tool is judged by name).
+  assert.equal(
+    planFloorRequest({ autoApprove: true, toolName: 'Write', inputPreview: preview, record: null, previewMatch: null }).action,
+    'none',
+  )
+  // A short, unlisted command carries on exactly as before.
+  assert.equal(
+    planFloorRequest({ autoApprove: true, toolName: 'Bash', inputPreview: '{ "command": "ls" }', record: null, previewMatch: null }).action,
+    'none',
+  )
+})
+
+test('with auto approve off, only a request the hook record vouches for is asked about', () => {
+  const record = recordFrom('Bash', { command: 'rm -rf doomed' })
+  assert.equal(
+    planFloorRequest({ autoApprove: false, toolName: 'Bash', inputPreview: D1_PREVIEW, record, previewMatch: null }).action,
+    'consult',
+  )
+  // No record: the CLI raised this one on its own, so the card it always got.
+  assert.equal(
+    planFloorRequest({ autoApprove: false, toolName: 'Bash', inputPreview: D1_PREVIEW, record: null, previewMatch: D1_MATCH }).action,
+    'none',
+  )
+})
+
+test('with auto approve off: a proceed in a full access session allows, anything else asks the owner', () => {
+  const off = { autoApprove: false }
+  assert.equal(floorRouteFor({ kind: 'hold', ruleId: 'x', rulesVersion: 1 }, { ...off, permissionMode: 'bypassPermissions' }), 'hold')
+  // Bypass: the request exists only because the floor hook asked; the switch is
+  // off, so the call runs as it did before 0.46.0, with no card.
+  assert.equal(floorRouteFor({ kind: 'proceed', rulesVersion: 1 }, { ...off, permissionMode: 'bypassPermissions' }), 'auto_approve')
+  assert.equal(floorRouteFor({ kind: 'unsupported', reason: 'r' }, { ...off, permissionMode: 'bypassPermissions' }), 'auto_approve')
+  // Any other mode: the CLI would have asked anyway, so the owner is asked as always.
+  assert.equal(floorRouteFor({ kind: 'proceed', rulesVersion: 1 }, { ...off, permissionMode: 'default' }), 'owner')
+  assert.equal(floorRouteFor({ kind: 'proceed', rulesVersion: 1 }, { ...off, permissionMode: null }), 'owner')
+  // An error is never a silent allow; with auto approve off it is the owner's card.
+  assert.equal(floorRouteFor({ kind: 'error', reason: 'r' }, { ...off, permissionMode: 'bypassPermissions' }), 'owner')
 })
 
 test('the D1 request matches the list locally, so the relay asks', () => {
@@ -271,20 +408,38 @@ const handler = SRC.slice(
 const bodyOf = (signature: string, next: string) =>
   SRC.slice(SRC.indexOf(signature), SRC.indexOf(next, SRC.indexOf(signature) + signature.length))
 
-test('the floor is asked BEFORE the auto approve branch', () => {
+test('the floor is asked BEFORE the auto approve branch, from the hook record first', () => {
   // The permission-relay.test.ts slice pattern. Run D3 is exactly what
   // happens if these two ever swap: auto approve answers first and the floor
   // is never consulted.
   assert.ok(handler.length > 0)
+  const record = handler.indexOf('const floorRecord = takeOwnFloorRecord(tool_name, input_preview)')
+  const plan = handler.indexOf('const floorPlan = planFloorRequest({')
   const classify = handler.indexOf('classifyPermissionRequest(tool_name, input_preview)')
-  const settle = handler.indexOf('if (floorMatch) return settleFloorRequest(params, floorMatch)')
+  const settle = handler.indexOf("if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)")
+  const owner = handler.indexOf("if (floorPlan.action === 'owner') {")
   const auto = handler.indexOf('if (AUTO_APPROVE) {')
-  assert.ok(classify > 0 && settle > 0 && auto > 0, 'all three must be in the handler')
-  assert.ok(classify < auto, 'the list is read before auto approve')
-  assert.ok(settle < auto, 'and a match leaves before auto approve can answer it')
-  // Asked only where the answer can change anything: with auto approve off
-  // every request is interactive already.
-  assert.match(handler, /const floorMatch = AUTO_APPROVE\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  assert.ok(record > 0 && plan > 0 && classify > 0 && settle > 0 && owner > 0 && auto > 0, 'all must be in the handler')
+  assert.ok(record < plan && plan < auto, 'the record and the plan are read before auto approve')
+  assert.ok(settle < auto && owner < auto, 'and a match leaves before auto approve can answer it')
+  // The preview is read only when there is no record (it is the lossy copy).
+  assert.match(handler, /floorRecord === null && AUTO_APPROVE\s*\?\s*classifyPermissionRequest\(tool_name, input_preview\)\s*:\s*null/)
+  assert.match(handler, /autoApprove: AUTO_APPROVE,/)
+  const ownerExit = handler.slice(owner, auto)
+  assert.ok(ownerExit.includes('return relayPermissionToOwner(params)'), 'a cut preview with no record goes to the owner')
+  assert.equal(ownerExit.includes("behavior: 'allow'"), false)
+})
+
+test('the record is read synchronously, from this daemon folder keys, before any await', () => {
+  const take = bodyOf('function takeOwnFloorRecord(', '\n/**')
+  assert.ok(take.includes('takeFloorRecord({'))
+  assert.ok(take.includes('keys: FLOOR_KEYS'))
+  assert.equal(/\bawait\b|\basync\b/.test(take), false, 'no await: it runs inside the handler, before auto approve')
+  // The marker rides the lock: written by the holder, taken down on stand down and exit.
+  const start = bodyOf('function startHookIntakeIfHolder(', '\n/**')
+  assert.ok(start.indexOf('if (!lockHeld) return') < start.indexOf('markFloorAttachedIfHolder()'))
+  const stop = bodyOf('function stopHookIntake(', '\n/**')
+  assert.ok(stop.includes('clearFloorAttachedMarker()'))
 })
 
 test('hold takes the whole interactive path; proceed allows; refuse denies', () => {
@@ -293,8 +448,13 @@ test('hold takes the whole interactive path; proceed allows; refuse denies', () 
   assert.ok(settle.includes('return trackMessageOperation(async () => {'), 'tracked, so a drain waits for it')
   assert.ok(settle.includes('path: floorCheckPath(AUTH.mode, ASSISTANT_ID)'))
   assert.ok(settle.includes('send: postFloorCheck'))
+  assert.ok(settle.includes('autoApprove: AUTO_APPROVE'))
+  assert.ok(settle.includes('permissionMode: plan.record?.permissionMode ?? null'))
   const hold = settle.slice(settle.indexOf("case 'hold':"), settle.indexOf("case 'auto_approve':"))
-  assert.ok(hold.includes('return relayPermissionToOwner(params)'), 'a hold is the interactive path itself')
+  assert.ok(
+    hold.includes('return relayPermissionToOwner(params, match.evidence)'),
+    'a hold is the interactive path itself, carrying the matched command to the card',
+  )
   assert.equal(hold.includes("behavior: 'allow'"), false, 'a hold never allows on its own')
   const proceed = settle.slice(settle.indexOf("case 'auto_approve':"), settle.indexOf("case 'refuse':"))
   assert.ok(proceed.includes("behavior: 'allow'"))
@@ -307,6 +467,7 @@ test('hold takes the whole interactive path; proceed allows; refuse denies', () 
 test('the interactive path a hold takes still refuses in a drain and with no chat', () => {
   const relay = bodyOf('function relayPermissionToOwner(', '\nfunction settleFloorRequest(')
   assert.ok(relay.length > 0)
+  assert.ok(relay.includes('floorEvidence,\n      }),'), 'the matched command reaches the card body')
   const drain = relay.slice(relay.indexOf('if (updateDrainMode) {'), relay.indexOf('return trackMessageOperation('))
   assert.ok(drain.includes("behavior: 'deny'"), 'the drain exit refuses a held request')
   const noChat = relay.slice(relay.indexOf('if (!chatId) {'), relay.indexOf('let resolveButtonChoice'))

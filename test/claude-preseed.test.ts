@@ -27,6 +27,8 @@ import { fileURLToPath } from 'node:url'
 
 import {
   CLAUDE_CONFIG_FILE_NAME,
+  FLOOR_HOOK_MATCHER,
+  FLOOR_HOOK_TIMEOUT_SECONDS,
   HOOK_EVENT_NAMES,
   HOOK_TIMEOUT_SECONDS,
   TRUST_ENTRY_DEFAULTS,
@@ -34,6 +36,7 @@ import {
   claudeConfigFilePath,
   ensureHookEntries,
   ensureMarketplaceAutoUpdate,
+  floorHookBesideForwarder,
   readMarketplaceAutoUpdate,
   preseedClaudeTrust,
   seedProjectEntry,
@@ -757,6 +760,7 @@ test('a truthy non-boolean autoUpdate is not read as enrolment', () => {
 // outside a plugin's own hooks file).
 
 const FORWARDER = '/home/kc/bgos-claude-plugin/bin/hoai-hook.mjs'
+const FLOOR_HOOK = '/home/kc/bgos-claude-plugin/bin/hoai-floor-hook.mjs'
 const settingsOf = (fs: ReturnType<typeof memFs>) =>
   JSON.parse(fs.files.get('/agent/.claude/settings.local.json') ?? '{}')
 
@@ -803,8 +807,65 @@ test('a moved checkout replaces our old entry instead of stacking a dead one bes
   ensureHookEntries({ settingsPath, forwarderPath: '/old/place/bin/hoai-hook.mjs', fs })
   ensureHookEntries({ settingsPath, forwarderPath: FORWARDER, fs })
   const entries = settingsOf(fs).hooks.PreToolUse.flatMap((m: any) => m.hooks)
-  assert.equal(entries.length, 1, 'exactly one HOAI forwarder per event, the live one')
+  assert.equal(entries.length, 2, 'exactly one HOAI forwarder and one floor hook, the live ones')
   assert.deepEqual(entries[0].args, [FORWARDER])
+  assert.deepEqual(entries[1].args, [FLOOR_HOOK])
+  assert.equal(JSON.stringify(settingsOf(fs)).includes('/old/place/'), false, 'nothing of the old checkout is left')
+})
+
+// ── The floor hook on the clone rail (0.46.0) ────────────────────────────────
+//
+// A clone reads its checkout's hooks/hooks.json no more for the floor than for
+// the forwarder, so without this entry a clone agent had no floor at all while
+// the canon told its model a hook stops a listed action (the lane's review).
+
+
+test('the clone rail registers the floor hook exactly as hooks/hooks.json does, beside the forwarder', () => {
+  const fs = memFs()
+  ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs })
+  const pre = settingsOf(fs).hooks.PreToolUse
+  assert.equal(pre.length, 2)
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8'),
+  )
+  const shipped = manifest.hooks.PreToolUse.find((m: any) => m.matcher)
+  assert.equal(pre[1].matcher, shipped.matcher, 'the same matcher as the marketplace install')
+  assert.equal(pre[1].matcher, FLOOR_HOOK_MATCHER)
+  const floor = pre[1].hooks[0]
+  assert.deepEqual(floor.args, [FLOOR_HOOK], 'the floor script beside the forwarder, absolute')
+  assert.equal(floor.command, 'node')
+  assert.equal(floor.async, false, 'the one blocking hook, as in the manifest')
+  assert.equal(floor.timeout, shipped.hooks[0].timeout)
+  assert.equal(floor.timeout, FLOOR_HOOK_TIMEOUT_SECONDS)
+  // Only PreToolUse carries it.
+  for (const name of HOOK_EVENT_NAMES) {
+    if (name === 'PreToolUse') continue
+    const flat = settingsOf(fs).hooks[name].flatMap((m: any) => m.hooks)
+    assert.equal(flat.some((h: any) => String(h.args?.[0]).includes('hoai-floor-hook')), false, name)
+  }
+  // A folder provisioned before 0.46.0 (forwarder only) is not "already" done.
+  const old = memFs({
+    '/agent/.claude/settings.local.json': JSON.stringify({
+      hooks: Object.fromEntries(
+        HOOK_EVENT_NAMES.map((name) => [
+          name,
+          [{ hooks: [{ type: 'command', command: 'node', args: [FORWARDER], timeout: HOOK_TIMEOUT_SECONDS, async: true }] }],
+        ]),
+      ),
+    }),
+  })
+  assert.deepEqual(
+    ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs: old }),
+    { changed: true, reason: 'set' },
+    'an older clone folder gets the floor on its next launch',
+  )
+  assert.equal(settingsOf(old).hooks.PreToolUse[1].hooks[0].args[0], FLOOR_HOOK)
+  // A caller can name the script, or opt out of it.
+  const none = memFs()
+  ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, floorHookPath: null, fs: none })
+  assert.equal(settingsOf(none).hooks.PreToolUse.length, 1)
+  assert.equal(floorHookBesideForwarder('C:\\p\\bin\\hoai-hook.mjs'), 'C:\\p\\bin\\hoai-floor-hook.mjs')
+  assert.equal(floorHookBesideForwarder('/p/bin/other.mjs'), '')
 })
 
 test('a hook the user wrote themselves survives untouched', () => {

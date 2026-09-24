@@ -41,15 +41,39 @@
  *     switch on for anyone. The house refusal for an agent the pairing does
  *     not own is a 403, which is refused like any other error.
  *
- * Only an install that auto approves asks at all. With auto approve off every
- * request already takes the interactive path, so a hold and a proceed would
- * end in the same place and the round trip would buy nothing.
+ * WHAT THE RELAY DECIDES FROM (planFloorRequest). The hook's FLOOR RECORD
+ * first (lib/floor-state.mjs): the hook saw the whole tool input, while the
+ * request's `input_preview` is a copy the CLI cuts in the middle when a value
+ * is over 3500 code points, so a listed action in the middle of a long
+ * command is not in the preview at all. Then, only when there is no record,
+ * the preview itself. And a shell preview carrying the CLI's cut mark with no
+ * record and no match is sent to the owner rather than auto approved: what
+ * was cut cannot be checked, and the only answer that is not a guess is the
+ * owner's.
+ *
+ * WITH AUTO APPROVE OFF (floorRouteFor's second argument). Every request is
+ * interactive there already, so the question is asked only for a request the
+ * hook's record vouches for, and it changes one thing: when the owner has not
+ * asked to hold it and the session runs with full access
+ * (`permission_mode: bypassPermissions`, which the record carries), the
+ * request exists ONLY because the floor hook asked, so it is allowed, exactly
+ * as it ran before 0.46.0, instead of posting a card to an owner whose switch
+ * is off. In any other mode the CLI would have asked anyway, so it goes to
+ * the owner as before. An error there also goes to the owner: the card is not
+ * a silent allow, and it is what that install did before.
  *
  * Pure except `consultFloor`, which takes the network call as an argument.
  */
 
 import type { HardFloorMatch } from './hard-floor.js'
-import { readToolInput } from './hard-floor.js'
+import {
+  FLOOR_SHELL_TOOLS,
+  classifyCommand,
+  classifyPath,
+  hardFloorWords,
+  previewIsElided,
+  readToolInput,
+} from './hard-floor.js'
 
 /** The route's own limits (spec 4.4); a body over either is a 400. */
 export const FLOOR_CHECK_TOOL_NAME_MAX = 200
@@ -74,8 +98,69 @@ export type FloorAnswer =
   | { kind: 'unsupported'; reason: string }
   | { kind: 'error'; reason: string }
 
-/** What the relay does next. */
-export type FloorRoute = 'hold' | 'auto_approve' | 'refuse'
+/**
+ * What the relay does next. `owner` is the interactive path for a request the
+ * owner's floor does not hold (auto approve off, see the header).
+ */
+export type FloorRoute = 'hold' | 'auto_approve' | 'refuse' | 'owner'
+
+/** The hook's floor record, as the relay reads it (lib/floor-state.mjs). */
+export interface FloorRecord {
+  v: 1
+  at: number
+  toolName: string
+  ruleId: string
+  rulesVersion: number
+  evidence: string
+  permissionMode: string | null
+  sessionId: string | null
+  toolUseId: string | null
+}
+
+/** How the relay treats one permission request, before any network. */
+export type FloorPlan =
+  | { action: 'consult'; match: HardFloorMatch; source: 'record' | 'preview'; record: FloorRecord | null }
+  | { action: 'owner'; reason: string }
+  | { action: 'none' }
+
+/**
+ * Decide, from the hook's record and the request itself, whether the relay
+ * asks the server, goes straight to the owner, or carries on as before.
+ */
+export function planFloorRequest(input: {
+  autoApprove: boolean
+  toolName: string
+  inputPreview: string | undefined
+  record: FloorRecord | null
+  previewMatch: HardFloorMatch | null
+}): FloorPlan {
+  const { record } = input
+  if (record) {
+    return {
+      action: 'consult',
+      source: 'record',
+      record,
+      match: {
+        ruleId: record.ruleId as HardFloorMatch['ruleId'],
+        rulesVersion: record.rulesVersion,
+        words: hardFloorWords(record.ruleId) ?? '',
+        evidence: record.evidence,
+      },
+    }
+  }
+  if (!input.autoApprove) return { action: 'none' }
+  if (input.previewMatch) {
+    return { action: 'consult', source: 'preview', record: null, match: input.previewMatch }
+  }
+  if (FLOOR_SHELL_TOOLS.includes(input.toolName) && previewIsElided(input.inputPreview)) {
+    return {
+      action: 'owner',
+      reason:
+        'the command was cut in the middle by the CLI and no floor record names it, so what was cut cannot be checked',
+    }
+  }
+  return { action: 'none' }
+}
 
 /**
  * The route, or NULL when this connection has nowhere to ask (an API key
@@ -100,14 +185,16 @@ export function floorCheckPath(
  * therefore the input reduced to the fields the list reads, re-rendered as
  * JSON: `{"command":"..."}` for a shell tool, `{"file_path":"..."}` (or
  * `notebook_path`) for an edit tool, `{}` for an MCP tool, whose NAME is what
- * matched. A command too long for the limit is replaced by the segment that
- * matched (the match's evidence), so the server reads the part that matters
- * and not a head that stops before it.
+ * matched. A command too long for the limit, or one in which the match's rule
+ * is no longer visible (the CLI cut the listed action out of the preview's
+ * middle, and the match came from the hook's record), is replaced by the
+ * simple command that matched (the match's evidence), so the server reads the
+ * part that matters and not a head and a tail that stop around it.
  */
 export function buildFloorCheckBody(
   toolName: string,
   inputPreview: string | undefined,
-  match: Pick<HardFloorMatch, 'evidence'>,
+  match: Pick<HardFloorMatch, 'evidence'> & { ruleId?: string },
 ): FloorCheckBody {
   const name = String(toolName ?? '').slice(0, FLOOR_CHECK_TOOL_NAME_MAX)
   const input = readToolInput(toolName, inputPreview ?? '')
@@ -116,9 +203,23 @@ export function buildFloorCheckBody(
     const value = input[key]
     if (typeof value === 'string' && value.length > 0) reduced[key] = value
   }
+  const evidence = String(match.evidence ?? '')
+  const ruleId = match.ruleId
+  if (ruleId && evidence) {
+    if (FLOOR_SHELL_TOOLS.includes(String(toolName)) && classifyCommand(reduced.command ?? '') !== ruleId) {
+      reduced.command = evidence
+    } else if (
+      !FLOOR_SHELL_TOOLS.includes(String(toolName)) &&
+      !toolName.startsWith('mcp__') &&
+      classifyPath(reduced.file_path ?? '') !== ruleId &&
+      classifyPath(reduced.notebook_path ?? '') !== ruleId
+    ) {
+      reduced.file_path = evidence
+    }
+  }
   let rendered = JSON.stringify(reduced)
   if (rendered.length > FLOOR_CHECK_INPUT_PREVIEW_MAX && typeof reduced.command === 'string') {
-    reduced.command = String(match.evidence ?? '')
+    reduced.command = evidence
     rendered = JSON.stringify(reduced)
   }
   while (rendered.length > FLOOR_CHECK_INPUT_PREVIEW_MAX) {
@@ -171,16 +272,26 @@ export function readFloorCheckResponse(response: { status: number; text: string 
   return { kind: 'error', reason: 'the floor check answer carries no hold' }
 }
 
-/** The three answers, and the two readings that proceed. */
-export function floorRouteFor(answer: FloorAnswer): FloorRoute {
+/**
+ * The three answers, and the two readings that proceed, on an install that
+ * auto approves (the default). With auto approve off (see the header) a
+ * proceed allows only a request that exists because the floor hook asked in a
+ * full access session, and everything else goes to the owner as it always did.
+ */
+export function floorRouteFor(
+  answer: FloorAnswer,
+  context: { autoApprove?: boolean; permissionMode?: string | null } = {},
+): FloorRoute {
+  const autoApprove = context.autoApprove ?? true
   switch (answer.kind) {
     case 'hold':
       return 'hold'
     case 'proceed':
     case 'unsupported':
-      return 'auto_approve'
+      if (autoApprove) return 'auto_approve'
+      return context.permissionMode === 'bypassPermissions' ? 'auto_approve' : 'owner'
     default:
-      return 'refuse'
+      return autoApprove ? 'refuse' : 'owner'
   }
 }
 
@@ -204,18 +315,27 @@ export async function consultFloor(opts: {
   path: string | null
   send: (path: string, body: FloorCheckBody) => Promise<{ status: number; text: string }>
   timeoutMs?: number
+  /** Omitted: an install that auto approves, the default and the original contract. */
+  autoApprove?: boolean
+  /** The session's permission mode, from the hook's floor record. */
+  permissionMode?: string | null
 }): Promise<FloorDecision> {
   const { toolName, requestId, match, path } = opts
+  const context = { autoApprove: opts.autoApprove ?? true, permissionMode: opts.permissionMode ?? null }
   const where = `${toolName} [${requestId}] (rule ${match.ruleId})`
   if (path === null) {
     const answer: FloorAnswer = {
       kind: 'unsupported',
       reason: 'an API key connection has no pairing scoped floor check',
     }
+    const route = floorRouteFor(answer, context)
     return {
-      route: 'auto_approve',
+      route,
       answer,
-      line: `Floor check skipped for ${where}: ${answer.reason}; auto approving as before`,
+      line:
+        route === 'auto_approve'
+          ? `Floor check skipped for ${where}: ${answer.reason}; auto approving as before`
+          : `Floor check skipped for ${where}: ${answer.reason}; asking the owner as before`,
     }
   }
   const timeoutMs = opts.timeoutMs ?? FLOOR_CHECK_TIMEOUT_MS
@@ -236,7 +356,7 @@ export async function consultFloor(opts: {
   } finally {
     if (timer) clearTimeout(timer)
   }
-  const route = floorRouteFor(answer)
+  const route = floorRouteFor(answer, context)
   const line =
     route === 'hold'
       ? `Floor HOLDS ${where} for the owner: the card waits for their answer`
@@ -244,8 +364,14 @@ export async function consultFloor(opts: {
         ? `Floor check could not decide ${where}, REFUSING it: ${
             answer.kind === 'error' ? answer.reason : answer.kind
           }`
-        : answer.kind === 'unsupported'
-          ? `Floor check unavailable for ${where}: ${answer.reason}; auto approving as before`
-          : `Floor check for ${where}: the owner has not asked to hold it; auto approving`
+        : route === 'owner'
+          ? `Floor check for ${where} (auto approve off): ${
+              answer.kind === 'error' ? `could not decide, ${answer.reason}` : 'not held'
+            }; asking the owner as this install always does`
+          : answer.kind === 'unsupported'
+            ? `Floor check unavailable for ${where}: ${answer.reason}; auto approving as before`
+            : `Floor check for ${where}: the owner has not asked to hold it; ${
+                context.autoApprove ? 'auto approving' : 'allowing it, as it ran before the floor (full access)'
+              }`
   return { route, answer, line }
 }

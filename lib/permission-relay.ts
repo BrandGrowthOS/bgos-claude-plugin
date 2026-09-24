@@ -53,6 +53,8 @@
  * answers at all.
  */
 
+import { previewIsElided } from './hard-floor.js'
+
 export type PermissionBehavior = 'allow' | 'deny'
 export type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
 
@@ -331,6 +333,52 @@ export interface PermissionRequestBodyInput {
   toolName: string
   description?: string
   inputPreview?: string
+  /**
+   * The command the hard floor matched, when the relay holds this request for
+   * the owner's floor (the hook's record, or the preview's own match).
+   */
+  floorEvidence?: string
+}
+
+/** How much of the floor's evidence leads a card's `tool` (see below). */
+export const FLOOR_EVIDENCE_LEAD_MAX = 1500
+
+/**
+ * The card's `approval_meta.tool`, which is what the owner's command panel
+ * shows AND what the server reads to stamp the floor block on the card (spec
+ * 3). Three shapes:
+ *
+ *   - an MCP tool: `<tool_name> <input_preview>`, or the bare name when there
+ *     is no preview. The server judges an MCP tool by its NAME, so a card that
+ *     carried only the arguments (`{ "to": "a@b.c", ... }`) was a held send
+ *     the server could not recognise: no pill, no line, and no rule that only
+ *     a person may allow it.
+ *   - a shell command the floor holds whose match the card would not show:
+ *     the preview was longer than the cap (cut from its head), or the CLI had
+ *     already cut its middle out. The card then LEADS with the matched command
+ *     as `{"command":"<evidence>"}` on its own line, then the preview, so the
+ *     owner sees the delete or the force push first and the server's card
+ *     reader (which reads the first `command` key of a text that is not JSON)
+ *     matches it.
+ *   - anything else: the preview, capped, as before.
+ */
+export function permissionCardTool(input: {
+  toolName: string
+  inputPreview?: string
+  floorEvidence?: string
+}): string {
+  const name = String(input.toolName ?? '')
+  const preview = (input.inputPreview ?? '').trim()
+  if (name.startsWith('mcp__')) return capToolPreview(preview ? `${name} ${preview}` : name)
+  if (!preview) return name
+  const evidence = (input.floorEvidence ?? '').trim()
+  const shell = name === 'Bash' || name === 'PowerShell'
+  const hidden = preview.length > APPROVAL_TOOL_MAX_CHARS || previewIsElided(preview)
+  if (shell && evidence && hidden) {
+    const lead = JSON.stringify({ command: evidence.slice(0, FLOOR_EVIDENCE_LEAD_MAX) })
+    return capToolPreview(`${lead}\n${preview}`)
+  }
+  return capToolPreview(preview)
 }
 
 /**
@@ -349,7 +397,6 @@ export interface PermissionRequestBodyInput {
 export function buildPermissionRequestBody(
   input: PermissionRequestBodyInput,
 ): Record<string, unknown> {
-  const preview = (input.inputPreview ?? '').trim()
   return {
     chatId: Number(input.chatId),
     sender: 'assistant',
@@ -357,7 +404,7 @@ export function buildPermissionRequestBody(
     messageType: 'approval_request',
     options: permissionApprovalOptions(input.requestId),
     approvalMeta: {
-      tool: preview ? capToolPreview(preview) : input.toolName,
+      tool: permissionCardTool(input),
       agent_route: PERMISSION_AGENT_ROUTE,
       // The CLI hands us no risk signal at all, so claiming low or high would
       // be an invention. The app hides the pill unless the owner turned

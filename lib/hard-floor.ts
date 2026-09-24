@@ -22,7 +22,8 @@
  *
  * THE SERVER OWNS THE LIST AND THE SWITCH. backend/src/services/hard-floor.ts
  * is the copy that decides what the owner sees. This mirror is held to it by
- * lib/hard-floor-fixture.ts (byte identical in both repos) and the rules
+ * a shared fixture, lib/hard-floor-fixture.ts, copied byte for byte from the
+ * server's (the reconciliation step compares the two files), and the rules
  * version. The switch never reaches this plugin: the relay asks the server a
  * question per matched request (POST .../floor-check, lib/floor-check.ts) and
  * the answer is a decision, not a copy of the setting.
@@ -117,7 +118,26 @@ export function readToolInput(toolName: unknown, inputPreview: unknown): Record<
   return core.readToolInput(toolName, inputPreview) as Record<string, unknown>
 }
 
-export const splitShellWords: (text: string) => { segments: string[][]; quoted: string[] } =
-  core.splitShellWords
+/** One simple command as the shell reader splits it. */
+export interface SimpleCommand {
+  words: string[]
+  stdin: string[]
+  pipedFrom: SimpleCommand | null
+}
+
+export const lexShell: (text: string) => { commands: SimpleCommand[]; nested: string[] } =
+  core.lexShell
+export const quoteWords: (words: string[]) => string = core.quoteWords
 export const isOwnChannelServer: (server: unknown) => boolean = core.isOwnChannelServer
 export const toolNameWords: (name: unknown) => string[] = core.toolNameWords
+
+/** The HOAI channel's own MCP server names, exact (spec 4.2). */
+export const HOAI_OWN_SERVERS: readonly string[] = core.HOAI_OWN_SERVERS
+
+/** The CLI's middle cut mark in a preview (truncateForPreview, Claude Code 2.1.281). */
+export const PREVIEW_ELISION_RE: RegExp = core.PREVIEW_ELISION_RE
+
+/** True when a permission request's preview carries the CLI's middle cut. */
+export function previewIsElided(inputPreview: unknown): boolean {
+  return core.previewIsElided(inputPreview) as boolean
+}

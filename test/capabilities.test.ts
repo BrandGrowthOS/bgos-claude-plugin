@@ -133,10 +133,21 @@ test('the bundled fallback carries the hard floor sentences, word for word (spec
     "pays or deletes on the owner's behalf. On such a card the platform offers only once and " +
     'deny and removes any session or always option you send, so do not offer them, and never ' +
     'split, rename or wrap the action to step around the list.'
+  // The third core sentence (spec 4.5 as amended): the held agent cannot
+  // release its own action, and a model that does not know it tries.
+  const personOnly =
+    'Only the owner, signed in to the app, can allow such an action: an answer your own ' +
+    'credential sends to that card is refused unless it is a deny, and so is any change your ' +
+    "credential makes to the owner's switch."
   const claude =
     'From this release a hook stops a listed action even with full access and your relay ' +
     'holds it for the owner; do not retry a refused one.'
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(core))
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(personOnly))
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(`${core} ${personOnly} ${claude}`),
+    'the three sentences in the served order',
+  )
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(claude))
 })
 

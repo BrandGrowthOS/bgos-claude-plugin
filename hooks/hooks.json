@@ -1,5 +1,5 @@
 {
-  "description": "HOAI: forwards this session's tool activity, task list and turn boundaries to the HOAI daemon so the owner sees live progress in the app; that forwarder is async, always exits 0 and never blocks a tool call. One entry blocks on purpose: the hard floor hook, which asks the owner before a short list of risky actions (a recursive delete, a force push, a change inside .git, to an .env file or to a settings file in the home folder, a tool that sends, posts, pays or deletes), never denies, and fails open inside 2 seconds.",
+  "description": "HOAI: forwards this session's tool activity, task list and turn boundaries to the HOAI daemon so the owner sees live progress in the app; that forwarder is async, always exits 0 and never blocks a tool call. One entry blocks on purpose: the hard floor hook, which, only in a session a HOAI agent's daemon is attached to, asks the owner before a short list of risky actions (a recursive delete, a force push, a change inside .git, to an .env file or to a settings file in the home folder, a tool that sends, posts, pays or deletes), never denies, and fails open inside 2 seconds.",
   "hooks": {
     "SessionStart": [
       {

@@ -29,11 +29,15 @@ import {
   classifyToolName,
   commandFloorMatch,
   hardFloorWords,
+  HOAI_OWN_SERVERS,
   isOwnChannelServer,
+  lexShell,
+  previewIsElided,
+  quoteWords,
   readToolInput,
-  splitShellWords,
   toolNameWords,
 } from '../lib/hard-floor.ts'
+import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
 test('the six rules, their ids and their words, exactly as spec section 1 writes them', () => {
   assert.equal(HARD_FLOOR_RULES_VERSION, 1)
@@ -89,21 +93,26 @@ test('rule order decides which rule a card names when two match', () => {
   assert.equal(classifyPath('/home/kc/.git/.env'), 'git_dir_write')
 })
 
-test('the shell splitter: segments, quotes removed, quoted text returned for a second read', () => {
-  const { segments, quoted } = splitShellWords('cd a && bash -c "rm -rf b" | tee c; echo $(ls)')
-  assert.deepEqual(segments, [
+test('the shell reader: simple commands, quotes removed, a comment and a heredoc body are not commands', () => {
+  const words = (text: string) => lexShell(text).commands.map((c) => c.words)
+  assert.deepEqual(words('cd a && bash -c "rm -rf b" | tee c; echo $(ls)'), [
     ['cd', 'a'],
     ['bash', '-c', 'rm -rf b'],
     ['tee', 'c'],
     ['echo'],
     ['ls'],
   ])
-  assert.deepEqual(quoted, ['rm -rf b'])
-  // A backslash before a newline continues the line; elsewhere it is a character.
-  assert.deepEqual(splitShellWords('rm -rf \\\n build').segments, [['rm', '-rf', 'build']])
-  assert.deepEqual(splitShellWords('rd /s C:\\tmp\\x').segments, [['rd', '/s', 'C:\\tmp\\x']])
+  // A backslash before a newline continues the line; before a plain letter it is a character.
+  assert.deepEqual(words('rm -rf \\\n build'), [['rm', '-rf', 'build']])
+  assert.deepEqual(words('rd /s C:\\tmp\\x'), [['rd', '/s', 'C:\\tmp\\x']])
   // An escaped quote inside double quotes does not end the string.
-  assert.deepEqual(splitShellWords('echo "a \\"b\\" c"').segments, [['echo', 'a "b" c']])
+  assert.deepEqual(words('echo "a \\"b\\" c"'), [['echo', 'a "b" c']])
+  assert.deepEqual(words('true # ; rm -rf x'), [['true']])
+  const heredoc = lexShell("cat > clean.sh <<'EOF'\nrm -rf dist\nEOF\necho ok").commands
+  assert.deepEqual(heredoc.map((c) => c.words), [['cat', 'clean.sh'], ['echo', 'ok']])
+  assert.deepEqual(heredoc[0].stdin, ['rm -rf dist'], 'the body is the data of the command that owns it')
+  // `$(...)` inside double quotes still runs, so it is handed back to be read.
+  assert.deepEqual(lexShell('echo "$(rm -rf x)"').nested, ['rm -rf x'])
 })
 
 test('an unterminated quote or a lone operator never throws and never hides what came before', () => {
@@ -123,17 +132,64 @@ test('the evidence of a long command is the segment that matched, not its head',
   assert.equal(match?.evidence, 'git push --force origin main')
 })
 
-test('quoted text is read as a command, three levels deep and no deeper', () => {
-  assert.equal(classifyCommand(`ssh host 'sudo sh -c "rm -rf /srv/x"'`), 'recursive_delete')
-  // Nest `sh -c "<inner>"` by hand, escaping the way the splitter unescapes.
-  const quote = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+test('a shell\'s script is read as a command, four levels deep and no deeper', () => {
+  assert.equal(classifyCommand(`sudo sh -c "rm -rf /srv/x"`), 'recursive_delete')
+  // Nest `sh -c "<inner>"` by hand, escaping the way the reader unescapes.
+  const quote = (s: string) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`')}"`
   const nest = (s: string) => `sh -c ${quote(s)}`
-  const three = nest(nest(nest('rm -rf x')))
-  const four = nest(three)
-  assert.equal(classifyCommand(three), 'recursive_delete', 'three levels of quotes are read')
-  // A fourth level is not: the depth is bounded so a pathological input cannot
-  // make the hook spend its budget re-reading its own quotes.
-  assert.equal(classifyCommand(four), null, 'a fourth level is not read')
+  const four = nest(nest(nest(nest('rm -rf x'))))
+  const five = nest(four)
+  assert.equal(classifyCommand(four), 'recursive_delete', 'four levels of scripts are read')
+  // A fifth level is not, on either side (the server's MAX_DEPTH is 4): the
+  // depth is bounded so a pathological input cannot spend the hook's budget.
+  assert.equal(classifyCommand(five), null, 'a fifth level is not read')
+})
+
+test('spec 4.2: a mention is not the action, and neither is a comment or a script written to a file', () => {
+  // The shapes an agent uses all day, each of which the server says null to.
+  // With the switch off, every one of these that asked cost a round trip, a
+  // terminal prompt on a personal session, and on an error a REFUSED commit.
+  for (const command of [
+    'git commit -m "$(cat <<\'EOF\'\nfix: stop the rm -rf of the cache\n\nCo-Authored-By: x\nEOF\n)"',
+    'gh pr create --title t --body "$(cat <<\'EOF\'\nnever git push --force to main\nEOF\n)"',
+    "rg -n 'git push -f' docs/",
+    'grep -rn "rm -rf" scripts/',
+    "cat > clean.sh <<'EOF'\nrm -rf dist\nEOF",
+    'echo "rm -rf dist" >> Makefile',
+    'echo \'rm -rf build\'',
+    'true # rm -rf x',
+    'alias r="rm -rf"',
+  ]) {
+    assert.equal(classifyCommand(command), null, command)
+  }
+  // And the same text fed to a shell is the action.
+  assert.equal(classifyCommand("bash <<'EOF'\nrm -rf dist\nEOF"), 'recursive_delete')
+  assert.equal(classifyCommand('echo "rm -rf dist" | bash'), 'recursive_delete')
+  assert.equal(classifyCommand('echo "$(rm -rf dist)"'), 'recursive_delete')
+  assert.equal(classifyCommand("eval 'git push -f'"), 'force_push')
+})
+
+test('GNU long option prefixes: --r, --rec, --recur are --recursive', () => {
+  for (const command of ['rm --r build', 'rm --rec -f build', 'rm --recur build', 'rm --recursive build']) {
+    assert.equal(classifyCommand(command), 'recursive_delete', command)
+  }
+  // `--` alone ends the options, and `--` then a folder called `--r` is not a flag.
+  assert.equal(classifyCommand('rm -- --r'), null)
+  assert.equal(classifyCommand('rm --force build'), null)
+})
+
+test('the evidence of every fixture match reads back as the same rule (what the relay sends)', () => {
+  let checked = 0
+  for (const c of HARD_FLOOR_FIXTURE) {
+    if (c.input.kind !== 'command' || c.ruleId === null) continue
+    const match = commandFloorMatch(c.input.command)
+    assert.equal(match?.ruleId, c.ruleId, c.name)
+    assert.equal(classifyCommand(match!.evidence), c.ruleId, `${c.name}: ${match!.evidence}`)
+    checked += 1
+  }
+  assert.ok(checked > 40, `the corpus was walked (${checked})`)
+  // Quoting keeps what a word is: a space, a quote, a trailing backslash.
+  assert.equal(quoteWords(['rm', '-rf', 'my dir', "it's", 'C:\\x\\']), `rm -rf 'my dir' "it's" 'C:\\x\\'`)
 })
 
 test('a command past the size limit is read up to the limit, and not beyond', () => {
@@ -157,17 +213,28 @@ test('paths: separators, long path prefixes and case do not change the answer', 
   assert.equal(classifyPath('~'), null)
 })
 
-test('tool names: the words, the own channel exemption, and nothing but MCP', () => {
-  assert.deepEqual(toolNameWords('sendHTTPPost_now-v2'), ['send', 'http', 'post', 'now', 'v'])
+test('tool names: the words, the own channel exemption by EXACT name, and nothing but MCP', () => {
+  assert.deepEqual(toolNameWords('sendHTTPPost_now-v2'), ['send', 'http', 'post', 'now', 'v2'])
+  assert.deepEqual([...HOAI_OWN_SERVERS], ['bgos', 'plugin_hoai_bgos', 'plugin_bgos_bgos', 'plugin_hoaiq_bgos'])
   assert.ok(isOwnChannelServer('bgos'))
   assert.ok(isOwnChannelServer('plugin_hoai_bgos'))
+  assert.ok(isOwnChannelServer('plugin_bgos_bgos'))
   assert.ok(isOwnChannelServer('plugin_hoaiq_bgos'))
   assert.equal(isOwnChannelServer('gmail'), false)
   assert.equal(isOwnChannelServer('bgos_mirror'), false)
+  // Spec 4.2: never by a pattern. Another plugin that names its server `bgos`
+  // is a third party, and its send is on the list.
+  assert.equal(isOwnChannelServer('plugin_mail_bgos'), false)
+  assert.equal(classifyToolName('mcp__plugin_mail_bgos__send_email'), 'acts_on_owners_behalf')
+  assert.equal(classifyToolName('mcp__plugin_hoai_bgos__reply'), null)
   assert.equal(classifyToolName('mcp__bgos'), null, 'no tool part, no tool')
   assert.equal(classifyToolName('send_email'), null, 'not an MCP tool name')
-  assert.equal(classifyToolName('mcp__x__publishing_queue'), 'acts_on_owners_behalf')
+  // Whole words, the server's: a digit or a suffix makes another word.
+  assert.equal(classifyToolName('mcp__x__send2'), null)
+  assert.equal(classifyToolName('mcp__x__sends_digest'), null)
+  assert.equal(classifyToolName('mcp__x__publishing_queue'), null)
   assert.equal(classifyToolName('mcp__x__published_items'), null, 'a past form names a list')
+  assert.equal(classifyToolName('mcp__x__publish_post'), 'acts_on_owners_behalf')
 })
 
 test('tool calls: shell by command, edit by path, MCP by name, everything else never', () => {
@@ -188,8 +255,13 @@ test('the preview reader: JSON, JSON cut short, and plain text', () => {
     readToolInput('Bash', '{ "command": "rm -rf \\"a b\\"\\nls", "description": "x'),
     { command: 'rm -rf "a b"\nls' },
   )
-  // An escape cut in half at the very end is dropped, not decoded into junk.
-  assert.deepEqual(readToolInput('Bash', '{ "command": "echo \\u00'), { command: 'echo ' })
+  // An escape cut in half at the very end is kept as text, as the server reads it.
+  assert.deepEqual(readToolInput('Bash', '{ "command": "echo \\u00'), { command: 'echo \\u00' })
+  // The CLI's middle cut (a raw newline inside the string) still reads, head and tail.
+  const cut = readToolInput('Bash', '{ "command": "echo a\n\u22EF 12 code points elided \u22EF\nrm -rf x", "description": "d" }')
+  assert.equal(cut.command, 'echo a\n\u22EF 12 code points elided \u22EF\nrm -rf x')
+  assert.ok(previewIsElided('{ "command": "a\n\u22EF 1 code point elided \u22EF\nb" }'))
+  assert.equal(previewIsElided('{ "command": "rm -rf x" }'), false)
   assert.deepEqual(readToolInput('Bash', 'rm -rf build'), { command: 'rm -rf build' })
   assert.deepEqual(readToolInput('Write', '/r/.env'), { file_path: '/r/.env' })
   assert.deepEqual(readToolInput('mcp__x__send', 'anything'), {})
@@ -215,7 +287,7 @@ test('the typed surface is the core, not a second copy of it', () => {
   // the list the hook reads.
   assert.equal(HARD_FLOOR_RULES, core.HARD_FLOOR_RULES)
   assert.equal(HARD_FLOOR_RULES_VERSION, core.HARD_FLOOR_RULES_VERSION)
-  assert.equal(splitShellWords, core.splitShellWords)
+  assert.equal(lexShell, core.lexShell)
   const src = readFileSync(new URL('../lib/hard-floor.ts', import.meta.url), 'utf8')
   assert.equal(/new RegExp|\/\^/.test(src), false, 'no pattern of its own in the typed surface')
 })

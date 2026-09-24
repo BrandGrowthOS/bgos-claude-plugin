@@ -22,28 +22,47 @@ Notable changes to the HOAI Claude Code plugin.
     exit 0. The telemetry forwarder is untouched and still cannot block
     anything; the manifest test and the forwarder's rule 1 now say why the one
     exception exists.
+  - **Only where a HOAI agent runs.** The hook asks only in a session a HOAI
+    daemon is attached to (the daemon marks its project folder while it holds
+    its pairing lock). A plain `claude` elsewhere on the same machine, or a
+    headless `claude -p` job, gets no new prompt.
   - **The relay stops waving it through.** A default install auto approves, and
-    the probe watched it allow the hook's ask in 8 ms (run D3). The relay now
-    reads the same list before its auto approve branch and, on a match, asks
-    the server (`POST /api/v1/integrations/assistants/:id/floor-check`): hold
-    posts the card and waits for you, proceed auto approves as before, and a
-    check that fails or times out REFUSES the action rather than allowing it
-    silently. A held request meets the same drain and no chat refusals as any
-    other card.
-  - **One list, owned by the server.** `lib/hard-floor-core.mjs` is plain
-    JavaScript so a bare `node` hook can load it; `lib/hard-floor.ts` is its
-    typed face for the daemon; `lib/hard-floor-fixture.ts` is byte identical to
-    the server's and pins six rule ids, their words, rules version 1 and every
-    named case.
+    the probe watched it allow the hook's ask in 8 ms (run D3). The hook now
+    leaves a floor record before it asks, and the relay takes it before its
+    auto approve branch, because the request's own preview is a copy the CLI
+    cuts in the middle when a command is long: a delete in the middle of a
+    long script was invisible to it. On a match the relay asks the server
+    (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched
+    command): hold posts the card and waits for you, proceed auto approves as
+    before, and a check that fails or times out REFUSES the action rather than
+    allowing it silently. A held request meets the same drain and no chat
+    refusals as any other card. With auto approve off, a proceed in a full
+    access session lets the call run as it did before, instead of a card for a
+    switch you left off.
+  - **The card the server can read.** An MCP tool's card now carries
+    `<tool_name> <input_preview>`, so the server recognises a held send, post
+    or payment and only you can allow it; a held long command leads with the
+    matched command, so you see the delete or the push first.
+  - **One list, owned by the server.** `lib/hard-floor-core.mjs` is a port of
+    the server's reader in plain JavaScript, so a bare `node` hook can load it;
+    `lib/hard-floor.ts` is its typed face for the daemon;
+    `lib/hard-floor-fixture.ts` is copied byte for byte from the server's and
+    pins six rule ids, their words, rules version 1 and every named case, with
+    its digest pinned again in the test. A mention in quotes, a commit message,
+    a comment or a heredoc written to a file is not the action; the HOAI
+    exemption is the channel's exact server names; `rm --rec` is recursive.
+  - **Clone installs too.** The launchers now write the floor hook's entry into
+    `.claude/settings.local.json` beside the forwarder, so a clone agent has the
+    same floor as a marketplace one from its next launch.
   - **Not covered, on purpose or for now:** a legacy API key connection and a
     backend without the route (both auto approve a listed action as before,
-    and say so in the log), a clone install (its launcher written hooks do not
-    carry the floor entry yet), and a delete done by a script, an alias or
+    and say so in the log), and a delete done by a script, an alias or
     `python -c` (the list reads text, not intent).
 - The plan card's own words no longer claim that no hook can stop a tool call:
   an ordinary edit is still never blocked, and the wait is still a promise.
-- The bundled offline capability text carries the floor's two canon sentences,
-  so a model whose canon fetch failed is not told the opposite.
+- The bundled offline capability text carries the floor's three core canon
+  sentences and the Claude delta sentence, so a model whose canon fetch failed
+  is not told the opposite.
 
 ## 0.45.0 (2026-09-23)
 
