@@ -54,12 +54,28 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const ROOT = join(import.meta.dirname, '..')
 const CORE = join(ROOT, 'lib', 'browser-host-core')
-const VENDORED = ['policy.js', 'settings.js'] as const
+/**
+ * DERIVED FROM DISK, never hand-listed.
+ *
+ * This was `['policy.js', 'settings.js']`, a literal, and it silently did
+ * nothing when `profiles.js` was vendored beside them: the file was copied,
+ * pinned in vendor.json, and every case here stayed green because none of
+ * them looked at it. A mutation proved it, which is the only reason it was
+ * caught. A hand-written list of the things to check is a list that stops
+ * matching what is there, and it fails in the reassuring direction.
+ *
+ * So the set comes from the directory, and the case below asserts vendor.json
+ * declares EXACTLY it. A new copy with no pin is then a failure, and a pin
+ * whose file is gone is a failure too.
+ */
+const VENDORED = readdirSync(CORE)
+  .filter((name) => name.endsWith('.js'))
+  .sort()
 
 type Pin = {
   files: Record<string, { source: string; sha256: string }>
@@ -84,6 +100,15 @@ test('every vendored file matches the sha256 the tree declares for it', () => {
       `${name} does not match its pin. Either it was edited here, which it must never be, or it was re-vendored without updating lib/browser-host-core/vendor.json.`,
     )
   }
+})
+
+test('vendor.json pins EXACTLY the files that are here, so a copy cannot arrive unpinned', () => {
+  // The case that would have caught profiles.js arriving with nobody
+  // checking it. Both directions matter: an unpinned copy is an unchecked
+  // copy, and a pin with no file is a pin nothing can ever fail.
+  const declared = Object.keys(pin().files).sort()
+  assert.deepEqual(declared, [...VENDORED], 'every .js in lib/browser-host-core must be pinned in vendor.json, and nothing else')
+  assert.ok(VENDORED.length >= 2, 'the directory should hold the vendored rules; an empty read would pass the line above vacuously')
 })
 
 test('the pin names a BGOS source path for each file, so the original is findable', () => {
