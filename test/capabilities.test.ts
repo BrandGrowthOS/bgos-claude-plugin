@@ -122,28 +122,33 @@ test('the bundled fallback carries the served helper rows sentence, word for wor
 })
 
 test('the bundled fallback carries the hard floor sentences, word for word (spec 4.5)', () => {
-  // The core floor sentence and the Claude delta sentence of the served
+  // The core floor sentences and the Claude delta sentence of the served
   // canon's approvals section, as the stage 6 spec writes them. A fetch that
   // failed must not leave the model believing nothing can stop a tool call:
-  // since 0.49.0 a listed action is held for the owner or refused.
+  // since 0.49.0 a listed action is held for the owner or refused. The core
+  // says only what the SERVER enforces for every runtime (the orchestrator's
+  // decision in wave B2, 2026-09-24); that a hook stops the action is the
+  // Claude sentence alone.
   const core =
-    'Some actions ALWAYS ask the owner when the owner has turned on Always ask before risky ' +
-    'actions for you: a recursive delete, a force push, a change inside .git, a change to an ' +
-    ".env file or to a settings file in the owner's home folder, and a tool that sends, posts, " +
-    "pays or deletes on the owner's behalf. On such a card the platform offers only once and " +
-    'deny and removes any session or always option you send, so do not offer them, and never ' +
-    'split, rename or wrap the action to step around the list.'
-  // The third core sentence (spec 4.5 as amended): the held agent cannot
+    'The owner can turn on Always ask before risky actions for you. It covers a short list: ' +
+    'a recursive delete, a force push, a change inside .git, a change to an .env file or to a ' +
+    "settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on " +
+    "the owner's behalf. While it is on, a request card raised for one of these offers only once " +
+    'and deny: the platform removes any session or always option you send, so do not offer them.'
+  // The person only sentence (spec 4.5 as amended): the held agent cannot
   // release its own action, and a model that does not know it tries.
   const personOnly =
-    'Only the owner, signed in to the app, can allow such an action: an answer your own ' +
-    'credential sends to that card is refused unless it is a deny, and so is any change your ' +
-    "credential makes to the owner's switch."
+    'Only the owner, signed in to the app, can say yes on such a card: an answer your own ' +
+    'credential sends to it is refused unless it is a deny, and so is any change your ' +
+    "credential makes to the owner's switch. Raise that card and wait for the answer; never " +
+    'split, rename or wrap the action to step around the list.'
   const claude =
     'From this release a hook stops a listed action even with full access and your relay ' +
     'holds it for the owner; do not retry a refused one.'
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(core))
   assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(personOnly))
+  // The first version's opening promised the stop to every runtime.
+  assert.equal(BGOS_CAPABILITIES_FALLBACK.includes('Some actions ALWAYS ask the owner'), false)
   assert.ok(
     BGOS_CAPABILITIES_FALLBACK.includes(`${core} ${personOnly} ${claude}`),
     'the three sentences in the served order',
