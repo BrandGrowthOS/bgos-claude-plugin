@@ -340,6 +340,13 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
+import { classifyPermissionRequest, type HardFloorMatch } from './lib/hard-floor.js'
+import {
+  consultFloor,
+  floorCheckPath,
+  FLOOR_CHECK_TIMEOUT_MS,
+  type FloorCheckBody,
+} from './lib/floor-check.js'
 import {
   PENDING_PLAN_FAST_MAX_MS,
   buildPlanCardBody,
@@ -2226,9 +2233,11 @@ const mcp = new Server(
       '  - `plan:no`, stop. Do not propose a replacement unasked.',
       '',
       'NOTHING IN THIS CHANNEL ENFORCES THE WAIT, and you should know exactly',
-      'what that means. This agent runs with permissions skipped: no tool call',
-      'is blocked, no hook can stop one, and this plugin cannot prevent you',
-      'editing a file one second after you propose. The card on the user\'s',
+      'what that means. This agent runs with permissions skipped: no ordinary',
+      'tool call is blocked (only the short list of risky actions your owner',
+      'may have asked to hold), no hook can stop an ordinary edit, and this',
+      'plugin cannot prevent you editing a file one second after you propose.',
+      'The card on the user\'s',
       'screen says "Nothing changes until you answer", so an edit before their',
       'answer makes that line untrue. It is a promise, not a lock. Keep it.',
       '',
@@ -2380,10 +2389,28 @@ const PermissionRequestSchema = z.object({
   }),
 })
 
+type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params']
+
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
+
+  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.46.0).
+  // Under --dangerously-skip-permissions the CLI raises a request for a listed
+  // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
+  // and the auto approve branch below would answer `allow` to it in
+  // milliseconds without looking at it (map part 24, run D3). So a request
+  // whose tool and input match the list asks the server first whether this
+  // agent's owner wants it held: hold takes the interactive path even with
+  // auto approve on, proceed auto approves exactly as below, and a check that
+  // cannot be answered REFUSES the action (lib/floor-check.ts has the whole
+  // contract). With auto approve off every request is interactive already,
+  // so the question would buy nothing and is not asked.
+  const floorMatch = AUTO_APPROVE
+    ? classifyPermissionRequest(tool_name, input_preview)
+    : null
+  if (floorMatch) return settleFloorRequest(params, floorMatch)
 
   if (AUTO_APPROVE) {
     // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
@@ -2405,6 +2432,19 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         log(`Failed to send auto-approve verdict: ${err}`)
       })
   }
+
+  return relayPermissionToOwner(params)
+})
+
+/**
+ * The interactive path, whole: the drain exit, the no chat exit, and the real
+ * approval card with its wait. The handler above takes it for every request on
+ * an install with auto approve off, and settleFloorRequest below takes it for
+ * a request the hard floor HOLDS, so a held request meets the same two
+ * refusals as any other here and the same card as any other.
+ */
+function relayPermissionToOwner(params: PermissionRequestParams): Promise<void> {
+  const { request_id, tool_name, description, input_preview } = params
 
   if (updateDrainMode) {
     // An update is draining this daemon: inbound intake is closed, so nobody
@@ -2559,7 +2599,90 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     }).catch(() => {})
   }
   })
-})
+}
+
+/**
+ * A request the hard floor matched, on an install that auto approves: ask the
+ * server whether this agent's owner holds it, then hold it for the owner,
+ * auto approve it as before, or refuse it (lib/floor-check.ts). Tracked like
+ * the interactive path, so an update drain waits for the answer instead of
+ * cutting it off halfway.
+ */
+function settleFloorRequest(
+  params: PermissionRequestParams,
+  match: HardFloorMatch,
+): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  return trackMessageOperation(async () => {
+    const decision = await consultFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      match,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+    })
+    log(decision.line)
+    switch (decision.route) {
+      case 'hold':
+        // The whole interactive path: its drain and no chat exits refuse a
+        // held request exactly as they refuse any other request there.
+        return relayPermissionToOwner(params)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      case 'refuse':
+        // A listed action whose check could not reach the owner is never
+        // allowed silently: the line above says why, and the model is told.
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'deny' },
+          })
+          .catch((err) => {
+            log(`Failed to send the floor refusal verdict: ${err}`)
+          })
+        return
+    }
+  })
+}
+
+/**
+ * The floor check's one network call. It hands back the status and the raw
+ * body rather than throwing on a non 2xx, because a 404 (a backend without the
+ * floor) and a refusal mean different things (lib/floor-check.ts). Bounded
+ * like every other call through bgosCall, on the floor's own short deadline.
+ */
+function postFloorCheck(
+  path: string,
+  body: FloorCheckBody,
+): Promise<{ status: number; text: string }> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: FLOOR_CHECK_TIMEOUT_MS,
+      label: `POST ${path}`,
+    },
+    async (response) => ({
+      status: response.status,
+      text: await response.text().catch(() => ''),
+    }),
+  )
+}
 
 /**
  * Wait for a permission request to be settled, by the owner or by the server.
@@ -3010,7 +3133,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'poll, do not wait, do not call reply to ask the same question again. ' +
         'CHANGE NOTHING UNTIL GO AHEAD, and understand what that means here: ' +
         'NOTHING IN THIS CHANNEL ENFORCES IT. This agent runs with permissions ' +
-        'skipped, so no tool call is blocked, no hook can stop one, and this ' +
+        'skipped, so no ordinary tool call is blocked (only the short list of ' +
+        'risky actions your owner may have asked to hold), no hook can stop an ' +
+        'ordinary edit, and this ' +
         'plugin cannot prevent you editing a file the moment after you propose. ' +
         'The card tells the user "Nothing changes until you answer", so every ' +
         'edit before their answer makes that line a lie. The wait is a promise ' +

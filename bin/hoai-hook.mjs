@@ -20,6 +20,15 @@
  *    PostToolBatch. A telemetry forwarder that can block the agent is a defect,
  *    not a feature, so every path here, a crash included, ends at exit code 0
  *    and writes nothing to stdout.
+ *    THE ONE BLOCKING HOOK IS NOT THIS FILE (0.46.0). The plugin registers a
+ *    second PreToolUse script, bin/hoai-floor-hook.mjs, with `async: false`,
+ *    because the owner's "Always ask before risky actions" needs a listed
+ *    action (a recursive delete, a force push, a change inside .git, to an
+ *    .env file or to a home settings file, a tool that sends, posts, pays or
+ *    deletes) to stop and ask even under full access, and a blocking hook's
+ *    `ask` is the only thing the CLI honours there (map part 24, run D1). It
+ *    only ever asks, never denies and never exits 2, and it fails open. This
+ *    forwarder stays exactly as it was: async, exit 0, unable to stop anything.
  * 2. IT READS STDIN AS BYTES. The live probe crashed a hook that read stdin in
  *    text mode on Windows: the console code page could not decode a box glyph
  *    the payload carried. Collect Buffers, decode UTF-8 explicitly.

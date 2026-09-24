@@ -121,6 +121,25 @@ test('the bundled fallback carries the served helper rows sentence, word for wor
   )
 })
 
+test('the bundled fallback carries the hard floor sentences, word for word (spec 4.5)', () => {
+  // The core floor sentence and the Claude delta sentence of the served
+  // canon's approvals section, as the stage 6 spec writes them. A fetch that
+  // failed must not leave the model believing nothing can stop a tool call:
+  // since 0.46.0 a listed action is held for the owner or refused.
+  const core =
+    'Some actions ALWAYS ask the owner when the owner has turned on Always ask before risky ' +
+    'actions for you: a recursive delete, a force push, a change inside .git, a change to an ' +
+    ".env file or to a settings file in the owner's home folder, and a tool that sends, posts, " +
+    "pays or deletes on the owner's behalf. On such a card the platform offers only once and " +
+    'deny and removes any session or always option you send, so do not offer them, and never ' +
+    'split, rename or wrap the action to step around the list.'
+  const claude =
+    'From this release a hook stops a listed action even with full access and your relay ' +
+    'holds it for the owner; do not retry a refused one.'
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(core))
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(claude))
+})
+
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
 })

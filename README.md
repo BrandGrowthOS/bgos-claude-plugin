@@ -800,6 +800,14 @@ What the flag turns on, when the backend serves the feature:
 
 Permission requests need the matching BGOS backend (the per agent wait clamp and the approval push). The daemon names that dependency in one line at boot; on an older backend a request waits the full offer and sends no device notification.
 
+### Always ask before risky actions (v0.46.0+)
+
+A per agent switch in the app, **OFF by default**, stored on the server and nowhere else. With it on, a short fixed list of actions stops and asks the owner on the request card even though the agent runs with full access: deleting a folder and everything in it (`rm -r`, `Remove-Item -Recurse`, `rd /s`), force pushing (`--force`, `-f`, `--force-with-lease`, a `+` refspec), changing a file inside `.git`, changing an `.env` file, changing a settings file in the home folder (`~/.bashrc`, `~/.ssh/config`, `~/.config/<app>/<file>`), and an MCP tool whose name sends, posts, pays or deletes (this channel's own tools excepted). The list is `lib/hard-floor-core.mjs`, mirrored from the server's and held to it by a byte identical fixture; its header says what it deliberately does not catch.
+
+**How it stops a call.** `bin/hoai-floor-hook.mjs` is the one BLOCKING hook this plugin registers (`hooks/hooks.json`, a second `PreToolUse` entry, `async: false`, 3 s timeout). For a listed action it answers `ask`, which Claude Code honours even under `--dangerously-skip-permissions`, and the request reaches the relay. The relay then asks the server, before its auto approve branch, whether this agent's owner holds it (`POST /api/v1/integrations/assistants/:id/floor-check`): **hold** posts the Allow once / Deny card and waits for the owner, **proceed** auto approves as before, and a check that fails or times out **refuses** the action. The hook only ever asks (never deny), prints nothing for anything else, and fails open inside 1.5 s, so a broken hook can never stop an unlisted call. With the switch off a listed action costs one round trip and runs as before.
+
+**Where it does not reach, said plainly.** A legacy API key connection has no pairing scoped route to ask, and a backend without the route cannot have the switch on, so both auto approve a listed action as before (logged). A clone install (a workspace `.mcp.json`) gets its hooks from `.claude/settings.local.json`, which the launchers write with the forwarder only, so it has no floor hook in this release. The hook runs for every session on a machine where the plugin is enabled, so a session WITHOUT the HOAI channel (a plain `claude` in another folder) sees Claude Code's own Yes / No for a listed action. And the list reads text: a delete done by a script, an alias or `python -c` is not on it.
+
 ## Slash Commands (v0.8.0+)
 
 The plugin syncs Claude Code's full slash-command catalog to the BGOS backend on boot and every 5 minutes thereafter. When the user types `/` in the BGOS composer, the autocomplete picker shows:

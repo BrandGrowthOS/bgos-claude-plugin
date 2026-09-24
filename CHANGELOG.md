@@ -2,6 +2,49 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.46.0 (2026-09-24)
+
+- **Always ask before risky actions: a listed action now stops and asks you,
+  even though the agent runs with full access.** It is your switch, per agent,
+  OFF by default, and it lives on the server; this plugin never reads it. With
+  it on, deleting a folder and everything in it, force pushing, changing a file
+  inside `.git`, changing an `.env` file, changing a settings file in your home
+  folder, and an MCP tool that sends, posts, pays or deletes on your behalf all
+  arrive as the Allow once / Deny card and wait for you. Nothing else changes:
+  `git status`, an ordinary edit and this channel's own tools never ask.
+  - **A blocking hook, and only one.** `bin/hoai-floor-hook.mjs` is a second
+    `PreToolUse` entry with `async: false`, a matcher for the shell, edit and
+    MCP tools and a 3 second timeout. For a listed action it answers `ask`,
+    which the CLI honours under `--dangerously-skip-permissions` (the stage 6
+    live probe, run D1). It never answers `deny`, because you could not
+    overrule a deny from your phone, and it fails OPEN: bad input, a crash, a
+    missing core or its own 1.5 second budget all end with nothing printed and
+    exit 0. The telemetry forwarder is untouched and still cannot block
+    anything; the manifest test and the forwarder's rule 1 now say why the one
+    exception exists.
+  - **The relay stops waving it through.** A default install auto approves, and
+    the probe watched it allow the hook's ask in 8 ms (run D3). The relay now
+    reads the same list before its auto approve branch and, on a match, asks
+    the server (`POST /api/v1/integrations/assistants/:id/floor-check`): hold
+    posts the card and waits for you, proceed auto approves as before, and a
+    check that fails or times out REFUSES the action rather than allowing it
+    silently. A held request meets the same drain and no chat refusals as any
+    other card.
+  - **One list, owned by the server.** `lib/hard-floor-core.mjs` is plain
+    JavaScript so a bare `node` hook can load it; `lib/hard-floor.ts` is its
+    typed face for the daemon; `lib/hard-floor-fixture.ts` is byte identical to
+    the server's and pins six rule ids, their words, rules version 1 and every
+    named case.
+  - **Not covered, on purpose or for now:** a legacy API key connection and a
+    backend without the route (both auto approve a listed action as before,
+    and say so in the log), a clone install (its launcher written hooks do not
+    carry the floor entry yet), and a delete done by a script, an alias or
+    `python -c` (the list reads text, not intent).
+- The plan card's own words no longer claim that no hook can stop a tool call:
+  an ordinary edit is still never blocked, and the wait is still a promise.
+- The bundled offline capability text carries the floor's two canon sentences,
+  so a model whose canon fetch failed is not told the opposite.
+
 ## 0.45.0 (2026-09-23)
 
 - **The agent can now show you its PLAN before it touches anything, and you

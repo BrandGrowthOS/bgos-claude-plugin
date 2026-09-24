@@ -21,6 +21,13 @@
  * time and the result. A half remembered version of any of them reads as
  * permission to try, or as a reason to restate in prose what the card already
  * carries.
+ *
+ * The hard floor bullet (0.46.0) carries the two sentences of the served
+ * canon's approvals section that this release makes true, in the words the
+ * stage 6 spec (section 4.5) gives them: the core floor sentence and the
+ * Claude delta sentence. It is here because the floor's refusals reach the
+ * model as a refused tool call, and a model that was never told the list
+ * exists retries a refused delete or wraps it in a script to get it through.
  */
 
 /** Compact frozen fallback used only when the served canon cannot be fetched. */
@@ -41,6 +48,7 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   voice_consult_reply, complete_voice_task.
 - Inline buttons: up to 6 chips; __skip__ and __custom__ are reserved sentinels.
   Approvals use the ea:{choice}:{id} callback format.
+- Some actions ALWAYS ask the owner when the owner has turned on Always ask before risky actions for you: a recursive delete, a force push, a change inside .git, a change to an .env file or to a settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on the owner's behalf. On such a card the platform offers only once and deny and removes any session or always option you send, so do not offer them, and never split, rename or wrap the action to step around the list. From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.
 - Files: image 10 MB, video 100 MB, audio 25 MB, document 25 MB.
 - Browser: the hoai-browser MCP server (the Agent Browser pane in the Home of
   Agents desktop app) is your default browser when its browser_ tools are
