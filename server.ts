@@ -80,6 +80,7 @@ import {
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
 import {
+  capabilitiesFetchPath,
   pickCapabilities,
   type ServedCapabilities,
 } from './lib/capabilities.js'
@@ -1069,7 +1070,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     let data: unknown = null
     try {
       data = await bgosGetCapped(
-        `integrations/capabilities?channel=claude&daemonVersion=${encodeURIComponent(RUNNING_VERSION ?? '0.0.0')}`,
+        capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', declaredCapabilities({ canInjectGoal: false })),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
         // fallback, so waiting longer than a few seconds buys nothing.

@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The four tokens, and what each one PROMISES the owner:
+ * The five tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -50,6 +50,21 @@
  *                       deliberately absent because nothing here could enforce
  *                       a pause and promised the goal lane would decide it.
  *                       This is that decision.
+ *   permission_card     this daemon relays Claude Code's permission prompt
+ *                       as a BGOS request card (an `approval_request` with
+ *                       an `approvalMeta`, Allow once and Deny) and honours
+ *                       the owner's `ea:` answers to it (0.47.0,
+ *                       lib/permission-relay.ts). Every host: the prompt
+ *                       arrives over the channel's own permission
+ *                       notification and the answer goes back the same way,
+ *                       with no platform limit. The backend tells the canon's
+ *                       permission request card sentence only to a
+ *                       connection that declares this token, on its
+ *                       heartbeat or on the capabilities fetch itself
+ *                       (lib/capabilities.ts, capabilitiesFetchPath), and NOT
+ *                       by version: a release number cannot be reserved in
+ *                       this repo, so a floor naming one would promise the
+ *                       card to whichever release happened to take it.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -63,6 +78,7 @@
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
+  'permission_card',
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */

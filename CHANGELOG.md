@@ -107,8 +107,10 @@ as 0.44.1). The HOAI backend floor for the plan card
 
 **Renumbered from 0.44.1.** This release was prepared as 0.44.1, but the
 plugin's main was released as 0.46.0 by another program without this work, so
-it ships as 0.47.0 on top of 0.46.0. The HOAI backend floor for the permission
-request card (`PERMISSION_CARD_MIN_DAEMON.claude`) moves to 0.47.0 with it.
+it ships as 0.47.0 on top of 0.46.0. The HOAI canon no longer ties the
+permission request card to a release number: it tells the card only to a
+daemon that DECLARES the `permission_card` capability (BGOS #1624), which this
+one now does, so the number is whatever release is free when this merges.
 
 - **A permission request now looks like one, and stops dying after two
   minutes.** When this agent needed an OK before running a tool, it posted a plain
@@ -231,6 +233,14 @@ request card (`PERMISSION_CARD_MIN_DAEMON.claude`) moves to 0.47.0 with it.
     two halves above, so a host that takes this release ahead of the backend
     reads it in the log instead of wondering why requests wait the full offer
     and ring nobody.
+- **This daemon declares `permission_card`, and the canon fetch carries the
+  declaration.** The token rides every heartbeat on every host, because the
+  relay speaks the channel's own permission notification and has no platform
+  limit. The capabilities fetch at connect now sends the declared list too
+  (`capabilitiesFetchPath`, the same helper the Kanban release adds for
+  `boards_playbook`), because that fetch can run before the first heartbeat
+  has stored the list, and the agent would otherwise not be told about the
+  card until the canon was fetched again.
 
 ## 0.46.0
 
