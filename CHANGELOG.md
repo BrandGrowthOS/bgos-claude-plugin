@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.48.1
+
+**An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**
+The browser tools' presence probe asked the backend for the browser host WITHOUT naming the agent, so the backend
+answered for the owner's desktop alone. With that app closed, every browser call from an agent placed on its own
+machine was refused as host offline, which is exactly the case the placement exists for (HOAI mission 25 goal 6).
+The probe now sends the agent's id, and the backend answers with the agent's own host when the owner placed it
+there. Re-vendored from HOAI's shim (BGOS #1642); bin/hoai-browser-mcp.mjs hashes to the pin, aaaff4b6.
+
 ## 0.48.0
 
 **set_mission_goals: the agent writes the goals of a mission that has none.**
