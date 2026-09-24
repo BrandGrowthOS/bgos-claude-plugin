@@ -1711,6 +1711,61 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: null,
   },
+  {
+    name: "mcp_create_payment_intent_pays",
+    input: { kind: "tool", toolName: "mcp__stripe__create_payment_intent" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "mcp_camel_case_create_payment_pays",
+    input: { kind: "tool", toolName: "mcp__stripe__createPayment" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "mcp_create_charge_pays",
+    input: { kind: "tool", toolName: "mcp__stripe__create_charge" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "mcp_charge_first_is_the_verb",
+    input: { kind: "tool", toolName: "mcp__square__charge_card" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "mcp_listing_payments_is_a_read",
+    input: { kind: "tool", toolName: "mcp__stripe__list_payment_intents" },
+    ruleId: null,
+  },
+  {
+    name: "mcp_retrieving_a_payment_is_a_read",
+    input: { kind: "tool", toolName: "mcp__stripe__retrieve_payment_intent" },
+    ruleId: null,
+  },
+  {
+    name: "mcp_get_charge_is_a_read",
+    input: { kind: "tool", toolName: "mcp__stripe__get_charge" },
+    ruleId: null,
+  },
+  {
+    name: "agent_browser_storage_delete_is_its_own_gate",
+    input: { kind: "tool", toolName: "mcp__plugin_hoai_hoai-browser__browser_localstorage_delete" },
+    ruleId: null,
+  },
+  {
+    name: "agent_browser_standalone_cookie_delete",
+    input: { kind: "tool", toolName: "mcp__hoai-browser__browser_cookie_delete" },
+    ruleId: null,
+  },
+  {
+    name: "agent_browser_qa_install_storage_delete",
+    input: { kind: "tool", toolName: "mcp__plugin_hoaiq_hoai-browser__browser_sessionstorage_delete" },
+    ruleId: null,
+  },
+  {
+    name: "mcp_other_plugin_named_hoai_browser_is_not_the_browser",
+    input: { kind: "tool", toolName: "mcp__plugin_mail_hoai-browser__delete_message" },
+    ruleId: "acts_on_owners_behalf",
+  },
 ];
 
 /**
@@ -1946,7 +2001,7 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "19c12d28cf3cffa382a38927cab05bacc8060dfbdad6e423791c25665f07ddf8";
+  "5217fd850181a05dcdbb6a994e48deeb10a618c0a9cfbb4f96f949bd40b50486";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =

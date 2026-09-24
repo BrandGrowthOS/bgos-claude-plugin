@@ -29,7 +29,9 @@ import {
   classifyToolName,
   commandFloorMatch,
   hardFloorWords,
+  HOAI_AGENT_BROWSER_SERVERS,
   HOAI_OWN_SERVERS,
+  isAgentBrowserServer,
   isOwnChannelServer,
   lexShell,
   previewIsElided,
@@ -287,6 +289,44 @@ test('tool names: the words, the own channel exemption by EXACT name, and nothin
   assert.equal(classifyToolName('mcp__x__publish_post'), 'acts_on_owners_behalf')
 })
 
+test("tool names: the Agent Browser's own server is left to its own gate, by EXACT name (the stage 6 backend review)", () => {
+  assert.deepEqual([...HOAI_AGENT_BROWSER_SERVERS], ['hoai-browser', 'plugin_hoai_hoai-browser', 'plugin_hoaiq_hoai-browser'])
+  for (const name of [
+    'mcp__hoai-browser__browser_cookie_delete',
+    'mcp__plugin_hoai_hoai-browser__browser_localstorage_delete',
+    'mcp__plugin_hoaiq_hoai-browser__browser_sessionstorage_delete',
+  ]) {
+    assert.equal(classifyToolName(name), null, name)
+  }
+  // Not the channel, and not a pattern: another plugin's `hoai-browser` is a third party.
+  assert.equal(isOwnChannelServer('plugin_hoai_hoai-browser'), false)
+  assert.equal(isAgentBrowserServer('plugin_mail_hoai-browser'), false)
+  assert.equal(classifyToolName('mcp__plugin_mail_hoai-browser__delete_message'), 'acts_on_owners_behalf')
+})
+
+test('tool names: paying in the names payment tools use, a payment noun beside a verb that makes one (the stage 6 backend review)', () => {
+  for (const name of [
+    'mcp__stripe__create_payment_intent',
+    'mcp__stripe__createPayment',
+    'mcp__stripe__confirm_payment_intent',
+    'mcp__billing__process_payments',
+    'mcp__stripe__create_charge',
+    'mcp__square__charge_card',
+    'mcp__x___charge_card',
+  ]) {
+    assert.equal(classifyToolName(name), 'acts_on_owners_behalf', name)
+  }
+  for (const name of [
+    'mcp__stripe__list_payment_intents',
+    'mcp__stripe__retrieve_payment_intent',
+    'mcp__stripe__get_charge',
+    'mcp__billing__payment_status',
+    'mcp__x__create_report',
+  ]) {
+    assert.equal(classifyToolName(name), null, name)
+  }
+})
+
 /**
  * The own channel exemption is tied to the plugin's OWN manifest (P2 stage 6,
  * wave B1b Fix). HOAI_OWN_SERVERS spells the channel's server names by hand,
@@ -322,11 +362,19 @@ test('the plugin manifest\'s own channel server is exempt under the name the CLI
     // match, so the null above comes from the exemption and not the words.
     assert.equal(classifyToolName(`mcp__plugin_${manifest.name}x_${server}__reply`), 'acts_on_owners_behalf')
   }
-  // The other servers the manifest ships (the browser) act on the owner's
-  // behalf and are NOT exempt.
+  // The other server the manifest ships is the Agent Browser: NOT the
+  // channel, and left to the browser's own gate under the name the CLI gives
+  // its tools (HOAI_AGENT_BROWSER_SERVERS), so a rename of the plugin or of
+  // the server key is red here rather than turning its storage clearers into
+  // floor matches. Any other server the manifest grows is neither.
   for (const server of Object.keys(manifest.mcpServers)) {
     if (manifest.channels.some((c) => c.server === server)) continue
-    assert.equal(isOwnChannelServer(`plugin_${manifest.name}_${server}`.toLowerCase()), false, `${server} is not the channel`)
+    const id = `plugin_${manifest.name}_${server}`.toLowerCase()
+    assert.equal(isOwnChannelServer(id), false, `${server} is not the channel`)
+    assert.equal(server, 'hoai-browser', `${server}: a new MCP server in the manifest needs a floor decision`)
+    assert.ok(isAgentBrowserServer(id), `${id} is the Agent Browser and is not in HOAI_AGENT_BROWSER_SERVERS`)
+    assert.ok(isAgentBrowserServer(server.toLowerCase()), `${server} standalone is not in HOAI_AGENT_BROWSER_SERVERS`)
+    assert.equal(classifyToolName(`mcp__${id}__browser_localstorage_delete`), null)
   }
 })
 

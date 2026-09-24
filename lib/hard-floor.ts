@@ -139,10 +139,14 @@ export const quoteWords: (words: string[]) => string = core.quoteWords
 export const redirectEvidence: (words: string[], write: RedirectWrite) => string =
   core.redirectEvidence
 export const isOwnChannelServer: (server: unknown) => boolean = core.isOwnChannelServer
+export const isAgentBrowserServer: (server: unknown) => boolean = core.isAgentBrowserServer
 export const toolNameWords: (name: unknown) => string[] = core.toolNameWords
 
 /** The HOAI channel's own MCP server names, exact (spec 4.2). */
 export const HOAI_OWN_SERVERS: readonly string[] = core.HOAI_OWN_SERVERS
+
+/** The HOAI Agent Browser's MCP server names, exact; left to the browser's own gate. */
+export const HOAI_AGENT_BROWSER_SERVERS: readonly string[] = core.HOAI_AGENT_BROWSER_SERVERS
 
 /** The CLI's middle cut mark in a preview (truncateForPreview, Claude Code 2.1.281). */
 export const PREVIEW_ELISION_RE: RegExp = core.PREVIEW_ELISION_RE

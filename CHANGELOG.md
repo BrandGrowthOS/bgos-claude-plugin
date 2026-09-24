@@ -22,6 +22,12 @@ card only to a daemon that declares `permission_card` or `plan_card`
   folder, and an MCP tool that sends, posts, pays or deletes on your behalf all
   arrive as the Allow once / Deny card and wait for you. Nothing else changes:
   `git status`, an ordinary edit and this channel's own tools never ask.
+  A payment tool is read by the names payment tools really use
+  (`create_payment_intent`, `createPayment`, `charge_card`), while a read of
+  one (`list_payment_intents`, `get_charge`) is not; and the HOAI Agent
+  Browser's own tools are left to the browser's own gate, which already asks
+  you before every sensitive action in the page, so clearing a value from the
+  agent's own browser storage no longer asks.
   - **A blocking hook, and only one.** `bin/hoai-floor-hook.mjs` is a second
     `PreToolUse` entry with `async: false`, a matcher for the shell, edit and
     MCP tools and a 3 second timeout. For a listed action it answers `ask`,
