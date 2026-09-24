@@ -19,7 +19,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { GateKeeper, deniedMessage, newGateId, remainingWaitSeconds, waitSecondsFrom } from '../lib/browser-gate.mjs'
+import {
+  GATE_ATTACH_MS,
+  GATE_DEFAULT_WAIT_S,
+  GATE_WAIT_MAX_S,
+  GateKeeper,
+  RELAY_CALL_CAP_MS,
+  deniedMessage,
+  newGateId,
+  remainingWaitSeconds,
+  waitSecondsFrom,
+} from '../lib/browser-gate.mjs'
 
 /** The backend's BROWSER_GATE_ID_PATTERN, copied so a drift shows up here. */
 const GATE_ID_PATTERN = /^g_[A-Za-z0-9_-]{4,64}$/
@@ -111,6 +121,43 @@ const ASK = {
   // because the fake server took the card anyway.
   choices: ['allow_once', 'allow_session', 'always_allow', 'trust_site', 'deny'],
 }
+
+test('ORDERING GUARD: the attach budget sits under the relay cap and OVER the default wait', () => {
+  // The numbers are a chain, not three independent constants
+  // (agent-browser-relay.service.ts documents it):
+  //   backend host deadline 130 s > relay call cap 120 s > attach 110 s > default wait 60 s
+  //
+  // This guard exists because the middle one shipped at 55 s, UNDER the
+  // default wait, so every ordinary gate parked a few seconds before its own
+  // deadline and no agent ever got an answer in the call that asked for it.
+  // Nothing went red: every other case here passes attachMs explicitly, so
+  // the default was the one value no test used.
+  assert.ok(GATE_ATTACH_MS < RELAY_CALL_CAP_MS, `attach ${GATE_ATTACH_MS} must stay under the relay cap ${RELAY_CALL_CAP_MS}, or the agent gets host_timeout instead of a gate id`)
+  assert.ok(
+    GATE_ATTACH_MS > GATE_DEFAULT_WAIT_S * 1000,
+    `attach ${GATE_ATTACH_MS} must exceed the default wait ${GATE_DEFAULT_WAIT_S}s, or an ordinary gate parks instead of answering in its own call`,
+  )
+  // And the ceiling is genuinely longer than the budget, so a long wait is
+  // the case that parks rather than the only case that does not.
+  assert.ok(GATE_WAIT_MAX_S * 1000 > GATE_ATTACH_MS)
+})
+
+test('a DEFAULT gate answers inside its own call rather than parking', async () => {
+  // The behaviour the ordering above buys, driven rather than asserted about:
+  // no attachMs is passed, so the shipped default decides, and a 60 second
+  // wait answered by the owner comes back as an answer, not gate_parked.
+  const srv = server()
+  const g = keeper(srv)
+  let ran = 0
+  const raised = g.raise({ ...ASK, waitSeconds: GATE_DEFAULT_WAIT_S, action: () => Promise.resolve(++ran) })
+  await Promise.resolve()
+  srv.answer(String(srv.cards[0]!.gateId), 'allow_once')
+  const out = await raised
+  assert.equal(out.parked, undefined, 'an ordinary gate must not park')
+  assert.equal(out.allowed, true)
+  await out.ran
+  assert.equal(ran, 1)
+})
 
 test('the gate id is the shape the backend accepts, or the card post 400s', () => {
   assert.match(newGateId((n: number) => Buffer.alloc(n, 3)), GATE_ID_PATTERN)

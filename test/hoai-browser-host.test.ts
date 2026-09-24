@@ -330,6 +330,12 @@ test('the host opens one socket per pairing, each listing only its own agents, a
   writeFileSync(join(root, 'credentials-901.json'), JSON.stringify({ backendUrl: relayB.backendUrl, pairingToken: 'tokB', pairingId: 68, assistantId: 901 }))
   const { factory, launched } = fakeEngines()
   const host = new BrowserHost({ agentRoot: root, env: {}, deviceLabel: 'kc-server', browserTools: [navigateTool()], createEngine: factory, rescanMs: 60_000 }).start()
+  // The owner answers, because this case is about SOCKETS and pairings, not
+  // permissions. Without it the browser_navigate below raises a real gate
+  // that nobody answers and the case waits out the whole 60 second park:
+  // correct of the host, and it hit this test's own 60 second timeout.
+  relayA.autoAnswer('allow_session')
+  relayB.autoAnswer('allow_session')
   try {
     const sockA = await relayA.waitForHost()
     const sockB = await relayB.waitForHost()
