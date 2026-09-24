@@ -1,7 +1,7 @@
 /**
  * The permission relay's pure half.
  *
- * WHY THIS FILE EXISTS. Until 0.44.1 this daemon asked its owner for a tool
+ * WHY THIS FILE EXISTS. Until 0.47.0 this daemon asked its owner for a tool
  * permission on a rail of its very own: a PLAIN message carrying
  * `perm:<choice>:<id>` buttons, and a hard coded 120 s local wait. It looked
  * like the platform's approval card and was nothing like it. The consequences
@@ -92,7 +92,7 @@ export const APPROVAL_CALLBACK_RE = new RegExp(
  * STALE permission click and both intakes swallow it; unrecognised, it would
  * be forwarded to the model as an ordinary `[button_clicked]` event, which is
  * a permission answer for a dead prompt arriving as chatter in the agent's
- * context. Drop this, and the two consumers of it, once no 0.44.0 or older
+ * context. Drop this, and the two consumers of it, once no 0.46.0 or older
  * daemon is left in the fleet.
  */
 export const PERMISSION_CALLBACK_RE = new RegExp(
@@ -195,7 +195,7 @@ export function parsePermissionChoice(
 /**
  * The owner's tap, read off the CARD ROW itself.
  *
- * THIS IS THE CLICK TRANSPORT, and until 0.44.1 shipped it was missing. A tap
+ * THIS IS THE CLICK TRANSPORT, and until 0.47.0 shipped it was missing. A tap
  * on an approval card writes no user message at all: the backend stamps
  * `answered_at` and an `answer_payload` on the card row and pushes the event
  * to whichever daemon is paired for clicks. This one is not: it registers no
