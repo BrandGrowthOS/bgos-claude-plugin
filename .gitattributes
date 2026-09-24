@@ -5,3 +5,7 @@ bin/hoai text eol=lf
 # not pick up CRLF on a Windows checkout.
 bin/hoai-browser-mcp.mjs text eol=lf
 *.sh text eol=lf
+# lib/claude-capability-tokens.ts is a byte-identical copy of the BGOS file
+# backend/src/integrations/claude-capability-tokens.ts, pinned by sha256 on
+# both sides, so it must not pick up CRLF on a Windows checkout.
+lib/claude-capability-tokens.ts text eol=lf
