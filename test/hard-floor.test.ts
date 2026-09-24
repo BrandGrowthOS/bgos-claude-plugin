@@ -35,6 +35,7 @@ import {
   previewIsElided,
   quoteWords,
   readToolInput,
+  redirectEvidence,
   toolNameWords,
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
@@ -109,7 +110,8 @@ test('the shell reader: simple commands, quotes removed, a comment and a heredoc
   assert.deepEqual(words('echo "a \\"b\\" c"'), [['echo', 'a "b" c']])
   assert.deepEqual(words('true # ; rm -rf x'), [['true']])
   const heredoc = lexShell("cat > clean.sh <<'EOF'\nrm -rf dist\nEOF\necho ok").commands
-  assert.deepEqual(heredoc.map((c) => c.words), [['cat', 'clean.sh'], ['echo', 'ok']])
+  assert.deepEqual(heredoc.map((c) => c.words), [['cat'], ['echo', 'ok']])
+  assert.deepEqual(heredoc[0].writes, [{ op: '>', target: 'clean.sh' }], 'a redirect target is a write, not a word')
   assert.deepEqual(heredoc[0].stdin, ['rm -rf dist'], 'the body is the data of the command that owns it')
   // `$(...)` inside double quotes still runs, so it is handed back to be read.
   assert.deepEqual(lexShell('echo "$(rm -rf x)"').nested, ['rm -rf x'])
@@ -169,13 +171,61 @@ test('spec 4.2: a mention is not the action, and neither is a comment or a scrip
   assert.equal(classifyCommand("eval 'git push -f'"), 'force_push')
 })
 
-test('GNU long option prefixes: --r, --rec, --recur are --recursive', () => {
-  for (const command of ['rm --r build', 'rm --rec -f build', 'rm --recur build', 'rm --recursive build']) {
-    assert.equal(classifyCommand(command), 'recursive_delete', command)
+test('GNU long option prefixes (--r, --rec, --recur) are in the SHARED fixture now, so both readers are held to them', () => {
+  // A3 pinned these on this side only; stage 6 wave B moved them into the
+  // byte identical fixture, where the server's spec runs them too.
+  const byName = new Map(HARD_FLOOR_FIXTURE.map((c) => [c.name, c]))
+  for (const [name, command, ruleId] of [
+    ['rm_long_prefix_r', 'rm --r build', 'recursive_delete'],
+    ['rm_long_prefix_rec_with_force', 'rm --rec -f build', 'recursive_delete'],
+    ['rm_long_prefix_recur', 'rm --recur build', 'recursive_delete'],
+    ['rm_long_force_is_not_recursive', 'rm --force build', null],
+    ['rm_double_dash_then_a_file_named_like_a_flag', 'rm -- --r', null],
+  ] as const) {
+    const c = byName.get(name)
+    assert.deepEqual(c?.input, { kind: 'command', command }, name)
+    assert.equal(c?.ruleId, ruleId, name)
   }
-  // `--` alone ends the options, and `--` then a folder called `--r` is not a flag.
-  assert.equal(classifyCommand('rm -- --r'), null)
-  assert.equal(classifyCommand('rm --force build'), null)
+})
+
+test('redirects: a target is a write with its operator, a stream is not a word, and an input is dropped', () => {
+  const only = (text: string) => lexShell(text).commands.map((c) => ({ words: c.words, writes: c.writes }))
+  assert.deepEqual(only('make 2>> .env'), [{ words: ['make'], writes: [{ op: '2>>', target: '.env' }] }])
+  assert.deepEqual(only('a &> out; b 2>&1; c >& file; d <> rw; e < in'), [
+    { words: ['a'], writes: [{ op: '&>', target: 'out' }] },
+    { words: ['b'], writes: [] },
+    { words: ['c'], writes: [{ op: '>&', target: 'file' }] },
+    { words: ['d'], writes: [{ op: '<>', target: 'rw' }] },
+    { words: ['e'], writes: [] },
+  ])
+  // `a2` is a word, not a stream; the redirect comes first and the program after it.
+  assert.deepEqual(only('echo a2>x'), [{ words: ['echo', 'a2'], writes: [{ op: '>', target: 'x' }] }])
+  assert.deepEqual(only('> log rm -rf x'), [{ words: ['rm', '-rf', 'x'], writes: [{ op: '>', target: 'log' }] }])
+  // A redirect never outlives its command: the `rm` inside `$(...)` is a command.
+  assert.equal(classifyCommand('echo > $(rm -rf y)'), 'recursive_delete')
+})
+
+test('the evidence of a shell write is a command the server reads the same way', () => {
+  // A redirect: the command's words and only the redirect that matched, operator kept.
+  const redirect = commandFloorMatch('npm run build > build.log 2>> .env')
+  assert.deepEqual(redirect, { ruleId: 'env_file_write', evidence: 'npm run build 2>> .env' })
+  assert.equal(classifyCommand(redirect!.evidence), 'env_file_write')
+  assert.equal(redirectEvidence([], { op: '>', target: '.env' }), '> .env')
+  assert.equal(redirectEvidence(['echo', 'a b'], { op: '>>', target: 'my .env' }), "echo 'a b' >> 'my .env'")
+  // A writer program (tee, sed -i, cp, mv): the whole simple command, not the path alone.
+  for (const [command, evidence, ruleId] of [
+    ["echo 'alias ll=ls' | sudo tee -a ~/.bashrc", 'sudo tee -a ~/.bashrc', 'home_dotfile_write'],
+    ["sed -i 's/a/b/' .env", 'sed -i s/a/b/ .env', 'env_file_write'],
+    ['cd app && cp -t .git/hooks pre-commit', 'cp -t .git/hooks pre-commit', 'git_dir_write'],
+    ['git fetch && git push --mirror backup', 'git push --mirror backup', 'force_push'],
+    ['find build -type f -delete', 'find build -type f -delete', 'recursive_delete'],
+  ] as const) {
+    const match = commandFloorMatch(command)
+    assert.deepEqual(match, { ruleId, evidence }, command)
+    assert.equal(classifyCommand(evidence), ruleId, evidence)
+  }
+  // An edit tool's path is still its own evidence (the relay sends it as the path).
+  assert.equal(classifyToolCall('Write', { file_path: '/w/.env', content: 'A=1' })?.evidence, '/w/.env')
 })
 
 test('the evidence of every fixture match reads back as the same rule (what the relay sends)', () => {

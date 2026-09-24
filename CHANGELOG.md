@@ -51,13 +51,19 @@ Notable changes to the HOAI Claude Code plugin.
     its digest pinned again in the test. A mention in quotes, a commit message,
     a comment or a heredoc written to a file is not the action; the HOAI
     exemption is the channel's exact server names; `rm --rec` is recursive.
+    The cheap shell forms of the same actions are on it too: `find -delete`,
+    `git clean -fd`/`-fx`, `rsync --delete`, `git push --mirror`, `--delete`
+    and `:branch`, and a redirect, `tee`, `sed -i`, `cp` or `mv` onto a
+    protected file. The same fixture now carries the card strings: the relay
+    must build each one byte for byte, and the test pins the file's own bytes
+    (kept at LF by `.gitattributes`), not only its data.
   - **Clone installs too.** The launchers now write the floor hook's entry into
     `.claude/settings.local.json` beside the forwarder, so a clone agent has the
     same floor as a marketplace one from its next launch.
   - **Not covered, on purpose or for now:** a legacy API key connection and a
     backend without the route (both auto approve a listed action as before,
-    and say so in the log), and a delete done by a script, an alias or
-    `python -c` (the list reads text, not intent).
+    and say so in the log), and a delete done by a script, an alias, a
+    variable or `python -c` (the list reads text, not intent).
 - The plan card's own words no longer claim that no hook can stop a tool call:
   an ordinary edit is still never blocked, and the wait is still a promise.
 - The bundled offline capability text carries the floor's three core canon

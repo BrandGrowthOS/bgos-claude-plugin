@@ -5,3 +5,7 @@ bin/hoai text eol=lf
 # not pick up CRLF on a Windows checkout.
 bin/hoai-browser-mcp.mjs text eol=lf
 *.sh text eol=lf
+# The hard floor fixture is a byte identical copy of the BGOS backend's
+# backend/src/services/hard-floor-fixture.ts, pinned by the sha256 of its
+# bytes on both sides, so it must not pick up CRLF on a Windows checkout.
+lib/hard-floor-fixture.ts text eol=lf

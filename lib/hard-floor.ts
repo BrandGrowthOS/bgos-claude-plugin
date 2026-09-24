@@ -118,16 +118,26 @@ export function readToolInput(toolName: unknown, inputPreview: unknown): Record<
   return core.readToolInput(toolName, inputPreview) as Record<string, unknown>
 }
 
-/** One simple command as the shell reader splits it. */
+/** An output redirect: its operator as written (`>`, `2>>`, `&>`) and the file it writes. */
+export interface RedirectWrite {
+  op: string
+  target: string
+}
+
+/** One simple command as the shell reader splits it (a redirect target is not a word). */
 export interface SimpleCommand {
   words: string[]
   stdin: string[]
+  writes: RedirectWrite[]
   pipedFrom: SimpleCommand | null
 }
 
 export const lexShell: (text: string) => { commands: SimpleCommand[]; nested: string[] } =
   core.lexShell
 export const quoteWords: (words: string[]) => string = core.quoteWords
+/** The evidence for a file one redirect writes: the command's words, then that redirect. */
+export const redirectEvidence: (words: string[], write: RedirectWrite) => string =
+  core.redirectEvidence
 export const isOwnChannelServer: (server: unknown) => boolean = core.isOwnChannelServer
 export const toolNameWords: (name: unknown) => string[] = core.toolNameWords
 

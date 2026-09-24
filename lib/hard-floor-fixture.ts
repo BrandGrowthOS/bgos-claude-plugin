@@ -11,28 +11,38 @@
  * would have held, or holds one the server then waves on, and the owner's
  * card says one thing while the machine does another.
  *
- * ONE FILE, ONE SCHEMA, ONE CASE LIST, ONE DIGEST. This file is BYTE
+ * ONE FILE, ONE SCHEMA, TWO CASE LISTS, ONE DIGEST EACH. This file is BYTE
  * IDENTICAL in both repos (backend src/services/hard-floor-fixture.ts and
- * plugin lib/hard-floor-fixture.ts). It imports nothing, so it compiles
- * unchanged in both. Its four input kinds are the four both classifiers take
- * as they are: a shell command, a file path the action writes, a tool name,
- * and a permission request as the Claude Code CLI sends it (a tool name plus
- * its input rendered as JSON, possibly cut short). The server's card string
- * reading has no plugin twin, so its cases live in the backend's own spec.
+ * plugin lib/hard-floor-fixture.ts, which the plugin's .gitattributes keeps
+ * at LF on a Windows checkout). It imports nothing, so it compiles
+ * unchanged in both. HARD_FLOOR_FIXTURE's four input kinds are the four both
+ * classifiers take as they are: a shell command, a file path the action
+ * writes, a tool name, and a permission request as the Claude Code CLI sends
+ * it (a tool name plus its input rendered as JSON, possibly cut short).
+ * HARD_FLOOR_CARD_FIXTURE is the card kind: an approval card's `tool` string,
+ * which the server's card reader must read as stated and, for a card the
+ * Claude Code relay writes, which the plugin's card builder must produce
+ * from the stated inputs, byte for byte.
  *
  * WHAT EACH SUITE CAN AND CANNOT SEE. Each repo's spec runs ITS classifier
- * over every case, asserts its own rule ids, words and version equal the ones
- * below, recomputes both digests, and compares them with the constants below
- * AND with a literal pinned in that spec file. Neither suite can read the
- * other repo, so neither can prove the other copy is the same: THE CROSS
- * REPO CHECK IS THE RECONCILIATION STEP, where this file is copied byte for
- * byte (cmp says nothing) and the two pinned digest literals are compared by
- * eye. A regeneration therefore shows up as a visible diff in FOUR places
- * (this file and one spec literal, in each repo), never as a silent green.
+ * over every case (and its card reader, or its card builder, over the card
+ * cases), asserts its own rule ids, words and version equal the ones below,
+ * recomputes the three data digests, and compares them with the constants
+ * below AND with a literal pinned in that spec file. It ALSO pins the sha256
+ * of this FILE'S BYTES as a literal, so a byte changed anywhere in one copy
+ * (a comment, a type, this header) turns that repo's suite red until its
+ * literal moves; the data digests alone let a comment drift on one side stay
+ * green on both. Neither suite can read the other repo, so neither can prove
+ * the other copy is the same: THE CROSS REPO CHECK IS THE RECONCILIATION
+ * STEP, where this file is copied byte for byte (cmp says nothing) and the
+ * two specs' literals are compared. A regeneration therefore shows up as a
+ * visible diff in SIX places (this file and one spec's literals, in each
+ * repo), never as a silent green.
  *
  * To change the list: update BOTH classifiers, regenerate this file in ONE
- * place and copy it to the other, update the digest literal in BOTH specs,
- * and bump the rules version on both sides when what a rule matches changes.
+ * place and copy it to the other, update the digest literals and the file
+ * sha256 literal in BOTH specs, and bump the rules version on both sides when
+ * what a rule matches changes after a release has shipped it.
  *
  * The cases quote real inputs where there are real inputs: the part 24 live
  * probe's Claude Code input previews, the subagent housekeeping the CLI runs
@@ -60,6 +70,36 @@ export interface HardFloorFixtureCase {
   name: string;
   input: HardFloorFixtureInput;
   /** The rule both classifiers must report, or null when neither may match. */
+  ruleId: string | null;
+}
+
+/**
+ * What produced a card string: the Claude Code relay (the plugin's
+ * `permissionCardTool`, from the three inputs in `relay`), or the Codex
+ * daemon (codex-channel-bgos: a file change card's `toolLines`, or a command
+ * card's command text), whose writer lives in neither of these two repos.
+ */
+export type HardFloorFixtureCardWriter =
+  | "claude_relay"
+  | "codex_file_change"
+  | "codex_command";
+
+/** The relay's inputs for one permission request, as `permissionCardTool` takes them. */
+export interface HardFloorFixtureRelayInput {
+  toolName: string;
+  inputPreview: string;
+  floorEvidence?: string;
+}
+
+export interface HardFloorFixtureCardCase {
+  /** Human name for the case, used in test output. Unique, snake case. */
+  name: string;
+  writer: HardFloorFixtureCardWriter;
+  /** For a `claude_relay` card only: what the relay was given. */
+  relay?: HardFloorFixtureRelayInput;
+  /** `approvalMeta.tool`, exactly as the card carries it. */
+  tool: string;
+  /** The rule the server's card reader must stamp, or null for none. */
   ruleId: string | null;
 }
 
@@ -1232,11 +1272,685 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     },
     ruleId: null,
   },
+  {
+    name: "rm_long_prefix_r",
+    input: { kind: "command", command: "rm --r build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rm_long_prefix_rec_with_force",
+    input: { kind: "command", command: "rm --rec -f build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rm_long_prefix_recur",
+    input: { kind: "command", command: "rm --recur build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rm_long_force_is_not_recursive",
+    input: { kind: "command", command: "rm --force build" },
+    ruleId: null,
+  },
+  {
+    name: "rm_double_dash_then_a_file_named_like_a_flag",
+    input: { kind: "command", command: "rm -- --r" },
+    ruleId: null,
+  },
+  {
+    name: "git_push_mirror",
+    input: { kind: "command", command: "git push --mirror backup" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_mirror_abbreviated",
+    input: { kind: "command", command: "git push --mirr backup" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_all_is_not_a_mirror",
+    input: { kind: "command", command: "git push --all origin" },
+    ruleId: null,
+  },
+  {
+    name: "git_push_delete_long",
+    input: { kind: "command", command: "git push --delete origin old-branch" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_delete_short",
+    input: { kind: "command", command: "git push -d origin old-branch" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_delete_abbreviated",
+    input: { kind: "command", command: "git push --dele origin old-branch" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_ambiguous_d_prefix_is_refused_by_git",
+    input: { kind: "command", command: "git push --d origin old-branch" },
+    ruleId: null,
+  },
+  {
+    name: "git_branch_delete_is_not_a_push",
+    input: { kind: "command", command: "git branch --delete old-branch" },
+    ruleId: null,
+  },
+  {
+    name: "git_push_empty_source_refspec",
+    input: { kind: "command", command: "git push origin :old-branch" },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_empty_source_full_ref",
+    input: {
+      kind: "command",
+      command: "git push origin ':refs/heads/old-branch'",
+    },
+    ruleId: "force_push",
+  },
+  {
+    name: "git_push_refspec_with_a_source",
+    input: { kind: "command", command: "git push origin HEAD:main" },
+    ruleId: null,
+  },
+  {
+    name: "git_push_bare_colon_pushes_matching",
+    input: { kind: "command", command: "git push origin :" },
+    ruleId: null,
+  },
+  {
+    name: "git_push_force_with_lease_abbreviated",
+    input: { kind: "command", command: "git push --force-w origin main" },
+    ruleId: "force_push",
+  },
+  {
+    name: "find_delete",
+    input: { kind: "command", command: "find build -delete" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "find_named_files_delete",
+    input: { kind: "command", command: "find . -name '*.log' -delete" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "find_without_delete",
+    input: { kind: "command", command: "find build -name '*.log'" },
+    ruleId: null,
+  },
+  {
+    name: "git_clean_fd",
+    input: { kind: "command", command: "git clean -fd" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "git_clean_xdf_any_order",
+    input: { kind: "command", command: "git clean -xdf" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "git_clean_split_flags",
+    input: { kind: "command", command: "git clean -f -d" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "git_clean_long_force_with_x",
+    input: { kind: "command", command: "git -C app clean --force -x" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "git_clean_ignored_only",
+    input: { kind: "command", command: "git clean -fX" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "git_clean_force_alone_is_files_only",
+    input: { kind: "command", command: "git clean -f" },
+    ruleId: null,
+  },
+  {
+    name: "git_clean_dry_run_of_folders",
+    input: { kind: "command", command: "git clean -nd" },
+    ruleId: null,
+  },
+  {
+    name: "git_clean_exclude_pattern_is_not_a_flag",
+    input: { kind: "command", command: "git clean -f -e -d" },
+    ruleId: null,
+  },
+  {
+    name: "rsync_delete",
+    input: { kind: "command", command: "rsync -a --delete src/ backup/" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rsync_delete_after",
+    input: {
+      kind: "command",
+      command: "rsync -av --delete-after src/ backup/",
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rsync_del_alias",
+    input: { kind: "command", command: "rsync -a --del src/ backup/" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "rsync_without_delete",
+    input: { kind: "command", command: "rsync -av src/ backup/" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_append_env",
+    input: { kind: "command", command: "echo API_KEY=abc >> .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_truncate_env_local",
+    input: { kind: "command", command: "printf 'A=1\\n' > config/.env.local" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_into_git_config",
+    input: { kind: "command", command: "echo '[core]' > .git/config" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "redirect_append_bashrc",
+    input: {
+      kind: "command",
+      command: "echo 'export PATH=$PATH:/opt/x' >> ~/.bashrc",
+    },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "redirect_stderr_into_env",
+    input: { kind: "command", command: "make 2> .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_both_streams_into_env",
+    input: { kind: "command", command: "npm run setup &> .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_heredoc_into_env",
+    input: { kind: "command", command: "cat > .env <<'EOF'\nAPI_KEY=abc\nEOF" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_bare_truncate_env",
+    input: { kind: "command", command: "> .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_inside_bash_lc",
+    input: { kind: "command", command: 'bash -lc "echo API_KEY=abc >> .env"' },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "redirect_before_the_program",
+    input: { kind: "command", command: "> build.log rm -rf build" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_into_envrc_is_not_env",
+    input: { kind: "command", command: "echo x >> .envrc" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_reading_env_is_not_writing",
+    input: { kind: "command", command: "sort < .env" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_stream_dup_is_not_a_file",
+    input: { kind: "command", command: "npm test 2>&1" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_after_a_single_file_rm",
+    input: { kind: "command", command: "rm notes.txt 2>/dev/null" },
+    ruleId: null,
+  },
+  {
+    name: "tee_env",
+    input: { kind: "command", command: "echo A=1 | tee .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "tee_append_bashrc_with_sudo",
+    input: {
+      kind: "command",
+      command: "echo 'alias ll=ls' | sudo tee -a ~/.bashrc",
+    },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "tee_git_hook",
+    input: {
+      kind: "command",
+      command: "cat hook.sh | tee .git/hooks/pre-commit > /dev/null",
+    },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "tee_ordinary_file",
+    input: { kind: "command", command: "npm test | tee test.log" },
+    ruleId: null,
+  },
+  {
+    name: "sed_in_place_env",
+    input: { kind: "command", command: "sed -i 's/DEBUG=0/DEBUG=1/' .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "sed_in_place_backup_suffix",
+    input: { kind: "command", command: "sed -i.bak -e 's/a/b/' ~/.zshrc" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "sed_in_place_bsd_empty_suffix",
+    input: { kind: "command", command: "sed -i '' 's/a/b/' .env.production" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "sed_in_place_long_option",
+    input: { kind: "command", command: "sed --in-place 's/a/b/' .git/config" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "sed_in_place_suffix_e_is_not_a_script",
+    input: { kind: "command", command: "sed -ie 's/a/b/' .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "sed_reading_env",
+    input: { kind: "command", command: "sed -n '1,5p' .env" },
+    ruleId: null,
+  },
+  {
+    name: "sed_in_place_script_names_git",
+    input: { kind: "command", command: "sed -i 's/.git/x/' README.md" },
+    ruleId: null,
+  },
+  {
+    name: "sed_in_place_ordinary_file",
+    input: { kind: "command", command: "sed -i 's/a/b/' src/app.ts" },
+    ruleId: null,
+  },
+  {
+    name: "cp_example_onto_env",
+    input: { kind: "command", command: "cp .env.example .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "cp_env_into_a_folder_is_a_new_env",
+    input: { kind: "command", command: "cp .env deploy/" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "cp_into_home_dot_folder",
+    input: { kind: "command", command: "cp id_ed25519 ~/.ssh/" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "cp_several_sources_into_home",
+    input: { kind: "command", command: "cp .bashrc .profile ~" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "cp_target_directory_git_hooks",
+    input: { kind: "command", command: "cp -t .git/hooks pre-commit" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "cp_with_a_redirect_after_it",
+    input: { kind: "command", command: "cp .env.example .env 2>/dev/null" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "mv_onto_gitconfig",
+    input: { kind: "command", command: "mv /tmp/gitconfig ~/.gitconfig" },
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "mv_into_git_dir",
+    input: { kind: "command", command: "mv pre-commit .git/hooks/pre-commit" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "cp_env_to_a_named_file_reads_it",
+    input: { kind: "command", command: "cp .env backup/env.txt" },
+    ruleId: null,
+  },
+  {
+    name: "mv_ordinary",
+    input: { kind: "command", command: "mv notes.txt docs/notes.txt" },
+    ruleId: null,
+  },
+  {
+    name: "sed_in_place_bsd_empty_suffix_then_a_script_naming_git",
+    input: { kind: "command", command: "sed -i '' 's/.git/x/' README.md" },
+    ruleId: null,
+  },
+  {
+    name: "redirect_does_not_outlive_its_command",
+    input: { kind: "command", command: "echo > $(rm -rf build)" },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "redirect_dup_operator_onto_a_file",
+    input: { kind: "command", command: "npm run setup >& .env" },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "input_redirect_is_not_the_destination",
+    input: {
+      kind: "command",
+      command: "cp hook .git/hooks/pre-commit < /dev/null",
+    },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "cp_powershell_named_destination_onto_env",
+    input: {
+      kind: "command",
+      command: "cp -Path .env.example -Destination .env",
+    },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "cp_powershell_named_destination_elsewhere",
+    input: {
+      kind: "command",
+      command: "cp -Path .env -Destination backup -Force",
+    },
+    ruleId: null,
+  },
+  {
+    name: "mv_powershell_recurse_into_git_dir",
+    input: { kind: "command", command: "mv -Recurse hooks .git/" },
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "cp_powershell_colon_destination_elsewhere",
+    input: { kind: "command", command: "cp .env -Destination:backup" },
+    ruleId: null,
+  },
+  {
+    name: "request_bash_redirect_into_env",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo API_KEY=abc >> .env", "description": "Add the key" }',
+    },
+    ruleId: "env_file_write",
+  },
+  {
+    name: "request_bash_git_clean",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "git clean -fdx", "description": "Remove untracked files" }',
+    },
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "request_bash_cat_env_is_not_a_change",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "cat .env", "description": "Show the env file" }',
+    },
+    ruleId: null,
+  },
+];
+
+/**
+ * THE CARD STRINGS. The server stamps the floor on a request card by reading
+ * its `approvalMeta.tool` (hard-floor-card.ts, `classifyFloorCard`), so what a
+ * writer puts there and what the reader reads are one contract across repos.
+ * The backend's spec runs its card reader over every case; the plugin's test
+ * builds every `claude_relay` case from its `relay` inputs with
+ * `permissionCardTool` and asserts the SAME string, and that its own reading
+ * of those inputs names the same rule. A `codex_*` case is the shape
+ * codex-channel-bgos writes, which the server must read as stated; its writer
+ * is in a third repo that neither suite can see.
+ *
+ * The relay's three shapes: an MCP tool as `<tool_name> <input_preview>` (the
+ * bare name when there is no preview); a held shell command whose match the
+ * card would not show (the preview over the 2000 character cap, or cut in the
+ * middle by the CLI) as the lead line `{"command":"<evidence>"}` above the
+ * preview; anything else as the preview, capped with `...`.
+ */
+export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
+  {
+    name: "card_relay_mcp_name_then_preview",
+    writer: "claude_relay",
+    relay: {
+      toolName: "mcp__gmail__send_email",
+      inputPreview: '{ "to": "kc@example.com", "subject": "Hi" }',
+    },
+    tool: 'mcp__gmail__send_email { "to": "kc@example.com", "subject": "Hi" }',
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "card_relay_mcp_bare_name",
+    writer: "claude_relay",
+    relay: { toolName: "mcp__gmail__reply_to_thread", inputPreview: "" },
+    tool: "mcp__gmail__reply_to_thread",
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "card_relay_mcp_read_tool",
+    writer: "claude_relay",
+    relay: {
+      toolName: "mcp__gmail__search_threads",
+      inputPreview: '{ "q": "from:kc" }',
+    },
+    tool: 'mcp__gmail__search_threads { "q": "from:kc" }',
+    ruleId: null,
+  },
+  {
+    name: "card_relay_mcp_own_channel",
+    writer: "claude_relay",
+    relay: {
+      toolName: "mcp__plugin_hoai_bgos__reply",
+      inputPreview: '{ "chat_id": "7", "text": "done" }',
+    },
+    tool: 'mcp__plugin_hoai_bgos__reply { "chat_id": "7", "text": "done" }',
+    ruleId: null,
+  },
+  {
+    name: "card_relay_shell_short_preview_is_the_card",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "rm -rf doomed", "description": "Remove doomed directory" }',
+      floorEvidence: "rm -rf doomed",
+    },
+    tool: '{ "command": "rm -rf doomed", "description": "Remove doomed directory" }',
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "card_relay_shell_capped_leads_with_evidence",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo ' +
+        "y".repeat(2100) +
+        ' && rm -rf build", "description": "Clean the build" }',
+      floorEvidence: "rm -rf build",
+    },
+    tool:
+      '{"command":"rm -rf build"}\n{ "command": "echo ' +
+      "y".repeat(1951) +
+      "...",
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "card_relay_shell_capped_redirect_leads_with_evidence",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo ' +
+        "y".repeat(2100) +
+        ' && echo API_KEY=abc >> .env", "description": "Add the key" }',
+      floorEvidence: "echo API_KEY=abc >> .env",
+    },
+    tool:
+      '{"command":"echo API_KEY=abc >> .env"}\n{ "command": "echo ' +
+      "y".repeat(1939) +
+      "...",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_relay_shell_capped_without_evidence_is_its_head",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo ' +
+        "y".repeat(2100) +
+        ' && ls", "description": "List" }',
+    },
+    tool: '{ "command": "echo ' + "y".repeat(1978) + "...",
+    ruleId: null,
+  },
+  {
+    name: "card_relay_shell_elided_leads_with_evidence",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Bash",
+      inputPreview:
+        '{ "command": "echo aa\n\u22EF 2600 code points elided \u22EF\necho bb", "description": "d" }',
+      floorEvidence: "git push --force origin main",
+    },
+    tool: '{"command":"git push --force origin main"}\n{ "command": "echo aa\n\u22EF 2600 code points elided \u22EF\necho bb", "description": "d" }',
+    ruleId: "force_push",
+  },
+  {
+    name: "card_relay_bare_shell_name",
+    writer: "claude_relay",
+    relay: { toolName: "Bash", inputPreview: "" },
+    tool: "Bash",
+    ruleId: null,
+  },
+  {
+    name: "card_relay_edit_of_env",
+    writer: "claude_relay",
+    relay: {
+      toolName: "Edit",
+      inputPreview:
+        '{ "file_path": "/srv/app/.env", "old_string": "A=1", "new_string": "A=2", "replace_all": false }',
+    },
+    tool: '{ "file_path": "/srv/app/.env", "old_string": "A=1", "new_string": "A=2", "replace_all": false }',
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_relay_read_of_env",
+    writer: "claude_relay",
+    relay: { toolName: "Read", inputPreview: '{ "file_path": "/srv/app/.env" }' },
+    tool: '{ "file_path": "/srv/app/.env" }',
+    ruleId: null,
+  },
+  {
+    name: "card_codex_add_env",
+    writer: "codex_file_change",
+    tool: ".env (add)",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_codex_update_inside_git",
+    writer: "codex_file_change",
+    tool: "README.md (update)\n.git/info/exclude (update)",
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "card_codex_update_home_settings",
+    writer: "codex_file_change",
+    tool: "~/.gitconfig (update)",
+    ruleId: "home_dotfile_write",
+  },
+  {
+    name: "card_codex_rename_into_env",
+    writer: "codex_file_change",
+    tool: "config/env.example -> .env (rename)",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_codex_rename_into_git",
+    writer: "codex_file_change",
+    tool: "hooks/pre-commit -> .git/hooks/pre-commit (rename)",
+    ruleId: "git_dir_write",
+  },
+  {
+    name: "card_codex_rename_arrow_into_env",
+    writer: "codex_file_change",
+    tool: "env.sample \u2192 .env.local (rename)",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_codex_rename_ordinary",
+    writer: "codex_file_change",
+    tool: "src/old.ts -> src/new.ts (rename)",
+    ruleId: null,
+  },
+  {
+    name: "card_codex_rename_row_naming_only_its_source",
+    writer: "codex_file_change",
+    tool: "config/env.example (rename)",
+    ruleId: null,
+  },
+  {
+    name: "card_codex_list_past_its_cap",
+    writer: "codex_file_change",
+    tool: "src/a.ts (update)\n.env (update)\nand 21 more files",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_codex_ordinary_list_past_its_cap",
+    writer: "codex_file_change",
+    tool: "src/a.ts (update)\nsrc/b.ts (update)\nand 1 more file",
+    ruleId: null,
+  },
+  {
+    name: "card_codex_command_git_clean",
+    writer: "codex_command",
+    tool: "bash -lc 'git clean -fdx'",
+    ruleId: "recursive_delete",
+  },
+  {
+    name: "card_codex_command_redirect_into_env",
+    writer: "codex_command",
+    tool: "/bin/bash -lc 'echo API_KEY=abc >> .env'",
+    ruleId: "env_file_write",
+  },
+  {
+    name: "card_codex_command_harmless",
+    writer: "codex_command",
+    tool: "bash -lc 'git status --short'",
+    ruleId: null,
+  },
 ];
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "9524af5c3f2b10e89775e484f24c7470c6c1719257219cc26bebb933308deb46";
+  "19c12d28cf3cffa382a38927cab05bacc8060dfbdad6e423791c25665f07ddf8";
+
+/** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
+export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
+  "dee81aa8df1f5c008b5af7a4b8ab464ca46d7a56d5e3116693007499cb7dd280";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE_RULES). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_RULES_DIGEST =
