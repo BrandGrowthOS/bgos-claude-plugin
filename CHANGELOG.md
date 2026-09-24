@@ -2,6 +2,42 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.47.0
+
+**The daemon host now HAS the desktop's permission rules, though it does not
+yet ask with them.** Groundwork for moving the gates into the host, which 0.46.0
+named as the follow-up to shipping it ungated.
+
+- **`lib/browser-host-core/` holds byte-identical copies of the BGOS rule tier**
+  (`policy.js` and `settings.js`): what counts as a read, a write, a sensitive
+  action, a credential, a blocked category, and what the owner's grants mean.
+  They are COPIED rather than re-implemented on purpose. Two hand-written
+  copies of a permission policy is how two hosts quietly come to disagree about
+  what is sensitive, and the disagreement surfaces as an agent doing something
+  on one machine that it would have been stopped from doing on another.
+  - They keep their ORIGINAL filenames in a directory of their own, because
+    `settings.js` does `require("./policy")`: a rename breaks that require and
+    a patched require breaks the byte-identity the hash exists to protect.
+  - The nested `package.json` declaring `type: commonjs` is load-bearing, since
+    this package is `type: module`; without it Node reads them as ESM and the
+    host cannot load the rules at all.
+- **Drift is now caught in BOTH directions.** `lib/browser-host-core/vendor.json`
+  pins each file's sha256 and `test/browser-host-core.vendor.test.ts` reads it,
+  following the shim's pattern; and BGOS carries a matching pin, so editing a
+  rule there fails ITS suite until someone re-vendors here. The shim's own
+  vendor test documents that missing second half, and that gap had already
+  shipped a stale copy with a dead relay lane for a round.
+- The vendor test does not stop at hashes: it loads the rules and asks them to
+  decide, so a passing hash is not the only thing proven.
+- `bin/hoai-browser-host.mjs` imports them and exposes `policy` and
+  `hostSettings`. Nothing calls them yet, so behaviour is unchanged.
+
+**Still ungated, and a backend gap is why.** `browser_gate_answer` reaches the
+owner's PERSON room only, deliberately, and a daemon host joins only its
+`browser-host:<assistantId>` room, so it can post a permission card and never
+hear the answer. A host-scoped read has to exist first; until it does, wiring
+the gate here would be a wait that never fires.
+
 ## 0.46.0
 
 **Runs ungated on purpose, by the owner's decision (2026-09-23).** A
