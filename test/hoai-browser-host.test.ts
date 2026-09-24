@@ -244,7 +244,12 @@ test('relay: session tools answer for this host, unknown and never-exposed tools
   assert.match(never.content[0].text, /Unknown tool "browser_cookie_list"/)
   const gate = await call('hoai_browser_wait_gate', { gate_id: 'g1' })
   assert.equal(gate.isError, true)
-  assert.match(gate.content[0].text, /raises no permission gates/)
+  // Was /raises no permission gates/, which pinned the STUB. The host raises
+  // real gates now, so a gate id it never minted is refused as unknown
+  // rather than as unsupported, and the difference matters: an agent that
+  // gets "unknown" knows to ask again, and one told the host has no gates
+  // would conclude its action ran.
+  assert.match(gate.content[0].text, /No permission request "g1" is waiting or held/)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_close_session') } }), /Session closed/)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_close_session') } }), /No session was open/)
   relay.close()
@@ -693,7 +698,7 @@ test(
         assert.equal(post.status, 200)
         assert.equal(post.headers['x-bgos-pairing'], 'tok-e2e')
         assert.equal(post.body.socketId, sock.id)
-        assert.equal(post.body.ok, true, JSON.stringify(post.body))
+        assert.equal(post.body.ok, true, `${JSON.stringify(post.body)}\n--- host log ---\n${logs.join('')}`)
         return post.body.message
       }
       const tool = async (principal: string | undefined, name: string, args: Record<string, unknown> = {}) => {
@@ -712,6 +717,30 @@ test(
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
       assert.equal(list.result.tools.length, 28, 'the desktop roster: 4 session tools and 24 browser_ tools')
 
+      // THE PERMISSION GATE, END TO END, on the real host process.
+      //
+      // This is the half that could not exist before. A host on the agent's
+      // own machine has no pane, so the owner is asked as a CARD in their
+      // chat, and the host learns the answer by ASKING the backend, because
+      // browser_gate_answer only ever reaches the owner's person room. The
+      // owner here answers every card the moment it arrives, which is what
+      // lets the rest of this case be about cookies rather than about
+      // permissions; what each ANSWER does is pinned in browser-gate.test.ts,
+      // and the assertions after the browsing check the cards that were
+      // really posted through a real socket to a real HTTP route.
+      relay.autoAnswer('allow_session')
+
+      // Scripting is OFF by default on this host, exactly as on the desktop
+      // (settings.js allowEvaluate), and browser_evaluate is how this case
+      // reads the cookie. So the owner turns it on for each of the three
+      // profiles, which is also the only coverage that the host READS that
+      // file at all.
+      for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner']) {
+        const dir = browserPathsFor({ agentRoot, assistantId: 900, principal }).profileDir
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, allowEvaluate: true }))
+      }
+
       // Alice signs in (a persistent cookie), and her browser sends it back.
       await tool('user-user_2Alice', 'browser_navigate', { url: `${site.url}/set?v=alice` })
       assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
@@ -726,6 +755,23 @@ test(
       // Alice's browser closes and reopens: her login is on disk, still hers.
       assert.match(await tool('user-user_2Alice', 'hoai_browser_close_session'), /Session closed/)
       assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
+
+      // THE GATE ACTUALLY HAPPENED, through a real socket and a real HTTP
+      // route. Without these the case could pass with permissions switched
+      // off entirely, which is exactly the hole the cards are here to close.
+      assert.ok(relay.gateCards.length >= 1, 'the host must have ASKED the owner before its first visit to a new origin')
+      const first = relay.gateCards[0]!
+      assert.equal(first.assistantId, 900, 'the card names the agent whose browser it is')
+      assert.equal(first.kind, 'navigate', 'a first visit to an origin is a navigate gate')
+      assert.equal(first.origin, site.url, 'the owner is told which site they are being asked about')
+      assert.match(String(first.gateId), /^g_[A-Za-z0-9_-]{4,64}$/, 'the backend DTO refuses any other gate id shape')
+      assert.ok(String(first.socketId).length > 0, 'the card carries the host socket the backend checks it against')
+      assert.ok(Array.isArray(first.choices) && first.choices.includes('deny'), 'the owner must be able to say no')
+      assert.ok(Number(first.waitSeconds) >= 1 && Number(first.waitSeconds) <= 1800, 'waitSeconds must satisfy @Min(1) @Max(1800)')
+      // And the session grant it left behind means the same origin is not
+      // asked about again: three profiles browsed, and the cards are one per
+      // profile and origin rather than one per call.
+      assert.ok(relay.gateCards.length <= 6, `asked ${relay.gateCards.length} times; an allow_session must stop the repeat asks`)
 
       const browserDir = join(agentRoot, '900', 'browser')
       const profiles = readdirSync(browserDir).sort()
@@ -791,9 +837,42 @@ function fakePool() {
   return { pool: new BrowserPool({ agentRoot: ROOT, createEngine: factory }), launched, calls }
 }
 
+/**
+ * A gate that always says yes, for the cases that are about something ELSE.
+ *
+ * These tests are named for profile isolation and for the relay, and since
+ * the host started raising real permission gates a browser_navigate to a new
+ * origin correctly asks the owner first. Handing them a gate that answers
+ * immediately keeps each case testing the thing it is named for. The gate's
+ * OWN behaviour, including that a host which cannot ask refuses rather than
+ * acts, is covered in test/browser-gate.test.ts.
+ */
+function alwaysAllows() {
+  return {
+    pending: () => null,
+    attach: async () => ({ unknown: true }),
+    closeAll: () => {},
+    raise: async ({ action }: { action?: () => unknown }) => ({
+      allowed: true,
+      choice: 'allow_once',
+      ran: action ? Promise.resolve().then(() => action()) : undefined,
+    }),
+  }
+}
+
 function relayOver(pool: any) {
-  const core = new BrowserHostCore({ pool, browserTools: [navigateTool()], deviceLabel: 'test-box' })
+  const core = new BrowserHostCore({ pool, browserTools: [navigateTool()], deviceLabel: 'test-box', gates: alwaysAllows() as never })
   return new RelaySessions({ core, serverInfo: { name: 'hoai-agent-browser', version: '0.0.0' }, instructions: hostInstructions('test-box') })
+}
+
+/** Poll a condition rather than guess a sleep. Throws with what it wanted. */
+async function waitFor(ok: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
+  const until = Date.now() + timeoutMs
+  while (Date.now() < until) {
+    if (ok()) return
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  throw new Error(`timed out waiting for ${what}`)
 }
 
 function textOf(answer: any): string {
