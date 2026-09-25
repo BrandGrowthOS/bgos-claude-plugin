@@ -792,7 +792,13 @@ What the flag turns on, when the backend serves the feature:
 
 **Auto-approve** (`BGOS_AUTO_APPROVE=true`): All tool permissions are automatically approved. Best for trusted environments.
 
-**Interactive** (default, v0.8.0+): Permission prompts appear in the BGOS chat as an inline-button card with **✅ Allow** and **❌ Deny** buttons. Tapping a button resolves the verdict immediately. The legacy text-reply path (`yes <code>` / `no <code>`) still works as a fallback for older clients. 120s timeout auto-denies.
+**Interactive** (default): a tool permission is posted to the BGOS chat as a real approval card, carrying the tool, the command it wants to run, and two buttons: **Allow once** and **Deny**. Tapping one answers the request.
+
+**How long it waits is the owner's choice, not this daemon's.** Every card carries this daemon's offer, `1800` seconds, which is the longest it can hold its side of a request open. The server stores the smaller of that and the per agent wait set for this agent, and the stored number is what the card in your hand counts down. Behind it this daemon keeps a local backstop of that stored wait plus `90` seconds, for the one case the card cannot cover: a server that never answers at all. The old two minute auto deny is gone, because it declared a refusal while the card in the owner's hand was still perfectly tappable.
+
+**The answer is read off the card row itself**, so a tap lands even when the card has scrolled off the chat's newest page and while the daemon is draining for a self update. Typing `yes <code>` or `no <code>` still works as a fallback for clients that do not render buttons, and every dead end (no monitored chat, a card that could not be posted, the backstop) fails closed as a deny.
+
+Permission requests need the matching BGOS backend (the per agent wait clamp and the approval push). The daemon names that dependency in one line at boot; on an older backend a request waits the full offer and sends no device notification.
 
 ## Slash Commands (v0.8.0+)
 
