@@ -21,6 +21,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -875,6 +876,210 @@ test('a correction that would overflow the index is refused', () => {
   const answer = storeOver(fs).replace('memory', 'short', 'y '.repeat(140).trim()) as any
   assert.equal(answer.code, 'over_budget')
   assert.equal(raw.readFile(INDEX), index)
+})
+
+// ── The live round trip (V2): findings F1 and F2 ─────────────────────────────
+//
+// BGOS docs/reports/2026-09-25-memory-box/live-round-trip/README.md ran this
+// store under the real daemon against a real backend. Two things it measured
+// are pinned here, with the seed exactly as that run wrote it
+// (raw/memory-states/S0-seed, sha256 checked below).
+
+const SEED_A = "- [Owner lives on Probe Street](owner-home-address.md) - Owner's home address is 12 Probe Street"
+const SEED_B = '- [Owner wants short bullets](owner-prefers-short-bullets.md) - Owner wants answers in short bullets'
+const SEED_INDEX = ['# Memory index', SEED_A, SEED_B, ''].join('\n')
+const SEED_ADDRESS = [
+  '---',
+  'name: owner-home-address',
+  `description: "Owner's home address is 12 Probe Street"`,
+  'metadata:',
+  '  node_type: memory',
+  '  type: user',
+  '  originSessionId: p7s2-live-seed',
+  '  modified: 2026-09-25T10:00:00.000Z',
+  '---',
+  '',
+  'The owner lives at 12 Probe Street, flat 3. Use it only for deliveries.',
+  '',
+].join('\n')
+const SEED_BULLETS = [
+  '---',
+  'name: owner-prefers-short-bullets',
+  'description: "Owner wants answers in short bullets"',
+  'metadata:',
+  '  node_type: memory',
+  '  type: feedback',
+  '  modified: 2026-09-25T10:00:00.000Z',
+  '---',
+  '',
+  'Keep answers to short bullets, no long paragraphs.',
+  '',
+].join('\n')
+/** The round trip's folder hash (memdump.sh): sha256 of "<file sha256>  <name>\n" per file, names sorted. */
+const SEED_FOLDER_SHA = '7ef2dc15927bebb9192ecbeb5f9a3d4d69d36bba86f46c271aed8dbf13c430fe'
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
+
+function seedFolder(): Record<string, string> {
+  return {
+    [INDEX]: SEED_INDEX,
+    [`${MEM}/owner-home-address.md`]: SEED_ADDRESS,
+    [`${MEM}/owner-prefers-short-bullets.md`]: SEED_BULLETS,
+  }
+}
+
+/** Every file in the memory folder (hidden temp files included), name to bytes. */
+function folderOf(raw: TestFs): Record<string, string> {
+  return Object.fromEntries(filesUnder(raw, MEM).map((k) => [k.slice(MEM.length + 1), raw.readFile(k)!]))
+}
+
+function folderSha(raw: TestFs): string {
+  const folder = folderOf(raw)
+  return sha256(
+    Object.keys(folder)
+      .sort()
+      .map((name) => `${sha256(folder[name])}  ${name}\n`)
+      .join(''),
+  )
+}
+
+function okAnswer(answer: any): any {
+  assert.equal(answer.ok, true, `expected ok, got ${JSON.stringify(answer)}`)
+  return answer
+}
+
+test("the round trip's seed is the one it measured", () => {
+  assert.equal(sha256(SEED_INDEX), 'e27f0ae866f213b33f927912c0c6f31bf5620452c82a822387c31c699dd1c6f8')
+  assert.equal(sha256(SEED_ADDRESS), '5c6860e3a62bf5949cff99749b216ffcb3631537421e2d7e7097a4c2c7020f1c')
+  assert.equal(sha256(SEED_BULLETS), '4140f0478484e208656f4bb33c887807fc3d49afa29d3715966e8ac19633db54')
+  assert.equal(folderSha(harness(seedFolder()).raw), SEED_FOLDER_SHA)
+})
+
+// F1. The owner adds C and removes B in the same store and corrects A. The
+// app's diff pairs "B gone, C came" in one store as ONE change (spec 6.6), so
+// its What changed Undo sends replace(memory, oldText: C, newContent: B). The
+// store found B's note in the trash but wrote it under C's file name and C's
+// line title, so the agent's next start read C, the fact just undone.
+test('the What changed Undo of an add and a remove in one store puts the folder back byte for byte (live round trip F1)', () => {
+  let clock = Date.parse('2026-09-25T10:10:37.000Z')
+  const { fs, raw } = harness(seedFolder())
+  const store = createClaudeMemoryStore({
+    fs,
+    resolve: () => ({ ok: true, memDir: MEM }),
+    trashDir: TRASH,
+    now: () => (clock += 1000),
+  })
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+  okAnswer(store.list())
+  // S1, S2, S3: the owner's three edits, as the round trip sent them.
+  okAnswer(store.add('memory', "The owner's manager is Sara"))
+  const saraNote = raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`)
+  const saraLine = "- [The owner's manager is Sara](the-owner-s-manager-is-sara.md) - The owner's manager is Sara"
+  assert.equal(raw.readFile(INDEX), ['# Memory index', SEED_A, SEED_B, saraLine, ''].join('\n'))
+  okAnswer(store.replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  okAnswer(store.remove('memory', 'Owner wants answers in short bullets'))
+  // U1, U2: the plan the app's diffMemoryStores and undoPlanFor computed
+  // from the S0 and S3 lists (raw/evidence/undo-plan-S0-S3.json).
+  okAnswer(store.replace('user', "Owner's home address is 40 Harbour Road", "Owner's home address is 12 Probe Street"))
+  const undone = okAnswer(store.replace('memory', "The owner's manager is Sara", 'Owner wants answers in short bullets'))
+  assert.deepEqual(texts(undone, 'user'), ["Owner's home address is 12 Probe Street"])
+  assert.deepEqual(texts(undone, 'memory'), ['Owner wants answers in short bullets'])
+  // The folder, not only the list: every file, byte for byte, and no other.
+  assert.deepEqual(folderOf(raw), {
+    'MEMORY.md': SEED_INDEX,
+    'owner-home-address.md': SEED_ADDRESS,
+    'owner-prefers-short-bullets.md': SEED_BULLETS,
+  })
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+  // C's line and note went to the trash, outside the folder, whole.
+  const records = trashNames(raw).map((n) => JSON.parse(raw.readFile(`${TRASH}/${n}`)!))
+  const sara = records.find((r) => r.text === "The owner's manager is Sara")
+  assert.ok(sara, JSON.stringify(records.map((r) => r.text)))
+  assert.equal(sara.target, 'memory')
+  assert.equal(sara.fileName, 'the-owner-s-manager-is-sara.md')
+  assert.equal(sara.fileContent, saraNote)
+  // Line 2: after S3 took B's line the index was heading, A, C.
+  assert.deepEqual(sara.lines, [{ text: saraLine, position: 2 }])
+  assert.ok(!records.some((r) => r.text === 'Owner wants answers in short bullets'), 'the record used by the restore is gone')
+  // And an Undo of that Undo brings C back under its own name and line, B to the trash.
+  okAnswer(store.replace('memory', 'Owner wants answers in short bullets', "The owner's manager is Sara"))
+  assert.deepEqual(folderOf(raw), {
+    'MEMORY.md': ['# Memory index', SEED_A, saraLine, ''].join('\n'),
+    'owner-home-address.md': SEED_ADDRESS,
+    'the-owner-s-manager-is-sara.md': saraNote,
+  })
+})
+
+test('a restore whose note name differs only in case keeps the note where its line points', () => {
+  // On Windows "Tea.md" and "tea.md" are one file: writing the first and then
+  // removing the second would delete the restored note.
+  const old = note('tea-old', 'feedback', 'Likes green tea, no sugar.')
+  const { fs, raw } = harness({
+    [INDEX]: '- [Tea](tea.md) - likes tea\n',
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${TRASH}/000000000000001-000001.json`]: JSON.stringify({
+      at: '2026-09-01T00:00:00.000Z',
+      op: 'remove',
+      target: 'memory',
+      text: 'likes green tea',
+      fileName: 'Tea.md',
+      fileContent: old,
+      lines: [{ text: '- [Tea](Tea.md) - likes green tea', position: 0 }],
+    }),
+  })
+  const answer = okAnswer(storeOver(fs).replace('memory', 'likes tea', 'likes green tea'))
+  assert.deepEqual(texts(answer, 'memory'), ['likes green tea'])
+  assert.equal(raw.readFile(`${MEM}/tea.md`), old)
+  assert.equal(raw.readFile(`${MEM}/Tea.md`), null)
+  assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes green tea\n')
+})
+
+// F2. A correction keeps the line's title (spec 10.6), and the titles this
+// store writes are the first six words of the fact, so the old fact stayed in
+// the line the model reads at start. A title derived from the old words now
+// follows the new words; a title written by hand is kept.
+test('a correction retitles a line whose title this store derived from the fact (live round trip F2, U2)', () => {
+  const { fs, raw } = harness({ [INDEX]: '# Memory index\n' })
+  const store = storeOver(fs)
+  okAnswer(store.add('memory', "The owner's manager is Sara"))
+  const added = raw.readFile(INDEX)
+  const note0 = raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`)
+  assert.equal(
+    added,
+    "# Memory index\n- [The owner's manager is Sara](the-owner-s-manager-is-sara.md) - The owner's manager is Sara\n",
+  )
+  const fixed = okAnswer(store.replace('memory', "The owner's manager is Sara", "The owner's manager is Omar"))
+  assert.deepEqual(texts(fixed, 'memory'), ["The owner's manager is Omar"])
+  assert.equal(
+    raw.readFile(INDEX),
+    "# Memory index\n- [The owner's manager is Omar](the-owner-s-manager-is-sara.md) - The owner's manager is Omar\n",
+  )
+  // The per edit Undo still lands byte for byte.
+  okAnswer(store.replace('memory', "The owner's manager is Omar", "The owner's manager is Sara"))
+  assert.equal(raw.readFile(INDEX), added)
+  assert.equal(raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`), note0)
+})
+
+test('a correction retitles a CLI line whose title is the first words of its fact (live round trip F2, S2)', () => {
+  const { fs, raw } = harness({
+    ...seedFolder(),
+    [INDEX]: `# Memory index\n- [Owner's home address is 12 Probe](owner-home-address.md) ${EM} Owner's home address is 12 Probe Street\n${SEED_B}\n`,
+  })
+  okAnswer(storeOver(fs).replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  assert.equal(
+    raw.readFile(INDEX),
+    `# Memory index\n- [Owner's home address is 40 Harbour](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
+  )
+})
+
+test('a correction keeps a title written by hand (control for F2)', () => {
+  // The round trip's seed title is a label, not the fact's first words.
+  const { fs, raw } = harness(seedFolder())
+  okAnswer(storeOver(fs).replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  assert.equal(
+    raw.readFile(INDEX),
+    `# Memory index\n- [Owner lives on Probe Street](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
+  )
 })
 
 // ── Other writers ────────────────────────────────────────────────────────────

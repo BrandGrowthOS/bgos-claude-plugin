@@ -46,7 +46,10 @@
  * add whose words match a trash record puts the note and its line back where
  * they were; failing that, a note this store listed earlier in this process
  * (the "remembered entries") comes back whole, which is how an Undo restores
- * what the agent removed on its own.
+ * what the agent removed on its own. A replace whose new words come back from
+ * ANOTHER note (the app's What changed Undo of "one fact went, another came")
+ * restores that note under its own name and line, and trashes the entry it
+ * matched, so the folder lands byte for byte (live round trip F1).
  */
 
 import { createHash } from 'node:crypto'
@@ -1008,8 +1011,64 @@ export function createClaudeMemoryStore(deps: {
       )
       const byExact = same || held || exact === hook ? null : restorableFor(target, exact)
       const source = byExact ?? (same || held ? null : restorableFor(target, hook))
+      // A note restored from ANOTHER file is another entry coming back, not
+      // this one's old words (live round trip F1): the app's What changed Undo
+      // pairs "B gone, C came" in one store as one change and sends
+      // replace(C, B). B then comes back as add brings it back, its own note
+      // and its own line where they were, and C's line and note go to the
+      // trash, as remove takes them. Keeping C's name and title here left B's
+      // note in C's file and C's title in the line the model reads. Names are
+      // compared without case: on Windows they are one file.
+      if (source && source.fileName.toLowerCase() !== entry.fileName.toLowerCase()) {
+        const gone: TrashLine[] = []
+        const kept: string[] = []
+        doc.lines.forEach((raw, position) => {
+          if (parseMemoryIndexLine(raw)?.fileName === entry.fileName) {
+            gone.push({ text: raw.replace(/\r$/, ''), position })
+          } else kept.push(raw)
+        })
+        const taken = new Set(entries.map((e) => e.fileName.toLowerCase()))
+        let fileName = source.fileName
+        let files: FileWrite[] = []
+        if (source.fileContent != null) {
+          const existing = fs.readFile(joinPath(memDir, fileName))
+          if (existing == null) files = [{ name: fileName, content: source.fileContent, previous: null }]
+          else if (existing !== source.fileContent) {
+            fileName = freeName(memDir, fileName.replace(/\.md$/i, ''), taken)
+            files = [{ name: fileName, content: source.fileContent, previous: null }]
+          }
+        }
+        const from = `](${source.fileName})`
+        const next = withLines({ ...doc, lines: kept }, source.lines, (text) =>
+          fileName === source.fileName ? text : text.split(from).join(`](${fileName})`),
+        )
+        const index = serializeIndex(next)
+        if (overBudget(index) && bytesOf(index) > bytesOf(serializeIndex(doc))) return fail('over_budget', MSG.full)
+        return {
+          ok: true,
+          trash: {
+            at: isoNow(),
+            op: 'replace',
+            target,
+            text: entry.text,
+            fileName: entry.fileName,
+            fileContent: entry.fileContent,
+            lines: gone,
+          },
+          files,
+          index,
+          removeFiles: entry.fileContent == null ? [] : [entry.fileName],
+          used: source.trashName,
+        }
+      }
       // A note restored by its exact words is listed under them, not their cut.
       const lineHook = byExact ? exact : hook
+      // A title derived from the old words (the first six, as add writes it
+      // and as a CLI line may) follows the new words, or the old fact stays in
+      // the line the model reads at start (live round trip F2). A title
+      // written by hand is kept (spec 10.6).
+      const derived = entry.title === titleOf(entry.text, slugOf(entry.text))
+      const title = !entry.title || derived ? titleOf(lineHook, slugOf(lineHook)) : entry.title
       const content =
         source?.fileContent ??
         rewrittenNote(entry.fileContent, {
@@ -1020,7 +1079,7 @@ export function createClaudeMemoryStore(deps: {
           body: bodyOf(newContent),
         })
       const lines = [...doc.lines]
-      lines[entry.position] = lineFor(entry.title || titleOf(hook, slugOf(hook)), entry.fileName, lineHook)
+      lines[entry.position] = lineFor(title, entry.fileName, lineHook)
       const index = serializeIndex({ ...doc, lines })
       if (overBudget(index) && bytesOf(index) > bytesOf(serializeIndex(doc))) return fail('over_budget', MSG.full)
       return {

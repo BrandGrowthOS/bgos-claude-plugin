@@ -20,6 +20,11 @@ start.
 - **Every change can be undone.** What a change takes away is kept in a trash outside the memory folder (the newest
   50, in this agent's plugin state folder), and adding the same words back restores the whole note where it was. A
   note the agent removed itself comes back whole too, while this daemon still remembers listing it.
+- **The What changed Undo puts the folder back byte for byte.** When the app pairs a fact that went and one that
+  came in the same store as one change, its Undo now brings the gone fact back under its own note and its own line
+  and moves the one that came to the trash, instead of writing the old note under the new fact's name and title. A
+  correction also retitles a line whose title was the first words of the old fact, so the old fact no longer stays
+  in the line the model reads at start; a title written by hand is kept (the HOAI live round trip, F1 and F2).
 - **Safe beside the model.** Every file is written through a temp file and a rename, the note before its line, and the
   index is compared right before it is replaced: a lost race answers busy instead of overwriting the other writer.
   Replace and remove match one entry exactly, never a part of one.
