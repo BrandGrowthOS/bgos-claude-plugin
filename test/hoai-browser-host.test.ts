@@ -101,6 +101,16 @@ const DISTINCT_PRINCIPALS: Array<[string, string]> = [
   ['USER-X', 'user-x'],
   ['con', 'p_con'],
   ['group-7', 'user-7'],
+  // A GROUP is a principal in its own right, not a person (design 9.2: the
+  // backend sends `group-<chatId>` for a room instead of the acting human's
+  // principal). So a group's browser must be its own, separate from the
+  // owner's AND from every member's, or one member's login in a group chat
+  // becomes the group's, and the group's becomes everyone's.
+  ['group-7', 'owner'],
+  ['group-7', 'group-70'],
+  ['group-7', 'user-user_2Alice'],
+  ['group-7', 'GROUP-7'],
+  ['group-a b', 'group-a_b'],
 ]
 
 test('PROFILE ISOLATION: two different principal values never resolve to one profile directory', () => {
@@ -244,7 +254,12 @@ test('relay: session tools answer for this host, unknown and never-exposed tools
   assert.match(never.content[0].text, /Unknown tool "browser_cookie_list"/)
   const gate = await call('hoai_browser_wait_gate', { gate_id: 'g1' })
   assert.equal(gate.isError, true)
-  assert.match(gate.content[0].text, /raises no permission gates/)
+  // Was /raises no permission gates/, which pinned the STUB. The host raises
+  // real gates now, so a gate id it never minted is refused as unknown
+  // rather than as unsupported, and the difference matters: an agent that
+  // gets "unknown" knows to ask again, and one told the host has no gates
+  // would conclude its action ran.
+  assert.match(gate.content[0].text, /No permission request "g1" is waiting or held/)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_close_session') } }), /Session closed/)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_close_session') } }), /No session was open/)
   relay.close()
@@ -315,6 +330,12 @@ test('the host opens one socket per pairing, each listing only its own agents, a
   writeFileSync(join(root, 'credentials-901.json'), JSON.stringify({ backendUrl: relayB.backendUrl, pairingToken: 'tokB', pairingId: 68, assistantId: 901 }))
   const { factory, launched } = fakeEngines()
   const host = new BrowserHost({ agentRoot: root, env: {}, deviceLabel: 'kc-server', browserTools: [navigateTool()], createEngine: factory, rescanMs: 60_000 }).start()
+  // The owner answers, because this case is about SOCKETS and pairings, not
+  // permissions. Without it the browser_navigate below raises a real gate
+  // that nobody answers and the case waits out the whole 60 second park:
+  // correct of the host, and it hit this test's own 60 second timeout.
+  relayA.autoAnswer('allow_session')
+  relayB.autoAnswer('allow_session')
   try {
     const sockA = await relayA.waitForHost()
     const sockB = await relayB.waitForHost()
@@ -693,7 +714,7 @@ test(
         assert.equal(post.status, 200)
         assert.equal(post.headers['x-bgos-pairing'], 'tok-e2e')
         assert.equal(post.body.socketId, sock.id)
-        assert.equal(post.body.ok, true, JSON.stringify(post.body))
+        assert.equal(post.body.ok, true, `${JSON.stringify(post.body)}\n--- host log ---\n${logs.join('')}`)
         return post.body.message
       }
       const tool = async (principal: string | undefined, name: string, args: Record<string, unknown> = {}) => {
@@ -712,6 +733,30 @@ test(
       const list = await rpc('user-user_2Alice', { jsonrpc: '2.0', id: ++id, method: 'tools/list' })
       assert.equal(list.result.tools.length, 28, 'the desktop roster: 4 session tools and 24 browser_ tools')
 
+      // THE PERMISSION GATE, END TO END, on the real host process.
+      //
+      // This is the half that could not exist before. A host on the agent's
+      // own machine has no pane, so the owner is asked as a CARD in their
+      // chat, and the host learns the answer by ASKING the backend, because
+      // browser_gate_answer only ever reaches the owner's person room. The
+      // owner here answers every card the moment it arrives, which is what
+      // lets the rest of this case be about cookies rather than about
+      // permissions; what each ANSWER does is pinned in browser-gate.test.ts,
+      // and the assertions after the browsing check the cards that were
+      // really posted through a real socket to a real HTTP route.
+      relay.autoAnswer('allow_session')
+
+      // Scripting is OFF by default on this host, exactly as on the desktop
+      // (settings.js allowEvaluate), and browser_evaluate is how this case
+      // reads the cookie. So the owner turns it on for each of the three
+      // profiles, which is also the only coverage that the host READS that
+      // file at all.
+      for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner', GROUP]) {
+        const dir = browserPathsFor({ agentRoot, assistantId: 900, principal }).profileDir
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, allowEvaluate: true }))
+      }
+
       // Alice signs in (a persistent cookie), and her browser sends it back.
       await tool('user-user_2Alice', 'browser_navigate', { url: `${site.url}/set?v=alice` })
       assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
@@ -723,13 +768,56 @@ test(
       assert.match(await cookieSeenBy('user-user_2Bob'), /cookie: who=bob/)
       // A frame with no principal is the owner's, a third profile.
       assert.match(await cookieSeenBy(undefined), /cookie: none/)
+      // A GROUP is a fourth, and it is the case design 9.2 turns on: a room's
+      // frame carries `group-<chatId>` INSTEAD of the acting human's
+      // principal, so the group's browsing must be neither the owner's nor
+      // any member's. Alice and Bob are both members here and both signed in
+      // above; the group has seen neither.
+      const groupFirst = await cookieSeenBy(GROUP)
+      assert.match(groupFirst, /cookie: none/, `the group must not inherit a member's login: ${groupFirst}`)
+      assert.doesNotMatch(groupFirst, /alice|bob/)
+      await tool(GROUP, 'browser_navigate', { url: `${site.url}/set?v=team` })
+      assert.match(await cookieSeenBy(GROUP), /cookie: who=team/)
+      // And the group's own login does not leak back to a member or the owner.
+      assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
+      assert.match(await cookieSeenBy(undefined), /cookie: none/)
       // Alice's browser closes and reopens: her login is on disk, still hers.
       assert.match(await tool('user-user_2Alice', 'hoai_browser_close_session'), /Session closed/)
       assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
 
+      // THE GATE ACTUALLY HAPPENED, through a real socket and a real HTTP
+      // route. Without these the case could pass with permissions switched
+      // off entirely, which is exactly the hole the cards are here to close.
+      assert.ok(relay.gateCards.length >= 1, 'the host must have ASKED the owner before its first visit to a new origin')
+      const first = relay.gateCards[0]!
+      assert.equal(first.assistantId, 900, 'the card names the agent whose browser it is')
+      assert.equal(first.kind, 'navigate', 'a first visit to an origin is a navigate gate')
+      assert.equal(first.origin, site.url, 'the owner is told which site they are being asked about')
+      assert.match(String(first.gateId), /^g_[A-Za-z0-9_-]{4,64}$/, 'the backend DTO refuses any other gate id shape')
+      assert.ok(String(first.socketId).length > 0, 'the card carries the host socket the backend checks it against')
+      assert.ok(Array.isArray(first.choices) && first.choices.includes('deny'), 'the owner must be able to say no')
+      assert.ok(Number(first.waitSeconds) >= 1 && Number(first.waitSeconds) <= 1800, 'waitSeconds must satisfy @Min(1) @Max(1800)')
+      // And the session grant it left behind means the same origin is not
+      // asked about again. FOUR profiles browsed this site, and a grant is
+      // per browser AND per gate kind, so the ceiling is two cards each: one
+      // navigate and one evaluate (allow_session on a navigate does not cover
+      // running scripts, which is the whole point of them being separate
+      // kinds). Anything above that is a grant failing to stick; anything at
+      // or below it is the repeat asks being suppressed.
+      const principals = 4
+      assert.ok(
+        relay.gateCards.length <= principals * 2,
+        `asked ${relay.gateCards.length} times for ${principals} profiles; an allow_session must stop the repeat asks`,
+      )
+      // And a floor, so the ceiling cannot pass by nobody being asked at all.
+      assert.ok(relay.gateCards.length >= principals, `only ${relay.gateCards.length} cards for ${principals} profiles; each new browser must ask`)
+      // Each profile asked about the site on its OWN account: a grant that
+      // leaked across profiles would show up as fewer cards than profiles.
+      assert.equal(new Set(relay.gateCards.map((c) => String(c.gateId))).size, relay.gateCards.length, 'every card carries its own gate id')
+
       const browserDir = join(agentRoot, '900', 'browser')
       const profiles = readdirSync(browserDir).sort()
-      assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob')].sort())
+      assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
       for (const p of profiles) assert.ok(existsSync(join(browserDir, p, 'Local State')), `${p} is a real Chrome profile`)
       assert.equal(site.hits.filter((h) => h.includes('who=alice')).length >= 2, true)
     } finally {
@@ -791,9 +879,45 @@ function fakePool() {
   return { pool: new BrowserPool({ agentRoot: ROOT, createEngine: factory }), launched, calls }
 }
 
+/**
+ * A gate that always says yes, for the cases that are about something ELSE.
+ *
+ * These tests are named for profile isolation and for the relay, and since
+ * the host started raising real permission gates a browser_navigate to a new
+ * origin correctly asks the owner first. Handing them a gate that answers
+ * immediately keeps each case testing the thing it is named for. The gate's
+ * OWN behaviour, including that a host which cannot ask refuses rather than
+ * acts, is covered in test/browser-gate.test.ts.
+ */
+function alwaysAllows() {
+  return {
+    pending: () => null,
+    attach: async () => ({ unknown: true }),
+    closeAll: () => {},
+    raise: async ({ action }: { action?: () => unknown }) => ({
+      allowed: true,
+      choice: 'allow_once',
+      ran: action ? Promise.resolve().then(() => action()) : undefined,
+    }),
+  }
+}
+
 function relayOver(pool: any) {
-  const core = new BrowserHostCore({ pool, browserTools: [navigateTool()], deviceLabel: 'test-box' })
+  const core = new BrowserHostCore({ pool, browserTools: [navigateTool()], deviceLabel: 'test-box', gates: alwaysAllows() as never })
   return new RelaySessions({ core, serverInfo: { name: 'hoai-agent-browser', version: '0.0.0' }, instructions: hostInstructions('test-box') })
+}
+
+/** A room's principal, as the backend sends it (browser-principal.ts). */
+const GROUP = 'group-4242'
+
+/** Poll a condition rather than guess a sleep. Throws with what it wanted. */
+async function waitFor(ok: () => boolean, what: string, timeoutMs = 20_000): Promise<void> {
+  const until = Date.now() + timeoutMs
+  while (Date.now() < until) {
+    if (ok()) return
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  throw new Error(`timed out waiting for ${what}`)
 }
 
 function textOf(answer: any): string {

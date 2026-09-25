@@ -164,6 +164,8 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionSetGoalsBody,
+  buildMissionSetGoalsPath,
   buildMissionCompletePath,
   buildMissionFailPath,
   buildMissionProgressPath,
@@ -3613,6 +3615,50 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'set_mission_goals',
+      description:
+        'Write the mini-goals of an OPEN mission that has NONE yet, keeping ' +
+        'the same mission (a /goal mission, or one your owner started, begins ' +
+        'with none). A Keep working card asks for this on a goal-less mission. ' +
+        'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
+        'where done_when is the observable check that proves it. Refused on a ' +
+        'mission that already has goals: tick those instead. Never use ' +
+        'create_mission for this, it would replace the mission. Targets your ' +
+        'active mission unless mission_id is passed. Maps to PUT ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description: '2 to 12 binary goals, each { name, done_when }.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are filling; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
       name: 'complete_mission',
       description:
         'End a mission early, marking it completed even though open ' +
@@ -5253,6 +5299,73 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to tick the mini-goal: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'set_mission_goals': {
+      const built = buildMissionSetGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to write goals for. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionSetGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPut(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Set goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `set_mission_goals: mission #${missionId} now has ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goals written.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to write the mission goals: ${errMsg}` }],
           isError: true,
         }
       }
