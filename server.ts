@@ -95,6 +95,7 @@ import {
 } from './lib/export-pack.js'
 import { UsageTracker } from './lib/usage-report.js'
 import { SessionTranscriptBinder } from './lib/session-binding.js'
+import { AgentSessionLibrary } from './lib/session-library.js'
 import {
   resolveTmuxTarget,
   buildProbeArgs,
@@ -8396,6 +8397,16 @@ async function getVoiceIdentity(
   }
 }
 
+// The Sessions sheet (P6 stage 3, spec 5.7): the sessions in this agent's own
+// folder, read from the SAME project dir the context gauge reads, with the
+// binder's resolved binding flagged Current, so the list and the gauge can
+// never disagree about which session is live. List only: resume and rename
+// answer unsupported in lib/voice-rpc.ts (spec D20).
+const sessionLibrary = new AgentSessionLibrary({
+  projectDir: sessionBinder.projectDirectory,
+  currentName: () => sessionBinder.resolve()?.binding.name ?? null,
+})
+
 const voiceRpc = new VoiceRpcHandler({
   config: {
     openaiApiKey: VOICE_OPENAI_API_KEY,
@@ -8447,6 +8458,9 @@ const voiceRpc = new VoiceRpcHandler({
   // The armed goal case (P6 stage 3): a stop that reached the model pauses
   // the mission a Keep working loop is on, so its Stop hook cannot re prompt.
   onStopDelivered: (chatId) => pauseArmedGoalOnStop(chatId),
+  // list_sessions reads the agent folder; titles and previews that hold a
+  // secret are withheld here, before anything leaves this machine.
+  listSessions: (input) => sessionLibrary.list(input),
   log,
 })
 

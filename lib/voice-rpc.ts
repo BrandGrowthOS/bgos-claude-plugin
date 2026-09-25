@@ -46,6 +46,14 @@
  *             no chatId or the live session is unreachable, result
  *             {stopped:false, supported:false}. Never kills the daemon,
  *             never touches other chats.
+ *   list_sessions → the app's Sessions sheet (P6 stage 3, spec 5.7): the
+ *             sessions in this agent's own folder, from lib/session-library.ts,
+ *             answered {sessions, abilities:{resume:false, rename:false},
+ *             truncated, runtime:'claude-code'}. Titles and previews that
+ *             hold a secret are withheld on this machine, before they leave.
+ *   resume_session, rename_session → a later slice (spec D20): refused with
+ *             the contract's `unsupported`, and the list already says so.
+ *             A Sessions frame is run once per rpcId, even after it answered.
  *
  * Deadline discipline (ported from openclaw-channel-bgos/voice-rpc-handler):
  * the daemon's inner cap must stay UNDER the backend's, because the backend
@@ -56,9 +64,23 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
-import { STOP_CONFIRMATION_COOPERATIVE } from './session-controls-contract.ts'
+import {
+  LIST_SESSIONS,
+  SESSION_OPS,
+  SESSION_QUERY_MAX,
+  SESSIONS_LIST_MAX,
+  STOP_CONFIRMATION_COOPERATIVE,
+  type ListSessionsAnswer,
+  type SessionOp,
+  type SessionRow,
+} from './session-controls-contract.ts'
 
-export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn'
+export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp
+
+/** True for the three Sessions ops the contract file names. */
+function isSessionOp(op: unknown): op is SessionOp {
+  return (SESSION_OPS as readonly unknown[]).includes(op)
+}
 
 export interface VoiceRpcFrame {
   rpcId: string
@@ -88,11 +110,13 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const rpcId = typeof r.rpcId === 'string' ? r.rpcId : ''
+  // The Sessions ops are spelled by the contract file BGOS pins too.
   const op =
     r.op === 'mint' ||
     r.op === 'consult' ||
     r.op === 'dispatch' ||
-    r.op === 'stop_turn'
+    r.op === 'stop_turn' ||
+    isSessionOp(r.op)
       ? r.op
       : null
   if (!rpcId || !op) return null
@@ -356,6 +380,16 @@ export interface VoiceRpcDeps {
    *  or delivered. Fire and forget: it must not throw into the op, and a
    *  throw is logged and swallowed, never a flipped result. */
   onStopDelivered?(chatId: string): void
+  /** The Sessions sheet's list (P6 stage 3, spec 5.7): the sessions in this
+   *  agent's own folder, newest first, at most `limit`, filtered by `query`,
+   *  secrets already withheld (lib/session-library.ts). server.ts builds it
+   *  from the same folder and binding the context gauge reads. Absent, a
+   *  list answers `failed`: never an empty list that would read as "no
+   *  sessions". */
+  listSessions?(input: {
+    query?: string
+    limit: number
+  }): { sessions: SessionRow[]; truncated: boolean }
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -706,6 +740,12 @@ export class VoiceRpcHandler {
    *  is the fresh answer and rides the backend's task-result path so it is
    *  spoken in the call. Same TTL and bound as expiredConsults. */
   private readonly continuations = new Map<string, number>()
+  /** Sessions frames already taken, answered or not (spec 5.4, the Codex
+   *  rpcSeen rule). The backend re-emits a frame once at 1.5 s when its ACK
+   *  has not landed, and a list answers in milliseconds, so the in flight
+   *  guard alone would run it twice and post a second result. Bounded like
+   *  the consult maps. */
+  private readonly sessionRpcsSeen = new Set<string>()
 
   constructor(deps: VoiceRpcDeps) {
     this.deps = deps
@@ -717,6 +757,17 @@ export class VoiceRpcHandler {
     if (this.inFlight.has(frame.rpcId)) {
       this.deps.log(`voice_rpc duplicate frame ignored (rpc=${frame.rpcId})`)
       return
+    }
+    if (isSessionOp(frame.op)) {
+      if (this.sessionRpcsSeen.has(frame.rpcId)) {
+        this.deps.log(`voice_rpc duplicate sessions frame ignored (rpc=${frame.rpcId})`)
+        return
+      }
+      this.sessionRpcsSeen.add(frame.rpcId)
+      if (this.sessionRpcsSeen.size > 200) {
+        const first = this.sessionRpcsSeen.values().next().value
+        if (first !== undefined) this.sessionRpcsSeen.delete(first)
+      }
     }
     this.inFlight.add(frame.rpcId)
     try {
@@ -740,6 +791,17 @@ export class VoiceRpcHandler {
         payload = await this.stopTurn(frame)
       } else if (frame.op === 'dispatch') {
         payload = await this.dispatch(frame)
+      } else if (frame.op === LIST_SESSIONS) {
+        payload = { ...this.listSessions(frame) }
+      } else if (isSessionOp(frame.op)) {
+        // resume_session and rename_session: a later slice (spec D20). The
+        // per agent supervisor reads its pinned session once at start and
+        // cannot be told to switch, and a rename would race the CLI's own
+        // appends to a live transcript. Answered honestly, never faked.
+        throw new VoiceRpcError(
+          'unsupported',
+          'Resuming or renaming a Claude Code session from the app comes in a later update.',
+        )
       } else {
         // Answer loudly so a future backend change fails fast, never silently.
         throw new VoiceRpcError(
@@ -751,7 +813,14 @@ export class VoiceRpcHandler {
       }
       await this.postResult(frame.rpcId, { ok: true, payload })
     } catch (err) {
-      const code = err instanceof VoiceRpcError ? err.code : 'PLUGIN_ERROR'
+      // A Sessions op speaks the contract's refusal codes, so anything that
+      // is not a named refusal there is `failed`.
+      const code =
+        err instanceof VoiceRpcError
+          ? err.code
+          : isSessionOp(frame.op)
+            ? 'failed'
+            : 'PLUGIN_ERROR'
       await this.postResult(frame.rpcId, {
         ok: false,
         error: {
@@ -980,6 +1049,54 @@ export class VoiceRpcHandler {
       )
     }
     return { stopped: true, mode: 'cooperative' }
+  }
+
+  // ── list_sessions (the Sessions sheet, list only) ─────────────────────────
+
+  /**
+   * The sessions in this agent's own folder, for the app's Sessions sheet.
+   * The backend already checked that the caller owns this agent and that the
+   * chat is its main chat; this daemon re-checks that the frame names the
+   * agent it serves, and that the payload is inside the contract's limits.
+   * Resume and rename are off (D19, D20), so the sheet offers neither.
+   * Refusals speak the contract's codes: `invalid` for a frame that is not
+   * ours or a search that is not text or is too long, `failed` for anything
+   * the library could not do.
+   */
+  private listSessions(frame: VoiceRpcFrame): ListSessionsAnswer {
+    if (String(frame.assistantId) !== String(this.deps.config.assistantId)) {
+      throw new VoiceRpcError('invalid', 'This agent does not serve that assistant.')
+    }
+    const raw = frame.payload?.query
+    if (raw !== undefined && raw !== null && typeof raw !== 'string') {
+      throw new VoiceRpcError('invalid', 'A session search must be text.')
+    }
+    const trimmed = typeof raw === 'string' ? raw.trim() : ''
+    // Counted in characters, as the backend's own limit counts them.
+    if (Array.from(trimmed).length > SESSION_QUERY_MAX) {
+      throw new VoiceRpcError(
+        'invalid',
+        `A session search holds at most ${SESSION_QUERY_MAX} characters.`,
+      )
+    }
+    const asked = frame.payload?.limit
+    const limit =
+      typeof asked === 'number' && Number.isInteger(asked) && asked >= 1
+        ? Math.min(asked, SESSIONS_LIST_MAX)
+        : SESSIONS_LIST_MAX
+    if (!this.deps.listSessions) {
+      throw new VoiceRpcError('failed', 'This agent cannot list its sessions here.')
+    }
+    const { sessions, truncated } = this.deps.listSessions({
+      query: trimmed || undefined,
+      limit,
+    })
+    return {
+      sessions,
+      abilities: { resume: false, rename: false },
+      truncated,
+      runtime: 'claude-code',
+    }
   }
 
   // ── dispatch ──────────────────────────────────────────────────────────────
