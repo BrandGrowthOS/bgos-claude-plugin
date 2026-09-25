@@ -27,12 +27,12 @@
  * WHICH TOKENS THIS RELEASE DECLARES. The file names every token the canon
  * gates a Claude Code sentence on. A token must be declared exactly when this
  * release carries the code that keeps its promise, and never before, because
- * declaring it is what makes the canon tell the agent. This release (#142,
- * the permission relay) carries the relay, so it declares permission_card.
- * It does NOT carry the propose_plan tool: plan_card is named in the file
- * but is declared by #150 (feat/p2-plan-card), which stacks on this branch
- * and carries the tool, and this test asserts plan_card is NOT declared here
- * so the canon cannot tell a daemon on this release about a tool it lacks.
+ * declaring it is what makes the canon tell the agent. This release (#150,
+ * the plan card, stacked on #142's permission relay) carries both the relay
+ * and the propose_plan tool with /plan, so it declares BOTH permission_card
+ * and plan_card, and nothing the file names is left to a later release. On
+ * #142 alone this test instead asserts plan_card is NOT declared, because
+ * that release lacks the tool.
  *
  * MUTATION PROOFS (recorded 2026-09-24 on the Windows build box, through the
  * test lock, file restored byte for byte from a pristine copy after each and
@@ -46,9 +46,23 @@
  *     unchanged, and still caught, because the BGOS copy would then differ.
  *  3. lib/declared-capabilities.ts spelling 'permission_card' itself in
  *     place of the imported PERMISSION_CARD -> 1 red: "this release declares
- *     permission_card, from the file, on every host".
+ *     permission_card and plan_card, from the file, on every host" (recorded
+ *     on #142, and again on #150 with 'plan_card' spelled in place of
+ *     PLAN_CARD: see RECORDED ON #150 below).
  * BGOS's pin spec records the same two flips on its copy (2 of 5 red, then 1
  * of 5), so a byte changed on either side alone is red on that side.
+ *
+ * RECORDED ON #150 (after merging #142 in, same lock, same restores):
+ *  1. the PLAN_CARD byte flip -> 6 red here: the digest, the exact list, and
+ *     four declaration pins in test/declared-capabilities.test.ts and
+ *     test/capabilities-fetch-path.test.ts, because this release now DECLARES
+ *     the misspelled token.
+ *  2. the comment byte flip -> 1 red, the digest alone.
+ *  3. lib/declared-capabilities.ts spelling 'plan_card' itself in place of
+ *     PLAN_CARD -> 1 red: "this release declares permission_card and
+ *     plan_card, from the file, on every host".
+ *  4. PLAN_CARD dropped from DECLARED_CAPABILITIES_BASE -> 5 red, among them
+ *     that same case and "the plan card token reaches the fetch too".
  *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
@@ -73,12 +87,13 @@ const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD]
 
-/** Named in the file, NOT declared by this release, and who declares them. */
-const DECLARED_LATER: Readonly<Record<string, string>> = {
-  [PLAN_CARD]: '#150 (feat/p2-plan-card), which carries the propose_plan tool and /plan',
-}
+/**
+ * Named in the file, NOT declared by this release, and who declares them.
+ * Empty from #150 on: #142 listed plan_card here, declared by this branch.
+ */
+const DECLARED_LATER: Readonly<Record<string, string>> = {}
 
 function sha256Of(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -112,7 +127,7 @@ test('every token the file names is either declared by this release or named as 
   }
 })
 
-test('this release declares permission_card, from the file, on every host', () => {
+test('this release declares permission_card and plan_card, from the file, on every host', () => {
   for (const token of DECLARED_BY_THIS_RELEASE) {
     assert.ok(DECLARED_CAPABILITIES_BASE.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE`)
     for (const canInjectGoal of [true, false]) {
@@ -128,7 +143,9 @@ test('this release declares permission_card, from the file, on every host', () =
   assert.match(code, /from '\.\/claude-capability-tokens\.js'/)
 })
 
-test('plan_card is NOT declared by this release: #150 declares it, with the tool it promises', () => {
+test('nothing the file names is left undeclared by this release, and nothing it names as later is declared', () => {
+  assert.deepEqual(Object.keys(DECLARED_LATER), [], 'from #150 on, every token in the file is declared')
+  assert.deepEqual([...DECLARED_BY_THIS_RELEASE], [...CLAUDE_CAPABILITY_TOKENS])
   for (const token of Object.keys(DECLARED_LATER)) {
     for (const canInjectGoal of [true, false]) {
       assert.ok(

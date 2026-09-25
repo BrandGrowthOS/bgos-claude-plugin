@@ -151,7 +151,14 @@ export function getFileCategory(mime: string): string | null {
 
 export const AGENT_VALUE_PREFIX = 'u:'
 export const RESERVED_VALUE_SENTINELS = new Set(['__skip__', '__custom__'])
-export const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:']
+// `plan:` joined this list with the plan card (0.50.0). An agent CAN author a
+// reply button, and a button whose value were the bare string `plan:go` would
+// come back through the same click intake as a real Go ahead on a plan card and
+// be read by the daemon as the owner approving one: the status line cleared,
+// the fast scope released, the session mode reported back to default. Escaping
+// it to `u:plan:go` keeps the agent's own value intact on the way out and makes
+// it unmistakable on the way in.
+export const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:', 'plan:']
 
 export function escapeAgentButtonValue(value: string): string {
   return `${AGENT_VALUE_PREFIX}${value}`
@@ -161,6 +168,37 @@ export function unescapeAgentButtonValue(callbackData: string): string {
   return callbackData.startsWith(AGENT_VALUE_PREFIX)
     ? callbackData.slice(AGENT_VALUE_PREFIX.length)
     : callbackData
+}
+
+/**
+ * The chip colour tiers the backend accepts on a message option
+ * (`default | primary | success | danger`, CreateMessageOptionDto). Named here
+ * rather than inlined because a value outside the set is a 400 on the WHOLE
+ * message, not a dropped field, and a bare array literal in server.ts would not
+ * be traceable to the DTO that enforces it.
+ *
+ * Until 0.50.0 only the two approval builders sent a style and the app dropped
+ * it for an ordinary inline options row anyway, so every agent authored chip
+ * rendered neutral. Both halves changed in the same release.
+ */
+export const REPLY_BUTTON_STYLES: readonly string[] = [
+  'default',
+  'primary',
+  'success',
+  'danger',
+]
+
+/**
+ * The tier an agent asked for, or null.
+ *
+ * An unknown value is DROPPED, never refused. A reply that fails to send
+ * because a chip wanted a colour that does not exist is a worse outcome than a
+ * neutral chip, and neutral is what every app rendered before the tier existed.
+ */
+export function normalizeButtonStyle(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const value = raw.trim().toLowerCase()
+  return REPLY_BUTTON_STYLES.includes(value) ? value : null
 }
 
 export function collidesWithReserved(value: string): boolean {

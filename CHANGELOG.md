@@ -2,6 +2,132 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.50.0 (2026-09-25)
+
+**Renumbered from 0.45.0, then from 0.48.0, at merge.** This release was
+prepared as 0.45.0, then renumbered 0.48.0 when the plugin's main was released
+as 0.46.0 by another program without this work. The permission request card it
+stacks on (prepared as 0.44.1, then 0.47.0) has since shipped as 0.49.0 on top
+of main's 0.48.1, so this ships as 0.50.0, the next free number above it. The
+HOAI canon no longer ties the plan card to a release number: it tells
+propose_plan and the plan card only to a daemon that DECLARES the `plan_card`
+capability (BGOS #1624), which this one now does, so the number is whatever
+release is free when this merges.
+
+- **The agent can now show you its PLAN before it touches anything, and you
+  answer with a button.** `propose_plan` posts a real card into the chat: a
+  title, one line saying how many steps and files, the numbered steps each with
+  the file it touches, a check line, and three buttons, Go ahead, Change the
+  plan and Do not do this. The tool returns immediately and the turn ends; your
+  answer arrives later as an ordinary click and starts a new turn. Nothing
+  parks a watchdog and nothing times out, so a plan answered tomorrow still
+  works.
+  - **Only the person a plan was proposed to can answer it.** A tap on a plan
+    card is bound to that person with the permission card's own rule: a tap
+    that names a different person is refused (the agent is not told to proceed:
+    the chip and the status line stay up, and nothing reaches the agent),
+    while a tap that names nobody, which is every tap on today's backend, is
+    accepted. The
+    person is the one the card was posted for, or the account owner when a
+    restart lost that record. Before this, on a shared assistant, anyone who
+    could see the chat could approve a plan and the agent went to work as if
+    its owner had.
+    The rule holds on every intake: the poll, the boot sweep and the live
+    update stream, which reads the tapper off the raw answer payload (its
+    normalised answer now carries that id as `clickerUserId`; before, it kept
+    only the button fields, so a stamped tap from the wrong person read as
+    unstamped on the stream and was accepted). A refused tap does not re arm
+    the card: the backend records the first answer, so the plan's person then
+    types their answer or the agent proposes again.
+  - **The wait on this channel is a CONVENTION, and everything says so.** Every
+    HOAI agent is launched with permissions skipped and the shipped manifest
+    auto approves, so no tool call is blocked, no hook can stop one, and this
+    plugin cannot prevent an edit one second after a plan is proposed. The card
+    carries `enforced: false`, which is what puts "will propose before it
+    changes anything" on your screen instead of "read only until approved"; the
+    tool description, the `/plan` procedure and the agent instructions each say
+    it in as many words. Codex, which has a real read only mode, sends `true`.
+  - **A revision retires the plan it replaces, in that order, whatever this
+    daemon happens to remember.** Pass `supersedes` and the older card loses
+    its buttons BEFORE the new one is posted, so two live plans never sit in
+    one chat and a tap on the old one cannot approve a plan the agent has
+    withdrawn. When this process still holds the old plan the card also dims
+    and says what replaced it; when it does not (a restart mid wait, or a model
+    naming an older card) the buttons still come off, which is the half that
+    matters.
+  - **Change the plan carries your words, not a button label.** The app sends
+    the typed revision as `custom_text` on the click itself, one stimulus
+    instead of a click plus a message, and the agent reads
+    `Change the plan: <what you typed>`. It arrives under the `__custom__`
+    sentinel rather than `plan:change`, because the chip arms your composer
+    instead of answering, so the daemon reads it off the card it landed on and
+    hands the agent the `plan:change` code every one of its instructions names.
+  - **Your answer settles the wait even if the agent restarted while you were
+    thinking.** The status line beside the agent and the Plan mode chip above
+    your composer are both taken down on any answer, and no longer depend on
+    the daemon still holding the plan in memory. If it was not even running
+    when you tapped, it finds the answer on its next boot and acts on it once.
+  - **Where a tap lands fast, and where it does not.** A click reaches this
+    plugin on the poll and nowhere else, so a chat with an open plan is polled
+    every two seconds for thirty minutes. A tap inside that window lands in
+    seconds; a later one arrives on the five minute sweep. That is the honest
+    trade rather than pinning a chat at two seconds for a plan nobody may
+    answer until tomorrow.
+  - **A button an agent wrote can never be read as a plan answer.** Every agent
+    authored button value is namespaced on the way out, and the plan
+    classification now happens before that namespace is stripped, so a reply
+    button whose value happens to start `plan:` is an ordinary button both
+    ways.
+- **`/plan` is a real command now, with a procedure behind it.** It reaches the
+  model as an actionable directive whose first step is `propose_plan`, and the
+  daemon arms a verifier when it delivers one: cancelled by the first
+  `propose_plan` call, fired by the turn's Stop hook when the turn ended without
+  a plan, and by a five minute timer where the hook rail is not installed. If no
+  plan came, you get one line saying so instead of silence. Typing `/plan` at an
+  agent that is ALREADY WORKING no longer fires it early: the verifier only
+  answers to the end of a turn that began after you asked, so the turn already
+  in flight can finish without taking your chip down and telling you no plan
+  arrived seconds after you asked for one.
+- **The Plan mode chip, and its close.** The daemon reports the chat's session
+  mode (`plan` when it delivers a `/plan`, `default` when the plan is answered
+  or you close the chip) so the app can draw the chip above the composer. The
+  close arrives as `/code` and is answered by the daemon, never handed to the
+  model, which would otherwise have told you your own close button was
+  unavailable.
+- **The owner's plan level reaches the agent on every transport.** The per agent
+  setting ("Only when I ask", "For bigger or risky jobs", "Always before it
+  changes anything") rides the inbound envelope as a labelled sentence and is
+  rendered into the turn the model reads, on the poll, the stream and the
+  socket alike. The daemon never reads the setting itself: the server decides,
+  the daemon renders what it is handed.
+  - **The poll rail gets it from the socket, because the poll route does not
+    carry it.** The backend puts the level on the socket event and on the agent
+    update stream. The chat history route this daemon polls is the app's own
+    projection and has no such field, so the poll read nothing on every delivery
+    and an owner on "Always" got an agent planning at the default for every turn
+    the poll won, which during a plan wait is most of them. The daemon now
+    remembers what the last carrying rail said, absence included, and the poll
+    answers from that. A level the owner turns back DOWN therefore stops on the
+    next socket delivery rather than lingering.
+- **Reply buttons can ask for a colour.** `reply`'s `buttons[]` gains an
+  optional `style` (`default | primary | success | danger`). An unknown value is
+  dropped rather than refused, because losing a whole message over a colour is
+  the wrong trade. Until now only approval cards sent a tier and every agent
+  authored chip rendered neutral.
+- **Fixed: the agent instructions advertised `/clear` and `/cost`.** Both were
+  removed from the catalog on 2026-08-30, because nothing here can reset a
+  context window or read client side accounting, so the model was being handed
+  two commands that come back unavailable. The instructions now say that
+  plainly.
+- **Hardened: `plan:` is a reserved button namespace.** An agent authored reply
+  button whose value was `plan:go` would have come back through the same intake
+  as a real approval on a plan card. It is now escaped like any other agent
+  value.
+- **This daemon declares `plan_card`.** On every heartbeat and on the
+  capabilities fetch at connect, on every host, because `propose_plan` is a
+  typed tool with no platform limit. It is what tells the canon to describe
+  the tool and the card to this agent.
+
 ## 0.49.0 (2026-09-25)
 
 **Renumbered from 0.44.1, then from 0.47.0, at merge.** This release was

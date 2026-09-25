@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The six tokens, and what each one PROMISES the owner:
+ * The seven tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -72,6 +72,15 @@
  *                       by version: a release number cannot be reserved in
  *                       this repo, so a floor naming one would promise the
  *                       card to whichever release happened to take it.
+ *   plan_card           this daemon has the propose_plan tool and posts the
+ *                       plan card (an `event` row whose payload kind is
+ *                       `plan_card`, with Go ahead, Change the plan and Do
+ *                       not do this) in the owner's agent chat (0.50.0,
+ *                       lib/plan-card.ts). Every host: it is a typed MCP tool
+ *                       with no platform limit. Gated exactly like
+ *                       permission_card: the backend tells the canon's plan
+ *                       card sentences only to a connection that declares
+ *                       this token, never by version.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -80,16 +89,16 @@
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
  *
- * The canon gated tokens (permission_card, and plan_card once the plan card
- * ships) are NOT spelled here. They come from lib/claude-capability-tokens.ts,
- * a byte-for-byte copy of the BGOS file the canon gates on
+ * The canon gated tokens (permission_card and plan_card) are NOT spelled
+ * here. They come from lib/claude-capability-tokens.ts, a byte-for-byte copy
+ * of the BGOS file the canon gates on
  * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
  * repos pin in a test (here test/claude-capability-tokens.pin.test.ts), so a
  * token renamed on one side only turns that side red instead of leaving the
  * agent silently untold.
  */
 
-import { PERMISSION_CARD } from './claude-capability-tokens.js'
+import { PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 
 /** Declared wherever this plugin runs, on every host. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -97,6 +106,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_goal_checks',
   'mission_set_goals',
   PERMISSION_CARD,
+  PLAN_CARD,
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */

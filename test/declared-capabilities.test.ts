@@ -86,7 +86,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card'],
   )
 })
 
@@ -118,10 +118,32 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_goal_checks',
       'mission_set_goals',
       'permission_card',
+      'plan_card',
       'mission_goal_loop',
       'mission_pause',
     ],
   )
+})
+
+/**
+ * plan_card (0.50.0, the propose_plan tool and its card).
+ *
+ * The BGOS canon tells an agent about propose_plan and the plan card only
+ * when its daemon declares this token, with no version floor (BGOS #1624):
+ * drop it and an agent that HAS the tool is never told how to use it.
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): removed 'plan_card' from DECLARED_CAPABILITIES_BASE -> five
+ * red: this test, the read half pin above, the permission_card case's full pin,
+ * test/version-heartbeat.test.ts's "what rides the beat" and
+ * test/capabilities-fetch-path.test.ts's "the plan card token reaches the
+ * fetch" fail.
+ */
+test('plan_card is declared on every host, because propose_plan is a typed tool with no platform limit', () => {
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('plan_card'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('plan_card'))
 })
 
 test('no token is declared twice, on either host', () => {
