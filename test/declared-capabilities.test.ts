@@ -69,6 +69,15 @@ test('the goal loop and the pause are declared ONLY where the daemon can type', 
   assert.ok(canType.includes('mission_pause'))
 })
 
+test('mission_set_goals is declared on every host: set_mission_goals is a plain tool call', () => {
+  // A Keep working wake on a mission with NO goals asks the agent to write
+  // them, and the backend only arms that wake for a daemon declaring this. The
+  // tool is an HTTP write the model makes itself, so no tmux is needed.
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('mission_set_goals'))
+  }
+})
+
 test('a host that cannot type declares the READ half only', () => {
   // The Windows case, and a Mac or Linux host whose CLI is not in a tmux pane.
   // Arming a goal is the injector and nothing else, and a pause this daemon
@@ -77,12 +86,12 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'boards_playbook', 'boards_playbook_does'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'boards_playbook', 'boards_playbook_does'],
   )
 })
 
 /**
- * boards_playbook (0.45.0, Kanban phase 1).
+ * boards_playbook (0.50.0, Kanban phase 1).
  *
  * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
  * restored): moved 'boards_playbook' from DECLARED_CAPABILITIES_BASE into
@@ -103,6 +112,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
     [
       'mission_events',
       'mission_goal_checks',
+      'mission_set_goals',
       'boards_playbook',
       'boards_playbook_does',
       'mission_goal_loop',
@@ -112,7 +122,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
 })
 
 /**
- * boards_playbook_does (0.50.0, Kanban phase 2).
+ * boards_playbook_does (0.51.0, Kanban phase 2).
  *
  * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
  * restored): moved 'boards_playbook_does' from DECLARED_CAPABILITIES_BASE into

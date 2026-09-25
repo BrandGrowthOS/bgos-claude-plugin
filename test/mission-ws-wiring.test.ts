@@ -88,7 +88,7 @@ test('every mission handler hands the frame to the one function that cannot thro
 })
 
 test('each mission tool case stamps its own write, so the echo can never start', () => {
-  const cases = ['create_mission', 'tick_mini_goal', 'complete_mission']
+  const cases = ['create_mission', 'tick_mini_goal', 'complete_mission', 'set_mission_goals']
   for (let i = 0; i < cases.length; i++) {
     const start = server.indexOf(`case '${cases[i]}': {`)
     assert.ok(start > 0, `${cases[i]} case not found`)
@@ -108,14 +108,14 @@ test('the writing tools stamp the mission BEFORE the request, not after the answ
   // model is told its owner marked done the mission it had just ticked shut.
   // An explicit mission_id is not required for the stamp: both tools resolve a
   // mission id before they write, which is exactly what the stamp is keyed on.
-  for (const tool of ['tick_mini_goal', 'complete_mission']) {
+  for (const tool of ['tick_mini_goal', 'complete_mission', 'set_mission_goals']) {
     const start = server.indexOf(`case '${tool}': {`)
     assert.ok(start > 0, `${tool} case not found`)
     const nextCase = server.indexOf("\n    case '", start + 10)
     const bodyText = server.slice(start, nextCase > 0 ? nextCase : start + 6000)
 
     const stamp = bodyText.indexOf('noteMissionPendingSelfWrite(')
-    const request = bodyText.indexOf('await bgosPatch(')
+    const request = bodyText.search(/await bgos(Patch|Put)\(/)
     assert.ok(stamp > 0, `${tool} must stamp the mission before it writes it`)
     assert.ok(request > 0, `${tool} request call not found`)
     assert.ok(
@@ -191,7 +191,7 @@ test('the implicit mission chat goes through the pure rule, never straight to th
   // still green while resolveMissionToolChat sits in the file uncalled and the
   // cases pick monitoredChatIds[0] inline, which is the one shape this test
   // exists to forbid, so the call sites are pinned here rather than assumed.
-  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission']) {
+  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission', 'set_mission_goals']) {
     const at = server.indexOf(`case '${tool}': {`)
     assert.ok(at > 0, `${tool} case not found`)
     const nextCase = server.indexOf("\n    case '", at + 10)
@@ -207,7 +207,7 @@ test('the mission tools accept an optional chat, and it stays optional', () => {
   // Making chat_id required would break every 0.40.0-era prompt habit and
   // every single-chat agent, and an omitted chat is DEFINED to mean the main
   // chat.
-  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission']) {
+  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission', 'set_mission_goals']) {
     const at = server.indexOf(`name: '${tool}',`)
     assert.ok(at > 0, `${tool} declaration not found`)
     const end = server.indexOf("    {\n      name: '", at)

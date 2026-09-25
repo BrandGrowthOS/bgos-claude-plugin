@@ -33,6 +33,8 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionSetGoalsBody,
+  buildMissionSetGoalsPath,
   buildMissionCompletePath,
   MISSION_VERDICT_REASON_MAX,
   MISSION_FEED_TEXT_MAX,
@@ -423,4 +425,50 @@ test('summary: completed mission says so and has no next goal', () => {
   )
   assert.match(s, /completed/i)
   assert.doesNotMatch(s, /Next:/)
+})
+
+// ── set_mission_goals: the agent writes the goals of an EMPTY mission ──────
+// PUT integrations/assistants/:id/missions/:missionId/goals { miniGoals }
+// The pairing family (like the goal lane's /stopped): goals are the agent's
+// own promise. Same bounds and row shape as a create's goals.
+
+test('set goals body: same goals shape and bounds as create, and nothing else on the wire', () => {
+  const r = buildMissionSetGoalsBody({
+    mini_goals: [
+      { name: ' Draft ', done_when: ' a draft exists ' },
+      { name: 'Ship', doneWhen: 'it is live' },
+    ],
+  })
+  assert.deepEqual(r, {
+    ok: true,
+    body: {
+      miniGoals: [
+        { name: 'Draft', doneWhen: 'a draft exists' },
+        { name: 'Ship', doneWhen: 'it is live' },
+      ],
+    },
+  })
+})
+
+test('set goals body: refuses too few, too many, and a goal with no check', () => {
+  const goal = { name: 'Ship', done_when: 'it is live' }
+  for (const mini_goals of [
+    undefined,
+    [],
+    [goal],
+    Array(MISSION_MAX_GOALS + 1).fill(goal),
+    [goal, { name: 'Draft' }],
+  ]) {
+    const r = buildMissionSetGoalsBody({ mini_goals })
+    assert.equal(r.ok, false, JSON.stringify(mini_goals)?.slice(0, 60))
+  }
+})
+
+test('set goals path: the pairing family, PUT .../goals', () => {
+  assert.deepEqual(buildMissionSetGoalsPath('873', 42), {
+    ok: true,
+    path: 'integrations/assistants/873/missions/42/goals',
+  })
+  assert.equal(buildMissionSetGoalsPath('873', 0).ok, false)
+  assert.equal(buildMissionSetGoalsPath('x', 42).ok, false)
 })

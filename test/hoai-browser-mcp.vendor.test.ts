@@ -129,6 +129,8 @@ test(
         : `HOAI_BROWSER_SHIM_SOURCE points at ${source}, which does not exist on this machine`,
   },
   () => {
+    // bun's node:test ignores the skip option and runs the body; this is the same skip.
+    if (!sourceReadable) return
     const expected = pin().sha256
     assert.equal(
       sha256(source),

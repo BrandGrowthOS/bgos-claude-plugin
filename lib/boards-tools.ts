@@ -120,7 +120,7 @@ const SCHEMA_OPS = [
   'delete_field',
   'set_description',
   'set_options',
-  // Kanban phase 1 (0.45.0): what each column of a workflow select means.
+  // Kanban phase 1 (0.50.0): what each column of a workflow select means.
   'set_column_lines',
   'move_field',
   // Multi-table boards: the table lifecycle, folded under update_schema so the
@@ -147,7 +147,7 @@ const LINE_KEYS = ['means', 'waits_on', 'rest', 'sort_by', 'answers', 'does'] as
 const ANSWER_KEYS = ['label', 'move_to', 'ask_note'] as const
 const SORT_BY_KEYS = ['field_key', 'dir'] as const
 const RENAME_KEYS = ['from', 'to'] as const
-// A line's instruction part (0.50.0, Kanban phase 2). Snake case in; the wire
+// A line's instruction part (0.51.0, Kanban phase 2). Snake case in; the wire
 // is the server's camel case, rebuilt key by key. The server's own keys
 // (`approved`, `textHash`, `v`) and the owner's `paused` are not here, so the
 // closed schema refuses them by name.
@@ -1242,7 +1242,7 @@ function strayFail(tool: string, where: string, strays: string[], allowed: reado
 }
 
 /**
- * A line's instruction part (0.50.0, Kanban phase 2), snake case in, the
+ * A line's instruction part (0.51.0, Kanban phase 2), snake case in, the
  * server's camel case out, rebuilt key by key from a closed schema. The shape
  * and the enums are checked here: a stray key (the server's `approved`,
  * `textHash` and `v`, or the owner's `paused`, included), a wrong type, a
@@ -1583,7 +1583,7 @@ function readOptionRenames(
  * changes directly), so the answer says that too rather than "keeps its
  * current setting" about words that changed.
  *
- * The instruction part (0.50.0, Kanban phase 2). A server with it also
+ * The instruction part (0.51.0, Kanban phase 2). A server with it also
  * answers `suggested` (the options whose `does` it filed as a suggestion the
  * owner approves word for word in the app, filed now or already) and, when
  * any, `declined` (the options whose words the owner already turned down,
