@@ -164,6 +164,8 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionSetGoalsBody,
+  buildMissionSetGoalsPath,
   buildMissionCompletePath,
   buildMissionFailPath,
   buildMissionProgressPath,
@@ -290,6 +292,7 @@ import {
   formatPassiveBanner,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
+import { startBrowserHostSupervisor, type BrowserHostSupervisor } from './lib/browser-host-supervisor.js'
 import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
 import {
@@ -585,6 +588,9 @@ const LOG_FILE = resolveLogPath({
 ensureLogDir(LOG_FILE)
 
 let selfUpdater: SelfUpdater | null = null
+// This machine's browser host for this daemon's pairing (started in main, see
+// lib/browser-host-supervisor.ts); stopped by shutdown() and the exit hook.
+let browserHost: BrowserHostSupervisor | null = null
 // The heartbeat handle, once armed in main (pairing mode only): the
 // update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
 // the backend immediately instead of on the next 6h tick.
@@ -3312,6 +3318,50 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'set_mission_goals',
+      description:
+        'Write the mini-goals of an OPEN mission that has NONE yet, keeping ' +
+        'the same mission (a /goal mission, or one your owner started, begins ' +
+        'with none). A Keep working card asks for this on a goal-less mission. ' +
+        'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
+        'where done_when is the observable check that proves it. Refused on a ' +
+        'mission that already has goals: tick those instead. Never use ' +
+        'create_mission for this, it would replace the mission. Targets your ' +
+        'active mission unless mission_id is passed. Maps to PUT ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description: '2 to 12 binary goals, each { name, done_when }.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are filling; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
       name: 'complete_mission',
       description:
         'End a mission early, marking it completed even though open ' +
@@ -4952,6 +5002,73 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to tick the mini-goal: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'set_mission_goals': {
+      const built = buildMissionSetGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to write goals for. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionSetGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPut(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Set goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `set_mission_goals: mission #${missionId} now has ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goals written.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to write the mission goals: ${errMsg}` }],
           isError: true,
         }
       }
@@ -10843,6 +10960,7 @@ async function main(): Promise<void> {
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
     process.exit(code)
   }
   // Sync backstop for any exit that did NOT route through shutdown() (a natural
@@ -10853,6 +10971,7 @@ async function main(): Promise<void> {
     stopHookIntake()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    browserHost?.stop()
   })
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -10933,6 +11052,30 @@ async function main(): Promise<void> {
       flushChatCursors()
     } catch {}
     process.exit(1)
+  })
+
+  // ── This machine's browser host for this pairing ──────────────────────────
+  // Started on every paired daemon, with no flag to remember: the backend
+  // elects an agent host ONLY for an agent whose browser placement is
+  // `daemon` (agent-browser-relay.service.ts :690 and :786), so a
+  // desktop-placed agent's host never receives a frame, and Chromium and
+  // playwright-core load only on the first frame, so an idle host is one node
+  // process holding one socket. One host per
+  // pairing on the machine (a per-pairing lib/pairing-lock.ts lock), stdio
+  // detached, stopped by shutdown() and the exit hook above, and it can never
+  // take this daemon down. HOAI_BROWSER_HOST=off skips it entirely.
+  browserHost = startBrowserHostSupervisor({
+    env: process.env,
+    auth: AUTH,
+    agentRoot: pathDirname(DEFAULT_CREDENTIALS_FILE),
+    hostScript: pathJoin(PLUGIN_ROOT, 'bin', 'hoai-browser-host.mjs'),
+    nodePath: resolveNodePath({
+      env: process.env,
+      platform: process.platform,
+      execPath: process.execPath,
+      exists: existsSync,
+    }),
+    log,
   })
 
   // ── Single-instance pairing lock (0.38.6, board 01a05185) ──────────────────

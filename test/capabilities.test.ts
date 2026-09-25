@@ -130,7 +130,7 @@ test('the fallback stays free of dashes, because it is injected into a prompt', 
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
 })
 
-// \u2500\u2500 The canon fetch path (0.45.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 The canon fetch path (0.50.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 //
 // The backend serves the column lines sentence only to a connection that
 // declares boards_playbook, and the fetch at connect can run before the first
@@ -153,33 +153,34 @@ test('the fallback stays free of dashes, because it is injected into a prompt', 
 
 test('the fetch path carries the channel, the version and the declared list', () => {
   assert.equal(
-    capabilitiesFetchPath('0.45.0', ['mission_events', 'boards_playbook']),
-    'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=mission_events%2Cboards_playbook',
+    capabilitiesFetchPath('0.50.0', ['mission_events', 'boards_playbook']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.50.0&capabilities=mission_events%2Cboards_playbook',
   )
 })
 
 test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
-  const path = capabilitiesFetchPath('0.45.0', declaredCapabilities({ canInjectGoal: false }))
+  const path = capabilitiesFetchPath('0.50.0', declaredCapabilities({ canInjectGoal: false }))
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   assert.equal(query.get('channel'), 'claude')
-  assert.equal(query.get('daemonVersion'), '0.45.0')
+  assert.equal(query.get('daemonVersion'), '0.50.0')
   assert.deepEqual(query.get('capabilities')!.split(','), [
     'mission_events',
     'mission_goal_checks',
+    'mission_set_goals',
     'boards_playbook',
   ])
 })
 
 test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
   assert.ok(
-    capabilitiesFetchPath('0.45.0-rc.1+build 7', ['boards_playbook']).includes(
-      'daemonVersion=0.45.0-rc.1%2Bbuild%207&',
+    capabilitiesFetchPath('0.50.0-rc.1+build 7', ['boards_playbook']).includes(
+      'daemonVersion=0.50.0-rc.1%2Bbuild%207&',
     ),
   )
   assert.ok(capabilitiesFetchPath(null, ['boards_playbook']).includes('daemonVersion=0.0.0&'))
 })
 
-test('an empty declaration sends no capabilities key, exactly the pre 0.45.0 path', () => {
+test('an empty declaration sends no capabilities key, exactly the pre 0.50.0 path', () => {
   assert.equal(
     capabilitiesFetchPath('0.44.0', []),
     'integrations/capabilities?channel=claude&daemonVersion=0.44.0',
@@ -188,11 +189,11 @@ test('an empty declaration sends no capabilities key, exactly the pre 0.45.0 pat
 
 test('a malformed token is dropped rather than costing the whole canon, and the list is capped at 32', () => {
   assert.equal(
-    capabilitiesFetchPath('0.45.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
-    'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=boards_playbook',
+    capabilitiesFetchPath('0.50.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.50.0&capabilities=boards_playbook',
   )
   const many = Array.from({ length: 40 }, (_, i) => `cap_${i}`)
-  const path = capabilitiesFetchPath('0.45.0', many)
+  const path = capabilitiesFetchPath('0.50.0', many)
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   const sent = query.get('capabilities')!.split(',')
   assert.equal(sent.length, 32)
@@ -203,7 +204,7 @@ test('a malformed token is dropped rather than costing the whole canon, and the 
 // The ONE caller (W1 close 2, review T4). Every case above tests the pure
 // helper; the call that runs it at boot is in server.ts, which no pure test
 // imports. A merge that takes the 0.44.0 template back (plugin PRs that touch
-// server.ts may land first) would pass all of them and leave every 0.45.0
+// server.ts may land first) would pass all of them and leave every 0.50.0
 // daemon untold on its first boot, so the call is pinned as a source
 // contract, the house style for server.ts behaviour
 // (test/startup-reaches-poll.test.ts).

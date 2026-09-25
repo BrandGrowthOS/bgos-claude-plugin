@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.45.0 (2026-09-22)
+## 0.50.0 (2026-09-25)
 
 - **An agent can say what each column of a board means.** A board's workflow
   select is the one the Kanban stacks by, and until now its columns were bare
@@ -50,6 +50,188 @@ Notable changes to the HOAI Claude Code plugin.
   - **Nothing here is new for agents that do not describe columns.** Every
     other op, argument and answer of the board tools is exactly as it was,
     and the tool roster is still the same twelve.
+
+## 0.48.1
+
+**An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**
+The browser tools' presence probe asked the backend for the browser host WITHOUT naming the agent, so the backend
+answered for the owner's desktop alone. With that app closed, every browser call from an agent placed on its own
+machine was refused as host offline, which is exactly the case the placement exists for (HOAI mission 25 goal 6).
+The probe now sends the agent's id, and the backend answers with the agent's own host when the owner placed it
+there. Re-vendored from HOAI's shim (BGOS #1642); bin/hoai-browser-mcp.mjs hashes to the pin, aaaff4b6.
+
+## 0.48.0
+
+**set_mission_goals: the agent writes the goals of a mission that has none.**
+Every /goal mission, and every mission an owner starts from the app, begins
+with no mini goals. Keep working ON now wakes the agent about every 30 minutes
+while a goal is unticked (HOAI #1635), and on a goal-less mission that wake
+asks the agent to write its goals first (KC, 2026-09-24).
+
+- **New tool `set_mission_goals`** (`mini_goals`, optional `mission_id` and
+  `chat_id`): `PUT integrations/assistants/:id/missions/:missionId/goals`. It
+  writes 2 to 12 `{ name, done_when }` goals into the OPEN mission that has
+  NONE, and keeps the same mission, so its Keep working switch and wake stay
+  with it. `create_mission` would have replaced it. A mission that already has
+  goals is refused: tick those instead. It validates goals with the same rule
+  as `create_mission`, now shared, so the two can never disagree.
+- **Declares `mission_set_goals` on every host.** The backend arms the
+  goal-less Keep working wake only for a daemon declaring it, so an agent is
+  never woken every 30 minutes to do something it has no tool for. It is a
+  plain HTTP write, so unlike the goal loop it needs no tmux.
+
+## 0.47.1
+
+**The agent's own browser asks its owner, as a card, and waits.** 0.46.0 shipped
+that browser UNGATED and named the gates as the follow-up; this is it. The
+0.47.0 entry below was written when only the rules had landed and said the host
+"does not yet ask with them". It does now, so that heading is folded into this
+one rather than left to read as the shipped state of something it describes
+half of. 0.47.0 was never released.
+
+- **Permission gates, using the desktop's rules.** Every browser_ call is
+  classified and decided by the vendored `policy.js`, so an agent is judged by
+  the same rules wherever its browser runs. A new site, any write on one, a
+  download, an upload, running scripts and every sensitive action is asked
+  about; a password or a code is never remembered by any answer.
+- **The card is the only surface, and it is posted immediately.** The desktop
+  opens a gate as a strip with a 60 second countdown and only PARKS an
+  unanswered one into the owner's chat. There is no pane on the agent's
+  machine and nobody is sitting at it, so there is no strip: the card goes to
+  the owner's chat with that agent the moment the gate is raised.
+- **The host ASKS what the owner answered**, on `GET /api/v1/browser/gate/:gateId`.
+  `browser_gate_answer` is emitted to the owner's person room and never to an
+  agent socket, and this host joins only `browser-host:<assistantId>`, so it
+  could otherwise post a card and then wait out the whole park for a frame that
+  cannot reach it. The read is scoped to the account AND to the assistant the
+  host serves, so a host serving one agent cannot read another's decision.
+- **The action runs at most once**, whichever call returns it. A gate that
+  outlives its call parks with a gate id, and `hoai_browser_wait_gate`
+  re-attaches to the same held run rather than starting a second.
+- **An ordinary gate answers inside the call that asked.** The attach budget
+  sits under the relay's call cap and over the default 60 second wait, and a
+  guard pins that ordering: it shipped inverted for one commit, and every gate
+  would have parked five seconds before its own deadline.
+- **Fail closed on every path that is not an explicit allow**: a card that could
+  not be posted, a gate the server no longer has, an expired card, a park that
+  runs out, an answer whose choice cannot be read, a gate kind the card route
+  cannot carry, and a host with no way to reach the owner at all.
+- **A group's browser is its own.** A room's frame carries `group-<chatId>`
+  rather than the acting human's principal, and a test with a real Chromium
+  shows the group sees neither the owner's nor either member's cookie, and that
+  its own does not leak back.
+- **`profiles.js` joins the vendored tier**, so "Always allow" and "Trust this
+  site" are stored in the shape the desktop reads. Both sides of the pin now
+  DERIVE the file set from disk instead of naming it, after a third file was
+  vendored, hashed, and silently checked by nothing.
+
+## 0.47.0 (never released, folded into 0.47.1)
+
+- **`lib/browser-host-core/` holds byte-identical copies of the BGOS rule tier**
+  (`policy.js` and `settings.js`): what counts as a read, a write, a sensitive
+  action, a credential, a blocked category, and what the owner's grants mean.
+  They are COPIED rather than re-implemented on purpose. Two hand-written
+  copies of a permission policy is how two hosts quietly come to disagree about
+  what is sensitive, and the disagreement surfaces as an agent doing something
+  on one machine that it would have been stopped from doing on another.
+  - They keep their ORIGINAL filenames in a directory of their own, because
+    `settings.js` does `require("./policy")`: a rename breaks that require and
+    a patched require breaks the byte-identity the hash exists to protect.
+  - The nested `package.json` declaring `type: commonjs` is load-bearing, since
+    this package is `type: module`; without it Node reads them as ESM and the
+    host cannot load the rules at all.
+- **Drift is now caught in BOTH directions.** `lib/browser-host-core/vendor.json`
+  pins each file's sha256 and `test/browser-host-core.vendor.test.ts` reads it,
+  following the shim's pattern; and BGOS carries a matching pin, so editing a
+  rule there fails ITS suite until someone re-vendors here. The shim's own
+  vendor test documents that missing second half, and that gap had already
+  shipped a stale copy with a dead relay lane for a round.
+- The vendor test does not stop at hashes: it loads the rules and asks them to
+  decide, so a passing hash is not the only thing proven.
+- `bin/hoai-browser-host.mjs` imports them and exposes `policy` and
+  `hostSettings`. Nothing calls them yet, so behaviour is unchanged.
+
+**Still ungated, and a backend gap is why.** `browser_gate_answer` reaches the
+owner's PERSON room only, deliberately, and a daemon host joins only its
+`browser-host:<assistantId>` room, so it can post a permission card and never
+hear the answer. A host-scoped read has to exist first; until it does, wiring
+the gate here would be a wait that never fires.
+
+## 0.46.0
+
+**Runs ungated on purpose, by the owner's decision (2026-09-23).** A
+daemon-placed agent's browser raises NO permission strip: a new site, a write
+on a signed-in site, a download, an upload and every sensitive action just run,
+where the desktop Agent Browser stops and asks. The owner was shown that
+difference and chose it for now. Moving the gates into the host is the
+follow-up, and the served capability canon is corrected in the same breath so
+no agent is told it will be asked when it will not be.
+
+
+- **An agent's own browser, on the machine the agent lives on.** New
+  `bin/hoai-browser-host.mjs`, run with node. It connects one socket per
+  pairing on this machine with the `browser_host` handshake the backend
+  already serves (the pairing token in the query; the role, only that
+  pairing's agents and the device label in the auth), answers each
+  `browser_rpc` frame through the desktop's own engine (Playwright's
+  `BrowserBackend` over the same filtered roster, so `tools/list` is byte
+  identical to the desktop's) and posts the answer to
+  `/api/v1/browser/rpc/<rpcId>/result` with the same pairing token and the
+  socket the frame arrived on. A notification is never posted.
+  - **It drives a real, installed Chrome or Chromium** over CDP
+    (`--remote-debugging-port`, `--user-data-dir`), headless by default. It
+    never downloads a browser; when none is installed it says so at startup
+    and in every call that needs one.
+  - **The profile is keyed by principal, not by agent:**
+    `~/.bgos-agent/<assistantId>/browser/<principal>/`, `owner` when the frame
+    names none. Two different principals always get two directories, on a
+    case-insensitive disk too, and a principal the host cannot read is
+    refused rather than served from the owner's profile. A test with a real
+    Chromium proves one principal's cookie is never sent for another.
+  - Adds `playwright-core` 1.63.0 (the desktop's pin) as a dependency and
+    `socket.io` as a dev dependency for the fake relay the tests drive.
+  - Two existing tests skipped with `t.skip()` or the `skip` option, which
+    bun's `node:test` does not honour, now also return early, so `bun test`
+    is green as well as `npm test`.
+- **The daemon starts that host itself.** `server.ts` spawns
+  `bin/hoai-browser-host.mjs` under node on every paired daemon
+  (`lib/browser-host-supervisor.ts`), scoped to the daemon's own pairing, with
+  its output in `~/.bgos-agent/browser-host-<digest>.log` and never on the
+  daemon's stdio, and stops it when the daemon exits (the host also stops
+  itself if the daemon is killed outright).
+  - **Unconditional, and safe by construction:** the backend elects an agent
+    host only for an agent whose browser placement is `daemon`, so a
+    desktop-placed agent's host never receives a frame, and Chromium and
+    playwright-core load only on the first frame; an idle host is one node
+    process (about 80 MB resident on macOS) holding one socket.
+  - **One host per pairing on a machine,** through the reclaimable lock of
+    `lib/pairing-lock.ts` at a per-pairing path: a second daemon of the same
+    pairing waits, and takes the host over when the first daemon or its host
+    is gone. A holder that is alive but late (a machine waking from sleep) is
+    given a full recheck to beat again before its lock is taken, and a daemon
+    whose lock was taken stands its host down and waits to take it back.
+  - **Chrome and the host get an ALLOW-LISTED environment**
+    (`lib/browser-env.mjs`), not a deny-list by name: a name rule cannot
+    see `SSH_AUTH_SOCK`, a live handle to the user's ssh-agent. Chrome gets
+    PATH, HOME, TMPDIR/TMP/TEMP, USER/LOGNAME, LANG/LANGUAGE/LC_*, TZ, the
+    Windows system folders on Windows, and on linux the display and session
+    variables only when it is shown. The host gets that plus its own
+    `HOAI_BROWSER_*` settings, `NODE_EXTRA_CA_CERTS` and its pairing token,
+    which it drops from its environment once read. Anything else is opt-in
+    by name in `HOAI_BROWSER_CHROME_ENV`, and a credential-looking name is
+    dropped even then.
+  - **It can never take the daemon down.** A missing node, a spawn that
+    fails, or a host that crashes is one log line; the daemon carries on and
+    does not restart that host.
+  - **Kill switch: `HOAI_BROWSER_HOST=off`** (also `0`, `false`, `no`) skips
+    the spawn entirely.
+  - Review fixes to the host: it no longer exits when it has no live socket
+    (no credentials yet, or refused by the gateway), a stop during a Chrome
+    launch now stops that Chrome, JSON-RPC ids `1` and `"1"` no longer share a
+    waiter, the CDP connect after a launch is bounded, and a Snap Chromium
+    (which cannot open a profile under `~/.bgos-agent`) is skipped with a
+    message that says so. `package-lock.json` now carries the new
+    dependencies.
 
 ## 0.44.0 (2026-09-21)
 

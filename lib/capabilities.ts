@@ -75,10 +75,10 @@ const MAX_DECLARED_ON_FETCH = 32;
  * canon's column lines sentence is served only to a connection that declares
  * `boards_playbook`. Comma joined, then percent encoded, so the commas travel
  * as %2C. An empty list sends no `capabilities` key at all, which the backend
- * reads exactly as a pre 0.45.0 fetch.
+ * reads exactly as a pre 0.50.0 fetch.
  *
- *   capabilitiesFetchPath('0.45.0', ['mission_events', 'boards_playbook'])
- *     === 'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=mission_events%2Cboards_playbook'
+ *   capabilitiesFetchPath('0.50.0', ['mission_events', 'boards_playbook'])
+ *     === 'integrations/capabilities?channel=claude&daemonVersion=0.50.0&capabilities=mission_events%2Cboards_playbook'
  */
 export function capabilitiesFetchPath(
   runningVersion: string | null,
