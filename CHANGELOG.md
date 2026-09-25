@@ -22,6 +22,15 @@ release is free when this merges.
   answer arrives later as an ordinary click and starts a new turn. Nothing
   parks a watchdog and nothing times out, so a plan answered tomorrow still
   works.
+  - **Only the person a plan was proposed to can answer it.** A tap on a plan
+    card is bound to that person with the permission card's own rule: a tap
+    that names a different person is refused (the plan stays open, the chip and
+    the status line stay up, and nothing reaches the agent), while a tap that
+    names nobody, which is every tap on today's backend, is accepted. The
+    person is the one the card was posted for, or the account owner when a
+    restart lost that record. Before this, on a shared assistant, anyone who
+    could see the chat could approve a plan and the agent went to work as if
+    its owner had.
   - **The wait on this channel is a CONVENTION, and everything says so.** Every
     HOAI agent is launched with permissions skipped and the shipped manifest
     auto approves, so no tool call is blocked, no hook can stop one, and this

@@ -359,7 +359,9 @@ import {
   planCardChatRefusal,
   planAnswerDirective,
   planChipFor,
+  planRequesterFor,
   planSettlement,
+  planTapAuthority,
   planStatusClearBody,
   planStatusBody,
   resolvePlanChoice,
@@ -4612,6 +4614,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             revision: payload.revision,
             postedAtMs: Date.now(),
             payload,
+            // WHO this plan was proposed to, from the permission relay's own
+            // source for requesterUserId, so a tap on the card can be bound to
+            // that person exactly as a tap on a permission card is. See
+            // foreignPlanTap.
+            requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
@@ -6792,6 +6799,52 @@ function clearPlanStatusLine(): void {
 }
 
 /**
+ * Is this tap on a plan card from somebody OTHER than the person the plan was
+ * proposed to? True means refuse it, and the one log line is written here.
+ *
+ * Data's blocker on #150: applyPlanAnswer used to take no clicker id at all,
+ * while the permission intake beside it always passed clickerUserId, so on a
+ * SHARED assistant anyone who could see the chat could tap Go ahead on a plan
+ * proposed to someone else and the agent went to work as if its owner had
+ * approved. The rule is #142's, null aware, as the permission card watch
+ * applies it (planTapAuthority): a tap naming a different person is refused, a
+ * tap naming nobody is accepted, which is every tap on today's backend.
+ *
+ * `clickerUserId` MUST be read with senderUserIdCandidate, never with
+ * senderUserIdOf: the owner fallback would turn an unstamped tap into the
+ * owner's, and on a shared assistant, where the plan was proposed to the
+ * person it was shared with, that would refuse every real approval.
+ *
+ * The person is this process's record of the card, or the owner when a
+ * restart lost it (planRequesterFor says why, and why not the chat's latest
+ * inbound user). Its own function because the boot sweep must ask it BEFORE
+ * it strips the chips, and the two click intakes ask it through
+ * applyPlanAnswer.
+ */
+function foreignPlanTap(input: {
+  chatId: string
+  messageId: number
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the log line only. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): boolean {
+  const authority = planTapAuthority({
+    clickerUserId: input.clickerUserId,
+    requesterUserId: planRequesterFor({
+      open: openPlansByChat.get(input.chatId),
+      messageId: input.messageId,
+      ownerUserId: USER_ID,
+    }),
+  })
+  if (authority.kind !== 'foreign') return false
+  log(
+    `Ignoring plan card tap on card ${input.messageId} via ${input.via} from ` +
+      `user ${authority.clickerUserId} (plan belongs to ${authority.requesterUserId})`,
+  )
+  return true
+}
+
+/**
  * Everything that has to happen when a plan is answered, whichever chip it was:
  * the card is no longer open, the status line comes down, the chat leaves the
  * fast scope, and the app is told the mode is back to default so the chip goes.
@@ -6849,6 +6902,13 @@ function settlePlan(chatId: string, wasPlanMode: boolean): void {
  * value) precisely so it can never be read back as one of this plugin's
  * control codes, and that only holds while the classification happens before
  * the unescape. The permission intake has always worked this way.
+ *
+ * WHO TAPPED is an input too, required, so no intake can call this without
+ * saying: `clickerUserId` is senderUserIdCandidate of the answer (null when
+ * it names nobody). A tap from a person other than the one the plan was
+ * proposed to comes back `refused`, and the caller DROPS the click: the plan
+ * is not settled, the chip and the status line stay up, and nothing reaches
+ * the model, so the plan keeps waiting for its person. See foreignPlanTap.
  */
 function applyPlanAnswer(input: {
   chatId: string
@@ -6858,8 +6918,18 @@ function applyPlanAnswer(input: {
   customText?: string | null
   /** `eventMeta.payload` of the answered row, when the transport carries it. */
   eventMetaPayload?: unknown
-}): { summary: string | null; directive: string | null; callbackData: string | null } {
-  const none = { summary: null, directive: null, callbackData: null }
+  /** senderUserIdCandidate of the answer: null when the tap names nobody. */
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the refusal's log line. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): {
+  summary: string | null
+  directive: string | null
+  callbackData: string | null
+  /** A foreign tap on a plan: the caller must drop the click entirely. */
+  refused: boolean
+} {
+  const none = { summary: null, directive: null, callbackData: null, refused: false }
   // Two independent ways to know the answered row is a plan card: the record
   // this process is holding, and the row's own payload. Either is enough, and
   // the second is what survives a restart, where the first is empty.
@@ -6871,6 +6941,18 @@ function applyPlanAnswer(input: {
   // say) is still an answer: the wait is over and the status line must come
   // down, even though there is no directive to give.
   if (choice === null && !onPlanCard) return none
+  // From here on this IS a plan answer, so from here on it is bound to the
+  // person the plan was proposed to, BEFORE anything is settled.
+  if (
+    foreignPlanTap({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      clickerUserId: input.clickerUserId,
+      via: input.via,
+    })
+  ) {
+    return { ...none, refused: true }
+  }
   // The DOOR of the row being answered, from this process's record first and
   // the row's own payload second, which is the pair that survives a restart.
   // Anything but `decided` is a door that could have lit the chip, and that is
@@ -6881,6 +6963,7 @@ function applyPlanAnswer(input: {
   settlePlan(input.chatId, answeredDoor !== undefined && answeredDoor !== 'decided')
   if (choice === null) return none
   return {
+    refused: false,
     summary: describePlanClick({ choice, customText: input.customText }),
     directive: planAnswerDirective(choice),
     // The code the model was PROMISED, put back on the meta. A revision
@@ -7015,6 +7098,16 @@ async function announceMissedPlanAnswers(): Promise<void> {
       const callbackData = payload.callbackData ?? payload.callback_data ?? ''
       const buttonText = payload.buttonText ?? payload.button_text ?? ''
       const customText = payload.customText ?? payload.custom_text ?? undefined
+      // WHO tapped, null aware, and asked BEFORE the strip: a refused tap must
+      // leave the card exactly as it is, chips and all, and the strip below is
+      // what makes a sweep final. Every row here is a plan card
+      // (missedPlanAnswers), so the question always applies.
+      const clickerUserId = senderUserIdCandidate(payload)
+      if (
+        foreignPlanTap({ chatId: String(chatId), messageId: row.id, clickerUserId, via: 'boot sweep' })
+      ) {
+        continue
+      }
       // Strip the chips FIRST. A failed announce then costs one delivery; a
       // failed strip after a successful announce would let the next boot
       // announce the same answer again, which is the louder failure.
@@ -7031,7 +7124,12 @@ async function announceMissedPlanAnswers(): Promise<void> {
         callbackData,
         customText,
         eventMetaPayload: mm.eventMeta?.payload,
+        clickerUserId,
+        via: 'boot sweep',
       })
+      // Asked above already, so this cannot be true today; kept so the drop is
+      // written wherever applyPlanAnswer is called.
+      if (planAnswer.refused) continue
       const contentLines = [
         `[button_clicked] ${planAnswer.summary ?? `Clicked: ${buttonText || callbackData}`}`,
         `(in reply to message_id=${row.id})`,
@@ -8285,7 +8383,14 @@ async function pollChat(chatId: string): Promise<void> {
         callbackData,
         customText,
         eventMetaPayload: mm.eventMeta?.payload,
+        // NULL AWARE, unlike the permission intake's senderUserIdOf above:
+        // see foreignPlanTap for why the owner fallback must not be used here.
+        clickerUserId: senderUserIdCandidate(payload),
+        via: 'poll',
       })
+      // A tap from someone other than the plan's person: drop it, the way the
+      // permission intake drops a foreign click. foreignPlanTap logged it.
+      if (planAnswer.refused) continue
 
       // Strip the `u:` namespace sentinel so the agent receives the exact value
       // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
@@ -10343,7 +10448,21 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     callbackData: answer.callbackData,
     customText: answer.customText,
     eventMetaPayload: view.eventMetaRaw?.payload,
+    // NULL AWARE: see foreignPlanTap.
+    clickerUserId: senderUserIdCandidate(answer),
+    via: 'stream',
   })
+  // A tap from someone other than the plan's person: drop it, the way the
+  // foreign permission click above is dropped. foreignPlanTap logged who and
+  // whose; this lane's own outcome line says where it stopped, like every
+  // other exit of this function.
+  if (planAnswer.refused) {
+    log(
+      `button_clicked DROPPED at plan binding: the tap on plan card ${view.messageId} ` +
+        `named someone other than the plan's person (streamAuthority=${authorityAtReceipt})`,
+    )
+    return
+  }
 
   const agentCallbackData = unescapeAgentButtonValue(answer.callbackData)
   const kind =

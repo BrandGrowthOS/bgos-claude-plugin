@@ -251,6 +251,7 @@ test('a revision keeps the plan id and counts up', () => {
     revision: 2,
     postedAtMs: 0,
     payload: payloadOf(),
+    requesterUserId: 'owner',
   }
   assert.deepEqual(
     nextPlanIdentity({ supersedes: 900, open, mintPlanId: () => 'MINTED' }),
@@ -274,6 +275,7 @@ test('a revision after a restart starts a new plan, and never claims revision 2'
     revision: 1,
     postedAtMs: 0,
     payload: payloadOf(),
+    requesterUserId: 'owner',
   }
   assert.deepEqual(
     nextPlanIdentity({ supersedes: 900, open, mintPlanId: () => 'MINTED' }),

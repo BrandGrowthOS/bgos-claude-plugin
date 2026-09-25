@@ -682,6 +682,72 @@ export interface PendingPlan {
   revision: number
   postedAtMs: number
   payload: PlanCardPayload
+  /**
+   * The person the plan was PROPOSED TO, and so the only person whose tap on
+   * it may send the agent to work. Taken when the card is posted, from the
+   * source the permission relay uses for its own requesterUserId: the user of
+   * the latest inbound message in the chat, the owner when none has been seen.
+   * See planTapAuthority.
+   */
+  requesterUserId: string
+}
+
+// Who may answer a plan -----------------------------------------------------
+
+/**
+ * The person a plan card was proposed to, for the tap now being judged.
+ *
+ * This process's record first, and only when it is the record OF THIS CARD:
+ * the map holds the newest plan per chat, so a tap on an older card must not
+ * borrow a newer card's person. With no such record (a restart lost it, or
+ * the card was never this process's) the answer is the configured OWNER,
+ * which is #142's direction for a request whose driver is unknown
+ * (`lastInboundUserByChat.get(chatId) ?? USER_ID` at the permission post).
+ * It is deliberately NOT the chat's latest inbound user read at ANSWER time:
+ * that can be the very person tapping, which would make the check approve
+ * whoever spoke last. Nothing on the plan card row names its person today.
+ */
+export function planRequesterFor(input: {
+  open: Pick<PendingPlan, 'messageId' | 'requesterUserId'> | null | undefined
+  messageId: number
+  ownerUserId: string
+}): string {
+  const { open } = input
+  if (open != null && open.messageId === input.messageId && open.requesterUserId) {
+    return open.requesterUserId
+  }
+  return input.ownerUserId
+}
+
+export type PlanTapAuthority =
+  | { kind: 'accept' }
+  | { kind: 'foreign'; clickerUserId: string; requesterUserId: string }
+
+/**
+ * May this tap answer the plan? #142's rule, NULL AWARE, exactly as the
+ * permission card watch applies it (answeredOn in server.ts's waitForVerdict).
+ *
+ * A tap that NAMES a different person than the one the plan was proposed to is
+ * refused: on a shared assistant that is a second person approving work the
+ * agent will then do as if its owner had approved it. A tap that names NOBODY
+ * (`clickerUserId === null`, read through senderUserIdCandidate, never through
+ * the owner fallback) is accepted, because no backend stamps a tapper id on an
+ * answer today, so refusing it would refuse every real approval. Both halves
+ * decide on the same field the day the backend stamps one.
+ */
+export function planTapAuthority(input: {
+  /** senderUserIdCandidate of the answer: null when the tap names nobody. */
+  clickerUserId: string | null
+  requesterUserId: string
+}): PlanTapAuthority {
+  if (input.clickerUserId !== null && input.clickerUserId !== input.requesterUserId) {
+    return {
+      kind: 'foreign',
+      clickerUserId: input.clickerUserId,
+      requesterUserId: input.requesterUserId,
+    }
+  }
+  return { kind: 'accept' }
 }
 
 /**
