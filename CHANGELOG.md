@@ -2,6 +2,29 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.51.0
+
+**A Stop is asked for honestly and never closes the mission, and the owner can find this agent's sessions in the app.**
+P6 stage 3 (HOAI's Resume button and Sessions sheet). The tokens, op names, words and limits below come from
+`lib/session-controls-contract.ts`, BGOS's session controls contract copied byte for byte and pinned by sha256,
+the same digest BGOS and codex-channel-bgos pin.
+
+- **"Asked to stop."** The line posted after a Stop replaces "Run stopped at your request.". It is posted the
+  moment the notice reaches the session, before the model has stood down, so it claims the asking and nothing more.
+- **The stop notice keeps the mission open.** The `[stop_turn]` notice now tells the model to leave the chat's
+  open mission open and not to call `complete_mission` for it because of the stop. A Stop is neither a finish nor
+  a failure.
+- **A Stop pauses the mission an armed goal loops on.** Where this daemon can type into its session and Keep
+  working is armed on the stopped chat's open mission, the Stop pauses that mission with the reason "Stopped by
+  you", so the goal's own Stop hook cannot re prompt the model, and the owner's next message in that chat resumes
+  it. An owner's own Pause is never resumed by a message. Declares `stop_pauses_mission` beside `mission_pause`.
+- **The Sessions library, list only.** New `list_sessions` op: the sessions in this agent's own folder, newest
+  first, with a title, last activity, a preview, the branch and the Current session, searchable. The 200 newest
+  transcripts at most, their first and last 64 KB only, cached while unchanged. Titles and previews that hold a
+  secret are withheld whole before they leave the machine. `resume_session` and `rename_session` answer
+  `unsupported`: switching the session a running agent is pinned to needs a supervisor change that reaches an
+  agent only when its owner runs `hoai` again, so it is a later update. Declares `sessions_library` on every host.
+
 ## 0.48.1
 
 **An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**
