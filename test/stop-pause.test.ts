@@ -88,12 +88,15 @@ function recorder(
     pauseFails?: boolean
     resumeFails?: number
     readFails?: boolean
+    /** The first N reads fail, then reads answer. */
+    readFailures?: number
     pauseGate?: Promise<void>
   } = {},
 ): Recorder {
   const calls: string[] = []
   const open = new Map<string, MissionSnapshot | null>(over.open ?? [[CHAT, mission()]])
   let resumeFailures = over.resumeFails ?? 0
+  let readFailures = over.readFailures ?? 0
   const find = (missionId: number): [string, MissionSnapshot] | null => {
     for (const [chatId, m] of open) if (m && m.id === missionId) return [chatId, m]
     return null
@@ -102,6 +105,10 @@ function recorder(
     readOpenMission: async (chatId) => {
       calls.push(`read ${chatId}`)
       if (over.readFails) throw new Error('GET 503')
+      if (readFailures > 0) {
+        readFailures -= 1
+        throw new Error('GET 503')
+      }
       return open.get(chatId) ?? null
     },
     pauseMission: async (missionId, reason) => {
@@ -318,6 +325,32 @@ test('a failed resume is tried again on the next owner message', async () => {
   assert.equal(r.open.get(CHAT)?.status, 'paused')
   assert.deepEqual(await lane.ownerMessage(CHAT), { kind: 'resumed', missionId: 77 })
   assert.equal(r.open.get(CHAT)?.status, 'active')
+})
+
+test('a failed restart read is tried again on the next owner message, so the stop pause still resumes', async () => {
+  // A fresh lane is a fresh process: it never paused this chat, and the
+  // server still has the mission a Stop paused before the restart. The
+  // owner's first message hits a network error or a 5xx on the read.
+  const r = recorder({
+    open: [[CHAT, mission({ status: 'paused', pausedReason: STOP_PAUSE_REASON })]],
+    readFailures: 1,
+  })
+  const lane = new StopPauseLane(r.deps)
+  assert.equal((await lane.ownerMessage(CHAT)).kind, 'failed')
+  assert.deepEqual(r.calls, [`read ${CHAT}`])
+  assert.equal(r.open.get(CHAT)?.status, 'paused')
+
+  // The owner's next message asks the server again (spec D11 and D12: a
+  // failure is logged and the next owner turn tries again), and resumes.
+  r.calls.length = 0
+  assert.deepEqual(await lane.ownerMessage(CHAT), { kind: 'resumed', missionId: 77 })
+  assert.deepEqual(r.calls, [`read ${CHAT}`, 'stamp 77', 'resume 77', 'written 77 active'])
+  assert.equal(r.open.get(CHAT)?.status, 'active')
+
+  // Once a read has answered, the chat is checked: the next message costs nothing.
+  r.calls.length = 0
+  assert.equal((await lane.ownerMessage(CHAT)).kind, 'skipped')
+  assert.deepEqual(r.calls, [])
 })
 
 test('a failed read never throws into the inbound path', async () => {

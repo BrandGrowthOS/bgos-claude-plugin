@@ -27,7 +27,8 @@
  *     paused with exactly STOP_PAUSE_REASON, so an owner's own Pause from the
  *     Mission view is never undone by a message;
  *   - the first owner message in a chat after the daemon starts asks the
- *     server, because a restart forgets what this process paused (spec D12);
+ *     server, because a restart forgets what this process paused (spec D12),
+ *     and a read that fails is asked again on the owner's next message;
  *   - an owner message that races the Stop's own pause waits for it, so a
  *     quick Resume ends active, never paused (spec D11).
  *
@@ -154,7 +155,8 @@ export class StopPauseLane {
   private readonly settleTimeoutMs: number
   /** chat id to the mission a Stop paused in this process. */
   private readonly pausedByChat = new Map<string, number>()
-  /** Chats whose open mission has been read since this process started. */
+  /** Chats whose open mission has been read, successfully, since this
+   *  process started. A failed read never lands a chat here. */
   private readonly checkedChats = new Set<string>()
   /** Per chat, the last stop or resume in flight: each one waits for the
    *  one before it, so a quick Resume can never overtake the Stop's pause. */
@@ -234,10 +236,11 @@ export class StopPauseLane {
       open = await this.deps.readOpenMission(chatId)
     } catch (err) {
       this.deps.log(`stop resume: could not read chat ${chatId}'s open mission: ${errorText(err)}`)
-      // A chat this process paused is tried again on the next owner message.
-      // The restart probe of a chat it never paused is one attempt, so a chat
-      // the server refuses to read does not cost a request on every message.
-      if (remembered === undefined) this.checkedChats.add(chatId)
+      // The chat is NOT marked checked: a failed read proves nothing about
+      // what the server holds, so the next owner message asks again (spec
+      // D11 and D12, and Codex's noteOwnerTurn). This covers the restart
+      // probe of a chat this process never paused, too: a stop pause from
+      // before the restart would otherwise stay paused for good.
       return { kind: 'failed', why: 'read' }
     }
     this.checkedChats.add(chatId)

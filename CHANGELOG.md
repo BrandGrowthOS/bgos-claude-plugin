@@ -17,7 +17,9 @@ the same digest BGOS and codex-channel-bgos pin.
 - **A Stop pauses the mission an armed goal loops on.** Where this daemon can type into its session and Keep
   working is armed on the stopped chat's open mission, the Stop pauses that mission with the reason "Stopped by
   you", so the goal's own Stop hook cannot re prompt the model, and the owner's next message in that chat resumes
-  it. An owner's own Pause is never resumed by a message. Declares `stop_pauses_mission` beside `mission_pause`.
+  it. An owner's own Pause is never resumed by a message. After a daemon restart the owner's first message in a
+  chat asks the server, and a read that fails is asked again on the next message, so a Stop pause from before the
+  restart is never left behind. Declares `stop_pauses_mission` beside `mission_pause`.
 - **The Sessions library, list only.** New `list_sessions` op: the sessions in this agent's own folder, newest
   first, with a title, last activity, a preview, the branch and the Current session, searchable. The 200 newest
   transcripts at most, their first and last 64 KB only, cached while unchanged. Titles and previews that hold a
