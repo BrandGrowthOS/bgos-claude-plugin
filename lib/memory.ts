@@ -902,7 +902,10 @@ export function createClaudeMemoryStore(deps: {
       const entry = matchOne(entries, target, oldText)
       if ('ok' in entry) return entry
       // An Undo of a correction brings the old note back whole, not only its words.
-      const source = hook === entry.text ? null : restorableFor(target, hook)
+      // Only for words that are gone: words another note still holds are not an
+      // undo, and copying that note's body here would duplicate it.
+      const held = entries.some((e) => e !== entry && e.store === target && e.text === hook)
+      const source = hook === entry.text || held ? null : restorableFor(target, hook)
       const content =
         source?.fileContent ??
         rewrittenNote(entry.fileContent, {

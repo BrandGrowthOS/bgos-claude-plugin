@@ -597,6 +597,24 @@ test('an undo correction brings the old note back', () => {
   assert.equal(raw.readFile(`${MEM}/home.md`), original)
 })
 
+test('a correction to words another note still holds rewrites this note, never copies the other', () => {
+  // Restoring a note whole is for words that are GONE (an Undo). Words another
+  // note still holds are not an undo, so this note gets the new words, not a
+  // copy of that other note's body.
+  const coffee = note('coffee', 'feedback', 'Likes coffee, black, no sugar, before nine.')
+  const { fs, raw } = harness({
+    [INDEX]: '- [Tea](tea.md) - likes tea\n- [Coffee](coffee.md) - likes coffee\n',
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/coffee.md`]: coffee,
+  })
+  const store = storeOver(fs)
+  store.list()
+  const answer = store.replace('memory', 'likes tea', 'likes coffee') as any
+  assert.deepEqual(texts(answer, 'memory'), ['likes coffee', 'likes coffee'])
+  assert.match(raw.readFile(`${MEM}/tea.md`)!, /\n\nlikes coffee\n$/)
+  assert.equal(raw.readFile(`${MEM}/coffee.md`), coffee)
+})
+
 test('a correction that would overflow the index is refused', () => {
   const filler = `- [big](big.md) - ${'x'.repeat(24_900)}`
   const index = `${filler}\n- [s](s.md) - short\n`
