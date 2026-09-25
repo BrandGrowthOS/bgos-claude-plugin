@@ -49,7 +49,10 @@
  * what the agent removed on its own. A replace whose new words come back from
  * ANOTHER note (the app's What changed Undo of "one fact went, another came")
  * restores that note under its own name and line, and trashes the entry it
- * matched, so the folder lands byte for byte (live round trip F1).
+ * matched, so the folder lands byte for byte (live round trip F1). A
+ * correction always retitles its line with the new words (fix round 2, E11),
+ * and its Undo puts the saved line back verbatim, the CLI's own title and em
+ * dash separator included (E12).
  */
 
 import { createHash } from 'node:crypto'
@@ -931,6 +934,26 @@ export function createClaudeMemoryStore(deps: {
     return matches[0]
   }
 
+  /**
+   * The Undo of a correction puts back the line it saved VERBATIM (fix round
+   * 2, E12): its own title and its own separator, the CLI's em dash included,
+   * so the index lands byte for byte. Only a saved line that points at this
+   * same note (names compared without case, relinked to the entry's spelling
+   * so the line still points where the note is) and holds the words coming
+   * back is used; anything else is null and the line is rebuilt. This store
+   * never writes an em dash of its own, it only puts the CLI's bytes back.
+   */
+  function savedLineFor(source: Restorable | null, fileName: string, words: string): string | null {
+    // A saved line is this store's own copy of an index line, carriage return already cut.
+    for (const { text } of source?.lines ?? []) {
+      const parsed = parseMemoryIndexLine(text)
+      if (!parsed || parsed.text !== words) continue
+      if (parsed.fileName.toLowerCase() !== fileName.toLowerCase()) continue
+      return parsed.fileName === fileName ? text : text.split(`](${parsed.fileName})`).join(`](${fileName})`)
+    }
+    return null
+  }
+
   /** Inserts lines at their old positions (clamped), in order, into a copy of the index. */
   function withLines(doc: IndexDoc, lines: TrashLine[], relink: (text: string) => string): IndexDoc {
     const next = [...doc.lines]
@@ -1063,12 +1086,6 @@ export function createClaudeMemoryStore(deps: {
       }
       // A note restored by its exact words is listed under them, not their cut.
       const lineHook = byExact ? exact : hook
-      // A title derived from the old words (the first six, as add writes it
-      // and as a CLI line may) follows the new words, or the old fact stays in
-      // the line the model reads at start (live round trip F2). A title
-      // written by hand is kept (spec 10.6).
-      const derived = entry.title === titleOf(entry.text, slugOf(entry.text))
-      const title = !entry.title || derived ? titleOf(lineHook, slugOf(lineHook)) : entry.title
       const content =
         source?.fileContent ??
         rewrittenNote(entry.fileContent, {
@@ -1079,7 +1096,15 @@ export function createClaudeMemoryStore(deps: {
           body: bodyOf(newContent),
         })
       const lines = [...doc.lines]
-      lines[entry.position] = lineFor(title, entry.fileName, lineHook)
+      lines[entry.position] =
+        savedLineFor(source, entry.fileName, lineHook) ??
+        // A correction ALWAYS retitles the line with the new words' first six
+        // (fix round 2, E11). The title sits beside the hook in the line the
+        // model reads at start, and a title written by hand can restate the
+        // old fact as well as a derived one ("Owner lives on Probe Street"
+        // over "40 Harbour Road"), so no title is kept through a correction.
+        // Its Undo gets the old title back from the saved line above.
+        lineFor(titleOf(lineHook, slugOf(lineHook)), entry.fileName, lineHook)
       const index = serializeIndex({ ...doc, lines })
       if (overBudget(index) && bytesOf(index) > bytesOf(serializeIndex(doc))) return fail('over_budget', MSG.full)
       return {

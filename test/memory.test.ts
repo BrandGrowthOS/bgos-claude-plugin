@@ -714,7 +714,9 @@ test('a note the agent removed itself comes back whole while it is remembered', 
   assert.equal(raw.readFile(INDEX), index)
 })
 
-test('replace changes the note and keeps its title and link', () => {
+// Fix round 2, E11: a correction always retitles the line with the new words,
+// a title written by hand ("Home") included; the link stays.
+test('replace changes the note, retitles its line with the new words and keeps its link', () => {
   const cliNote =
     '---\nname: home\ndescription: lives in Dubai\nmetadata:\n  node_type: memory\n  type: user\n  originSessionId: 62a4\n  modified: 2026-09-20T08:00:00.000Z\n---\n\nLives in Dubai.\n'
   const { fs, raw } = harness({
@@ -724,7 +726,7 @@ test('replace changes the note and keeps its title and link', () => {
   })
   const answer = storeOver(fs).replace('user', 'lives in Dubai', 'lives in Abu Dhabi') as any
   assert.deepEqual(texts(answer, 'user'), ['lives in Abu Dhabi'])
-  assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes tea\n- [Home](home.md) - lives in Abu Dhabi\n')
+  assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes tea\n- [lives in Abu Dhabi](home.md) - lives in Abu Dhabi\n')
   assert.equal(
     raw.readFile(`${MEM}/home.md`),
     '---\nname: home\ndescription: "lives in Abu Dhabi"\nmetadata:\n  node_type: memory\n  type: user\n  originSessionId: 62a4\n  modified: 2026-09-25T10:00:00.000Z\n---\n\nlives in Abu Dhabi\n',
@@ -1034,10 +1036,11 @@ test('a restore whose note name differs only in case keeps the note where its li
   assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes green tea\n')
 })
 
-// F2. A correction keeps the line's title (spec 10.6), and the titles this
+// F2. A correction kept the line's title (spec 10.6), and the titles this
 // store writes are the first six words of the fact, so the old fact stayed in
-// the line the model reads at start. A title derived from the old words now
-// follows the new words; a title written by hand is kept.
+// the line the model reads at start. A title derived from the old words then
+// followed the new words, and since fix round 2 (E11) every title does: a
+// title written by hand can restate the old fact just as well.
 test('a correction retitles a line whose title this store derived from the fact (live round trip F2, U2)', () => {
   const { fs, raw } = harness({ [INDEX]: '# Memory index\n' })
   const store = storeOver(fs)
@@ -1072,14 +1075,74 @@ test('a correction retitles a CLI line whose title is the first words of its fac
   )
 })
 
-test('a correction keeps a title written by hand (control for F2)', () => {
-  // The round trip's seed title is a label, not the fact's first words.
+// Fix round 2, E11 (this was the F2 control, "a correction keeps a title
+// written by hand"). The round trip's seed title "Owner lives on Probe Street"
+// is a label written by hand, and it restates the OLD fact: kept through the
+// correction, the agent's next start read "Owner lives on Probe Street" beside
+// "40 Harbour Road". A correction now always retitles with the new words, and
+// the Undo still puts the hand title back from the trash, byte for byte.
+test('a correction retitles a title written by hand too, and its Undo puts that title back byte for byte (E11)', () => {
   const { fs, raw } = harness(seedFolder())
-  okAnswer(storeOver(fs).replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  const store = storeOver(fs)
+  okAnswer(store.replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
   assert.equal(
     raw.readFile(INDEX),
-    `# Memory index\n- [Owner lives on Probe Street](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
+    `# Memory index\n- [Owner's home address is 40 Harbour](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
   )
+  okAnswer(store.replace('user', "Owner's home address is 40 Harbour Road", "Owner's home address is 12 Probe Street"))
+  assert.equal(raw.readFile(INDEX), SEED_INDEX)
+  assert.equal(raw.readFile(`${MEM}/owner-home-address.md`), SEED_ADDRESS)
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+})
+
+// Fix round 2, E12, the probe of the live round trip fixes
+// (s2-logs/rt-fix/probe-emdash.ts): the Undo of a correction over a CLI line
+// brought the note back byte for byte but REBUILT the line with this store's
+// hyphen, so the CLI's em dash separator was lost. An Undo whose saved line
+// points at the same note now puts that line back verbatim. The store never
+// writes an em dash of its own: it only puts the CLI's own bytes back.
+test('an Undo of a correction puts the CLI line back verbatim, its em dash separator included (E12)', () => {
+  const probeNote = '---\nname: home\nmetadata:\n  type: user\n---\n\nLives in Dubai.\n'
+  const cliLine = '- [Home](home.md) \u2014 lives in Dubai'
+  const emDashBytes = Buffer.from([0xe2, 0x80, 0x94])
+  for (const eol of ['\n', '\r\n']) {
+    const index = ['- [Tea](tea.md) - likes tea', cliLine, ''].join(eol)
+    const { fs, raw } = harness({
+      [INDEX]: index,
+      [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+      [`${MEM}/home.md`]: probeNote,
+    })
+    const store = storeOver(fs)
+    okAnswer(store.replace('user', 'lives in Dubai', 'lives in Abu Dhabi'))
+    const corrected = raw.readFile(INDEX)!
+    assert.ok(!Buffer.from(corrected, 'utf8').includes(emDashBytes), `the store wrote an em dash: ${JSON.stringify(corrected)}`)
+    okAnswer(store.replace('user', 'lives in Abu Dhabi', 'lives in Dubai'))
+    const undone = raw.readFile(INDEX)!
+    assert.equal(undone, index, `eol ${JSON.stringify(eol)}`)
+    assert.ok(Buffer.from(undone, 'utf8').equals(Buffer.from(index, 'utf8')), 'the index bytes')
+    assert.ok(Buffer.from(undone, 'utf8').includes(emDashBytes), "the CLI's em dash is back")
+    assert.equal(raw.readFile(`${MEM}/home.md`), probeNote)
+  }
+})
+
+// E12, the other half: a saved record can hold SEVERAL lines that point at one
+// note (remove keeps every line to the note it takes). The line put back is
+// the one that holds the words coming back, never the first to that note.
+test('a restore puts back the saved line that holds the words, not another line to the same note (E12)', () => {
+  const both = note('home', 'user', 'Lives in Dubai and likes the sea.')
+  const homeLine = '- [Home](home.md) \u2014 lives in Dubai'
+  const seaLine = '- [Sea](home.md) \u2014 likes the sea'
+  const { fs, raw } = harness({ [INDEX]: `${homeLine}\n${seaLine}\n`, [`${MEM}/home.md`]: both })
+  const store = storeOver(fs)
+  okAnswer(store.remove('user', 'likes the sea'))
+  assert.equal(raw.readFile(INDEX), '')
+  // The agent writes a new note under the same name, outside the store.
+  raw.writeFile(`${MEM}/home.md`, note('home', 'user', 'lives in Abu Dhabi'))
+  raw.writeFile(INDEX, '- [Home](home.md) - lives in Abu Dhabi\n')
+  const back = okAnswer(store.replace('user', 'lives in Abu Dhabi', 'likes the sea'))
+  assert.deepEqual(texts(back, 'user'), ['likes the sea'])
+  assert.equal(raw.readFile(INDEX), `${seaLine}\n`)
+  assert.equal(raw.readFile(`${MEM}/home.md`), both)
 })
 
 // ── Other writers ────────────────────────────────────────────────────────────
