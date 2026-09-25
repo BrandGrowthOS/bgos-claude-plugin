@@ -2292,6 +2292,9 @@ const mcp = new Server(
       'send ONE short `reply` line to that chat acknowledging where you',
       'stopped. Keep any partial results you already sent; do not undo work.',
       'The stop applies ONLY to that chat_id; other chats are unaffected.',
+      'A Stop is neither a finish nor a failure: if that chat has an open',
+      'mission, leave it open and do not call `complete_mission` for it because',
+      'of the stop. Your owner can resume.',
     ].join('\n'),
   },
 )

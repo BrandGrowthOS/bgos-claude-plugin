@@ -34,6 +34,7 @@ import {
   type VoiceRpcFrame,
   type VoiceRpcResultBody,
 } from '../lib/voice-rpc.ts'
+import { STOP_CONFIRMATION_COOPERATIVE } from '../lib/session-controls-contract.ts'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -631,8 +632,10 @@ test('stop_turn notifies the live session, confirms in-chat, and results coopera
   assert.match(note.content, /Keep any partial results/)
   assert.equal(note.meta.event_type, 'stop_turn')
   assert.equal(note.meta.chat_id, '42')
-  // The plain confirmation rides the normal outbound send path.
-  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_TURN_CONFIRMATION }])
+  // The plain confirmation rides the normal outbound send path, and it is the
+  // contract file's cooperative line: this daemon ASKED the model to stop.
+  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_CONFIRMATION_COOPERATIVE }])
+  assert.equal(rec.sends[0]!.text, 'Asked to stop.')
   // Wire contract: {stopped:true} on success, cooperative mode declared.
   assert.deepEqual(rec.results, [
     {
@@ -707,6 +710,48 @@ test('buildStopTurnNotification names the chat and the stand-down rules', () => 
   assert.match(text, /chat 7/)
   assert.match(text, /ONE short reply line/)
   assert.match(text, /other chats is unaffected/)
+})
+
+// P6 stage 3 (C-32, spec 4.3 and D13 items 1 and 2). Claude Code has
+// create_mission and complete_mission and no fail tool, so a Stop cannot fail
+// a mission here; the risk is a WRONG DONE, a model that reads "stop" and
+// closes the chat's open mission on its way out. The notice says not to.
+
+/** The one sentence the notice gains, word for word (spec 4.3). */
+const STOP_MISSION_SENTENCE =
+  'If that chat has an open mission, leave it open: do not call complete_mission ' +
+  'for it because of this stop. Your owner can resume.'
+
+test('the stop notice tells the model to leave the chat open mission open, and not to complete it', () => {
+  const text = buildStopTurnNotification({ chatId: '7' })
+  assert.ok(
+    text.includes(STOP_MISSION_SENTENCE),
+    'the [stop_turn] notice must carry the complete_mission sentence of spec 4.3',
+  )
+  // Added, not swapped: every stand-down rule the model already follows stays.
+  assert.match(text, /do not start any new tool calls/)
+  assert.match(text, /Keep any partial results/)
+  // Rule 3 of lib/mission-events.ts: nothing that reaches the model carries an
+  // em or en dash (escaped here so this file carries neither).
+  assert.doesNotMatch(text, new RegExp('[\\u2013\\u2014]'))
+})
+
+test('the delivered stop notice is the one that carries the sentence', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.equal(rec.notifications.length, 1)
+  assert.ok(rec.notifications[0]!.content.includes(STOP_MISSION_SENTENCE))
+  assert.ok(rec.notifications[0]!.content.includes('chat 42'))
+})
+
+test('the stop confirmation is the contract file cooperative line, Asked to stop.', () => {
+  // Posted the moment the notice is delivered, before the model has stood
+  // down, so it may claim the asking and nothing more (spec D7). The words
+  // come from lib/session-controls-contract.ts, the file BGOS and Codex pin
+  // too, so the canon's mirror and this daemon cannot say different things.
+  assert.equal(STOP_TURN_CONFIRMATION, STOP_CONFIRMATION_COOPERATIVE)
+  assert.equal(STOP_TURN_CONFIRMATION, 'Asked to stop.')
+  assert.notEqual(STOP_TURN_CONFIRMATION, 'Run stopped at your request.')
 })
 
 // ── dedupe + unsupported ops ─────────────────────────────────────────────────

@@ -56,6 +56,8 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
+import { STOP_CONFIRMATION_COOPERATIVE } from './session-controls-contract.ts'
+
 export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn'
 
 export interface VoiceRpcFrame {
@@ -634,20 +636,32 @@ export function normalizeVoiceTaskDispatch(
   }
 }
 
-/** Confirmation line posted to the chat after a delivered stop request. */
-export const STOP_TURN_CONFIRMATION = 'Run stopped at your request.'
+/** Confirmation line posted to the chat after a delivered stop request.
+ *  The contract file's cooperative line (P6 stage 3, spec D7): it is posted
+ *  the moment the notice is delivered, BEFORE the model has stood down, so
+ *  it claims the asking and nothing more. The old "Run stopped at your
+ *  request." claimed a stop this plugin cannot back. BGOS and Codex pin the
+ *  same file, so the canon's mirror and this daemon say the same words. */
+export const STOP_TURN_CONFIRMATION: string = STOP_CONFIRMATION_COOPERATIVE
 
 /** The [stop_turn] channel-notification text (session controls). Honest
  *  cooperative semantics: this plugin cannot kill an in-flight model turn,
  *  so it tells the live agent, in plain words, to stand down on that ONE
- *  chat immediately. Exported for tests. */
+ *  chat immediately. Exported for tests.
+ *
+ *  The last sentence is P6 stage 3 (spec 4.3, D13 item 1). A Stop is neither
+ *  a finish nor a failure, and this runtime has complete_mission and no fail
+ *  tool, so the one wrong write a stop can cause here is a model closing the
+ *  chat's open mission on its way out. The notice says not to. */
 export function buildStopTurnNotification(args: { chatId: string }): string {
   return (
     `[stop_turn] Your user pressed STOP for chat ${args.chatId}. ` +
     `Stop working on that chat NOW: do not start any new tool calls for ` +
     `it and abandon its remaining steps. Send ONE short reply line to ` +
     `that chat acknowledging where you stopped. Keep any partial results ` +
-    `you already sent. Work for other chats is unaffected.`
+    `you already sent. Work for other chats is unaffected. ` +
+    `If that chat has an open mission, leave it open: do not call ` +
+    `complete_mission for it because of this stop. Your owner can resume.`
   )
 }
 
