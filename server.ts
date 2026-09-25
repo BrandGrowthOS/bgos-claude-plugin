@@ -168,6 +168,9 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionAddGoalsBody,
+  buildMissionAddGoalsPath,
+  buildMissionCancelGoalPath,
   buildMissionSetGoalsBody,
   buildMissionSetGoalsPath,
   buildMissionCompletePath,
@@ -3717,7 +3720,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'steps or work spanning tools and minutes), then work normally and ' +
         'tick goals with `tick_mini_goal` as their checks come true. One ' +
         'open mission per CHAT; creating a new one sets aside that chat\'s ' +
-        'previous open mission and leaves every other chat alone. Maps to ' +
+        'previous open mission and leaves every other chat alone. NEVER call ' +
+        'this to change a mission that is already running: use ' +
+        'add_mission_goals or cancel_mission_goal, which keep the card and ' +
+        'every tick on it. Maps to ' +
         'POST /api/v1/assistants/:id/missions (user-scoped, X-API-Key).',
       inputSchema: {
         type: 'object' as const,
@@ -3810,8 +3816,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'with none). A Keep working card asks for this on a goal-less mission. ' +
         'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
         'where done_when is the observable check that proves it. Refused on a ' +
-        'mission that already has goals: tick those instead. Never use ' +
-        'create_mission for this, it would replace the mission. Targets your ' +
+        'mission that already has goals: tick those, or ADD to them with ' +
+        'add_mission_goals. Never use create_mission for either, it would ' +
+        'replace the mission. Targets your ' +
         'active mission unless mission_id is passed. Maps to PUT ' +
         '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
       inputSchema: {
@@ -3844,6 +3851,93 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'add_mission_goals',
+      description:
+        'ADD one or more mini-goals to a mission that ALREADY has some, ' +
+        'keeping the same mission: its ticks, its history and its Keep ' +
+        'working switch all stay. This is the tool to use when your owner ' +
+        'asks for a goal to be added to work already under way, and it is ' +
+        'the only correct answer on a mission the app will not let them edit ' +
+        'themselves (every /goal mission), where the card tells them to ask ' +
+        'you. NEVER call create_mission to add a goal: that sets the mission ' +
+        'aside and discards every tick on it. Send ONLY the new goals, 1 to ' +
+        '12, each { name, done_when }; never restate the goals the mission ' +
+        'already has. A mission holds 12 in all, so an add that would pass ' +
+        'that is refused with both numbers. Refused on a mission with NO ' +
+        'goals yet: use set_mission_goals for that. Targets your active ' +
+        'mission unless mission_id is passed. Maps to POST ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description:
+              'The goals to ADD, 1 to 12, each { name, done_when }. Only the ' +
+              'new ones.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are adding to; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'cancel_mission_goal',
+      description:
+        'CANCEL one mini-goal you are no longer going to do, by its id, ' +
+        'keeping the mission and everything else on it. Use it when your ' +
+        'owner drops a goal or the work turns out not to be needed, and say ' +
+        'in the chat why it went. A goal you have already TICKED cannot be ' +
+        'cancelled: it is a record of work that happened and it carries your ' +
+        'own evidence line, so if a tick was wrong, say so in the chat ' +
+        'instead. Cancelling the last unticked goal does NOT complete the ' +
+        'mission, because removing a promise is not keeping one; call ' +
+        'complete_mission yourself when the work is really done. One goal per ' +
+        'call. Targets your active mission unless mission_id is passed. Maps ' +
+        'to DELETE ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals/:goalId.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          goal_id: {
+            type: 'number',
+            description: 'The mini-goal id to cancel, as the mission card shows it.',
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are changing; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['goal_id'],
       },
     },
     {
@@ -5781,6 +5875,133 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to write the mission goals: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'add_mission_goals': {
+      const built = buildMissionAddGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to add goals to. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionAddGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPost(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Add goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `add_mission_goals: mission #${missionId} gained ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `${built.body.miniGoals.length === 1 ? 'Goal' : 'Goals'} added.\n` +
+                formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to add the mission goals: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'cancel_mission_goal': {
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              { type: 'text', text: 'No active mission in this chat to cancel a goal on.' },
+            ],
+            isError: true,
+          }
+        }
+        // The goal id is validated by the PATH builder, so a bad one never
+        // reaches the network and the agent gets the sentence rather than a 400.
+        const builtPath = buildMissionCancelGoalPath(
+          ASSISTANT_ID,
+          missionId,
+          rawArgs.goal_id,
+        )
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosDelete(builtPath.path)) as {
+          mission?: MissionSnapshot
+        }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Cancel goal returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `cancel_mission_goal: mission #${missionId} goal ${String(rawArgs.goal_id)} cancelled`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goal cancelled.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to cancel the mission goal: ${errMsg}` }],
           isError: true,
         }
       }

@@ -2,6 +2,53 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.51.0 (2026-09-26)
+
+**Two tools that change a mission already running: `add_mission_goals` and
+`cancel_mission_goal`.**
+
+KC asked for "add and cancel mini goals" on 2026-09-23. The app has had an owner
+goal editor since stage 5 and it REFUSES a mission whose origin is `derived`,
+which is every `/goal` mission; the card says so in words and tells the owner to
+ask the agent in the chat. The agent then had nothing to change it WITH.
+`set_mission_goals` refuses a mission that already has goals, and
+`create_mission` SETS THE MISSION ASIDE, so the only answer to "add a goal" was
+to destroy the card the owner was reading, every tick on it included.
+
+- `add_mission_goals` APPENDS 1 to 12 goals. Send only the new ones: the backend
+  never reads a row the mission already holds, which is what stops a restated
+  list from dropping one silently. Refused on a mission with none, which is the
+  fill door's job, and refused when the total would pass twelve, with both
+  numbers in the sentence.
+- `cancel_mission_goal` removes one goal by its id, validated in the path
+  builder so a bad id is a sentence the model can act on rather than a 400. A
+  TICKED goal is refused: it is a record of work carrying the agent's own
+  evidence line. Cancelling the last unticked goal does NOT complete the
+  mission, because removing a promise is not keeping one.
+- `create_mission` and `set_mission_goals` now point at these two rather than
+  only forbidding a create, and the served canon's Missions section loses a
+  sentence that had become an instruction to do the destructive thing.
+
+**A guard in this repo was not keeping the promise written in its own header.**
+`test/mission-ws-wiring.test.ts` says a "FOURTH mission tool added later must
+not be able to forget the stamp quietly", and it named its four tools as
+literals in four places, so a fifth and a sixth would have been added with every
+one of those tests green and neither checked. The scope is now DERIVED from the
+tool dispatch switch: a mission tool is a case that builds a mission path or
+body, and a mission WRITE is one that resolves an existing mission id. Proven by
+deleting `rememberMissionSelfWrite` from the new cancel case (2 tests red, named)
+and by moving its stamp after the DELETE (1 red, named); the literal lists caught
+neither. The request-verb search was `Patch|Put` only, so it also now sees a POST
+and a DELETE.
+
+Two smaller fixes fell out of building that: a case body was sliced to a fixed
+6000 characters, so the last case of a switch swallowed the next switch (that is
+how `show_component` briefly appeared to build a mission), and the scan read the
+whole file rather than the tool dispatch switch, so WS frame cases arrived as
+tools.
+
+Backend: BGOS PR #1669, canon `-goaledit1`. Requires a backend carrying it.
+
 ## 0.50.0 (2026-09-25)
 
 **Renumbered from 0.45.0, then from 0.48.0, at merge.** This release was
