@@ -48,7 +48,7 @@ test('the daemon\'s own base declaration reaches the fetch, permission_card incl
   assert.ok(query.get('capabilities')!.split(',').includes('permission_card'))
 })
 
-test('the plan card token reaches the fetch too (0.48.0)', () => {
+test('the plan card token reaches the fetch too (0.50.0)', () => {
   // The canon's plan card sentences are gated on plan_card exactly as the
   // permission card sentence is on permission_card, so the fetch at connect
   // must carry it for the same reason.

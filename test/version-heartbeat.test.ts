@@ -382,7 +382,7 @@ describe('declared capabilities on the heartbeat', () => {
     // upgrade starts declaring without a restart.
     // permission_card (0.49.0) rides every beat on every host: the relay
     // speaks the channel's own permission notification, which has no
-    // platform limit. plan_card (0.48.0) likewise: propose_plan is a typed
+    // platform limit. plan_card (0.50.0) likewise: propose_plan is a typed
     // tool on every host.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',

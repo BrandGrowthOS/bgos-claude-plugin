@@ -126,7 +126,7 @@ test('permission_card is declared on every host, because the relay has no platfo
 })
 
 /**
- * plan_card (0.48.0, the propose_plan tool and its card).
+ * plan_card (0.50.0, the propose_plan tool and its card).
  *
  * The BGOS canon tells an agent about propose_plan and the plan card only
  * when its daemon declares this token, with no version floor (BGOS #1624):

@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The six tokens, and what each one PROMISES the owner:
+ * The seven tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -75,7 +75,7 @@
  *   plan_card           this daemon has the propose_plan tool and posts the
  *                       plan card (an `event` row whose payload kind is
  *                       `plan_card`, with Go ahead, Change the plan and Do
- *                       not do this) in the owner's agent chat (0.48.0,
+ *                       not do this) in the owner's agent chat (0.50.0,
  *                       lib/plan-card.ts). Every host: it is a typed MCP tool
  *                       with no platform limit. Gated exactly like
  *                       permission_card: the backend tells the canon's plan
