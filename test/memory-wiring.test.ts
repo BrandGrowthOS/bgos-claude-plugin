@@ -69,9 +69,15 @@ test('the memory folder is found from the launch folder and the config dir, neve
   // The trash lives in this agent's plugin state folder, outside the memory folder.
   assert.match(built, /pluginStateDirFor\(/)
   assert.ok(built.includes("'memory-trash'"))
-  // Nothing is read or written before the home folder is confirmed.
-  assert.ok(built.includes('homeDirRecorded'))
-  assert.ok(built.includes("HOME_BINDING.action === 'allow'"))
+  // Nothing is read or written before the home folder is confirmed. The WHOLE
+  // wired line, anchored (review fix P8): a substring check stayed green with
+  // the predicate inverted (`|| !homeDirRecorded`) or a `|| true` tail, and the
+  // handler tests inject their own predicate, so this is the only guard on it.
+  assert.match(
+    built,
+    /\n\s*homeConfirmed: \(\) => HOME_BINDING\.action === 'allow' \|\| homeDirRecorded,\n/,
+    'home check is exactly: allow, or recorded',
+  )
   assert.ok(built.includes('ASSISTANT_ID'))
 })
 

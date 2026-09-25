@@ -16,13 +16,20 @@
  *   - off when CLAUDE_CODE_DISABLE_AUTO_MEMORY is true, or when the first
  *     settings file that sets autoMemoryEnabled sets it false (local, then
  *     project, then user; the CLI's switch set false forces it on);
- *   - moved by the first settings file that sets autoMemoryDirectory, which
- *     must be a full path (or start with ~/);
- *   - else keyed by the git root of the agent folder (a worktree follows its
- *     commondir to the main repository, which is how the CLI shares memory
- *     across worktrees), every character that is not a letter or digit turned
- *     into a hyphen, and refused past 200 characters (the CLI changed that rule
- *     in 2.1.224 and the new one was not measured).
+ *   - moved by the first settings file whose autoMemoryDirectory is not null
+ *     (an empty string included, as the CLI reads it), which must be a full
+ *     path or start with ~/ or ~\ and must not be the home folder itself, a
+ *     way out of it, a share, a root or a bare drive; a value the CLI would
+ *     not use is refused here rather than guessed. A folder the repository's
+ *     own settings chose is refused when any settings file blocks reads
+ *     outside the working folder, because the CLI does not load it then;
+ *   - else keyed by the git root of the agent folder, every character that is
+ *     not a letter or digit turned into a hyphen, and refused past 200
+ *     characters (the CLI changed that rule in 2.1.224 and the new one was not
+ *     measured). A worktree follows its commondir to the main repository only
+ *     when the CLI would: its git dir sits in <common>/worktrees and its gitdir
+ *     back link points at this folder's .git; a bare common dir is itself the
+ *     key. Otherwise the worktree keys by itself.
  * The CLI creates the folder at every session start, so a missing folder means
  * the answer is wrong or memory is not in use: it is refused and NOTHING is
  * created. The config dir is the one the daemon was given, never ~/.claude.
@@ -48,6 +55,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -69,6 +77,12 @@ export type MemoryFs = {
   stat: (path: string) => { mtimeMs: number; isDirectory: boolean } | null
   /** Recursive. Used for the trash only: the memory folder is never created. */
   mkdir: (path: string) => void
+  /**
+   * The real path, or null when it cannot be resolved. Optional: without it
+   * paths are compared as normalized strings, which differs only where a
+   * symlink is involved.
+   */
+  realpath?: (path: string) => string | null
 }
 
 export type MemoryErrorCode =
@@ -110,6 +124,7 @@ const TEMP_SUFFIX = '.bgos-tmp'
 const MSG = {
   off: 'auto memory is turned off for this agent',
   notFullPath: 'the memory folder setting is not a full path',
+  blocked: "this agent's settings stop Claude Code from reading the memory folder its project chose",
   tooLong: 'the agent folder path is too long to find its memory',
   noFolder: 'no memory folder found for this agent',
   blank: 'the text is missing',
@@ -193,9 +208,15 @@ export function mungeMemoryKey(root: string): string {
 /**
  * The repository the CLI keys memory by: the nearest folder holding `.git`. A
  * `.git` FILE is a worktree (or a submodule): its gitdir's `commondir` names
- * the main repository's git folder, whose parent is the main repository. With
- * no commondir (a submodule) the folder holding the file is the root. No `.git`
- * anywhere: the agent folder itself.
+ * the main repository's git folder. With no commondir (a submodule) the folder
+ * holding the file is the root. No `.git` anywhere: the agent folder itself.
+ *
+ * A port of the CLI's own root function (Claude Code 2.1.282, review fix P1):
+ * a worktree is followed to the main repository only when its git dir sits in
+ * `<common>/worktrees` and its `gitdir` back link resolves to this folder's
+ * `.git`; a moved or foreign worktree keys by itself. A common dir not named
+ * `.git` (a bare repository, the "bare plus worktrees" layout) is itself the
+ * key, unless it holds its own `.git`.
  */
 function gitRootOf(fs: MemoryFs, start: string): string {
   const origin = stripTrailing(start)
@@ -208,9 +229,19 @@ function gitRootOf(fs: MemoryFs, start: string): string {
       const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFile(dotGit) ?? '')
       if (!pointer) return dir
       const gitDir = resolveFrom(dir, pointer[1])
-      const common = (fs.readFile(joinPath(gitDir, 'commondir')) ?? '').trim()
-      if (!common) return dir
-      return parentDir(resolveFrom(gitDir, common)) ?? dir
+      const commonRaw = (fs.readFile(joinPath(gitDir, 'commondir')) ?? '').trim()
+      if (!commonRaw) return dir
+      const common = resolveFrom(gitDir, commonRaw)
+      if (normalizePath(parentDir(gitDir) ?? '') !== joinPath(common, 'worktrees')) return dir
+      const back = (fs.readFile(joinPath(gitDir, 'gitdir')) ?? '').trim()
+      if (!back) return dir
+      const real = (p: string): string | null => (fs.realpath ? fs.realpath(p) : normalizePath(p))
+      const backReal = real(resolveFrom(gitDir, back))
+      const rootReal = real(dir)
+      if (backReal == null || rootReal == null || backReal !== joinPath(rootReal, '.git')) return dir
+      const base = common.split(/[\\/]/).pop()
+      if (base !== '.git') return fs.stat(joinPath(common, '.git')) ? dir : common
+      return parentDir(common) ?? dir
     }
     const up = parentDir(dir)
     if (!up || up === dir) break
@@ -223,7 +254,7 @@ function readSettings(fs: MemoryFs, path: string): Record<string, unknown> | nul
   const text = fs.readFile(path)
   if (text == null) return null
   try {
-    const parsed = JSON.parse(text.replace(/^﻿/, ''))
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
   } catch {
     return null
@@ -236,6 +267,40 @@ function envSwitch(value: string | undefined): boolean | null {
   if (['1', 'true', 'yes', 'on'].includes(v)) return true
   if (['0', 'false', 'no', 'off'].includes(v)) return false
   return null
+}
+
+/**
+ * The CLI's check of an autoMemoryDirectory value (2.1.282, review fix P5),
+ * with no trim: the folder it names, or null when the CLI would not use it.
+ * `~/` and `~\\` join the home folder, but never the home folder itself or a
+ * way out of it; a share, a root, a bare drive and anything under three
+ * characters are refused.
+ */
+function movedDir(value: unknown, home: string): string | null {
+  if (typeof value !== 'string' || value === '') return null
+  let p = value
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    const rest = p.slice(2)
+    const n = normalizePath(rest || '.')
+    if (n === '' || n === '.' || n === '..' || /^\.\.[\\/]/.test(n) || !home) return null
+    p = joinPath(home, rest)
+  }
+  if (/^[\\/]{2}/.test(p) || p.includes('\0')) return null
+  const s = normalizePath(p).replace(/[\\/]+$/, '')
+  if (!isAbsolutePath(s) || s.length < 3 || /^[A-Za-z]:$/.test(s)) return null
+  return s
+}
+
+/** Any settings file sets permissions.blockReadsOutsideWorkingDirectories to true. */
+function blocksOutsideReads(settings: Array<Record<string, unknown> | null>): boolean {
+  return settings.some((s) => {
+    const p = s?.permissions
+    return (
+      !!p &&
+      typeof p === 'object' &&
+      (p as Record<string, unknown>).blockReadsOutsideWorkingDirectories === true
+    )
+  })
 }
 
 export function resolveMemoryFolder(input: {
@@ -269,12 +334,20 @@ export function resolveMemoryFolder(input: {
   }
 
   let memDir: string
-  const moved = first('autoMemoryDirectory', (v) => typeof v === 'string' && v.trim() !== '')
-  if (typeof moved === 'string') {
-    const setting = moved.trim()
-    if (setting.startsWith('~/') && home) memDir = joinPath(home, setting.slice(2))
-    else if (isAbsolutePath(setting)) memDir = setting
-    else return fail('unavailable', MSG.notFullPath)
+  // The first file where the key is present and not null decides, an empty
+  // string included (the CLI's sb()); its value is checked the CLI's way.
+  const movedFrom = settings.findIndex(
+    (s) => !!s && s.autoMemoryDirectory !== undefined && s.autoMemoryDirectory !== null,
+  )
+  if (movedFrom >= 0) {
+    const chosen = movedDir(settings[movedFrom]?.autoMemoryDirectory, home)
+    if (chosen == null) return fail('unavailable', MSG.notFullPath)
+    // Index 0 or 1 is the repository's own settings (local, then project). With
+    // reads outside the working folder blocked, the CLI does not load a folder
+    // those chose (map part 10, 5.3), so editing it would look right while the
+    // agent never reads it: refuse, the exact CLI scope was never measured.
+    if (movedFrom <= 1 && blocksOutsideReads(settings)) return fail('unavailable', MSG.blocked)
+    memDir = chosen
   } else {
     const key = mungeMemoryKey(gitRootOf(fs, agentDir))
     if (key.length > MEMORY_KEY_MAX) return fail('unavailable', MSG.tooLong)
@@ -327,7 +400,7 @@ function unquote(value: string): string {
 
 /** A note's frontmatter lines and where its body starts, or null when it has none. */
 function frontmatterOf(content: string): { lines: string[]; bodyAt: number } | null {
-  const lines = content.replace(/^﻿/, '').split('\n')
+  const lines = content.replace(/^\uFEFF/, '').split('\n')
   if (lines[0]?.replace(/\r$/, '').trim() !== '---') return null
   for (let i = 1; i < lines.length; i += 1) {
     if (lines[i].replace(/\r$/, '').trim() === '---') {
@@ -601,8 +674,8 @@ export function createClaudeMemoryStore(deps: {
   now: () => number
 }): ClaudeMemoryStore {
   const { fs } = deps
-  /** Every listed entry, newest last in insertion order, keyed by store and text. */
-  const remembered = new Map<string, Entry>()
+  /** Every listed entry, newest last in insertion order, keyed by store and text, with when it was listed. */
+  const remembered = new Map<string, Entry & { seenAt: number }>()
   let trashSeq = 0
 
   const indexPathOf = (memDir: string) => joinPath(memDir, MEMORY_INDEX_FILE)
@@ -633,7 +706,7 @@ export function createClaudeMemoryStore(deps: {
       if (entry.fileContent == null) continue
       const key = `${entry.store}\u0000${entry.text}`
       remembered.delete(key)
-      remembered.set(key, entry)
+      remembered.set(key, { ...entry, seenAt: deps.now() })
     }
     while (remembered.size > MEMORY_REMEMBER_MAX) {
       const oldest = remembered.keys().next().value
@@ -708,24 +781,31 @@ export function createClaudeMemoryStore(deps: {
     }
   }
 
-  /** A trash record with these words in this store, newest first; else a remembered note. */
+  /**
+   * The newer of a trash record with these words in this store (newest first)
+   * and a note this store listed with them; the trash wins a tie and a record
+   * whose time cannot be read (review fix P4: an old record must not restore a
+   * stale version over the note this daemon listed after it). A record passed
+   * over is kept, not used; pruning still applies.
+   */
   function restorableFor(target: MemoryTarget, text: string): Restorable | null {
     const hit = readTrash().find((t) => t.record.target === target && t.record.text === text)
+    const seen = remembered.get(`${target}\u0000${text}`)
+    const hitAt = hit ? Date.parse(hit.record.at) : Number.NaN
+    if (seen && seen.fileContent != null && (!hit || hitAt < seen.seenAt)) {
+      return {
+        fileName: seen.fileName,
+        fileContent: seen.fileContent,
+        lines: [{ text: seen.line, position: seen.position }],
+        trashName: null,
+      }
+    }
     if (hit) {
       return {
         fileName: hit.record.fileName,
         fileContent: hit.record.fileContent,
         lines: hit.record.lines,
         trashName: hit.name,
-      }
-    }
-    const seen = remembered.get(`${target}\u0000${text}`)
-    if (seen && seen.fileContent != null) {
-      return {
-        fileName: seen.fileName,
-        fileContent: seen.fileContent,
-        lines: [{ text: seen.line, position: seen.position }],
-        trashName: null,
       }
     }
     return null
@@ -830,9 +910,19 @@ export function createClaudeMemoryStore(deps: {
     return fail('store_busy', MSG.busy)
   }
 
+  /**
+   * Exactly one entry of that store whose text equals oldText, or else equals
+   * the hook of oldText (review fix P2): the app's Undo of a correction by hand
+   * sends the words as the owner typed them, and this store keeps only their
+   * hook (white space folded, cut at 300).
+   */
   function matchOne(entries: Entry[], target: MemoryTarget, oldText: string): Entry | MemoryFailure {
     const want = String(oldText ?? '').trim()
-    const matches = entries.filter((e) => e.store === target && e.text === want)
+    let matches = entries.filter((e) => e.store === target && e.text === want)
+    if (matches.length === 0) {
+      const hook = memoryHookOf(want)
+      if (hook && hook !== want) matches = entries.filter((e) => e.store === target && e.text === hook)
+    }
     if (matches.length === 0) return fail('no_match', MSG.noMatch)
     if (matches.length > 1) return fail('ambiguous', MSG.ambiguous)
     return matches[0]
@@ -851,9 +941,15 @@ export function createClaudeMemoryStore(deps: {
   function add(target: MemoryTarget, content: string): MemoryAnswer {
     const hook = memoryHookOf(content)
     if (!hook) return fail('bad_request', MSG.blank)
+    // The words exactly as listed come first (review fix P3): trash records and
+    // remembered notes are keyed by the listed text, which for a CLI line is
+    // neither folded nor cut, and an Undo sends that text back.
+    const exact = String(content ?? '').trim()
     return write((memDir, doc, entries) => {
-      if (entries.some((e) => e.store === target && e.text === hook)) return { ok: true, noop: true }
-      const source = restorableFor(target, hook)
+      if (entries.some((e) => e.store === target && (e.text === exact || e.text === hook))) {
+        return { ok: true, noop: true }
+      }
+      const source = (exact !== hook ? restorableFor(target, exact) : null) ?? restorableFor(target, hook)
       const taken = new Set(entries.map((e) => e.fileName.toLowerCase()))
       let files: FileWrite[] = []
       let next: IndexDoc
@@ -904,8 +1000,16 @@ export function createClaudeMemoryStore(deps: {
       // An Undo of a correction brings the old note back whole, not only its words.
       // Only for words that are gone: words another note still holds are not an
       // undo, and copying that note's body here would duplicate it.
-      const held = entries.some((e) => e !== entry && e.store === target && e.text === hook)
-      const source = hook === entry.text || held ? null : restorableFor(target, hook)
+      // The exact words first, then their hook (review fix P3), as in add.
+      const exact = String(newContent ?? '').trim()
+      const same = hook === entry.text || exact === entry.text
+      const held = entries.some(
+        (e) => e !== entry && e.store === target && (e.text === hook || e.text === exact),
+      )
+      const byExact = same || held || exact === hook ? null : restorableFor(target, exact)
+      const source = byExact ?? (same || held ? null : restorableFor(target, hook))
+      // A note restored by its exact words is listed under them, not their cut.
+      const lineHook = byExact ? exact : hook
       const content =
         source?.fileContent ??
         rewrittenNote(entry.fileContent, {
@@ -916,7 +1020,7 @@ export function createClaudeMemoryStore(deps: {
           body: bodyOf(newContent),
         })
       const lines = [...doc.lines]
-      lines[entry.position] = lineFor(entry.title || titleOf(hook, slugOf(hook)), entry.fileName, hook)
+      lines[entry.position] = lineFor(entry.title || titleOf(hook, slugOf(hook)), entry.fileName, lineHook)
       const index = serializeIndex({ ...doc, lines })
       if (overBudget(index) && bytesOf(index) > bytesOf(serializeIndex(doc))) return fail('over_budget', MSG.full)
       return {
@@ -1018,5 +1122,12 @@ export const nodeMemoryFs: MemoryFs = {
   },
   mkdir: (path) => {
     mkdirSync(path, { recursive: true })
+  },
+  realpath: (path) => {
+    try {
+      return realpathSync(path)
+    } catch {
+      return null
+    }
   },
 }

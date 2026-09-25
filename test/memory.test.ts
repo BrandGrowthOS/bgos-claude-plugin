@@ -135,9 +135,12 @@ test('a git worktree uses the main repository', () => {
     {
       '/w/.git': 'gitdir: /r/.git/worktrees/w\n',
       '/r/.git/worktrees/w/commondir': '../..\n',
+      // The back link git writes for a worktree, which the CLI checks (review fix P1).
+      '/r/.git/worktrees/w/gitdir': '/w/.git\n',
       // A relative gitdir, the way some tools write it.
       '/w2/.git': 'gitdir: ../r/.git/worktrees/w2\n',
       '/r/.git/worktrees/w2/commondir': '../..\n',
+      '/r/.git/worktrees/w2/gitdir': '/w2/.git\n',
       // A submodule: a .git FILE with no commondir is its own repository.
       '/s/.git': 'gitdir: /r/.git/modules/s\n',
       '/r/.git/HEAD': 'ref: refs/heads/main\n',
@@ -148,6 +151,66 @@ test('a git worktree uses the main repository', () => {
   assert.deepEqual(at('/w'), { ok: true, memDir: '/cfg/projects/-r/memory' })
   assert.deepEqual(at('/w2'), { ok: true, memDir: '/cfg/projects/-r/memory' })
   assert.deepEqual(at('/s'), { ok: true, memDir: '/cfg/projects/-s/memory' })
+})
+
+// Review fix P1 (P7 stage 2 review): the CLI's own root function (2.1.282)
+// trusts a worktree only when its git dir sits in <common>/worktrees and its
+// gitdir back link points at this folder's .git; otherwise it keys by the
+// worktree itself. A bare common dir (not named .git) is itself the key.
+test('a worktree the CLI cannot confirm keys by itself, as the CLI does', () => {
+  const fs = memoryFs(
+    {
+      // No back link at all.
+      '/w/.git': 'gitdir: /r/.git/worktrees/w\n',
+      '/r/.git/worktrees/w/commondir': '../..\n',
+      // A stale back link: the worktree was moved with a plain mv.
+      '/moved/.git': 'gitdir: /r/.git/worktrees/moved\n',
+      '/r/.git/worktrees/moved/commondir': '../..\n',
+      '/r/.git/worktrees/moved/gitdir': '/old/.git\n',
+      // A git dir outside <common>/worktrees.
+      '/w3/.git': 'gitdir: /elsewhere/wt\n',
+      '/elsewhere/wt/commondir': '/r/.git\n',
+      '/elsewhere/wt/gitdir': '/w3/.git\n',
+      '/r/.git/HEAD': 'ref: refs/heads/main\n',
+    },
+    [
+      '/cfg/projects/-r/memory',
+      '/cfg/projects/-w/memory',
+      '/cfg/projects/-moved/memory',
+      '/cfg/projects/-w3/memory',
+    ],
+  )
+  const at = (agentDir: string) => resolveMemoryFolder({ fs, agentDir, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at('/w'), { ok: true, memDir: '/cfg/projects/-w/memory' })
+  assert.deepEqual(at('/moved'), { ok: true, memDir: '/cfg/projects/-moved/memory' })
+  assert.deepEqual(at('/w3'), { ok: true, memDir: '/cfg/projects/-w3/memory' })
+})
+
+test('a worktree of a bare repository keys by the bare folder, as the CLI does', () => {
+  const fs = memoryFs(
+    {
+      '/p/main/.git': 'gitdir: /p/.bare/worktrees/main\n',
+      '/p/.bare/worktrees/main/commondir': '../..\n',
+      '/p/.bare/worktrees/main/gitdir': '/p/main/.git\n',
+      '/p/.bare/HEAD': 'ref: refs/heads/main\n',
+      // A bare common that holds its own .git: the CLI keys by the worktree.
+      '/q/main/.git': 'gitdir: /q/.bare/worktrees/main\n',
+      '/q/.bare/worktrees/main/commondir': '../..\n',
+      '/q/.bare/worktrees/main/gitdir': '/q/main/.git\n',
+      '/q/.bare/.git': 'gitdir: /somewhere\n',
+    },
+    [
+      '/cfg/projects/-p/memory',
+      '/cfg/projects/-p--bare/memory',
+      '/cfg/projects/-p-main/memory',
+      '/cfg/projects/-q/memory',
+      '/cfg/projects/-q--bare/memory',
+      '/cfg/projects/-q-main/memory',
+    ],
+  )
+  const at = (agentDir: string) => resolveMemoryFolder({ fs, agentDir, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at('/p/main'), { ok: true, memDir: '/cfg/projects/-p--bare/memory' })
+  assert.deepEqual(at('/q/main'), { ok: true, memDir: '/cfg/projects/-q-main/memory' })
 })
 
 test('the memory folder setting wins, local before project before user', () => {
@@ -180,6 +243,96 @@ test('a relative memory folder setting is refused, not guessed', () => {
   assert.equal(answer.ok, false)
   assert.equal((answer as any).code, 'unavailable')
   assert.equal((answer as any).message, 'the memory folder setting is not a full path')
+})
+
+// Review fix P5: the CLI takes the FIRST settings file whose value is not null
+// (an empty string included) and validates it, with no trim. The plugin
+// refuses an invalid value rather than guess (spec 10.4).
+test('the memory folder setting is read and checked the way the CLI does', () => {
+  const at = (files: Record<string, string>, dirs: string[] = []) =>
+    resolveMemoryFolder({
+      fs: memoryFs(files, ['/m/user', '/home/k/m', '/home/k', '/', '/a', MEM, ...dirs]),
+      agentDir: AGENT,
+      configDir: CFG,
+      home: HOME,
+      env: {},
+    })
+  const project = (value: unknown) => ({
+    [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: value }),
+    [`${CFG}/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/user' }),
+  })
+  const refused = { ok: false, code: 'unavailable', message: 'the memory folder setting is not a full path' }
+  // A blank left in a template stops the search: never the user's folder.
+  assert.deepEqual(at(project('')), refused)
+  // The home folder itself, and a way out of it, are refused.
+  assert.deepEqual(at(project('~/')), refused)
+  assert.deepEqual(at(project('~/..')), refused)
+  assert.deepEqual(at(project('~/../x')), refused)
+  // A Windows style home shorthand is accepted, like the CLI.
+  assert.deepEqual(at(project('~\\m')), { ok: true, memDir: '/home/k/m' })
+  // A share, a root, a bare drive and anything too short are refused.
+  assert.deepEqual(at(project('\\\\srv\\share\\m')), refused)
+  assert.deepEqual(at(project('//srv/share/m')), refused)
+  assert.deepEqual(at(project('/')), refused)
+  assert.deepEqual(at(project('C:\\')), refused)
+  assert.deepEqual(at(project('/a')), refused)
+  assert.deepEqual(at(project(5)), refused)
+  // A null is "not set": the next file decides.
+  assert.deepEqual(at(project(null)), { ok: true, memDir: '/m/user' })
+})
+
+// Review fix P6 (map part 10, 5.3): with blockReadsOutsideWorkingDirectories
+// set, a memory folder chosen by the repository's own settings is not loaded
+// by the CLI, so editing it would look right while the agent never sees it.
+test("a folder the repository chose is refused when reads outside the working folder are blocked", () => {
+  const block = JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } })
+  const { fs, raw, log } = harness(
+    {
+      [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/project' }),
+      [`${CFG}/settings.json`]: block,
+    },
+    ['/m/project', MEM],
+  )
+  const resolve = () => resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(resolve(), {
+    ok: false,
+    code: 'unavailable',
+    message: "this agent's settings stop Claude Code from reading the memory folder its project chose",
+  })
+  const store = storeOver(fs, resolve)
+  assert.equal((store.add('memory', 'Prefers tea') as any).code, 'unavailable')
+  assert.deepEqual(log, [])
+  assert.deepEqual(filesUnder(raw, '/m/project'), [])
+  // Control: the same permission with the folder chosen by the user's own settings is read as before.
+  const userChose = memoryFs(
+    { [`${CFG}/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/user', permissions: { blockReadsOutsideWorkingDirectories: true } }) },
+    ['/m/user', MEM],
+  )
+  assert.deepEqual(
+    resolveMemoryFolder({ fs: userChose, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }),
+    { ok: true, memDir: '/m/user' },
+  )
+})
+
+// Review fix P7: Windows Notepad saves settings.json with a byte order mark.
+// The BOM is built here with fromCharCode so no editor can drop it unseen.
+test('a settings file or a note that starts with a byte order mark still reads', () => {
+  const BOM = String.fromCharCode(0xfeff)
+  const moved = memoryFs(
+    { [`${AGENT}/.claude/settings.json`]: BOM + JSON.stringify({ autoMemoryDirectory: '/m/project' }) },
+    ['/m/project', MEM],
+  )
+  assert.deepEqual(resolveMemoryFolder({ fs: moved, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }), {
+    ok: true,
+    memDir: '/m/project',
+  })
+  const off = memoryFs({ [`${AGENT}/.claude/settings.json`]: BOM + JSON.stringify({ autoMemoryEnabled: false }) }, [MEM])
+  assert.equal((resolveMemoryFolder({ fs: off, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }) as any).code, 'memory_off')
+  const { fs } = harness({
+    [INDEX]: '- [Home](home.md) - lives in Dubai\n',
+    [`${MEM}/home.md`]: BOM + note('home', 'user', 'lives in Dubai'),
+  })
+  assert.deepEqual(texts(storeOver(fs).list(), 'user'), ['lives in Dubai'])
 })
 
 test('the config dir is the one given, never ~/.claude', () => {
@@ -615,6 +768,102 @@ test('a correction to words another note still holds rewrites this note, never c
   assert.equal(raw.readFile(`${MEM}/coffee.md`), coffee)
 })
 
+// Review fix P2: the app's 30 second Undo of a correction by hand sends the
+// words the owner typed as oldText, and the store keeps only their hook (white
+// space folded, cut at 300). So a match falls back to the hook of oldText.
+test('an undo of a typed correction matches its folded words', () => {
+  const original = note('tea', 'feedback', 'likes tea')
+  const fresh = () =>
+    harness({ [INDEX]: '- [Tea](tea.md) - likes tea\n', [`${MEM}/tea.md`]: original })
+  const long = `likes tea ${'and green tea in the afternoon '.repeat(13)}`.trim()
+  assert.ok(long.length > 380)
+  for (const typed of ['likes tea\nbut only green', 'likes  green tea', long]) {
+    const { fs, raw } = fresh()
+    const store = storeOver(fs)
+    assert.equal((store.replace('memory', 'likes tea', typed) as any).ok, true)
+    const back = store.replace('memory', typed, 'likes tea') as any
+    assert.deepEqual(texts(back, 'memory'), ['likes tea'], `undo of ${JSON.stringify(typed.slice(0, 30))}`)
+    assert.equal(raw.readFile(`${MEM}/tea.md`), original)
+  }
+  // remove with the words as typed, over several lines.
+  const { fs } = fresh()
+  const store = storeOver(fs)
+  assert.equal((store.add('memory', 'likes coffee\nblack') as any).ok, true)
+  assert.deepEqual(texts(store.remove('memory', 'likes coffee\nblack'), 'memory'), ['likes tea'])
+})
+
+// Review fix P3: trash records and remembered entries are keyed by the text as
+// LISTED (the CLI's hook, trimmed, not folded, not cut). An Undo sends that
+// text back, so the exact words are tried before their hook.
+test('an undo of a long or oddly spaced CLI line brings the note back whole', () => {
+  const long = `works on the platform team ${'and owns the billing service end to end '.repeat(8)}`.trim()
+  assert.ok(long.length > 300)
+  for (const words of [long, 'likes  green tea']) {
+    const stack = '---\nname: stack\ndescription: x\nmetadata:\n  node_type: memory\n  type: project\n  originSessionId: 62a4\n---\n\nThe full note.\n'
+    const index = `- [Tea](tea.md) - likes tea\n- [Stack](stack.md) ${EM} ${words}\n`
+    const make = () =>
+      harness({ [INDEX]: index, [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'), [`${MEM}/stack.md`]: stack })
+    // (d) adding it while it is still listed is a no-op.
+    {
+      const { fs, raw, log } = make()
+      const answer = storeOver(fs).add('memory', words) as any
+      assert.equal(answer.ok, true)
+      assert.deepEqual(log, [], 'nothing written')
+      assert.equal(raw.readFile(INDEX), index)
+    }
+    // (a), (b) removed, then added back: byte for byte, and the trash is empty.
+    {
+      const { fs, raw } = make()
+      const store = storeOver(fs)
+      assert.equal((store.remove('memory', words) as any).ok, true)
+      const back = store.add('memory', words) as any
+      assert.deepEqual(texts(back, 'memory'), ['likes tea', words])
+      assert.equal(raw.readFile(INDEX), index)
+      assert.equal(raw.readFile(`${MEM}/stack.md`), stack)
+      assert.deepEqual(trashNames(raw), [])
+    }
+    // (c) corrected, then corrected back to the words as listed.
+    {
+      const { fs, raw } = make()
+      const store = storeOver(fs)
+      assert.equal((store.replace('memory', words, 'moved to the data team') as any).ok, true)
+      const back = store.replace('memory', 'moved to the data team', words) as any
+      assert.deepEqual(texts(back, 'memory'), ['likes tea', words])
+      assert.equal(raw.readFile(`${MEM}/stack.md`), stack)
+    }
+  }
+})
+
+// Review fix P4: an old trash record must not win over the newer note this
+// daemon listed after it. Ties, and a record with no readable time, keep the
+// trash first (spec 10.6).
+test('an undo restores the newest version of a note, not an old trash record', () => {
+  let clock = NOW
+  const c1 = note('tea', 'feedback', 'likes tea, June version')
+  const c2 = note('tea-pref', 'feedback', 'likes tea, September version')
+  const { fs, raw } = harness({ [INDEX]: '- [Tea](tea.md) - likes tea\n', [`${MEM}/tea.md`]: c1 })
+  const store = createClaudeMemoryStore({
+    fs,
+    resolve: () => ({ ok: true, memDir: MEM }),
+    trashDir: TRASH,
+    now: () => clock,
+  })
+  // June: the owner deletes it in the panel and never undoes.
+  assert.equal((store.remove('memory', 'likes tea') as any).ok, true)
+  // Later the agent writes a new note with the same words.
+  clock = NOW + 90 * 24 * 3600 * 1000
+  raw.writeFile(`${MEM}/tea-pref.md`, c2)
+  raw.writeFile(INDEX, '- [Tea pref](tea-pref.md) - likes tea\n')
+  store.list()
+  // September: the agent removes it on the owner's request, outside the store.
+  raw.rm(`${MEM}/tea-pref.md`)
+  raw.writeFile(INDEX, '')
+  const back = store.add('memory', 'likes tea') as any
+  assert.deepEqual(texts(back, 'memory'), ['likes tea'])
+  assert.equal(raw.readFile(`${MEM}/tea-pref.md`), c2)
+  assert.equal(raw.readFile(`${MEM}/tea.md`), null)
+})
+
 test('a correction that would overflow the index is refused', () => {
   const filler = `- [big](big.md) - ${'x'.repeat(24_900)}`
   const index = `${filler}\n- [s](s.md) - short\n`
@@ -701,6 +950,9 @@ test('the node adapter reads a missing file as null and renames over an existing
     assert.equal(nodeMemoryFs.stat(join(dir, 'trash', 'deep'))?.isDirectory, true)
     nodeMemoryFs.rm(target)
     assert.equal(nodeMemoryFs.exists(target), false)
+    // Review fix P1: the CLI compares real paths, and a missing one is null.
+    assert.equal(typeof nodeMemoryFs.realpath?.(dir), 'string')
+    assert.equal(nodeMemoryFs.realpath?.(join(dir, 'absent')), null)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
