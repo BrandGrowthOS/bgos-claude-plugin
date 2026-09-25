@@ -2,15 +2,17 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.48.0 (2026-09-24)
+## 0.50.0 (2026-09-25)
 
-**Renumbered from 0.45.0.** This release was prepared as 0.45.0, but the
-plugin's main was released as 0.46.0 by another program without this work, so
-it ships as 0.48.0, stacked on 0.47.0 (the permission request card, prepared
-as 0.44.1). The HOAI canon no longer ties the plan card to a release number:
-it tells propose_plan and the plan card only to a daemon that DECLARES the
-`plan_card` capability (BGOS #1624), which this one now does, so the number is
-whatever release is free when this merges.
+**Renumbered from 0.45.0, then from 0.48.0, at merge.** This release was
+prepared as 0.45.0, then renumbered 0.48.0 when the plugin's main was released
+as 0.46.0 by another program without this work. The permission request card it
+stacks on (prepared as 0.44.1, then 0.47.0) has since shipped as 0.49.0 on top
+of main's 0.48.1, so this ships as 0.50.0, the next free number above it. The
+HOAI canon no longer ties the plan card to a release number: it tells
+propose_plan and the plan card only to a daemon that DECLARES the `plan_card`
+capability (BGOS #1624), which this one now does, so the number is whatever
+release is free when this merges.
 
 - **The agent can now show you its PLAN before it touches anything, and you
   answer with a button.** `propose_plan` posts a real card into the chat: a
@@ -109,11 +111,13 @@ whatever release is free when this merges.
   typed tool with no platform limit. It is what tells the canon to describe
   the tool and the card to this agent.
 
-## 0.47.0 (2026-09-24)
+## 0.49.0 (2026-09-25)
 
-**Renumbered from 0.44.1.** This release was prepared as 0.44.1, but the
-plugin's main was released as 0.46.0 by another program without this work, so
-it ships as 0.47.0 on top of 0.46.0. The HOAI canon no longer ties the
+**Renumbered from 0.44.1, then from 0.47.0, at merge.** This release was
+prepared as 0.44.1, then renumbered 0.47.0 when the plugin's main was released
+as 0.46.0 by another program without this work. Main has since moved on again
+without it (0.47.1, 0.48.0 and 0.48.1; main's own 0.47.0 was never released and
+was folded into 0.47.1), so it ships as 0.49.0 on top of 0.48.1. The HOAI canon no longer ties the
 permission request card to a release number: it tells the card only to a
 daemon that DECLARES the `permission_card` capability (BGOS #1624), which this
 one now does, so the number is whatever release is free when this merges.
@@ -229,7 +233,7 @@ one now does, so the number is whatever release is free when this merges.
     handler, including the drain. It needs no chat, no network and no intake,
     so an update drain must not turn it into a refusal. The drain deny above is
     for interactive mode, where the card genuinely cannot be posted or heard.
-  - **A prompt left on screen by a 0.46.0 or older daemon** is still
+  - **A prompt left on screen by a 0.48.1 or older daemon** is still
     recognised, for one release, though not for the reason the first draft of
     this note gave. It cannot be ANSWERED across the update: the pending
     request died with the process that posted it. What the tolerance buys is
@@ -247,6 +251,112 @@ one now does, so the number is whatever release is free when this merges.
   `boards_playbook`), because that fetch can run before the first heartbeat
   has stored the list, and the agent would otherwise not be told about the
   card until the canon was fetched again.
+
+## 0.48.1
+
+**An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**
+The browser tools' presence probe asked the backend for the browser host WITHOUT naming the agent, so the backend
+answered for the owner's desktop alone. With that app closed, every browser call from an agent placed on its own
+machine was refused as host offline, which is exactly the case the placement exists for (HOAI mission 25 goal 6).
+The probe now sends the agent's id, and the backend answers with the agent's own host when the owner placed it
+there. Re-vendored from HOAI's shim (BGOS #1642); bin/hoai-browser-mcp.mjs hashes to the pin, aaaff4b6.
+
+## 0.48.0
+
+**set_mission_goals: the agent writes the goals of a mission that has none.**
+Every /goal mission, and every mission an owner starts from the app, begins
+with no mini goals. Keep working ON now wakes the agent about every 30 minutes
+while a goal is unticked (HOAI #1635), and on a goal-less mission that wake
+asks the agent to write its goals first (KC, 2026-09-24).
+
+- **New tool `set_mission_goals`** (`mini_goals`, optional `mission_id` and
+  `chat_id`): `PUT integrations/assistants/:id/missions/:missionId/goals`. It
+  writes 2 to 12 `{ name, done_when }` goals into the OPEN mission that has
+  NONE, and keeps the same mission, so its Keep working switch and wake stay
+  with it. `create_mission` would have replaced it. A mission that already has
+  goals is refused: tick those instead. It validates goals with the same rule
+  as `create_mission`, now shared, so the two can never disagree.
+- **Declares `mission_set_goals` on every host.** The backend arms the
+  goal-less Keep working wake only for a daemon declaring it, so an agent is
+  never woken every 30 minutes to do something it has no tool for. It is a
+  plain HTTP write, so unlike the goal loop it needs no tmux.
+
+## 0.47.1
+
+**The agent's own browser asks its owner, as a card, and waits.** 0.46.0 shipped
+that browser UNGATED and named the gates as the follow-up; this is it. The
+0.47.0 entry below was written when only the rules had landed and said the host
+"does not yet ask with them". It does now, so that heading is folded into this
+one rather than left to read as the shipped state of something it describes
+half of. 0.47.0 was never released.
+
+- **Permission gates, using the desktop's rules.** Every browser_ call is
+  classified and decided by the vendored `policy.js`, so an agent is judged by
+  the same rules wherever its browser runs. A new site, any write on one, a
+  download, an upload, running scripts and every sensitive action is asked
+  about; a password or a code is never remembered by any answer.
+- **The card is the only surface, and it is posted immediately.** The desktop
+  opens a gate as a strip with a 60 second countdown and only PARKS an
+  unanswered one into the owner's chat. There is no pane on the agent's
+  machine and nobody is sitting at it, so there is no strip: the card goes to
+  the owner's chat with that agent the moment the gate is raised.
+- **The host ASKS what the owner answered**, on `GET /api/v1/browser/gate/:gateId`.
+  `browser_gate_answer` is emitted to the owner's person room and never to an
+  agent socket, and this host joins only `browser-host:<assistantId>`, so it
+  could otherwise post a card and then wait out the whole park for a frame that
+  cannot reach it. The read is scoped to the account AND to the assistant the
+  host serves, so a host serving one agent cannot read another's decision.
+- **The action runs at most once**, whichever call returns it. A gate that
+  outlives its call parks with a gate id, and `hoai_browser_wait_gate`
+  re-attaches to the same held run rather than starting a second.
+- **An ordinary gate answers inside the call that asked.** The attach budget
+  sits under the relay's call cap and over the default 60 second wait, and a
+  guard pins that ordering: it shipped inverted for one commit, and every gate
+  would have parked five seconds before its own deadline.
+- **Fail closed on every path that is not an explicit allow**: a card that could
+  not be posted, a gate the server no longer has, an expired card, a park that
+  runs out, an answer whose choice cannot be read, a gate kind the card route
+  cannot carry, and a host with no way to reach the owner at all.
+- **A group's browser is its own.** A room's frame carries `group-<chatId>`
+  rather than the acting human's principal, and a test with a real Chromium
+  shows the group sees neither the owner's nor either member's cookie, and that
+  its own does not leak back.
+- **`profiles.js` joins the vendored tier**, so "Always allow" and "Trust this
+  site" are stored in the shape the desktop reads. Both sides of the pin now
+  DERIVE the file set from disk instead of naming it, after a third file was
+  vendored, hashed, and silently checked by nothing.
+
+## 0.47.0 (never released, folded into 0.47.1)
+
+- **`lib/browser-host-core/` holds byte-identical copies of the BGOS rule tier**
+  (`policy.js` and `settings.js`): what counts as a read, a write, a sensitive
+  action, a credential, a blocked category, and what the owner's grants mean.
+  They are COPIED rather than re-implemented on purpose. Two hand-written
+  copies of a permission policy is how two hosts quietly come to disagree about
+  what is sensitive, and the disagreement surfaces as an agent doing something
+  on one machine that it would have been stopped from doing on another.
+  - They keep their ORIGINAL filenames in a directory of their own, because
+    `settings.js` does `require("./policy")`: a rename breaks that require and
+    a patched require breaks the byte-identity the hash exists to protect.
+  - The nested `package.json` declaring `type: commonjs` is load-bearing, since
+    this package is `type: module`; without it Node reads them as ESM and the
+    host cannot load the rules at all.
+- **Drift is now caught in BOTH directions.** `lib/browser-host-core/vendor.json`
+  pins each file's sha256 and `test/browser-host-core.vendor.test.ts` reads it,
+  following the shim's pattern; and BGOS carries a matching pin, so editing a
+  rule there fails ITS suite until someone re-vendors here. The shim's own
+  vendor test documents that missing second half, and that gap had already
+  shipped a stale copy with a dead relay lane for a round.
+- The vendor test does not stop at hashes: it loads the rules and asks them to
+  decide, so a passing hash is not the only thing proven.
+- `bin/hoai-browser-host.mjs` imports them and exposes `policy` and
+  `hostSettings`. Nothing calls them yet, so behaviour is unchanged.
+
+**Still ungated, and a backend gap is why.** `browser_gate_answer` reaches the
+owner's PERSON room only, deliberately, and a daemon host joins only its
+`browser-host:<assistantId>` room, so it can post a permission card and never
+hear the answer. A host-scoped read has to exist first; until it does, wiring
+the gate here would be a wait that never fires.
 
 ## 0.46.0
 

@@ -232,25 +232,11 @@ const GOALS_HELP =
   `(aim for ${MISSION_TARGET_RANGE}), each { name, done_when } where done_when states the ` +
   'observable check that proves the goal, e.g. "the URL returns 200".'
 
-/** Build the POST assistants/:id/missions body from snake_case tool args. */
-export function buildMissionCreateBody(input: {
-  title?: unknown
-  mini_goals?: unknown
-  chat_id?: unknown
-}): MissionBuildResult<MissionCreateBody> {
-  const { title, mini_goals, chat_id } = input
-
-  if (typeof title !== 'string' || !title.trim()) {
-    return { ok: false, error: 'title is required: a short mission headline the user will see on the card.' }
-  }
-  const trimmedTitle = title.trim()
-  if (trimmedTitle.length > MISSION_TITLE_MAX) {
-    return {
-      ok: false,
-      error: `title is too long (${trimmedTitle.length} chars, max ${MISSION_TITLE_MAX}).`,
-    }
-  }
-
+/**
+ * The 2..12 { name, done_when } goals a create and a set-goals write share,
+ * validated once so the two tools can never disagree about what a goal is.
+ */
+function parseMissionGoals(mini_goals: unknown): MissionBuildResult<MissionGoalBody[]> {
   if (!Array.isArray(mini_goals)) {
     return { ok: false, error: GOALS_HELP }
   }
@@ -303,6 +289,49 @@ export function buildMissionCreateBody(input: {
     }
     miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
   }
+  return { ok: true, body: miniGoals }
+}
+
+/** PUT integrations/assistants/:id/missions/:missionId/goals body. */
+export interface MissionSetGoalsBody {
+  miniGoals: MissionGoalBody[]
+}
+
+/**
+ * Build the set_mission_goals body: the mini goals of an open mission that has
+ * NONE yet. Same shape and bounds as create's, and nothing else goes on the
+ * wire (the backend keeps the mission's own title, chat and switch).
+ */
+export function buildMissionSetGoalsBody(input: {
+  mini_goals?: unknown
+}): MissionBuildResult<MissionSetGoalsBody> {
+  const goals = parseMissionGoals(input.mini_goals)
+  if (!goals.ok) return goals
+  return { ok: true, body: { miniGoals: goals.body } }
+}
+
+/** Build the POST assistants/:id/missions body from snake_case tool args. */
+export function buildMissionCreateBody(input: {
+  title?: unknown
+  mini_goals?: unknown
+  chat_id?: unknown
+}): MissionBuildResult<MissionCreateBody> {
+  const { title, mini_goals, chat_id } = input
+
+  if (typeof title !== 'string' || !title.trim()) {
+    return { ok: false, error: 'title is required: a short mission headline the user will see on the card.' }
+  }
+  const trimmedTitle = title.trim()
+  if (trimmedTitle.length > MISSION_TITLE_MAX) {
+    return {
+      ok: false,
+      error: `title is too long (${trimmedTitle.length} chars, max ${MISSION_TITLE_MAX}).`,
+    }
+  }
+
+  const goals = parseMissionGoals(mini_goals)
+  if (!goals.ok) return goals
+  const miniGoals = goals.body
 
   const body: MissionCreateBody = { title: trimmedTitle, miniGoals }
   // A chat is OPTIONAL and, when absent, the key must not exist at all. A
@@ -629,6 +658,19 @@ export function buildMissionCompletePath(assistantId: unknown, missionId: unknow
     return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
   }
   return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/complete` }
+}
+
+/**
+ * The set_mission_goals write. The PAIRING family, like the goal lane's
+ * /stopped report: goals are the agent's own promise, and the backend gives
+ * the owner no twin of this door.
+ */
+export function buildMissionSetGoalsPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `integrations/assistants/${assistantId}/missions/${missionId}/goals` }
 }
 
 /** The goal lane's check write. */

@@ -41,6 +41,13 @@
  *                       skipSlashCommands, see
  *                       docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
  *                       and the model has no tool for it.
+ *   mission_set_goals   the model has set_mission_goals, which writes the
+ *                       mini goals of an open mission that has none yet
+ *                       (every /goal mission starts that way). The backend
+ *                       arms a Keep working wake on a goal-less mission only
+ *                       for a daemon declaring this, because that wake asks
+ *                       the agent to write its goals. Every host: it is a
+ *                       plain HTTP write the model makes itself.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -53,7 +60,7 @@
  *   permission_card     this daemon relays Claude Code's permission prompt
  *                       as a BGOS request card (an `approval_request` with
  *                       an `approvalMeta`, Allow once and Deny) and honours
- *                       the owner's `ea:` answers to it (0.47.0,
+ *                       the owner's `ea:` answers to it (0.49.0,
  *                       lib/permission-relay.ts). Every host: the prompt
  *                       arrives over the channel's own permission
  *                       notification and the answer goes back the same way,
@@ -97,6 +104,7 @@ import { PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
+  'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
 ])
