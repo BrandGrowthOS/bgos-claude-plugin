@@ -2,6 +2,34 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.52.0
+
+**An owner can change this agent's memory from the app.**
+The HOAI Memory screen now reaches a Claude Code agent (HOAI P7 stage 2, C-39). This daemon answers a new
+`memory_rpc` lane (list, add, replace, remove) over the agent's own auto memory folder, the one the CLI reads at every
+start.
+
+- **The folder is found by the CLI's own rule, on every request.** `autoMemoryDirectory` from the agent's settings
+  (local, then project, then user), else the git root of the agent folder (a worktree shares its main repository's
+  memory), under the config dir this daemon runs with, never a hardcoded `~/.claude` and never the process folder.
+  Memory turned off is said so. A relative folder setting, an agent path over 200 characters, or a folder the CLI
+  never made is refused, and nothing is created.
+- **An entry is one line of `MEMORY.md`**, the only part the model reads at start; the full words live in the note the
+  line links to. A note typed `user` is listed as what the agent knows about its owner, the rest as its own notes.
+- **Changes apply from the agent's next start**, not in the conversation it is having now.
+- **Every change can be undone.** What a change takes away is kept in a trash outside the memory folder (the newest
+  50, in this agent's plugin state folder), and adding the same words back restores the whole note where it was. A
+  note the agent removed itself comes back whole too, while this daemon still remembers listing it.
+- **Safe beside the model.** Every file is written through a temp file and a rename, the note before its line, and the
+  index is compared right before it is replaced: a lost race answers busy instead of overwriting the other writer.
+  Replace and remove match one entry exactly, never a part of one.
+- **Only this agent answers.** A frame for another agent gets no answer at all, a re sent frame is answered again and
+  never run twice, only the pairing lock holder answers, and nothing is read or written before the agent's home
+  folder is confirmed.
+- **Search is answered as not available here**; the app hides it for Claude Code.
+- **Declares `memory_rpc` on every host.** The backend sends a memory frame to a Claude Code pairing only while it is
+  declared, so the gate is the token, never this version.
+
 ## 0.48.1
 
 **An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**
