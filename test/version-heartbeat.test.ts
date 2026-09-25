@@ -379,13 +379,16 @@ describe('declared capabilities on the heartbeat', () => {
     // the current turn. It is host shaped, so the beat carries a different
     // answer on a machine that cannot type into its own session, and the
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
-    // upgrade starts declaring without a restart.
+    // upgrade starts declaring without a restart. stop_pauses_mission (P6
+    // stage 3) rides with mission_pause: the Stop pause it promises is the
+    // same goal clear, so it is host shaped too.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
       'mission_goal_loop',
       'mission_pause',
+      'stop_pauses_mission',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false })]).toEqual([
       'mission_events',

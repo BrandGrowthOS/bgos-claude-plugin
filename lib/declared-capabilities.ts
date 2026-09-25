@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The five tokens, and what each one PROMISES the owner:
+ * The six tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -57,6 +57,19 @@
  *                       deliberately absent because nothing here could enforce
  *                       a pause and promised the goal lane would decide it.
  *                       This is that decision.
+ *   stop_pauses_mission an owner Stop pauses the chat's open mission with the
+ *                       reason "Stopped by you" instead of letting it run on,
+ *                       and the owner's next message there resumes it (P6
+ *                       stage 3). ONLY where the injector answers, beside
+ *                       mission_pause and for the same reason: the pause is
+ *                       what clears a Keep working goal whose own Stop hook
+ *                       would otherwise re prompt the model after it stood
+ *                       down (lib/stop-pause.ts, gated on mission_pause being
+ *                       declared on the same beat). BGOS serves the sentence
+ *                       that tells the agent so only to a daemon declaring
+ *                       it, so the token ships with the code that keeps it.
+ *                       Spelled by lib/session-controls-contract.ts, the file
+ *                       BGOS and codex-channel-bgos pin too.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -65,6 +78,8 @@
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
  */
+
+import { STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 
 /** Declared wherever this plugin runs, on every host. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -77,6 +92,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
   'mission_pause',
+  STOP_PAUSES_MISSION,
 ])
 
 /**

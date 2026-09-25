@@ -18,6 +18,7 @@ import {
   DECLARED_CAPABILITIES_BASE,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
+import { STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
 
 /** backend/src/dto/integrations/pair-exchange.dto.ts:25 */
 const CAPABILITY_TOKEN_REGEX = /^[a-z][a-z0-9_]{0,63}$/
@@ -95,6 +96,40 @@ test('no token is declared twice, on either host', () => {
     const declared = declaredCapabilities({ canInjectGoal })
     assert.equal(new Set(declared).size, declared.length)
   }
+})
+
+test('stop_pauses_mission is declared ONLY where the daemon can type, spelled by the contract file', () => {
+  // P6 stage 3 (spec 4.3, D13 item 4). The token tells BGOS to serve the
+  // sentence "your host also pauses the goal and the mission" to this agent,
+  // so it ships only with the code that keeps it: the armed goal case
+  // (lib/stop-pause.ts), which pauses on a Stop only where this daemon can
+  // clear the native goal, which is where it declares mission_pause.
+  assert.equal(STOP_PAUSES_MISSION, 'stop_pauses_mission')
+  assert.ok(declaredCapabilities({ canInjectGoal: true }).includes(STOP_PAUSES_MISSION))
+  assert.ok(!declaredCapabilities({ canInjectGoal: false }).includes(STOP_PAUSES_MISSION))
+})
+
+test('the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind', () => {
+  // server.ts stopGoalView gates the stop pause on
+  // declaredCapabilities(...).includes('mission_pause'), so a daemon that
+  // declared stop_pauses_mission without mission_pause would promise a pause
+  // it never makes, and one declaring mission_pause without it would make a
+  // pause the canon never tells its agent about.
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal })
+    assert.equal(declared.includes(STOP_PAUSES_MISSION), declared.includes('mission_pause'))
+  }
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: true })],
+    [
+      'mission_events',
+      'mission_goal_checks',
+      'mission_set_goals',
+      'mission_goal_loop',
+      'mission_pause',
+      'stop_pauses_mission',
+    ],
+  )
 })
 
 test('a late tmux upgrade changes the answer, because it is computed per beat', () => {
