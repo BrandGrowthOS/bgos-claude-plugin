@@ -26,6 +26,8 @@ the same digest BGOS and codex-channel-bgos pin.
   secret are withheld whole before they leave the machine. `resume_session` and `rename_session` answer
   `unsupported`: switching the session a running agent is pinned to needs a supervisor change that reaches an
   agent only when its owner runs `hoai` again, so it is a later update. Declares `sessions_library` on every host.
+  The bundled MCP instructions, what the model reads when the served canon cannot be fetched, carry the served
+  Sessions sentence word for word, and say resuming from the app is not available yet.
 
 ## 0.48.1
 

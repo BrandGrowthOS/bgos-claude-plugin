@@ -2287,7 +2287,7 @@ const mcp = new Server(
       'fabricate usage numbers if asked what a turn cost: the dashboard has',
       'the measured truth.',
       '',
-      '## Session Controls (context gauge + user Stop)',
+      '## Session Controls (context gauge, user Stop, Sessions list)',
       '',
       'The plugin reports your context-window fill (`contextPct`) to BGOS',
       'automatically, read from the session transcript. Do NOT set or estimate',
@@ -2303,6 +2303,8 @@ const mcp = new Server(
       'A Stop is neither a finish nor a failure: if that chat has an open',
       'mission, leave it open and do not call `complete_mission` for it because',
       'of the stop. Your owner can resume.',
+      '',
+      'Your owner can find the sessions in your agent folder by title in the Sessions sheet in the app; resuming one from the app is not available yet.',
     ].join('\n'),
   },
 )
