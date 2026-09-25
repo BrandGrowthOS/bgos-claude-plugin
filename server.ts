@@ -76,6 +76,7 @@ import {
 import { ensureMarketplaceAutoUpdate, readMarketplaceAutoUpdate } from './lib/claude-preseed.mjs'
 import { recordKnownGood } from './lib/known-good-store.mjs'
 import {
+  capabilitiesFetchPath,
   pickCapabilities,
   type ServedCapabilities,
 } from './lib/capabilities.js'
@@ -318,6 +319,27 @@ import {
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
+import {
+  PERMISSION_CLICK_RE,
+  PERMISSION_HOLD_SECONDS,
+  SWEEP_CLOCK_SKEW_MARGIN_MS,
+  VERDICT_RE,
+  answeredPermissionChoice,
+  buildPermissionRequestBody,
+  cardMessageIdFrom,
+  choiceToBehavior,
+  isApprovalExpired,
+  orphanedPermissionCards,
+  parsePermissionChoice,
+  pendingPermissionFastChatIds,
+  permissionBackstopMs,
+  permissionRowsReader,
+  resolvePermissionClick,
+  senderUserIdCandidate,
+  storedWaitSeconds,
+  watchPermissionVerdict,
+  type PermissionChoice,
+} from './lib/permission-relay.js'
 import {
   authSnapshot,
   resolveAuthRecheckIntervalMs,
@@ -1009,7 +1031,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
     let data: unknown = null
     try {
       data = await bgosGetCapped(
-        `integrations/capabilities?channel=claude&daemonVersion=${encodeURIComponent(RUNNING_VERSION ?? '0.0.0')}`,
+        capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', declaredCapabilities({ canInjectGoal: false })),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
         // fallback, so waiting longer than a few seconds buys nothing.
@@ -1782,9 +1804,12 @@ async function resolveFile(fileSpec: {
 }
 
 // ── Permission Relay State ───────────────────────────────────────────────────
-
-type PermissionBehavior = 'allow' | 'deny'
-type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
+//
+// The pure half of the relay (the card body, the callback vocabularies, the
+// click resolver, the verdict watch and its three endings) lives in
+// ./lib/permission-relay.ts so it can be unit tested without booting a daemon.
+// Everything left here is the impure wiring: the MCP notification, the HTTP
+// calls and the two transports a click can arrive on.
 
 interface PendingPermission {
   chatId: string
@@ -1799,6 +1824,14 @@ interface PendingPermission {
   // message (falls back to the configured account owner USER_ID).
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
+  /**
+   * How long this daemon is still listening to this request: the backstop
+   * built from the wait the SERVER stored, written once the card comes back.
+   * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
+   * absent until the post returns, which reads as the longest it could be
+   * (see pendingPermissionFastChatIds).
+   */
+  waitMs?: number
 }
 
 // Tracks the user_id of the most recent inbound USER message per chat. Used to
@@ -1813,11 +1846,20 @@ const lastInboundUserByChat = new Map<string, string>()
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
 
-/** Regex matching typed fallback verdict: "yes abcde" or "no abcde" */
-const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
-
-/** Regex matching BGOS permission button callback identifiers. */
-const PERMISSION_CALLBACK_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
+// How often the verdict watch looks at the chat now lives in
+// lib/permission-relay.ts (permissionPollIntervalMs), because it is no longer
+// one number: the watch can run for the owner's whole wait, and a 30 minute
+// request at the old flat 1.5 s was ~1,200 looks per waiting daemon.
+//
+// AND THAT IS ONLY HALF THE BILL, which the first version of this comment
+// dropped instead of counting. The same request also holds its chat on THIS
+// file's 2 s fast scope, because fastScopeChatIds reads pendingPermissions:
+// another ~900 reads of the same endpoint over the same half hour. That half
+// is bounded too, by the request's OWN wait rather than by a flat window
+// (PENDING_PERMISSION_FAST_MAX_MS is only the leak guard), because that scope
+// is what keeps this poll's click intake at 2 s instead of the five minute
+// sweep. About 300 of those reads at the ten minute wait the clamp will make
+// the default, about 900 at the unclamped half hour.
 
 // ── Button-value namespace isolation ─────────────────────────────────────────
 // escapeAgentButtonValue / unescapeAgentButtonValue / collidesWithReserved and
@@ -1836,61 +1878,15 @@ void RESERVED_VALUE_PREFIXES
  * not a fixed account owner. Falls back through the legacy top-level userId
  * and finally the configured owner (USER_ID) for pre-Block-A backends or when
  * the field is absent, so older deployments keep working unchanged.
+ *
+ * The chain itself is `senderUserIdCandidate` in lib/permission-relay.ts,
+ * which answers NULL where this one answers the owner. One reader with two
+ * endings, because the card read in `waitForVerdict` has to tell "nobody
+ * stamped an id" apart from "the owner sent it", and a second hand copy of the
+ * chain would drift from this one the first time a backend added a casing.
  */
 function senderUserIdOf(message: unknown): string {
-  const m = message as Record<string, unknown> | null | undefined
-  // WS payloads carry a nested sender object; the REST poll message carries a
-  // flat senderUserId (its own `sender` field is the role string, not an
-  // object, so reading .userId off it is a harmless undefined).
-  const nestedSender = m?.sender as { userId?: unknown } | null | undefined
-  const candidate =
-    (nestedSender?.userId as string | undefined) ??
-    (m?.senderUserId as string | undefined) ??
-    (m?.sender_user_id as string | undefined) ??
-    (m?.userId as string | undefined) ??
-    (m?.user_id as string | undefined)
-  return typeof candidate === 'string' && candidate ? candidate : USER_ID
-}
-
-function permissionOptions(requestId: string): Array<{ text: string; callbackData: string }> {
-  return [
-    { text: 'Allow once', callbackData: `perm:once:${requestId}` },
-    { text: 'Allow for session', callbackData: `perm:session:${requestId}` },
-    { text: 'Allow permanently', callbackData: `perm:permanent:${requestId}` },
-    { text: 'Do not allow', callbackData: `perm:deny:${requestId}` },
-  ]
-}
-
-function choiceToBehavior(choice: PermissionChoice): PermissionBehavior {
-  // Claude Code's current channel permission protocol, as used by the
-  // official Telegram plugin, accepts only behavior='allow' or 'deny'. Keep
-  // the richer BGOS UX now and collapse all allow scopes to 'allow' until the
-  // upstream channel protocol exposes scoped behaviors.
-  return choice === 'deny' ? 'deny' : 'allow'
-}
-
-function parsePermissionChoice(text: string, requestId: string): PermissionChoice | null {
-  const trimmed = text.trim()
-  const callback = PERMISSION_CALLBACK_RE.exec(trimmed)
-  if (callback && callback[2]?.toLowerCase() === requestId.toLowerCase()) {
-    return callback[1]!.toLowerCase() as PermissionChoice
-  }
-
-  const typed = VERDICT_RE.exec(trimmed)
-  if (typed && typed[2]?.toLowerCase() === requestId.toLowerCase()) {
-    return typed[1]!.toLowerCase().startsWith('y') ? 'once' : 'deny'
-  }
-
-  // Some BGOS clients materialize option clicks as a user message containing
-  // the visible label rather than callbackData. This is still safe here because
-  // waitForVerdict only inspects messages newer than the permission prompt.
-  const normalized = trimmed.toLowerCase().replace(/[✅🔒❌]/g, '').trim()
-  if (normalized === 'allow once') return 'once'
-  if (normalized === 'allow for session') return 'session'
-  if (normalized === 'allow permanently' || normalized === 'always allow') return 'permanent'
-  if (normalized === 'do not allow' || normalized === 'deny' || normalized === 'not allowed') return 'deny'
-
-  return null
+  return senderUserIdCandidate(message) ?? USER_ID
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
@@ -2322,27 +2318,61 @@ const PermissionRequestSchema = z.object({
 })
 
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
-  if (updateDrainMode) return Promise.resolve()
-  return trackMessageOperation(async () => {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
   if (AUTO_APPROVE) {
-    // Auto-approve mode: immediately allow all tool usage
+    // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
+    // 0.49.0 put the drain branch in front of this one, so a default auto
+    // approve install got a hard DENY for every tool raised inside an update
+    // drain, on a path that needs nothing the drain closes: no chat, no
+    // network, no intake, one notification back to the CLI it came from. A
+    // drain window recurs on every auto update, so that was a recurring,
+    // unnecessary refusal on the installs that asked for none. The drain deny
+    // below is for INTERACTIVE mode only, where the card really cannot be
+    // posted or heard.
     log(`Auto-approving: ${tool_name} [${request_id}]`)
-    await mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
-    }).catch((err) => {
-      log(`Failed to send auto-approve verdict: ${err}`)
-    })
-    return
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'allow' },
+      })
+      .catch((err) => {
+        log(`Failed to send auto-approve verdict: ${err}`)
+      })
   }
 
-  // Interactive mode: send a Telegram-style BGOS approval prompt with
-  // clickable options. We still keep the typed yes/no fallback below for old
-  // clients or if a button-click event is not materialized in chat history.
+  if (updateDrainMode) {
+    // An update is draining this daemon: inbound intake is closed, so nobody
+    // here can post a card or hear the answer to one. This used to return with
+    // NO verdict at all, which left the CLI blocked on a request that nothing
+    // would ever answer and nothing in any log to say so. It was survivable
+    // while the local clock was 120 s; it is not now that a request can hold a
+    // drain open for half an hour. Fail closed, the same as every other dead
+    // end in this handler: one step is skipped and the agent carries on.
+    //
+    // A request that was ALREADY open when the drain started is a different
+    // case and is not lost: its watch's read is not drain gated, so the
+    // owner's tap on that card still ends it. See the drain counter note.
+    log(
+      `Permission request during an update drain, denying: ` +
+        `${tool_name} [${request_id}]`,
+    )
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'deny' },
+      })
+      .catch((err) => {
+        log(`Failed to send the drain deny verdict: ${err}`)
+      })
+  }
+
+  return trackMessageOperation(async () => {
+  // Interactive mode: post a real BGOS approval card. The typed yes/no
+  // fallback below stays for old clients, or if a button-click event is not
+  // materialized in chat history.
   const chatId = monitoredChatIds[0]
   if (!chatId) {
     log(`No monitored chat found, auto-denying ${tool_name} [${request_id}]`)
@@ -2373,42 +2403,78 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     resolve: resolveButtonChoice,
   })
 
-  // Send the permission prompt as an inline-button message. Click handling
-  // lives in pollChat, perm:* callback_data is swallowed there and resolves
-  // the verdict via the pendingPermissions map. Text-reply ("yes abcde" /
-  // "no abcde") is kept as a fallback path for older clients without button
-  // rendering.
-  const promptText = [
-    `🔐 **Permission Request**`,
-    ``,
-    `Claude wants to use **${tool_name}**`,
-    `${description}`,
-    input_preview ? `\n\`\`\`\n${input_preview}\n\`\`\`` : '',
-    ``,
-    `Choose an option below. Fallback: type **yes ${request_id}** or **no ${request_id}**.`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-
+  // Post a REAL approval card: messageType approval_request, two ea: options
+  // and an approvalMeta. All three together are what makes the app draw the
+  // card, the sweep see the row and the morning report count it. A plain
+  // message with perm: chips, which is what this used to send, was none of
+  // those things.
+  //
+  // AND IT IS THE ONLY ROUTE THAT TAKES THEM, which costs the device push:
+  // the messages route sends none, and every push in HOAI goes out from
+  // /send-message, whose body declares no approvalMeta at all. The backend is
+  // adding that push on this create path in the same stage, on the same branch
+  // as the per agent clamp below; see the note at the top of
+  // lib/permission-relay.ts for the order this ships in.
+  //
+  // Nothing is awaited between the pending entry above and this post. The card
+  // carries this daemon's own hold and nothing it had to look up: the server
+  // stores the smaller of that and the owner's choice, and tells us which on
+  // the way back. Until the clamp is deployed that smaller number is always
+  // the hold itself, which is why the log below prints what came back rather
+  // than what was sent.
   try {
-    await bgosPost('send-message', {
-      chatId: Number(chatId),
-      assistantId: Number(ASSISTANT_ID),
-      text: promptText,
-      sender: 'assistant',
-      sentDate: new Date().toISOString(),
-      hasAttachment: false,
-      files: [],
-      options: permissionOptions(request_id),
-      renderMode: 'inline',
-    })
+    const posted = await bgosPost(
+      'messages',
+      buildPermissionRequestBody({
+        chatId,
+        requestId: request_id,
+        toolName: tool_name,
+        description,
+        inputPreview: input_preview,
+      }),
+    )
+    const cardMessageId = cardMessageIdFrom(posted)
+    // What the SERVER decided this request waits, off the row it just created.
+    // Null means the response did not say, and the backstop falls back to the
+    // hold, which is the longest it could have been.
+    const storedWait = storedWaitSeconds(posted)
+    // Now that the wait is known, bound the chat's 2 s fast scope by it rather
+    // than by a flat ten minutes: the entry stays fast for as long as this
+    // daemon is still listening to the request. Until this line runs the entry
+    // states no wait, which reads as the longest it could be.
+    const held = pendingPermissions.get(request_id)
+    if (held) held.waitMs = permissionBackstopMs(storedWait)
 
-    log(`Permission prompt sent to chat ${chatId} for ${tool_name} [${request_id}]`)
+    log(
+      `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
+        `(message ${cardMessageId ?? 'unknown'}, wait ` +
+        `${storedWait === null ? 'not stated' : `${storedWait}s`})`,
+    )
+    if (cardMessageId === null) {
+      // Not cosmetic, and worth a line of its own: with no id there is no row
+      // to watch, so nothing can read the server's own verdict and nothing can
+      // strip the buttons afterwards. If this ever shows up in the logs, the
+      // messages route's response shape moved under us.
+      log(
+        `Permission [${request_id}]: the post returned no numeric message id, ` +
+          `so the server expiry arm is off for this request and only a click ` +
+          `or the local backstop can end it`,
+      )
+    }
 
-    // Race: inline-button click vs. text-reply verdict vs. 120s timeout.
+    // Race: an inline-button click on either transport, against the watch on
+    // the chat itself (the owner's typed answer, the server's own expiry, and
+    // the local backstop behind both). There is no daemon-side clock racing
+    // the server any more: see lib/permission-relay.ts.
     const choice = await Promise.race<PermissionChoice>([
       buttonChoice,
-      waitForVerdict(request_id, chatId, 120_000, requesterUserId),
+      waitForVerdict(
+        request_id,
+        chatId,
+        cardMessageId,
+        permissionBackstopMs(storedWait),
+        requesterUserId,
+      ),
     ])
     const behavior = choiceToBehavior(choice)
 
@@ -2433,86 +2499,318 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 })
 
 /**
- * Wait for the user to choose a permission verdict in the BGOS chat.
- * Accepts either a button materialized as callbackData/text, or the typed
- * fallback "yes <id>" / "no <id>".
+ * Wait for a permission request to be settled, by the owner or by the server.
+ *
+ * Three endings, and only one of them is ours (see lib/permission-relay.ts):
+ * the owner's answer (a button materialized as callbackData/text, or the
+ * typed "yes <id>" / "no <id>" fallback), the SERVER's own
+ * `approval_meta.expired` flag on the card, and a local backstop that sits 90
+ * s behind the owner's whole wait and exists only for a server that never
+ * answers at all. Before 0.49.0 this was a flat 120 s clock, which is how a
+ * request could be declined here while the card in the owner's hand was still
+ * perfectly tappable.
  *
  * The verdict is bound to `requesterUserId`, the user who drove the session
- * that triggered this permission request. In a shared-assistant chat this
- * prevents an unrelated user from approving/denying a prompt that wasn't
- * theirs. The binding is only enforced when the resolving message carries a
- * comparable per-sender user id; if it doesn't (current backend), we fall back
- * to the existing `sender === 'user'` behavior (see TODO below).
+ * that triggered this permission request, so in a shared-assistant chat an
+ * unrelated user cannot approve or deny a prompt that was not theirs. The two
+ * arms below read that binding off DIFFERENT fields, and so they answer an
+ * unstamped one differently: a typed verdict is an inbound user message and a
+ * current backend stamps a real per-sender id on one of those, so
+ * `verdictFrom` compares and refuses; a TAP carries no id at all, so
+ * `answeredOn` accepts what nobody stamped rather than charging the owner a
+ * backstop deny for an Allow they really gave. Each arm says so where it is.
  */
 async function waitForVerdict(
   requestId: string,
   chatId: string,
+  cardMessageId: number | null,
   timeoutMs: number,
   requesterUserId: string,
 ): Promise<PermissionChoice> {
-  const startTime = Date.now()
   const baselineId = chatLastSeen.get(chatId) ?? 0
+  // See answeredOn below: the card is re-read every tick, so its mismatch line
+  // is said once rather than once per look.
+  let foreignTapLogged = false
 
-  while (Date.now() - startTime < timeoutMs) {
-    await new Promise((r) => setTimeout(r, 1500))
-
-    try {
-      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`)
-      // 304: nothing changed since the last look, so no verdict landed either.
-      if (isNotModified(raw)) continue
-      const data = raw as ChatHistoryResponse
-      if (!data.messages?.length) continue
-
-      // Look for new user messages that match one of the verdict formats.
-      for (const msg of data.messages) {
-        if (msg.message.id <= baselineId) continue
-        if (msg.message.sender !== 'user') continue
-        if (
-          isAgentInbound({
-            senderType: pollSenderTypeOf(msg),
-            agentOrigin: pollAgentOriginOf(msg),
+  const verdict = await watchPermissionVerdict<ChatMessage>({
+    requestId,
+    timeoutMs,
+    // A MONOTONIC reading, not the wall clock. Everything this hands back is
+    // used as a duration (the backstop and the poll cadence), and a wall clock
+    // that steps FORWARD, after a laptop resumes from sleep or an NTP
+    // correction lands, would carry the elapsed time past the timeout and deny
+    // a request whose card is still perfectly tappable. That is the 120 s bug
+    // wearing a different hat, and it is free to rule out.
+    now: () => performance.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log,
+    // ONE OF THE TWO WAYS THIS LOOP LEARNS THE OWNER ANSWERED: a click intake
+    // settled the request on the other side of the race, the entry left the
+    // map, and this read is how the loop finds out. The other way is
+    // `answeredOn` below, which reads the tap off the card row itself when no
+    // intake heard it at all. Without THIS one the loop polled on for the
+    // whole backstop after an answer that took five seconds, then stripped
+    // the buttons off the answered card.
+    stillPending: () => pendingPermissions.has(requestId),
+    // The page, plus the card itself once the page stops carrying it. See
+    // permissionRowsReader: this read is the NEWEST 50 rows, and a wait that
+    // now lasts minutes can outlive the card's place in them.
+    rows: permissionRowsReader<ChatMessage>({
+      cardMessageId,
+      idOf: (msg) => msg.message.id,
+      page: async () => {
+        try {
+          const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+            // Its OWN validator. The default key is the path, and the
+            // ask_user_input wait loop reads the same path in the same chat:
+            // whichever loop got the 200 recorded the ETag and the other one
+            // got a 304 and lost that tick. Per REQUEST, so two open requests
+            // in one chat cannot do it to each other either. The cache is a
+            // bounded LRU, so a key per request costs nothing.
+            cacheKey: `perm:${requestId}`,
           })
-        ) {
-          continue
+          // 304: nothing changed since the last look, so no verdict landed either.
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          if (!data.messages?.length) return null
+          return data.messages
+        } catch {
+          // Poll error, retry on the next tick.
+          return null
         }
-
-        // User binding: only accept the verdict from the user who triggered
-        // the request. We extract a per-sender user id from the message when
-        // present and require it to equal requesterUserId.
-        //
-        // TODO(backend): the chat-message payload does not yet carry a distinct
-        // per-sender user id (senderUserIdOf falls back to USER_ID), so in a
-        // multi-user shared-assistant chat this comparison is currently a
-        // no-op (USER_ID === USER_ID) and we still accept any user-sent verdict
-        //, the same as the pre-hardening behavior. Once the backend stamps a
-        // real sender user id, this binding tightens automatically with no
-        // further code change. The button-click path (PERMISSION_CALLBACK_RE in
-        // pollChat) carries the same limitation and the same future fix.
-        const resolverUserId = senderUserIdOf(msg.message)
-        if (resolverUserId !== requesterUserId) {
-          log(
-            `Ignoring permission verdict for [${requestId}] from user ` +
-              `${resolverUserId} (request belongs to ${requesterUserId})`,
+      },
+      card: async () => {
+        if (cardMessageId === null) return null
+        try {
+          // One row, anchored on the card. `beforeId` is exclusive (`m.id <`),
+          // so the id above it asks for the card itself. Its own cacheKey for
+          // the same reason the page has one, and a 304 here is the honest
+          // answer that the row has not changed, so no expiry has landed.
+          const raw = await bgosGet(
+            `chats/${chatId}/messages?userId=${USER_ID}` +
+              `&beforeId=${cardMessageId + 1}&limit=1`,
+            { cacheKey: `perm-card:${requestId}` },
           )
-          continue
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          const row = data.messages?.[0]
+          return row && row.message.id === cardMessageId ? row : null
+        } catch {
+          return null
         }
-
-        const text = msg.message.text ?? ''
-        const choice = parsePermissionChoice(text, requestId)
-        if (!choice) continue
-
-        // Update last seen so we don't re-process this message
-        advanceChatCursor(chatId, msg.message.id)
-
-        return choice
+      },
+    }),
+    // The server is the judge. Only OUR card counts: another agent's expired
+    // approval sitting in the same chat is none of this request's business.
+    expiredOn: (msg) =>
+      cardMessageId !== null &&
+      msg.message.id === cardMessageId &&
+      isApprovalExpired(msg.message),
+    // THE OWNER'S TAP, off the card row, and this loop is the only lane that
+    // always carries it. A tap writes no user message, so verdictFrom below
+    // cannot see one; the poll's click intake stops seeing the card once it
+    // falls off the newest 50, and every intake is shut while an update
+    // drains. This read is anchored on the card and is not drain gated, so an
+    // Allow that used to be lost, and charged to the owner as a deny at the
+    // backstop, now ends the request.
+    //
+    // Only OUR card, the same rule as the expiry above. And the chat cursor is
+    // deliberately NOT advanced here, unlike verdictFrom: the card is an
+    // assistant row the delivery path never forwards, so moving the cursor
+    // past it would skip whatever the owner typed alongside the tap.
+    answeredOn: (msg) => {
+      const ours = cardMessageId !== null && msg.message.id === cardMessageId
+      if (!ours) return null
+      // THE TAP FIRST, THE TAPPER SECOND, and the order is load bearing. Every
+      // tick re-reads this card, and on all but one of those reads there is no
+      // answer on it at all: asking who tapped before asking whether anyone
+      // did would burn the once per request log line below on a card nobody
+      // has touched.
+      const choice = answeredPermissionChoice(msg.message, requestId)
+      if (!choice) return null
+      // The requester binding, read off the ANSWER PAYLOAD rather than off the
+      // card row, whose own sender is this assistant. It is NULL AWARE here,
+      // and that is what makes this lane different from the two click intakes:
+      // no backend stamps a tapper id on an answer today, so read through
+      // senderUserIdOf's owner fallback an unstamped tap would compare unequal
+      // on a SHARED assistant, where the requester is the person the agent was
+      // shared with. The alternative to accepting it is a backstop deny of an
+      // approval the owner really gave, which is the exact failure this lane
+      // exists to remove. So an unstamped tap is ACCEPTED, a tap that NAMES a
+      // different user is dropped, and the intakes keep their stricter rule
+      // because a click they refuse is not lost whenever the card's id came
+      // back off the post: this read then sees the same answer on the card a
+      // tick later (with no id this read is off, and the post site says so).
+      // All three decide on the same field
+      // the day the backend stamps a tapper id on the answer.
+      const clickerUserId = senderUserIdCandidate(msg.message.answerPayload)
+      if (clickerUserId !== null && clickerUserId !== requesterUserId) {
+        // Once per request, unlike verdictFrom's line. A user message is read
+        // once and then left behind the cursor; the CARD is re-read on every
+        // tick of a wait that can run half an hour, so logging per read would
+        // be hundreds of copies of one sentence.
+        if (!foreignTapLogged) {
+          foreignTapLogged = true
+          log(
+            `Ignoring permission tap on card ${msg.message.id} [${requestId}] ` +
+              `from user ${clickerUserId} (request belongs to ${requesterUserId})`,
+          )
+        }
+        return null
       }
-    } catch {
-      // Poll error, retry
+      return choice
+    },
+    verdictFrom: (msg) => {
+      if (msg.message.id <= baselineId) return null
+      if (msg.message.sender !== 'user') return null
+      if (
+        isAgentInbound({
+          senderType: pollSenderTypeOf(msg),
+          agentOrigin: pollAgentOriginOf(msg),
+        })
+      ) {
+        return null
+      }
+
+      // User binding: only accept the verdict from the user who triggered
+      // the request. We extract a per-sender user id from the message when
+      // present and require it to equal requesterUserId.
+      //
+      // AND ON THIS ARM IT DECIDES. The row is an inbound user message, and a
+      // current backend stamps a real per-sender id on one of those, so on a
+      // shared assistant a second person's typed "yes <code>" is refused here.
+      // The owner fallback fires only on a backend old enough to stamp
+      // nothing, or on a row carrying no id, where the comparison is as loose
+      // as it was before. The TAP is the case that cannot be read this way at
+      // all, because no answer payload carries an id yet, which is why
+      // answeredOn above is null aware and this arm is not.
+      const resolverUserId = senderUserIdOf(msg.message)
+      if (resolverUserId !== requesterUserId) {
+        log(
+          `Ignoring permission verdict for [${requestId}] from user ` +
+            `${resolverUserId} (request belongs to ${requesterUserId})`,
+        )
+        return null
+      }
+
+      const text = msg.message.text ?? ''
+      const choice = parsePermissionChoice(text, requestId)
+      if (!choice) return null
+
+      // Update last seen so we don't re-process this message
+      advanceChatCursor(chatId, msg.message.id)
+
+      return choice
+    },
+    // Best effort, and only on the backstop: a card nobody is listening to
+    // any more must not keep looking answerable. The owner's own words for
+    // what happened come from the server's expiry; this is the case where the
+    // server said nothing at all.
+    retireCard: async () => {
+      if (cardMessageId === null) return
+      await bgosPatch(`messages/${cardMessageId}`, { options: [] })
+    },
+  })
+
+  return verdict.choice
+}
+
+/**
+ * The request cards a previous run of this daemon left looking live.
+ *
+ * `pendingPermissions` is memory. A crash, a kill or an ordinary restart in
+ * the middle of a wait takes the request with it: nothing re-sends a verdict
+ * to the CLI, and, worse for the owner, nothing retires the CARD. Its buttons
+ * came off at the watch's backstop, and the watch died with the process, so
+ * the row sat there tappable until the server's own expiry at
+ * `created_at + wait_seconds`. That was 60 s before 0.49.0 and is up to half
+ * an hour now, during which a tap tells the owner the request was approved
+ * while nothing at all is listening.
+ *
+ * So this sweep retires them on boot: the buttons come off, the card stops
+ * inviting an answer, and the row keeps its words and its history.
+ *
+ * THE NEWEST PAGE IS THE LIMIT, and it is the honest cost of doing this in one
+ * read per chat. `chats/<id>/messages` with no cursor is the newest 50 rows,
+ * so a card that a busy chat has already pushed off that page is left to the
+ * server's expiry, exactly as it was before. That is the bounded case: the
+ * sweep is a boot time courtesy, not a guarantee, and paging back through a
+ * chat's history on every boot would cost every daemon a great deal to catch
+ * the rarest orphan.
+ *
+ * Its own ETag key, for the same reason the watch has one: the ordinary chat
+ * poll reads this path too, and sharing a validator would hand one of the two
+ * a 304 and lose it a cycle.
+ *
+ * AND IT ONLY LOOKS BACKWARDS, found by the second review. Two daemons can
+ * share one pairing and therefore monitor the same chats, and the held set
+ * only knows the requests THIS process is holding, so on the clauses alone a
+ * booting daemon would strip the buttons off a card the other one was at that
+ * moment still waiting on. `createdBefore` is the answer: a row written at or
+ * after this process started is not a card this process left behind.
+ *
+ * AND THAT BOUND COMPARES TWO CLOCKS, which is the third review's finding. The
+ * row's date is the BACKEND's stamp and the bound is this host's `Date.now()`,
+ * so a host running ahead of the backend would read another daemon's fresh
+ * card as older than its own boot and strip its buttons anyway. The bound is
+ * therefore set SWEEP_CLOCK_SKEW_MARGIN_MS (a minute) behind boot, which is
+ * the protective direction: a smaller bound skips more rows. The cost falls on
+ * this daemon alone and is small, this run's own orphans from the last minute
+ * before it stopped, which keep their buttons until the server's expiry.
+ */
+async function retireOrphanedPermissionCards(): Promise<void> {
+  let retired = 0
+  for (const chatId of monitoredChatIds) {
+    let messages: ChatMessage[]
+    try {
+      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+        cacheKey: `perm-sweep:${chatId}`,
+      })
+      if (isNotModified(raw)) continue
+      messages = (raw as ChatHistoryResponse).messages ?? []
+    } catch (err) {
+      log(`Permission boot sweep: could not read chat ${chatId} (ignored): ${err}`)
+      continue
+    }
+    const orphans = orphanedPermissionCards(
+      messages.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        messageType: m.message.messageType,
+        answeredAt: m.message.answeredAt,
+        createdAt: sentDateToMs(m.message.sentDate),
+        hasOptions: (m.messageOptions ?? []).length > 0,
+        approvalMeta: m.message.approvalMeta,
+      })),
+      {
+        // A request raised while this very boot was running is live, not an
+        // orphan, and must keep its buttons.
+        heldRequestIds: new Set(pendingPermissions.keys()),
+        // And one raised after this process started is not this process's to
+        // retire at all: another daemon on the same pairing monitors the same
+        // chats, and heldRequestIds cannot see its requests. A minute BEHIND
+        // boot rather than on it, because the row's date is the backend's
+        // clock and this is the host's (see SWEEP_CLOCK_SKEW_MARGIN_MS).
+        createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS,
+      },
+    )
+    for (const card of orphans) {
+      try {
+        await bgosPatch(`messages/${card.id}`, { options: [] })
+        retired += 1
+        log(
+          `Permission boot sweep: retired card ${card.id} in chat ${chatId} ` +
+            `[${card.requestId ?? 'no request id'}], left live by a run that ` +
+            `stopped mid wait`,
+        )
+      } catch (err) {
+        log(`Permission boot sweep: could not retire card ${card.id} (ignored): ${err}`)
+      }
     }
   }
-
-  log(`Permission timeout for [${requestId}], denying`)
-  return 'deny'
+  if (retired === 0) {
+    log('Permission boot sweep: no cards were left live by a previous run')
+  }
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -5349,6 +5647,16 @@ interface ChatMessage {
     messageType?: string | null
     answeredAt?: string | null
     answerPayload?: AnswerPayload | null
+    // The approval card's own metadata, echoed back on every read (the
+    // backend hands the whole JSONB value back, so what was sent comes back).
+    // The permission relay reads three fields of it: `expired`, which the
+    // server sets when a request outlives its wait and which, not a local
+    // clock, is what ends the wait; and `agent_route` plus `request_id`,
+    // which are how the boot sweep recognises a card this daemon's own kind
+    // left behind (lib/permission-relay.ts).
+    approvalMeta?:
+      | { expired?: unknown; agent_route?: unknown; request_id?: unknown }
+      | null
     renderMode?: 'inline' | 'modal' | string | null
     commandName?: string | null
     commandArgs?: string | null
@@ -7099,35 +7407,40 @@ async function pollChat(chatId: string): Promise<void> {
       const buttonText = payload.buttonText ?? payload.button_text ?? ''
       const customText = payload.customText ?? payload.custom_text ?? undefined
 
-      // Internal permission-flow intercept: perm:(once|session|permanent|deny):<request_id>.
-      // Swallow these, do NOT forward to Claude as a channel event; resolve
-      // the pending verdict instead. The three allow scopes currently collapse
-      // to Claude's binary allow behavior in choiceToBehavior().
-      const permMatch = PERMISSION_CALLBACK_RE.exec(callbackData)
-      if (permMatch) {
-        const [, choice, requestId] = permMatch
-        const pending = pendingPermissions.get(requestId)
-        if (pending) {
-          // User binding (mirrors waitForVerdict): only the user who triggered
-          // the request may resolve it via a button click.
-          //
-          // TODO(backend): the answer payload carries no clicker user id, so
-          // senderUserIdOf falls back to USER_ID and this comparison is a
-          // no-op today (same limitation as the text-verdict path). It tightens
-          // automatically once the backend stamps a clicker user id.
-          const clickerUserId = senderUserIdOf(payload)
-          if (clickerUserId !== pending.requesterUserId) {
-            log(
-              `Ignoring permission button click ${choice} [${requestId}] from ` +
-                `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
-            )
-            continue
-          }
-          log(`Permission inline-button click: ${choice} [${requestId}]`)
-          pending.resolve(choice!.toLowerCase() as PermissionChoice)
-          pendingPermissions.delete(requestId)
+      // Internal permission-flow intercept: ea:(once|deny):<request_id>, plus
+      // the retired perm: vocabulary for a prompt an older build of this
+      // daemon posted and is still holding. Swallow these, do NOT forward to
+      // Claude as a channel event; resolve the pending verdict instead. The
+      // user binding and every log line below are unchanged; the parse and the
+      // resolve now live in lib/permission-relay.ts so both transports share
+      // one copy of them.
+      //
+      // The answer payload carries no clicker user id on any backend today, so
+      // this read falls back to the owner: on a SHARED assistant, where the
+      // requester is the person the agent was shared with, their own click is
+      // refused here as foreign. That rule predates the card read and is left
+      // exactly as it is, because the tap is not lost when it happens, whenever
+      // the card's id came back off the post: the watch then reads the same
+      // answer off the card row a tick later, and THAT read is null aware (see
+      // answeredOn in waitForVerdict; with no card id that read is off). Both decide on
+      // the same field the day the backend stamps a clicker user id.
+      const permOutcome = resolvePermissionClick({
+        callbackData,
+        clickerUserId: senderUserIdOf(payload),
+        pending: pendingPermissions,
+      })
+      if (permOutcome.kind !== 'not_permission') {
+        if (permOutcome.kind === 'resolved') {
+          log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
+        } else if (permOutcome.kind === 'foreign') {
+          log(
+            `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
+              `user ${permOutcome.clickerUserId} (request belongs to ${permOutcome.requesterUserId})`,
+          )
         } else {
-          log(`Stale permission click ${choice} [${requestId}], no pending entry`)
+          log(
+            `Stale permission click ${permOutcome.choice} [${permOutcome.requestId}], no pending entry`,
+          )
         }
         continue
       }
@@ -8538,6 +8851,29 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 })
 
 // The daemon's live drain counters (shared with SelfUpdater in main()).
+//
+// KNOWN, NOT YET DECIDED (0.49.0 review, drafted as 0.44.1 and 0.47.0). A permission request holds BOTH
+// `activeOperations` (the handler body runs inside trackMessageOperation) and
+// `pendingPermissions` for as long as the owner has to answer, which used to
+// be at most two minutes and can now be half an hour. The scheduled update
+// path waits for this snapshot to clear with no deadline of its own, so an
+// update that fires during an open request can sit in drain, with inbound
+// intake closed, until that request settles. The handler above now answers a
+// NEW request with a deny while draining, so nothing hangs the CLI any more,
+// but the length of the drain itself belongs to the update machinery and is
+// deliberately not changed from here: dropping pendingPermissions alone would
+// do nothing, because activeOperations is held by the very same handler.
+//
+// WHAT ENDS AN ALREADY OPEN REQUEST WHILE THIS DAEMON DRAINS, in full, because
+// the first version of this note left the owner out of it. Both click intakes
+// are shut: pollChat returns immediately in drain mode, and every entry into
+// the update stream consumer is gated the same way. What is NOT gated is the
+// watch's own read of the chat, so the owner's tap is heard through the WATCH
+// ONLY (it reads the answer off the card row), alongside a typed "yes <id>",
+// the server's expiry and the local backstop. Before the watch could read that
+// row the tap was heard by nothing at all, and a drain that began during a
+// request held every inbound message for up to the whole wait while the owner
+// pressed a button that did nothing.
 function updateDrainSnapshot() {
   return {
     activeOperations: messageActivity.activeOperations,
@@ -9066,7 +9402,9 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     messageType: view.messageType,
     callbackData: answer.callbackData,
     alreadyAnnounced: announcedClickIds.has(view.messageId),
-    permissionRe: PERMISSION_CALLBACK_RE,
+    // Both vocabularies: a new ea: click, and a perm: click from a prompt an
+    // older build of this daemon left on screen across an update.
+    permissionRe: PERMISSION_CLICK_RE,
   })
   if (decision === 'skip') {
     const why = announcedClickIds.has(view.messageId)
@@ -9090,35 +9428,36 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   if (recentButtonPrompts.get(chatId)?.messageId === view.messageId) recentButtonPrompts.delete(chatId)
 
   if (decision === 'permission') {
-    const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
-    if (!permMatch) {
+    const outcome = resolvePermissionClick({
+      callbackData: answer.callbackData,
+      clickerUserId: senderUserIdOf(answer),
+      pending: pendingPermissions,
+    })
+    if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not
-      // re-parse: the two regexes have drifted apart. Silent here means a
-      // permission prompt hangs forever with no trace.
+      // re-parse: the gate regex and the parser have drifted apart. Silent
+      // here means a permission prompt hangs forever with no trace.
       log(
         `button_clicked DROPPED at permission parse: callbackData did not match ` +
-          `PERMISSION_CALLBACK_RE on message ${view.messageId} ` +
+          `PERMISSION_CLICK_RE on message ${view.messageId} ` +
           `(streamAuthority=${authorityAtReceipt})`,
       )
       return
     }
-    const [, choice, requestId] = permMatch
-    const pending = pendingPermissions.get(requestId!)
-    if (!pending) {
-      log(`Stale permission click ${choice} [${requestId}] via stream, no pending entry`)
-      return
-    }
-    const clickerUserId = senderUserIdOf(answer)
-    if (clickerUserId !== pending.requesterUserId) {
+    if (outcome.kind === 'stale') {
       log(
-        `Ignoring stream permission click ${choice} [${requestId}] from ` +
-          `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
+        `Stale permission click ${outcome.choice} [${outcome.requestId}] via stream, no pending entry`,
       )
       return
     }
-    log(`Permission inline-button click via stream: ${choice} [${requestId}]`)
-    pending.resolve(choice!.toLowerCase() as PermissionChoice)
-    pendingPermissions.delete(requestId!)
+    if (outcome.kind === 'foreign') {
+      log(
+        `Ignoring stream permission click ${outcome.choice} [${outcome.requestId}] from ` +
+          `user ${outcome.clickerUserId} (request belongs to ${outcome.requesterUserId})`,
+      )
+      return
+    }
+    log(`Permission inline-button click via stream: ${outcome.choice} [${outcome.requestId}]`)
     return
   }
 
@@ -10861,6 +11200,20 @@ async function main(): Promise<void> {
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
+  // THE BACKEND HALF THIS RELEASE LEANS ON, said out loud once per boot. Two
+  // things a permission request needs live on one BGOS branch (#1556): the per
+  // agent wait clamp, without which the server stores this daemon's whole
+  // offer and every request waits the maximum whatever the owner chose, and
+  // the device push on the messages route, without which a request raised
+  // while the app is closed rings nobody. A host that takes this plugin ahead
+  // of that backend gets both silently, which is exactly the kind of thing a
+  // sentence in a changelog does not prevent.
+  log(
+    `Permission requests depend on the BGOS backend half (BGOS #1556: the per ` +
+      `agent wait clamp and the approval push on POST /messages). Without it a ` +
+      `request waits the full ${PERMISSION_HOLD_SECONDS}s offer and sends no ` +
+      `device notification.`,
+  )
   log(`Require confirmed dispatch: ${REQUIRE_CONFIRMED_DISPATCH}`)
   log(`Log file: ${LOG_FILE}`)
 
@@ -11215,6 +11568,16 @@ async function main(): Promise<void> {
     // bounded, so it cannot stall forever either.
     await phase('boot poll sweep', () => pollAllChats())
 
+    // The request cards a previous run left looking live (see
+    // retireOrphanedPermissionCards). NOT awaited: it is one read per
+    // monitored chat plus a PATCH per orphan, it moves no cursor and nothing
+    // about delivery depends on it, so it must inform the boot rather than
+    // hold it. It runs AFTER the sweep above for one reason: monitoredChatIds
+    // has to be populated, which discoverChats did.
+    void phase('permission card sweep', () => retireOrphanedPermissionCards()).catch(
+      (err) => log(`Permission boot sweep gave up: ${err}`),
+    )
+
     // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
     // on disk), ask the session to greet its owner via the reply tool. The
     // greeting is the user-visible "your agent is alive" moment AND the
@@ -11462,8 +11825,22 @@ async function main(): Promise<void> {
         streamSchedulerTick(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
-          pendingPermissionChatIds: [...pendingPermissions.values()].map(
-            (p) => p.chatId,
+          // BOUNDED, like the button prompt beside it, but bounded by the
+          // REQUEST'S OWN WAIT rather than by a flat ten minutes. Every entry
+          // in this map used to pin its chat at the base 2 s tick until the
+          // request was answered, which was fine at 120 s and is 900 extra
+          // reads of one chat at half an hour. The first bound dropped the
+          // chat at ten minutes and said a later tap still arrived "on the
+          // socket": it does not, this daemon registers no inbound click
+          // listener (see the drain counter note). What the scope really buys
+          // is THIS poll's own click intake, which reads answered_at on the
+          // newest page: a chat outside it is read on the five minute sweep,
+          // so a tap could sit unheard for five minutes. So the scope lasts as
+          // long as this daemon is still listening, and the constant is only
+          // the leak guard. See PENDING_PERMISSION_FAST_MAX_MS.
+          pendingPermissionChatIds: pendingPermissionFastChatIds(
+            pendingPermissions.values(),
+            Date.now(),
           ),
           buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now()),
         })

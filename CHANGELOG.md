@@ -2,6 +2,147 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.49.0 (2026-09-25)
+
+**Renumbered from 0.44.1, then from 0.47.0, at merge.** This release was
+prepared as 0.44.1, then renumbered 0.47.0 when the plugin's main was released
+as 0.46.0 by another program without this work. Main has since moved on again
+without it (0.47.1, 0.48.0 and 0.48.1; main's own 0.47.0 was never released and
+was folded into 0.47.1), so it ships as 0.49.0 on top of 0.48.1. The HOAI canon no longer ties the
+permission request card to a release number: it tells the card only to a
+daemon that DECLARES the `permission_card` capability (BGOS #1624), which this
+one now does, so the number is whatever release is free when this merges.
+
+- **A permission request now looks like one, and stops dying after two
+  minutes.** When this agent needed an OK before running a tool, it posted a plain
+  chat message with four grey chips and gave up on its own after two minutes.
+  It looked like the approval card the rest of HOAI uses and was nothing like
+  it: the app drew chips instead of a card, the agent read as FINISHED on every
+  needs you surface while it sat there waiting, and the morning report never
+  counted the request at all, because every one of those reads the
+  `approval_request` message type and this relay did not send it.
+  - **The card is a real one.** `messageType: 'approval_request'`, an
+    `approvalMeta` naming the tool, the route and the request id, and exactly
+    two buttons: Allow once and Deny, in the platform's `ea:<choice>:<id>`
+    vocabulary. Two and not four, because the CLI accepts only allow or deny,
+    so a session or permanent button would have promised the owner a memory
+    this agent does not have.
+  - **The owner decides how long it waits, and this daemon only offers.** The
+    plugin reads no setting of the owner's. Every card carries
+    `wait_seconds: 1800`, the longest this daemon can keep its own side of a
+    request open, and the SERVER stores the smaller of that and the owner's
+    per agent choice (10 minutes unless they change it). That stored number
+    comes back on the created message, and it is what the card says and what
+    this daemon's own backstop is built from. Sending nothing instead would be
+    the shortest wait of all: a card with no `wait_seconds` gets the server's
+    generic minute, shorter than the two minutes this replaces.
+  - **Deploy the backend first, and this is why.** Both halves this release
+    leans on are on one BGOS branch, `feat/p2-requests-wait-for-you`, and
+    neither is on the deployed backend yet.
+    - The **push**: the card has to go to the messages route, because that is
+      the only one that carries an `approvalMeta` at all, and that route sends
+      no device notification today. Every push in HOAI is sent from the other
+      one. So until that branch deploys, a request raised while the app is
+      closed reaches nobody.
+    - The **per agent clamp**: the deployed backend caps `wait_seconds` at
+      1800 and stores what it is given. Until the clamp lands, every request
+      from this daemon waits the full 30 minutes whatever the owner chose,
+      and can hold an update's drain for that whole time (see below).
+    Both are reasons to let hosts take this release AFTER the backend is out,
+    not before.
+  - **The server is the only judge of when a request is dead.** The 120 s
+    local clock is gone. The wait ends on the owner's answer, or on the
+    server's own expiry flag, or on a backstop 90 s BEHIND the stored wait for
+    a server that never answers, which also strips the buttons off a card
+    nobody is listening to. A yes in the last seconds is honoured now, where
+    before it hit a request the daemon had already declined. And a request
+    raised while an auto update is draining the daemon is answered with a no
+    instead of hanging the CLI on a question nothing was left to answer.
+  - **The tap is read off the card, which is what makes the answer arrive at
+    all.** Pressing Allow writes no message into the chat: the backend stamps
+    the answer onto the card row and pushes the event to whichever daemon is
+    paired for clicks, and this one is not paired for them. So the wait now
+    reads the owner's answer off the card row it is already watching. That is
+    the lane that exists in the two cases where the others do not: when the
+    card has slid off the newest page of a busy chat, and while a self update
+    has the daemon's inbound intake shut. Both of those used to end in a deny
+    at the backstop with the owner's Allow thrown away. The same tap can still
+    arrive on the ordinary poll a cycle later; the request is settled exactly
+    once, and the late copy finds nothing to resolve. WHOSE tap it is comes off
+    the answer the backend stamps on the card, and no backend stamps a tapper
+    there yet: a tap nobody named is accepted, because the alternative on a
+    shared agent is to throw away an approval the owner really gave, and only a
+    tap that names a different person is refused. The two click intakes keep
+    their older, stricter rule, and a click they refuse is not a verdict lost
+    whenever the card's id came back off the post, because this read then sees
+    the same answer on the card a moment later (with no id that read is off).
+  - **A parked request reads its chat on a budget, and the budget is the
+    wait.** TWO loops read that chat while a request waits, and only counting
+    one of them is how a half hour request got expensive. The verdict watch now
+    looks every 1.5 s for the first minute, where an answer usually lands, then
+    every 5 s: about 390 looks over half an hour rather than 1,200. The
+    daemon's own 2 s fast scope stays on the chat for exactly as long as this
+    daemon is still listening to the request, which is about 300 reads at the
+    ten minute wait the clamp will make the default and about 900 at the
+    unclamped half hour. It is NOT cut shorter than that, and a first attempt
+    to cut it at ten minutes was wrong: that scope is what keeps the ordinary
+    poll's own click intake prompt, and a chat dropped out of it is read on the
+    five minute sweep instead, so a tap could sit unheard for five minutes.
+    Every one of these reads still carries an If-None-Match.
+  - **The expiry reaches a request in a busy chat.** The watch reads a PAGE of
+    the chat, the newest 50 messages, and a card posted into a chat with
+    several people talking can slide off that page during a wait that now
+    lasts minutes. The server's "this request is dead" flag lives on the card
+    row, so once the row was off the page nothing ended the wait but the local
+    backstop, with the CLI blocked the whole time. The card is now read on its
+    own, anchored, the moment the page stops carrying it.
+  - **A daemon that stops mid wait no longer leaves a live looking card.**
+    The requests a process is holding live in its memory, so a crash, a kill or
+    an ordinary restart takes them with it: nothing answers the CLI, and, worse
+    for the owner, nothing takes the buttons off the card. It sat there
+    tappable until the server expired it, which used to be a minute and is now
+    up to the whole wait, and a tap on it showed as answered while nothing was
+    listening. On boot the daemon now retires its own unanswered cards on the
+    newest page of each chat it monitors, one log line each. A card a busy chat
+    has already pushed off that page is still left to the server's expiry:
+    reading further back on every boot would cost every daemon a great deal to
+    catch the rarest case. A card posted in the last minute before this daemon
+    booted is left alone too: the row's date is the server's clock and the
+    cutoff is this machine's, so the sweep allows a minute for the two to
+    disagree rather than risk taking the buttons off a card another daemon is
+    at that moment waiting on.
+  - **Known and not fixed here: a pending request holds an auto update's
+    drain** for as long as it waits, because the handler runs inside the same
+    message operation tracker that the drain waits on. Up to the owner's whole
+    wait once the backend clamp is deployed, and up to the full 30 minutes
+    until then. Bounding the drain belongs to the self update lane, not to
+    this one. What DOES end such a request while the daemon drains: the owner's
+    tap, heard through the watch only (both click intakes are shut in a drain),
+    a typed `yes <code>`, the server's own expiry, or the local backstop.
+  - **Nothing changes for an agent installed with auto approve on**, which is
+    the default: that check answers first, ahead of everything else in the
+    handler, including the drain. It needs no chat, no network and no intake,
+    so an update drain must not turn it into a refusal. The drain deny above is
+    for interactive mode, where the card genuinely cannot be posted or heard.
+  - **A prompt left on screen by a 0.48.1 or older daemon** is still
+    recognised, for one release, though not for the reason the first draft of
+    this note gave. It cannot be ANSWERED across the update: the pending
+    request died with the process that posted it. What the tolerance buys is
+    that such a click is swallowed as a stale permission click rather than
+    forwarded to the model as ordinary chatter.
+  - **The daemon says which backend it needs, at boot.** One line naming the
+    two halves above, so a host that takes this release ahead of the backend
+    reads it in the log instead of wondering why requests wait the full offer
+    and ring nobody.
+- **This daemon declares `permission_card`, and the canon fetch carries the
+  declaration.** The token rides every heartbeat on every host, because the
+  relay speaks the channel's own permission notification and has no platform
+  limit. The capabilities fetch at connect now sends the declared list too
+  (`capabilitiesFetchPath`, the same helper the Kanban release adds for
+  `boards_playbook`), because that fetch can run before the first heartbeat
+  has stored the list, and the agent would otherwise not be told about the
+  card until the canon was fetched again.
+
 ## 0.48.1
 
 **An agent whose browser runs on its own machine is no longer read as offline when the owner's desktop app is closed.**

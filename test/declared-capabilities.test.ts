@@ -86,7 +86,41 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card'],
+  )
+})
+
+/**
+ * permission_card (0.49.0, the permission relay on the request rail).
+ *
+ * The BGOS canon tells an agent about the permission request card only when
+ * its daemon declares this token, with no version floor (BGOS #1624), so the
+ * declaration IS the gate: drop it and a daemon that posts the card is never
+ * told the card exists.
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): removed 'permission_card' from DECLARED_CAPABILITIES_BASE ->
+ * five red: this test, the read half pin above,
+ * test/version-heartbeat.test.ts's "what rides the beat", and
+ * test/capabilities-fetch-path.test.ts's "the daemon's own base declaration
+ * reaches the fetch" and "the canon fetch at connect carries the declared
+ * list".
+ */
+test('permission_card is declared on every host, because the relay has no platform limit', () => {
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes('permission_card'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('permission_card'))
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: true })],
+    [
+      'mission_events',
+      'mission_goal_checks',
+      'mission_set_goals',
+      'permission_card',
+      'mission_goal_loop',
+      'mission_pause',
+    ],
   )
 })
 

@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The five tokens, and what each one PROMISES the owner:
+ * The six tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -57,6 +57,21 @@
  *                       deliberately absent because nothing here could enforce
  *                       a pause and promised the goal lane would decide it.
  *                       This is that decision.
+ *   permission_card     this daemon relays Claude Code's permission prompt
+ *                       as a BGOS request card (an `approval_request` with
+ *                       an `approvalMeta`, Allow once and Deny) and honours
+ *                       the owner's `ea:` answers to it (0.49.0,
+ *                       lib/permission-relay.ts). Every host: the prompt
+ *                       arrives over the channel's own permission
+ *                       notification and the answer goes back the same way,
+ *                       with no platform limit. The backend tells the canon's
+ *                       permission request card sentence only to a
+ *                       connection that declares this token, on its
+ *                       heartbeat or on the capabilities fetch itself
+ *                       (lib/capabilities.ts, capabilitiesFetchPath), and NOT
+ *                       by version: a release number cannot be reserved in
+ *                       this repo, so a floor naming one would promise the
+ *                       card to whichever release happened to take it.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -64,13 +79,24 @@
  * fresh array each call, so a caller that mutates what it was given cannot
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
+ *
+ * The canon gated tokens (permission_card, and plan_card once the plan card
+ * ships) are NOT spelled here. They come from lib/claude-capability-tokens.ts,
+ * a byte-for-byte copy of the BGOS file the canon gates on
+ * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
+ * repos pin in a test (here test/claude-capability-tokens.pin.test.ts), so a
+ * token renamed on one side only turns that side red instead of leaving the
+ * agent silently untold.
  */
+
+import { PERMISSION_CARD } from './claude-capability-tokens.js'
 
 /** Declared wherever this plugin runs, on every host. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  PERMISSION_CARD,
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
