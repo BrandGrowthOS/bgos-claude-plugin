@@ -18,7 +18,7 @@ import {
   DECLARED_CAPABILITIES_BASE,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
-import { STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
+import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
 
 /** backend/src/dto/integrations/pair-exchange.dto.ts:25 */
 const CAPABILITY_TOKEN_REGEX = /^[a-z][a-z0-9_]{0,63}$/
@@ -87,7 +87,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'sessions_library'],
   )
 })
 
@@ -125,6 +125,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'sessions_library',
       'mission_goal_loop',
       'mission_pause',
       'stop_pauses_mission',
@@ -140,4 +141,18 @@ test('a late tmux upgrade changes the answer, because it is computed per beat', 
   const after = declaredCapabilities({ canInjectGoal: true })
   assert.ok(!before.includes('mission_goal_loop'))
   assert.ok(after.includes('mission_goal_loop'))
+})
+
+test('sessions_library is declared on every host, spelled by the contract file', () => {
+  // P6 stage 3 (spec 5.7, D18). The token lights the Sessions circle in the
+  // app and lets the backend forward a list request to this daemon. Listing
+  // is a read of the agent folder and needs no tmux, so every host declares
+  // it; resume and rename are a later slice (D20) and answer unsupported,
+  // which the list's own abilities say up front, so the token promises the
+  // list and nothing more.
+  assert.equal(SESSIONS_LIBRARY, 'sessions_library')
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal }).includes(SESSIONS_LIBRARY))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes(SESSIONS_LIBRARY))
 })

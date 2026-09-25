@@ -381,11 +381,13 @@ describe('declared capabilities on the heartbeat', () => {
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
     // upgrade starts declaring without a restart. stop_pauses_mission (P6
     // stage 3) rides with mission_pause: the Stop pause it promises is the
-    // same goal clear, so it is host shaped too.
+    // same goal clear, so it is host shaped too. sessions_library (P6 stage
+    // 3) is a read of the agent folder, so every host declares it.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'sessions_library',
       'mission_goal_loop',
       'mission_pause',
       'stop_pauses_mission',
@@ -394,6 +396,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'sessions_library',
     ])
   })
 

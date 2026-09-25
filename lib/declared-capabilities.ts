@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The six tokens, and what each one PROMISES the owner:
+ * The seven tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -70,6 +70,17 @@
  *                       it, so the token ships with the code that keeps it.
  *                       Spelled by lib/session-controls-contract.ts, the file
  *                       BGOS and codex-channel-bgos pin too.
+ *   sessions_library    the owner can find this agent's sessions from the
+ *                       app's Sessions sheet: the list_sessions op answers
+ *                       the sessions in the agent's own folder, titles and
+ *                       previews that hold a secret withheld on this machine
+ *                       (lib/session-library.ts, P6 stage 3). Every host:
+ *                       it is a read of the agent folder and needs no tmux.
+ *                       It promises the LIST only. Resume and rename are a
+ *                       later slice and answer unsupported, and the list's
+ *                       own abilities {resume:false, rename:false} say so,
+ *                       so the sheet never offers either. Spelled by the
+ *                       same contract file.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -79,13 +90,14 @@
  * place.
  */
 
-import { STOP_PAUSES_MISSION } from './session-controls-contract.ts'
+import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 
 /** Declared wherever this plugin runs, on every host. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
   'mission_set_goals',
+  SESSIONS_LIBRARY,
 ])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
