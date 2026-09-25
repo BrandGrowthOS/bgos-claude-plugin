@@ -86,8 +86,20 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'memory_rpc'],
   )
+})
+
+test('memory_rpc is declared on every host: the memory folder is plain files', () => {
+  // The owner's Memory screen reaches this agent only while the pairing has
+  // declared memory_rpc (backend memory-capability-tokens.ts reads this exact
+  // name). Reading and writing the agent's own auto memory folder needs no
+  // tmux, so it is not gated on the injector, and it is declared once.
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal })
+    assert.equal(declared.filter((t) => t === 'memory_rpc').length, 1)
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('memory_rpc'))
 })
 
 test('no token is declared twice, on either host', () => {

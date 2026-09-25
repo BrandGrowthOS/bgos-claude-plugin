@@ -384,6 +384,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'memory_rpc',
       'mission_goal_loop',
       'mission_pause',
     ])
@@ -391,6 +392,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'memory_rpc',
     ])
   })
 
