@@ -365,6 +365,8 @@ export const OWN_MCP_TOOLS = [
   'create_mission',
   'tick_mini_goal',
   'set_mission_goals',
+  'add_mission_goals',
+  'cancel_mission_goal',
   'complete_mission',
   'log_health_event',
   'list_health_events',
