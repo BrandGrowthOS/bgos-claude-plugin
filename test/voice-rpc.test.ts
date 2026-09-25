@@ -744,6 +744,44 @@ test('the delivered stop notice is the one that carries the sentence', async () 
   assert.ok(rec.notifications[0]!.content.includes('chat 42'))
 })
 
+// P6 stage 3 (spec 4.3, D13 item 3): the armed goal case hangs off a stop that
+// REACHED the model, and off nothing else. server.ts passes onStopDelivered;
+// lib/stop-pause.ts decides what, if anything, is paused.
+
+test('a delivered stop hands its chat to onStopDelivered, once', async () => {
+  const { deps, rec } = makeDeps({})
+  const handed: string[] = []
+  deps.onStopDelivered = (chatId) => {
+    handed.push(chatId)
+  }
+  await new VoiceRpcHandler(deps).handle(stopFrame({ chatId: 42 }))
+  assert.deepEqual(handed, ['42'])
+  assert.deepEqual(rec.results[0]!.body.payload, { stopped: true, mode: 'cooperative' })
+})
+
+test('a stop that never reached the model hands nothing on', async () => {
+  for (const over of [{ notifyFails: true }, {}] as const) {
+    const { deps } = makeDeps(over)
+    const handed: string[] = []
+    deps.onStopDelivered = (chatId) => {
+      handed.push(chatId)
+    }
+    const f = 'notifyFails' in over ? stopFrame() : stopFrame({ chatId: null })
+    await new VoiceRpcHandler(deps).handle(f)
+    assert.deepEqual(handed, [], 'an undelivered or unscoped stop must not pause anything')
+  }
+})
+
+test('a hook that throws never flips a delivered stop, and the confirmation still goes', async () => {
+  const { deps, rec } = makeDeps({})
+  deps.onStopDelivered = () => {
+    throw new Error('lane exploded')
+  }
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_CONFIRMATION_COOPERATIVE }])
+  assert.deepEqual(rec.results[0]!.body.payload, { stopped: true, mode: 'cooperative' })
+})
+
 test('the stop confirmation is the contract file cooperative line, Asked to stop.', () => {
   // Posted the moment the notice is delivered, before the model has stood
   // down, so it may claim the asking and nothing more (spec D7). The words

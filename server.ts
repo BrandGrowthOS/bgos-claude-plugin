@@ -168,6 +168,8 @@ import {
   buildMissionCompletePath,
   buildMissionFailPath,
   buildMissionProgressPath,
+  buildMissionPausePath,
+  buildMissionResumePath,
   formatMissionSummary,
   pickImplicitMissionChat,
   MISSION_DONE_WHEN_MAX,
@@ -182,6 +184,11 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import {
+  StopPauseLane,
+  isOwnerAuthoredInbound,
+  type StopGoalView,
+} from './lib/stop-pause.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -7359,6 +7366,12 @@ async function pollChat(chatId: string): Promise<void> {
       const content = slashDelivery?.content ?? originalContent
 
       if (!content) continue
+      // A real owner turn resumes a mission a Stop paused (P6 stage 3).
+      noteOwnerMessageForStopPause(chatId, {
+        senderType: pollSenderType,
+        agentOrigin: pollAgentOrigin,
+        userId: pollSenderUserId,
+      })
 
       log(`${isBacklog ? 'Backlog' : 'New'} message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
 
@@ -8251,6 +8264,93 @@ function handleMissionEvent(frame: string, payload: unknown): void {
     log(`${frame} handler error: ${err}`)
   }
 }
+
+// ── The armed goal case: a Stop pauses, the owner's next message resumes ─────
+//
+// P6 stage 3 (C-32, spec 4.3, D13 item 3). The decision, the order of every
+// write and the race with a quick Resume live in lib/stop-pause.ts and are
+// unit tested there; this is the wire. Where this daemon can type into its
+// session (it declares mission_pause on this beat) and its goal lane holds an
+// armed goal for the stopped chat's open mission, the Stop pauses that
+// mission with STOP_PAUSE_REASON. The echo reaches applyMissionFrameToGoalLane
+// exactly as the owner's own Pause does: the native goal is cleared, so its
+// Stop hook cannot re prompt the model, and goalHeld keeps the condition. The
+// owner's next message in that chat resumes the mission, and that echo arms
+// the same goal again. Both writes ride the user scoped routes every goal lane
+// write uses, stamped with the same ledger the echo is read against.
+const stopPauseLane = new StopPauseLane({
+  readOpenMission: async (chatId) => {
+    const active = buildMissionActivePath(ASSISTANT_ID, chatId)
+    if (!active.ok) throw new Error(active.error)
+    const answer = (await bgosGetCachedOn304(active.path)) as {
+      mission?: MissionSnapshot | null
+    } | null
+    return answer?.mission ?? null
+  },
+  pauseMission: async (missionId, reason) => {
+    const pause = buildMissionPausePath(ASSISTANT_ID, missionId)
+    if (!pause.ok) throw new Error(pause.error)
+    const result = (await bgosPatch(pause.path, { reason })) as { mission?: MissionSnapshot } | null
+    return result?.mission ?? null
+  },
+  resumeMission: async (missionId) => {
+    const resume = buildMissionResumePath(ASSISTANT_ID, missionId)
+    if (!resume.ok) throw new Error(resume.error)
+    const result = (await bgosPatch(resume.path, {})) as { mission?: MissionSnapshot } | null
+    return result?.mission ?? null
+  },
+  notePendingSelfWrite: (missionId) => noteMissionPendingSelfWrite(missionId),
+  noteSelfWritten: (mission) => rememberMissionSelfWrite(mission),
+  log,
+})
+
+/** The goal lane as it is right now, read synchronously when a Stop lands.
+ *  The gate is the SAME expression the version heartbeat declares from, so
+ *  this daemon never pauses on a host whose owner was never offered Pause. */
+function stopGoalView(): StopGoalView {
+  return {
+    pauseDeclared: declaredCapabilities({ canInjectGoal: compactTarget !== null }).includes('mission_pause'),
+    held: goalHeld,
+    attachedMissionId: goalMissionId,
+    pending: goalPendingArm,
+    loopStopped: goalStopped,
+  }
+}
+
+/** lib/voice-rpc.ts calls this when a [stop_turn] notice reached the model. */
+function pauseArmedGoalOnStop(chatId: string): void {
+  const view = stopGoalView()
+  void trackMessageOperation(() =>
+    stopPauseLane.stopDelivered(chatId, view),
+  ).catch((err) => log(`stop pause: ${err}`))
+}
+
+/**
+ * Every inbound rail calls this right before it delivers a message to the
+ * model, after its daemon answered commands (/compact, /status) and its
+ * meeting branch have taken their own exits, so only a real owner turn can
+ * resume. Never awaited: the message is delivered whatever the lane does.
+ */
+function noteOwnerMessageForStopPause(
+  chatId: string,
+  sender: { senderType: string | null | undefined; agentOrigin: unknown; userId: string | null | undefined },
+): void {
+  if (!chatId) return
+  if (
+    !isOwnerAuthoredInbound({
+      senderType: sender.senderType,
+      agentOrigin: sender.agentOrigin,
+      userId: sender.userId,
+      ownerUserId: USER_ID,
+    })
+  ) {
+    return
+  }
+  void trackMessageOperation(() => stopPauseLane.ownerMessage(chatId)).catch((err) =>
+    log(`stop resume: ${err}`),
+  )
+}
+
 let realtimeSocket: IOClientSocket | null = null
 
 // ── Native voice (voice_rpc mint/consult) ────────────────────────────────────
@@ -8344,6 +8444,9 @@ const voiceRpc = new VoiceRpcHandler({
       hasAttachment: false,
       files: [],
     }),
+  // The armed goal case (P6 stage 3): a stop that reached the model pauses
+  // the mission a Keep working loop is on, so its Stop hook cannot re prompt.
+  onStopDelivered: (chatId) => pauseArmedGoalOnStop(chatId),
   log,
 })
 
@@ -8967,6 +9070,12 @@ async function forwardStreamInbound(
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
+  // A real owner turn resumes a mission a Stop paused (P6 stage 3).
+  noteOwnerMessageForStopPause(chatId, {
+    senderType: view.agentOrigin ? 'agent' : isSystem ? 'system' : view.senderKind,
+    agentOrigin: view.agentOrigin,
+    userId: senderUserId,
+  })
 
   const isSlash = isSlashCommandPayload(view.raw)
   const streamEventMeta = !isSlash
@@ -9926,6 +10035,12 @@ function connectWebsocket(): void {
         : null
       const content = slashDelivery?.content ?? originalContent
       if (!content) return
+      // A real owner turn resumes a mission a Stop paused (P6 stage 3).
+      noteOwnerMessageForStopPause(chatId, {
+        senderType: wsSenderType,
+        agentOrigin: wsAgentOrigin,
+        userId: wsSenderUserId,
+      })
 
       // Machine-delivered event enrichment (capability #12), same as the poll
       // path. Backend ships the envelope as `eventMeta` (camelCase) on the

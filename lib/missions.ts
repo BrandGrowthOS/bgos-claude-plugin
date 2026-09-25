@@ -682,6 +682,29 @@ export function buildMissionProgressPath(assistantId: unknown, missionId: unknow
   return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/progress` }
 }
 
+/**
+ * The armed goal case's pause (P6 stage 3, lib/stop-pause.ts): an owner Stop
+ * pauses the mission its armed goal loops on, with the contract's reason.
+ * The user scoped family, like every other goal lane write: it admits an
+ * X-API-Key install and a paired one alike.
+ */
+export function buildMissionPausePath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/pause` }
+}
+
+/** Its resume, on the owner's next message in that chat. */
+export function buildMissionResumePath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/resume` }
+}
+
 /** The goal lane's "the checker said this cannot be done" write. */
 export function buildMissionFailPath(assistantId: unknown, missionId: unknown): MissionPathResult {
   if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }

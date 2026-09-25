@@ -350,6 +350,12 @@ export interface VoiceRpcDeps {
    *  send-message). Used by stop_turn for its short confirmation line.
    *  Optional and best-effort: a failure never fails the op. */
   sendChatMessage?(chatId: string, text: string): Promise<unknown>
+  /** Told once, synchronously, when a stop_turn notice REACHED the live
+   *  session for this chat (P6 stage 3, the armed goal case in
+   *  lib/stop-pause.ts). Never called for a stop that could not be scoped
+   *  or delivered. Fire and forget: it must not throw into the op, and a
+   *  throw is logged and swallowed, never a flipped result. */
+  onStopDelivered?(chatId: string): void
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -948,6 +954,18 @@ export class VoiceRpcHandler {
         }`,
       )
       return { stopped: false, supported: false }
+    }
+    // The stop reached the model. Hand the chat on for the armed goal case
+    // (a Keep working loop would re prompt the model, so its mission is
+    // paused), without waiting on it and without letting it fail the op.
+    try {
+      this.deps.onStopDelivered?.(chatId)
+    } catch (err) {
+      this.deps.log(
+        `stop_turn: the armed goal hand off failed (chat=${chatId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
     }
     // Short plain confirmation into the chat via the normal outbound send
     // path. Best-effort: the stop already reached the agent, so a failed
