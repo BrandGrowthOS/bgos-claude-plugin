@@ -6904,11 +6904,14 @@ function settlePlan(chatId: string, wasPlanMode: boolean): void {
  * the unescape. The permission intake has always worked this way.
  *
  * WHO TAPPED is an input too, required, so no intake can call this without
- * saying: `clickerUserId` is senderUserIdCandidate of the answer (null when
- * it names nobody). A tap from a person other than the one the plan was
+ * saying: `clickerUserId` is senderUserIdCandidate of the RAW answer payload
+ * (null when it names nobody; the stream carries it as answer.clickerUserId,
+ * because its normalised answer keeps only the button fields). A tap from a person other than the one the plan was
  * proposed to comes back `refused`, and the caller DROPS the click: the plan
  * is not settled, the chip and the status line stay up, and nothing reaches
- * the model, so the plan keeps waiting for its person. See foreignPlanTap.
+ * the model, so the agent is NOT told to proceed. It does not re arm the card:
+ * the backend's markAnswered is first answer wins, so the row is answered and
+ * the plan's person has to type, or the agent re proposes. See foreignPlanTap.
  */
 function applyPlanAnswer(input: {
   chatId: string
@@ -10448,8 +10451,10 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     callbackData: answer.callbackData,
     customText: answer.customText,
     eventMetaPayload: view.eventMetaRaw?.payload,
-    // NULL AWARE: see foreignPlanTap.
-    clickerUserId: senderUserIdCandidate(answer),
+    // NULL AWARE: see foreignPlanTap. The id the normalisation CARRIED off the
+    // raw answer payload: `answer` itself keeps only the button fields, so
+    // senderUserIdCandidate(answer) read null on every stream tap.
+    clickerUserId: answer.clickerUserId,
     via: 'stream',
   })
   // A tap from someone other than the plan's person: drop it, the way the

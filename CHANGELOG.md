@@ -24,13 +24,21 @@ release is free when this merges.
   works.
   - **Only the person a plan was proposed to can answer it.** A tap on a plan
     card is bound to that person with the permission card's own rule: a tap
-    that names a different person is refused (the plan stays open, the chip and
-    the status line stay up, and nothing reaches the agent), while a tap that
-    names nobody, which is every tap on today's backend, is accepted. The
+    that names a different person is refused (the agent is not told to proceed:
+    the chip and the status line stay up, and nothing reaches the agent),
+    while a tap that names nobody, which is every tap on today's backend, is
+    accepted. The
     person is the one the card was posted for, or the account owner when a
     restart lost that record. Before this, on a shared assistant, anyone who
     could see the chat could approve a plan and the agent went to work as if
     its owner had.
+    The rule holds on every intake: the poll, the boot sweep and the live
+    update stream, which reads the tapper off the raw answer payload (its
+    normalised answer now carries that id as `clickerUserId`; before, it kept
+    only the button fields, so a stamped tap from the wrong person read as
+    unstamped on the stream and was accepted). A refused tap does not re arm
+    the card: the backend records the first answer, so the plan's person then
+    types their answer or the agent proposes again.
   - **The wait on this channel is a CONVENTION, and everything says so.** Every
     HOAI agent is launched with permissions skipped and the shipped manifest
     auto approves, so no tool call is blocked, no hook can stop one, and this

@@ -32,6 +32,9 @@ import ts from 'typescript'
 
 import * as planCard from '../lib/plan-card.ts'
 import * as permissionRelay from '../lib/permission-relay.ts'
+import * as streamApply from '../lib/stream-apply.ts'
+import * as messageText from '../lib/message-text.ts'
+import type { StreamUpdate } from '../lib/update-stream.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
 const SERVER = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(
@@ -164,7 +167,7 @@ test("a plan proposed to A and approved by B is REFUSED: no directive, the plan 
   assert.equal(out.summary, null, 'a refused tap must not be described to the model either')
   assert.equal(out.callbackData, null)
   assert.equal(h.settled.length, 0, 'a refused tap must not settle the plan or take the chip down')
-  assert.ok(h.openPlansByChat.has(CHAT), 'the plan keeps waiting for the person it was proposed to')
+  assert.ok(h.openPlansByChat.has(CHAT), 'this process keeps the plan open; the backend row is answered all the same (first answer wins)')
   assert.ok(
     h.logs.some((l) => l.includes(`from user ${B}`) && l.includes(`belongs to ${A}`)),
     'the refusal is logged in the shape the permission path writes for a foreign click',
@@ -238,6 +241,146 @@ test('a non plan click from anyone passes through untouched', () => {
   assert.deepEqual(h.logs, [])
 })
 
+// ── The stream lane, end to end ──────────────────────────────────────────────
+//
+// THE CHECKER'S MAJOR on 2608c08. The stream lane read the tapper off
+// `view.answerPayload`, which viewStreamMessage builds by keeping ONLY
+// callbackData, buttonText and customText. Every id key was dropped on the way
+// in, so the tapper read null on every stream tap and B's STAMPED tap was
+// accepted as an unstamped one. When the stream is on it is the lane that
+// announces clicks, so the case below runs the real normalisation and the real
+// stream handler, not the plan function alone: a pin on the call's argument was
+// green on exactly this defect.
+
+interface StreamHarness {
+  run: (update: StreamUpdate) => void
+  notes: Array<{ method: string; params: { content: string } }>
+  openPlansByChat: Map<string, Record<string, unknown>>
+  settled: Array<{ chatId: string; wasPlanMode: boolean }>
+  logs: string[]
+}
+
+/**
+ * applyStreamButtonsAnswered out of server.ts, live, with applyPlanAnswer and
+ * foreignPlanTap beside it and the REAL viewStreamMessage from
+ * lib/stream-apply.ts. Only the daemon's own state and the MCP transport are
+ * stubs; the notification spy is what the model would have been handed.
+ */
+function streamHarness(record: { requesterUserId?: string } = { requesterUserId: A }): StreamHarness {
+  const source = [
+    declaredFunction('foreignPlanTap'),
+    declaredFunction('applyPlanAnswer'),
+    declaredFunction('applyStreamButtonsAnswered'),
+  ]
+    .filter((s) => s !== '')
+    .join('\n')
+  assert.ok(source.includes('function applyStreamButtonsAnswered('))
+  const js = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+
+  const openPlansByChat = new Map<string, Record<string, unknown>>()
+  openPlansByChat.set(CHAT, {
+    chatId: CHAT,
+    messageId: CARD,
+    planId: 'p1',
+    revision: 1,
+    postedAtMs: Date.now(),
+    payload: planPayload(),
+    ...record,
+  })
+  const settled: Array<{ chatId: string; wasPlanMode: boolean }> = []
+  const logs: string[] = []
+  const notes: StreamHarness['notes'] = []
+  const announcedClickIds = new Set<number>()
+  const scope: Record<string, unknown> = {
+    ...permissionRelay,
+    ...planCard,
+    ...streamApply,
+    ...messageText,
+    openPlansByChat,
+    settlePlan: (chatId: string, wasPlanMode: boolean) => {
+      settled.push({ chatId, wasPlanMode })
+      openPlansByChat.delete(chatId)
+    },
+    log: (line: string) => logs.push(line),
+    USER_ID: OWNER,
+    ASSISTANT_ID: 9,
+    streamAuthority: {},
+    announcedClickIds,
+    rememberAnnouncedClick: (id: number) => announcedClickIds.add(id),
+    chatUnansweredButtons: new Map(),
+    recentButtonPrompts: new Map(),
+    pendingPermissions: new Map(),
+    senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
+    trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    mcp: {
+      notification: async (n: StreamHarness['notes'][number]) => {
+        notes.push(n)
+      },
+    },
+  }
+  const names = Object.keys(scope).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k))
+  const factory = new Function(...names, `${js}\nreturn applyStreamButtonsAnswered`)
+  const run = factory(...names.map((k) => scope[k])) as StreamHarness['run']
+  return { run, notes, openPlansByChat, settled, logs }
+}
+
+/** A buttons_answered update for the plan card, as the stream delivers it. */
+function streamTap(answer: Record<string, unknown>): StreamUpdate {
+  return {
+    seq: 11,
+    kind: 'buttons_answered',
+    chatId: Number(CHAT),
+    messageId: CARD,
+    payload: {
+      messageId: CARD,
+      chatId: CHAT,
+      messageType: 'buttons',
+      text: 'Refactor the thing',
+      eventMeta: { source: 'plan', payload: planPayload() },
+      answerPayload: {
+        callbackData: planCard.PLAN_CHIP_GO,
+        buttonText: 'Go ahead',
+        ...answer,
+      },
+    },
+  }
+}
+
+test("STREAM: B's stamped tap on a plan proposed to A is REFUSED: no directive, the plan still open", async () => {
+  const h = streamHarness({ requesterUserId: A })
+  h.run(streamTap({ userId: B, senderUserId: B }))
+  await new Promise((r) => setImmediate(r))
+  assert.equal(
+    h.notes.length,
+    0,
+    "B's stamped tap reached the model on the stream: " +
+      (h.notes[0]?.params.content ?? '').replace(/\n/g, ' | '),
+  )
+  assert.equal(h.settled.length, 0, 'a refused stream tap must not settle the plan')
+  assert.ok(h.openPlansByChat.has(CHAT), 'the plan must still be open in this process')
+  assert.ok(
+    h.logs.some((l) => l.includes('via stream') && l.includes(`from user ${B}`) && l.includes(`belongs to ${A}`)),
+    'the refusal names the stream, the tapper and the plan\'s person',
+  )
+  assert.ok(h.logs.some((l) => l.includes('DROPPED at plan binding')))
+})
+
+test("STREAM: A's own stamped tap, and an unstamped tap, reach the model with the directive", async () => {
+  for (const answer of [{ userId: A, senderUserId: A }, {}]) {
+    const h = streamHarness({ requesterUserId: A })
+    h.run(streamTap(answer))
+    await new Promise((r) => setImmediate(r))
+    assert.equal(h.notes.length, 1, `the tap ${JSON.stringify(answer)} must be announced`)
+    assert.ok(
+      h.notes[0].params.content.includes(planCard.planAnswerDirective('go')!),
+      'the go ahead directive reaches the model',
+    )
+    assert.equal(h.settled.length, 1)
+  }
+})
+
 // ── The pure rule ────────────────────────────────────────────────────────────
 
 test('planTapAuthority is #142\'s null aware rule', () => {
@@ -292,12 +435,16 @@ test('all three call sites pass a NULL AWARE clicker id and drop a refused tap',
   assert.match(poll, /clickerUserId: senderUserIdCandidate\(payload\),/)
   assert.match(poll, /via: 'poll',/)
   assert.match(poll, /if \(planAnswer\.refused\) continue/)
-  // The stream: the answer object, the same reader the permission branch
-  // above it reads through senderUserIdOf.
+  // The stream: the id the normalisation CARRIED off the raw answer payload
+  // (lib/stream-apply.ts answerPayloadOf). NOT senderUserIdCandidate(answer):
+  // `answer` keeps only the button fields, so that read null on every stream
+  // tap and accepted a stamped tap from the wrong person (the checker's major
+  // on 2608c08; the STREAM cases above are the behavioural guard).
   const stream = SERVER.slice(
     SERVER.indexOf('const planAnswer = applyPlanAnswer({\n    chatId,\n    messageId: view.messageId,'),
-  ).slice(0, 900)
-  assert.match(stream, /clickerUserId: senderUserIdCandidate\(answer\),/)
+  ).slice(0, 1400)
+  assert.match(stream, /clickerUserId: answer\.clickerUserId,/)
+  assert.ok(!/clickerUserId: senderUserIdCandidate\(answer\)/.test(stream))
   assert.match(stream, /via: 'stream',/)
   assert.match(
     stream,
