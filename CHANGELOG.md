@@ -124,7 +124,7 @@ one now does, so the number is whatever release is free when this merges.
     handler, including the drain. It needs no chat, no network and no intake,
     so an update drain must not turn it into a refusal. The drain deny above is
     for interactive mode, where the card genuinely cannot be posted or heard.
-  - **A prompt left on screen by a 0.46.0 or older daemon** is still
+  - **A prompt left on screen by a 0.48.1 or older daemon** is still
     recognised, for one release, though not for the reason the first draft of
     this note gave. It cannot be ANSWERED across the update: the pending
     request died with the process that posted it. What the tolerance buys is

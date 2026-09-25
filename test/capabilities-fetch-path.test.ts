@@ -1,5 +1,5 @@
 /**
- * The canon fetch carries this daemon's declared list (0.47.0).
+ * The canon fetch carries this daemon's declared list (0.49.0).
  *
  * The BGOS canon tells the permission request card sentence only to a
  * connection that DECLARES `permission_card`, with no version floor (BGOS
