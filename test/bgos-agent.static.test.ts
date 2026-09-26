@@ -171,3 +171,35 @@ test('both supervisors run claude in the workspace, which is what loads that .mc
   assert.ok(/<key>WorkingDirectory<\/key><string>\$x_wd<\/string>/.test(code), 'launchd plist')
   assert.ok(/^WorkingDirectory=\$workdir$/m.test(code), 'systemd unit')
 })
+
+/**
+ * `bgos-agent update` re-registers a clone workspace's hook entries before
+ * the restart (P2 stage 6, the plugin review).
+ *
+ * THE REVIEW: the CLI reads a clone's hooks only from the workspace settings
+ * file, and only install wrote it, so an always on agent installed at 0.48.0
+ * and updated to 0.53.0 restarted `claude` with no floor entry at all: no
+ * request is ever raised for a listed action under full access, and the
+ * unattended agent was the one with no floor. The daemon no longer declares
+ * hard_floor without the hook (lib/floor-hook-presence.ts); this is the half
+ * that gives the updated agent the hook.
+ *
+ * MUTATION PROOF (applied to bin/bgos-agent, confirmed red, restored): the
+ * `refresh_hook_entries "$id"` line removed from restart_after_update -> this
+ * case red, 2 of 10 with the baseline Windows red (bash -n) beside it.
+ */
+test('update re-registers a clone workspace\'s hooks (the floor hook included) before it restarts the agent', () => {
+  const restart = sh.slice(sh.indexOf('restart_after_update() {'), sh.indexOf('\n}\n', sh.indexOf('restart_after_update() {')))
+  assert.match(restart, /^restart_after_update\(\) \{ # \$1 assistant id\n  local id="\$1"\n  refresh_hook_entries "\$id"\n/)
+  const refresh = sh.slice(sh.indexOf('refresh_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('refresh_hook_entries() {')))
+  assert.ok(refresh.length > 0, 'refresh_hook_entries is defined')
+  // The workspace is read off the service each supervisor was installed with.
+  assert.match(refresh, /sed -n 's\/\^WorkingDirectory=\/\/p' "\$service_file"/)
+  assert.match(refresh, /<key>WorkingDirectory<\/key><string>/)
+  // Only a workspace that already carries the rail, so a marketplace channel is left alone.
+  assert.match(refresh, /grep -q 'hoai-hook\\\.mjs' "\$settings"/)
+  assert.match(refresh, /install_hook_entries "\$workdir" "\$PLUGIN_DIR"/)
+  // And ensureHookEntries is what writes the floor entry beside the forwarder.
+  const writer = sh.slice(sh.indexOf('install_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('install_hook_entries() {')))
+  assert.match(writer, /m\.ensureHookEntries\(\{/)
+})

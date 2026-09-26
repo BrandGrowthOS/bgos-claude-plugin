@@ -3,8 +3,9 @@
  *
  * WHAT IS COPIED AND WHY. The BGOS capability canon tells a Claude Code agent
  * the request card sentence only when this daemon declares `permission_card`,
- * and the plan card sentences only when it declares `plan_card`, whatever the
- * daemon's version (BGOS #1624). The canon gates on BGOS's
+ * the plan card sentences only when it declares `plan_card`, whatever the
+ * daemon's version (BGOS #1624), and the hard floor sentence only when it
+ * declares `hard_floor` beside `permission_card` (P2 stage 6). The canon gates on BGOS's
  * backend/src/integrations/claude-capability-tokens.ts; this daemon declares
  * from lib/claude-capability-tokens.ts, a byte-for-byte copy of it. A token
  * spelled differently on the two sides fails nowhere on its own: the backend's
@@ -32,7 +33,9 @@
  * and the propose_plan tool with /plan, so it declares BOTH permission_card
  * and plan_card, and nothing the file names is left to a later release. On
  * #142 alone this test instead asserts plan_card is NOT declared, because
- * that release lacks the tool.
+ * that release lacks the tool. This branch (P2 stage 6, the hard floor,
+ * stacked on #150) also carries the blocking floor hook and the relay's hold,
+ * so it declares hard_floor as well.
  *
  * MUTATION PROOFS (recorded 2026-09-24 on the Windows build box, through the
  * test lock, file restored byte for byte from a pristine copy after each and
@@ -64,6 +67,20 @@
  *  4. PLAN_CARD dropped from DECLARED_CAPABILITIES_BASE -> 5 red, among them
  *     that same case and "the plan card token reaches the fetch too".
  *
+ * RECORDED FOR `hard_floor` (P2 stage 6, 2026-09-24, both copies changed in
+ * one step, both digests moved to the same literal): the new
+ * sha256 is a14ba628...ad75 on both sides.
+ *  1. one byte flipped in this copy (`hard_floor` to `hard_floos` in the
+ *     HARD_FLOOR_TOKEN literal, byte 2098) -> 7 red here: the digest, the
+ *     exact list, the read half pin and the permission_card full pin, the
+ *     hard_floor declaration case, the fetch path case, and the owner switch
+ *     guard in test/floor-check.test.ts (the one exempt statement is gone).
+ *     The same flip in BGOS's copy turned 5 BGOS tests red. Each copy
+ *     restored byte for byte and re-hashed.
+ *  2. HARD_FLOOR_TOKEN dropped from DECLARED_CAPABILITIES_BASE -> 5 red,
+ *     among them "this release declares permission_card, plan_card and
+ *     hard_floor, from the file, on every host".
+ *
  * Run: npm test, or npx tsx --test test/claude-capability-tokens.pin.test.ts
  */
 
@@ -75,19 +92,24 @@ import { join } from 'node:path'
 
 import {
   CLAUDE_CAPABILITY_TOKENS,
+  HARD_FLOOR_TOKEN,
   PERMISSION_CARD,
   PLAN_CARD,
 } from '../lib/claude-capability-tokens.ts'
-import { DECLARED_CAPABILITIES_BASE, declaredCapabilities } from '../lib/declared-capabilities.ts'
+import {
+  DECLARED_CAPABILITIES_BASE,
+  DECLARED_CAPABILITIES_PAIRING,
+  declaredCapabilities,
+} from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = '128dec02ae34ac6f117805969bd95ba9f0654fac79e72f649286818614bc26e3'
+const SHA256 = 'a14ba628606269e463c38ac820f96860b1c2731a07ef088371bed6c24080ad75'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN]
 
 /**
  * Named in the file, NOT declared by this release, and who declares them.
@@ -112,10 +134,11 @@ test('the token file still has the bytes BGOS pins for its copy', () => {
   )
 })
 
-test('the file names exactly permission_card and plan_card, in that order', () => {
-  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card'])
+test('the file names exactly permission_card, plan_card and hard_floor, in that order', () => {
+  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor'])
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
+  assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')
   assert.ok(Object.isFrozen(CLAUDE_CAPABILITY_TOKENS))
 })
 
@@ -127,11 +150,15 @@ test('every token the file names is either declared by this release or named as 
   }
 })
 
-test('this release declares permission_card and plan_card, from the file, on every host', () => {
+test('this release declares permission_card, plan_card and hard_floor, from the file, on every host', () => {
+  // hard_floor is declared on a pairing connection only (its hold is the
+  // pairing scoped floor check route; lib/declared-capabilities.ts), so the
+  // home of each token is the base or the pairing half.
+  const declaredLists = [...DECLARED_CAPABILITIES_BASE, ...DECLARED_CAPABILITIES_PAIRING]
   for (const token of DECLARED_BY_THIS_RELEASE) {
-    assert.ok(DECLARED_CAPABILITIES_BASE.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE`)
+    assert.ok(declaredLists.includes(token), `${token} is missing from DECLARED_CAPABILITIES_BASE and _PAIRING`)
     for (const canInjectGoal of [true, false]) {
-      assert.ok(declaredCapabilities({ canInjectGoal }).includes(token))
+      assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes(token))
     }
   }
   // Taken from the file, not spelled again: a second literal would agree with
@@ -149,7 +176,7 @@ test('nothing the file names is left undeclared by this release, and nothing it 
   for (const token of Object.keys(DECLARED_LATER)) {
     for (const canInjectGoal of [true, false]) {
       assert.ok(
-        !declaredCapabilities({ canInjectGoal }).includes(token),
+        !declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes(token),
         `${token} is declared, but ${DECLARED_LATER[token]} carries the code it promises`,
       )
     }

@@ -2,7 +2,11 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.52.0
+## 0.54.0
+
+**Renumbered from 0.52.0 at merge.** The plugin's main was released as 0.51.0, 0.52.0 and 0.53.0 by other work
+(#162, #163, #157) while this was open, so this ships as 0.54.0, the next free number. Nothing is gated on the number:
+the backend reaches this lane only through the declared `memory_rpc` token.
 
 **An owner can change this agent's memory from the app.**
 The HOAI Memory screen now reaches a Claude Code agent (HOAI P7 stage 2, C-39). This daemon answers a new
@@ -36,6 +40,252 @@ start.
 - **Search is answered as not available here**; the app hides it for Claude Code.
 - **Declares `memory_rpc` on every host.** The backend sends a memory frame to a Claude Code pairing only while it is
   declared, so the gate is the token, never this version.
+
+## 0.53.0 (2026-09-26)
+
+**Renumbered from 0.46.0, then from 0.49.0, then from 0.52.0, at merge.**
+This release was prepared as 0.46.0, then renumbered 0.49.0 when the plugin's
+main was released as 0.46.0, 0.47.0 and 0.47.1 by other programs without this
+work and it stacked on the plan card. The permission request card (prepared as
+0.44.1, then 0.47.0) has since shipped as 0.49.0 and the plan card it stacks on
+(prepared as 0.45.0, then 0.48.0) as 0.50.0, both on the plugin's main. Main
+then took 0.51.0 (add_mission_goals and cancel_mission_goal) and, while this
+branch was being merged as 0.52.0, 0.52.0 (the restart recovery of an
+unanswered message, #163), so this ships as 0.53.0, the next free number above
+it. A plugin version cannot be reserved, so the HOAI canon does not tie the
+floor to a release number: it tells the floor sentences only to a daemon that
+DECLARES the `hard_floor` capability, the way it tells the request card and the
+plan card only to a daemon that declares `permission_card` or `plan_card`
+(BGOS #1624).
+
+- **Always ask before risky actions: a listed action now stops and asks you,
+  even though the agent runs with full access.** It is your switch, per agent,
+  OFF by default, and it lives on the server; this plugin never reads it. With
+  it on, deleting a folder and everything in it, force pushing, changing a file
+  inside `.git`, changing an `.env` file, changing a settings file in your home
+  folder, and an MCP tool that sends, posts, pays or deletes on your behalf all
+  arrive as the Allow once / Deny card and wait for you. Nothing else changes:
+  `git status`, an ordinary edit and this channel's own tools never ask.
+  A payment tool is read by the names payment tools really use
+  (`create_payment_intent`, `createPayment`, `charge_card`), while a read of
+  one (`list_payment_intents`, `get_charge`) is not; and the HOAI Agent
+  Browser's own tools are left to the browser's own gate, which already asks
+  you before every sensitive action in the page, so clearing a value from the
+  agent's own browser storage no longer asks. A shell command the CLI cut in
+  the middle that no floor record names waits for you only when your switch
+  is on (the relay asks the server with `elided: true`); with it off it runs
+  as it did before. And if this daemon cannot fetch the canon, its offline
+  copy tells the agent that a hook stops a listed action only when it
+  declares `hard_floor`, the served canon's own rule.
+  - **A blocking hook, and only one.** `bin/hoai-floor-hook.mjs` is a second
+    `PreToolUse` entry with `async: false`, a matcher for the shell, edit and
+    MCP tools and a 3 second timeout. For a listed action it answers `ask`,
+    which the CLI honours under `--dangerously-skip-permissions` (the stage 6
+    live probe, run D1). It never answers `deny`, because you could not
+    overrule a deny from your phone, and it fails OPEN: bad input, a crash, a
+    missing core or its own 1.5 second budget all end with nothing printed and
+    exit 0. The telemetry forwarder is untouched and still cannot block
+    anything; the manifest test and the forwarder's rule 1 now say why the one
+    exception exists.
+  - **Only where a HOAI agent runs.** The hook asks only in a session a HOAI
+    daemon is attached to (the daemon marks its project folder while it holds
+    its pairing lock). A plain `claude` elsewhere on the same machine, or a
+    headless `claude -p` job, gets no new prompt.
+  - **The relay stops waving it through.** A default install auto approves, and
+    the probe watched it allow the hook's ask in 8 ms (run D3). The hook now
+    leaves a floor record before it asks, and the relay takes it before its
+    auto approve branch, because the request's own preview is a copy the CLI
+    cuts in the middle when a command is long: a delete in the middle of a
+    long script was invisible to it. On a match the relay asks the server
+    (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched
+    command): hold posts the card and waits for you, proceed auto approves as
+    before, and a check that fails or times out REFUSES the action rather than
+    allowing it silently. A held request meets the same drain and no chat
+    refusals as any other card. With auto approve off, a proceed in a full
+    access session lets the call run as it did before, instead of a card for a
+    switch you left off.
+  - **The card the server can read.** An MCP tool's card now carries
+    `<tool_name> <input_preview>`, so the server recognises a held send, post
+    or payment and only you can allow it; a held long command leads with the
+    matched command, so you see the delete or the push first.
+  - **One list, owned by the server.** `lib/hard-floor-core.mjs` is a port of
+    the server's reader in plain JavaScript, so a bare `node` hook can load it;
+    `lib/hard-floor.ts` is its typed face for the daemon;
+    `lib/hard-floor-fixture.ts` is copied byte for byte from the server's and
+    pins six rule ids, their words, rules version 1 and every named case, with
+    its digest pinned again in the test. A mention in quotes, a commit message,
+    a comment or a heredoc written to a file is not the action; the HOAI
+    exemption is the channel's exact server names; `rm --rec` is recursive.
+    The cheap shell forms of the same actions are on it too: `find -delete`,
+    `git clean -fd`/`-fx`, `rsync --delete`, `git push --mirror`, `--delete`
+    and `:branch`, and a redirect, `tee`, `sed -i`, `cp` or `mv` onto a
+    protected file. The same fixture now carries the card strings: the relay
+    must build each one byte for byte, and the test pins the file's own bytes
+    (kept at LF by `.gitattributes`), not only its data.
+  - **Clone installs too.** The launchers now write the floor hook's entry into
+    `.claude/settings.local.json` beside the forwarder, so a clone agent has the
+    same floor as a marketplace one from its next launch through a launcher.
+    An always on agent that `bgos-agent update` moves to this release gets the
+    entry too: the update re-registers a clone workspace's hooks before it
+    restarts the service (a service starts `claude` directly, so nothing else
+    would have written it). And the daemon never takes the hook on trust: it
+    looks at boot for the blocking entry in the files the CLI reads for its
+    session and declares `hard_floor` only when it finds one, so a session
+    with no floor hook is not told a hook stops a listed action.
+  - **Long commands keep what makes them listed.** The hook's record keeps the
+    whole matched command, and the relay fits it to the floor check's 4000
+    characters and to the card's lead by dropping arguments, never the
+    operator, with a marker saying how many went: `echo "K=<4000 characters>"
+    > .env`, a `--force` after hundreds of branch names, `-rf` after hundreds
+    of folders and a `cp` of hundreds of files into `.git/hooks/` used to be
+    cut from their head, read as harmless and auto approved with the switch
+    on, or held on a card the server could not stamp. A held edit whose path
+    the preview lost now leads its card with the path. If the listed part
+    cannot fit at all, a `hold: false` about the cut body does not auto
+    approve it: you are asked.
+  - **Only a tap allows a held action.** A typed `yes <id>`, the `Yes, this
+    once` label or a callback pasted as text no longer settles a request the
+    floor holds (a typed no still does): the server cannot tell a person from
+    the agent's own credential on such a message, and the person only gate is
+    on the tap.
+  - **Not covered, on purpose or for now:** a legacy API key connection and a
+    backend without the route (both auto approve a listed action as before,
+    and say so in the log), and a delete done by a script, an alias, a
+    variable or `python -c` (the list reads text, not intent).
+- The daemon's attached marker, which the floor hook asks behind, is keyed by
+  the folder the agent was LAUNCHED from as well (`BGOS_LAUNCH_CWD`, which
+  `bin/bgos-launch.mjs` hands through when it moves the server to the plugin
+  folder), and the hook reads that key too. Before, a launcher start rested on
+  `CLAUDE_PROJECT_DIR` alone, and where that was lost (a WSL hop) the floor
+  silently did not ask.
+- A test ties the channel's own server exemption to the plugin manifest's name
+  and channel server, so renaming either cannot turn the channel's own replies
+  into floor matches.
+- The plan card's own words no longer claim that no hook can stop a tool call:
+  an ordinary edit is still never blocked, and the wait is still a promise.
+- The bundled offline capability text carries the floor's three core canon
+  sentences and the Claude delta sentence, so a model whose canon fetch failed
+  is not told the opposite.
+- **This daemon declares `hard_floor`.** On every heartbeat and on the canon
+  fetch at connect, on every host of a PAIRING connection (a legacy API key
+  connection does not declare it: its relay has no floor check to ask and
+  auto approves a listed action, so it must not be told a hook holds one;
+  `permission_card` and `plan_card` stay declared there, both work on an API
+  key), taken from `lib/claude-capability-tokens.ts`
+  (now naming three tokens), the file BGOS pins byte for byte, both sides
+  pinning the same new sha256. The token promises the blocking floor hook and
+  the relay's hold before any auto approve; the served canon tells the floor
+  sentence only to a daemon that declares it together with `permission_card`.
+  The floor-check limits (200 and 4000) are pinned as literals beside the ones
+  BGOS pins on its route.
+- The log says what the floor really does. The boot line reads "declared" off
+  the declaration itself, so a daemon on an API key, where `hard_floor` is
+  never declared, now says plainly that the floor is not declared and why,
+  instead of "declaring the floor capability on a pairing". And a typed yes
+  the floor refuses, or a verdict from another user, is logged once per row
+  per request rather than on every poll tick (the final live proof counted
+  57 copies in 37 s).
+
+## 0.52.0 (2026-09-26)
+
+**A message the previous session could not answer comes back after a restart,
+instead of being lost forever.**
+
+Board row 294a571a, raised 2026-09-06. The per-chat cursor advances when a
+message is FORWARDED, not when it is ANSWERED. So a session that is handed a
+message and then cannot act on it, because its account hit a limit, because the
+model call failed, because it was killed mid turn, left that message BELOW the
+cursor where nothing would ever look again: the delta window starts above it,
+`selectFirstPollBacklogIds` only runs for a chat with no cursor at all, and the
+restart handed the new session nothing.
+
+The clean exemplar is KC's own question to Argus on 2026-09-24. It was consumed
+at 14:29Z by a session whose every model call was being refused, the daemon was
+restarted at 14:49Z, the new session came up and sat idle with the question
+still open, and it was answered at 14:53Z only because a person noticed and
+asked again. A shared account running out of credit is a fleet wide event, so
+every message that arrives during one is consumed by a session that cannot
+answer it.
+
+`selectRestartRecoveryIds` (lib/poll-core.ts) runs on the BOOT poll only, which
+is already the one poll that fetches a chat in full, and re-offers the trailing
+messages nobody answered. Three limits, each of which is a way this could have
+made things worse:
+
+- **The stop rule is what makes it safe**, not the window or the cap. It is the
+  same walk back `selectFirstPollBacklogIds` uses: stop at a real user then
+  assistant REPLY. If the previous session DID answer, there is an assistant row
+  after the user row and the scan stops before reaching it.
+- **Only at or below the cursor.** Rows above it are delivered by the ordinary
+  delta path on the same poll, so including them would hand the agent one
+  message twice in one turn.
+- **A day-long window, a cap of ten, and an undated row does not qualify**,
+  because unknown age must not read as recent.
+
+Six mutations, each printed before running and each reddening a named test:
+removing the stop rule (6 red, including "a user message the session ANSWERED is
+never re-offered"), dropping the cursor bound (2), dropping the age window and
+the undated guard (2), dropping the cap (1), dropping the entry guards (1), and
+replacing the boot gate with `if (true)` (1).
+
+**That last one is the finding worth keeping.** Its guard passed the first time:
+the test searched the 1200 characters before the call for the word `isBootPoll`,
+and the comment written above the call contains that word, so replacing the real
+gate left all seventeen tests green. A guard that can be satisfied by a COMMENT
+is not a guard. It now walks back to the nearest `if (` line and reads that line
+itself.
+
+One honest note: the `lastSeen <= 0` half of the entry guard turned out to be
+defence in depth rather than load bearing, since the at-or-below-cursor filter
+already excludes everything when the cursor is zero. Kept, and said so, rather
+than reported as a caught defect.
+
+## 0.51.0 (2026-09-26)
+
+**Two tools that change a mission already running: `add_mission_goals` and
+`cancel_mission_goal`.**
+
+KC asked for "add and cancel mini goals" on 2026-09-23. The app has had an owner
+goal editor since stage 5 and it REFUSES a mission whose origin is `derived`,
+which is every `/goal` mission; the card says so in words and tells the owner to
+ask the agent in the chat. The agent then had nothing to change it WITH.
+`set_mission_goals` refuses a mission that already has goals, and
+`create_mission` SETS THE MISSION ASIDE, so the only answer to "add a goal" was
+to destroy the card the owner was reading, every tick on it included.
+
+- `add_mission_goals` APPENDS 1 to 12 goals. Send only the new ones: the backend
+  never reads a row the mission already holds, which is what stops a restated
+  list from dropping one silently. Refused on a mission with none, which is the
+  fill door's job, and refused when the total would pass twelve, with both
+  numbers in the sentence.
+- `cancel_mission_goal` removes one goal by its id, validated in the path
+  builder so a bad id is a sentence the model can act on rather than a 400. A
+  TICKED goal is refused: it is a record of work carrying the agent's own
+  evidence line. Cancelling the last unticked goal does NOT complete the
+  mission, because removing a promise is not keeping one.
+- `create_mission` and `set_mission_goals` now point at these two rather than
+  only forbidding a create, and the served canon's Missions section loses a
+  sentence that had become an instruction to do the destructive thing.
+
+**A guard in this repo was not keeping the promise written in its own header.**
+`test/mission-ws-wiring.test.ts` says a "FOURTH mission tool added later must
+not be able to forget the stamp quietly", and it named its four tools as
+literals in four places, so a fifth and a sixth would have been added with every
+one of those tests green and neither checked. The scope is now DERIVED from the
+tool dispatch switch: a mission tool is a case that builds a mission path or
+body, and a mission WRITE is one that resolves an existing mission id. Proven by
+deleting `rememberMissionSelfWrite` from the new cancel case (2 tests red, named)
+and by moving its stamp after the DELETE (1 red, named); the literal lists caught
+neither. The request-verb search was `Patch|Put` only, so it also now sees a POST
+and a DELETE.
+
+Two smaller fixes fell out of building that: a case body was sliced to a fixed
+6000 characters, so the last case of a switch swallowed the next switch (that is
+how `show_component` briefly appeared to build a mission), and the scan read the
+whole file rather than the tool dispatch switch, so WS frame cases arrived as
+tools.
+
+Backend: BGOS PR #1669, canon `-goaledit1`. Requires a backend carrying it.
 
 ## 0.50.0 (2026-09-25)
 

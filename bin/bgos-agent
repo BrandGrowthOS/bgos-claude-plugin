@@ -607,11 +607,41 @@ cmd_restart() {
   esac
 }
 
+# Re-register a CLONE workspace's hook entries after an update, before its
+# service restarts. The CLI reads a clone's hooks only from the workspace
+# settings file, and only install writes it, so an update that grows the list
+# (0.53.0 added the BLOCKING floor hook) reached an always-on agent's checkout
+# but never its session: the daemon then had no floor to declare, and without
+# this the unattended, full access agent was the one with no floor. Only a
+# workspace that already carries the rail is touched (a marketplace channel's
+# hooks come from its own hooks file, and its settings carry no hoai-hook
+# entry). Best effort: install_hook_entries never fails the update.
+refresh_hook_entries() { # $1 assistant id
+  local id="$1" service_file="" workdir=""
+  case "$OS" in
+    Darwin)
+      service_file="$(plist_for "$id")"
+      [ -f "$service_file" ] && workdir="$(sed -n 's:.*<key>WorkingDirectory</key><string>\(.*\)</string>.*:\1:p' "$service_file" | head -n 1 \
+        | sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e "s/&apos;/'/g" -e 's/&amp;/\&/g')"
+      ;;
+    Linux)
+      service_file="$(unitfile_for "$id")"
+      [ -f "$service_file" ] && workdir="$(sed -n 's/^WorkingDirectory=//p' "$service_file" | head -n 1)"
+      ;;
+  esac
+  [ -n "$workdir" ] || workdir="$(default_workdir_for "$id")"
+  local settings="$workdir/.claude/settings.local.json"
+  if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
+    install_hook_entries "$workdir" "$PLUGIN_DIR"
+  fi
+}
+
 # Restart an installed supervisor after an update. Updating the checkout has
 # already succeeded by this point, so a missing or unreachable service is a
 # warning, never an update failure.
 restart_after_update() { # $1 assistant id
   local id="$1"
+  refresh_hook_entries "$id"
   case "$OS" in
     Darwin)
       local plist; plist="$(plist_for "$id")"

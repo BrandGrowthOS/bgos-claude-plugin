@@ -285,6 +285,102 @@ export function selectFirstPollBacklogIds(opts: {
   return qualified.map((m) => m.id)
 }
 
+// ── Restart recovery for a message nobody answered ───────────────────────────
+
+/**
+ * How far back a restart will look for a message the previous session never
+ * answered.
+ *
+ * NOT `FIRST_RUN_RECENT_WINDOW_MS` (10 minutes), which answers a different
+ * question: on a genuine first install, dormant history must not be delivered
+ * at all. Here the daemon has a cursor and has been running, so a message from
+ * this morning that nobody answered is a real thing still owed, not history.
+ * The exemplar this exists for had a 20 minute gap (Argus, 2026-09-24, KC's
+ * question at 14:29Z answered at 14:53Z only after a person nudged him), and a
+ * shared account that runs out of credit can mute a fleet for hours.
+ *
+ * It is a DAY and not a week because the re-offer happens on every boot: a
+ * message nobody has answered in two days is not going to be answered by
+ * re-delivering it a fifth time, and a wide window turns a crash loop into a
+ * flood.
+ */
+export const RESTART_RECOVERY_WINDOW_MS = 24 * 60 * 60_000
+
+/**
+ * On the FIRST poll after a restart, which messages at or BELOW the persisted
+ * cursor should be handed to the agent again because the previous session
+ * consumed them and never answered.
+ *
+ * THE DEFECT THIS EXISTS FOR (board row 294a571a, raised 2026-09-06). The
+ * per-chat cursor advances when a message is FORWARDED, not when it is
+ * ANSWERED. So a session that is handed a message and then cannot act on it,
+ * because its account hit a limit, because the model call failed, because it
+ * was killed mid turn, leaves that message below the cursor forever: the delta
+ * window starts above it, `selectFirstPollBacklogIds` only runs when there is
+ * no cursor at all, and a restart hands the new session nothing. The clean
+ * exemplar is KC's own question to Argus on 2026-09-24, consumed at 14:29Z by
+ * a session whose every model call was refused, still unanswered after the
+ * restart, and answered only when a person noticed and asked again.
+ *
+ * THE RULE IS THE SAME WALK-BACK `selectFirstPollBacklogIds` USES, on purpose:
+ * scan from the newest row backward, collect user and system rows, and stop at
+ * a real user then assistant REPLY. That stop is what makes this safe. If the
+ * previous session DID answer, there is an assistant row after the user row and
+ * the scan stops before reaching it, so an answered message is never re-offered.
+ * A proactive assistant row (a cron check in, an external trigger) does not
+ * terminate the scan, because it is not an answer to anything.
+ *
+ * THREE LIMITS, each of which is a way this could have made things worse:
+ *   - ONLY AT OR BELOW THE CURSOR. Rows above it are delivered by the ordinary
+ *     delta path on this same poll, so including them here would hand the agent
+ *     the same message twice in one turn.
+ *   - AN AGE WINDOW, and a row with NO sent date does not qualify. Unknown age
+ *     must not read as recent; that is the same rule the first run gate states.
+ *   - A CAP, so a chat where nothing was ever answered cannot dump its history
+ *     into the agent's context on every boot.
+ *
+ * Rows must be ordered oldest to newest by id; returned ids keep that order.
+ */
+export function selectRestartRecoveryIds(opts: {
+  rows: FirstPollRow[]
+  /** The persisted cursor. Rows above it are the delta path's job. */
+  lastSeen: number
+  maxForward: number
+  nowMs: number
+  windowMs?: number
+}): number[] {
+  const { rows, lastSeen, maxForward, nowMs } = opts
+  const windowMs = opts.windowMs ?? RESTART_RECOVERY_WINDOW_MS
+  if (lastSeen <= 0 || maxForward <= 0) return []
+
+  const collected: FirstPollRow[] = []
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!
+    if (m.pendingEmptySystem) continue
+    if (m.sender === 'user' || m.sender === 'system') {
+      // Above the cursor is the delta path's row, not ours. Keep scanning:
+      // the unanswered row we want can sit below a newer one.
+      if (m.id <= lastSeen) {
+        collected.push(m)
+        if (collected.length >= maxForward) break
+      }
+      continue
+    }
+    if (m.sender === 'assistant') {
+      const prev = i > 0 ? rows[i - 1]! : null
+      if (prev && prev.sender === 'user') {
+        // A real reply. Everything older was answered; stop.
+        break
+      }
+      // Proactive assistant row, not an answer. Keep scanning backward.
+    }
+  }
+  collected.reverse()
+  return collected
+    .filter((m) => m.sentDateMs !== null && nowMs - m.sentDateMs <= windowMs)
+    .map((m) => m.id)
+}
+
 // ── Button-click transition detection (single-announce contract) ─────────────
 
 /** The projection of a polled message that click detection needs. */
