@@ -25,9 +25,15 @@
  *     daemons can share one pairing room on a host and the first result
  *     wins: an error from the wrong daemon could be the answer the owner sees.
  *  3. A re sent frame never runs Git twice. The ids of the last 256 frames are
- *     REMEMBERED with their answers: an id still running is ignored, an id
- *     already answered gets the same answer again. Never forgotten in a
- *     finally.
+ *     REMEMBERED: an id still running is ignored, an id already answered gets
+ *     the same answer again while the answer is held, and nothing once it is
+ *     let go. Never forgotten in a finally. The ANSWER is held only for the
+ *     backend's own hold (CHANGES_READ_TIMEOUT_MS, 20 s from its first emit,
+ *     changes-panel.service.ts) and only for the newest few: an answer can
+ *     carry a megabyte of patch and more, the backend takes the first result
+ *     and drops anything after its hold as late, so a copy kept longer buys
+ *     nothing and would pile up in a daemon that runs for days (review round
+ *     1, D-R1).
  *  4. The ack is best effort: a failed ack costs one re emit, which rule 3
  *     absorbs, and must not stop the work.
  *  5. Until this agent's home folder is on record (or was pinned), nothing is
@@ -70,10 +76,23 @@ export type ChangesRpcDeps = {
   postAck: (rpcId: string) => Promise<unknown>
   postResult: (rpcId: string, body: ChangesRpcResult) => Promise<unknown>
   log: (msg: string) => void
+  /**
+   * Runs `run` once, `ms` from now, without keeping the process alive. The
+   * default is an unref'd setTimeout; the tests inject their own clock.
+   */
+  schedule?: (run: () => void, ms: number) => void
 }
 
 /** How many answered frames are remembered (the memory lane keeps the same). */
 export const CHANGES_RPC_SEEN_MAX = 256
+/**
+ * How long a whole answer is held for a re sent frame: the backend's own hold,
+ * CHANGES_READ_TIMEOUT_MS in changes-panel.service.ts. Past it the backend has
+ * given up on the frame and logs any answer as late.
+ */
+export const CHANGES_RPC_ANSWER_HOLD_MS = 20_000
+/** The most whole answers held at once, whatever the clock. */
+export const CHANGES_RPC_ANSWERS_HELD_MAX = 4
 export const CHANGES_RPC_MESSAGE_MAX = 300
 export const CHANGES_RPC_CODE_MAX = 40
 
@@ -123,12 +142,21 @@ function failure(code: string, message: string): ChangesRpcResult {
   return { ok: false, error: { code: safeCode, message: shortChangesMessage(message) } }
 }
 
-type Seen = { state: 'running' } | { state: 'done'; result: ChangesRpcResult }
+/** A done entry whose result is null was answered and its answer let go. */
+type Answered = { state: 'done'; result: ChangesRpcResult | null }
+type Seen = { state: 'running' } | Answered
+
+function scheduleUnref(run: () => void, ms: number): void {
+  const timer = setTimeout(run, ms) as { unref?: () => unknown }
+  timer.unref?.()
+}
 
 export class ChangesRpcHandler {
   private readonly deps: ChangesRpcDeps
   /** rpcId to its state, oldest first; bounded at CHANGES_RPC_SEEN_MAX. */
   private readonly seen = new Map<string, Seen>()
+  /** The entries still holding their answer, oldest first. */
+  private held: Answered[] = []
 
   constructor(deps: ChangesRpcDeps) {
     this.deps = deps
@@ -150,6 +178,10 @@ export class ChangesRpcHandler {
       return
     }
     if (earlier?.state === 'done') {
+      if (!earlier.result) {
+        this.deps.log(`changes_rpc duplicate frame ignored, answered earlier (rpc=${frame.rpcId})`)
+        return
+      }
       this.deps.log(`changes_rpc duplicate frame answered again from memory (rpc=${frame.rpcId})`)
       await this.post(frame.rpcId, earlier.result)
       return
@@ -169,9 +201,32 @@ export class ChangesRpcHandler {
       this.deps.log(`changes_rpc ${frame.op || 'frame'} failed (rpc=${frame.rpcId}): ${errorText(err)}`)
       result = failure('read_failed', MSG.failed)
     }
-    // Remembered for good (bounded), never forgotten in a finally: see rule 3.
-    this.seen.set(frame.rpcId, { state: 'done', result })
+    // The id is remembered for good (bounded), never forgotten in a finally;
+    // the answer only for the hold: see rule 3.
+    const entry: Answered = { state: 'done', result }
+    this.seen.set(frame.rpcId, entry)
+    this.hold(entry)
     await this.post(frame.rpcId, result)
+  }
+
+  /** How many whole answers are held right now. */
+  heldAnswers(): number {
+    return this.held.length
+  }
+
+  private hold(entry: Answered): void {
+    this.held.push(entry)
+    while (this.held.length > CHANGES_RPC_ANSWERS_HELD_MAX) {
+      const oldest = this.held.shift()
+      if (oldest) oldest.result = null
+    }
+    const schedule = this.deps.schedule ?? scheduleUnref
+    schedule(() => this.letGo(entry), CHANGES_RPC_ANSWER_HOLD_MS)
+  }
+
+  private letGo(entry: Answered): void {
+    entry.result = null
+    this.held = this.held.filter((e) => e !== entry)
   }
 
   private async run(frame: ChangesRpcFrame): Promise<ChangesRpcResult> {

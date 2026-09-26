@@ -52,6 +52,7 @@ function harness(
     collect?: (input: Collected) => ChangesCollectResult | Promise<ChangesCollectResult>
     postAck?: (rpcId: string) => Promise<unknown>
     postResult?: (rpcId: string, body: any) => Promise<unknown>
+    schedule?: (run: () => void, ms: number) => void
   } = {},
 ) {
   const posts: Post[] = []
@@ -74,6 +75,7 @@ function harness(
       if (opts.postResult) await opts.postResult(rpcId, body)
     },
     log: (msg) => logs.push(msg),
+    ...(opts.schedule ? { schedule: opts.schedule } : {}),
   })
   return { handler, posts, logs, collected }
 }
@@ -208,6 +210,61 @@ test('remembers the last 256 ids', async () => {
   // The oldest is forgotten, so it runs as new.
   await h.handler.handle(frame('id-1'))
   assert.equal(h.collected.length, 258)
+})
+
+// Review round 1 (D-R1): an answer can hold a megabyte of patch and more. The
+// backend re emits a frame only 1.5 s after sending it, takes the first result,
+// and gives up at CHANGES_READ_TIMEOUT_MS = 20 s (changes-panel.service.ts), so
+// a whole answer is worth keeping for that long and no longer. After it, the id
+// stays remembered (Git still never runs twice) but the answer is let go.
+
+test("keeps a whole answer for the backend's 20 s hold, then lets it go: a later re send runs nothing and posts nothing", async () => {
+  const timers: Array<{ run: () => void; ms: number }> = []
+  const h = harness({ schedule: (run, ms) => timers.push({ run, ms }) })
+  await h.handler.handle(frame('r1'))
+  // Within the hold, a re send is answered again from memory.
+  await h.handler.handle(frame('r1'))
+  assert.equal(results(h.posts).length, 2, 'answered again within the hold')
+  // The hold runs out.
+  for (const t of timers.splice(0)) t.run()
+  await h.handler.handle(frame('r1'))
+  assert.equal(h.collected.length, 1, 'Git never runs twice, even after the answer is let go')
+  assert.equal(results(h.posts).length, 2, 'a re send past the hold posts nothing')
+  assert.equal(h.handler.heldAnswers(), 0, 'no whole answer is held past the hold')
+  assert.ok(h.logs.some((l) => l.includes('answered earlier') && l.includes('r1')), h.logs.join('\n'))
+})
+
+test('the hold is the backend\'s own 20 s, one timer per answer, and every answer is held, a failure too', async () => {
+  const timers: Array<{ run: () => void; ms: number }> = []
+  const h = harness({ schedule: (run, ms) => timers.push({ run, ms }) })
+  await h.handler.handle(frame('r1'))
+  await h.handler.handle(frame('r2', { op: 'log' }))
+  assert.deepEqual(timers.map((t) => t.ms), [20_000, 20_000])
+  assert.equal(h.handler.heldAnswers(), 2)
+  timers[0].run()
+  assert.equal(h.handler.heldAnswers(), 1, 'only the answer whose hold ran out is let go')
+  await h.handler.handle(frame('r2', { op: 'log' }))
+  assert.deepEqual(results(h.posts).at(-1), {
+    ok: false,
+    error: { code: 'unsupported', message: 'this changes operation is not supported here' },
+  })
+  assert.equal(results(h.posts).length, 3)
+})
+
+test('at most the newest 4 whole answers are held at once, whatever the clock', async () => {
+  // A timer that never fires: only the count lets answers go.
+  const h = harness({ schedule: () => {} })
+  for (let i = 1; i <= 6; i += 1) await h.handler.handle(frame(`n-${i}`))
+  assert.equal(h.collected.length, 6)
+  // The two oldest are let go: a re send runs nothing and posts nothing.
+  await h.handler.handle(frame('n-1'))
+  await h.handler.handle(frame('n-2'))
+  assert.equal(results(h.posts).length, 6, 'the answers beyond the newest four are not held')
+  // The newest four are answered again from memory.
+  for (const id of ['n-3', 'n-4', 'n-5', 'n-6']) await h.handler.handle(frame(id))
+  assert.equal(results(h.posts).length, 10)
+  assert.equal(h.collected.length, 6, 'Git never runs twice')
+  assert.equal(h.handler.heldAnswers(), 4)
 })
 
 test('a failed ack does not stop the work', async () => {
