@@ -13,27 +13,44 @@ The HOAI Changes panel (HOAI P7 stage 3, C-31) shows the files a coding agent ha
 daemon answers a new `changes_rpc` lane (op `diff`, scope `uncommitted`) with read only Git in the agent's launch
 folder (lib/changes-rpc.ts over lib/git-changes.ts).
 
+**What the read defends against, and what it does not.** It defends the owner against untrusted repository content,
+what a clone carries (a `git` binary planted in the folder, attributes, the files themselves), and against Git writing
+the repository (the index refresh, its locks). It does not defend against the agent itself: the agent runs as the same
+user with the same reach on the same machine and can already run any program and read any file there, and the answer
+goes only to the owner who owns that machine. A setting only the agent's own local config or its `.git` file can make
+(`core.worktree`, a gitfile or `GIT_DIR` pointing elsewhere, a clean filter, a promisor remote's programs) can mislead
+its own panel; the checks below that exist for those (the top folder rule, `GIT_NO_LAZY_FETCH`, the Git floor) are
+defence in depth, and each line says what it covers. The git dir and the common dir are not contained, on purpose: an
+agent that runs in a Git worktree keeps its common dir outside its folder.
+
 - **Read only, and it stays off the index.** The whole list is `rev-parse`, `symbolic-ref`, `diff --numstat`, `diff`
   and `ls-files`, run with `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on
   Git 2.55, a file touched but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off,
-  which would race the agent's own `git add` for the index lock.
+  which would race the agent's own `git add` for the index lock. None of these writes the index, the working tree or a
+  ref; a lazy fetch, on a Git that does not know `GIT_NO_LAZY_FETCH`, would still add objects (below).
 - **No fsmonitor hook runs, on Git 2.36 or later.** Every Git command turns `core.fsmonitor` off on its command line.
   The repository's own config can point that setting at a program, and measured on Git 2.55 both diffs and `ls-files`
-  ran it, so each panel read would have run that program, which the agent picked, as the owner. Before Git 2.36 the
-  same `core.fsmonitor=false` is read as the path of a program to run, so the daemon reads `git version` once for each
-  Git it finds, and an older Git, or a version it cannot read, is refused with "Git 2.36 or later is needed to read
-  changes safely" before any other command runs.
-- **No fetch from a partial clone.** Every Git command runs with `GIT_NO_LAZY_FETCH=1`, so a read that needs an object a
-  partial clone left out fails instead of asking the promisor remote for it, a fetch that runs the programs the
-  repository's config names and can wait on the network (measured on Git 2.55: the numstat ran the upload-pack program
-  a clone's config named). The variable, not the `--no-lazy-fetch` flag an older Git rejects. The variable came with
-  that flag in Git 2.45 (Git's own release notes for 2.45.0 name the flag; no older Git was run here), so a Git from
-  2.36 to 2.44 passes the floor but ignores it.
-- **One program still runs: a clean filter.** A clean filter the repository's own config and attributes name still
-  runs on the two diffs; no flag here stops it. This is an accepted limit: it needs the repository's local config,
-  which no clone carries, and this daemon runs as the same user with the same reach as the agent. Unlike the fsmonitor
-  there is no one switch for it (filter names are free), and reading attributes from an empty tree needs Git 2.40 and
-  does not cover `.git/info/attributes`.
+  ran it, so each panel read would have run that program, which the agent picked, as the owner. That setting lives in
+  the repository's local config, which no clone carries, so this is defence in depth. From Git 2.36 the flag reads as
+  off; before it, the same `core.fsmonitor=false` is read as the path of a program to run, so the daemon reads
+  `git version` for the Git it finds before any other command, and an older Git, or a version it cannot read, is
+  refused with "Git 2.36 or later is needed to read changes safely" and nothing else runs. Only an accepted Git is
+  remembered: a refused one is asked again at the next read, so an owner who updates Git needs no daemon restart. The
+  floor stays 2.36: 2.45 would refuse Ubuntu 24.04's Git 2.43, which honours `GIT_NO_LAZY_FETCH`.
+- **No lazy fetch from a partial clone, on a Git that knows `GIT_NO_LAZY_FETCH`.** Every Git command runs with
+  `GIT_NO_LAZY_FETCH=1`, so on such a Git a read that needs an object a partial clone left out fails instead of asking
+  the promisor remote for it, a fetch that runs the programs the repository's config names and can wait on the network
+  (measured on Git 2.55: the numstat ran the upload-pack program a clone's config named). The variable, not the
+  `--no-lazy-fetch` flag an older Git rejects. Git's release notes first name it in 2.45.0, and Ubuntu 24.04's build of
+  Git 2.43.0 honours it too (measured); a Git from 2.36 that does not know it passes the floor and can still fetch
+  lazily in a partial clone, a documented gap. A promisor remote is the clone's local config, so this too is defence in
+  depth.
+- **A clean filter still runs, on every Git.** A clean filter the repository's own config and attributes name still
+  runs on the two diffs; no flag here stops it (and on a Git that does not know `GIT_NO_LAZY_FETCH`, a lazy fetch's
+  programs can run too, above). This is an accepted limit: it needs the repository's local config, which no clone
+  carries, and this daemon runs as the same user with the same reach as the agent. Unlike the fsmonitor there is no
+  one switch for it (filter names are free), and reading attributes from an empty tree (`--attr-source` from Git 2.41,
+  `attr.tree` from Git 2.43) would raise the floor and still not cover `.git/info/attributes`.
 - **Git's own `a/` and `b/` prefixes**, asked for on the patch, so a host whose Git config sets
   `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix` or `diff.dstPrefix` still reads right.
 - **A moved submodule is one section of its own.** The patch asks for Git's short submodule format too, so a host
@@ -46,11 +63,15 @@ folder (lib/changes-rpc.ts over lib/git-changes.ts).
   that is gone is a failed read, never "Git is not installed" (Node names both the same way). The repository's top
   folder must be the launch folder or a folder above it, as the host resolves both: a `core.worktree` in the
   repository's config that names any other folder is refused and nothing there is read (measured on Git 2.55: without
-  the check, the read went on in that folder's own repository and sent a new file from it whole).
+  the check, the read went on in that folder's own repository and sent a new file from it whole). The refusal reads
+  "changes could not be read on the agent host", the sentence the Codex daemon sends for it too. `core.worktree` is
+  local config, so this is defence in depth, and it covers the top folder only: the git dir and the common dir are not
+  checked, so a gitfile pointing elsewhere still reads that repository against this folder.
 - **Git by its absolute path, never a git in the agent's folder.** Windows looks for a bare `git` in the working
-  folder before PATH, so a `git.exe` the agent left there would have run as the owner each time the panel opened
-  (measured on node 24.16 and bun 1.3.9). Git is looked up on PATH's absolute entries only and run by that path; an
-  empty, `.` or other relative entry is never looked at, and no Git on PATH still reads as "Git is not installed".
+  folder before PATH, so a `git.exe` there, which a cloned repository can carry as an ordinary file, would have run as
+  the owner each time the panel opened (measured on node 24.16 and bun 1.3.9). Git is looked up on PATH's absolute
+  entries only and run by that path; an empty, `.` or other relative entry is never looked at, and no Git on PATH still
+  reads as "Git is not installed".
 - **New files count.** The first 20 untracked files are read: text up to 64 KB is sent whole, a file with a NUL in
   its first 8,000 bytes is binary, a larger one is its size only, a symlink is never followed. Each is opened once and
   checked through that handle before any byte is read: it is read, at most 64 KB and one byte, only while it is still
