@@ -2,11 +2,9 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.54.0
+## 0.55.0
 
-**Renumbered from 0.52.0 at merge.** The plugin's main was released as 0.51.0, 0.52.0 and 0.53.0 by other work
-(#162, #163, #157) while this was open, so this ships as 0.54.0, the next free number. Nothing is gated on the number:
-the backend reaches this lane only through the declared `memory_rpc` token.
+**Renumbered from 0.52.0, then from 0.54.0, at merge:** the plugin's main took 0.51.0 to 0.54.0 (#162, #163, #157, #164).
 
 **An owner can change this agent's memory from the app.**
 The HOAI Memory screen now reaches a Claude Code agent (HOAI P7 stage 2, C-39). This daemon answers a new
