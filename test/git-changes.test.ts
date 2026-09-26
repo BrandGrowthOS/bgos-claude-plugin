@@ -29,7 +29,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -145,26 +145,56 @@ function fakeGit(reply: (args: readonly string[], signal: AbortSignal) => Reply 
   return { runGit, calls }
 }
 
-type MemEntry = { kind: 'file' | 'symlink' | 'dir'; data?: Buffer; size?: number }
+/**
+ * One name in the in memory fs. `open` is what an open handle finds at that
+ * name if it changed after the lstat (it grew, or another file was put in its
+ * place); `ino` 0 is a host that reports none.
+ */
+type MemEntry = {
+  kind: 'file' | 'symlink' | 'dir' | 'device'
+  data?: Buffer
+  size?: number
+  ino?: number
+  open?: MemEntry
+}
 
 function memFs(entries: Record<string, MemEntry>) {
   const lstats: string[] = []
   const reads: string[] = []
-  const fs: ChangesFs = {
-    lstat: async (p) => {
+  /** What each bounded read asked for, in bytes. */
+  const readMax: number[] = []
+  /** Whole file reads: the collector must never make one (review round 1, D-R3). */
+  const wholeReads: string[] = []
+  const names = Object.keys(entries)
+  const inoOf = (p: string, e: MemEntry) => e.ino ?? names.indexOf(p) + 1
+  const enoent = (p: string) => Object.assign(new Error(`ENOENT: no such file, open '${p}'`), { code: 'ENOENT' })
+  const fs = {
+    lstat: async (p: string) => {
       lstats.push(p)
       const e = entries[p]
       if (!e) throw Object.assign(new Error(`ENOENT: no such file, lstat '${p}'`), { code: 'ENOENT' })
-      return { isFile: () => e.kind === 'file', size: e.size ?? e.data?.length ?? 0 }
+      return { isFile: () => e.kind === 'file', size: e.size ?? e.data?.length ?? 0, dev: 1, ino: inoOf(p, e) }
     },
-    readFile: async (p) => {
+    readAtMost: async (p: string, maxBytes: number) => {
       reads.push(p)
+      readMax.push(maxBytes)
       const e = entries[p]
-      if (!e?.data) throw Object.assign(new Error(`ENOENT: no such file, open '${p}'`), { code: 'ENOENT' })
-      return e.data
+      const o = e?.open ?? e
+      if (!e || !o || (o.kind === 'file' && !o.data)) throw enoent(p)
+      const stat = { isFile: () => o.kind === 'file', size: o.size ?? o.data?.length ?? 0, dev: 1, ino: o.ino ?? inoOf(p, e) }
+      if (o.kind !== 'file' || !o.data) return { stat, data: new Uint8Array(0) }
+      return { stat, data: new Uint8Array(o.data.subarray(0, maxBytes)) }
+    },
+    // The old unbounded read, kept as a trap: it answers, and it is counted.
+    readFile: async (p: string) => {
+      reads.push(p)
+      wholeReads.push(p)
+      const o = entries[p]?.open ?? entries[p]
+      if (!o?.data) throw enoent(p)
+      return o.data
     },
   }
-  return { fs, lstats, reads }
+  return { fs: fs as ChangesFs, lstats, reads, readMax, wholeReads }
 }
 
 const BASE_ENV = { PATH: '/usr/bin', HOME: '/home/kc' }
@@ -649,6 +679,41 @@ test('reads the first 20 untracked regular files: text, binary by a NUL, too lar
   for (const n of ['big.log', 'link', 'dir']) assert.ok(!mem.reads.includes(`${ROOT}/${n}`), `${n} was read`)
 })
 
+test('a file that changes between its check and its read is read through one handle, never past the text cap, and never through a name swapped in', async () => {
+  // Review round 1 (D-R3). An untracked file was lstat'ed and then read WHOLE,
+  // following symlinks: one that grew, or a name swapped for a link to a big
+  // file (or /dev/zero), was loaded in full before the cap was checked. Now
+  // one handle is opened (O_NOFOLLOW where the host has it), it must still be
+  // the regular file lstat saw, and at most the text cap and one byte is read.
+  const max = CHANGES_DEFAULT_CAPS.maxUntrackedTextBytes
+  const mem = memFs({
+    // 40 KB at the lstat, 500 KB by the read.
+    [`${ROOT}/grows.log`]: { kind: 'file', size: 40_000, ino: 11, open: { kind: 'file', data: Buffer.alloc(500_000, 'g'), ino: 11 } },
+    // Another file put in its place (a symlink followed, on a host with no O_NOFOLLOW): a different file id.
+    [`${ROOT}/swapped.txt`]: {
+      kind: 'file',
+      size: 40,
+      ino: 12,
+      open: { kind: 'file', data: Buffer.from('the target of a link put in its place\n'), ino: 99 },
+    },
+    // Swapped for a device on a host that reports no file id: only the kind tells.
+    [`${ROOT}/fifo`]: { kind: 'file', size: 40, ino: 13, open: { kind: 'device', data: Buffer.alloc(200_000), ino: 0 } },
+    [`${ROOT}/steady.md`]: { kind: 'file', data: Buffer.from('# Steady\n'), ino: 14 },
+  })
+  const list = 'grows.log\0swapped.txt\0fifo\0steady.md\0'
+  const { result } = await collect({ fs: mem.fs, reply: repoReply([[ARGV_UNTRACKED, ok(list)]]) })
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.deepEqual(result.payload.untrackedFiles, [
+    { path: 'grows.log', bytes: 500_000 },
+    { path: 'swapped.txt', bytes: 40 },
+    { path: 'fifo', bytes: 40 },
+    { path: 'steady.md', bytes: 9, text: '# Steady\n' },
+  ])
+  assert.deepEqual(mem.wholeReads, [], 'no untracked file is ever read whole')
+  assert.deepEqual(mem.readMax, [max + 1, max + 1, max + 1, max + 1], 'each read asks for the text cap and one byte, no more')
+})
+
 test('a name the cut list did not finish is not read', async () => {
   const mem = memFs({ [`${ROOT}/a.txt`]: { kind: 'file', data: Buffer.from('a\n') } })
   const { result } = await collect({
@@ -940,6 +1005,44 @@ test('real Git: a git planted in the folder Git runs in is never the one that ru
     assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
   } finally {
     s.remove(t)
+  }
+})
+
+test('the node read opens one handle and reads at most what it is asked for, from the same file lstat saw', { timeout: 60_000 }, async () => {
+  // Review round 1 (D-R3), on this host's real file system.
+  const base = mkdtempSync(join(tmpdir(), 'hoai-changes-'))
+  try {
+    const big = join(base, 'big.log')
+    writeFileSync(big, Buffer.alloc(200_000, 'b'))
+    const opened = await nodeChangesFs.readAtMost(big, 1000)
+    assert.equal(opened.data.length, 1000, 'at most what was asked for')
+    assert.equal(opened.stat.isFile(), true)
+    assert.equal(opened.stat.size, 200_000)
+    // The identity check must not misfire on this host: the handle is the file lstat saw.
+    const seen = await nodeChangesFs.lstat(big)
+    assert.equal(opened.stat.ino, seen.ino)
+    assert.equal(opened.stat.dev, seen.dev)
+    const small = join(base, 'small.txt')
+    writeFileSync(small, 'hi\n')
+    assert.equal(Buffer.from((await nodeChangesFs.readAtMost(small, 1000)).data).toString('utf8'), 'hi\n')
+  } finally {
+    rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+  }
+})
+
+test('the node read refuses a symlink, where the host has O_NOFOLLOW', { skip: process.platform === 'win32', timeout: 60_000 }, async () => {
+  // Windows has no O_NOFOLLOW (fs.constants.O_NOFOLLOW is undefined on node
+  // 24.16 and bun 1.3.9 there); the collector's file id check covers it, see
+  // the in memory case above.
+  const base = mkdtempSync(join(tmpdir(), 'hoai-changes-'))
+  try {
+    const target = join(base, 'target.txt')
+    writeFileSync(target, 'outside\n')
+    const link = join(base, 'link.txt')
+    symlinkSync(target, link)
+    await assert.rejects(nodeChangesFs.readAtMost(link, 1000))
+  } finally {
+    rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   }
 })
 

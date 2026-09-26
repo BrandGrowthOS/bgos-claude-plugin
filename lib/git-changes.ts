@@ -37,7 +37,11 @@
  *    Git there reads as git_missing.
  *  - A STREAM CAP, NOT A BUFFER. stdout is read until the cap and then the
  *    child is killed, so a huge diff costs one megabyte and a flag, never a
- *    failed read (a maxBuffer overflow fails the whole call).
+ *    failed read (a maxBuffer overflow fails the whole call). An untracked
+ *    file is the same: one handle, at most the text cap and one byte read,
+ *    and it must still be the regular file the lstat saw (review round 1,
+ *    D-R3), so a file that grows or a name swapped between the two is never
+ *    loaded whole.
  *  - A BUDGET. Past budgetMs the running child is killed and the answer is
  *    too_slow; nothing more runs.
  *  - CAPS FROM THE FRAME, NEVER ABOVE THE DEFAULTS. The defaults are the
@@ -51,7 +55,7 @@
 
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
-import { access as fsAccess, lstat as fsLstat, readFile as fsReadFile, stat as fsStat } from 'node:fs/promises'
+import { access as fsAccess, lstat as fsLstat, open as fsOpen, stat as fsStat } from 'node:fs/promises'
 
 export type ChangesCaps = {
   maxPatchBytes: number
@@ -299,15 +303,48 @@ function spawnGit(
   })
 }
 
+/** What the untracked step reads of a file: its kind, size and identity. */
+export type ChangesStat = { isFile(): boolean; size: number; dev?: number; ino?: number }
+
 /** The file reads the untracked step needs. */
 export type ChangesFs = {
-  lstat(path: string): Promise<{ isFile(): boolean; size: number }>
-  readFile(path: string): Promise<Uint8Array>
+  lstat(path: string): Promise<ChangesStat>
+  /**
+   * Opens `path` once (never through a symlink, where the host can refuse
+   * one) and reads at most `maxBytes` from the start. `stat` is the OPEN
+   * file's, so a name swapped after an lstat shows. Nothing is read from
+   * anything that is not a regular file.
+   */
+  readAtMost(path: string, maxBytes: number): Promise<{ stat: ChangesStat; data: Uint8Array }>
 }
+
+/**
+ * O_NOFOLLOW refuses a symlink at the open and O_NONBLOCK keeps a FIFO put in
+ * a file's place from blocking the open. Windows has neither (both are
+ * undefined in fs.constants there); the file id check in readUntracked is
+ * what catches a swapped name on that host.
+ */
+const OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0)
 
 export const nodeChangesFs: ChangesFs = {
   lstat: (path) => fsLstat(path),
-  readFile: (path) => fsReadFile(path),
+  readAtMost: async (path, maxBytes) => {
+    const handle = await fsOpen(path, OPEN_FLAGS)
+    try {
+      const stat = await handle.stat()
+      if (!stat.isFile()) return { stat, data: new Uint8Array(0) }
+      const buf = Buffer.alloc(Math.max(0, maxBytes))
+      let got = 0
+      while (got < buf.length) {
+        const { bytesRead } = await handle.read(buf, got, buf.length - got, got)
+        if (bytesRead === 0) break
+        got += bytesRead
+      }
+      return { stat, data: buf.subarray(0, got) }
+    } finally {
+      await handle.close().catch(() => {})
+    }
+  },
 }
 
 // ---------------------------------------------------------------------------
@@ -571,33 +608,54 @@ async function folderExists(fs: ChangesFs, path: string): Promise<boolean> {
   }
 }
 
+function wholeSize(size: number): number {
+  return Number.isFinite(size) && size >= 0 ? Math.floor(size) : 0
+}
+
+/**
+ * The same file, as far as the host can tell: the file ids match. A host that
+ * reports no id (0 or none) cannot tell, and the kind check and the bounded
+ * read still hold.
+ */
+function sameFile(a: ChangesStat, b: ChangesStat): boolean {
+  const known = (s: ChangesStat) => typeof s.ino === 'number' && s.ino > 0
+  if (!known(a) || !known(b)) return true
+  return a.ino === b.ino && a.dev === b.dev
+}
+
 /**
  * One untracked name, read under the root. A regular file within the text cap
  * is read: a NUL in its first 8,000 bytes makes it binary, else it is text. A
  * larger one is its size only. A symlink or anything that is not a regular
- * file is binary with its size, never followed. A name that cannot be read
+ * file is binary with its size, never followed. The read is ONE handle and at
+ * most the cap and one byte: a file that grew past the cap since the lstat is
+ * its size only, and a name that is no longer the regular file the lstat saw
+ * (swapped for a link or a device) is not read. A name that cannot be read
  * (gone since the list, or refused) is its name with no text, which the
  * backend shows as not drawn.
  */
 async function readUntracked(fs: ChangesFs, root: string, name: string, maxText: number): Promise<ChangesUntrackedFile> {
   const full = `${root.replace(/[\\/]+$/, '')}/${name}`
-  let st: { isFile(): boolean; size: number }
+  let st: ChangesStat
   try {
     st = await fs.lstat(full)
   } catch {
     return { path: name, bytes: 0 }
   }
-  const size = Number.isFinite(st.size) && st.size >= 0 ? Math.floor(st.size) : 0
+  const size = wholeSize(st.size)
   if (!st.isFile()) return { path: name, bytes: size, binary: true }
   if (size > maxText) return { path: name, bytes: size }
-  let data: Buffer
+  let opened: { stat: ChangesStat; data: Uint8Array }
   try {
-    data = Buffer.from(await fs.readFile(full))
+    opened = await fs.readAtMost(full, maxText + 1)
   } catch {
     return { path: name, bytes: size }
   }
-  // It grew between the two calls.
-  if (data.length > maxText) return { path: name, bytes: data.length }
+  // Swapped since the lstat: no longer a regular file, or another file.
+  if (!opened.stat.isFile() || !sameFile(st, opened.stat)) return { path: name, bytes: size }
+  const data = Buffer.from(opened.data.buffer, opened.data.byteOffset, opened.data.byteLength)
+  // It grew past the cap between the two calls.
+  if (data.length > maxText) return { path: name, bytes: Math.max(wholeSize(opened.stat.size), data.length) }
   if (data.subarray(0, CHANGES_BINARY_SNIFF_BYTES).includes(0)) return { path: name, bytes: data.length, binary: true }
   return { path: name, bytes: data.length, text: data.toString('utf8') }
 }
