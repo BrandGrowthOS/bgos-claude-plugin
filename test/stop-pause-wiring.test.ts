@@ -57,13 +57,17 @@ test('the voice rpc Stop hands a delivered stop to the armed goal case', () => {
 
 test('the stop reads the goal lane as it is at that moment, gated on the heartbeat own declaration', () => {
   const body = functionBody('stopGoalView')
-  // The SAME expression the version heartbeat declares from.
-  assert.ok(
-    server.includes('capabilities: () => [...declaredCapabilities({ canInjectGoal: compactTarget !== null })]'),
+  // The SAME expression the version heartbeat declares from (main 0.53.0
+  // made floorHook and authMode required, for hard_floor).
+  const declaration =
+    'declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode })'
+  assert.match(
+    server,
+    new RegExp(`capabilities: \\(\\) => \\[\\s*\\.\\.\\.${declaration.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},?\\s*\\]`),
     'the heartbeat declaration moved; keep the stop gate on the same expression',
   )
   assert.ok(
-    body.includes("declaredCapabilities({ canInjectGoal: compactTarget !== null }).includes('mission_pause')"),
+    body.includes(`${declaration}.includes('mission_pause')`),
     'the stop pauses only where mission_pause is declared on this beat',
   )
   for (const record of ['goalHeld', 'goalMissionId', 'goalPendingArm', 'goalStopped']) {

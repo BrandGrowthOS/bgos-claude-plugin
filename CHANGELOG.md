@@ -28,6 +28,518 @@ the same digest BGOS and codex-channel-bgos pin.
   agent only when its owner runs `hoai` again, so it is a later update. Declares `sessions_library` on every host.
   The bundled MCP instructions, what the model reads when the served canon cannot be fetched, carry the served
   Sessions sentence word for word, and say resuming from the app is not available yet.
+## 0.53.0 (2026-09-26)
+
+**Renumbered from 0.46.0, then from 0.49.0, then from 0.52.0, at merge.**
+This release was prepared as 0.46.0, then renumbered 0.49.0 when the plugin's
+main was released as 0.46.0, 0.47.0 and 0.47.1 by other programs without this
+work and it stacked on the plan card. The permission request card (prepared as
+0.44.1, then 0.47.0) has since shipped as 0.49.0 and the plan card it stacks on
+(prepared as 0.45.0, then 0.48.0) as 0.50.0, both on the plugin's main. Main
+then took 0.51.0 (add_mission_goals and cancel_mission_goal) and, while this
+branch was being merged as 0.52.0, 0.52.0 (the restart recovery of an
+unanswered message, #163), so this ships as 0.53.0, the next free number above
+it. A plugin version cannot be reserved, so the HOAI canon does not tie the
+floor to a release number: it tells the floor sentences only to a daemon that
+DECLARES the `hard_floor` capability, the way it tells the request card and the
+plan card only to a daemon that declares `permission_card` or `plan_card`
+(BGOS #1624).
+
+- **Always ask before risky actions: a listed action now stops and asks you,
+  even though the agent runs with full access.** It is your switch, per agent,
+  OFF by default, and it lives on the server; this plugin never reads it. With
+  it on, deleting a folder and everything in it, force pushing, changing a file
+  inside `.git`, changing an `.env` file, changing a settings file in your home
+  folder, and an MCP tool that sends, posts, pays or deletes on your behalf all
+  arrive as the Allow once / Deny card and wait for you. Nothing else changes:
+  `git status`, an ordinary edit and this channel's own tools never ask.
+  A payment tool is read by the names payment tools really use
+  (`create_payment_intent`, `createPayment`, `charge_card`), while a read of
+  one (`list_payment_intents`, `get_charge`) is not; and the HOAI Agent
+  Browser's own tools are left to the browser's own gate, which already asks
+  you before every sensitive action in the page, so clearing a value from the
+  agent's own browser storage no longer asks. A shell command the CLI cut in
+  the middle that no floor record names waits for you only when your switch
+  is on (the relay asks the server with `elided: true`); with it off it runs
+  as it did before. And if this daemon cannot fetch the canon, its offline
+  copy tells the agent that a hook stops a listed action only when it
+  declares `hard_floor`, the served canon's own rule.
+  - **A blocking hook, and only one.** `bin/hoai-floor-hook.mjs` is a second
+    `PreToolUse` entry with `async: false`, a matcher for the shell, edit and
+    MCP tools and a 3 second timeout. For a listed action it answers `ask`,
+    which the CLI honours under `--dangerously-skip-permissions` (the stage 6
+    live probe, run D1). It never answers `deny`, because you could not
+    overrule a deny from your phone, and it fails OPEN: bad input, a crash, a
+    missing core or its own 1.5 second budget all end with nothing printed and
+    exit 0. The telemetry forwarder is untouched and still cannot block
+    anything; the manifest test and the forwarder's rule 1 now say why the one
+    exception exists.
+  - **Only where a HOAI agent runs.** The hook asks only in a session a HOAI
+    daemon is attached to (the daemon marks its project folder while it holds
+    its pairing lock). A plain `claude` elsewhere on the same machine, or a
+    headless `claude -p` job, gets no new prompt.
+  - **The relay stops waving it through.** A default install auto approves, and
+    the probe watched it allow the hook's ask in 8 ms (run D3). The hook now
+    leaves a floor record before it asks, and the relay takes it before its
+    auto approve branch, because the request's own preview is a copy the CLI
+    cuts in the middle when a command is long: a delete in the middle of a
+    long script was invisible to it. On a match the relay asks the server
+    (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched
+    command): hold posts the card and waits for you, proceed auto approves as
+    before, and a check that fails or times out REFUSES the action rather than
+    allowing it silently. A held request meets the same drain and no chat
+    refusals as any other card. With auto approve off, a proceed in a full
+    access session lets the call run as it did before, instead of a card for a
+    switch you left off.
+  - **The card the server can read.** An MCP tool's card now carries
+    `<tool_name> <input_preview>`, so the server recognises a held send, post
+    or payment and only you can allow it; a held long command leads with the
+    matched command, so you see the delete or the push first.
+  - **One list, owned by the server.** `lib/hard-floor-core.mjs` is a port of
+    the server's reader in plain JavaScript, so a bare `node` hook can load it;
+    `lib/hard-floor.ts` is its typed face for the daemon;
+    `lib/hard-floor-fixture.ts` is copied byte for byte from the server's and
+    pins six rule ids, their words, rules version 1 and every named case, with
+    its digest pinned again in the test. A mention in quotes, a commit message,
+    a comment or a heredoc written to a file is not the action; the HOAI
+    exemption is the channel's exact server names; `rm --rec` is recursive.
+    The cheap shell forms of the same actions are on it too: `find -delete`,
+    `git clean -fd`/`-fx`, `rsync --delete`, `git push --mirror`, `--delete`
+    and `:branch`, and a redirect, `tee`, `sed -i`, `cp` or `mv` onto a
+    protected file. The same fixture now carries the card strings: the relay
+    must build each one byte for byte, and the test pins the file's own bytes
+    (kept at LF by `.gitattributes`), not only its data.
+  - **Clone installs too.** The launchers now write the floor hook's entry into
+    `.claude/settings.local.json` beside the forwarder, so a clone agent has the
+    same floor as a marketplace one from its next launch through a launcher.
+    An always on agent that `bgos-agent update` moves to this release gets the
+    entry too: the update re-registers a clone workspace's hooks before it
+    restarts the service (a service starts `claude` directly, so nothing else
+    would have written it). And the daemon never takes the hook on trust: it
+    looks at boot for the blocking entry in the files the CLI reads for its
+    session and declares `hard_floor` only when it finds one, so a session
+    with no floor hook is not told a hook stops a listed action.
+  - **Long commands keep what makes them listed.** The hook's record keeps the
+    whole matched command, and the relay fits it to the floor check's 4000
+    characters and to the card's lead by dropping arguments, never the
+    operator, with a marker saying how many went: `echo "K=<4000 characters>"
+    > .env`, a `--force` after hundreds of branch names, `-rf` after hundreds
+    of folders and a `cp` of hundreds of files into `.git/hooks/` used to be
+    cut from their head, read as harmless and auto approved with the switch
+    on, or held on a card the server could not stamp. A held edit whose path
+    the preview lost now leads its card with the path. If the listed part
+    cannot fit at all, a `hold: false` about the cut body does not auto
+    approve it: you are asked.
+  - **Only a tap allows a held action.** A typed `yes <id>`, the `Yes, this
+    once` label or a callback pasted as text no longer settles a request the
+    floor holds (a typed no still does): the server cannot tell a person from
+    the agent's own credential on such a message, and the person only gate is
+    on the tap.
+  - **Not covered, on purpose or for now:** a legacy API key connection and a
+    backend without the route (both auto approve a listed action as before,
+    and say so in the log), and a delete done by a script, an alias, a
+    variable or `python -c` (the list reads text, not intent).
+- The daemon's attached marker, which the floor hook asks behind, is keyed by
+  the folder the agent was LAUNCHED from as well (`BGOS_LAUNCH_CWD`, which
+  `bin/bgos-launch.mjs` hands through when it moves the server to the plugin
+  folder), and the hook reads that key too. Before, a launcher start rested on
+  `CLAUDE_PROJECT_DIR` alone, and where that was lost (a WSL hop) the floor
+  silently did not ask.
+- A test ties the channel's own server exemption to the plugin manifest's name
+  and channel server, so renaming either cannot turn the channel's own replies
+  into floor matches.
+- The plan card's own words no longer claim that no hook can stop a tool call:
+  an ordinary edit is still never blocked, and the wait is still a promise.
+- The bundled offline capability text carries the floor's three core canon
+  sentences and the Claude delta sentence, so a model whose canon fetch failed
+  is not told the opposite.
+- **This daemon declares `hard_floor`.** On every heartbeat and on the canon
+  fetch at connect, on every host of a PAIRING connection (a legacy API key
+  connection does not declare it: its relay has no floor check to ask and
+  auto approves a listed action, so it must not be told a hook holds one;
+  `permission_card` and `plan_card` stay declared there, both work on an API
+  key), taken from `lib/claude-capability-tokens.ts`
+  (now naming three tokens), the file BGOS pins byte for byte, both sides
+  pinning the same new sha256. The token promises the blocking floor hook and
+  the relay's hold before any auto approve; the served canon tells the floor
+  sentence only to a daemon that declares it together with `permission_card`.
+  The floor-check limits (200 and 4000) are pinned as literals beside the ones
+  BGOS pins on its route.
+- The log says what the floor really does. The boot line reads "declared" off
+  the declaration itself, so a daemon on an API key, where `hard_floor` is
+  never declared, now says plainly that the floor is not declared and why,
+  instead of "declaring the floor capability on a pairing". And a typed yes
+  the floor refuses, or a verdict from another user, is logged once per row
+  per request rather than on every poll tick (the final live proof counted
+  57 copies in 37 s).
+
+## 0.52.0 (2026-09-26)
+
+**A message the previous session could not answer comes back after a restart,
+instead of being lost forever.**
+
+Board row 294a571a, raised 2026-09-06. The per-chat cursor advances when a
+message is FORWARDED, not when it is ANSWERED. So a session that is handed a
+message and then cannot act on it, because its account hit a limit, because the
+model call failed, because it was killed mid turn, left that message BELOW the
+cursor where nothing would ever look again: the delta window starts above it,
+`selectFirstPollBacklogIds` only runs for a chat with no cursor at all, and the
+restart handed the new session nothing.
+
+The clean exemplar is KC's own question to Argus on 2026-09-24. It was consumed
+at 14:29Z by a session whose every model call was being refused, the daemon was
+restarted at 14:49Z, the new session came up and sat idle with the question
+still open, and it was answered at 14:53Z only because a person noticed and
+asked again. A shared account running out of credit is a fleet wide event, so
+every message that arrives during one is consumed by a session that cannot
+answer it.
+
+`selectRestartRecoveryIds` (lib/poll-core.ts) runs on the BOOT poll only, which
+is already the one poll that fetches a chat in full, and re-offers the trailing
+messages nobody answered. Three limits, each of which is a way this could have
+made things worse:
+
+- **The stop rule is what makes it safe**, not the window or the cap. It is the
+  same walk back `selectFirstPollBacklogIds` uses: stop at a real user then
+  assistant REPLY. If the previous session DID answer, there is an assistant row
+  after the user row and the scan stops before reaching it.
+- **Only at or below the cursor.** Rows above it are delivered by the ordinary
+  delta path on the same poll, so including them would hand the agent one
+  message twice in one turn.
+- **A day-long window, a cap of ten, and an undated row does not qualify**,
+  because unknown age must not read as recent.
+
+Six mutations, each printed before running and each reddening a named test:
+removing the stop rule (6 red, including "a user message the session ANSWERED is
+never re-offered"), dropping the cursor bound (2), dropping the age window and
+the undated guard (2), dropping the cap (1), dropping the entry guards (1), and
+replacing the boot gate with `if (true)` (1).
+
+**That last one is the finding worth keeping.** Its guard passed the first time:
+the test searched the 1200 characters before the call for the word `isBootPoll`,
+and the comment written above the call contains that word, so replacing the real
+gate left all seventeen tests green. A guard that can be satisfied by a COMMENT
+is not a guard. It now walks back to the nearest `if (` line and reads that line
+itself.
+
+One honest note: the `lastSeen <= 0` half of the entry guard turned out to be
+defence in depth rather than load bearing, since the at-or-below-cursor filter
+already excludes everything when the cursor is zero. Kept, and said so, rather
+than reported as a caught defect.
+
+## 0.51.0 (2026-09-26)
+
+**Two tools that change a mission already running: `add_mission_goals` and
+`cancel_mission_goal`.**
+
+KC asked for "add and cancel mini goals" on 2026-09-23. The app has had an owner
+goal editor since stage 5 and it REFUSES a mission whose origin is `derived`,
+which is every `/goal` mission; the card says so in words and tells the owner to
+ask the agent in the chat. The agent then had nothing to change it WITH.
+`set_mission_goals` refuses a mission that already has goals, and
+`create_mission` SETS THE MISSION ASIDE, so the only answer to "add a goal" was
+to destroy the card the owner was reading, every tick on it included.
+
+- `add_mission_goals` APPENDS 1 to 12 goals. Send only the new ones: the backend
+  never reads a row the mission already holds, which is what stops a restated
+  list from dropping one silently. Refused on a mission with none, which is the
+  fill door's job, and refused when the total would pass twelve, with both
+  numbers in the sentence.
+- `cancel_mission_goal` removes one goal by its id, validated in the path
+  builder so a bad id is a sentence the model can act on rather than a 400. A
+  TICKED goal is refused: it is a record of work carrying the agent's own
+  evidence line. Cancelling the last unticked goal does NOT complete the
+  mission, because removing a promise is not keeping one.
+- `create_mission` and `set_mission_goals` now point at these two rather than
+  only forbidding a create, and the served canon's Missions section loses a
+  sentence that had become an instruction to do the destructive thing.
+
+**A guard in this repo was not keeping the promise written in its own header.**
+`test/mission-ws-wiring.test.ts` says a "FOURTH mission tool added later must
+not be able to forget the stamp quietly", and it named its four tools as
+literals in four places, so a fifth and a sixth would have been added with every
+one of those tests green and neither checked. The scope is now DERIVED from the
+tool dispatch switch: a mission tool is a case that builds a mission path or
+body, and a mission WRITE is one that resolves an existing mission id. Proven by
+deleting `rememberMissionSelfWrite` from the new cancel case (2 tests red, named)
+and by moving its stamp after the DELETE (1 red, named); the literal lists caught
+neither. The request-verb search was `Patch|Put` only, so it also now sees a POST
+and a DELETE.
+
+Two smaller fixes fell out of building that: a case body was sliced to a fixed
+6000 characters, so the last case of a switch swallowed the next switch (that is
+how `show_component` briefly appeared to build a mission), and the scan read the
+whole file rather than the tool dispatch switch, so WS frame cases arrived as
+tools.
+
+Backend: BGOS PR #1669, canon `-goaledit1`. Requires a backend carrying it.
+
+## 0.50.0 (2026-09-25)
+
+**Renumbered from 0.45.0, then from 0.48.0, at merge.** This release was
+prepared as 0.45.0, then renumbered 0.48.0 when the plugin's main was released
+as 0.46.0 by another program without this work. The permission request card it
+stacks on (prepared as 0.44.1, then 0.47.0) has since shipped as 0.49.0 on top
+of main's 0.48.1, so this ships as 0.50.0, the next free number above it. The
+HOAI canon no longer ties the plan card to a release number: it tells
+propose_plan and the plan card only to a daemon that DECLARES the `plan_card`
+capability (BGOS #1624), which this one now does, so the number is whatever
+release is free when this merges.
+
+- **The agent can now show you its PLAN before it touches anything, and you
+  answer with a button.** `propose_plan` posts a real card into the chat: a
+  title, one line saying how many steps and files, the numbered steps each with
+  the file it touches, a check line, and three buttons, Go ahead, Change the
+  plan and Do not do this. The tool returns immediately and the turn ends; your
+  answer arrives later as an ordinary click and starts a new turn. Nothing
+  parks a watchdog and nothing times out, so a plan answered tomorrow still
+  works.
+  - **Only the person a plan was proposed to can answer it.** A tap on a plan
+    card is bound to that person with the permission card's own rule: a tap
+    that names a different person is refused (the agent is not told to proceed:
+    the chip and the status line stay up, and nothing reaches the agent),
+    while a tap that names nobody, which is every tap on today's backend, is
+    accepted. The
+    person is the one the card was posted for, or the account owner when a
+    restart lost that record. Before this, on a shared assistant, anyone who
+    could see the chat could approve a plan and the agent went to work as if
+    its owner had.
+    The rule holds on every intake: the poll, the boot sweep and the live
+    update stream, which reads the tapper off the raw answer payload (its
+    normalised answer now carries that id as `clickerUserId`; before, it kept
+    only the button fields, so a stamped tap from the wrong person read as
+    unstamped on the stream and was accepted). A refused tap does not re arm
+    the card: the backend records the first answer, so the plan's person then
+    types their answer or the agent proposes again.
+  - **The wait on this channel is a CONVENTION, and everything says so.** Every
+    HOAI agent is launched with permissions skipped and the shipped manifest
+    auto approves, so no tool call is blocked, no hook can stop one, and this
+    plugin cannot prevent an edit one second after a plan is proposed. The card
+    carries `enforced: false`, which is what puts "will propose before it
+    changes anything" on your screen instead of "read only until approved"; the
+    tool description, the `/plan` procedure and the agent instructions each say
+    it in as many words. Codex, which has a real read only mode, sends `true`.
+  - **A revision retires the plan it replaces, in that order, whatever this
+    daemon happens to remember.** Pass `supersedes` and the older card loses
+    its buttons BEFORE the new one is posted, so two live plans never sit in
+    one chat and a tap on the old one cannot approve a plan the agent has
+    withdrawn. When this process still holds the old plan the card also dims
+    and says what replaced it; when it does not (a restart mid wait, or a model
+    naming an older card) the buttons still come off, which is the half that
+    matters.
+  - **Change the plan carries your words, not a button label.** The app sends
+    the typed revision as `custom_text` on the click itself, one stimulus
+    instead of a click plus a message, and the agent reads
+    `Change the plan: <what you typed>`. It arrives under the `__custom__`
+    sentinel rather than `plan:change`, because the chip arms your composer
+    instead of answering, so the daemon reads it off the card it landed on and
+    hands the agent the `plan:change` code every one of its instructions names.
+  - **Your answer settles the wait even if the agent restarted while you were
+    thinking.** The status line beside the agent and the Plan mode chip above
+    your composer are both taken down on any answer, and no longer depend on
+    the daemon still holding the plan in memory. If it was not even running
+    when you tapped, it finds the answer on its next boot and acts on it once.
+  - **Where a tap lands fast, and where it does not.** A click reaches this
+    plugin on the poll and nowhere else, so a chat with an open plan is polled
+    every two seconds for thirty minutes. A tap inside that window lands in
+    seconds; a later one arrives on the five minute sweep. That is the honest
+    trade rather than pinning a chat at two seconds for a plan nobody may
+    answer until tomorrow.
+  - **A button an agent wrote can never be read as a plan answer.** Every agent
+    authored button value is namespaced on the way out, and the plan
+    classification now happens before that namespace is stripped, so a reply
+    button whose value happens to start `plan:` is an ordinary button both
+    ways.
+- **`/plan` is a real command now, with a procedure behind it.** It reaches the
+  model as an actionable directive whose first step is `propose_plan`, and the
+  daemon arms a verifier when it delivers one: cancelled by the first
+  `propose_plan` call, fired by the turn's Stop hook when the turn ended without
+  a plan, and by a five minute timer where the hook rail is not installed. If no
+  plan came, you get one line saying so instead of silence. Typing `/plan` at an
+  agent that is ALREADY WORKING no longer fires it early: the verifier only
+  answers to the end of a turn that began after you asked, so the turn already
+  in flight can finish without taking your chip down and telling you no plan
+  arrived seconds after you asked for one.
+- **The Plan mode chip, and its close.** The daemon reports the chat's session
+  mode (`plan` when it delivers a `/plan`, `default` when the plan is answered
+  or you close the chip) so the app can draw the chip above the composer. The
+  close arrives as `/code` and is answered by the daemon, never handed to the
+  model, which would otherwise have told you your own close button was
+  unavailable.
+- **The owner's plan level reaches the agent on every transport.** The per agent
+  setting ("Only when I ask", "For bigger or risky jobs", "Always before it
+  changes anything") rides the inbound envelope as a labelled sentence and is
+  rendered into the turn the model reads, on the poll, the stream and the
+  socket alike. The daemon never reads the setting itself: the server decides,
+  the daemon renders what it is handed.
+  - **The poll rail gets it from the socket, because the poll route does not
+    carry it.** The backend puts the level on the socket event and on the agent
+    update stream. The chat history route this daemon polls is the app's own
+    projection and has no such field, so the poll read nothing on every delivery
+    and an owner on "Always" got an agent planning at the default for every turn
+    the poll won, which during a plan wait is most of them. The daemon now
+    remembers what the last carrying rail said, absence included, and the poll
+    answers from that. A level the owner turns back DOWN therefore stops on the
+    next socket delivery rather than lingering.
+- **Reply buttons can ask for a colour.** `reply`'s `buttons[]` gains an
+  optional `style` (`default | primary | success | danger`). An unknown value is
+  dropped rather than refused, because losing a whole message over a colour is
+  the wrong trade. Until now only approval cards sent a tier and every agent
+  authored chip rendered neutral.
+- **Fixed: the agent instructions advertised `/clear` and `/cost`.** Both were
+  removed from the catalog on 2026-08-30, because nothing here can reset a
+  context window or read client side accounting, so the model was being handed
+  two commands that come back unavailable. The instructions now say that
+  plainly.
+- **Hardened: `plan:` is a reserved button namespace.** An agent authored reply
+  button whose value was `plan:go` would have come back through the same intake
+  as a real approval on a plan card. It is now escaped like any other agent
+  value.
+- **This daemon declares `plan_card`.** On every heartbeat and on the
+  capabilities fetch at connect, on every host, because `propose_plan` is a
+  typed tool with no platform limit. It is what tells the canon to describe
+  the tool and the card to this agent.
+
+## 0.49.0 (2026-09-25)
+
+**Renumbered from 0.44.1, then from 0.47.0, at merge.** This release was
+prepared as 0.44.1, then renumbered 0.47.0 when the plugin's main was released
+as 0.46.0 by another program without this work. Main has since moved on again
+without it (0.47.1, 0.48.0 and 0.48.1; main's own 0.47.0 was never released and
+was folded into 0.47.1), so it ships as 0.49.0 on top of 0.48.1. The HOAI canon no longer ties the
+permission request card to a release number: it tells the card only to a
+daemon that DECLARES the `permission_card` capability (BGOS #1624), which this
+one now does, so the number is whatever release is free when this merges.
+
+- **A permission request now looks like one, and stops dying after two
+  minutes.** When this agent needed an OK before running a tool, it posted a plain
+  chat message with four grey chips and gave up on its own after two minutes.
+  It looked like the approval card the rest of HOAI uses and was nothing like
+  it: the app drew chips instead of a card, the agent read as FINISHED on every
+  needs you surface while it sat there waiting, and the morning report never
+  counted the request at all, because every one of those reads the
+  `approval_request` message type and this relay did not send it.
+  - **The card is a real one.** `messageType: 'approval_request'`, an
+    `approvalMeta` naming the tool, the route and the request id, and exactly
+    two buttons: Allow once and Deny, in the platform's `ea:<choice>:<id>`
+    vocabulary. Two and not four, because the CLI accepts only allow or deny,
+    so a session or permanent button would have promised the owner a memory
+    this agent does not have.
+  - **The owner decides how long it waits, and this daemon only offers.** The
+    plugin reads no setting of the owner's. Every card carries
+    `wait_seconds: 1800`, the longest this daemon can keep its own side of a
+    request open, and the SERVER stores the smaller of that and the owner's
+    per agent choice (10 minutes unless they change it). That stored number
+    comes back on the created message, and it is what the card says and what
+    this daemon's own backstop is built from. Sending nothing instead would be
+    the shortest wait of all: a card with no `wait_seconds` gets the server's
+    generic minute, shorter than the two minutes this replaces.
+  - **Deploy the backend first, and this is why.** Both halves this release
+    leans on are on one BGOS branch, `feat/p2-requests-wait-for-you`, and
+    neither is on the deployed backend yet.
+    - The **push**: the card has to go to the messages route, because that is
+      the only one that carries an `approvalMeta` at all, and that route sends
+      no device notification today. Every push in HOAI is sent from the other
+      one. So until that branch deploys, a request raised while the app is
+      closed reaches nobody.
+    - The **per agent clamp**: the deployed backend caps `wait_seconds` at
+      1800 and stores what it is given. Until the clamp lands, every request
+      from this daemon waits the full 30 minutes whatever the owner chose,
+      and can hold an update's drain for that whole time (see below).
+    Both are reasons to let hosts take this release AFTER the backend is out,
+    not before.
+  - **The server is the only judge of when a request is dead.** The 120 s
+    local clock is gone. The wait ends on the owner's answer, or on the
+    server's own expiry flag, or on a backstop 90 s BEHIND the stored wait for
+    a server that never answers, which also strips the buttons off a card
+    nobody is listening to. A yes in the last seconds is honoured now, where
+    before it hit a request the daemon had already declined. And a request
+    raised while an auto update is draining the daemon is answered with a no
+    instead of hanging the CLI on a question nothing was left to answer.
+  - **The tap is read off the card, which is what makes the answer arrive at
+    all.** Pressing Allow writes no message into the chat: the backend stamps
+    the answer onto the card row and pushes the event to whichever daemon is
+    paired for clicks, and this one is not paired for them. So the wait now
+    reads the owner's answer off the card row it is already watching. That is
+    the lane that exists in the two cases where the others do not: when the
+    card has slid off the newest page of a busy chat, and while a self update
+    has the daemon's inbound intake shut. Both of those used to end in a deny
+    at the backstop with the owner's Allow thrown away. The same tap can still
+    arrive on the ordinary poll a cycle later; the request is settled exactly
+    once, and the late copy finds nothing to resolve. WHOSE tap it is comes off
+    the answer the backend stamps on the card, and no backend stamps a tapper
+    there yet: a tap nobody named is accepted, because the alternative on a
+    shared agent is to throw away an approval the owner really gave, and only a
+    tap that names a different person is refused. The two click intakes keep
+    their older, stricter rule, and a click they refuse is not a verdict lost
+    whenever the card's id came back off the post, because this read then sees
+    the same answer on the card a moment later (with no id that read is off).
+  - **A parked request reads its chat on a budget, and the budget is the
+    wait.** TWO loops read that chat while a request waits, and only counting
+    one of them is how a half hour request got expensive. The verdict watch now
+    looks every 1.5 s for the first minute, where an answer usually lands, then
+    every 5 s: about 390 looks over half an hour rather than 1,200. The
+    daemon's own 2 s fast scope stays on the chat for exactly as long as this
+    daemon is still listening to the request, which is about 300 reads at the
+    ten minute wait the clamp will make the default and about 900 at the
+    unclamped half hour. It is NOT cut shorter than that, and a first attempt
+    to cut it at ten minutes was wrong: that scope is what keeps the ordinary
+    poll's own click intake prompt, and a chat dropped out of it is read on the
+    five minute sweep instead, so a tap could sit unheard for five minutes.
+    Every one of these reads still carries an If-None-Match.
+  - **The expiry reaches a request in a busy chat.** The watch reads a PAGE of
+    the chat, the newest 50 messages, and a card posted into a chat with
+    several people talking can slide off that page during a wait that now
+    lasts minutes. The server's "this request is dead" flag lives on the card
+    row, so once the row was off the page nothing ended the wait but the local
+    backstop, with the CLI blocked the whole time. The card is now read on its
+    own, anchored, the moment the page stops carrying it.
+  - **A daemon that stops mid wait no longer leaves a live looking card.**
+    The requests a process is holding live in its memory, so a crash, a kill or
+    an ordinary restart takes them with it: nothing answers the CLI, and, worse
+    for the owner, nothing takes the buttons off the card. It sat there
+    tappable until the server expired it, which used to be a minute and is now
+    up to the whole wait, and a tap on it showed as answered while nothing was
+    listening. On boot the daemon now retires its own unanswered cards on the
+    newest page of each chat it monitors, one log line each. A card a busy chat
+    has already pushed off that page is still left to the server's expiry:
+    reading further back on every boot would cost every daemon a great deal to
+    catch the rarest case. A card posted in the last minute before this daemon
+    booted is left alone too: the row's date is the server's clock and the
+    cutoff is this machine's, so the sweep allows a minute for the two to
+    disagree rather than risk taking the buttons off a card another daemon is
+    at that moment waiting on.
+  - **Known and not fixed here: a pending request holds an auto update's
+    drain** for as long as it waits, because the handler runs inside the same
+    message operation tracker that the drain waits on. Up to the owner's whole
+    wait once the backend clamp is deployed, and up to the full 30 minutes
+    until then. Bounding the drain belongs to the self update lane, not to
+    this one. What DOES end such a request while the daemon drains: the owner's
+    tap, heard through the watch only (both click intakes are shut in a drain),
+    a typed `yes <code>`, the server's own expiry, or the local backstop.
+  - **Nothing changes for an agent installed with auto approve on**, which is
+    the default: that check answers first, ahead of everything else in the
+    handler, including the drain. It needs no chat, no network and no intake,
+    so an update drain must not turn it into a refusal. The drain deny above is
+    for interactive mode, where the card genuinely cannot be posted or heard.
+  - **A prompt left on screen by a 0.48.1 or older daemon** is still
+    recognised, for one release, though not for the reason the first draft of
+    this note gave. It cannot be ANSWERED across the update: the pending
+    request died with the process that posted it. What the tolerance buys is
+    that such a click is swallowed as a stale permission click rather than
+    forwarded to the model as ordinary chatter.
+  - **The daemon says which backend it needs, at boot.** One line naming the
+    two halves above, so a host that takes this release ahead of the backend
+    reads it in the log instead of wondering why requests wait the full offer
+    and ring nobody.
+- **This daemon declares `permission_card`, and the canon fetch carries the
+  declaration.** The token rides every heartbeat on every host, because the
+  relay speaks the channel's own permission notification and has no platform
+  limit. The capabilities fetch at connect now sends the declared list too
+  (`capabilitiesFetchPath`, the same helper the Kanban release adds for
+  `boards_playbook`), because that fetch can run before the first heartbeat
+  has stored the list, and the agent would otherwise not be told about the
+  card until the canon was fetched again.
 
 ## 0.48.1
 

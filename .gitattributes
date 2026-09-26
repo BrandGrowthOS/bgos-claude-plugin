@@ -8,6 +8,14 @@ bin/hoai-browser-mcp.mjs text eol=lf
 lib/browser-host-core/policy.js text eol=lf
 lib/browser-host-core/settings.js text eol=lf
 lib/browser-host-core/profiles.js text eol=lf
+# The hard floor fixture is a byte identical copy of the BGOS backend's
+# backend/src/services/hard-floor-fixture.ts, pinned by the sha256 of its
+# bytes on both sides, so it must not pick up CRLF on a Windows checkout.
+lib/hard-floor-fixture.ts text eol=lf
+# lib/claude-capability-tokens.ts is a byte-identical copy of the BGOS file
+# backend/src/integrations/claude-capability-tokens.ts, pinned by sha256 on
+# both sides, so it must not pick up CRLF on a Windows checkout.
+lib/claude-capability-tokens.ts text eol=lf
 # The session controls contract is a byte-identical copy of the BGOS source of
 # truth (backend/src/integrations/session-controls-contract.ts), pinned by
 # sha256 in test/session-controls-contract.pin.test.ts, so it must not pick up

@@ -21,7 +21,17 @@
  * time and the result. A half remembered version of any of them reads as
  * permission to try, or as a reason to restate in prose what the card already
  * carries.
+ *
+ * The hard floor bullet (0.53.0) carries the sentences of the served canon's
+ * approvals section that this release makes true, in the words the stage 6
+ * spec (section 4.5) gives them: the core floor sentences (the list, the
+ * narrowed card, and that only the owner signed in to the app can allow such
+ * an action) and the Claude delta sentence. It is here because the floor's refusals reach the
+ * model as a refused tool call, and a model that was never told the list
+ * exists retries a refused delete or wraps it in a script to get it through.
  */
+
+import { HARD_FLOOR_TOKEN, PERMISSION_CARD } from './claude-capability-tokens.js';
 
 /** Compact frozen fallback used only when the served canon cannot be fetched. */
 export const BGOS_CAPABILITIES_FALLBACK = `# BGOS Channel Agent Capabilities (bundled fallback)
@@ -41,6 +51,7 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
   voice_consult_reply, complete_voice_task.
 - Inline buttons: up to 6 chips; __skip__ and __custom__ are reserved sentinels.
   Approvals use the ea:{choice}:{id} callback format.
+- The owner can turn on Always ask before risky actions for you. It covers a short list: a recursive delete, a force push, a change inside .git, a change to an .env file or to a settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on the owner's behalf. While it is on, a request card raised for one of these offers only once and deny: the platform removes any session or always option you send, so do not offer them. Only the owner, signed in to the app, can say yes on such a card: an answer your own credential sends to it is refused unless it is a deny, and so is any change your credential makes to the owner's switch. Raise that card and wait for the answer; never split, rename or wrap the action to step around the list. From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.
 - Files: image 10 MB, video 100 MB, audio 25 MB, document 25 MB.
 - Browser: the hoai-browser MCP server (the Agent Browser pane in the Home of
   Agents desktop app) is your default browser when its browser_ tools are
@@ -55,6 +66,44 @@ fetched from the backend at connect; if you are reading this, that fetch failed.
 - Your owner can ask you to keep working until a condition holds. Where this host can type into your session it sets a native goal for you and clears it at your owner's turn cap; where it cannot there is no switch on their side and nothing pretends otherwise. You never set a goal yourself and there is no tool for it, so do not try to type a slash command. While a goal is active a separate checker reads your work after every turn and answers met, not yet with a reason, or cannot be done with a reason, and the host posts every answer onto the mission for you: do not narrate the checks, do not argue with the checker, and never tick a mini goal because a check passed.
 - Your tool rows now carry what your commands printed, their exit codes and your edits' line counts, and this host fills every one of them from your own hook events: it takes the output tail from the tool result, masks secrets in it, caps it, reads the exit code off the runtime's own failure line, and counts the plus and minus lines off the patch. You write none of it and you cannot add to it. So do not paste command output into your reply, do not restate an exit code or a line count in prose, and do not close a turn with a summary of what you did: the folded card already says how long the turn took, how many tools ran, how many failed and how many files changed, and saying it again reads to your owner as a second, competing answer.
 - When you delegate with the Agent tool, this host draws each child as its own row on your tool card and fills every part of that row from your own hook events: the child's type and the description you gave it when the launch returns, the tool the child is using right now from its own tagged events, its elapsed time from this host's receipt of the launch and of the child's stop, and its last message, masked and capped, as the row's result. You write none of it and you cannot add to it. Your card also stays open while a helper is still working, even after your turn has ended. So do not narrate what your helpers are doing, do not repeat a helper's result in prose, and do not report how many tokens a helper used: this host is not given a token count and shows none, and nothing here can stop one helper without stopping your whole turn.`;
+
+/**
+ * The backend's capability token grammar and list cap
+ * (backend/src/dto/integrations/pair-exchange.dto.ts). The capabilities query
+ * DTO refuses the WHOLE fetch on a malformed list, and a refused fetch costs
+ * the agent the live canon, so a token outside the grammar is dropped here
+ * rather than sent.
+ */
+const CAPABILITY_TOKEN = /^[a-z][a-z0-9_]{0,63}$/;
+const MAX_DECLARED_ON_FETCH = 32;
+
+/**
+ * The path of the canon fetch: channel, the running version, and this
+ * daemon's own declared list.
+ *
+ * The declared list rides the fetch itself (Kanban phase 1, E3) because the
+ * heartbeat that also carries it may not have landed yet at connect, and the
+ * canon's column lines sentence is served only to a connection that declares
+ * `boards_playbook`. Comma joined, then percent encoded, so the commas travel
+ * as %2C. An empty list sends no `capabilities` key at all, which the backend
+ * reads exactly as a pre 0.45.0 fetch.
+ *
+ *   capabilitiesFetchPath('0.45.0', ['mission_events', 'boards_playbook'])
+ *     === 'integrations/capabilities?channel=claude&daemonVersion=0.45.0&capabilities=mission_events%2Cboards_playbook'
+ */
+export function capabilitiesFetchPath(
+  runningVersion: string | null,
+  declared: readonly string[],
+): string {
+  const version = encodeURIComponent(runningVersion ?? '0.0.0');
+  const tokens = declared
+    .filter((t) => CAPABILITY_TOKEN.test(t))
+    .slice(0, MAX_DECLARED_ON_FETCH);
+  const base = `integrations/capabilities?channel=claude&daemonVersion=${version}`;
+  return tokens.length
+    ? `${base}&capabilities=${encodeURIComponent(tokens.join(','))}`
+    : base;
+}
 
 export interface ServedCapabilities {
   text: string;
@@ -78,11 +127,43 @@ export const MAX_CAPABILITIES_BYTES = 256 * 1024;
 export const CAPABILITIES_MARKERS = ['BGOS Channel', 'Agent Capabilities'] as const;
 
 /**
- * Validate a /capabilities response body. Returns the served text when it is
- * well-formed (carries both markers), otherwise the bundled fallback. Never
- * throws, so the caller can pass the raw fetch result (or null on error).
+ * The Claude delta sentence of the hard floor, the one sentence the served
+ * canon tells ONLY a daemon that declares `hard_floor` AND `permission_card`
+ * (hardFloorTold in capability-canon.ts).
  */
-export function pickCapabilities(data: unknown): ServedCapabilities {
+export const CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE =
+  'From this release a hook stops a listed action even with full access and your relay holds it for the owner; do not retry a refused one.';
+
+/**
+ * The bundled fallback for THIS daemon, gated the way the served canon gates
+ * it (the stage 6 backend review). The canon tells the hook sentence only to
+ * a daemon that declares `hard_floor` and `permission_card`, and this plugin
+ * declares `hard_floor` only on a pairing whose session has the floor hook
+ * registered (declaredCapabilities). An API key install, or a clone without
+ * the hook, whose fetch failed was still told that a hook stops a listed
+ * action while its relay reads the floor check as unsupported and auto
+ * approves it: the agent believed in a guard that was not there. Without both
+ * tokens the sentence is taken out; the core floor sentences, which say only
+ * what the server enforces for every runtime, stay.
+ */
+export function capabilitiesFallbackFor(declared: readonly string[]): string {
+  if (declared.includes(HARD_FLOOR_TOKEN) && declared.includes(PERMISSION_CARD)) {
+    return BGOS_CAPABILITIES_FALLBACK;
+  }
+  return BGOS_CAPABILITIES_FALLBACK.replace(` ${CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE}`, '');
+}
+
+/**
+ * Validate a /capabilities response body. Returns the served text when it is
+ * well-formed (carries both markers), otherwise the bundled fallback for the
+ * capabilities this daemon declares (capabilitiesFallbackFor; none declared
+ * is the copy that promises least). Never throws, so the caller can pass the
+ * raw fetch result (or null on error).
+ */
+export function pickCapabilities(
+  data: unknown,
+  declared: readonly string[] = [],
+): ServedCapabilities {
   if (
     data !== null &&
     typeof data === 'object' &&
@@ -102,7 +183,7 @@ export function pickCapabilities(data: unknown): ServedCapabilities {
     }
   }
   return {
-    text: BGOS_CAPABILITIES_FALLBACK,
+    text: capabilitiesFallbackFor(declared),
     version: 'bundled',
     source: 'fallback',
   };

@@ -10,6 +10,8 @@ import assert from 'node:assert/strict'
 import {
   pickCapabilities,
   BGOS_CAPABILITIES_FALLBACK,
+  CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE,
+  capabilitiesFallbackFor,
   MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
 
@@ -33,7 +35,26 @@ test('falls back to the bundled copy on null (fetch failed)', () => {
   const r = pickCapabilities(null)
   assert.equal(r.source, 'fallback')
   assert.equal(r.version, 'bundled')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
+})
+
+test('the offline copy tells the hook sentence only to a daemon that declares hard_floor AND permission_card (the stage 6 backend review)', () => {
+  // The served canon's gate (hardFloorTold). This plugin declares hard_floor
+  // only on a pairing with the floor hook registered, so an API key install
+  // whose fetch failed must not be told that a hook stops a listed action
+  // while its relay auto approves it.
+  const both = pickCapabilities(null, ['mission_events', 'permission_card', 'hard_floor'])
+  assert.equal(both.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.ok(both.text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE))
+  for (const declared of [[], ['permission_card'], ['hard_floor'], ['mission_events', 'permission_card', 'plan_card']]) {
+    const text = pickCapabilities(null, declared).text
+    assert.equal(text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE), false, declared.join(','))
+    assert.equal(text.includes('From this release a hook'), false)
+    // The core floor sentences (what the SERVER enforces) stay, and the
+    // bullet still ends on its own sentence.
+    assert.ok(text.includes('never split, rename or wrap the action to step around the list.\n'))
+  }
+  assert.equal(capabilitiesFallbackFor([]).length, BGOS_CAPABILITIES_FALLBACK.length - CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE.length - 1)
 })
 
 test('falls back when the served canon exceeds the size cap (DoS/injection guard)', () => {
@@ -41,7 +62,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
     '# BGOS Channel Agent Capabilities\n' + 'x'.repeat(MAX_CAPABILITIES_BYTES + 1)
   const r = pickCapabilities({ text: oversized, version: 'evil' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
   // A canon right at the cap with valid markers is still accepted.
   const marker = '# BGOS Channel Agent Capabilities\n'
   const atCap = marker + 'y'.repeat(MAX_CAPABILITIES_BYTES - marker.length)
@@ -51,7 +72,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
 test('falls back when the response is missing the markers', () => {
   const r = pickCapabilities({ text: 'some unrelated body', version: '9' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
 })
 
 test('falls back when text is not a string', () => {
@@ -119,6 +140,41 @@ test('the bundled fallback carries the served helper rows sentence, word for wor
     BGOS_CAPABILITIES_FALLBACK.includes(SERVED_CLAUDE_HELPERS_SENTENCE),
     'the offline copy has drifted from the served Claude delta; copy the sentence across verbatim',
   )
+})
+
+test('the bundled fallback carries the hard floor sentences, word for word (spec 4.5)', () => {
+  // The core floor sentences and the Claude delta sentence of the served
+  // canon's approvals section, as the stage 6 spec writes them. A fetch that
+  // failed must not leave the model believing nothing can stop a tool call:
+  // since 0.53.0 a listed action is held for the owner or refused. The core
+  // says only what the SERVER enforces for every runtime (the orchestrator's
+  // decision in wave B2, 2026-09-24); that a hook stops the action is the
+  // Claude sentence alone.
+  const core =
+    'The owner can turn on Always ask before risky actions for you. It covers a short list: ' +
+    'a recursive delete, a force push, a change inside .git, a change to an .env file or to a ' +
+    "settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on " +
+    "the owner's behalf. While it is on, a request card raised for one of these offers only once " +
+    'and deny: the platform removes any session or always option you send, so do not offer them.'
+  // The person only sentence (spec 4.5 as amended): the held agent cannot
+  // release its own action, and a model that does not know it tries.
+  const personOnly =
+    'Only the owner, signed in to the app, can say yes on such a card: an answer your own ' +
+    'credential sends to it is refused unless it is a deny, and so is any change your ' +
+    "credential makes to the owner's switch. Raise that card and wait for the answer; never " +
+    'split, rename or wrap the action to step around the list.'
+  const claude =
+    'From this release a hook stops a listed action even with full access and your relay ' +
+    'holds it for the owner; do not retry a refused one.'
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(core))
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(personOnly))
+  // The first version's opening promised the stop to every runtime.
+  assert.equal(BGOS_CAPABILITIES_FALLBACK.includes('Some actions ALWAYS ask the owner'), false)
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(`${core} ${personOnly} ${claude}`),
+    'the three sentences in the served order',
+  )
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(claude))
 })
 
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
