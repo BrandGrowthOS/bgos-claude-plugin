@@ -182,7 +182,12 @@ async function collect(
     workdir: opts.workdir ?? WORKDIR,
     caps: opts.caps ?? { ...CHANGES_DEFAULT_CAPS },
     runGit: opts.runGit ?? git.runGit,
-    fs: opts.fs ?? memFs({ [`${ROOT}/notes.md`]: { kind: 'file', data: Buffer.from('# Notes\n') } }).fs,
+    fs:
+      opts.fs ??
+      memFs({
+        [WORKDIR]: { kind: 'dir' },
+        [`${ROOT}/notes.md`]: { kind: 'file', data: Buffer.from('# Notes\n') },
+      }).fs,
     now: () => NOW,
     env: BASE_ENV,
   })
@@ -243,6 +248,19 @@ test('Git missing answers git_missing', async () => {
   })
   assert.deepEqual(result, emptyAnswer('git_missing', 'services'))
   assert.equal(calls.length, 1)
+})
+
+test('a working folder that is gone is a failure, never Git missing', async () => {
+  // Node reports a spawn whose cwd does not exist as ENOENT, the same code as a
+  // missing git. An agent whose folder was removed while its daemon ran must
+  // not tell the owner Git is not installed.
+  await assert.rejects(
+    collect({
+      fs: memFs({}).fs,
+      reply: () => ({ code: null, spawnError: 'ENOENT' }),
+    }),
+    /working folder/,
+  )
 })
 
 test('no first commit answers no_commits', async () => {
@@ -793,5 +811,24 @@ test("real Git writes a/ and b/ on a host that sets other prefixes, a top folder
     }
   } finally {
     s.remove(t)
+  }
+})
+
+test('real Git: a working folder that is gone is a failure, never Git missing', { timeout: 60_000 }, async () => {
+  // No skip: with or without Git on this host, a folder that is not there
+  // must never read as "Git missing".
+  const base = mkdtempSync(join(tmpdir(), 'hoai-changes-'))
+  try {
+    await assert.rejects(
+      collectChanges({
+        workdir: join(base, 'gone'),
+        caps: { ...CHANGES_DEFAULT_CAPS, budgetMs: 30_000 },
+        runGit: createNodeRunGit(),
+        fs: nodeChangesFs,
+        now: () => NOW,
+      }),
+    )
+  } finally {
+    rmSync(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   }
 })

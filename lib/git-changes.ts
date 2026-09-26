@@ -409,7 +409,13 @@ async function readChanges(
 
   // 1. The root, run in the working folder.
   const top = await run(GIT_TOPLEVEL, input.workdir, SMALL_OUTPUT_BYTES)
-  if (top.spawnError === 'ENOENT') return done(emptyPayload('git_missing', folderName(input.workdir), takenAt))
+  if (top.spawnError === 'ENOENT') {
+    // Node reports a spawn whose cwd does not exist as ENOENT too, so ENOENT
+    // means Git is missing only while the folder is there.
+    if (!(await folderExists(input.fs, input.workdir))) throw new Error('the working folder is not there')
+    if (signal.aborted) throw new BudgetSpent()
+    return done(emptyPayload('git_missing', folderName(input.workdir), takenAt))
+  }
   if (top.spawnError) throw new Error(`git could not start (${top.spawnError})`)
   if (top.code !== 0) {
     if (top.code === 128 && /not a git repository/i.test(top.stderr)) {
@@ -466,6 +472,15 @@ async function readChanges(
     untrackedFiles,
     takenAt,
   })
+}
+
+async function folderExists(fs: ChangesFs, path: string): Promise<boolean> {
+  try {
+    const st = await fs.lstat(path)
+    return !st.isFile()
+  } catch {
+    return false
+  }
 }
 
 /**
