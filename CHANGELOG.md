@@ -19,6 +19,9 @@ folder (lib/changes-rpc.ts over lib/git-changes.ts).
   which would race the agent's own `git add` for the index lock.
 - **Git's own `a/` and `b/` prefixes**, asked for on the patch, so a host whose Git config sets
   `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix` or `diff.dstPrefix` still reads right.
+- **A moved submodule is one section of its own.** The patch asks for Git's short submodule format too, so a host
+  whose Git config sets `diff.submodule` to `log` or `diff` still writes a moved submodule as one `diff --git` section
+  with its old and new commit, never lines the backend would hang on the file before it (measured on Git 2.55).
 - **The launch folder, never the process folder.** The first command finds the repository root from the agent's
   folder and every later one runs in that root, so tracked and untracked paths agree from a subfolder too. Variables
   that would point Git at another repository (`GIT_DIR` and its neighbours) are dropped for the call. A launch folder
