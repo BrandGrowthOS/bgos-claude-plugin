@@ -2,6 +2,39 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.56.0
+
+**Numbered 0.56.0, the next free number.** The plugin's main took 0.54.0 on 2026-09-26 (#164) while the memory lane
+this stacks on (#161) was open at 0.54.0 too, so that one re takes 0.55.0 and merges first, and this ships above it.
+Nothing is gated on the number: the backend reaches this lane only through the declared `changes_rpc` token.
+
+**The owner's Changes panel can read this agent's uncommitted changes.**
+The HOAI Changes panel (HOAI P7 stage 3, C-31) shows the files a coding agent has changed and not committed yet. This
+daemon answers a new `changes_rpc` lane (op `diff`, scope `uncommitted`) with read only Git in the agent's launch
+folder (lib/changes-rpc.ts over lib/git-changes.ts).
+
+- **Read only, and it stays off the index.** The whole list is `rev-parse`, `symbolic-ref`, `diff --numstat`, `diff`
+  and `ls-files`, run with `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on
+  Git 2.55, a file touched but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off,
+  which would race the agent's own `git add` for the index lock.
+- **Git's own `a/` and `b/` prefixes**, asked for on the patch, so a host whose Git config sets
+  `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix` or `diff.dstPrefix` still reads right.
+- **The launch folder, never the process folder.** The first command finds the repository root from the agent's
+  folder and every later one runs in that root, so tracked and untracked paths agree from a subfolder too. Variables
+  that would point Git at another repository (`GIT_DIR` and its neighbours) are dropped for the call. A launch folder
+  that is gone is a failed read, never "Git is not installed" (Node names both the same way).
+- **New files count.** The first 20 untracked files are read: text up to 64 KB is sent whole, a file with a NUL in
+  its first 8,000 bytes is binary, a larger one is its size only, a symlink is never followed.
+- **Raw and capped, never processed here.** Each stream is cut at the byte cap the frame carries (never above the
+  backend's own numbers) and Git is killed at the cap, so a huge diff costs a flag, not a failed read. Past the
+  frame's budget (10 s) the read stops and answers too slow. The backend, not this daemon, splits the patch, counts,
+  masks secrets and caps what reaches the app. The folder is sent as its last name only.
+- **Only this agent answers.** A frame for another agent gets no answer at all, a re sent frame is answered again and
+  never runs Git twice, only the pairing lock holder answers, a draining daemon takes none, and nothing is read before
+  the agent's home folder is confirmed. The log carries sizes, never a path or a line.
+- **Declares `changes_rpc` on every host.** The backend sends a changes frame to a Claude Code pairing only while it is
+  declared and only while the owner has turned the panel on for this agent; this daemon never reads that switch.
+
 ## 0.54.0
 
 **Renumbered from 0.52.0 at merge.** The plugin's main was released as 0.51.0, 0.52.0 and 0.53.0 by other work
