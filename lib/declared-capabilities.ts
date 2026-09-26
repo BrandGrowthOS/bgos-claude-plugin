@@ -88,7 +88,7 @@
  *                       it for the owner BEFORE any auto approve: the relay
  *                       asks the server's floor-check route first
  *                       (lib/floor-check.ts) and a hold takes the owner's
- *                       request card (0.52.0). Every host: the hook is a
+ *                       request card (0.53.0). Every host: the hook is a
  *                       plain node script and the relay is the permission
  *                       relay above, with no platform limit. The backend
  *                       tells the canon's floor sentence (a hook stops a

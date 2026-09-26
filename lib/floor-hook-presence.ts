@@ -1,6 +1,6 @@
 /**
  * Is the blocking floor hook really registered for the session this daemon
- * serves? The answer decides whether `hard_floor` is declared (0.52.0).
+ * serves? The answer decides whether `hard_floor` is declared (0.53.0).
  *
  * WHY THE DECLARATION NEEDS IT. `hard_floor` tells the served canon to say to
  * the agent "a hook stops a listed action even with full access, and your
@@ -13,7 +13,7 @@
  * CLI never reads a clone's hooks file, so the entry has to be in a settings
  * file the CLI reads, and only the launchers and `bgos-agent install` write it
  * (lib/claude-preseed.mjs ensureHookEntries). The review's case: an always on
- * agent installed at 0.48.0 and moved to 0.52.0 by `bgos-agent update`, whose
+ * agent installed at 0.48.0 and moved to 0.53.0 by `bgos-agent update`, whose
  * service starts `claude` directly, so nothing wrote the floor entry and the
  * unattended, full access agent was exactly the one with no floor.
  *

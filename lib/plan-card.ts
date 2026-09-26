@@ -10,7 +10,7 @@
 // agent honours, not a lock. Every HOAI agent is launched with
 // `--dangerously-skip-permissions` (bin/hoai-core.mjs, bin/bgos-agent) and the
 // shipped manifest sets `BGOS_AUTO_APPROVE: "true"`, which the permission relay
-// answers `allow` to (since 0.52.0 after asking the server about the hard
+// answers `allow` to (since 0.53.0 after asking the server about the hard
 // floor's short list of risky actions, and only those). The hook rail cannot
 // gate a plan either: every forwarder entry is `async: true` and
 // bin/hoai-hook.mjs always exits 0 by explicit rule, and the one blocking

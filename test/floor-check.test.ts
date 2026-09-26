@@ -177,7 +177,7 @@ test('with auto approve off: a proceed in a full access session allows, anything
   const off = { autoApprove: false }
   assert.equal(floorRouteFor({ kind: 'hold', ruleId: 'x', rulesVersion: 1 }, { ...off, permissionMode: 'bypassPermissions' }), 'hold')
   // Bypass: the request exists only because the floor hook asked; the switch is
-  // off, so the call runs as it did before 0.52.0, with no card.
+  // off, so the call runs as it did before 0.53.0, with no card.
   assert.equal(floorRouteFor({ kind: 'proceed', rulesVersion: 1 }, { ...off, permissionMode: 'bypassPermissions' }), 'auto_approve')
   assert.equal(floorRouteFor({ kind: 'unsupported', reason: 'r' }, { ...off, permissionMode: 'bypassPermissions' }), 'auto_approve')
   // Any other mode: the CLI would have asked anyway, so the owner is asked as always.

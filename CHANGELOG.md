@@ -2,20 +2,22 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.52.0 (2026-09-26)
+## 0.53.0 (2026-09-26)
 
-**Renumbered from 0.46.0, then from 0.49.0, at merge.** This release was
-prepared as 0.46.0, then renumbered 0.49.0 when the plugin's main was released
-as 0.46.0, 0.47.0 and 0.47.1 by other programs without this work and it stacked
-on the plan card. The permission request card (prepared as 0.44.1, then 0.47.0)
-has since shipped as 0.49.0 and the plan card it stacks on (prepared as 0.45.0,
-then 0.48.0) as 0.50.0, both on the plugin's main, and main is at 0.51.0 with
-add_mission_goals and cancel_mission_goal, so this ships as 0.52.0, the next
-free number above it. A plugin version cannot be reserved, so the HOAI canon
-does not tie the floor to a release number: it tells the floor sentences only
-to a daemon that DECLARES the `hard_floor` capability, the way it tells the
-request card and the plan card only to a daemon that declares
-`permission_card` or `plan_card` (BGOS #1624).
+**Renumbered from 0.46.0, then from 0.49.0, then from 0.52.0, at merge.**
+This release was prepared as 0.46.0, then renumbered 0.49.0 when the plugin's
+main was released as 0.46.0, 0.47.0 and 0.47.1 by other programs without this
+work and it stacked on the plan card. The permission request card (prepared as
+0.44.1, then 0.47.0) has since shipped as 0.49.0 and the plan card it stacks on
+(prepared as 0.45.0, then 0.48.0) as 0.50.0, both on the plugin's main. Main
+then took 0.51.0 (add_mission_goals and cancel_mission_goal) and, while this
+branch was being merged as 0.52.0, 0.52.0 (the restart recovery of an
+unanswered message, #163), so this ships as 0.53.0, the next free number above
+it. A plugin version cannot be reserved, so the HOAI canon does not tie the
+floor to a release number: it tells the floor sentences only to a daemon that
+DECLARES the `hard_floor` capability, the way it tells the request card and the
+plan card only to a daemon that declares `permission_card` or `plan_card`
+(BGOS #1624).
 
 - **Always ask before risky actions: a listed action now stops and asks you,
   even though the agent runs with full access.** It is your switch, per agent,
@@ -144,6 +146,60 @@ request card and the plan card only to a daemon that declares
   the floor refuses, or a verdict from another user, is logged once per row
   per request rather than on every poll tick (the final live proof counted
   57 copies in 37 s).
+
+## 0.52.0 (2026-09-26)
+
+**A message the previous session could not answer comes back after a restart,
+instead of being lost forever.**
+
+Board row 294a571a, raised 2026-09-06. The per-chat cursor advances when a
+message is FORWARDED, not when it is ANSWERED. So a session that is handed a
+message and then cannot act on it, because its account hit a limit, because the
+model call failed, because it was killed mid turn, left that message BELOW the
+cursor where nothing would ever look again: the delta window starts above it,
+`selectFirstPollBacklogIds` only runs for a chat with no cursor at all, and the
+restart handed the new session nothing.
+
+The clean exemplar is KC's own question to Argus on 2026-09-24. It was consumed
+at 14:29Z by a session whose every model call was being refused, the daemon was
+restarted at 14:49Z, the new session came up and sat idle with the question
+still open, and it was answered at 14:53Z only because a person noticed and
+asked again. A shared account running out of credit is a fleet wide event, so
+every message that arrives during one is consumed by a session that cannot
+answer it.
+
+`selectRestartRecoveryIds` (lib/poll-core.ts) runs on the BOOT poll only, which
+is already the one poll that fetches a chat in full, and re-offers the trailing
+messages nobody answered. Three limits, each of which is a way this could have
+made things worse:
+
+- **The stop rule is what makes it safe**, not the window or the cap. It is the
+  same walk back `selectFirstPollBacklogIds` uses: stop at a real user then
+  assistant REPLY. If the previous session DID answer, there is an assistant row
+  after the user row and the scan stops before reaching it.
+- **Only at or below the cursor.** Rows above it are delivered by the ordinary
+  delta path on the same poll, so including them would hand the agent one
+  message twice in one turn.
+- **A day-long window, a cap of ten, and an undated row does not qualify**,
+  because unknown age must not read as recent.
+
+Six mutations, each printed before running and each reddening a named test:
+removing the stop rule (6 red, including "a user message the session ANSWERED is
+never re-offered"), dropping the cursor bound (2), dropping the age window and
+the undated guard (2), dropping the cap (1), dropping the entry guards (1), and
+replacing the boot gate with `if (true)` (1).
+
+**That last one is the finding worth keeping.** Its guard passed the first time:
+the test searched the 1200 characters before the call for the word `isBootPoll`,
+and the comment written above the call contains that word, so replacing the real
+gate left all seventeen tests green. A guard that can be satisfied by a COMMENT
+is not a guard. It now walks back to the nearest `if (` line and reads that line
+itself.
+
+One honest note: the `lastSeen <= 0` half of the entry guard turned out to be
+defence in depth rather than load bearing, since the at-or-below-cursor filter
+already excludes everything when the cursor is zero. Kept, and said so, rather
+than reported as a caught defect.
 
 ## 0.51.0 (2026-09-26)
 

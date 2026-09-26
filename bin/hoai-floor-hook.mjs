@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * hoai-floor-hook: the hard floor's blocking PreToolUse hook (0.52.0).
+ * hoai-floor-hook: the hard floor's blocking PreToolUse hook (0.53.0).
  *
  * THE ONE BLOCKING HOOK THIS PLUGIN REGISTERS, and it is a different script
  * from the telemetry forwarder (bin/hoai-hook.mjs) on purpose: the forwarder
@@ -28,7 +28,7 @@
  * that the owner never switched on. So a match asks only when the daemon's
  * attached marker for this session's folder is present and its pid alive
  * (lib/floor-state.mjs); anywhere else the hook prints nothing, exactly as
- * before 0.52.0.
+ * before 0.53.0.
  *
  * AND IT LEAVES A RECORD FOR THE RELAY. Before it asks, it writes a floor
  * record (the rule, the matched command, the session's permission mode) under
@@ -91,7 +91,7 @@ export function loadFloorState() {
  * The two host side steps, bound to one state root and environment: is a
  * HOAI daemon attached to this session, and leave the relay the record.
  * Each fails on its own terms: an unreadable marker is not attached (the
- * hook stays silent, as before 0.52.0); an unwritable record still asks.
+ * hook stays silent, as before 0.53.0); an unwritable record still asks.
  */
 export function floorDeps(state, { env = process.env, root } = {}) {
   const stateRoot = root ?? state.floorStateRoot(env)

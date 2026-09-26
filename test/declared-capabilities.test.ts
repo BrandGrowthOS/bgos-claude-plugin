@@ -162,7 +162,7 @@ test('plan_card is declared on every host, because propose_plan is a typed tool 
 })
 
 /**
- * hard_floor (0.52.0, the Always ask floor: the blocking hook and the hold).
+ * hard_floor (0.53.0, the Always ask floor: the blocking hook and the hold).
  *
  * The promise: this daemon installs the blocking floor hook
  * (bin/hoai-floor-hook.mjs, registered in hooks/hooks.json) and holds an
@@ -289,7 +289,7 @@ test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at
  * THE REVIEW: hard_floor was declared on every pairing whether or not the
  * session's CLI carried the blocking hook. A clone gets the entry only when a
  * launcher or bgos-agent install writes it into a settings file; an always on
- * agent installed at 0.48.0 and moved to 0.52.0 by `bgos-agent update` starts
+ * agent installed at 0.48.0 and moved to 0.53.0 by `bgos-agent update` starts
  * `claude` from its service with 0.48.0's settings, so no request is ever
  * raised for `rm -rf` under --dangerously-skip-permissions, while the canon
  * told its agent (and the owner turned the switch on believing) a hook stops
@@ -335,7 +335,7 @@ const presence = (over: Partial<FloorHookPresenceInput> & { files: Record<string
   })
 }
 
-/** What the clone launchers write today (ensureHookEntries, 0.52.0), read back. */
+/** What the clone launchers write today (ensureHookEntries, 0.53.0), read back. */
 function cloneSettings(floorHookPath?: string | null): string {
   let text = ''
   const fs = {

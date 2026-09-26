@@ -384,7 +384,7 @@ describe('declared capabilities on the heartbeat', () => {
     // speaks the channel's own permission notification, which has no
     // platform limit. plan_card (0.50.0) likewise: propose_plan is a typed
     // tool on every host.
-    // hard_floor (0.52.0) likewise: the floor hook is a plain node script and
+    // hard_floor (0.53.0) likewise: the floor hook is a plain node script and
     // its hold rides the permission relay. It is declared on a pairing
     // connection only, and only a pairing connection beats
     // (shouldSendVersionHeartbeat), so every beat carries it.

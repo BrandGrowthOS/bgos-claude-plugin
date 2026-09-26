@@ -610,7 +610,7 @@ cmd_restart() {
 # Re-register a CLONE workspace's hook entries after an update, before its
 # service restarts. The CLI reads a clone's hooks only from the workspace
 # settings file, and only install writes it, so an update that grows the list
-# (0.52.0 added the BLOCKING floor hook) reached an always-on agent's checkout
+# (0.53.0 added the BLOCKING floor hook) reached an always-on agent's checkout
 # but never its session: the daemon then had no floor to declare, and without
 # this the unattended, full access agent was the one with no floor. Only a
 # workspace that already carries the rail is touched (a marketplace channel's

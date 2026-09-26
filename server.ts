@@ -244,6 +244,7 @@ import {
   type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
+  selectRestartRecoveryIds,
   sentDateToMs,
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
@@ -1900,7 +1901,7 @@ interface PendingPermission {
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
   /**
-   * True when the hard floor HOLDS this request for the owner (0.52.0): only a
+   * True when the hard floor HOLDS this request for the owner (0.53.0): only a
    * tap may allow it, never a typed verdict (typedPermissionVerdict).
    */
   floorHeld?: boolean
@@ -2435,7 +2436,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
-  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.52.0).
+  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.53.0).
   // Under --dangerously-skip-permissions the CLI raises a request for a listed
   // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
   // and the auto approve branch below would answer `allow` to it in
@@ -6760,6 +6761,12 @@ const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
   ? null
   : DAEMON_START_MS - FIRST_RUN_RECENT_WINDOW_MS
 
+// How many messages the BOOT poll may bring back per chat for the previous
+// session's unanswered work (board row 294a571a). The same figure as the
+// first-poll cap, for the same reason: the agent's context is the scarce thing,
+// and a chat where nothing was ever answered must not be able to fill it.
+const MAX_RESTART_RECOVERY_FORWARD = 10
+
 // Chats fully processed by pollChat at least once since THIS process started.
 // A chat's first successful poll after boot is the one that may carry
 // messages that arrived while the daemon was down; those keep the [backlog]
@@ -8791,6 +8798,53 @@ async function pollChat(chatId: string): Promise<void> {
       // chat first polled mid-run (discovered via WS) carries only post-boot
       // messages, so it stays unframed too. Keep the predicate in lockstep
       // with test/first-poll-gate.test.ts (deltaIsBacklog mirror).
+      // AND ON THE BOOT POLL ONLY, bring back what the PREVIOUS session was
+      // handed and never answered (board row 294a571a). The cursor advances on
+      // FORWARD, not on ANSWER, so a session that could not act, because its
+      // account hit a limit, because the model call failed, because it was
+      // killed mid turn, left those rows below the cursor where nothing would
+      // ever look again. KC's own question to Argus on 2026-09-24 sat unanswered
+      // through a restart for exactly this reason.
+      //
+      // The selection is pure and lives in lib/poll-core.ts. It stops at a real
+      // user then assistant REPLY, so a message the previous session DID answer
+      // is never re-offered; it takes only rows at or BELOW the cursor, so it
+      // cannot duplicate what the delta filter above already picked up; and it
+      // is capped and windowed so a chat nobody ever answered cannot dump its
+      // history on every boot. This is the one poll where the fetch is FULL
+      // (forceFull on isBootPoll), which is why the older rows are in hand at
+      // all.
+      if (isBootPoll) {
+        const recoveredIds = new Set(
+          selectRestartRecoveryIds({
+            rows: pollForwardableRows.map((m) => ({
+              id: m.message.id,
+              sender: m.message.sender,
+              pendingEmptySystem: isPendingEmptySystem(m),
+              sentDateMs: sentDateToMs(m.message.sentDate),
+            })),
+            lastSeen,
+            maxForward: MAX_RESTART_RECOVERY_FORWARD,
+            nowMs: Date.now(),
+          }),
+        )
+        if (recoveredIds.size) {
+          const already = new Set(newUserMessages.map((m) => m.message.id))
+          const recovered = pollForwardableRows.filter(
+            (m) => recoveredIds.has(m.message.id) && !already.has(m.message.id),
+          )
+          if (recovered.length) {
+            log(
+              `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
+                .map((m) => m.message.id)
+                .join(', ')})`,
+            )
+            // Oldest first, and BEFORE the delta rows, so the agent reads the
+            // conversation in the order it happened.
+            newUserMessages = [...recovered, ...newUserMessages]
+          }
+        }
+      }
       isBacklog =
         isBootPoll &&
         newUserMessages.some((m) => {

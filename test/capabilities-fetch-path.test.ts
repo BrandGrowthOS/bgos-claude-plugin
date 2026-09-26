@@ -57,7 +57,7 @@ test('the plan card token reaches the fetch too (0.50.0)', () => {
   assert.ok(query.get('capabilities')!.split(',').includes('plan_card'))
 })
 
-test('the hard floor token reaches the fetch too (0.52.0)', () => {
+test('the hard floor token reaches the fetch too (0.53.0)', () => {
   // The canon's floor sentence is gated on hard_floor (with permission_card),
   // so the fetch at connect, which runs before the first heartbeat, must carry
   // it or a fresh boot is told nothing about the hook it installed.
