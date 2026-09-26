@@ -100,7 +100,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'boards_playbook', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'boards_playbook', 'boards_playbook_does', 'hard_floor'],
   )
 })
 
@@ -130,11 +130,38 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'permission_card',
       'plan_card',
       'boards_playbook',
+      'boards_playbook_does',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
     ],
   )
+})
+
+/**
+ * boards_playbook_does (0.57.0, Kanban phase 2).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): moved 'boards_playbook_does' from DECLARED_CAPABILITIES_BASE into
+ * DECLARED_CAPABILITIES_INJECTOR -> "boards_playbook_does is declared on every
+ * host" fails on the host that cannot type, and so do the read half pin above,
+ * the boards_playbook pin (the order of the base), test/capabilities.test.ts's
+ * "the daemon's own base declaration reaches the fetch" and "the canon fetch
+ * carries boards_playbook" (five node red), and test/version-heartbeat.test.ts's
+ * "what rides the beat is what THIS host can do" (one bun red). The
+ * set_column_lines op takes a `does` on every host, so an agent that is not
+ * told the canon's instruction sentence would write instructions without
+ * knowing they are suggestions the owner approves.
+ */
+test('boards_playbook_does is declared on every host, because the does part is a typed argument of the same tool', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
+    assert.ok(declared.includes('boards_playbook_does'))
+    // Beside the phase 1 token, never instead of it: the served canon strips
+    // the two sentences independently, so an agent needs both to read both.
+    assert.ok(declared.includes('boards_playbook'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('boards_playbook_does'))
 })
 
 /**
@@ -167,6 +194,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'permission_card',
       'plan_card',
       'boards_playbook',
+      'boards_playbook_does',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',

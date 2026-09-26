@@ -1,0 +1,16 @@
+{
+  "optionRules": {
+    "Ready": {
+      "does": {
+        "kind": "start",
+        "instruction": "Draft the brief from the card, then move it to Review.",
+        "startsWhen": ["person_moves_in"],
+        "who": { "by": "ask_at_drop" },
+        "needs": [{ "fieldKey": "brief" }],
+        "askForNote": "offer",
+        "landsIn": ["Review"],
+        "planFirst": "ask"
+      }
+    }
+  }
+}

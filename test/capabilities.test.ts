@@ -215,6 +215,9 @@ test('the fetch path carries the channel, the version and the declared list', ()
 })
 
 test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
+  // boards_playbook_does (0.57.0, Kanban phase 2) rides the same fetch: the
+  // served canon's instruction sentence is gated on it, on the heartbeat or
+  // on this fetch, exactly as the phase 1 sentence is on boards_playbook.
   const path = capabilitiesFetchPath(
     '0.56.0',
     declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }),
@@ -229,6 +232,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'permission_card',
     'plan_card',
     'boards_playbook',
+    'boards_playbook_does',
     'hard_floor',
   ])
 })
@@ -294,11 +298,13 @@ test('the canon fetch carries boards_playbook', () => {
   )
   assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
-  // The declared list the fetch sends holds the token the gate reads, on
+  // The declared list the fetch sends holds the tokens the gates read, on
   // either auth mode and whether or not the floor hook is registered.
   for (const authMode of ['pairing', 'apikey'] as const) {
     for (const floorHook of [true, false]) {
-      assert.ok(declaredCapabilities({ canInjectGoal: false, floorHook, authMode }).includes('boards_playbook'))
+      const declared = declaredCapabilities({ canInjectGoal: false, floorHook, authMode })
+      assert.ok(declared.includes('boards_playbook'))
+      assert.ok(declared.includes('boards_playbook_does'))
     }
   }
 })

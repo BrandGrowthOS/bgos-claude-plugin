@@ -143,10 +143,35 @@ const ROLES = ['read', 'write', 'admin'] as const
 const WAITS_ON = ['you', 'agent', 'someone_else', 'nobody'] as const
 const REST = ['open', 'parked', 'finished', 'dropped'] as const
 const SORT_DIRS = ['asc', 'desc'] as const
-const LINE_KEYS = ['means', 'waits_on', 'rest', 'sort_by', 'answers'] as const
+const LINE_KEYS = ['means', 'waits_on', 'rest', 'sort_by', 'answers', 'does'] as const
 const ANSWER_KEYS = ['label', 'move_to', 'ask_note'] as const
 const SORT_BY_KEYS = ['field_key', 'dir'] as const
 const RENAME_KEYS = ['from', 'to'] as const
+// A line's instruction part (0.57.0, Kanban phase 2). Snake case in; the wire
+// is the server's camel case, rebuilt key by key. The server's own keys
+// (`approved`, `textHash`, `v`) and the owner's `paused` are not here, so the
+// closed schema refuses them by name.
+const DOES_KEYS = [
+  'kind',
+  'instruction',
+  'starts_when',
+  'who',
+  'only_when',
+  'needs',
+  'ask_for_note',
+  'fills',
+  'lands_in',
+  'plan_first',
+] as const
+const DOES_KINDS = ['start', 'tell'] as const
+/** The one start phase 2 honours: a person moving a card into the column. */
+const DOES_STARTS = ['person_moves_in'] as const
+const DOES_WHO_BY = ['agent', 'card_field', 'ask_at_drop'] as const
+const DOES_WHO_KEYS = ['by', 'assistant_id', 'field_key'] as const
+const DOES_ONLY_WHEN_KEYS = ['field_key', 'in', 'empty'] as const
+const DOES_NEED_KEYS = ['field_key', 'in'] as const
+const DOES_NOTE = ['offer', 'require'] as const
+const DOES_PLAN_FIRST = ['ask', 'always', 'never'] as const
 
 /** What a set_column_lines answer from a server that predates column lines means. */
 export const COLUMN_LINES_UNSUPPORTED =
@@ -466,6 +491,88 @@ export const BOARDS_TOOL_DECLS = [
                 description:
                   'Only with waits_on "you": up to four answers the owner can give.',
               },
+              does: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    enum: [...DOES_KINDS],
+                    description:
+                      'start: the agent the card is handed to starts work on it. ' +
+                      'tell: it is told about the card.',
+                  },
+                  instruction: {
+                    type: 'string',
+                    description:
+                      'What the agent should always do with a card handed over ' +
+                      'from this column, at most 1200 characters.',
+                  },
+                  starts_when: {
+                    type: 'array',
+                    items: { type: 'string', enum: [...DOES_STARTS] },
+                    description:
+                      'Only person_moves_in is honoured today: a person moving a ' +
+                      'card here. An agent moving a card never starts anything.',
+                  },
+                  who: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      by: { type: 'string', enum: [...DOES_WHO_BY] },
+                      assistant_id: { type: 'number' },
+                      field_key: { type: 'string' },
+                    },
+                    required: ['by'],
+                    description:
+                      'Who gets the card: one agent, the agent a card field ' +
+                      'names, or ask the owner at each drop.',
+                  },
+                  only_when: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      field_key: { type: 'string' },
+                      in: { type: 'array', items: { type: 'string' } },
+                      empty: { type: 'boolean' },
+                    },
+                    required: ['field_key'],
+                    description: 'One condition on the card: a field in some values, or empty.',
+                  },
+                  needs: {
+                    type: 'array',
+                    maxItems: 20,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        field_key: { type: 'string' },
+                        in: { type: 'array', items: { type: 'string' } },
+                      },
+                      required: ['field_key'],
+                    },
+                    description: 'Fields that must be filled before the card can be handed over.',
+                  },
+                  ask_for_note: { type: 'string', enum: [...DOES_NOTE] },
+                  fills: {
+                    type: 'array',
+                    maxItems: 20,
+                    items: { type: 'string' },
+                    description: 'Fields the agent is expected to fill.',
+                  },
+                  lands_in: {
+                    type: 'array',
+                    maxItems: 20,
+                    items: { type: 'string' },
+                    description: 'Columns of this same field finished work may move to.',
+                  },
+                  plan_first: { type: 'string', enum: [...DOES_PLAN_FIRST] },
+                },
+                description:
+                  'What happens when the owner hands a card over from this ' +
+                  'column. It is saved as a suggestion: nothing starts until ' +
+                  'the owner approves these exact words in the app.',
+              },
             },
           },
           description:
@@ -476,8 +583,8 @@ export const BOARDS_TOOL_DECLS = [
             'sentence (means) changes directly: any other change you send is ' +
             'not applied and the owner\'s setting stays, and a part you leave ' +
             'out keeps its current value. Columns you leave out keep theirs. ' +
-            'A line only describes the board: nothing you write here starts ' +
-            'work or sends a message.',
+            'A line\'s sentence and facts only describe the board; its does ' +
+            'part is a suggestion until the owner approves it.',
         },
         clear_lines: {
           type: 'array',
@@ -1104,7 +1211,273 @@ function compileColumnLine(
     }
     line.answers = answers
   }
+  if (present('does')) {
+    const does = compileDoes(tool, `${where}.does`, raw.does)
+    if (!does.ok) return does
+    line.does = does.value
+  }
   return { ok: true, line }
+}
+
+/** A list of non empty strings, or the refusal naming the item that is not. */
+function stringList(
+  tool: string,
+  where: string,
+  value: unknown,
+): Fail | { ok: true; value: string[] } {
+  if (!Array.isArray(value)) return wrongType(tool, where, 'an array of strings', value)
+  for (const [i, item] of value.entries()) {
+    if (typeof item !== 'string' || !item.trim()) {
+      return fail(`${tool} "${where}[${i}]" must be a non-empty string.`)
+    }
+  }
+  return { ok: true, value: [...(value as string[])] }
+}
+
+function strayFail(tool: string, where: string, strays: string[], allowed: readonly string[]): Fail {
+  return fail(
+    `${tool} "${where}" does not take ${strays.map((k) => `"${k}"`).join(', ')}. ` +
+      `It takes: ${allowed.join(', ')}.`,
+  )
+}
+
+/**
+ * A line's instruction part (0.57.0, Kanban phase 2), snake case in, the
+ * server's camel case out, rebuilt key by key from a closed schema. The shape
+ * and the enums are checked here: a stray key (the server's `approved`,
+ * `textHash` and `v`, or the owner's `paused`, included), a wrong type, a
+ * value outside an enum, a `who` or an `only_when` whose parts do not fit
+ * together. Every length (1200 characters of instruction, 20 items a list,
+ * 100 characters an item) and every reference (a field of the table, an
+ * option of the select, an agent of the owner's fleet) is the server's, whose
+ * refusal reaches the model verbatim. The server files what an agent sends
+ * here as a suggestion, never as a working instruction; the echo says which
+ * (see `columnLinesAnswer`).
+ */
+function compileDoes(
+  tool: string,
+  where: string,
+  raw: unknown,
+): Fail | { ok: true; value: Record<string, unknown> } {
+  if (!isPlainObject(raw)) {
+    return wrongType(
+      tool,
+      where,
+      'an object, for example { "kind": "start", "instruction": "Draft the ' +
+        'brief.", "who": { "by": "ask_at_drop" } }',
+      raw,
+    )
+  }
+  const unknown = strayKeys(raw, DOES_KEYS)
+  if (unknown.length) {
+    return fail(
+      `${tool} "${where}" does not take ${unknown.map((k) => `"${k}"`).join(', ')}. ` +
+        `An instruction takes: ${DOES_KEYS.join(', ')}.`,
+    )
+  }
+  const present = (key: string) => raw[key] !== undefined && raw[key] !== null
+  if (!DOES_KEYS.some(present)) {
+    return fail(
+      `${tool} "${where}" is empty. Give it at least kind and instruction, ` +
+        'or leave does out.',
+    )
+  }
+
+  const does: Record<string, unknown> = {}
+  if (present('kind')) {
+    if (!DOES_KINDS.includes(raw.kind as (typeof DOES_KINDS)[number])) {
+      return enumFail(tool, `${where}.kind`, DOES_KINDS, raw.kind)
+    }
+    does.kind = raw.kind
+  }
+  if (present('instruction')) {
+    if (typeof raw.instruction !== 'string') {
+      return wrongType(tool, `${where}.instruction`, 'a string', raw.instruction)
+    }
+    does.instruction = raw.instruction
+  }
+  if (present('starts_when')) {
+    const at = `${where}.starts_when`
+    if (!Array.isArray(raw.starts_when)) {
+      return wrongType(tool, at, 'an array, for example ["person_moves_in"]', raw.starts_when)
+    }
+    for (const [i, item] of raw.starts_when.entries()) {
+      if (!DOES_STARTS.includes(item as (typeof DOES_STARTS)[number])) {
+        return fail(
+          `${tool} "${at}[${i}]" must be one of ${DOES_STARTS.join(', ')}, got ` +
+            `${JSON.stringify(item)}. Only a person moving a card here starts ` +
+            'anything today.',
+        )
+      }
+    }
+    does.startsWhen = [...raw.starts_when]
+  }
+  if (present('who')) {
+    const who = compileDoesWho(tool, `${where}.who`, raw.who)
+    if (!who.ok) return who
+    does.who = who.value
+  }
+  if (present('only_when')) {
+    const when = compileDoesOnlyWhen(tool, `${where}.only_when`, raw.only_when)
+    if (!when.ok) return when
+    does.onlyWhen = when.value
+  }
+  if (present('needs')) {
+    const at = `${where}.needs`
+    if (!Array.isArray(raw.needs)) {
+      return wrongType(tool, at, 'an array of { field_key, in } needs', raw.needs)
+    }
+    const needs: Array<Record<string, unknown>> = []
+    for (const [i, item] of raw.needs.entries()) {
+      const itemAt = `${at}[${i}]`
+      if (!isPlainObject(item)) {
+        return wrongType(tool, itemAt, 'an object { field_key, in }', item)
+      }
+      const strays = strayKeys(item, DOES_NEED_KEYS)
+      if (strays.length) return strayFail(tool, itemAt, strays, DOES_NEED_KEYS)
+      if (typeof item.field_key !== 'string' || !item.field_key.trim()) {
+        return fail(
+          `${tool} "${itemAt}" needs "field_key": a field of the same table, ` +
+            'as boards_describe prints it.',
+        )
+      }
+      const need: Record<string, unknown> = { fieldKey: item.field_key }
+      if (item.in !== undefined && item.in !== null) {
+        const list = stringList(tool, `${itemAt}.in`, item.in)
+        if (!list.ok) return list
+        need.in = list.value
+      }
+      needs.push(need)
+    }
+    does.needs = needs
+  }
+  if (present('ask_for_note')) {
+    if (!DOES_NOTE.includes(raw.ask_for_note as (typeof DOES_NOTE)[number])) {
+      return enumFail(tool, `${where}.ask_for_note`, DOES_NOTE, raw.ask_for_note)
+    }
+    does.askForNote = raw.ask_for_note
+  }
+  if (present('fills')) {
+    const list = stringList(tool, `${where}.fills`, raw.fills)
+    if (!list.ok) return list
+    does.fills = list.value
+  }
+  if (present('lands_in')) {
+    const list = stringList(tool, `${where}.lands_in`, raw.lands_in)
+    if (!list.ok) return list
+    does.landsIn = list.value
+  }
+  if (present('plan_first')) {
+    if (!DOES_PLAN_FIRST.includes(raw.plan_first as (typeof DOES_PLAN_FIRST)[number])) {
+      return enumFail(tool, `${where}.plan_first`, DOES_PLAN_FIRST, raw.plan_first)
+    }
+    does.planFirst = raw.plan_first
+  }
+  return { ok: true, value: does }
+}
+
+/** `who`: one agent, the agent a card field names, or ask at each drop. */
+function compileDoesWho(
+  tool: string,
+  where: string,
+  who: unknown,
+): Fail | { ok: true; value: Record<string, unknown> } {
+  if (!isPlainObject(who)) {
+    return wrongType(tool, where, 'an object, for example { "by": "ask_at_drop" }', who)
+  }
+  const strays = strayKeys(who, DOES_WHO_KEYS)
+  if (strays.length) return strayFail(tool, where, strays, DOES_WHO_KEYS)
+  if (who.by === undefined || who.by === null) {
+    return fail(`${tool} "${where}" needs "by": one of ${DOES_WHO_BY.join(', ')}.`)
+  }
+  if (!DOES_WHO_BY.includes(who.by as (typeof DOES_WHO_BY)[number])) {
+    return enumFail(tool, `${where}.by`, DOES_WHO_BY, who.by)
+  }
+  const extra = (allowed: string[]) =>
+    Object.keys(who).filter((k) => !allowed.includes(k) && who[k] !== undefined)
+  if (who.by === 'agent') {
+    const others = extra(['by', 'assistant_id'])
+    if (others.length) {
+      return fail(
+        `${tool} "${where}" with by "agent" does not take ` +
+          `${others.map((k) => `"${k}"`).join(', ')}. It takes by and assistant_id.`,
+      )
+    }
+    const id = who.assistant_id
+    if (id === undefined || id === null) {
+      return fail(
+        `${tool} "${where}" with by "agent" needs "assistant_id": the number ` +
+          'of the agent that gets the card.',
+      )
+    }
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0) {
+      return wrongType(tool, `${where}.assistant_id`, 'a positive whole number', id)
+    }
+    return { ok: true, value: { by: 'agent', assistantId: id } }
+  }
+  if (who.by === 'card_field') {
+    const others = extra(['by', 'field_key'])
+    if (others.length) {
+      return fail(
+        `${tool} "${where}" with by "card_field" does not take ` +
+          `${others.map((k) => `"${k}"`).join(', ')}. It takes by and field_key.`,
+      )
+    }
+    if (typeof who.field_key !== 'string' || !who.field_key.trim()) {
+      return fail(
+        `${tool} "${where}" with by "card_field" needs "field_key": the agent ` +
+          'field of the card that names who gets it.',
+      )
+    }
+    return { ok: true, value: { by: 'card_field', fieldKey: who.field_key } }
+  }
+  const others = extra(['by'])
+  if (others.length) {
+    return fail(
+      `${tool} "${where}" with by "ask_at_drop" does not take ` +
+        `${others.map((k) => `"${k}"`).join(', ')}. The owner picks at each drop.`,
+    )
+  }
+  return { ok: true, value: { by: 'ask_at_drop' } }
+}
+
+/** `only_when`: one field, either in some values or empty, never both. */
+function compileDoesOnlyWhen(
+  tool: string,
+  where: string,
+  when: unknown,
+): Fail | { ok: true; value: Record<string, unknown> } {
+  if (!isPlainObject(when)) {
+    return wrongType(tool, where, 'an object { field_key, in } or { field_key, empty: true }', when)
+  }
+  const strays = strayKeys(when, DOES_ONLY_WHEN_KEYS)
+  if (strays.length) return strayFail(tool, where, strays, DOES_ONLY_WHEN_KEYS)
+  if (typeof when.field_key !== 'string' || !when.field_key.trim()) {
+    return fail(
+      `${tool} "${where}" needs "field_key": a field of the same table, as ` +
+        'boards_describe prints it.',
+    )
+  }
+  const hasIn = when.in !== undefined && when.in !== null
+  const hasEmpty = when.empty !== undefined && when.empty !== null
+  if (hasIn === hasEmpty) {
+    return fail(
+      `${tool} "${where}" needs exactly one of in or empty: { "field_key": ` +
+        '"priority", "in": ["High"] } or { "field_key": "due", "empty": true }.',
+    )
+  }
+  if (hasEmpty) {
+    if (when.empty !== true) {
+      return fail(
+        `${tool} "${where}.empty" can only be true. For a field that must hold ` +
+          'a value, name the values with in.',
+      )
+    }
+    return { ok: true, value: { fieldKey: when.field_key, empty: true } }
+  }
+  const list = stringList(tool, `${where}.in`, when.in)
+  if (!list.ok) return list
+  return { ok: true, value: { fieldKey: when.field_key, in: list.value } }
 }
 
 /**
@@ -1209,6 +1582,16 @@ function readOptionRenames(
  * sentence the agent sent for a filed column WAS saved (only the sentence
  * changes directly), so the answer says that too rather than "keeps its
  * current setting" about words that changed.
+ *
+ * The instruction part (0.57.0, Kanban phase 2). A server with it also
+ * answers `suggested` (the options whose `does` it filed as a suggestion the
+ * owner approves word for word in the app, filed now or already) and, when
+ * any, `declined` (the options whose words the owner already turned down,
+ * stored nowhere). Each is one sentence beside the filed one, so the model
+ * neither tells the owner an instruction is working nor sends the same words
+ * again. Here, and only here, the answer says "suggestion": the owner is
+ * shown it. "Everything else in this call was saved." closes the answer once,
+ * when the call carried anything none of the three sentences covers.
  */
 function columnLinesAnswer(
   data: unknown,
@@ -1217,38 +1600,88 @@ function columnLinesAnswer(
   if (!isPlainObject(data) || !('playbook' in data)) {
     return fail(COLUMN_LINES_UNSUPPORTED)
   }
-  const filed = Array.isArray(data.filed)
-    ? data.filed.filter((o): o is string => typeof o === 'string')
-    : []
-  if (filed.length) return { ok: true, data: filedAnswer(filed, sent) }
-  return { ok: true, data }
+  const listOf = (value: unknown) =>
+    Array.isArray(value) ? value.filter((o): o is string => typeof o === 'string') : []
+  const filed = listOf(data.filed)
+  const suggested = listOf(data.suggested)
+  const declined = listOf(data.declined)
+  const said: string[] = []
+  if (filed.length) said.push(filedAnswer(filed, sent))
+  if (suggested.length) said.push(suggestedAnswer(suggested))
+  if (declined.length) said.push(declinedAnswer(declined))
+  if (!said.length) return { ok: true, data }
+  if (restWasSaved(sent, filed, [...suggested, ...declined])) {
+    said.push('Everything else in this call was saved.')
+  }
+  return { ok: true, data: said.join(' ') }
+}
+
+function quoteOptions(options: string[]): string {
+  return options.map((o) => JSON.stringify(o)).join(', ')
+}
+
+function sentRules(sent: Record<string, unknown>): Record<string, unknown> {
+  return isPlainObject(sent.optionRules) ? sent.optionRules : {}
 }
 
 /** The one sentence a filed write reads as (see `columnLinesAnswer`). */
 function filedAnswer(filed: string[], sent: Record<string, unknown>): string {
-  const quote = (options: string[]) =>
-    options.map((o) => JSON.stringify(o)).join(', ')
-  const rules = isPlainObject(sent.optionRules) ? sent.optionRules : {}
+  const rules = sentRules(sent)
   const lineOf = (option: string) =>
     Object.prototype.hasOwnProperty.call(rules, option) ? rules[option] : undefined
   const saved = filed.filter((option) => {
     const line = lineOf(option)
     return isPlainObject(line) && typeof line.means === 'string' && line.means.trim() !== ''
   })
-  const more =
-    Object.keys(rules).some((option) => !filed.includes(option)) ||
-    typeof sent.workflow === 'boolean'
   const one = filed.length === 1
   let text =
-    `The owner decides how ${quote(filed)} ${one ? 'works' : 'work'}, so ` +
+    `The owner decides how ${quoteOptions(filed)} ${one ? 'works' : 'work'}, so ` +
     `your change to ${one ? 'it' : 'them'} was not applied and ` +
     `${one ? 'the column keeps its' : 'those columns keep their'} current setting`
   text += saved.length
-    ? `, except the sentence (means) you sent for ${quote(saved)}, which was ` +
+    ? `, except the sentence (means) you sent for ${quoteOptions(saved)}, which was ` +
       'saved. Do not send the rest again.'
     : `. Do not send ${one ? 'it' : 'them'} again.`
-  if (more) text += ' Everything else in this call was saved.'
   return text
+}
+
+/** An instruction filed as a suggestion (plan 3.7, verbatim). */
+function suggestedAnswer(suggested: string[]): string {
+  return (
+    `Your instruction for ${quoteOptions(suggested)} is saved as a suggestion. ` +
+    'Nothing starts until your owner approves those exact words in the app. ' +
+    'Do not send it again.'
+  )
+}
+
+/** Words the owner already turned down (plan 3.7, PROD-04, verbatim). */
+function declinedAnswer(declined: string[]): string {
+  return (
+    `Your owner turned down that instruction for ${quoteOptions(declined)}. ` +
+    'Do not send it again unless your owner asks for a different one.'
+  )
+}
+
+/**
+ * Whether the call carried anything the filed, suggested and declined
+ * sentences do not already account for: the workflow flag, a column in none
+ * of the lists (a cleared line included), or, on a suggested or declined
+ * column that was not filed, a part beside its `does` (its sentence, say),
+ * which was saved like any other.
+ */
+function restWasSaved(
+  sent: Record<string, unknown>,
+  filed: string[],
+  decided: string[],
+): boolean {
+  if (typeof sent.workflow === 'boolean') return true
+  const rules = sentRules(sent)
+  return Object.keys(rules).some((option) => {
+    if (filed.includes(option)) return false
+    if (!decided.includes(option)) return true
+    const line = rules[option]
+    return isPlainObject(line) && Object.keys(line).some((key) => key !== 'does')
+  })
 }
 
 // ── Path building (nothing raw ever reaches a URL) ───────────────────────────
