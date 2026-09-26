@@ -120,7 +120,7 @@ const SCHEMA_OPS = [
   'delete_field',
   'set_description',
   'set_options',
-  // Kanban phase 1 (0.50.0): what each column of a workflow select means.
+  // Kanban phase 1 (0.56.0): what each column of a workflow select means.
   'set_column_lines',
   'move_field',
   // Multi-table boards: the table lifecycle, folded under update_schema so the

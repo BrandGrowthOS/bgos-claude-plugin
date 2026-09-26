@@ -38,14 +38,18 @@ import {
   escapeAgentButtonValue,
   unescapeAgentButtonValue,
   collidesWithReserved,
+  REPLY_BUTTON_STYLES,
+  normalizeButtonStyle,
   protectBackslashesForMarkdown,
   buildEventMeta,
 } from './lib/message-text.js'
 import {
   buildInboundChannel,
   type AgentOriginLike,
+  createPlanPolicyMemo,
   isAgentInbound,
   isSelfAuthoredAgentOrigin,
+  readPlanPolicyField,
 } from './lib/inbound-channel.js'
 import {
   buildMeetingCard,
@@ -164,6 +168,9 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionAddGoalsBody,
+  buildMissionAddGoalsPath,
+  buildMissionCancelGoalPath,
   buildMissionSetGoalsBody,
   buildMissionSetGoalsPath,
   buildMissionCompletePath,
@@ -183,6 +190,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -236,6 +244,7 @@ import {
   type ButtonPromptRecord,
   planPollCycle,
   selectFirstPollBacklogIds,
+  selectRestartRecoveryIds,
   sentDateToMs,
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
@@ -319,6 +328,87 @@ import {
   viewStreamMessage,
   type StreamMessageView,
 } from './lib/stream-apply.js'
+import {
+  PERMISSION_CLICK_RE,
+  PERMISSION_HOLD_SECONDS,
+  SWEEP_CLOCK_SKEW_MARGIN_MS,
+  VERDICT_RE,
+  answeredPermissionChoice,
+  buildPermissionRequestBody,
+  cardMessageIdFrom,
+  choiceToBehavior,
+  isApprovalExpired,
+  orphanedPermissionCards,
+  parsePermissionChoice,
+  typedPermissionVerdict,
+  oncePerRow,
+  pendingPermissionFastChatIds,
+  permissionBackstopMs,
+  permissionRowsReader,
+  resolvePermissionClick,
+  senderUserIdCandidate,
+  storedWaitSeconds,
+  watchPermissionVerdict,
+  type PermissionChoice,
+} from './lib/permission-relay.js'
+import { classifyPermissionRequest } from './lib/hard-floor.js'
+import {
+  consultElidedFloor,
+  consultFloor,
+  floorCheckPath,
+  planFloorRequest,
+  FLOOR_CHECK_TIMEOUT_MS,
+  type FloorCheckBody,
+  type FloorPlan,
+  type FloorRecord,
+} from './lib/floor-check.js'
+import {
+  clearFloorAttached,
+  daemonFloorFolders,
+  floorKey,
+  floorStateRoot,
+  markFloorAttached,
+  takeFloorRecord,
+} from './lib/floor-state.mjs'
+import {
+  PENDING_PLAN_FAST_MAX_MS,
+  buildPlanCardBody,
+  buildPlanCardPayload,
+  buildPlanRetireBody,
+  buildPlanSupersedeBody,
+  describePlanClick,
+  isPlanCardPayload,
+  missedPlanAnswers,
+  nextPlanIdentity,
+  parsePlanSupersedes,
+  pendingPlanFastChatIds,
+  planCardChatRefusal,
+  planAnswerDirective,
+  planChipFor,
+  planRequesterFor,
+  planSettlement,
+  planTapAuthority,
+  planStatusClearBody,
+  planStatusBody,
+  resolvePlanChoice,
+  type PendingPlan,
+} from './lib/plan-card.js'
+import {
+  PLAN_VERIFIER_MESSAGE,
+  armPlanVerifier,
+  cancelPlanVerifiers,
+  createPlanVerifierState,
+  disarmPlanVerifier,
+  duePlanVerifiers,
+  endTurnPlanVerifiers,
+  isPlanVerifierArmed,
+} from './lib/plan-verifier.js'
+import {
+  buildSessionModeBody,
+  sessionModePath,
+  shouldReportSessionMode,
+  type SessionMode,
+} from './lib/session-mode.js'
 import {
   authSnapshot,
   resolveAuthRecheckIntervalMs,
@@ -1008,9 +1098,16 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
   if (capabilitiesInFlight) return capabilitiesInFlight
   capabilitiesInFlight = (async () => {
     let data: unknown = null
+    // ONE declared list for the fetch AND the offline copy, so a fetch that
+    // fails tells the agent no more than the served canon would have told
+    // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
-        capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', declaredCapabilities({ canInjectGoal: false })),
+        capabilitiesFetchPath(
+          RUNNING_VERSION ?? '0.0.0',
+          declared,
+        ),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
         // fallback, so waiting longer than a few seconds buys nothing.
@@ -1028,7 +1125,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
           : `Capability canon fetch failed (${reason}); using bundled fallback`,
       )
     }
-    cachedCapabilities = pickCapabilities(data)
+    cachedCapabilities = pickCapabilities(data, declared)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -1783,9 +1880,12 @@ async function resolveFile(fileSpec: {
 }
 
 // ── Permission Relay State ───────────────────────────────────────────────────
-
-type PermissionBehavior = 'allow' | 'deny'
-type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
+//
+// The pure half of the relay (the card body, the callback vocabularies, the
+// click resolver, the verdict watch and its three endings) lives in
+// ./lib/permission-relay.ts so it can be unit tested without booting a daemon.
+// Everything left here is the impure wiring: the MCP notification, the HTTP
+// calls and the two transports a click can arrive on.
 
 interface PendingPermission {
   chatId: string
@@ -1800,6 +1900,19 @@ interface PendingPermission {
   // message (falls back to the configured account owner USER_ID).
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
+  /**
+   * True when the hard floor HOLDS this request for the owner (0.53.0): only a
+   * tap may allow it, never a typed verdict (typedPermissionVerdict).
+   */
+  floorHeld?: boolean
+  /**
+   * How long this daemon is still listening to this request: the backstop
+   * built from the wait the SERVER stored, written once the card comes back.
+   * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
+   * absent until the post returns, which reads as the longest it could be
+   * (see pendingPermissionFastChatIds).
+   */
+  waitMs?: number
 }
 
 // Tracks the user_id of the most recent inbound USER message per chat. Used to
@@ -1814,11 +1927,20 @@ const lastInboundUserByChat = new Map<string, string>()
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
 
-/** Regex matching typed fallback verdict: "yes abcde" or "no abcde" */
-const VERDICT_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
-
-/** Regex matching BGOS permission button callback identifiers. */
-const PERMISSION_CALLBACK_RE = /^perm:(once|session|permanent|deny):([a-km-z]{5})$/i
+// How often the verdict watch looks at the chat now lives in
+// lib/permission-relay.ts (permissionPollIntervalMs), because it is no longer
+// one number: the watch can run for the owner's whole wait, and a 30 minute
+// request at the old flat 1.5 s was ~1,200 looks per waiting daemon.
+//
+// AND THAT IS ONLY HALF THE BILL, which the first version of this comment
+// dropped instead of counting. The same request also holds its chat on THIS
+// file's 2 s fast scope, because fastScopeChatIds reads pendingPermissions:
+// another ~900 reads of the same endpoint over the same half hour. That half
+// is bounded too, by the request's OWN wait rather than by a flat window
+// (PENDING_PERMISSION_FAST_MAX_MS is only the leak guard), because that scope
+// is what keeps this poll's click intake at 2 s instead of the five minute
+// sweep. About 300 of those reads at the ten minute wait the clamp will make
+// the default, about 900 at the unclamped half hour.
 
 // ── Button-value namespace isolation ─────────────────────────────────────────
 // escapeAgentButtonValue / unescapeAgentButtonValue / collidesWithReserved and
@@ -1837,61 +1959,15 @@ void RESERVED_VALUE_PREFIXES
  * not a fixed account owner. Falls back through the legacy top-level userId
  * and finally the configured owner (USER_ID) for pre-Block-A backends or when
  * the field is absent, so older deployments keep working unchanged.
+ *
+ * The chain itself is `senderUserIdCandidate` in lib/permission-relay.ts,
+ * which answers NULL where this one answers the owner. One reader with two
+ * endings, because the card read in `waitForVerdict` has to tell "nobody
+ * stamped an id" apart from "the owner sent it", and a second hand copy of the
+ * chain would drift from this one the first time a backend added a casing.
  */
 function senderUserIdOf(message: unknown): string {
-  const m = message as Record<string, unknown> | null | undefined
-  // WS payloads carry a nested sender object; the REST poll message carries a
-  // flat senderUserId (its own `sender` field is the role string, not an
-  // object, so reading .userId off it is a harmless undefined).
-  const nestedSender = m?.sender as { userId?: unknown } | null | undefined
-  const candidate =
-    (nestedSender?.userId as string | undefined) ??
-    (m?.senderUserId as string | undefined) ??
-    (m?.sender_user_id as string | undefined) ??
-    (m?.userId as string | undefined) ??
-    (m?.user_id as string | undefined)
-  return typeof candidate === 'string' && candidate ? candidate : USER_ID
-}
-
-function permissionOptions(requestId: string): Array<{ text: string; callbackData: string }> {
-  return [
-    { text: 'Allow once', callbackData: `perm:once:${requestId}` },
-    { text: 'Allow for session', callbackData: `perm:session:${requestId}` },
-    { text: 'Allow permanently', callbackData: `perm:permanent:${requestId}` },
-    { text: 'Do not allow', callbackData: `perm:deny:${requestId}` },
-  ]
-}
-
-function choiceToBehavior(choice: PermissionChoice): PermissionBehavior {
-  // Claude Code's current channel permission protocol, as used by the
-  // official Telegram plugin, accepts only behavior='allow' or 'deny'. Keep
-  // the richer BGOS UX now and collapse all allow scopes to 'allow' until the
-  // upstream channel protocol exposes scoped behaviors.
-  return choice === 'deny' ? 'deny' : 'allow'
-}
-
-function parsePermissionChoice(text: string, requestId: string): PermissionChoice | null {
-  const trimmed = text.trim()
-  const callback = PERMISSION_CALLBACK_RE.exec(trimmed)
-  if (callback && callback[2]?.toLowerCase() === requestId.toLowerCase()) {
-    return callback[1]!.toLowerCase() as PermissionChoice
-  }
-
-  const typed = VERDICT_RE.exec(trimmed)
-  if (typed && typed[2]?.toLowerCase() === requestId.toLowerCase()) {
-    return typed[1]!.toLowerCase().startsWith('y') ? 'once' : 'deny'
-  }
-
-  // Some BGOS clients materialize option clicks as a user message containing
-  // the visible label rather than callbackData. This is still safe here because
-  // waitForVerdict only inspects messages newer than the permission prompt.
-  const normalized = trimmed.toLowerCase().replace(/[✅🔒❌]/g, '').trim()
-  if (normalized === 'allow once') return 'once'
-  if (normalized === 'allow for session') return 'session'
-  if (normalized === 'allow permanently' || normalized === 'always allow') return 'permanent'
-  if (normalized === 'do not allow' || normalized === 'deny' || normalized === 'not allowed') return 'deny'
-
-  return null
+  return senderUserIdCandidate(message) ?? USER_ID
 }
 
 // ── MCP Server ───────────────────────────────────────────────────────────────
@@ -2179,12 +2255,43 @@ const mcp = new Server(
       '    the free text as a normal user message right before/after, treat',
       '    them as correlated by message_id.',
       '',
+      '## Proposing a Plan',
+      '',
+      'Use `propose_plan` to show the user your plan as its own card, with',
+      'Go ahead / Change the plan / Do not do this. Propose when they type',
+      '`/plan`, when the owner\'s plan level for this agent asks you to (it',
+      'arrives as a line at the top of the turn), or on your own before a job',
+      'that touches several files or would be awkward to undo.',
+      '',
+      'It returns IMMEDIATELY with "pending" and the card id, and the turn ends.',
+      'Do not poll and do not re-ask with `reply`. The answer comes back later as',
+      'a `button_clicked` event that starts a NEW turn:',
+      '  - `plan:go`, carry out the plan you proposed.',
+      '  - `plan:change`, their words are in `meta.custom_text`. Revise and call',
+      '    `propose_plan` again with `supersedes` set to the old card id, which',
+      '    retires the old card so two live plans never sit in the chat.',
+      '  - `plan:no`, stop. Do not propose a replacement unasked.',
+      '',
+      'NOTHING IN THIS CHANNEL ENFORCES THE WAIT, and you should know exactly',
+      'what that means. This agent runs with permissions skipped: no ordinary',
+      'tool call is blocked (only the short list of risky actions your owner',
+      'may have asked to hold), no hook can stop an ordinary edit, and this',
+      'plugin cannot prevent you editing a file one second after you propose.',
+      'The card on the user\'s',
+      'screen says "Nothing changes until you answer", so an edit before their',
+      'answer makes that line untrue. It is a promise, not a lock. Keep it.',
+      '',
       '## Slash Commands From the User',
       '',
       'Users can pick slash commands from the BGOS app\'s composer. When they',
       'type `/`, the app shows an autocomplete picker populated from the catalog',
-      'this plugin syncs on boot (built-in commands like `/help`, `/clear`,',
-      '`/cost`, plus your user/project/plugin commands).',
+      'this plugin syncs on boot (built-in commands like `/help`, `/plan` and',
+      '`/status`, plus your user/project/plugin commands).',
+      '`/clear` and `/cost` are NOT in that catalog and have not been since',
+      '0.31: nothing here can reset a context window or read client-side',
+      'accounting, and both used to produce a confident answer that was false.',
+      'If a user asks for either, say plainly that it is a terminal command you',
+      'cannot run from a chat.',
       '',
       'A slash-command turn arrives as a `<channel source="bgos">` event with',
       '`meta.event_type = "slash_command"`, the selected command and arguments,',
@@ -2322,28 +2429,115 @@ const PermissionRequestSchema = z.object({
   }),
 })
 
+type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params']
+
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
-  if (updateDrainMode) return Promise.resolve()
-  return trackMessageOperation(async () => {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
-  if (AUTO_APPROVE) {
-    // Auto-approve mode: immediately allow all tool usage
-    log(`Auto-approving: ${tool_name} [${request_id}]`)
-    await mcp.notification({
-      method: 'notifications/claude/channel/permission',
-      params: { request_id, behavior: 'allow' },
-    }).catch((err) => {
-      log(`Failed to send auto-approve verdict: ${err}`)
-    })
-    return
+  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.53.0).
+  // Under --dangerously-skip-permissions the CLI raises a request for a listed
+  // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
+  // and the auto approve branch below would answer `allow` to it in
+  // milliseconds without looking at it (map part 24, run D3). So a request
+  // the list matches asks the server first whether this agent's owner wants
+  // it held: hold takes the interactive path even with auto approve on,
+  // proceed auto approves exactly as below, and a check that cannot be
+  // answered REFUSES the action (lib/floor-check.ts has the whole contract).
+  //
+  // WHAT MATCHED IS THE HOOK'S RECORD FIRST, read synchronously here: the
+  // hook saw the whole tool input, and the preview below is a copy the CLI
+  // cuts in the middle when a value is long, so a listed action in the middle
+  // of a long command is not in it. The preview is read only when there is no
+  // record, and a cut shell preview with neither goes to the owner. With auto
+  // approve off only a request the record vouches for is asked about, so a
+  // floor the owner left off does not turn every hook ask into a card.
+  const floorRecord = takeOwnFloorRecord(tool_name, input_preview)
+  const floorPlan = planFloorRequest({
+    autoApprove: AUTO_APPROVE,
+    toolName: tool_name,
+    inputPreview: input_preview,
+    record: floorRecord,
+    previewMatch:
+      floorRecord === null && AUTO_APPROVE
+        ? classifyPermissionRequest(tool_name, input_preview)
+        : null,
+  })
+  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
+  if (floorPlan.action === 'ask_elided') {
+    log(`Floor asks about ${tool_name} [${request_id}]: ${floorPlan.reason}`)
+    return settleElidedFloorRequest(params)
   }
 
-  // Interactive mode: send a Telegram-style BGOS approval prompt with
-  // clickable options. We still keep the typed yes/no fallback below for old
-  // clients or if a button-click event is not materialized in chat history.
+  if (AUTO_APPROVE) {
+    // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
+    // 0.49.0 put the drain branch in front of this one, so a default auto
+    // approve install got a hard DENY for every tool raised inside an update
+    // drain, on a path that needs nothing the drain closes: no chat, no
+    // network, no intake, one notification back to the CLI it came from. A
+    // drain window recurs on every auto update, so that was a recurring,
+    // unnecessary refusal on the installs that asked for none. The drain deny
+    // below is for INTERACTIVE mode only, where the card really cannot be
+    // posted or heard.
+    log(`Auto-approving: ${tool_name} [${request_id}]`)
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'allow' },
+      })
+      .catch((err) => {
+        log(`Failed to send auto-approve verdict: ${err}`)
+      })
+  }
+
+  return relayPermissionToOwner(params)
+})
+
+/**
+ * The interactive path, whole: the drain exit, the no chat exit, and the real
+ * approval card with its wait. The handler above takes it for every request on
+ * an install with auto approve off, and settleFloorRequest below takes it for
+ * a request the hard floor HOLDS, so a held request meets the same two
+ * refusals as any other here and the same card as any other.
+ */
+function relayPermissionToOwner(
+  params: PermissionRequestParams,
+  floorEvidence?: string,
+  floorHeld = false,
+): Promise<void> {
+  const { request_id, tool_name, description, input_preview } = params
+
+  if (updateDrainMode) {
+    // An update is draining this daemon: inbound intake is closed, so nobody
+    // here can post a card or hear the answer to one. This used to return with
+    // NO verdict at all, which left the CLI blocked on a request that nothing
+    // would ever answer and nothing in any log to say so. It was survivable
+    // while the local clock was 120 s; it is not now that a request can hold a
+    // drain open for half an hour. Fail closed, the same as every other dead
+    // end in this handler: one step is skipped and the agent carries on.
+    //
+    // A request that was ALREADY open when the drain started is a different
+    // case and is not lost: its watch's read is not drain gated, so the
+    // owner's tap on that card still ends it. See the drain counter note.
+    log(
+      `Permission request during an update drain, denying: ` +
+        `${tool_name} [${request_id}]`,
+    )
+    return mcp
+      .notification({
+        method: 'notifications/claude/channel/permission',
+        params: { request_id, behavior: 'deny' },
+      })
+      .catch((err) => {
+        log(`Failed to send the drain deny verdict: ${err}`)
+      })
+  }
+
+  return trackMessageOperation(async () => {
+  // Interactive mode: post a real BGOS approval card. The typed yes/no
+  // fallback below stays for old clients, or if a button-click event is not
+  // materialized in chat history.
   const chatId = monitoredChatIds[0]
   if (!chatId) {
     log(`No monitored chat found, auto-denying ${tool_name} [${request_id}]`)
@@ -2372,44 +2566,83 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     createdAt: Date.now(),
     requesterUserId,
     resolve: resolveButtonChoice,
+    floorHeld,
   })
 
-  // Send the permission prompt as an inline-button message. Click handling
-  // lives in pollChat, perm:* callback_data is swallowed there and resolves
-  // the verdict via the pendingPermissions map. Text-reply ("yes abcde" /
-  // "no abcde") is kept as a fallback path for older clients without button
-  // rendering.
-  const promptText = [
-    `🔐 **Permission Request**`,
-    ``,
-    `Claude wants to use **${tool_name}**`,
-    `${description}`,
-    input_preview ? `\n\`\`\`\n${input_preview}\n\`\`\`` : '',
-    ``,
-    `Choose an option below. Fallback: type **yes ${request_id}** or **no ${request_id}**.`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-
+  // Post a REAL approval card: messageType approval_request, two ea: options
+  // and an approvalMeta. All three together are what makes the app draw the
+  // card, the sweep see the row and the morning report count it. A plain
+  // message with perm: chips, which is what this used to send, was none of
+  // those things.
+  //
+  // AND IT IS THE ONLY ROUTE THAT TAKES THEM, which costs the device push:
+  // the messages route sends none, and every push in HOAI goes out from
+  // /send-message, whose body declares no approvalMeta at all. The backend is
+  // adding that push on this create path in the same stage, on the same branch
+  // as the per agent clamp below; see the note at the top of
+  // lib/permission-relay.ts for the order this ships in.
+  //
+  // Nothing is awaited between the pending entry above and this post. The card
+  // carries this daemon's own hold and nothing it had to look up: the server
+  // stores the smaller of that and the owner's choice, and tells us which on
+  // the way back. Until the clamp is deployed that smaller number is always
+  // the hold itself, which is why the log below prints what came back rather
+  // than what was sent.
   try {
-    await bgosPost('send-message', {
-      chatId: Number(chatId),
-      assistantId: Number(ASSISTANT_ID),
-      text: promptText,
-      sender: 'assistant',
-      sentDate: new Date().toISOString(),
-      hasAttachment: false,
-      files: [],
-      options: permissionOptions(request_id),
-      renderMode: 'inline',
-    })
+    const posted = await bgosPost(
+      'messages',
+      buildPermissionRequestBody({
+        chatId,
+        requestId: request_id,
+        toolName: tool_name,
+        description,
+        inputPreview: input_preview,
+        floorEvidence,
+      }),
+    )
+    const cardMessageId = cardMessageIdFrom(posted)
+    // What the SERVER decided this request waits, off the row it just created.
+    // Null means the response did not say, and the backstop falls back to the
+    // hold, which is the longest it could have been.
+    const storedWait = storedWaitSeconds(posted)
+    // Now that the wait is known, bound the chat's 2 s fast scope by it rather
+    // than by a flat ten minutes: the entry stays fast for as long as this
+    // daemon is still listening to the request. Until this line runs the entry
+    // states no wait, which reads as the longest it could be.
+    const held = pendingPermissions.get(request_id)
+    if (held) held.waitMs = permissionBackstopMs(storedWait)
 
-    log(`Permission prompt sent to chat ${chatId} for ${tool_name} [${request_id}]`)
+    log(
+      `Permission card sent to chat ${chatId} for ${tool_name} [${request_id}] ` +
+        `(message ${cardMessageId ?? 'unknown'}, wait ` +
+        `${storedWait === null ? 'not stated' : `${storedWait}s`})`,
+    )
+    if (cardMessageId === null) {
+      // Not cosmetic, and worth a line of its own: with no id there is no row
+      // to watch, so nothing can read the server's own verdict and nothing can
+      // strip the buttons afterwards. If this ever shows up in the logs, the
+      // messages route's response shape moved under us.
+      log(
+        `Permission [${request_id}]: the post returned no numeric message id, ` +
+          `so the server expiry arm is off for this request and only a click ` +
+          `or the local backstop can end it`,
+      )
+    }
 
-    // Race: inline-button click vs. text-reply verdict vs. 120s timeout.
+    // Race: an inline-button click on either transport, against the watch on
+    // the chat itself (the owner's typed answer, the server's own expiry, and
+    // the local backstop behind both). There is no daemon-side clock racing
+    // the server any more: see lib/permission-relay.ts.
     const choice = await Promise.race<PermissionChoice>([
       buttonChoice,
-      waitForVerdict(request_id, chatId, 120_000, requesterUserId),
+      waitForVerdict(
+        request_id,
+        chatId,
+        cardMessageId,
+        permissionBackstopMs(storedWait),
+        requesterUserId,
+        floorHeld,
+      ),
     ])
     const behavior = choiceToBehavior(choice)
 
@@ -2431,89 +2664,532 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     }).catch(() => {})
   }
   })
-})
+}
 
 /**
- * Wait for the user to choose a permission verdict in the BGOS chat.
- * Accepts either a button materialized as callbackData/text, or the typed
- * fallback "yes <id>" / "no <id>".
+ * A request the hard floor matched: ask the server whether this agent's owner
+ * holds it, then hold it for the owner, allow it as before, refuse it, or
+ * (auto approve off) send it to the owner as that install always did
+ * (lib/floor-check.ts). Tracked like the interactive path, so an update drain
+ * waits for the answer instead of cutting it off halfway.
+ */
+function settleFloorRequest(
+  params: PermissionRequestParams,
+  plan: Extract<FloorPlan, { action: 'consult' }>,
+): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  const { match } = plan
+  return trackMessageOperation(async () => {
+    const decision = await consultFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      match,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+      autoApprove: AUTO_APPROVE,
+      permissionMode: plan.record?.permissionMode ?? null,
+    })
+    log(`${decision.line} (from the ${plan.source === 'record' ? "hook's floor record" : 'preview'})`)
+    switch (decision.route) {
+      case 'hold':
+        // The whole interactive path: its drain and no chat exits refuse a
+        // held request exactly as they refuse any other request there. The
+        // matched command rides along so the card shows it and the server can
+        // stamp the floor on it even when the preview lost it. HELD: only a
+        // tap may allow it, never a typed yes (typedPermissionVerdict).
+        return relayPermissionToOwner(params, match.evidence, true)
+      case 'owner':
+        // Auto approve off, and the owner's floor does not hold it: the card
+        // this install always posts, nothing more.
+        return relayPermissionToOwner(params, match.evidence)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      case 'refuse':
+        // A listed action whose check could not reach the owner is never
+        // allowed silently: the line above says why, and the model is told.
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'deny' },
+          })
+          .catch((err) => {
+            log(`Failed to send the floor refusal verdict: ${err}`)
+          })
+        return
+    }
+  })
+}
+
+/**
+ * A cut shell command no floor record names (lib/floor-check.ts
+ * consultElidedFloor, the stage 6 backend review): the server says whether
+ * the owner's switch holds what the relay cannot read. hold is the owner's
+ * card, held, so only a tap allows it; proceed and an API key connection
+ * auto approve as before; an error asks the owner, never a silent allow.
+ */
+function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  return trackMessageOperation(async () => {
+    const decision = await consultElidedFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+    })
+    log(decision.line)
+    switch (decision.route) {
+      case 'hold':
+        return relayPermissionToOwner(params, undefined, true)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      default:
+        return relayPermissionToOwner(params)
+    }
+  })
+}
+
+/**
+ * The folders this daemon's floor marker and the hook's records are keyed by
+ * (lib/floor-state.mjs daemonFloorFolders): LAUNCH_CWD first, because
+ * bin/bgos-launch.mjs moves this process's working folder to the plugin folder
+ * and only LAUNCH_CWD still names the session's project folder, then the CLI's
+ * CLAUDE_PROJECT_DIR when it passed one down, then the process's own folder.
+ * Keyed by process.cwd() and CLAUDE_PROJECT_DIR alone, a launcher start
+ * depended on CLAUDE_PROJECT_DIR, and where that was lost the floor did not ask.
+ */
+const FLOOR_STATE_ROOT = floorStateRoot(process.env)
+const FLOOR_FOLDERS: string[] = daemonFloorFolders({
+  launchCwd: LAUNCH_CWD,
+  cwd: process.cwd(),
+  env: process.env,
+})
+const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
+let floorMarkerKeys: string[] = []
+
+/**
+ * Say to the floor hook that a HOAI daemon is attached to this project folder,
+ * so a listed action here asks (bin/hoai-floor-hook.mjs asks nowhere else).
+ * Written while this daemon holds its pairing lock, taken down when it stands
+ * down or exits. Never throws.
+ */
+function markFloorAttachedIfHolder(): void {
+  if (!lockHeld) return
+  try {
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS })
+    if (floorMarkerKeys.length === 0) {
+      log('floor: could not write the attached marker; the floor hook stays silent in this session')
+    }
+  } catch (err) {
+    log(`floor: could not write the attached marker (${err})`)
+  }
+}
+
+function clearFloorAttachedMarker(): void {
+  try {
+    clearFloorAttached({ root: FLOOR_STATE_ROOT, keys: floorMarkerKeys })
+  } catch {
+    /* gone already */
+  }
+  floorMarkerKeys = []
+}
+
+/** The hook's floor record for this request, taken synchronously, or null. */
+function takeOwnFloorRecord(toolName: string, inputPreview: string | undefined): FloorRecord | null {
+  try {
+    return takeFloorRecord({
+      root: FLOOR_STATE_ROOT,
+      keys: FLOOR_KEYS,
+      toolName,
+      inputPreview: inputPreview ?? '',
+    }) as FloorRecord | null
+  } catch (err) {
+    log(`floor: could not read the floor records (${err}); reading the preview instead`)
+    return null
+  }
+}
+
+/**
+ * The floor check's one network call. It hands back the status and the raw
+ * body rather than throwing on a non 2xx, because a 404 (a backend without the
+ * floor) and a refusal mean different things (lib/floor-check.ts). Bounded
+ * like every other call through bgosCall, on the floor's own short deadline.
+ */
+function postFloorCheck(
+  path: string,
+  body: FloorCheckBody,
+): Promise<{ status: number; text: string }> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: FLOOR_CHECK_TIMEOUT_MS,
+      label: `POST ${path}`,
+    },
+    async (response) => ({
+      status: response.status,
+      text: await response.text().catch(() => ''),
+    }),
+  )
+}
+
+/**
+ * Wait for a permission request to be settled, by the owner or by the server.
+ *
+ * Three endings, and only one of them is ours (see lib/permission-relay.ts):
+ * the owner's answer (a button materialized as callbackData/text, or the
+ * typed "yes <id>" / "no <id>" fallback), the SERVER's own
+ * `approval_meta.expired` flag on the card, and a local backstop that sits 90
+ * s behind the owner's whole wait and exists only for a server that never
+ * answers at all. Before 0.49.0 this was a flat 120 s clock, which is how a
+ * request could be declined here while the card in the owner's hand was still
+ * perfectly tappable.
  *
  * The verdict is bound to `requesterUserId`, the user who drove the session
- * that triggered this permission request. In a shared-assistant chat this
- * prevents an unrelated user from approving/denying a prompt that wasn't
- * theirs. The binding is only enforced when the resolving message carries a
- * comparable per-sender user id; if it doesn't (current backend), we fall back
- * to the existing `sender === 'user'` behavior (see TODO below).
+ * that triggered this permission request, so in a shared-assistant chat an
+ * unrelated user cannot approve or deny a prompt that was not theirs. The two
+ * arms below read that binding off DIFFERENT fields, and so they answer an
+ * unstamped one differently: a typed verdict is an inbound user message and a
+ * current backend stamps a real per-sender id on one of those, so
+ * `verdictFrom` compares and refuses; a TAP carries no id at all, so
+ * `answeredOn` accepts what nobody stamped rather than charging the owner a
+ * backstop deny for an Allow they really gave. Each arm says so where it is.
  */
 async function waitForVerdict(
   requestId: string,
   chatId: string,
+  cardMessageId: number | null,
   timeoutMs: number,
   requesterUserId: string,
+  floorHeld = false,
 ): Promise<PermissionChoice> {
-  const startTime = Date.now()
   const baselineId = chatLastSeen.get(chatId) ?? 0
+  // See answeredOn below: the card is re-read every tick, so its mismatch line
+  // is said once rather than once per look.
+  let foreignTapLogged = false
+  // The same rule for verdictFrom's two refusal lines: a refused row sits above
+  // baselineId, so every tick reads it again, and it is said once per request
+  // (lib/permission-relay.ts oncePerRow).
+  const firstRefusalOf = oncePerRow()
 
-  while (Date.now() - startTime < timeoutMs) {
-    await new Promise((r) => setTimeout(r, 1500))
-
-    try {
-      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`)
-      // 304: nothing changed since the last look, so no verdict landed either.
-      if (isNotModified(raw)) continue
-      const data = raw as ChatHistoryResponse
-      if (!data.messages?.length) continue
-
-      // Look for new user messages that match one of the verdict formats.
-      for (const msg of data.messages) {
-        if (msg.message.id <= baselineId) continue
-        if (msg.message.sender !== 'user') continue
-        if (
-          isAgentInbound({
-            senderType: pollSenderTypeOf(msg),
-            agentOrigin: pollAgentOriginOf(msg),
+  const verdict = await watchPermissionVerdict<ChatMessage>({
+    requestId,
+    timeoutMs,
+    // A MONOTONIC reading, not the wall clock. Everything this hands back is
+    // used as a duration (the backstop and the poll cadence), and a wall clock
+    // that steps FORWARD, after a laptop resumes from sleep or an NTP
+    // correction lands, would carry the elapsed time past the timeout and deny
+    // a request whose card is still perfectly tappable. That is the 120 s bug
+    // wearing a different hat, and it is free to rule out.
+    now: () => performance.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    log,
+    // ONE OF THE TWO WAYS THIS LOOP LEARNS THE OWNER ANSWERED: a click intake
+    // settled the request on the other side of the race, the entry left the
+    // map, and this read is how the loop finds out. The other way is
+    // `answeredOn` below, which reads the tap off the card row itself when no
+    // intake heard it at all. Without THIS one the loop polled on for the
+    // whole backstop after an answer that took five seconds, then stripped
+    // the buttons off the answered card.
+    stillPending: () => pendingPermissions.has(requestId),
+    // The page, plus the card itself once the page stops carrying it. See
+    // permissionRowsReader: this read is the NEWEST 50 rows, and a wait that
+    // now lasts minutes can outlive the card's place in them.
+    rows: permissionRowsReader<ChatMessage>({
+      cardMessageId,
+      idOf: (msg) => msg.message.id,
+      page: async () => {
+        try {
+          const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+            // Its OWN validator. The default key is the path, and the
+            // ask_user_input wait loop reads the same path in the same chat:
+            // whichever loop got the 200 recorded the ETag and the other one
+            // got a 304 and lost that tick. Per REQUEST, so two open requests
+            // in one chat cannot do it to each other either. The cache is a
+            // bounded LRU, so a key per request costs nothing.
+            cacheKey: `perm:${requestId}`,
           })
-        ) {
-          continue
+          // 304: nothing changed since the last look, so no verdict landed either.
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          if (!data.messages?.length) return null
+          return data.messages
+        } catch {
+          // Poll error, retry on the next tick.
+          return null
         }
+      },
+      card: async () => {
+        if (cardMessageId === null) return null
+        try {
+          // One row, anchored on the card. `beforeId` is exclusive (`m.id <`),
+          // so the id above it asks for the card itself. Its own cacheKey for
+          // the same reason the page has one, and a 304 here is the honest
+          // answer that the row has not changed, so no expiry has landed.
+          const raw = await bgosGet(
+            `chats/${chatId}/messages?userId=${USER_ID}` +
+              `&beforeId=${cardMessageId + 1}&limit=1`,
+            { cacheKey: `perm-card:${requestId}` },
+          )
+          if (isNotModified(raw)) return null
+          const data = raw as ChatHistoryResponse
+          const row = data.messages?.[0]
+          return row && row.message.id === cardMessageId ? row : null
+        } catch {
+          return null
+        }
+      },
+    }),
+    // The server is the judge. Only OUR card counts: another agent's expired
+    // approval sitting in the same chat is none of this request's business.
+    expiredOn: (msg) =>
+      cardMessageId !== null &&
+      msg.message.id === cardMessageId &&
+      isApprovalExpired(msg.message),
+    // THE OWNER'S TAP, off the card row, and this loop is the only lane that
+    // always carries it. A tap writes no user message, so verdictFrom below
+    // cannot see one; the poll's click intake stops seeing the card once it
+    // falls off the newest 50, and every intake is shut while an update
+    // drains. This read is anchored on the card and is not drain gated, so an
+    // Allow that used to be lost, and charged to the owner as a deny at the
+    // backstop, now ends the request.
+    //
+    // Only OUR card, the same rule as the expiry above. And the chat cursor is
+    // deliberately NOT advanced here, unlike verdictFrom: the card is an
+    // assistant row the delivery path never forwards, so moving the cursor
+    // past it would skip whatever the owner typed alongside the tap.
+    answeredOn: (msg) => {
+      const ours = cardMessageId !== null && msg.message.id === cardMessageId
+      if (!ours) return null
+      // THE TAP FIRST, THE TAPPER SECOND, and the order is load bearing. Every
+      // tick re-reads this card, and on all but one of those reads there is no
+      // answer on it at all: asking who tapped before asking whether anyone
+      // did would burn the once per request log line below on a card nobody
+      // has touched.
+      const choice = answeredPermissionChoice(msg.message, requestId)
+      if (!choice) return null
+      // The requester binding, read off the ANSWER PAYLOAD rather than off the
+      // card row, whose own sender is this assistant. It is NULL AWARE here,
+      // and that is what makes this lane different from the two click intakes:
+      // no backend stamps a tapper id on an answer today, so read through
+      // senderUserIdOf's owner fallback an unstamped tap would compare unequal
+      // on a SHARED assistant, where the requester is the person the agent was
+      // shared with. The alternative to accepting it is a backstop deny of an
+      // approval the owner really gave, which is the exact failure this lane
+      // exists to remove. So an unstamped tap is ACCEPTED, a tap that NAMES a
+      // different user is dropped, and the intakes keep their stricter rule
+      // because a click they refuse is not lost whenever the card's id came
+      // back off the post: this read then sees the same answer on the card a
+      // tick later (with no id this read is off, and the post site says so).
+      // All three decide on the same field
+      // the day the backend stamps a tapper id on the answer.
+      const clickerUserId = senderUserIdCandidate(msg.message.answerPayload)
+      if (clickerUserId !== null && clickerUserId !== requesterUserId) {
+        // Once per request, unlike verdictFrom's line. A user message is read
+        // once and then left behind the cursor; the CARD is re-read on every
+        // tick of a wait that can run half an hour, so logging per read would
+        // be hundreds of copies of one sentence.
+        if (!foreignTapLogged) {
+          foreignTapLogged = true
+          log(
+            `Ignoring permission tap on card ${msg.message.id} [${requestId}] ` +
+              `from user ${clickerUserId} (request belongs to ${requesterUserId})`,
+          )
+        }
+        return null
+      }
+      return choice
+    },
+    verdictFrom: (msg) => {
+      if (msg.message.id <= baselineId) return null
+      if (msg.message.sender !== 'user') return null
+      if (
+        isAgentInbound({
+          senderType: pollSenderTypeOf(msg),
+          agentOrigin: pollAgentOriginOf(msg),
+        })
+      ) {
+        return null
+      }
 
-        // User binding: only accept the verdict from the user who triggered
-        // the request. We extract a per-sender user id from the message when
-        // present and require it to equal requesterUserId.
-        //
-        // TODO(backend): the chat-message payload does not yet carry a distinct
-        // per-sender user id (senderUserIdOf falls back to USER_ID), so in a
-        // multi-user shared-assistant chat this comparison is currently a
-        // no-op (USER_ID === USER_ID) and we still accept any user-sent verdict
-        //, the same as the pre-hardening behavior. Once the backend stamps a
-        // real sender user id, this binding tightens automatically with no
-        // further code change. The button-click path (PERMISSION_CALLBACK_RE in
-        // pollChat) carries the same limitation and the same future fix.
-        const resolverUserId = senderUserIdOf(msg.message)
-        if (resolverUserId !== requesterUserId) {
+      // User binding: only accept the verdict from the user who triggered
+      // the request. We extract a per-sender user id from the message when
+      // present and require it to equal requesterUserId.
+      //
+      // AND ON THIS ARM IT DECIDES. The row is an inbound user message, and a
+      // current backend stamps a real per-sender id on one of those, so on a
+      // shared assistant a second person's typed "yes <code>" is refused here.
+      // The owner fallback fires only on a backend old enough to stamp
+      // nothing, or on a row carrying no id, where the comparison is as loose
+      // as it was before. The TAP is the case that cannot be read this way at
+      // all, because no answer payload carries an id yet, which is why
+      // answeredOn above is null aware and this arm is not.
+      const resolverUserId = senderUserIdOf(msg.message)
+      if (resolverUserId !== requesterUserId) {
+        if (firstRefusalOf(msg.message.id)) {
           log(
             `Ignoring permission verdict for [${requestId}] from user ` +
               `${resolverUserId} (request belongs to ${requesterUserId})`,
           )
-          continue
         }
-
-        const text = msg.message.text ?? ''
-        const choice = parsePermissionChoice(text, requestId)
-        if (!choice) continue
-
-        // Update last seen so we don't re-process this message
-        advanceChatCursor(chatId, msg.message.id)
-
-        return choice
+        return null
       }
-    } catch {
-      // Poll error, retry
+
+      const text = msg.message.text ?? ''
+      // A request the floor HOLDS takes only a deny on this lane: the row's
+      // sender is not proven to be a person (lib/permission-relay.ts,
+      // typedPermissionVerdict), and the person only gate is on the tap.
+      const { choice, refused } = typedPermissionVerdict(text, requestId, floorHeld)
+      if (refused) {
+        if (firstRefusalOf(msg.message.id)) {
+          log(
+            `Ignoring typed ${refused} for [${requestId}] in message ${msg.message.id}: ` +
+              `the hard floor holds this request, so only a tap on its card can allow it`,
+          )
+        }
+        advanceChatCursor(chatId, msg.message.id)
+        return null
+      }
+      if (!choice) return null
+
+      // Update last seen so we don't re-process this message
+      advanceChatCursor(chatId, msg.message.id)
+
+      return choice
+    },
+    // Best effort, and only on the backstop: a card nobody is listening to
+    // any more must not keep looking answerable. The owner's own words for
+    // what happened come from the server's expiry; this is the case where the
+    // server said nothing at all.
+    retireCard: async () => {
+      if (cardMessageId === null) return
+      await bgosPatch(`messages/${cardMessageId}`, { options: [] })
+    },
+  })
+
+  return verdict.choice
+}
+
+/**
+ * The request cards a previous run of this daemon left looking live.
+ *
+ * `pendingPermissions` is memory. A crash, a kill or an ordinary restart in
+ * the middle of a wait takes the request with it: nothing re-sends a verdict
+ * to the CLI, and, worse for the owner, nothing retires the CARD. Its buttons
+ * came off at the watch's backstop, and the watch died with the process, so
+ * the row sat there tappable until the server's own expiry at
+ * `created_at + wait_seconds`. That was 60 s before 0.49.0 and is up to half
+ * an hour now, during which a tap tells the owner the request was approved
+ * while nothing at all is listening.
+ *
+ * So this sweep retires them on boot: the buttons come off, the card stops
+ * inviting an answer, and the row keeps its words and its history.
+ *
+ * THE NEWEST PAGE IS THE LIMIT, and it is the honest cost of doing this in one
+ * read per chat. `chats/<id>/messages` with no cursor is the newest 50 rows,
+ * so a card that a busy chat has already pushed off that page is left to the
+ * server's expiry, exactly as it was before. That is the bounded case: the
+ * sweep is a boot time courtesy, not a guarantee, and paging back through a
+ * chat's history on every boot would cost every daemon a great deal to catch
+ * the rarest orphan.
+ *
+ * Its own ETag key, for the same reason the watch has one: the ordinary chat
+ * poll reads this path too, and sharing a validator would hand one of the two
+ * a 304 and lose it a cycle.
+ *
+ * AND IT ONLY LOOKS BACKWARDS, found by the second review. Two daemons can
+ * share one pairing and therefore monitor the same chats, and the held set
+ * only knows the requests THIS process is holding, so on the clauses alone a
+ * booting daemon would strip the buttons off a card the other one was at that
+ * moment still waiting on. `createdBefore` is the answer: a row written at or
+ * after this process started is not a card this process left behind.
+ *
+ * AND THAT BOUND COMPARES TWO CLOCKS, which is the third review's finding. The
+ * row's date is the BACKEND's stamp and the bound is this host's `Date.now()`,
+ * so a host running ahead of the backend would read another daemon's fresh
+ * card as older than its own boot and strip its buttons anyway. The bound is
+ * therefore set SWEEP_CLOCK_SKEW_MARGIN_MS (a minute) behind boot, which is
+ * the protective direction: a smaller bound skips more rows. The cost falls on
+ * this daemon alone and is small, this run's own orphans from the last minute
+ * before it stopped, which keep their buttons until the server's expiry.
+ */
+async function retireOrphanedPermissionCards(): Promise<void> {
+  let retired = 0
+  for (const chatId of monitoredChatIds) {
+    let messages: ChatMessage[]
+    try {
+      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+        cacheKey: `perm-sweep:${chatId}`,
+      })
+      if (isNotModified(raw)) continue
+      messages = (raw as ChatHistoryResponse).messages ?? []
+    } catch (err) {
+      log(`Permission boot sweep: could not read chat ${chatId} (ignored): ${err}`)
+      continue
+    }
+    const orphans = orphanedPermissionCards(
+      messages.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        messageType: m.message.messageType,
+        answeredAt: m.message.answeredAt,
+        createdAt: sentDateToMs(m.message.sentDate),
+        hasOptions: (m.messageOptions ?? []).length > 0,
+        approvalMeta: m.message.approvalMeta,
+      })),
+      {
+        // A request raised while this very boot was running is live, not an
+        // orphan, and must keep its buttons.
+        heldRequestIds: new Set(pendingPermissions.keys()),
+        // And one raised after this process started is not this process's to
+        // retire at all: another daemon on the same pairing monitors the same
+        // chats, and heldRequestIds cannot see its requests. A minute BEHIND
+        // boot rather than on it, because the row's date is the backend's
+        // clock and this is the host's (see SWEEP_CLOCK_SKEW_MARGIN_MS).
+        createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS,
+      },
+    )
+    for (const card of orphans) {
+      try {
+        await bgosPatch(`messages/${card.id}`, { options: [] })
+        retired += 1
+        log(
+          `Permission boot sweep: retired card ${card.id} in chat ${chatId} ` +
+            `[${card.requestId ?? 'no request id'}], left live by a run that ` +
+            `stopped mid wait`,
+        )
+      } catch (err) {
+        log(`Permission boot sweep: could not retire card ${card.id} (ignored): ${err}`)
+      }
     }
   }
-
-  log(`Permission timeout for [${requestId}], denying`)
-  return 'deny'
+  if (retired === 0) {
+    log('Permission boot sweep: no cards were left live by a previous run')
+  }
 }
 
 // ── Tools ────────────────────────────────────────────────────────────────────
@@ -2591,6 +3267,17 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               properties: {
                 label: { type: 'string', description: 'Visible button text (user-facing).' },
                 value: { type: 'string', description: 'Stable identifier returned to you in the click callback_data.' },
+                style: {
+                  type: 'string',
+                  enum: ['default', 'primary', 'success', 'danger'],
+                  description:
+                    'Optional colour tier for this one chip: "default" (neutral, and what you get ' +
+                    'if you omit it), "primary" (the emphasised choice), "success" (go ahead, ' +
+                    'confirm), "danger" (destructive, decline). Use it only when one choice is ' +
+                    'genuinely different in kind from the others; three chips all styled the same ' +
+                    'is three plain chips with extra noise. An app that predates the tier renders ' +
+                    'every chip neutral, so never carry meaning in colour alone.',
+                },
               },
               required: ['label', 'value'],
             },
@@ -2623,6 +3310,113 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['chat_id'],
+      },
+    },
+    {
+      name: 'propose_plan',
+      description:
+        'Show the user your PLAN as its own card in the chat, with three buttons: ' +
+        'Go ahead, Change the plan, Do not do this. Use it before a job that ' +
+        'touches several files or would be awkward to undo, when the user typed ' +
+        '/plan, or whenever the owner\'s plan level for this agent asks you to. ' +
+        'It returns IMMEDIATELY with "pending" and the card id; the turn then ' +
+        'ends. The answer comes back later as an ordinary channel event that ' +
+        'starts a NEW turn: a click with callback_data "plan:go", "plan:change" ' +
+        '(the user\'s words arrive with it as custom_text) or "plan:no". Do not ' +
+        'poll, do not wait, do not call reply to ask the same question again. ' +
+        'CHANGE NOTHING UNTIL GO AHEAD, and understand what that means here: ' +
+        'NOTHING IN THIS CHANNEL ENFORCES IT. This agent runs with permissions ' +
+        'skipped, so no ordinary tool call is blocked (only the short list of ' +
+        'risky actions your owner may have asked to hold), no hook can stop an ' +
+        'ordinary edit, and this ' +
+        'plugin cannot prevent you editing a file the moment after you propose. ' +
+        'The card tells the user "Nothing changes until you answer", so every ' +
+        'edit before their answer makes that line a lie. The wait is a promise ' +
+        'you are making. Keep it.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat to post the plan in. Pass back the chat_id (or session_handle) ' +
+              'from the channel event you are answering.',
+          },
+          title: {
+            type: 'string',
+            description:
+              'What this plan does, in one line the user can read on a phone (<=120 chars). ' +
+              'Name the outcome, not the activity: "Cache the boards list so it opens warm", ' +
+              'not "Work on caching".',
+          },
+          summary: {
+            type: 'string',
+            description:
+              'Optional. One short paragraph (<=500 chars) on the approach and anything ' +
+              'about it the user would want to push back on BEFORE you start.',
+          },
+          steps: {
+            type: 'array',
+            description:
+              'The numbered steps you intend to take, in order, 1 to 30. Each step is one ' +
+              'action the user could recognise, not a tool call. Give the file it touches ' +
+              'wherever there is one: the file line is most of what makes a plan reviewable.',
+            items: {
+              type: 'object',
+              properties: {
+                text: { type: 'string', description: 'The step, one line (<=200 chars).' },
+                file: { type: 'string', description: 'The file this step touches, if any.' },
+                check: { type: 'string', description: 'Optional: how this one step is verified.' },
+                tag: {
+                  type: 'string',
+                  enum: ['unchanged', 'changed', 'dropped'],
+                  description:
+                    'ONLY on a revision (when you pass supersedes): how this step differs from ' +
+                    'the plan you are replacing, so the user can see what their feedback changed.',
+                },
+              },
+              required: ['text'],
+            },
+          },
+          files: {
+            type: 'array',
+            description:
+              'Optional. Every file the whole plan touches, up to 30. The card counts them ' +
+              'in its one line summary, which is how a user judges the size of what they are ' +
+              'approving.',
+            items: { type: 'string' },
+          },
+          check: {
+            type: 'string',
+            description:
+              'Optional. One sentence on how the user will know the whole job worked: the test ' +
+              'you will run, the screen they should look at (<=300 chars).',
+          },
+          door: {
+            type: 'string',
+            enum: ['typed', 'decided'],
+            description:
+              'Why there is a plan at all: "typed" when the user sent /plan, "decided" when you ' +
+              'chose to plan first. The card says which, in the user\'s own words, under the ' +
+              'title. Defaults to "decided".',
+          },
+          supersedes: {
+            type: 'number',
+            description:
+              'ONLY on a revision: the message id of the plan card this one replaces (it came ' +
+              'back from the previous propose_plan call, and is the message_id on the click ' +
+              'event). The old card loses its buttons, dims, and reads "Superseded by the plan ' +
+              'below", so the user is never looking at two live plans.',
+          },
+          note: {
+            type: 'string',
+            description:
+              'ONLY on a revision: one line on what changed and why (<=300 chars), shown under ' +
+              'the kicker. "Dropped the migration, kept the index" tells the user their feedback ' +
+              'landed.',
+          },
+        },
+        required: ['chat_id', 'title', 'steps'],
       },
     },
     {
@@ -3232,7 +4026,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'steps or work spanning tools and minutes), then work normally and ' +
         'tick goals with `tick_mini_goal` as their checks come true. One ' +
         'open mission per CHAT; creating a new one sets aside that chat\'s ' +
-        'previous open mission and leaves every other chat alone. Maps to ' +
+        'previous open mission and leaves every other chat alone. NEVER call ' +
+        'this to change a mission that is already running: use ' +
+        'add_mission_goals or cancel_mission_goal, which keep the card and ' +
+        'every tick on it. Maps to ' +
         'POST /api/v1/assistants/:id/missions (user-scoped, X-API-Key).',
       inputSchema: {
         type: 'object' as const,
@@ -3325,8 +4122,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'with none). A Keep working card asks for this on a goal-less mission. ' +
         'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
         'where done_when is the observable check that proves it. Refused on a ' +
-        'mission that already has goals: tick those instead. Never use ' +
-        'create_mission for this, it would replace the mission. Targets your ' +
+        'mission that already has goals: tick those, or ADD to them with ' +
+        'add_mission_goals. Never use create_mission for either, it would ' +
+        'replace the mission. Targets your ' +
         'active mission unless mission_id is passed. Maps to PUT ' +
         '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
       inputSchema: {
@@ -3359,6 +4157,93 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'add_mission_goals',
+      description:
+        'ADD one or more mini-goals to a mission that ALREADY has some, ' +
+        'keeping the same mission: its ticks, its history and its Keep ' +
+        'working switch all stay. This is the tool to use when your owner ' +
+        'asks for a goal to be added to work already under way, and it is ' +
+        'the only correct answer on a mission the app will not let them edit ' +
+        'themselves (every /goal mission), where the card tells them to ask ' +
+        'you. NEVER call create_mission to add a goal: that sets the mission ' +
+        'aside and discards every tick on it. Send ONLY the new goals, 1 to ' +
+        '12, each { name, done_when }; never restate the goals the mission ' +
+        'already has. A mission holds 12 in all, so an add that would pass ' +
+        'that is refused with both numbers. Refused on a mission with NO ' +
+        'goals yet: use set_mission_goals for that. Targets your active ' +
+        'mission unless mission_id is passed. Maps to POST ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description:
+              'The goals to ADD, 1 to 12, each { name, done_when }. Only the ' +
+              'new ones.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are adding to; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'cancel_mission_goal',
+      description:
+        'CANCEL one mini-goal you are no longer going to do, by its id, ' +
+        'keeping the mission and everything else on it. Use it when your ' +
+        'owner drops a goal or the work turns out not to be needed, and say ' +
+        'in the chat why it went. A goal you have already TICKED cannot be ' +
+        'cancelled: it is a record of work that happened and it carries your ' +
+        'own evidence line, so if a tick was wrong, say so in the chat ' +
+        'instead. Cancelling the last unticked goal does NOT complete the ' +
+        'mission, because removing a promise is not keeping one; call ' +
+        'complete_mission yourself when the work is really done. One goal per ' +
+        'call. Targets your active mission unless mission_id is passed. Maps ' +
+        'to DELETE ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals/:goalId.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          goal_id: {
+            type: 'number',
+            description: 'The mini-goal id to cancel, as the mission card shows it.',
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are changing; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['goal_id'],
       },
     },
     {
@@ -3804,7 +4689,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         url?: string; path?: string; file_name?: string; mime_type?: string
       }> | undefined
       const buttonsInput = rawArgs.buttons as Array<{
-        label?: string; value?: string
+        label?: string; value?: string; style?: string
       }> | undefined
       const renderModeRaw = rawArgs.render_mode as string | undefined
       const renderMode: 'inline' | 'modal' | undefined =
@@ -3861,7 +4746,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
 
       // Button validation, inline mode caps at 6 choices (backend rejects >6).
-      let options: Array<{ text: string; callbackData: string }> = []
+      let options: Array<{ text: string; callbackData: string; style?: string }> = []
       if (buttonsInput?.length) {
         if (buttonsInput.length > 6) {
           return {
@@ -3889,7 +4774,24 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
                 `namespace, escaping with "${AGENT_VALUE_PREFIX}" sentinel`,
             )
           }
-          options.push({ text: b.label, callbackData: escapeAgentButtonValue(b.value) })
+          // The colour tier, when the agent asked for one. An UNKNOWN value is
+          // dropped rather than refused: the backend's DTO would 400 the whole
+          // reply over one bad enum, and losing a message because a chip wanted
+          // a colour that does not exist is the wrong trade. The chip then
+          // renders neutral, which is what every app did before the tier
+          // existed anyway.
+          const style = normalizeButtonStyle(b.style)
+          if (b.style && !style) {
+            log(
+              `reply: ignoring unknown button style "${b.style}" ` +
+                `(known: ${REPLY_BUTTON_STYLES.join(', ')})`,
+            )
+          }
+          options.push({
+            text: b.label,
+            callbackData: escapeAgentButtonValue(b.value),
+            ...(style ? { style } : {}),
+          })
         }
       }
 
@@ -3980,6 +4882,216 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed to send: ${errMsg}` }], isError: true }
+      }
+    }
+
+    case 'propose_plan': {
+      const chat_id = rawArgs.chat_id as string | undefined
+      if (!chat_id) {
+        return { content: [{ type: 'text', text: 'Error: chat_id is required' }], isError: true }
+      }
+      const planAuth = resolveAuthorizedChat(chat_id)
+      if (!planAuth.ok) return planAuth.error
+      const planChatId = String(planAuth.chatId)
+
+      // WHICH CHAT, and not only whether the daemon may write into it.
+      // `resolveAuthorizedChat` answers membership, and the monitored set
+      // GROWS with every inbound, so an a2a side thread and a seated meeting
+      // room are both accepted targets. Neither is a chat the owner can
+      // answer a card in: a2a is excluded from the chat list entirely and a
+      // room is addressed at everybody in it, while the status line below
+      // would still block this agent for a day on an answer that can never
+      // come. The backend refuses the same two kinds on the write (its
+      // services/plan-card.ts carries the per-kind record); this refusal
+      // exists so the MODEL is told where the plan belongs instead of being
+      // handed a 403. See planCardChatRefusal.
+      const wrongChat = planCardChatRefusal({
+        isPeerSideThread: peerConvByChat.has(planChatId),
+        isMeetingRoom: meetingChatIds.has(planChatId),
+      })
+      if (wrongChat) {
+        log(`propose_plan refused in chat ${planChatId}: not the owner's agent chat`)
+        return { content: [{ type: 'text', text: wrongChat }], isError: true }
+      }
+
+      // The revision chain. `supersedes` is what decides it, not whatever this
+      // process happens to be holding: a daemon restarted mid wait has no
+      // record of the plan it is revising, and nextPlanIdentity says what
+      // happens then (a new plan id, revision 1, the old card still retired).
+      const openPlan = openPlansByChat.get(planChatId) ?? null
+      const parsedSupersedes = parsePlanSupersedes(rawArgs.supersedes)
+      if (!parsedSupersedes.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${parsedSupersedes.error}` }],
+          isError: true,
+        }
+      }
+      const identity = nextPlanIdentity({
+        supersedes: parsedSupersedes.supersedes,
+        open: openPlan,
+        mintPlanId,
+      })
+      const built = buildPlanCardPayload(
+        {
+          title: rawArgs.title,
+          summary: rawArgs.summary,
+          steps: rawArgs.steps,
+          files: rawArgs.files,
+          check: rawArgs.check,
+          door: rawArgs.door,
+          note: rawArgs.note,
+          supersedes: rawArgs.supersedes,
+        },
+        identity,
+      )
+      if (!built.ok) {
+        return { content: [{ type: 'text', text: `Error: ${built.error}` }], isError: true }
+      }
+      const payload = built.payload
+
+      const bodyBuild = buildPlanCardBody({
+        chatId: planAuth.chatId,
+        payload,
+        sessionHandle: planAuth.sessionHandle,
+      })
+      if (!bodyBuild.ok) {
+        return { content: [{ type: 'text', text: `Error: ${bodyBuild.error}` }], isError: true }
+      }
+
+      // RETIRE FIRST, POST SECOND. If the order were reversed a failed retire
+      // would leave two live plan cards in the chat, both answerable, and a tap
+      // on the older one would approve a plan the agent has already withdrawn.
+      // A failed retire here costs the new card, which the model can retry.
+      //
+      // AND IT RETIRES WHENEVER `supersedes` IS GIVEN, not only when this
+      // process still holds the record of the card being replaced. Gating the
+      // PATCH on the record made the guarantee above evaporate in exactly the
+      // two cases it was written for: a daemon that restarted mid wait, and a
+      // model naming an older card while a newer one is open. The new card was
+      // posted anyway, with no log line, leaving two answerable plans. Without
+      // the previous payload the dimmed `state: 'superseded'` body cannot be
+      // rebuilt, so the fallback strips the chips and nothing else
+      // (buildPlanRetireBody): the old card stops being answerable, which is
+      // the half that matters, and loses only its explanation.
+      if (payload.supersedes !== undefined) {
+        const retireBody =
+          openPlan?.messageId === payload.supersedes
+            ? buildPlanSupersedeBody(openPlan.payload)
+            : buildPlanRetireBody()
+        try {
+          await bgosPatch(`messages/${payload.supersedes}`, retireBody)
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err)
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Failed to retire the plan being replaced (message ${payload.supersedes}): ` +
+                  `${errMsg}. Nothing was posted, so the user still sees exactly one plan. Retry.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+
+      try {
+        const posted = await bgosPost(
+          'messages',
+          bodyBuild.body as unknown as Record<string, unknown>,
+        )
+        const cardMessageId = cardMessageIdFrom(posted)
+        if (cardMessageId === null) {
+          // Worth its own line: with no id there is no row to supersede on the
+          // next revision and no way to tie the answer back to this plan.
+          log(`propose_plan: the messages route returned no id (chat ${planChatId})`)
+        } else {
+          openPlansByChat.set(planChatId, {
+            chatId: planChatId,
+            messageId: cardMessageId,
+            planId: payload.plan_id,
+            revision: payload.revision,
+            postedAtMs: Date.now(),
+            payload,
+            // WHO this plan was proposed to, from the permission relay's own
+            // source for requesterUserId, so a tap on the card can be bound to
+            // that person exactly as a tap on a permission card is. See
+            // foreignPlanTap.
+            requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
+          })
+          // The CLI writes this tool result verbatim into the transcript, so
+          // the minted id is proof of which transcript is ours, exactly as a
+          // reply's is.
+          sessionBinder.recordReplyMessageId(cardMessageId)
+        }
+
+        // The status line and the chip: both are reports, neither gates
+        // anything, and both are fire and forget.
+        void bgosPatch(`assistants/${ASSISTANT_ID}/status`, planStatusBody()).catch((err) => {
+          log(`plan status line failed: ${err}`)
+        })
+        // THE CHIP BELONGS TO THE TYPED DOOR ONLY. Design spec section 4:
+        // Claude Code reports `plan` when it delivers a /plan DIRECTIVE, and
+        // `default` when the plan is answered or /code arrives. A card raised
+        // through the DECIDED door is a plan the agent chose to show inside an
+        // ordinary chat the owner never put in plan mode, and reporting `plan`
+        // there writes a session mode onto that chat row: the composer grows a
+        // Plan mode chip and a gold ring nobody asked for, and if the card is
+        // never answered nothing takes them down but a hand typed /code. Codex
+        // gates its three mode effects on the same distinction and for the
+        // same reason (planModeChat in its adapter).
+        //
+        // AND THE DOOR IS THE MODEL'S WORD, so it is checked against this
+        // daemon's own record of the same fact. `door` is a free field the
+        // model fills; a model that passes `typed` in a chat where nobody
+        // typed anything would otherwise PATCH a persisted session mode and
+        // put a Plan mode chip, a gold ring and a changed placeholder on a
+        // chat nobody switched, standing until the card is answered or the
+        // owner hand types /code. The verifier is armed by
+        // onPlanDirectiveDelivered when a /plan is actually DELIVERED and is
+        // cancelled three lines below, so at this point it is still armed for
+        // a genuine typed door. On that door this report is also redundant:
+        // the delivery already reported `plan`, and the dedupe drops it. That
+        // is the honest shape, a second confirmation rather than a first
+        // claim, which is what Codex does too (it resolves the question from
+        // the payload AND the host's store, never from the payload alone).
+        if (payload.door === 'typed' && isPlanVerifierArmed(planVerifiers, planChatId)) {
+          reportSessionMode(planChatId, 'plan')
+        }
+
+        // The /plan directive, if there was one, got its plan.
+        const cancelled = cancelPlanVerifiers(planVerifiers)
+        if (cancelled.length > 0) {
+          log(`propose_plan: ${cancelled.length} plan verifier(s) cancelled, a plan arrived`)
+        }
+
+        log(
+          `plan card posted to chat ${planChatId} (message ${cardMessageId ?? 'unknown'}, ` +
+            `${payload.steps.length} step(s), revision ${payload.revision}` +
+            `${payload.supersedes !== undefined ? `, supersedes ${payload.supersedes}` : ''})`,
+        )
+        reportContextPct()
+        clearInbound(planAuth.chatId)
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `pending (message_id: ${cardMessageId ?? 'unknown'}). The plan is on the user's ` +
+                'screen with Go ahead, Change the plan and Do not do this. This turn is over: ' +
+                'stop here, change nothing, and wait. Their answer arrives as a new channel ' +
+                'event with callback_data plan:go, plan:change (their words in custom_text) or ' +
+                'plan:no. Nothing here enforces the wait, so it is yours to keep.',
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to post the plan: ${errMsg}` }],
+          isError: true,
+        }
       }
     }
 
@@ -5074,6 +6186,133 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
     }
 
+    case 'add_mission_goals': {
+      const built = buildMissionAddGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to add goals to. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionAddGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPost(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Add goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `add_mission_goals: mission #${missionId} gained ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `${built.body.miniGoals.length === 1 ? 'Goal' : 'Goals'} added.\n` +
+                formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to add the mission goals: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'cancel_mission_goal': {
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              { type: 'text', text: 'No active mission in this chat to cancel a goal on.' },
+            ],
+            isError: true,
+          }
+        }
+        // The goal id is validated by the PATH builder, so a bad one never
+        // reaches the network and the agent gets the sentence rather than a 400.
+        const builtPath = buildMissionCancelGoalPath(
+          ASSISTANT_ID,
+          missionId,
+          rawArgs.goal_id,
+        )
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosDelete(builtPath.path)) as {
+          mission?: MissionSnapshot
+        }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Cancel goal returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `cancel_mission_goal: mission #${missionId} goal ${String(rawArgs.goal_id)} cancelled`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goal cancelled.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to cancel the mission goal: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
     case 'complete_mission': {
       const built = buildMissionCompleteBody({ summary: rawArgs.summary })
       if (!built.ok) {
@@ -5350,6 +6589,16 @@ interface ChatMessage {
     messageType?: string | null
     answeredAt?: string | null
     answerPayload?: AnswerPayload | null
+    // The approval card's own metadata, echoed back on every read (the
+    // backend hands the whole JSONB value back, so what was sent comes back).
+    // The permission relay reads three fields of it: `expired`, which the
+    // server sets when a request outlives its wait and which, not a local
+    // clock, is what ends the wait; and `agent_route` plus `request_id`,
+    // which are how the boot sweep recognises a card this daemon's own kind
+    // left behind (lib/permission-relay.ts).
+    approvalMeta?:
+      | { expired?: unknown; agent_route?: unknown; request_id?: unknown }
+      | null
     renderMode?: 'inline' | 'modal' | string | null
     commandName?: string | null
     commandArgs?: string | null
@@ -5511,6 +6760,12 @@ const chatLastSeen = cursorBoot.cursors
 const FIRST_POLL_RECENT_CUTOFF_MS: number | null = cursorBoot.fileExisted
   ? null
   : DAEMON_START_MS - FIRST_RUN_RECENT_WINDOW_MS
+
+// How many messages the BOOT poll may bring back per chat for the previous
+// session's unanswered work (board row 294a571a). The same figure as the
+// first-poll cap, for the same reason: the agent's context is the scarce thing,
+// and a chat where nothing was ever answered must not be able to fill it.
+const MAX_RESTART_RECOVERY_FORWARD = 10
 
 // Chats fully processed by pollChat at least once since THIS process started.
 // A chat's first successful poll after boot is the one that may carry
@@ -5987,6 +7242,483 @@ const chatUnansweredButtons = new Map<string, Set<number>>()
  * anything else there. See activeButtonPromptChatIds in lib/poll-core.ts.
  */
 const recentButtonPrompts = new Map<string, ButtonPromptRecord>()
+
+// ── The plan card's state, all of it in memory and all of it per process ─────
+//
+// A plan wait has NO END, which is what makes this different from every other
+// wait in this daemon. A restart therefore loses the open plan, and that is
+// accepted rather than papered over: the CARD stays live on the owner's screen
+// and is still answerable, because the answer is a row fact (answeredAt) the
+// app writes, not a promise this process holds.
+//
+// WHAT THE RESTART COSTS, in full, because an earlier version of this comment
+// named two of the four and read as a clean bill of health:
+//   1. The revision chain. A revised plan after a restart starts at revision 1
+//      (nextPlanIdentity) and retires the named card without the dimmed body.
+//   2. The fast poll scope, which a running daemon re-earns only when a new
+//      plan is posted.
+//   3. NOTHING, now, for the status line and the mode chip: settlePlan makes
+//      both reports unconditionally, so a plan approved after a restart still
+//      takes them down. It used to return early on the missing record, which
+//      left the owner a day of "Waiting for your go ahead" and a chip only a
+//      hand typed /code could clear.
+//   4. NOTHING, now, for the answer itself: a tap that landed while this
+//      daemon was DOWN is invisible to the live click detector (it announces
+//      only ids it saw unanswered on a previous poll), so the boot sweep
+//      announceMissedPlanAnswers delivers it once and strips the chips.
+//
+// No sweep RETIRES a plan card as an orphan: the permission boot sweep refuses
+// any row that is not `approval_request`, so a plan card is invisible to it by
+// construction, which is exactly the behaviour wanted.
+
+/** The newest unanswered plan this daemon posted, per chat. */
+const openPlansByChat = new Map<string, PendingPlan>()
+
+/** Armed /plan verifiers, per chat. See lib/plan-verifier.ts. */
+const planVerifiers = createPlanVerifierState()
+/**
+ * The owner's plan level, remembered off the rails that carry it.
+ *
+ * The WS event and the agent update stream both carry `planPolicy`; the chat
+ * history route this daemon polls does not (lib/inbound-channel.ts says which
+ * is which and why). Those two teach it, the poll reads it back, and the
+ * agent's behaviour stops depending on which rail happened to win the race.
+ */
+const planPolicyMemo = createPlanPolicyMemo()
+
+/** The last session mode this daemon reported, per chat, to avoid re-PATCHing. */
+const lastSessionModeByChat = new Map<string, SessionMode>()
+
+/**
+ * Mint a plan id. Not a uuid dependency for one field: the assistant id plus
+ * the clock plus four random characters is unique enough for a value whose only
+ * job is to tie a revision to the plan it revises inside one chat.
+ */
+function mintPlanId(): string {
+  return `p${ASSISTANT_ID}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+/**
+ * Report the session mode for a chat. Fire and forget, and deliberately so: the
+ * chip above the composer is cosmetic, the route may not exist yet on an older
+ * backend, and nothing in this daemon behaves differently because of the mode.
+ * A failure is one log line.
+ */
+function reportSessionMode(chatId: string | number, mode: SessionMode): void {
+  const key = String(chatId)
+  // No route for this connection (an API key daemon; the route is pairing
+  // scoped and deliberately has no user scoped twin, see lib/session-mode.ts).
+  // Checked BEFORE the dedupe write, so nothing is remembered as reported.
+  const path = sessionModePath(AUTH.mode, ASSISTANT_ID, key)
+  if (path === null) return
+  if (!shouldReportSessionMode(lastSessionModeByChat.get(key), mode)) return
+  lastSessionModeByChat.set(key, mode)
+  void bgosPatch(
+    path,
+    buildSessionModeBody(mode),
+  ).catch((err) => {
+    // Forget what we claimed to have reported, so the next attempt tries again
+    // rather than deduping against a value the server never received.
+    if (lastSessionModeByChat.get(key) === mode) lastSessionModeByChat.delete(key)
+    log(`session mode report failed (chat ${key}, mode ${mode}): ${err}`)
+  })
+}
+
+/** Clear the "Waiting for your go ahead" line this daemon wrote. */
+function clearPlanStatusLine(): void {
+  void bgosPatch(`assistants/${ASSISTANT_ID}/status`, planStatusClearBody()).catch((err) => {
+    log(`plan status clear failed: ${err}`)
+  })
+}
+
+/**
+ * Is this tap on a plan card from somebody OTHER than the person the plan was
+ * proposed to? True means refuse it, and the one log line is written here.
+ *
+ * Data's blocker on #150: applyPlanAnswer used to take no clicker id at all,
+ * while the permission intake beside it always passed clickerUserId, so on a
+ * SHARED assistant anyone who could see the chat could tap Go ahead on a plan
+ * proposed to someone else and the agent went to work as if its owner had
+ * approved. The rule is #142's, null aware, as the permission card watch
+ * applies it (planTapAuthority): a tap naming a different person is refused, a
+ * tap naming nobody is accepted, which is every tap on today's backend.
+ *
+ * `clickerUserId` MUST be read with senderUserIdCandidate, never with
+ * senderUserIdOf: the owner fallback would turn an unstamped tap into the
+ * owner's, and on a shared assistant, where the plan was proposed to the
+ * person it was shared with, that would refuse every real approval.
+ *
+ * The person is this process's record of the card, or the owner when a
+ * restart lost it (planRequesterFor says why, and why not the chat's latest
+ * inbound user). Its own function because the boot sweep must ask it BEFORE
+ * it strips the chips, and the two click intakes ask it through
+ * applyPlanAnswer.
+ */
+function foreignPlanTap(input: {
+  chatId: string
+  messageId: number
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the log line only. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): boolean {
+  const authority = planTapAuthority({
+    clickerUserId: input.clickerUserId,
+    requesterUserId: planRequesterFor({
+      open: openPlansByChat.get(input.chatId),
+      messageId: input.messageId,
+      ownerUserId: USER_ID,
+    }),
+  })
+  if (authority.kind !== 'foreign') return false
+  log(
+    `Ignoring plan card tap on card ${input.messageId} via ${input.via} from ` +
+      `user ${authority.clickerUserId} (plan belongs to ${authority.requesterUserId})`,
+  )
+  return true
+}
+
+/**
+ * Everything that has to happen when a plan is answered, whichever chip it was:
+ * the card is no longer open, the status line comes down, the chat leaves the
+ * fast scope, and the app is told the mode is back to default so the chip goes.
+ *
+ * NOTHING HERE BAILS OUT ON THIS PROCESS HOLDING A RECORD, and that is the
+ * whole point of the shape. `openPlansByChat` is per process and is lost on a
+ * restart (see the block comment above it), but the two things the OWNER can
+ * see are server side: the status line beside the agent, and the session mode
+ * the composer chip is drawn from. An early return when the map has no entry
+ * left a restarted daemon unable to take either of them down, so a plan posted
+ * before the restart and approved after it left `Waiting for your go ahead`
+ * standing for its full day and a Plan mode chip that only a hand typed /code
+ * could clear. The delete is the only part that has anything to say about
+ * local state, so the delete is the only part that is conditional on it.
+ *
+ * The mode report is conditional on something ELSE, and on nothing local: the
+ * answered row's own door, which a restart does not lose because it is read
+ * back off the row. See the note on the call.
+ */
+function settlePlan(chatId: string, wasPlanMode: boolean): void {
+  // THE DECISION IS A PURE FUNCTION (lib/plan-card.ts, planSettlement) and it
+  // carries the whole reasoning, including why nothing here may bail out on
+  // this process holding a record. It lives there because the rule was pinned
+  // by a source grep over this body, and a grep is green on a defect it cannot
+  // see: a one line `if (!openPlansByChat.has(chatId)) return` inserted here
+  // reproduced the restart regression with every plan suite still passing.
+  // The unit test on planSettlement is what fails now.
+  const settlement = planSettlement({
+    hasLocalRecord: openPlansByChat.has(chatId),
+    wasPlanMode,
+    lastReportedMode: lastSessionModeByChat.get(chatId),
+  })
+  if (settlement.forgetLocalRecord) openPlansByChat.delete(chatId)
+  if (settlement.clearStatusLine) clearPlanStatusLine()
+  // The explicit /code path (onPlanModeOff) still reports unconditionally,
+  // which is right: there the owner asked.
+  if (settlement.reportDefaultMode) reportSessionMode(chatId, 'default')
+}
+
+/**
+ * The plan half of a button click, and the ONE copy of it, called by BOTH
+ * click transports.
+ *
+ * There are two complete click intakes in this file: the poll's transition
+ * detector and the stream's `buttons_answered` rail, and they are mutually
+ * exclusive per click (whichever gets there first marks the id in the shared
+ * announced set and the other stays silent). So a plan rule written into one
+ * of them only is not a duplicate waiting to be tidied, it is a plan that
+ * settles or does not settle depending on whether the socket happened to be
+ * healthy, which is the worst kind of intermittent. This is the same reason
+ * noteSlashPlanDelivery is called from all three rails.
+ *
+ * WHAT IT IS FED IS THE RAW callbackData, never the agent unescaped value.
+ * Every agent authored button goes out namespaced (`u:` + the agent's own
+ * value) precisely so it can never be read back as one of this plugin's
+ * control codes, and that only holds while the classification happens before
+ * the unescape. The permission intake has always worked this way.
+ *
+ * WHO TAPPED is an input too, required, so no intake can call this without
+ * saying: `clickerUserId` is senderUserIdCandidate of the RAW answer payload
+ * (null when it names nobody; the stream carries it as answer.clickerUserId,
+ * because its normalised answer keeps only the button fields). A tap from a person other than the one the plan was
+ * proposed to comes back `refused`, and the caller DROPS the click: the plan
+ * is not settled, the chip and the status line stay up, and nothing reaches
+ * the model, so the agent is NOT told to proceed. It does not re arm the card:
+ * the backend's markAnswered is first answer wins, so the row is answered and
+ * the plan's person has to type, or the agent re proposes. See foreignPlanTap.
+ */
+function applyPlanAnswer(input: {
+  chatId: string
+  messageId: number
+  /** RAW, straight off the answer payload. */
+  callbackData: string
+  customText?: string | null
+  /** `eventMeta.payload` of the answered row, when the transport carries it. */
+  eventMetaPayload?: unknown
+  /** senderUserIdCandidate of the answer: null when the tap names nobody. */
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the refusal's log line. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): {
+  summary: string | null
+  directive: string | null
+  callbackData: string | null
+  /** A foreign tap on a plan: the caller must drop the click entirely. */
+  refused: boolean
+} {
+  const none = { summary: null, directive: null, callbackData: null, refused: false }
+  // Two independent ways to know the answered row is a plan card: the record
+  // this process is holding, and the row's own payload. Either is enough, and
+  // the second is what survives a restart, where the first is empty.
+  const onPlanCard =
+    openPlansByChat.get(input.chatId)?.messageId === input.messageId ||
+    isPlanCardPayload(input.eventMetaPayload)
+  const choice = resolvePlanChoice({ callbackData: input.callbackData, onPlanCard })
+  // A card answered with something that is not one of the three (a bare skip,
+  // say) is still an answer: the wait is over and the status line must come
+  // down, even though there is no directive to give.
+  if (choice === null && !onPlanCard) return none
+  // From here on this IS a plan answer, so from here on it is bound to the
+  // person the plan was proposed to, BEFORE anything is settled.
+  if (
+    foreignPlanTap({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      clickerUserId: input.clickerUserId,
+      via: input.via,
+    })
+  ) {
+    return { ...none, refused: true }
+  }
+  // The DOOR of the row being answered, from this process's record first and
+  // the row's own payload second, which is the pair that survives a restart.
+  // Anything but `decided` is a door that could have lit the chip, and that is
+  // the only case where taking it down is worth a write. See settlePlan.
+  const answeredDoor =
+    openPlansByChat.get(input.chatId)?.payload.door ??
+    (isPlanCardPayload(input.eventMetaPayload) ? input.eventMetaPayload.door : undefined)
+  settlePlan(input.chatId, answeredDoor !== undefined && answeredDoor !== 'decided')
+  if (choice === null) return none
+  return {
+    refused: false,
+    summary: describePlanClick({ choice, customText: input.customText }),
+    directive: planAnswerDirective(choice),
+    // The code the model was PROMISED, put back on the meta. A revision
+    // arrives as `__custom__` because the chip arms the composer instead of
+    // answering, and every surface that tells the model what to expect names
+    // `plan:change`. See planChipFor.
+    callbackData: planChipFor(choice),
+  }
+}
+
+/**
+ * THE VERIFIER'S ENDING, WHOLE: the line goes out AND the mode it announced
+ * comes back down.
+ *
+ * `onPlanDirectiveDelivered` reports `plan` the moment a /plan is delivered,
+ * which is what lights the composer chip and the gold ring. Only two things
+ * ever took that back down, `settlePlan` (a card was answered) and
+ * `onPlanModeOff` (the owner typed /code), and NEITHER can happen on this
+ * ending: the whole definition of this ending is that no card exists. So the
+ * two fire sites used to post the line and stop, leaving a chat wearing a
+ * "Plan mode" chip over nothing pending, across restarts, while every later
+ * turn ran normally. PLAN_VERIFIER_MESSAGE does not mention /code, so the
+ * owner was not even told the one thing that cleared it.
+ *
+ * ONE FUNCTION FOR BOTH FIRE SITES (the Stop hook's turn end and the poll
+ * tick's timeout), for the same reason the click intake has one: a rule
+ * written into whichever site somebody was looking at is a chip that clears or
+ * does not clear depending on whether the hook rail happened to be installed.
+ *
+ * The report is NOT gated the way settlePlan's is. There the door is a model
+ * filled field and a `decided` card never lit anything; here the arm itself is
+ * this daemon's own record that it reported `plan` for this chat, so there is
+ * always something to take down. A daemon with no route (an API key
+ * connection) is refused inside reportSessionMode and nothing is written.
+ */
+function onPlanVerifierExpired(chatId: string): void {
+  postPlanVerifierLine(chatId)
+  reportSessionMode(chatId, 'default')
+}
+
+/** Post the daemon's own line when a /plan produced no plan. */
+function postPlanVerifierLine(chatId: string): void {
+  void bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text: PLAN_VERIFIER_MESSAGE,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+    options: [],
+  }).catch((err) => log(`plan verifier line failed (chat ${chatId}): ${err}`))
+}
+
+/**
+ * The owner typed /plan. Arm the verifier, and tell the app so the chip
+ * appears. `enforced` is false and says so on screen: see lib/session-mode.ts.
+ */
+function onPlanDirectiveDelivered(chatId: string, messageId: number): void {
+  armPlanVerifier(planVerifiers, { chatId, messageId, nowMs: Date.now() })
+  reportSessionMode(chatId, 'plan')
+  log(`/plan directive delivered (chat ${chatId}, message ${messageId}); verifier armed`)
+}
+
+/** The owner closed the Plan mode chip. Nothing to undo locally; report it. */
+function onPlanModeOff(chatId: string): void {
+  disarmPlanVerifier(planVerifiers, chatId)
+  lastSessionModeByChat.delete(chatId)
+  reportSessionMode(chatId, 'default')
+  log(`/code received (chat ${chatId}); session mode reported default`)
+}
+
+/**
+ * The plan answers that landed while this daemon was NOT running.
+ *
+ * WHY THIS EXISTS AT ALL. A tap reaches the model only on a live transition:
+ * `selectClickTransitions` announces an id only if it saw that id unanswered on
+ * a PREVIOUS poll, and after a restart the unanswered map is empty while an
+ * already answered row never enters it either. So a plan approved while this
+ * process was down was never announced, with no error and no log line: the
+ * owner saw Approved and the agent never heard. For a ten minute prompt that
+ * property was harmless. A plan card is designed to be answered tomorrow
+ * (PLAN_STATUS_TTL_MINUTES is a day), which makes it the plan wait's main way
+ * of ending in silence. The window is narrow but not rare on a fleet that self
+ * updates.
+ *
+ * WHY IT CANNOT RUN TWICE ON THE SAME ANSWER. It takes only an answered plan
+ * card that still carries its chips, and it STRIPS them as it announces
+ * (buildPlanRetireBody). So the second boot no longer sees the row, with no new
+ * persistent store to keep in step. The owner loses nothing: every app already
+ * collapses the chips on `answeredAt`.
+ *
+ * Its own ETag key, its own read, and the permission sweep's `createdBefore`
+ * bound, all for the permission sweep's reasons (a shared validator would hand
+ * one of the two readers a 304 and lose it a cycle; two daemons can share one
+ * pairing and a row written after this process started is not its business;
+ * the row's stamp is the backend's clock and the bound is this host's, so the
+ * bound sits a skew margin behind boot). Like that sweep it is a boot time
+ * courtesy over the newest page of each chat, not a guarantee.
+ */
+async function announceMissedPlanAnswers(): Promise<void> {
+  let announced = 0
+  for (const chatId of monitoredChatIds) {
+    let messages: ChatMessage[]
+    try {
+      const raw = await bgosGet(`chats/${chatId}/messages?userId=${USER_ID}`, {
+        cacheKey: `plan-sweep:${chatId}`,
+      })
+      if (isNotModified(raw)) continue
+      messages = (raw as ChatHistoryResponse).messages ?? []
+    } catch (err) {
+      log(`Plan boot sweep: could not read chat ${chatId} (ignored): ${err}`)
+      continue
+    }
+    const rowsById = new Map(messages.map((m) => [m.message.id, m]))
+    const missed = missedPlanAnswers(
+      messages.map((m) => ({
+        id: m.message.id,
+        sender: m.message.sender,
+        messageType: m.message.messageType,
+        answeredAt: m.message.answeredAt,
+        createdAt: sentDateToMs(m.message.sentDate),
+        hasOptions: (m.messageOptions ?? []).length > 0,
+        eventMeta: m.message.eventMeta,
+      })),
+      { createdBefore: DAEMON_START_MS - SWEEP_CLOCK_SKEW_MARGIN_MS },
+    )
+    for (const row of missed) {
+      const mm = rowsById.get(row.id)?.message
+      if (!mm) continue
+      const payload = mm.answerPayload ?? {}
+      const callbackData = payload.callbackData ?? payload.callback_data ?? ''
+      const buttonText = payload.buttonText ?? payload.button_text ?? ''
+      const customText = payload.customText ?? payload.custom_text ?? undefined
+      // WHO tapped, null aware, and asked BEFORE the strip: a refused tap must
+      // leave the card exactly as it is, chips and all, and the strip below is
+      // what makes a sweep final. Every row here is a plan card
+      // (missedPlanAnswers), so the question always applies.
+      const clickerUserId = senderUserIdCandidate(payload)
+      if (
+        foreignPlanTap({ chatId: String(chatId), messageId: row.id, clickerUserId, via: 'boot sweep' })
+      ) {
+        continue
+      }
+      // Strip the chips FIRST. A failed announce then costs one delivery; a
+      // failed strip after a successful announce would let the next boot
+      // announce the same answer again, which is the louder failure.
+      try {
+        await bgosPatch(`messages/${row.id}`, buildPlanRetireBody())
+      } catch (err) {
+        log(`Plan boot sweep: could not retire card ${row.id} (skipped): ${err}`)
+        continue
+      }
+      rememberAnnouncedClick(row.id)
+      const planAnswer = applyPlanAnswer({
+        chatId: String(chatId),
+        messageId: row.id,
+        callbackData,
+        customText,
+        eventMetaPayload: mm.eventMeta?.payload,
+        clickerUserId,
+        via: 'boot sweep',
+      })
+      // Asked above already, so this cannot be true today; kept so the drop is
+      // written wherever applyPlanAnswer is called.
+      if (planAnswer.refused) continue
+      const contentLines = [
+        `[button_clicked] ${planAnswer.summary ?? `Clicked: ${buttonText || callbackData}`}`,
+        `(in reply to message_id=${row.id})`,
+        'This answer arrived while this agent was not running, so it is reaching you late.',
+      ]
+      if (planAnswer.directive) contentLines.push(planAnswer.directive)
+      announced += 1
+      log(
+        `Plan boot sweep: delivering the answer to plan card ${row.id} in chat ${chatId} ` +
+          `(answeredAt=${mm.answeredAt}), missed by a run that had stopped`,
+      )
+      void trackMessageOperation(() =>
+        mcp.notification({
+          method: 'notifications/claude/channel',
+          params: {
+            content: contentLines.join('\n'),
+            meta: {
+              chat_id: String(chatId),
+              message_id: String(row.id),
+              event_type: 'button_clicked',
+              callback_data:
+                planAnswer.callbackData ?? unescapeAgentButtonValue(String(callbackData)),
+              button_text: String(buttonText),
+              ...(customText ? { custom_text: String(customText) } : {}),
+              user: 'User',
+              user_id: USER_ID,
+              assistant_id: ASSISTANT_ID,
+              ts: mm.answeredAt ?? '',
+            },
+          },
+        }),
+      ).catch((err) => {
+        log(`Plan boot sweep: failed to deliver the answer to Claude: ${err}`)
+      })
+    }
+  }
+  if (announced === 0) log('Plan boot sweep: no plan was answered while this daemon was down')
+}
+
+/**
+ * Was this slash delivery a /plan? Called on all three transports, off the
+ * delivery's own meta rather than off the raw payload, so an alias resolved by
+ * the registry is recognised the same way the model sees it.
+ */
+function noteSlashPlanDelivery(
+  delivery: { meta: Record<string, string> } | null,
+  chatId: string | number | null | undefined,
+  messageId: unknown,
+): void {
+  if (!delivery || delivery.meta.command_name !== 'plan') return
+  if (chatId == null || chatId === '') return
+  onPlanDirectiveDelivered(String(chatId), Number(messageId) || 0)
+}
 let monitoredChatIds: string[] = []
 
 // ── Chat membership authority ────────────────────────────────────────────────
@@ -6384,6 +8116,36 @@ async function finishHookTurn(keepCard: boolean): Promise<void> {
   // waiting in the queue beside it, and that is not this turn's final card.
   const pending = hookCardPending.get(hookTurnCardKey)
   const chatId = hookChatId()
+  // THE TURN ENDED. If a /plan was armed for the chat this turn belonged to and
+  // no propose_plan cancelled it, that is an OBSERVED fact rather than a five
+  // minute guess, so the line goes out now instead of waiting out the window.
+  //
+  // turnChat.current is read directly, NOT hookChatId(), because hookChatId
+  // falls back to the first monitored chat when the turn cannot be attributed,
+  // and a guess here would post "no plan arrived" into a chat that never asked
+  // for one. An unattributed turn end settles nothing and the timer keeps its
+  // job (endTurnPlanVerifiers refuses a null chat id for this reason).
+  //
+  // AND WHEN THE TURN BEGAN, because the chat id alone named the wrong turn.
+  // `/plan` typed into a chat that already has a turn running arms the
+  // verifier mid flight, and that turn's Stop then fired it. While the turn is
+  // LIVE the record's clock is the moment it began (turnChat.beginTurn stamps
+  // it at UserPromptSubmit), which is exactly the comparison the verifier
+  // needs. Off a turn that clock has been refreshed by turnChat.end and says
+  // nothing about any turn's start, so nothing is passed and the old
+  // behaviour stands.
+  const endingTurn = turnChat.current(Date.now())
+  for (const due of endTurnPlanVerifiers(
+    planVerifiers,
+    endingTurn?.chatId ?? null,
+    turnChat.live() ? (endingTurn?.at ?? null) : null,
+  )) {
+    log(
+      `plan verifier fired on turn end (chat ${due.chatId}, /plan message ${due.messageId}): ` +
+        'the turn finished without a plan',
+    )
+    onPlanVerifierExpired(due.chatId)
+  }
   const flight = hookCardFlight
   const flightKey = hookCardFlightKey
   const cardKey = pending?.cardKey ?? null
@@ -6582,6 +8344,8 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
  */
 function startHookIntakeIfHolder(): void {
   if (!lockHeld) return
+  // The floor's attached marker rides the same holder rule as the intake.
+  markFloorAttachedIfHolder()
   if (hookIntake !== null) return
   try {
     const root = hookStateRoot()
@@ -6626,6 +8390,7 @@ function stopHookIntake(): void {
     /* already closed */
   }
   hookIntake = null
+  clearFloorAttachedMarker()
   if (hookCardTimer !== null) {
     clearTimeout(hookCardTimer)
     hookCardTimer = null
@@ -7033,6 +8798,53 @@ async function pollChat(chatId: string): Promise<void> {
       // chat first polled mid-run (discovered via WS) carries only post-boot
       // messages, so it stays unframed too. Keep the predicate in lockstep
       // with test/first-poll-gate.test.ts (deltaIsBacklog mirror).
+      // AND ON THE BOOT POLL ONLY, bring back what the PREVIOUS session was
+      // handed and never answered (board row 294a571a). The cursor advances on
+      // FORWARD, not on ANSWER, so a session that could not act, because its
+      // account hit a limit, because the model call failed, because it was
+      // killed mid turn, left those rows below the cursor where nothing would
+      // ever look again. KC's own question to Argus on 2026-09-24 sat unanswered
+      // through a restart for exactly this reason.
+      //
+      // The selection is pure and lives in lib/poll-core.ts. It stops at a real
+      // user then assistant REPLY, so a message the previous session DID answer
+      // is never re-offered; it takes only rows at or BELOW the cursor, so it
+      // cannot duplicate what the delta filter above already picked up; and it
+      // is capped and windowed so a chat nobody ever answered cannot dump its
+      // history on every boot. This is the one poll where the fetch is FULL
+      // (forceFull on isBootPoll), which is why the older rows are in hand at
+      // all.
+      if (isBootPoll) {
+        const recoveredIds = new Set(
+          selectRestartRecoveryIds({
+            rows: pollForwardableRows.map((m) => ({
+              id: m.message.id,
+              sender: m.message.sender,
+              pendingEmptySystem: isPendingEmptySystem(m),
+              sentDateMs: sentDateToMs(m.message.sentDate),
+            })),
+            lastSeen,
+            maxForward: MAX_RESTART_RECOVERY_FORWARD,
+            nowMs: Date.now(),
+          }),
+        )
+        if (recoveredIds.size) {
+          const already = new Set(newUserMessages.map((m) => m.message.id))
+          const recovered = pollForwardableRows.filter(
+            (m) => recoveredIds.has(m.message.id) && !already.has(m.message.id),
+          )
+          if (recovered.length) {
+            log(
+              `Restart recovery: re-offering ${recovered.length} unanswered message(s) in chat ${chatId} (ids ${recovered
+                .map((m) => m.message.id)
+                .join(', ')})`,
+            )
+            // Oldest first, and BEFORE the delta rows, so the agent reads the
+            // conversation in the order it happened.
+            newUserMessages = [...recovered, ...newUserMessages]
+          }
+        }
+      }
       isBacklog =
         isBootPoll &&
         newUserMessages.some((m) => {
@@ -7100,38 +8912,71 @@ async function pollChat(chatId: string): Promise<void> {
       const buttonText = payload.buttonText ?? payload.button_text ?? ''
       const customText = payload.customText ?? payload.custom_text ?? undefined
 
-      // Internal permission-flow intercept: perm:(once|session|permanent|deny):<request_id>.
-      // Swallow these, do NOT forward to Claude as a channel event; resolve
-      // the pending verdict instead. The three allow scopes currently collapse
-      // to Claude's binary allow behavior in choiceToBehavior().
-      const permMatch = PERMISSION_CALLBACK_RE.exec(callbackData)
-      if (permMatch) {
-        const [, choice, requestId] = permMatch
-        const pending = pendingPermissions.get(requestId)
-        if (pending) {
-          // User binding (mirrors waitForVerdict): only the user who triggered
-          // the request may resolve it via a button click.
-          //
-          // TODO(backend): the answer payload carries no clicker user id, so
-          // senderUserIdOf falls back to USER_ID and this comparison is a
-          // no-op today (same limitation as the text-verdict path). It tightens
-          // automatically once the backend stamps a clicker user id.
-          const clickerUserId = senderUserIdOf(payload)
-          if (clickerUserId !== pending.requesterUserId) {
-            log(
-              `Ignoring permission button click ${choice} [${requestId}] from ` +
-                `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
-            )
-            continue
-          }
-          log(`Permission inline-button click: ${choice} [${requestId}]`)
-          pending.resolve(choice!.toLowerCase() as PermissionChoice)
-          pendingPermissions.delete(requestId)
+      // Internal permission-flow intercept: ea:(once|deny):<request_id>, plus
+      // the retired perm: vocabulary for a prompt an older build of this
+      // daemon posted and is still holding. Swallow these, do NOT forward to
+      // Claude as a channel event; resolve the pending verdict instead. The
+      // user binding and every log line below are unchanged; the parse and the
+      // resolve now live in lib/permission-relay.ts so both transports share
+      // one copy of them.
+      //
+      // The answer payload carries no clicker user id on any backend today, so
+      // this read falls back to the owner: on a SHARED assistant, where the
+      // requester is the person the agent was shared with, their own click is
+      // refused here as foreign. That rule predates the card read and is left
+      // exactly as it is, because the tap is not lost when it happens, whenever
+      // the card's id came back off the post: the watch then reads the same
+      // answer off the card row a tick later, and THAT read is null aware (see
+      // answeredOn in waitForVerdict; with no card id that read is off). Both decide on
+      // the same field the day the backend stamps a clicker user id.
+      const permOutcome = resolvePermissionClick({
+        callbackData,
+        clickerUserId: senderUserIdOf(payload),
+        pending: pendingPermissions,
+      })
+      if (permOutcome.kind !== 'not_permission') {
+        if (permOutcome.kind === 'resolved') {
+          log(`Permission inline-button click: ${permOutcome.choice} [${permOutcome.requestId}]`)
+        } else if (permOutcome.kind === 'foreign') {
+          log(
+            `Ignoring permission button click ${permOutcome.choice} [${permOutcome.requestId}] from ` +
+              `user ${permOutcome.clickerUserId} (request belongs to ${permOutcome.requesterUserId})`,
+          )
         } else {
-          log(`Stale permission click ${choice} [${requestId}], no pending entry`)
+          log(
+            `Stale permission click ${permOutcome.choice} [${permOutcome.requestId}], no pending entry`,
+          )
         }
         continue
       }
+
+      // A PLAN ANSWER, if it is one, and it is decided HERE, above the
+      // unescape, off the raw value, for the reason written on applyPlanAnswer.
+      // Three things separate a plan answer from an ordinary click:
+      //   1. Change the plan arrives as a click carrying the owner's typed
+      //      words in `custom_text` under the `__custom__` sentinel, because
+      //      the chip arms the composer rather than answering. The generic
+      //      wording would render that as `Custom reply: "make it shorter"`,
+      //      which reads as a button label rather than as what the owner said.
+      //   2. The click is the whole instruction on this channel: nothing here
+      //      starts a turn, flips a mode or blocks a tool, so what to do next
+      //      has to travel with the answer.
+      //   3. The wait is over either way, so the status line comes down, the
+      //      chat leaves the fast scope and the chip is reported off.
+      const planAnswer = applyPlanAnswer({
+        chatId,
+        messageId: mm.id,
+        callbackData,
+        customText,
+        eventMetaPayload: mm.eventMeta?.payload,
+        // NULL AWARE, unlike the permission intake's senderUserIdOf above:
+        // see foreignPlanTap for why the owner fallback must not be used here.
+        clickerUserId: senderUserIdCandidate(payload),
+        via: 'poll',
+      })
+      // A tap from someone other than the plan's person: drop it, the way the
+      // permission intake drops a foreign click. foreignPlanTap logged it.
+      if (planAnswer.refused) continue
 
       // Strip the `u:` namespace sentinel so the agent receives the exact value
       // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
@@ -7145,15 +8990,17 @@ async function pollChat(chatId: string): Promise<void> {
             ? 'Custom reply'
             : 'Clicked'
       const summary =
-        customText
+        planAnswer.summary ??
+        (customText
           ? `${kind}: "${customText}"`
           : buttonText
             ? `${kind}: ${buttonText}`
-            : `${kind}: ${agentCallbackData}`
+            : `${kind}: ${agentCallbackData}`)
       const contentLines = [
         `[button_clicked] ${summary}`,
         `(in reply to message_id=${mm.id})`,
       ]
+      if (planAnswer.directive) contentLines.push(planAnswer.directive)
       if (mm.text && mm.text.trim().length > 0) {
         const quoted = mm.text.length > 200 ? mm.text.slice(0, 197) + '…' : mm.text
         contentLines.push(`Original question: ${quoted}`)
@@ -7177,7 +9024,7 @@ async function pollChat(chatId: string): Promise<void> {
             chat_id: chatId,
             message_id: String(mm.id),
             event_type: 'button_clicked',
-            callback_data: agentCallbackData,
+            callback_data: planAnswer.callbackData ?? agentCallbackData,
             button_text: buttonText,
             ...(customText ? { custom_text: customText } : {}),
             user: 'User',
@@ -7305,6 +9152,16 @@ async function pollChat(chatId: string): Promise<void> {
         peerConversationId: pollPeerConversationId,
         turnState: pollTurnState,
         sessionHandle: pollSessionHandle,
+        // The owner's plan level, as the backend labelled it. A level
+        // delivered on one rail only would change the agent's behaviour
+        // depending on whether the socket happened to be healthy, which is the
+        // worst kind of intermittent, so the poll carries it too. IT IS NOT ON
+        // THE ROW: `GET /chats/:chatId/messages` is the app's chat history
+        // projection and declares no `planPolicy` at all, so the field read
+        // here has always been null and this call site was dead. The row is
+        // still read first, so a backend that ever adds the field wins, and
+        // the memo the socket and the stream fill answers when it does not.
+        planPolicy: readPlanPolicyField(msg.message) ?? planPolicyMemo.recall(),
         backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
@@ -7351,9 +9208,17 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
+      // The plan chip's close. Daemon answered and never forwarded, like
+      // /compact: there is no mode here to leave, only a report to send.
+      if (slashRoute.kind === 'plan_mode_off') {
+        onPlanModeOff(chatId)
+        continue
+      }
+
       const slashDelivery = slashRoute.kind === 'directive'
         ? slashRoute.delivery
         : null
+      noteSlashPlanDelivery(slashDelivery, chatId, msg.message.id)
       const content = slashDelivery?.content ?? originalContent
 
       if (!content) continue
@@ -8515,6 +10380,30 @@ const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
+/**
+ * Is the blocking floor hook registered for this session? Looked up ONCE, at
+ * boot, because the CLI reads its hooks when it launches, and hard_floor is
+ * declared only when it is (lib/floor-hook-presence.ts): a clone updated in
+ * place has no floor entry until a launcher or bgos-agent writes one, and an
+ * agent told that a hook stops a listed action when none does is the defect.
+ */
+const FLOOR_HOOK: FloorHookPresence = (() => {
+  try {
+    return floorHookPresence({
+      installMethod: INSTALL_METHOD,
+      pluginRoot: PLUGIN_ROOT,
+      folders: FLOOR_FOLDERS,
+      configDir: CLAUDE_CONFIG_DIR,
+      env: process.env,
+      readFile: (path) => readFileSync(path, 'utf8'),
+      exists: (path) => existsSync(path),
+      join: pathJoin,
+    })
+  } catch (err) {
+    return { registered: false, where: `could not look (${err})` }
+  }
+})()
+
 function safeUsername(): string {
   try {
     return osUserInfo().username
@@ -8539,6 +10428,29 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 })
 
 // The daemon's live drain counters (shared with SelfUpdater in main()).
+//
+// KNOWN, NOT YET DECIDED (0.49.0 review, drafted as 0.44.1 and 0.47.0). A permission request holds BOTH
+// `activeOperations` (the handler body runs inside trackMessageOperation) and
+// `pendingPermissions` for as long as the owner has to answer, which used to
+// be at most two minutes and can now be half an hour. The scheduled update
+// path waits for this snapshot to clear with no deadline of its own, so an
+// update that fires during an open request can sit in drain, with inbound
+// intake closed, until that request settles. The handler above now answers a
+// NEW request with a deny while draining, so nothing hangs the CLI any more,
+// but the length of the drain itself belongs to the update machinery and is
+// deliberately not changed from here: dropping pendingPermissions alone would
+// do nothing, because activeOperations is held by the very same handler.
+//
+// WHAT ENDS AN ALREADY OPEN REQUEST WHILE THIS DAEMON DRAINS, in full, because
+// the first version of this note left the owner out of it. Both click intakes
+// are shut: pollChat returns immediately in drain mode, and every entry into
+// the update stream consumer is gated the same way. What is NOT gated is the
+// watch's own read of the chat, so the owner's tap is heard through the WATCH
+// ONLY (it reads the answer off the card row), alongside a typed "yes <id>",
+// the server's expiry and the local backstop. Before the watch could read that
+// row the tap was heard by nothing at all, and a drain that began during a
+// request held every inbound message for up to the whole wait while the owner
+// pressed a button that did nothing.
 function updateDrainSnapshot() {
   return {
     activeOperations: messageActivity.activeOperations,
@@ -8927,6 +10839,10 @@ async function forwardStreamInbound(
     peerConversationId: view.peerConversationId,
     turnState: view.turnState,
     sessionHandle: view.sessionHandle,
+    // This rail CARRIES the field, so it teaches the memo, absence included:
+    // an omitted key is the backend saying "the default level", which is what
+    // stops a stale sentence outliving a level the owner turned back down.
+    planPolicy: planPolicyMemo.learn(view.raw),
   })
   const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
@@ -8962,7 +10878,12 @@ async function forwardStreamInbound(
     }
     return
   }
+  if (slashRoute.kind === 'plan_mode_off') {
+    onPlanModeOff(chatId)
+    return
+  }
   const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
+  noteSlashPlanDelivery(slashDelivery, chatId, view.messageId)
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
 
@@ -9067,7 +10988,9 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     messageType: view.messageType,
     callbackData: answer.callbackData,
     alreadyAnnounced: announcedClickIds.has(view.messageId),
-    permissionRe: PERMISSION_CALLBACK_RE,
+    // Both vocabularies: a new ea: click, and a perm: click from a prompt an
+    // older build of this daemon left on screen across an update.
+    permissionRe: PERMISSION_CLICK_RE,
   })
   if (decision === 'skip') {
     const why = announcedClickIds.has(view.messageId)
@@ -9091,35 +11014,65 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   if (recentButtonPrompts.get(chatId)?.messageId === view.messageId) recentButtonPrompts.delete(chatId)
 
   if (decision === 'permission') {
-    const permMatch = PERMISSION_CALLBACK_RE.exec(answer.callbackData)
-    if (!permMatch) {
+    const outcome = resolvePermissionClick({
+      callbackData: answer.callbackData,
+      clickerUserId: senderUserIdOf(answer),
+      pending: pendingPermissions,
+    })
+    if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not
-      // re-parse: the two regexes have drifted apart. Silent here means a
-      // permission prompt hangs forever with no trace.
+      // re-parse: the gate regex and the parser have drifted apart. Silent
+      // here means a permission prompt hangs forever with no trace.
       log(
         `button_clicked DROPPED at permission parse: callbackData did not match ` +
-          `PERMISSION_CALLBACK_RE on message ${view.messageId} ` +
+          `PERMISSION_CLICK_RE on message ${view.messageId} ` +
           `(streamAuthority=${authorityAtReceipt})`,
       )
       return
     }
-    const [, choice, requestId] = permMatch
-    const pending = pendingPermissions.get(requestId!)
-    if (!pending) {
-      log(`Stale permission click ${choice} [${requestId}] via stream, no pending entry`)
-      return
-    }
-    const clickerUserId = senderUserIdOf(answer)
-    if (clickerUserId !== pending.requesterUserId) {
+    if (outcome.kind === 'stale') {
       log(
-        `Ignoring stream permission click ${choice} [${requestId}] from ` +
-          `user ${clickerUserId} (request belongs to ${pending.requesterUserId})`,
+        `Stale permission click ${outcome.choice} [${outcome.requestId}] via stream, no pending entry`,
       )
       return
     }
-    log(`Permission inline-button click via stream: ${choice} [${requestId}]`)
-    pending.resolve(choice!.toLowerCase() as PermissionChoice)
-    pendingPermissions.delete(requestId!)
+    if (outcome.kind === 'foreign') {
+      log(
+        `Ignoring stream permission click ${outcome.choice} [${outcome.requestId}] from ` +
+          `user ${outcome.clickerUserId} (request belongs to ${outcome.requesterUserId})`,
+      )
+      return
+    }
+    log(`Permission inline-button click via stream: ${outcome.choice} [${outcome.requestId}]`)
+    return
+  }
+
+  // THE SAME PLAN HALF THE POLL RUNS, from the same function and off the same
+  // raw value. This rail is not a dormant duplicate of the poll: it marks the
+  // id in the shared announced set and consumes the poll's baseline entry a
+  // few lines above, so when the stream is on the poll never announces this
+  // click and anything missing here is missing full stop.
+  const planAnswer = applyPlanAnswer({
+    chatId,
+    messageId: view.messageId,
+    callbackData: answer.callbackData,
+    customText: answer.customText,
+    eventMetaPayload: view.eventMetaRaw?.payload,
+    // NULL AWARE: see foreignPlanTap. The id the normalisation CARRIED off the
+    // raw answer payload: `answer` itself keeps only the button fields, so
+    // senderUserIdCandidate(answer) read null on every stream tap.
+    clickerUserId: answer.clickerUserId,
+    via: 'stream',
+  })
+  // A tap from someone other than the plan's person: drop it, the way the
+  // foreign permission click above is dropped. foreignPlanTap logged who and
+  // whose; this lane's own outcome line says where it stopped, like every
+  // other exit of this function.
+  if (planAnswer.refused) {
+    log(
+      `button_clicked DROPPED at plan binding: the tap on plan card ${view.messageId} ` +
+        `named someone other than the plan's person (streamAuthority=${authorityAtReceipt})`,
+    )
     return
   }
 
@@ -9130,15 +11083,18 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       : agentCallbackData === '__custom__'
         ? 'Custom reply'
         : 'Clicked'
-  const summary = answer.customText
-    ? `${kind}: "${answer.customText}"`
-    : answer.buttonText
-      ? `${kind}: ${answer.buttonText}`
-      : `${kind}: ${agentCallbackData}`
+  const summary =
+    planAnswer.summary ??
+    (answer.customText
+      ? `${kind}: "${answer.customText}"`
+      : answer.buttonText
+        ? `${kind}: ${answer.buttonText}`
+        : `${kind}: ${agentCallbackData}`)
   const contentLines = [
     `[button_clicked] ${summary}`,
     `(in reply to message_id=${view.messageId})`,
   ]
+  if (planAnswer.directive) contentLines.push(planAnswer.directive)
   if (view.text.trim().length > 0) {
     const quoted =
       view.text.length > 200 ? view.text.slice(0, 197) + '...' : view.text
@@ -9152,7 +11108,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
         meta: buildStreamClickMeta({
           chatId,
           messageId: view.messageId,
-          callbackData: agentCallbackData,
+          callbackData: planAnswer.callbackData ?? agentCallbackData,
           buttonText: answer.buttonText,
           customText: answer.customText,
           senderUserId: senderUserIdOf(answer),
@@ -9877,6 +11833,8 @@ function connectWebsocket(): void {
         peerConversationId: wsPeerConversationId,
         turnState: wsTurnState,
         sessionHandle: wsSessionHandle,
+        // Carries the field, so it teaches the memo. See the stream site.
+        planPolicy: planPolicyMemo.learn(payload),
         extraMeta: {
           ...(payload?.sender?.displayName
             ? { sender_display_name: String(payload.sender.displayName) }
@@ -9919,9 +11877,14 @@ function connectWebsocket(): void {
         }
         return
       }
+      if (slashRoute.kind === 'plan_mode_off') {
+        if (chatId) onPlanModeOff(chatId)
+        return
+      }
       const slashDelivery = slashRoute.kind === 'directive'
         ? slashRoute.delivery
         : null
+      noteSlashPlanDelivery(slashDelivery, chatId, messageId)
       const content = slashDelivery?.content ?? originalContent
       if (!content) return
 
@@ -10842,6 +12805,15 @@ async function main(): Promise<void> {
     }),
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
+    // The nightly update asks the SAME ladder the clicked one uses (KC,
+    // 2026-09-26). Before this, only a click could reach it, so a scheduled
+    // update installed the new version and told nobody: 20 of 59 live agents
+    // were running code they had already replaced. The ladder is what keeps
+    // this safe, not this line: it signals a keepalive, restarts a service
+    // that provably owns us, or writes the marker the hoai launcher is
+    // already watching for, and it stages rather than acting on an authority
+    // it cannot prove.
+    requestRestart: (targetVersion) => updateRpc.restartAfterScheduledUpdate(targetVersion),
   })
   }
 
@@ -10862,6 +12834,20 @@ async function main(): Promise<void> {
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
   log(`Auto-approve: ${AUTO_APPROVE}`)
+  // THE BACKEND HALF THIS RELEASE LEANS ON, said out loud once per boot. Two
+  // things a permission request needs live on one BGOS branch (#1556): the per
+  // agent wait clamp, without which the server stores this daemon's whole
+  // offer and every request waits the maximum whatever the owner chose, and
+  // the device push on the messages route, without which a request raised
+  // while the app is closed rings nobody. A host that takes this plugin ahead
+  // of that backend gets both silently, which is exactly the kind of thing a
+  // sentence in a changelog does not prevent.
+  log(
+    `Permission requests depend on the BGOS backend half (BGOS #1556: the per ` +
+      `agent wait clamp and the approval push on POST /messages). Without it a ` +
+      `request waits the full ${PERMISSION_HOLD_SECONDS}s offer and sends no ` +
+      `device notification.`,
+  )
   log(`Require confirmed dispatch: ${REQUIRE_CONFIRMED_DISPATCH}`)
   log(`Log file: ${LOG_FILE}`)
 
@@ -10904,6 +12890,9 @@ async function main(): Promise<void> {
   // process and, unbounded, the one most likely to strand a daemon that could
   // otherwise have polled. loadServedCapabilities is single-flight, so a tool
   // call arriving while this is in flight joins it rather than refetching.
+  // What the declaration REALLY carries, which needs a pairing as well as the
+  // hook (lib/floor-hook-presence.ts floorBootLine).
+  log(floorBootLine(FLOOR_HOOK, AUTH.mode))
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.
@@ -11216,6 +13205,24 @@ async function main(): Promise<void> {
     // bounded, so it cannot stall forever either.
     await phase('boot poll sweep', () => pollAllChats())
 
+    // The request cards a previous run left looking live (see
+    // retireOrphanedPermissionCards). NOT awaited: it is one read per
+    // monitored chat plus a PATCH per orphan, it moves no cursor and nothing
+    // about delivery depends on it, so it must inform the boot rather than
+    // hold it. It runs AFTER the sweep above for one reason: monitoredChatIds
+    // has to be populated, which discoverChats did.
+    void phase('permission card sweep', () => retireOrphanedPermissionCards()).catch(
+      (err) => log(`Permission boot sweep gave up: ${err}`),
+    )
+
+    // And the plan answers a previous run never heard (see
+    // announceMissedPlanAnswers). Same shape and same reasoning as the sweep
+    // above: one read per monitored chat, no cursor moved, nothing about
+    // delivery waiting on it, and it needs monitoredChatIds populated.
+    void phase('plan answer sweep', () => announceMissedPlanAnswers()).catch((err) =>
+      log(`Plan boot sweep gave up: ${err}`),
+    )
+
     // Fix 09: on the FIRST-EVER boot of this pairing (no channel-live marker
     // on disk), ask the session to greet its owner via the reply tool. The
     // greeting is the user-visible "your agent is alive" moment AND the
@@ -11463,11 +13470,44 @@ async function main(): Promise<void> {
         streamSchedulerTick(Date.now())
         const fastIds = fastScopeChatIds({
           meetingChatIds,
-          pendingPermissionChatIds: [...pendingPermissions.values()].map(
-            (p) => p.chatId,
+          // BOUNDED, like the button prompt beside it, but bounded by the
+          // REQUEST'S OWN WAIT rather than by a flat ten minutes. Every entry
+          // in this map used to pin its chat at the base 2 s tick until the
+          // request was answered, which was fine at 120 s and is 900 extra
+          // reads of one chat at half an hour. The first bound dropped the
+          // chat at ten minutes and said a later tap still arrived "on the
+          // socket": it does not, this daemon registers no inbound click
+          // listener (see the drain counter note). What the scope really buys
+          // is THIS poll's own click intake, which reads answered_at on the
+          // newest page: a chat outside it is read on the five minute sweep,
+          // so a tap could sit unheard for five minutes. So the scope lasts as
+          // long as this daemon is still listening, and the constant is only
+          // the leak guard. See PENDING_PERMISSION_FAST_MAX_MS.
+          pendingPermissionChatIds: pendingPermissionFastChatIds(
+            pendingPermissions.values(),
+            Date.now(),
           ),
           buttonPromptChatIds: activeButtonPromptChatIds(recentButtonPrompts, Date.now()),
+          // A plan wait has no end, so this one is bounded by a flat half hour
+          // and nothing else; PENDING_PLAN_FAST_MAX_MS writes out the trade.
+          // A tap after that lands on the five minute sweep, and the PR says so.
+          pendingPlanChatIds: pendingPlanFastChatIds(
+            openPlansByChat.values(),
+            Date.now(),
+            PENDING_PLAN_FAST_MAX_MS,
+          ),
         })
+        // The /plan verifier's fallback ending. The Stop hook settles it first
+        // where the hook rail is installed; this is the tick for the installs
+        // where it is not (a clone install gets hooks only after
+        // ensureHookEntries has run, and one launch late at that).
+        for (const due of duePlanVerifiers(planVerifiers, Date.now())) {
+          log(
+            `plan verifier fired (chat ${due.chatId}, /plan message ${due.messageId}): ` +
+              'no plan was proposed within the window',
+          )
+          onPlanVerifierExpired(due.chatId)
+        }
         let plan = planPollCycle({
           now: Date.now(),
           lastFullCycleAt,
@@ -11719,7 +13759,9 @@ async function main(): Promise<void> {
       // the four tokens depend on whether this daemon can type into its own
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
-      capabilities: () => [...declaredCapabilities({ canInjectGoal: compactTarget !== null })],
+      capabilities: () => [
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
+      ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would

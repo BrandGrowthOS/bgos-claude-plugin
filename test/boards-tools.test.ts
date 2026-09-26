@@ -1446,7 +1446,7 @@ test('update_schema lists the table ops when the op is unknown', async () => {
   }
 })
 
-// ── Column lines: set_column_lines and option_renames (0.50.0) ───────────────
+// ── Column lines: set_column_lines and option_renames (0.56.0) ───────────────
 //
 // Kanban phase 1 (plan 3.8, P1.11): an agent may describe what each column of
 // a workflow select means, in one plain sentence plus a few closed facts. The

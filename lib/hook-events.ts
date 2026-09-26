@@ -340,6 +340,10 @@ export const TASK_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskGet', 'TaskList'] as
 export const OWN_MCP_TOOLS = [
   'bgos_capabilities',
   'reply',
+  // The plan card posts its own bubble, so a tool progress row saying
+  // "propose_plan" beside it would narrate the machinery of a card the owner is
+  // already looking at.
+  'propose_plan',
   'edit_message',
   'rename_chat',
   'set_status',
@@ -361,6 +365,8 @@ export const OWN_MCP_TOOLS = [
   'create_mission',
   'tick_mini_goal',
   'set_mission_goals',
+  'add_mission_goals',
+  'cancel_mission_goal',
   'complete_mission',
   'log_health_event',
   'list_health_events',
