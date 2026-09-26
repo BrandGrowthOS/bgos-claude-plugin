@@ -29,13 +29,14 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
   CHANGES_DEFAULT_CAPS,
   collectChanges,
+  createFindGit,
   createNodeRunGit,
   nodeChangesFs,
   readCaps,
@@ -455,10 +456,10 @@ class FakeChild extends EventEmitter {
 type SpawnPlan = { out?: string; code?: number; stream?: { chunk: Buffer; count: number }; error?: string }
 
 function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan) {
-  const children: Array<{ args: string[]; cwd: string; child: FakeChild }> = []
-  const spawnImpl = (_cmd: string, args: readonly string[], options: { cwd: string }) => {
+  const children: Array<{ cmd: string; args: string[]; cwd: string; child: FakeChild }> = []
+  const spawnImpl = (cmd: string, args: readonly string[], options: { cwd: string }) => {
     const child = new FakeChild()
-    children.push({ args: [...args], cwd: options.cwd, child })
+    children.push({ cmd, args: [...args], cwd: options.cwd, child })
     const p = plan(args)
     setImmediate(async () => {
       if (p.error) {
@@ -483,6 +484,10 @@ function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan) {
   return { spawnImpl, children }
 }
 
+/** Where Git for Windows puts the git on PATH: what a PATH lookup hands the adapter. */
+const GIT_EXE = 'C:\\Program Files\\Git\\cmd\\git.exe'
+const findGitExe = async () => GIT_EXE
+
 test('stops reading at the byte cap, says it was cut, and kills the child', async () => {
   const MB = 1024 * 1024
   const chunk = Buffer.alloc(64 * 1024, 'x')
@@ -496,7 +501,7 @@ test('stops reading at the byte cap, says it was cut, and kills the child', asyn
     // The patch: three megabytes, far past the one megabyte cap.
     return { stream: { chunk, count: 48 } }
   })
-  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never) })
+  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe) })
   assert.equal(result.ok, true)
   if (!result.ok) return
   assert.ok(Buffer.byteLength(result.payload.patch, 'utf8') <= CHANGES_DEFAULT_CAPS.maxPatchBytes)
@@ -513,8 +518,89 @@ test('stops reading at the byte cap, says it was cut, and kills the child', asyn
 
 test('the node adapter reads a spawn ENOENT as Git missing', async () => {
   const spawn = fakeSpawn(() => ({ error: 'ENOENT' }))
-  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never) })
+  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe) })
   assert.deepEqual(result, emptyAnswer('git_missing', 'services'))
+})
+
+// Review round 1 (D-R2). spawn('git', ..., { cwd }) on Windows looks in cwd
+// FIRST: libuv's search_path tries the current directory (git, git.com, then
+// git.exe) before any PATH entry, and uv_spawn hands it the child's cwd.
+// Measured on this machine (node 24.16.0 and bun 1.3.9, whose async spawn the
+// daemon uses): a copy of the runtime saved as git.exe in the folder answered
+// `git --version` with the runtime's own version. The agent writes that folder;
+// the owner's panel must never run what it put there. So the adapter runs the
+// Git that PATH names, by its absolute path.
+
+test('the node adapter runs the Git that PATH names by its absolute path, never a bare git a folder could answer', async () => {
+  const asked: Array<Record<string, string | undefined>> = []
+  const spawn = fakeSpawn((args) => {
+    if (same(args, ARGV_TOPLEVEL)) return { out: ROOT + '\n' }
+    if (same(args, ARGV_VERIFY)) return { out: 'abc\n' }
+    if (same(args, ARGV_BRANCH)) return { out: 'main\n' }
+    if (same(args, ARGV_SHORT)) return { out: 'abc1234\n' }
+    if (same(args, ARGV_NUMSTAT)) return { out: NUMSTAT }
+    if (same(args, ARGV_PATCH)) return { out: PATCH }
+    return { out: '' }
+  })
+  const { result } = await collect({
+    runGit: createNodeRunGit(spawn.spawnImpl as never, async (env) => {
+      asked.push(env)
+      return GIT_EXE
+    }),
+  })
+  assert.equal(result.ok && result.payload.state, 'ok')
+  assert.equal(spawn.children.length, 7)
+  assert.deepEqual(
+    spawn.children.map((c) => c.cmd),
+    Array(7).fill(GIT_EXE),
+    'every command runs the absolute path, never a bare name the working folder could answer',
+  )
+  assert.equal(asked.length, 1, 'PATH is looked up once per read')
+  assert.equal(asked[0].PATH, '/usr/bin', 'with the environment Git gets')
+})
+
+test('finds Git on the absolute PATH entries only, in order; an empty or relative entry, which names the folder Git runs in, is never looked at', async () => {
+  // Worst case: EVERY candidate a lookup could build exists and runs, the
+  // planted ones included. Only an absolute entry may answer.
+  const probe = (absent: string[]) => {
+    const probed: string[] = []
+    const isRunnable = async (path: string) => {
+      probed.push(path)
+      return !absent.includes(path)
+    }
+    return { probed, isRunnable }
+  }
+  // Windows: the variable is spelled Path, entries may be quoted, and a drive
+  // relative entry (C:tools) or a rooted one without a drive (\tools) is relative too.
+  const w = probe(['D:\\empty\\git.exe'])
+  const onWindows = createFindGit({ platform: 'win32', isRunnable: w.isRunnable })
+  const winPath = ['.', '', 'bin', 'C:tools', '\\tools', 'D:\\empty\\', ' "C:\\Program Files\\Git\\cmd" ', 'E:\\later'].join(';')
+  assert.equal(await onWindows({ Path: winPath }), 'C:\\Program Files\\Git\\cmd\\git.exe')
+  assert.deepEqual(w.probed, ['D:\\empty\\git.exe', 'C:\\Program Files\\Git\\cmd\\git.exe'])
+  // A UNC entry is absolute.
+  const u = probe([])
+  assert.equal(
+    await createFindGit({ platform: 'win32', isRunnable: u.isRunnable })({ PATH: '.;\\\\server\\share\\git\\cmd' }),
+    '\\\\server\\share\\git\\cmd\\git.exe',
+  )
+  // POSIX: an empty entry and . both mean the current folder.
+  const p = probe(['/usr/local/bin/git'])
+  const onPosix = createFindGit({ platform: 'linux', isRunnable: p.isRunnable })
+  assert.equal(await onPosix({ PATH: ':.:bin:./tools:/usr/local/bin/:/usr/bin:/bin' }), '/usr/bin/git')
+  assert.deepEqual(p.probed, ['/usr/local/bin/git', '/usr/bin/git'])
+  // Only relative entries, or no PATH at all: no Git, and nothing looked at.
+  const none = probe([])
+  assert.equal(await createFindGit({ platform: 'win32', isRunnable: none.isRunnable })({ Path: '.;bin;;C:rel' }), null)
+  assert.equal(await createFindGit({ platform: 'linux', isRunnable: none.isRunnable })({ PATH: ':.:bin' }), null)
+  assert.equal(await createFindGit({ platform: 'linux', isRunnable: none.isRunnable })({}), null)
+  assert.deepEqual(none.probed, [])
+})
+
+test('a PATH with no Git answers git_missing and starts nothing', async () => {
+  const spawn = fakeSpawn(() => ({ out: ROOT + '\n' }))
+  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, async () => null) })
+  assert.deepEqual(result, emptyAnswer('git_missing', 'services'))
+  assert.equal(spawn.children.length, 0, 'nothing is started when no PATH entry holds Git')
 })
 
 // ---------------------------------------------------------------------------
@@ -809,6 +895,49 @@ test("real Git writes a/ and b/ on a host that sets other prefixes, a top folder
         `${name}: ${headers.join(' | ')}`,
       )
     }
+  } finally {
+    s.remove(t)
+  }
+})
+
+test('real Git: a git planted in the folder Git runs in is never the one that runs', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+  // Review round 1 (D-R2), against the real node adapter and its real PATH
+  // lookup. The planted binary is harmless (whoami on Windows, a script that
+  // exits 3 elsewhere); if it ran, the first command would fail.
+  const s = scratchRepo()
+  try {
+    s.git('init', '-q', '-b', 'main')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+    s.commitAll()
+    writeFileSync(join(s.repo, 'a.txt'), 'two\n')
+    const win = process.platform === 'win32'
+    // In the working folder (the first command) and at the root (every later one).
+    for (const dir of [join(s.repo, 'dir'), s.repo]) {
+      const planted = join(dir, win ? 'git.exe' : 'git')
+      if (win) {
+        copyFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'whoami.exe'), planted)
+      } else {
+        writeFileSync(planted, '#!/bin/sh\nexit 3\n')
+        chmodSync(planted, 0o755)
+      }
+    }
+    // Windows looks in the folder with no PATH entry asking it to; POSIX only
+    // through a relative entry, so this host's PATH gains one.
+    const env = win ? s.env : { ...s.env, PATH: `.:${s.env.PATH ?? ''}` }
+    const result = await collectChanges({
+      workdir: join(s.repo, 'dir'),
+      caps: { ...CHANGES_DEFAULT_CAPS, budgetMs: 60_000 },
+      runGit: createNodeRunGit(),
+      fs: nodeChangesFs,
+      now: () => NOW,
+      env,
+    })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.payload.state, 'ok')
+    assert.equal(result.payload.folder, 'repo')
+    assert.equal(result.payload.branch, 'main')
+    assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
   } finally {
     s.remove(t)
   }

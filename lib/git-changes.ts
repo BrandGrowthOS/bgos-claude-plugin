@@ -26,6 +26,15 @@
  *    never read: on a marketplace install it is the plugin cache. And the
  *    variables that would point Git at another repository whatever the
  *    folder says (GIT_DIR and friends) are dropped from its environment.
+ *  - GIT BY ITS ABSOLUTE PATH. spawn('git', { cwd }) on Windows looks in the
+ *    working folder BEFORE PATH (libuv's search_path, which uv_spawn hands
+ *    the child's cwd; git.com is tried before git.exe), and a relative PATH
+ *    entry does the same on any host. The agent writes that folder, so a
+ *    git.exe it left there would run as the owner, outside the agent's own
+ *    permission prompts, each time the owner opened the panel. Measured on
+ *    node 24.16 and bun 1.3.9 on Windows (review round 1, D-R2). So Git is
+ *    looked up on PATH's ABSOLUTE entries only and spawned by that path; no
+ *    Git there reads as git_missing.
  *  - A STREAM CAP, NOT A BUFFER. stdout is read until the cap and then the
  *    child is killed, so a huge diff costs one megabyte and a flag, never a
  *    failed read (a maxBuffer overflow fails the whole call).
@@ -41,7 +50,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { lstat as fsLstat, readFile as fsReadFile } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import { access as fsAccess, lstat as fsLstat, readFile as fsReadFile, stat as fsStat } from 'node:fs/promises'
 
 export type ChangesCaps = {
   maxPatchBytes: number
@@ -143,72 +153,150 @@ function errorCode(err: unknown): string {
   return typeof code === 'string' && code ? code : 'spawn_failed'
 }
 
+/** Finds the Git to run: an absolute path, or null when no PATH entry holds one. */
+export type FindGit = (env: Record<string, string | undefined>) => Promise<string | null>
+
+export type FindGitDeps = {
+  platform: string
+  /** True when the path is a file this process may run. */
+  isRunnable: (path: string) => Promise<boolean>
+}
+
+async function nodeIsRunnable(path: string): Promise<boolean> {
+  try {
+    const st = await fsStat(path)
+    if (!st.isFile()) return false
+    if (process.platform !== 'win32') await fsAccess(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** PATH's value. Windows spells the name Path and reads it case blind. */
+function pathVariable(env: Record<string, string | undefined>, win: boolean): string {
+  if (!win) return typeof env.PATH === 'string' ? env.PATH : ''
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === 'PATH' && typeof value === 'string') return value
+  }
+  return ''
+}
+
 /**
- * Run `git` from PATH through spawn, reading stdout until `maxBytes` and then
- * killing the child. Resolves once, never rejects: a spawn failure comes back
- * as `spawnError`, a budget abort as `aborted`.
+ * An entry that names a folder on its own, whatever folder Git runs in. Empty,
+ * `.`, `bin`, a drive relative `C:tools` and a rooted `\tools` with no drive
+ * all depend on the working folder, so they are never looked at.
  */
-export function createNodeRunGit(spawnImpl: SpawnLike = spawn as unknown as SpawnLike): RunGit {
-  return (args, opts) =>
-    new Promise<GitRun>((resolve) => {
-      const chunks: Buffer[] = []
-      let size = 0
-      let truncated = false
-      let stderr = ''
-      let settled = false
-      let child: ChildLike | null = null
+function isAbsoluteEntry(dir: string, win: boolean): boolean {
+  if (win) return /^[A-Za-z]:[\\/]/.test(dir) || /^[\\/]{2}[^\\/]/.test(dir)
+  return dir.startsWith('/')
+}
 
-      const finish = (run: Omit<GitRun, 'stdout' | 'stderr' | 'truncated'>) => {
-        if (settled) return
-        settled = true
-        opts.signal.removeEventListener('abort', onAbort)
-        resolve({ ...run, stdout: Buffer.concat(chunks, size), stderr: stderr.slice(0, STDERR_KEEP), truncated })
-      }
-      const kill = () => {
-        try {
-          child?.kill()
-        } catch {
-          // Already gone.
-        }
-      }
-      function onAbort() {
-        kill()
-        finish({ code: null, aborted: true })
-      }
+/**
+ * The Git lookup: the first absolute PATH entry holding `git.exe` (Windows) or
+ * a runnable `git` (elsewhere), in PATH order. Never the working folder.
+ */
+export function createFindGit(deps: Partial<FindGitDeps> = {}): FindGit {
+  const platform = deps.platform ?? process.platform
+  const isRunnable = deps.isRunnable ?? nodeIsRunnable
+  const win = platform === 'win32'
+  return async (env) => {
+    for (const raw of pathVariable(env, win).split(win ? ';' : ':')) {
+      const dir = win ? raw.trim().replace(/^"(.*)"$/, '$1').trim() : raw
+      if (!isAbsoluteEntry(dir, win)) continue
+      const candidate = win ? `${dir.replace(/[\\/]+$/, '')}\\git.exe` : `${dir.replace(/\/+$/, '')}/git`
+      if (await isRunnable(candidate)) return candidate
+    }
+    return null
+  }
+}
 
-      if (opts.signal.aborted) {
-        finish({ code: null, aborted: true })
-        return
-      }
+/**
+ * Run the Git that PATH names, by its absolute path (see the rule above),
+ * through spawn, reading stdout until `maxBytes` and then killing the child.
+ * Resolves once, never rejects: a spawn failure comes back as `spawnError`
+ * (ENOENT too when no PATH entry holds Git), a budget abort as `aborted`.
+ * PATH is looked up once per adapter; server.ts makes one per read.
+ */
+export function createNodeRunGit(
+  spawnImpl: SpawnLike = spawn as unknown as SpawnLike,
+  findGit: FindGit = createFindGit(),
+): RunGit {
+  let git: Promise<string | null> | null = null
+  return async (args, opts) => {
+    if (opts.signal.aborted) return { code: null, stdout: Buffer.alloc(0), stderr: '', truncated: false, aborted: true }
+    git ??= findGit(opts.env).catch(() => null)
+    const bin = await git
+    if (!bin) return { code: null, stdout: Buffer.alloc(0), stderr: '', truncated: false, spawnError: 'ENOENT' }
+    return spawnGit(spawnImpl, bin, args, opts)
+  }
+}
+
+function spawnGit(
+  spawnImpl: SpawnLike,
+  bin: string,
+  args: readonly string[],
+  opts: { cwd: string; env: Record<string, string | undefined>; maxBytes: number; signal: AbortSignal },
+): Promise<GitRun> {
+  return new Promise<GitRun>((resolve) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    let truncated = false
+    let stderr = ''
+    let settled = false
+    let child: ChildLike | null = null
+
+    const finish = (run: Omit<GitRun, 'stdout' | 'stderr' | 'truncated'>) => {
+      if (settled) return
+      settled = true
+      opts.signal.removeEventListener('abort', onAbort)
+      resolve({ ...run, stdout: Buffer.concat(chunks, size), stderr: stderr.slice(0, STDERR_KEEP), truncated })
+    }
+    const kill = () => {
       try {
-        child = spawnImpl('git', args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
-      } catch (err) {
-        finish({ code: null, spawnError: errorCode(err) })
+        child?.kill()
+      } catch {
+        // Already gone.
+      }
+    }
+    function onAbort() {
+      kill()
+      finish({ code: null, aborted: true })
+    }
+
+    if (opts.signal.aborted) {
+      finish({ code: null, aborted: true })
+      return
+    }
+    try {
+      child = spawnImpl(bin, args, { cwd: opts.cwd, env: opts.env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    } catch (err) {
+      finish({ code: null, spawnError: errorCode(err) })
+      return
+    }
+    opts.signal.addEventListener('abort', onAbort, { once: true })
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (truncated || settled) return
+      const room = opts.maxBytes - size
+      if (chunk.length > room) {
+        if (room > 0) {
+          chunks.push(chunk.subarray(0, room))
+          size += room
+        }
+        truncated = true
+        kill()
         return
       }
-      opts.signal.addEventListener('abort', onAbort, { once: true })
-
-      child.stdout?.on('data', (chunk: Buffer) => {
-        if (truncated || settled) return
-        const room = opts.maxBytes - size
-        if (chunk.length > room) {
-          if (room > 0) {
-            chunks.push(chunk.subarray(0, room))
-            size += room
-          }
-          truncated = true
-          kill()
-          return
-        }
-        chunks.push(chunk)
-        size += chunk.length
-      })
-      child.stderr?.on('data', (chunk: Buffer) => {
-        if (stderr.length < STDERR_KEEP) stderr += chunk.toString('utf8')
-      })
-      child.on('error', (err) => finish({ code: null, spawnError: errorCode(err) }))
-      child.on('close', (code) => finish({ code }))
+      chunks.push(chunk)
+      size += chunk.length
     })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < STDERR_KEEP) stderr += chunk.toString('utf8')
+    })
+    child.on('error', (err) => finish({ code: null, spawnError: errorCode(err) }))
+    child.on('close', (code) => finish({ code }))
+  })
 }
 
 /** The file reads the untracked step needs. */
