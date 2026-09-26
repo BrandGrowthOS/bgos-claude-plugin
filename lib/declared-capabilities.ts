@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The seven tokens, and what each one PROMISES the owner:
+ * The nine tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -104,6 +104,17 @@
  *                       it into a settings file the CLI reads, so the daemon
  *                       looks at boot (lib/floor-hook-presence.ts) and does
  *                       not declare a stop its session cannot make.
+ *   boards_playbook     this daemon's boards_update_schema tool can describe
+ *                       what each column of a workflow select means (the
+ *                       set_column_lines op, 0.56.0), and it checks the
+ *                       server's echo, so a server that cannot store a line
+ *                       is reported as one. Every host: it is a typed tool
+ *                       argument and has no platform limit. The backend
+ *                       serves the canon's column lines sentence only to a
+ *                       connection that declares this token, on its
+ *                       heartbeat or on the capabilities fetch itself
+ *                       (lib/capabilities.ts, capabilitiesFetchPath), so an
+ *                       agent is never told about a tool it does not have.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -130,6 +141,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
+  'boards_playbook',
 ])
 
 /**

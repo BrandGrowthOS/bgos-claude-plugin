@@ -6,14 +6,19 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   pickCapabilities,
+  capabilitiesFetchPath,
   BGOS_CAPABILITIES_FALLBACK,
   CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE,
   capabilitiesFallbackFor,
   MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
+import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 
 const SERVED_TEXT =
   '# BGOS Channel Agent Capabilities\n(channel: claude, canon v2026.07.11)\n\nGuide body.'
@@ -179,4 +184,121 @@ test('the bundled fallback carries the hard floor sentences, word for word (spec
 
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
+})
+
+// \u2500\u2500 The canon fetch path (0.56.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+//
+// The backend serves the column lines sentence only to a connection that
+// declares boards_playbook, and the fetch at connect can run before the first
+// heartbeat has stored the declaration, so the fetch carries the list itself.
+//
+// MUTATION PROOFS (each applied to lib/capabilities.ts, confirmed red,
+// restored):
+//
+//  1. DROP THE PARAMETER. Returned the base path without `&capabilities=` ->
+//     "the fetch path carries the channel, the version and the declared list",
+//     "the daemon's own base declaration reaches the fetch", the version case
+//     and the malformed token case fail (four red): the agent would never be
+//     told about the tool it has.
+//  2. NO ENCODING. Joined the tokens into the query unencoded -> the literal
+//     pin fails on `%2C`. A raw comma is legal in a query, but the pin is the
+//     contract the backend spec is written against, so it stays exact.
+//  3. NO GRAMMAR FILTER. Sent every token as given -> "a malformed token is
+//     dropped rather than costing the whole canon" fails, and the backend's
+//     @Matches would answer 400 and cost the live canon for every token.
+
+test('the fetch path carries the channel, the version and the declared list', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.56.0', ['mission_events', 'boards_playbook']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.56.0&capabilities=mission_events%2Cboards_playbook',
+  )
+})
+
+test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
+  const path = capabilitiesFetchPath(
+    '0.56.0',
+    declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }),
+  )
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  assert.equal(query.get('channel'), 'claude')
+  assert.equal(query.get('daemonVersion'), '0.56.0')
+  assert.deepEqual(query.get('capabilities')!.split(','), [
+    'mission_events',
+    'mission_goal_checks',
+    'mission_set_goals',
+    'permission_card',
+    'plan_card',
+    'boards_playbook',
+    'hard_floor',
+  ])
+})
+
+test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
+  assert.ok(
+    capabilitiesFetchPath('0.56.0-rc.1+build 7', ['boards_playbook']).includes(
+      'daemonVersion=0.56.0-rc.1%2Bbuild%207&',
+    ),
+  )
+  assert.ok(capabilitiesFetchPath(null, ['boards_playbook']).includes('daemonVersion=0.0.0&'))
+})
+
+test('an empty declaration sends no capabilities key, exactly the path before the key existed', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.44.0', []),
+    'integrations/capabilities?channel=claude&daemonVersion=0.44.0',
+  )
+})
+
+test('a malformed token is dropped rather than costing the whole canon, and the list is capped at 32', () => {
+  assert.equal(
+    capabilitiesFetchPath('0.56.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.56.0&capabilities=boards_playbook',
+  )
+  const many = Array.from({ length: 40 }, (_, i) => `cap_${i}`)
+  const path = capabilitiesFetchPath('0.56.0', many)
+  const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
+  const sent = query.get('capabilities')!.split(',')
+  assert.equal(sent.length, 32)
+  assert.equal(sent[0], 'cap_0')
+  assert.equal(sent[31], 'cap_31')
+})
+
+// The ONE caller (W1 close 2, review T4). Every case above tests the pure
+// helper; the call that runs it at boot is in server.ts, which no pure test
+// imports. A merge that takes the 0.44.0 template back (plugin PRs that touch
+// server.ts may land first) would pass all of them and leave every 0.56.0
+// daemon untold on its first boot, so the call is pinned as a source
+// contract, the house style for server.ts behaviour
+// (test/startup-reaches-poll.test.ts).
+//
+// MUTATION PROOF (applied to server.ts, confirmed red, restored from one
+// pristine copy): the fetch path back to the 0.44.0 template
+// `integrations/capabilities?channel=claude&daemonVersion=${...}` -> "the
+// canon fetch carries boards_playbook" fails.
+
+test('the canon fetch carries boards_playbook', () => {
+  const server = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'),
+    'utf8',
+  ).replace(/\r\n/g, '\n')
+  const start = server.indexOf('async function loadServedCapabilities(')
+  assert.ok(start > 0, 'loadServedCapabilities is gone from server.ts')
+  const end = server.indexOf('\n}\n', start)
+  const body = server.slice(start, end)
+  // Main's one declared list (test/capabilities-fetch-path.test.ts pins its
+  // shape): computed once from the host and the auth mode, for the fetch and
+  // the offline copy. Taken at the merge of main at 0.54.0.
+  assert.match(
+    body,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)/,
+  )
+  assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
+  assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
+  // The declared list the fetch sends holds the token the gate reads, on
+  // either auth mode and whether or not the floor hook is registered.
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    for (const floorHook of [true, false]) {
+      assert.ok(declaredCapabilities({ canInjectGoal: false, floorHook, authMode }).includes('boards_playbook'))
+    }
+  }
 })
