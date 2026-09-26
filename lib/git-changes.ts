@@ -384,6 +384,16 @@ export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than th
 // otherwise write its own, and under diff.noprefix a top folder named a or b
 // cannot be told from a prefix (lane B's review, B-3). numstat prints paths
 // with no prefix at all, so it needs neither flag.
+//
+// The patch also asks for Git's short submodule format by name: a host whose
+// config sets diff.submodule=log writes a moved submodule as
+// "Submodule <path> <a>..<b>:" and its commit subjects, and =diff writes the
+// submodule's own files inline. Neither starts with a diff --git line of its
+// own, so the backend's splitter would hang them on the file before, or draw
+// files numstat never names. Short is Git's default: one
+// "diff --git a/<path> b/<path>" section whose two lines are the old and the
+// new "Subproject commit" (lane C's review, C-R3, measured on Git 2.55).
+// numstat is one "1 1 <path>" record under every setting, so it needs none.
 const GIT_TOPLEVEL = ['rev-parse', '--show-toplevel']
 const GIT_VERIFY_HEAD = ['rev-parse', '--verify', '--quiet', 'HEAD']
 const GIT_BRANCH = ['symbolic-ref', '--quiet', '--short', 'HEAD']
@@ -414,6 +424,7 @@ const GIT_PATCH = [
   '--no-color',
   '--src-prefix=a/',
   '--dst-prefix=b/',
+  '--submodule=short',
   '--find-renames',
   'HEAD',
   '--',

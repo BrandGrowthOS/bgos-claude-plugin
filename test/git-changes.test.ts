@@ -88,6 +88,7 @@ const ARGV_PATCH = [
   '--no-color',
   '--src-prefix=a/',
   '--dst-prefix=b/',
+  '--submodule=short',
   '--find-renames',
   'HEAD',
   '--',
@@ -415,6 +416,28 @@ test("asks Git for its own a/ and b/ prefixes on the patch, whatever the host's 
   // numstat names paths without any prefix, so it needs none.
   const numstat = calls.find((c) => c.args.includes('--numstat'))
   assert.ok(numstat && !numstat.args.some((a) => a.startsWith('--src-prefix') || a.startsWith('--dst-prefix')))
+})
+
+test("asks Git for its short submodule format on the patch, whatever the host's diff.submodule", async () => {
+  // Lane C's review (P7 stage 3, C-R3), which applies here as written: a host
+  // whose Git config sets diff.submodule=log writes a moved submodule as
+  // "Submodule <path> <a>..<b>:" and its commit subjects, and =diff writes
+  // the submodule's own files inline. Neither starts with a diff --git line
+  // of its own, so the backend's splitter would hang them on the file before.
+  // Short is Git's default, and the patch asks for it by name. The patch is
+  // answered whatever its argv here, so this fails on the flag, not on a
+  // fixture that no longer matches.
+  const reply = (args: readonly string[]): Reply => (args.includes('--no-color') ? ok(PATCH) : repoReply()(args))
+  const { calls } = await collect({ reply })
+  const patch = calls.find((c) => c.args.includes('--no-color'))
+  assert.ok(patch, 'the patch command ran')
+  assert.deepEqual(
+    patch.args.filter((a) => a.startsWith('--submodule')),
+    ['--submodule=short'],
+    'the patch asks for the short submodule format, once',
+  )
+  const at = patch.args.indexOf('--submodule=short')
+  assert.ok(at > patch.args.indexOf('diff') && at < patch.args.indexOf('HEAD'), 'an option of the diff, before HEAD')
 })
 
 const WRITING_COMMANDS = [
@@ -964,6 +987,68 @@ test("real Git writes a/ and b/ on a host that sets other prefixes, a top folder
     s.remove(t)
   }
 })
+
+// Lane C's review (P7 stage 3, C-R3), on this daemon: a moved submodule under a
+// host's diff.submodule=log or =diff. The repository's one change is
+// vendor/lib, an embedded repository recorded at its first commit and then
+// moved on to a second one. The setting goes in the scratch global config,
+// where a host's own would be.
+for (const setting of ['log', 'diff']) {
+  test(`real Git: a host with diff.submodule=${setting} set still writes a moved submodule as its own a/ b/ section`, { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+    const s = scratchRepo()
+    try {
+      s.git('init', '-q', '-b', 'main')
+      writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+      s.git('init', '-q', '-b', 'main', 'vendor/lib')
+      const inner = (...args: string[]) => s.git('-C', 'vendor/lib', ...args)
+      const innerCommit = (message: string) =>
+        inner('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-a', '-m', message)
+      writeFileSync(join(s.repo, 'vendor', 'lib', 'lib.txt'), 'v1\n')
+      inner('add', 'lib.txt')
+      innerCommit('lib one')
+      const first = inner('rev-parse', 'HEAD').trim()
+      s.commitAll()
+      writeFileSync(join(s.repo, 'vendor', 'lib', 'lib.txt'), 'v2\n')
+      innerCommit('lib two')
+      const second = inner('rev-parse', 'HEAD').trim()
+      writeFileSync(join(s.base, 'gitconfig'), `[safe]\n\tdirectory = *\n[diff]\n\tsubmodule = ${setting}\n`)
+
+      // The control, so this case can fail: the same patch WITHOUT the short
+      // format, under the same setting and the collector's own variables,
+      // writes Git's "Submodule vendor/lib ..." line, which starts no section.
+      const control = spawnSync('git', ARGV_PATCH.filter((a) => a !== '--submodule=short'), {
+        cwd: s.repo,
+        env: { ...s.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } as NodeJS.ProcessEnv,
+        encoding: 'utf8',
+      })
+      assert.equal(control.status, 0, control.stderr)
+      assert.ok(
+        control.stdout.split(/\r?\n/).some((l) => l.startsWith('Submodule vendor/lib ')),
+        `the host setting is in force: ${JSON.stringify(control.stdout)}`,
+      )
+
+      const result = await s.read(s.repo)
+      assert.equal(result.ok, true)
+      if (!result.ok) return
+      const p = result.payload
+      assert.equal(p.state, 'ok')
+      const lines = p.patch.replace(/\r\n/g, '\n').split('\n')
+      // One section, named by its own diff --git line, and nothing the
+      // backend's splitter would hang on another file.
+      assert.deepEqual(lines.filter((l) => l.startsWith('diff --git ')), ['diff --git a/vendor/lib b/vendor/lib'], p.patch)
+      assert.deepEqual(lines.filter((l) => l.startsWith('Submodule ')), [], p.patch)
+      assert.deepEqual(
+        lines.filter((l) => /^(--- |\+\+\+ |[-+]Subproject commit )/.test(l)),
+        ['--- a/vendor/lib', '+++ b/vendor/lib', `-Subproject commit ${first}`, `+Subproject commit ${second}`],
+        p.patch,
+      )
+      assert.equal(p.numstat, '1\t1\tvendor/lib\x00')
+      assert.equal(p.untracked, '')
+    } finally {
+      s.remove(t)
+    }
+  })
+}
 
 test('real Git: a git planted in the folder Git runs in is never the one that runs', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
   // Review round 1 (D-R2), against the real node adapter and its real PATH
