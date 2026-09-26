@@ -126,11 +126,16 @@ const UNTRACKED = 'notes.md\0'
  * The two refusals the owner reads, in their plain words, written out (fix
  * round w5): a Git below the 2.36 floor (W4-N3), and a top folder that is not
  * the agent's folder or a folder above it (W4-N4). Both answer read_failed.
- * The second is the very sentence the Codex daemon sends for the same
- * refusal (lane C's READ_FAILED_MESSAGE, fix round w6), so the owner reads
- * one sentence whatever the agent.
+ * Each is the very sentence the Codex daemon sends for the same refusal, so
+ * the owner reads one sentence whatever the agent: the first is lane C's
+ * READ_FAILED_MESSAGE, a colon, then its GIT_FLOOR_MESSAGE (round w7), the
+ * second its READ_FAILED_MESSAGE alone (fix round w6).
  */
-const TOO_OLD = { ok: false, code: 'read_failed', message: 'Git 2.36 or later is needed to read changes safely' }
+const TOO_OLD = {
+  ok: false,
+  code: 'read_failed',
+  message: 'changes could not be read on the agent host: Git 2.36 or later is needed to read changes safely',
+}
 const OUTSIDE = { ok: false, code: 'read_failed', message: 'changes could not be read on the agent host' }
 
 type Reply = Partial<GitRun>
@@ -595,7 +600,7 @@ test('every Git command turns off an fsmonitor hook the repository names, before
   }
 })
 
-test('every Git read turns off lazy fetching, by the variable, so a partial clone never starts a fetch from its promisor remote', async () => {
+test('every Git read turns off lazy fetching, by the variable, so on a Git that knows GIT_NO_LAZY_FETCH a partial clone never starts a fetch from its promisor remote', async () => {
   // Fix round w5 (W4-N1). In a partial clone, a read that needs an object the
   // clone left out asks the promisor remote for it, and that fetch runs the
   // programs the repository's config names (remote.<name>.uploadpack, a
@@ -1638,7 +1643,7 @@ function recordingSpawn() {
   return { argvs, spawnImpl }
 }
 
-test('real Git: a partial clone never starts a fetch from its promisor remote during a read', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+test('real Git: on a Git that knows GIT_NO_LAZY_FETCH, a partial clone never starts a fetch from its promisor remote during a read', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
   // Fix round w5 (W4-N1), against real Git: a clone of a file:// source made
   // with --filter=blob:none and no checkout, so the object behind a.txt at
   // HEAD is not in it, and the index read from HEAD. The repository's own

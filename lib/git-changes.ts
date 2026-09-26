@@ -26,7 +26,8 @@
  * common dir outside its folder.
  *
  * The rules, and why each one is here (spec 10.1):
- *  - READ ONLY. The commands below are the whole list. None of them writes the
+ *  - READ ONLY. The commands below are the whole list, after the one read of
+ *    `git version` per Git path (GIT 2.36 OR LATER). None of them writes the
  *    index, the working tree or a ref (a lazy fetch, on a Git that does not
  *    know GIT_NO_LAZY_FETCH, would still add objects: see NO LAZY FETCH).
  *    One read still WOULD write: a diff that finds a file touched but
@@ -43,13 +44,15 @@
  *    notes do not name it, and no Git before 2.36 was run here). So the
  *    adapter reads `git version` for the Git path it resolves before any
  *    other command; a Git below 2.36, or a version it cannot read, answers
- *    read_failed in plain words ("Git 2.36 or later is needed to read changes
- *    safely") and no other command runs (fix round w5, W4-N3). Only an
- *    ACCEPTED Git is kept, once per Git path: a refusal is read again at the
- *    next read, so an owner who updates Git needs no daemon restart (fix
- *    round w6, as lane C does). The floor stays 2.36: 2.45 would refuse
- *    Ubuntu 24.04's Git 2.43, which honours GIT_NO_LAZY_FETCH (measured for
- *    fix round w6, not on this host). What the floor covers: the meaning of
+ *    read_failed in the words the Codex daemon sends for it too ("changes
+ *    could not be read on the agent host: Git 2.36 or later is needed to read
+ *    changes safely", round w7) and no other command runs (fix round w5,
+ *    W4-N3). Only an ACCEPTED Git is kept, once per Git path: a refusal is
+ *    read again at the next read, so an owner who updates Git needs no daemon
+ *    restart (fix round w6, as lane C does). The floor stays 2.36: 2.45 would
+ *    refuse Ubuntu 24.04's Git 2.43, which honours GIT_NO_LAZY_FETCH
+ *    (measured by lane C in fix round w5, probe 2, on this machine's WSL, not
+ *    under this lane's Windows Git). What the floor covers: the meaning of
  *    the fsmonitor flag below, nothing more; it is defence in depth.
  *  - NO FSMONITOR HOOK. core.fsmonitor in the repository's own config names
  *    a program Git runs when it reads the index; every command here turns it
@@ -68,11 +71,12 @@
  *    on a Git that knows the variable such a read fails instead (fix round
  *    w5, W4-N1). Git's release notes first name it in 2.45.0 (with its
  *    --no-lazy-fetch flag), and Ubuntu 24.04's build of Git 2.43.0 honours it
- *    too (measured for fix round w6, not on this host). A Git from 2.36 that
- *    does not know it passes the floor and can still fetch lazily in a
- *    partial clone: a documented gap. The variable, never the flag, which an
- *    older Git rejects as an unknown option. A promisor remote is the
- *    clone's local config, so this is defence in depth.
+ *    too (measured by lane C in fix round w5, probe 2, on this machine's WSL,
+ *    not under this lane's Windows Git). A Git from 2.36 that does not know it
+ *    passes the floor and can still fetch lazily in a partial clone: a
+ *    documented gap. The variable, never the flag, which an older Git rejects
+ *    as an unknown option. A promisor remote is the clone's local config, so
+ *    this is defence in depth.
  *  - THE FOLDER IT IS GIVEN. The first command runs in the working folder and
  *    prints the repository root; every later command runs in that ROOT, so
  *    the tracked paths (Git prints them root relative) and the untracked names
@@ -580,8 +584,14 @@ export type ChangesCollectResult =
   | { ok: false; code: 'too_slow' | 'read_failed'; message: string }
 
 export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than the time allowed'
-/** A Git below the floor (fix round w5, W4-N3), in the words the owner reads. */
-export const CHANGES_GIT_TOO_OLD_MESSAGE = 'Git 2.36 or later is needed to read changes safely'
+/**
+ * A Git below the floor (fix round w5, W4-N3), in the very words the Codex
+ * daemon sends for the same refusal (its READ_FAILED_MESSAGE, a colon, then
+ * its GIT_FLOOR_MESSAGE; round w7), so the owner reads one sentence whatever
+ * the agent. The part after the colon says what the owner can do.
+ */
+export const CHANGES_GIT_TOO_OLD_MESSAGE =
+  'changes could not be read on the agent host: Git 2.36 or later is needed to read changes safely'
 /**
  * A root that is not the working folder or above it (fix round w5, W4-N4), in
  * the very words the Codex daemon sends for the same refusal (its
@@ -590,8 +600,13 @@ export const CHANGES_GIT_TOO_OLD_MESSAGE = 'Git 2.36 or later is needed to read 
  */
 export const CHANGES_OUTSIDE_FOLDER_MESSAGE = 'changes could not be read on the agent host'
 
-// The commands, whole. Nothing else is ever run (spec 10.1 item 7). The
-// patch asks for Git's own a/ and b/ prefixes: a host whose config sets
+// The commands, whole (spec 10.1 item 7). Before them the adapter runs one
+// Git read more: `git version`, once per Git path it resolves and accepts
+// (GIT_VERSION above, the header's GIT 2.36 OR LATER rule; a refused Git is
+// asked again at the next read, and none of these runs). Nothing else is
+// ever run.
+//
+// The patch asks for Git's own a/ and b/ prefixes: a host whose config sets
 // diff.mnemonicPrefix, diff.noprefix, diff.srcPrefix or diff.dstPrefix would
 // otherwise write its own, and under diff.noprefix a top folder named a or b
 // cannot be told from a prefix (lane B's review, B-3). numstat prints paths
