@@ -391,6 +391,70 @@ test('a repository whose Git environment points elsewhere is still read in the f
   }
 })
 
+/** The eight names Git reads as "another repository or index", written out. */
+const REPOSITORY_OVERRIDE_NAMES = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+]
+
+test('on Windows, which reads names case blind, a repository override in any spelling is dropped', async () => {
+  // Fix round w4 (F5). The eight were dropped by their capital spelling only,
+  // but a Windows environment name is case blind: Git reads Git_Dir as
+  // GIT_DIR there (measured, the real Git case below). Elsewhere names are
+  // case sensitive and Git reads only the capitals, so another spelling is
+  // not Git's and rides along untouched.
+  const spelled = {
+    Git_Dir: 'D:/other/.git',
+    git_work_tree: 'D:/other',
+    Git_Index_File: 'D:/other/.git/index',
+    GIT_Common_Dir: 'D:/other/.git',
+    git_object_directory: 'D:/other/.git/objects',
+    Git_Alternate_Object_Directories: 'D:/elsewhere/objects',
+    Git_NameSpace: 'theirs',
+    git_Prefix: 'sub/',
+  }
+  const read = async (platform: string, env: Record<string, string>) => {
+    const git = fakeGit(repoReply())
+    const result = await collectChanges({
+      workdir: WORKDIR,
+      caps: { ...CHANGES_DEFAULT_CAPS },
+      runGit: git.runGit,
+      fs: memFs({ [`${ROOT}/notes.md`]: { kind: 'file', data: Buffer.from('# Notes\n') } }).fs,
+      now: () => NOW,
+      env,
+      platform,
+    } as Parameters<typeof collectChanges>[0])
+    assert.equal(result.ok && result.payload.state, 'ok', platform)
+    return git.calls
+  }
+  const onWindows = await read('win32', { ...BASE_ENV, ...spelled, GIT_DIR_NOT_AN_OVERRIDE: 'kept' })
+  assert.equal(onWindows.length, 7)
+  for (const c of onWindows) {
+    assert.deepEqual(
+      Object.keys(c.env).filter((k) => REPOSITORY_OVERRIDE_NAMES.includes(k.toUpperCase())),
+      [],
+      `${c.args.join(' ')} still carries an override in another spelling`,
+    )
+    assert.equal(c.env.GIT_DIR_NOT_AN_OVERRIDE, 'kept', 'a name that only starts like one rides along')
+    assert.equal(c.env.PATH, '/usr/bin', 'the rest of the environment rides along')
+  }
+  const onLinux = await read('linux', { ...BASE_ENV, ...spelled, GIT_DIR: 'D:/other/.git' })
+  for (const c of onLinux) {
+    assert.equal(c.env.GIT_DIR, undefined, 'the capitals are dropped everywhere')
+    assert.deepEqual(
+      Object.keys(c.env).filter((k) => REPOSITORY_OVERRIDE_NAMES.includes(k.toUpperCase())),
+      Object.keys(spelled),
+      'elsewhere another spelling is not a Git variable and is left as it was',
+    )
+  }
+})
+
 test('both diffs turn off the index refresh, which GIT_OPTIONAL_LOCKS alone does not stop', async () => {
   // Found while building this collector (Git 2.55 on Windows, a scratch
   // repository): a file touched but unchanged makes `git diff HEAD` refresh
@@ -1133,7 +1197,49 @@ test("real Git: an fsmonitor hook the repository's own config names never runs",
   }
 })
 
-test('real Git: a git planted in the folder Git runs in is never the one that runs',{ skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+test('real Git on Windows: an override spelled another way never points Git at another repository', { skip: !HAS_GIT || process.platform !== 'win32', timeout: 120_000 }, async (t) => {
+  // Fix round w4 (F5), against real Git on a Windows host (skipped elsewhere,
+  // where Git reads only the capitals and the control below could not pass).
+  const s = scratchRepo()
+  try {
+    s.git('init', '-q', '-b', 'agent-branch')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+    s.commitAll()
+    writeFileSync(join(s.repo, 'a.txt'), 'two\n')
+    // Another repository, on a branch of its own, outside the agent's.
+    const other = join(s.base, 'other')
+    s.git('init', '-q', '-b', 'other-branch', other)
+    writeFileSync(join(other, 'z.txt'), 'zed\n')
+    s.git('-C', other, 'add', '-A')
+    s.git('-C', other, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'other')
+    const env = { ...s.env, Git_Dir: join(other, '.git') }
+    // The control, so this case can fail: Windows hands Git_Dir to Git as GIT_DIR.
+    const control = spawnSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      cwd: s.repo,
+      env: env as NodeJS.ProcessEnv,
+      encoding: 'utf8',
+    })
+    assert.equal(control.stdout.trim(), 'other-branch', `the control read the other repository: ${control.stderr}`)
+    const result = await collectChanges({
+      workdir: s.repo,
+      caps: { ...CHANGES_DEFAULT_CAPS, budgetMs: 60_000 },
+      runGit: createNodeRunGit(),
+      fs: nodeChangesFs,
+      now: () => NOW,
+      env,
+    })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.payload.state, 'ok')
+    assert.equal(result.payload.branch, 'agent-branch', 'the agent repository, never the one Git_Dir names')
+    assert.equal(result.payload.folder, 'repo')
+    assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
+  } finally {
+    s.remove(t)
+  }
+})
+
+test('real Git: a git planted in the folder Git runs in is never the one that runs', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
   // Review round 1 (D-R2), against the real node adapter and its real PATH
   // lookup. The planted binary is harmless (whoami on Windows, a script that
   // exits 3 elsewhere); if it ran, the first command would fail.

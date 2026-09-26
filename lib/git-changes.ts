@@ -29,7 +29,8 @@
  *    (which ls-files prints folder relative) agree. The process folder is
  *    never read: on a marketplace install it is the plugin cache. And the
  *    variables that would point Git at another repository whatever the
- *    folder says (GIT_DIR and friends) are dropped from its environment.
+ *    folder says (GIT_DIR and friends) are dropped from its environment, in
+ *    any spelling on Windows, whose names are case blind (fix round w4, F5).
  *  - GIT BY ITS ABSOLUTE PATH. spawn('git', { cwd }) on Windows looks in the
  *    working folder BEFORE PATH (libuv's search_path, which uv_spawn hands
  *    the child's cwd; git.com is tried before git.exe), and a relative PATH
@@ -459,9 +460,20 @@ const REPOSITORY_OVERRIDES = [
   'GIT_PREFIX',
 ]
 
-function gitEnv(base: Record<string, string | undefined>): Record<string, string | undefined> {
+/**
+ * Git's environment: a copy of the daemon's without the repository overrides.
+ * A Windows environment name is case blind, so there Git reads Git_Dir as
+ * GIT_DIR (measured on Git 2.55 through node's spawn, fix round w4, F5), and
+ * every spelling of the eight is dropped. Elsewhere names are case sensitive
+ * and Git reads only the capitals; another spelling is not Git's and stays.
+ */
+function gitEnv(base: Record<string, string | undefined>, platform: string): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...base }
-  for (const key of REPOSITORY_OVERRIDES) delete env[key]
+  if (platform === 'win32') {
+    for (const key of Object.keys(env)) if (REPOSITORY_OVERRIDES.includes(key.toUpperCase())) delete env[key]
+  } else {
+    for (const key of REPOSITORY_OVERRIDES) delete env[key]
+  }
   env.GIT_OPTIONAL_LOCKS = '0'
   env.GIT_TERMINAL_PROMPT = '0'
   env.LC_ALL = 'C'
@@ -516,6 +528,8 @@ export async function collectChanges(input: {
   fs: ChangesFs
   now: () => number
   env?: Record<string, string | undefined>
+  /** The host's platform (process.platform by default); decides how Git's environment names compare. */
+  platform?: string
 }): Promise<ChangesCollectResult> {
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -545,11 +559,12 @@ async function readChanges(
     fs: ChangesFs
     now: () => number
     env?: Record<string, string | undefined>
+    platform?: string
   },
   signal: AbortSignal,
 ): Promise<ChangesCollectResult> {
   const { caps } = input
-  const env = gitEnv(input.env ?? process.env)
+  const env = gitEnv(input.env ?? process.env, input.platform ?? process.platform)
   const takenAt = new Date(input.now()).toISOString()
   const run = async (args: readonly string[], cwd: string, maxBytes: number): Promise<GitRun> => {
     if (signal.aborted) throw new BudgetSpent()
