@@ -636,12 +636,24 @@ class FakeChild extends EventEmitter {
   }
 }
 
+/**
+ * A child whose kill never ends it: Git for Windows' cmd\git.exe is a
+ * launcher, and the git it started can keep the pipes open after the
+ * launcher is killed, so no 'close' comes (fix round w4, R-6).
+ */
+class StubbornChild extends FakeChild {
+  override kill(): boolean {
+    this.killed = true
+    return true
+  }
+}
+
 type SpawnPlan = { out?: string; code?: number; stream?: { chunk: Buffer; count: number }; error?: string }
 
-function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan) {
+function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan, make: () => FakeChild = () => new FakeChild()) {
   const children: Array<{ cmd: string; args: string[]; cwd: string; child: FakeChild }> = []
   const spawnImpl = (cmd: string, args: readonly string[], options: { cwd: string }) => {
-    const child = new FakeChild()
+    const child = make()
     children.push({ cmd, args: [...args], cwd: options.cwd, child })
     const p = plan(args)
     setImmediate(async () => {
@@ -697,6 +709,34 @@ test('stops reading at the byte cap, says it was cut, and kills the child', asyn
   assert.equal(spawn.children.filter((c) => c.child.killed).length, 1, 'only the child past its cap is killed')
   // The adapter runs `git` with the working folder it is given.
   assert.equal(spawn.children[0].cwd, WORKDIR)
+})
+
+test('at the byte cap the node adapter answers at once, even when the killed Git never closes its pipes', { timeout: 10_000 }, async () => {
+  // Fix round w4 (R-6), as lane C does. The adapter killed the child at the
+  // cap and then waited for 'close'. A kill ends Git for Windows' launcher,
+  // but the git it started can hold the pipes for as long as it lives, so
+  // that wait could last. At the cap the read already has all it will send:
+  // it answers then, and closes its own end of stdout, so a grandchild still
+  // writing fails its next write and ends.
+  const MB = 1024 * 1024
+  const chunk = Buffer.alloc(64 * 1024, 'x')
+  const spawn = fakeSpawn(() => ({ stream: { chunk, count: 48 } }), () => new StubbornChild())
+  const runGit = createNodeRunGit(spawn.spawnImpl as never, findGitExe)
+  const read = runGit(ARGV_PATCH, { cwd: ROOT, env: { ...BASE_ENV }, maxBytes: MB, signal: new AbortController().signal })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<'still waiting'>((resolve) => {
+    timer = setTimeout(() => resolve('still waiting'), 2000)
+  })
+  const run = await Promise.race([read, late])
+  clearTimeout(timer)
+  assert.notEqual(run, 'still waiting', 'the read answers at the cap, never waiting on a close that does not come')
+  if (run === 'still waiting') return
+  assert.equal(run.truncated, true)
+  assert.equal(run.stdout.length, MB, 'everything up to the cap is kept')
+  assert.equal(run.code, null, 'a read cut at the cap has no exit code')
+  assert.equal(spawn.children.length, 1)
+  assert.equal(spawn.children[0].child.killed, true, 'Git is still told to stop')
+  assert.equal(spawn.children[0].child.stdout.destroyed, true, 'our end of stdout is closed')
 })
 
 test('the node adapter reads a spawn ENOENT as Git missing', async () => {

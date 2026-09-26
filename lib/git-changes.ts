@@ -41,13 +41,14 @@
  *    looked up on PATH's ABSOLUTE entries only and spawned by that path; no
  *    Git there reads as git_missing.
  *  - A STREAM CAP, NOT A BUFFER. stdout is read until the cap and then the
- *    child is killed, so a huge diff costs one megabyte and a flag, never a
- *    failed read (a maxBuffer overflow fails the whole call). An untracked
- *    file is the same: one handle, fstat'd before any byte is read, and read
- *    (at most the text cap and one byte) only while it is still the regular
- *    file the lstat saw (review round 1, D-R3; fix round w4, F7), so a file
- *    that grows is never loaded whole and a name swapped between the two is
- *    never read at all.
+ *    child is killed and the read answers at once, never waiting on a close a
+ *    launcher's grandchild can hold off (fix round w4, R-6), so a huge diff
+ *    costs one megabyte and a flag, never a failed read (a maxBuffer overflow
+ *    fails the whole call). An untracked file is the same: one handle,
+ *    fstat'd before any byte is read, and read (at most the text cap and one
+ *    byte) only while it is still the regular file the lstat saw (review
+ *    round 1, D-R3; fix round w4, F7), so a file that grows is never loaded
+ *    whole and a name swapped between the two is never read at all.
  *  - A BUDGET. Past budgetMs the running child is killed and the answer is
  *    too_slow; nothing more runs.
  *  - CAPS FROM THE FRAME, NEVER ABOVE THE DEFAULTS. The defaults are the
@@ -296,6 +297,17 @@ function spawnGit(
         }
         truncated = true
         kill()
+        // Answer now, never on 'close' (fix round w4, R-6, as lane C does):
+        // a kill ends Git for Windows' cmd\git.exe launcher, but the git it
+        // started can hold the pipes for as long as it lives, and the read
+        // already has everything it will send. Closing our end of stdout
+        // makes that git's next write fail, so it ends too.
+        try {
+          child?.stdout?.destroy()
+        } catch {
+          // Already closed.
+        }
+        finish({ code: null })
         return
       }
       chunks.push(chunk)
