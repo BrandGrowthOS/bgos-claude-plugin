@@ -14,6 +14,8 @@ import {
   pickCapabilities,
   capabilitiesFetchPath,
   BGOS_CAPABILITIES_FALLBACK,
+  CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE,
+  capabilitiesFallbackFor,
   MAX_CAPABILITIES_BYTES,
 } from '../lib/capabilities.ts'
 import { declaredCapabilities } from '../lib/declared-capabilities.ts'
@@ -38,7 +40,26 @@ test('falls back to the bundled copy on null (fetch failed)', () => {
   const r = pickCapabilities(null)
   assert.equal(r.source, 'fallback')
   assert.equal(r.version, 'bundled')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
+})
+
+test('the offline copy tells the hook sentence only to a daemon that declares hard_floor AND permission_card (the stage 6 backend review)', () => {
+  // The served canon's gate (hardFloorTold). This plugin declares hard_floor
+  // only on a pairing with the floor hook registered, so an API key install
+  // whose fetch failed must not be told that a hook stops a listed action
+  // while its relay auto approves it.
+  const both = pickCapabilities(null, ['mission_events', 'permission_card', 'hard_floor'])
+  assert.equal(both.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.ok(both.text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE))
+  for (const declared of [[], ['permission_card'], ['hard_floor'], ['mission_events', 'permission_card', 'plan_card']]) {
+    const text = pickCapabilities(null, declared).text
+    assert.equal(text.includes(CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE), false, declared.join(','))
+    assert.equal(text.includes('From this release a hook'), false)
+    // The core floor sentences (what the SERVER enforces) stay, and the
+    // bullet still ends on its own sentence.
+    assert.ok(text.includes('never split, rename or wrap the action to step around the list.\n'))
+  }
+  assert.equal(capabilitiesFallbackFor([]).length, BGOS_CAPABILITIES_FALLBACK.length - CLAUDE_HARD_FLOOR_FALLBACK_SENTENCE.length - 1)
 })
 
 test('falls back when the served canon exceeds the size cap (DoS/injection guard)', () => {
@@ -46,7 +67,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
     '# BGOS Channel Agent Capabilities\n' + 'x'.repeat(MAX_CAPABILITIES_BYTES + 1)
   const r = pickCapabilities({ text: oversized, version: 'evil' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
   // A canon right at the cap with valid markers is still accepted.
   const marker = '# BGOS Channel Agent Capabilities\n'
   const atCap = marker + 'y'.repeat(MAX_CAPABILITIES_BYTES - marker.length)
@@ -56,7 +77,7 @@ test('falls back when the served canon exceeds the size cap (DoS/injection guard
 test('falls back when the response is missing the markers', () => {
   const r = pickCapabilities({ text: 'some unrelated body', version: '9' })
   assert.equal(r.source, 'fallback')
-  assert.equal(r.text, BGOS_CAPABILITIES_FALLBACK)
+  assert.equal(r.text, capabilitiesFallbackFor([]))
 })
 
 test('falls back when text is not a string', () => {
@@ -126,11 +147,46 @@ test('the bundled fallback carries the served helper rows sentence, word for wor
   )
 })
 
+test('the bundled fallback carries the hard floor sentences, word for word (spec 4.5)', () => {
+  // The core floor sentences and the Claude delta sentence of the served
+  // canon's approvals section, as the stage 6 spec writes them. A fetch that
+  // failed must not leave the model believing nothing can stop a tool call:
+  // since 0.53.0 a listed action is held for the owner or refused. The core
+  // says only what the SERVER enforces for every runtime (the orchestrator's
+  // decision in wave B2, 2026-09-24); that a hook stops the action is the
+  // Claude sentence alone.
+  const core =
+    'The owner can turn on Always ask before risky actions for you. It covers a short list: ' +
+    'a recursive delete, a force push, a change inside .git, a change to an .env file or to a ' +
+    "settings file in the owner's home folder, and a tool that sends, posts, pays or deletes on " +
+    "the owner's behalf. While it is on, a request card raised for one of these offers only once " +
+    'and deny: the platform removes any session or always option you send, so do not offer them.'
+  // The person only sentence (spec 4.5 as amended): the held agent cannot
+  // release its own action, and a model that does not know it tries.
+  const personOnly =
+    'Only the owner, signed in to the app, can say yes on such a card: an answer your own ' +
+    'credential sends to it is refused unless it is a deny, and so is any change your ' +
+    "credential makes to the owner's switch. Raise that card and wait for the answer; never " +
+    'split, rename or wrap the action to step around the list.'
+  const claude =
+    'From this release a hook stops a listed action even with full access and your relay ' +
+    'holds it for the owner; do not retry a refused one.'
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(core))
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(personOnly))
+  // The first version's opening promised the stop to every runtime.
+  assert.equal(BGOS_CAPABILITIES_FALLBACK.includes('Some actions ALWAYS ask the owner'), false)
+  assert.ok(
+    BGOS_CAPABILITIES_FALLBACK.includes(`${core} ${personOnly} ${claude}`),
+    'the three sentences in the served order',
+  )
+  assert.ok(BGOS_CAPABILITIES_FALLBACK.includes(claude))
+})
+
 test('the fallback stays free of dashes, because it is injected into a prompt', () => {
   assert.equal(/[\u2013\u2014]/.test(BGOS_CAPABILITIES_FALLBACK), false)
 })
 
-// \u2500\u2500 The canon fetch path (0.50.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 The canon fetch path (0.56.0, Kanban phase 1, E3) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 //
 // The backend serves the column lines sentence only to a connection that
 // declares boards_playbook, and the fetch at connect can run before the first
@@ -153,39 +209,45 @@ test('the fallback stays free of dashes, because it is injected into a prompt', 
 
 test('the fetch path carries the channel, the version and the declared list', () => {
   assert.equal(
-    capabilitiesFetchPath('0.50.0', ['mission_events', 'boards_playbook']),
-    'integrations/capabilities?channel=claude&daemonVersion=0.50.0&capabilities=mission_events%2Cboards_playbook',
+    capabilitiesFetchPath('0.56.0', ['mission_events', 'boards_playbook']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.56.0&capabilities=mission_events%2Cboards_playbook',
   )
 })
 
 test('the daemon\'s own base declaration reaches the fetch, boards_playbook included', () => {
-  // boards_playbook_does (0.51.0, Kanban phase 2) rides the same fetch: the
+  // boards_playbook_does (0.57.0, Kanban phase 2) rides the same fetch: the
   // served canon's instruction sentence is gated on it, on the heartbeat or
   // on this fetch, exactly as the phase 1 sentence is on boards_playbook.
-  const path = capabilitiesFetchPath('0.50.0', declaredCapabilities({ canInjectGoal: false }))
+  const path = capabilitiesFetchPath(
+    '0.56.0',
+    declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' }),
+  )
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   assert.equal(query.get('channel'), 'claude')
-  assert.equal(query.get('daemonVersion'), '0.50.0')
+  assert.equal(query.get('daemonVersion'), '0.56.0')
   assert.deepEqual(query.get('capabilities')!.split(','), [
     'mission_events',
     'mission_goal_checks',
     'mission_set_goals',
+    'permission_card',
+    'plan_card',
     'boards_playbook',
     'boards_playbook_does',
     'boards_runs',
+    'hard_floor',
   ])
 })
 
 test('the version is encoded, and a missing one reads as 0.0.0 as it always has', () => {
   assert.ok(
-    capabilitiesFetchPath('0.50.0-rc.1+build 7', ['boards_playbook']).includes(
-      'daemonVersion=0.50.0-rc.1%2Bbuild%207&',
+    capabilitiesFetchPath('0.56.0-rc.1+build 7', ['boards_playbook']).includes(
+      'daemonVersion=0.56.0-rc.1%2Bbuild%207&',
     ),
   )
   assert.ok(capabilitiesFetchPath(null, ['boards_playbook']).includes('daemonVersion=0.0.0&'))
 })
 
-test('an empty declaration sends no capabilities key, exactly the pre 0.50.0 path', () => {
+test('an empty declaration sends no capabilities key, exactly the path before the key existed', () => {
   assert.equal(
     capabilitiesFetchPath('0.44.0', []),
     'integrations/capabilities?channel=claude&daemonVersion=0.44.0',
@@ -194,11 +256,11 @@ test('an empty declaration sends no capabilities key, exactly the pre 0.50.0 pat
 
 test('a malformed token is dropped rather than costing the whole canon, and the list is capped at 32', () => {
   assert.equal(
-    capabilitiesFetchPath('0.50.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
-    'integrations/capabilities?channel=claude&daemonVersion=0.50.0&capabilities=boards_playbook',
+    capabilitiesFetchPath('0.56.0', ['boards_playbook', 'Bad Token', 'a,b', '9lives']),
+    'integrations/capabilities?channel=claude&daemonVersion=0.56.0&capabilities=boards_playbook',
   )
   const many = Array.from({ length: 40 }, (_, i) => `cap_${i}`)
-  const path = capabilitiesFetchPath('0.50.0', many)
+  const path = capabilitiesFetchPath('0.56.0', many)
   const query = new URLSearchParams(path.slice(path.indexOf('?') + 1))
   const sent = query.get('capabilities')!.split(',')
   assert.equal(sent.length, 32)
@@ -209,7 +271,7 @@ test('a malformed token is dropped rather than costing the whole canon, and the 
 // The ONE caller (W1 close 2, review T4). Every case above tests the pure
 // helper; the call that runs it at boot is in server.ts, which no pure test
 // imports. A merge that takes the 0.44.0 template back (plugin PRs that touch
-// server.ts may land first) would pass all of them and leave every 0.50.0
+// server.ts may land first) would pass all of them and leave every 0.56.0
 // daemon untold on its first boot, so the call is pinned as a source
 // contract, the house style for server.ts behaviour
 // (test/startup-reaches-poll.test.ts).
@@ -223,20 +285,30 @@ test('the canon fetch carries boards_playbook', () => {
   const server = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'),
     'utf8',
-  )
+  ).replace(/\r\n/g, '\n')
   const start = server.indexOf('async function loadServedCapabilities(')
   assert.ok(start > 0, 'loadServedCapabilities is gone from server.ts')
   const end = server.indexOf('\n}\n', start)
   const body = server.slice(start, end)
+  // Main's one declared list (test/capabilities-fetch-path.test.ts pins its
+  // shape): computed once from the host and the auth mode, for the fetch and
+  // the offline copy. Taken at the merge of main at 0.54.0.
   assert.match(
     body,
-    /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declaredCapabilities\(\{ canInjectGoal: false \}\)\s*,?\s*\)/,
+    /const declared = declaredCapabilities\(\{ canInjectGoal: false, floorHook: FLOOR_HOOK\.registered, authMode: AUTH\.mode \}\)/,
   )
+  assert.match(body, /capabilitiesFetchPath\(\s*RUNNING_VERSION \?\? '0\.0\.0',\s*declared\s*,?\s*\)/)
   assert.equal(body.includes('integrations/capabilities?'), false, 'a hand built fetch path is back')
-  // The declared list the fetch sends holds the tokens the gates read.
-  assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_playbook'))
-  assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_playbook_does'))
-  assert.ok(declaredCapabilities({ canInjectGoal: false }).includes('boards_runs'))
+  // The declared list the fetch sends holds the tokens the gates read, on
+  // either auth mode and whether or not the floor hook is registered.
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    for (const floorHook of [true, false]) {
+      const declared = declaredCapabilities({ canInjectGoal: false, floorHook, authMode })
+      assert.ok(declared.includes('boards_playbook'))
+      assert.ok(declared.includes('boards_playbook_does'))
+      assert.ok(declared.includes('boards_runs'))
+    }
+  }
 })
 
 // ── No bundled copy mentions runs (Kanban phase 3, plan P3.6) ────────────────

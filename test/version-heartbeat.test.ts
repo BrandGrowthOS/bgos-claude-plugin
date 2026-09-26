@@ -360,14 +360,14 @@ describe('declared capabilities on the heartbeat', () => {
         return {}
       },
       log: () => {},
-      capabilities: () => [...declaredCapabilities({ canInjectGoal: true })],
+      capabilities: () => [...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })],
     })
     await Bun.sleep(0)
     handle!.sendNow()
     await Bun.sleep(0)
     expect(calls.length).toBe(2)
     for (const body of calls) {
-      expect(body.capabilities).toEqual([...declaredCapabilities({ canInjectGoal: true })])
+      expect(body.capabilities).toEqual([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })])
     }
     clearInterval(handle!.timer)
   })
@@ -380,29 +380,43 @@ describe('declared capabilities on the heartbeat', () => {
     // answer on a machine that cannot type into its own session, and the
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
     // upgrade starts declaring without a restart.
-    // boards_playbook (0.50.0) rides every beat on every host: the column
+    // permission_card (0.49.0) rides every beat on every host: the relay
+    // speaks the channel's own permission notification, which has no
+    // platform limit. plan_card (0.50.0) likewise: propose_plan is a typed
+    // tool on every host.
+    // hard_floor (0.53.0) likewise: the floor hook is a plain node script and
+    // its hold rides the permission relay. It is declared on a pairing
+    // connection only, and only a pairing connection beats
+    // (shouldSendVersionHeartbeat), so every beat carries it.
+    // boards_playbook (0.56.0) rides every beat on every host: the column
     // lines tool is typed and has no platform limit. boards_playbook_does
-    // (0.51.0, Kanban phase 2) rides beside it for the same reason: a line's
+    // (0.57.0, Kanban phase 2) rides beside it for the same reason: a line's
     // instruction part is an argument of the same tool. boards_runs (Kanban
     // phase 3) rides beside them on every host: it is a sentence the model
     // reads and needs no tool.
-    expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
+    expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'permission_card',
+      'plan_card',
       'boards_playbook',
       'boards_playbook_does',
       'boards_runs',
+      'hard_floor',
       'mission_goal_loop',
       'mission_pause',
     ])
-    expect([...declaredCapabilities({ canInjectGoal: false })]).toEqual([
+    expect([...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
+      'permission_card',
+      'plan_card',
       'boards_playbook',
       'boards_playbook_does',
       'boards_runs',
+      'hard_floor',
     ])
   })
 

@@ -35,6 +35,9 @@ import {
   buildMissionTickPath,
   buildMissionSetGoalsBody,
   buildMissionSetGoalsPath,
+  buildMissionAddGoalsBody,
+  buildMissionAddGoalsPath,
+  buildMissionCancelGoalPath,
   buildMissionCompletePath,
   MISSION_VERDICT_REASON_MAX,
   MISSION_FEED_TEXT_MAX,
@@ -471,4 +474,97 @@ test('set goals path: the pairing family, PUT .../goals', () => {
   })
   assert.equal(buildMissionSetGoalsPath('873', 0).ok, false)
   assert.equal(buildMissionSetGoalsPath('x', 42).ok, false)
+})
+
+// ── add_mission_goals and cancel_mission_goal: changing a RUNNING mission ──
+// POST   integrations/assistants/:id/missions/:missionId/goals { miniGoals }
+// DELETE integrations/assistants/:id/missions/:missionId/goals/:goalId
+//
+// These exist because the app's own card tells the owner to ask the agent: the
+// owner's editor refuses a mission with origin derived, which is every /goal
+// mission. Before them the only agent-side write was create, and creating SETS
+// THE MISSION ASIDE, so the honest answer to "add a goal" was to destroy the
+// card the owner was reading, ticks and all.
+
+test('add goals body: ONE goal is enough, unlike the fill door', () => {
+  // The floor is the whole difference between the two doors. A plan of one
+  // goal is a plan that was not made, which is why the fill refuses it; adding
+  // one goal to a plan that exists is the ordinary case and the reason this
+  // door exists.
+  const one = { mini_goals: [{ name: 'Announce', done_when: 'the post is up' }] }
+  assert.equal(buildMissionSetGoalsBody(one).ok, false)
+  assert.deepEqual(buildMissionAddGoalsBody(one), {
+    ok: true,
+    body: { miniGoals: [{ name: 'Announce', doneWhen: 'the post is up' }] },
+  })
+})
+
+test('add goals body: trims, accepts the doneWhen alias, and keeps the twelve ceiling', () => {
+  assert.deepEqual(buildMissionAddGoalsBody({
+    mini_goals: [
+      { name: ' Draft ', done_when: ' a draft exists ' },
+      { name: 'Ship', doneWhen: 'it is live' },
+    ],
+  }), {
+    ok: true,
+    body: {
+      miniGoals: [
+        { name: 'Draft', doneWhen: 'a draft exists' },
+        { name: 'Ship', doneWhen: 'it is live' },
+      ],
+    },
+  })
+  const goal = { name: 'Ship', done_when: 'it is live' }
+  for (const mini_goals of [
+    undefined,
+    [],
+    Array(MISSION_MAX_GOALS + 1).fill(goal),
+    [goal, { name: 'Draft' }],
+    'not an array',
+  ]) {
+    assert.equal(
+      buildMissionAddGoalsBody({ mini_goals }).ok,
+      false,
+      JSON.stringify(mini_goals)?.slice(0, 60),
+    )
+  }
+})
+
+test('add goals body: the refusal tells the agent to send only the NEW goals', () => {
+  // The one mistake that costs the owner something: an agent that restates the
+  // whole list would DOUBLE every goal, because this door appends.
+  const r = buildMissionAddGoalsBody({ mini_goals: [] })
+  assert.equal(r.ok, false)
+  assert.match(r.ok === false ? r.error : '', /only the NEW goals/)
+})
+
+test('add goals path: the same path as the fill, which is what the POST means', () => {
+  // Deliberately identical: PUT fills a mission with none, POST adds to one
+  // with some, and the backend refuses each door the other's mission by name.
+  assert.deepEqual(buildMissionAddGoalsPath('873', 42), {
+    ok: true,
+    path: 'integrations/assistants/873/missions/42/goals',
+  })
+  assert.deepEqual(
+    buildMissionAddGoalsPath('873', 42),
+    buildMissionSetGoalsPath('873', 42),
+  )
+  assert.equal(buildMissionAddGoalsPath('873', 0).ok, false)
+  assert.equal(buildMissionAddGoalsPath('x', 42).ok, false)
+})
+
+test('cancel goal path: the goal id is in the path and validated before the network', () => {
+  assert.deepEqual(buildMissionCancelGoalPath('873', 42, 3), {
+    ok: true,
+    path: 'integrations/assistants/873/missions/42/goals/3',
+  })
+  // A bad goal id must be a SENTENCE from the builder, not a 400 from the
+  // server: the agent can act on the first and not on the second.
+  for (const goalId of [0, -1, 1.5, 'three', null, undefined, {}]) {
+    const r = buildMissionCancelGoalPath('873', 42, goalId)
+    assert.equal(r.ok, false, JSON.stringify(goalId))
+    assert.match(r.ok === false ? r.error : '', /goal_id must be a positive integer/)
+  }
+  assert.equal(buildMissionCancelGoalPath('873', 0, 3).ok, false)
+  assert.equal(buildMissionCancelGoalPath('x', 42, 3).ok, false)
 })

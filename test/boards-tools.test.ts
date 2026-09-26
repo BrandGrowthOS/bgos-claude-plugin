@@ -1446,7 +1446,7 @@ test('update_schema lists the table ops when the op is unknown', async () => {
   }
 })
 
-// ── Column lines: set_column_lines and option_renames (0.50.0) ───────────────
+// ── Column lines: set_column_lines and option_renames (0.56.0) ───────────────
 //
 // Kanban phase 1 (plan 3.8, P1.11): an agent may describe what each column of
 // a workflow select means, in one plain sentence plus a few closed facts. The
@@ -1496,7 +1496,7 @@ test('update_schema lists the table ops when the op is unknown', async () => {
 // 10. SUGGESTION IN THE LINES TEXT. The `lines` description back to "kept as
 //     a suggestion for the owner" -> "set_column_lines is an op, and the tool
 //     roster is still the 12" and "no text the boards tools declare says
-//     suggestion" fail. Re proved in 0.51.0, where the roster case pins the
+//     suggestion" fail. Re proved in 0.57.0, where the roster case pins the
 //     new last sentence instead: "any other change you send is kept as a
 //     suggestion for the owner" put into the lines text -> "no text the
 //     boards tools declare says suggestion, outside the instruction part"
@@ -1535,7 +1535,7 @@ test('set_column_lines is an op, and the tool roster is still the 12', () => {
   // owner wrote, on a board he never confirmed (W1 close 2, review R3).
   assert.ok(props.lines!.description!.includes('On a confirmed board'))
   assert.ok(props.lines!.description!.includes('whose line the owner wrote'))
-  // Changed ON PURPOSE in 0.51.0 (Kanban phase 2, plan 3.7): the lines text
+  // Changed ON PURPOSE in 0.57.0 (Kanban phase 2, plan 3.7): the lines text
   // now ends by saying the does part is a suggestion until the owner approves
   // it, because from phase 2 the owner is shown that suggestion. The
   // descriptive half still never says it ("no text the boards tools declare
@@ -1602,7 +1602,7 @@ test('set_column_lines sends exactly optionRules and workflow, in camel case', a
 
 test('set_column_lines never sends a key the server owns', async () => {
   // v, writtenBy, at, approved and textHash are the server's: the tool
-  // refuses them as unknown keys of a line. Changed ON PURPOSE in 0.51.0
+  // refuses them as unknown keys of a line. Changed ON PURPOSE in 0.57.0
   // (Kanban phase 2, plan 3.7): `does` left this list because it is now the
   // agent's own key (its instruction, filed as a suggestion), and `approved`
   // and `textHash` joined it, because the owner's approval and the hash of
@@ -1997,11 +1997,11 @@ test('a filed sentence never claims a confirmation or a suggestion, and names th
   assert.ok(!textOf(r2).includes('which was saved'), textOf(r2))
 })
 
-test('no text the boards tools declare says suggestion, outside the instruction part (W1 close 2, review R3; retargeted in 0.51.0)', () => {
+test('no text the boards tools declare says suggestion, outside the instruction part (W1 close 2, review R3; retargeted in 0.57.0)', () => {
   // The descriptive half (a line's sentence and facts, a filed change, every
   // other tool) is never a suggestion: the owner is shown none for it, and the
   // tool text is what the model repeats to him. Retargeted ON PURPOSE in
-  // 0.51.0 (Kanban phase 2, plan 3.7): the instruction part (`does`) IS a
+  // 0.57.0 (Kanban phase 2, plan 3.7): the instruction part (`does`) IS a
   // suggestion the owner is shown and approves, so its own schema and the one
   // sentence of the lines text that names it are left out of this walk, and
   // the next case pins that they DO say it.
@@ -2025,7 +2025,7 @@ test('no text the boards tools declare says suggestion, outside the instruction 
   }
 })
 
-// ── The instruction part: a line's does (0.51.0) ─────────────────────────────
+// ── The instruction part: a line's does (0.57.0) ─────────────────────────────
 //
 // Kanban phase 2 (plan 3.7, P2.13): a column line may carry a standing
 // instruction for the agent a card is handed to. The tool takes it in snake
