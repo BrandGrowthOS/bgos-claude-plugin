@@ -190,6 +190,7 @@ import {
   type MissionEventWire,
 } from './lib/mission-events.js'
 import { declaredCapabilities } from './lib/declared-capabilities.js'
+import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -339,6 +340,8 @@ import {
   isApprovalExpired,
   orphanedPermissionCards,
   parsePermissionChoice,
+  typedPermissionVerdict,
+  oncePerRow,
   pendingPermissionFastChatIds,
   permissionBackstopMs,
   permissionRowsReader,
@@ -348,6 +351,25 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
+import { classifyPermissionRequest } from './lib/hard-floor.js'
+import {
+  consultElidedFloor,
+  consultFloor,
+  floorCheckPath,
+  planFloorRequest,
+  FLOOR_CHECK_TIMEOUT_MS,
+  type FloorCheckBody,
+  type FloorPlan,
+  type FloorRecord,
+} from './lib/floor-check.js'
+import {
+  clearFloorAttached,
+  daemonFloorFolders,
+  floorKey,
+  floorStateRoot,
+  markFloorAttached,
+  takeFloorRecord,
+} from './lib/floor-state.mjs'
 import {
   PENDING_PLAN_FAST_MAX_MS,
   buildPlanCardBody,
@@ -1076,9 +1098,16 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
   if (capabilitiesInFlight) return capabilitiesInFlight
   capabilitiesInFlight = (async () => {
     let data: unknown = null
+    // ONE declared list for the fetch AND the offline copy, so a fetch that
+    // fails tells the agent no more than the served canon would have told
+    // this daemon (capabilitiesFallbackFor, the stage 6 backend review).
+    const declared = declaredCapabilities({ canInjectGoal: false, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode })
     try {
       data = await bgosGetCapped(
-        capabilitiesFetchPath(RUNNING_VERSION ?? '0.0.0', declaredCapabilities({ canInjectGoal: false })),
+        capabilitiesFetchPath(
+          RUNNING_VERSION ?? '0.0.0',
+          declared,
+        ),
         CAPABILITIES_FETCH_MAX_BYTES,
         // Warm-up deadline, not the ordinary one: this call has a bundled
         // fallback, so waiting longer than a few seconds buys nothing.
@@ -1096,7 +1125,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
           : `Capability canon fetch failed (${reason}); using bundled fallback`,
       )
     }
-    cachedCapabilities = pickCapabilities(data)
+    cachedCapabilities = pickCapabilities(data, declared)
     log(
       `Capability canon ready: v${cachedCapabilities.version} ` +
         `(${cachedCapabilities.text.length} chars) [source=${cachedCapabilities.source}]`,
@@ -1872,6 +1901,11 @@ interface PendingPermission {
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
   /**
+   * True when the hard floor HOLDS this request for the owner (0.53.0): only a
+   * tap may allow it, never a typed verdict (typedPermissionVerdict).
+   */
+  floorHeld?: boolean
+  /**
    * How long this daemon is still listening to this request: the backstop
    * built from the wait the SERVER stored, written once the card comes back.
    * It is what keeps this chat on the scheduler's 2 s fast scope, and it is
@@ -2239,9 +2273,11 @@ const mcp = new Server(
       '  - `plan:no`, stop. Do not propose a replacement unasked.',
       '',
       'NOTHING IN THIS CHANNEL ENFORCES THE WAIT, and you should know exactly',
-      'what that means. This agent runs with permissions skipped: no tool call',
-      'is blocked, no hook can stop one, and this plugin cannot prevent you',
-      'editing a file one second after you propose. The card on the user\'s',
+      'what that means. This agent runs with permissions skipped: no ordinary',
+      'tool call is blocked (only the short list of risky actions your owner',
+      'may have asked to hold), no hook can stop an ordinary edit, and this',
+      'plugin cannot prevent you editing a file one second after you propose.',
+      'The card on the user\'s',
       'screen says "Nothing changes until you answer", so an edit before their',
       'answer makes that line untrue. It is a promise, not a lock. Keep it.',
       '',
@@ -2393,10 +2429,46 @@ const PermissionRequestSchema = z.object({
   }),
 })
 
+type PermissionRequestParams = z.infer<typeof PermissionRequestSchema>['params']
+
 mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   const { request_id, tool_name, description, input_preview } = params
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
+
+  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.53.0).
+  // Under --dangerously-skip-permissions the CLI raises a request for a listed
+  // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
+  // and the auto approve branch below would answer `allow` to it in
+  // milliseconds without looking at it (map part 24, run D3). So a request
+  // the list matches asks the server first whether this agent's owner wants
+  // it held: hold takes the interactive path even with auto approve on,
+  // proceed auto approves exactly as below, and a check that cannot be
+  // answered REFUSES the action (lib/floor-check.ts has the whole contract).
+  //
+  // WHAT MATCHED IS THE HOOK'S RECORD FIRST, read synchronously here: the
+  // hook saw the whole tool input, and the preview below is a copy the CLI
+  // cuts in the middle when a value is long, so a listed action in the middle
+  // of a long command is not in it. The preview is read only when there is no
+  // record, and a cut shell preview with neither goes to the owner. With auto
+  // approve off only a request the record vouches for is asked about, so a
+  // floor the owner left off does not turn every hook ask into a card.
+  const floorRecord = takeOwnFloorRecord(tool_name, input_preview)
+  const floorPlan = planFloorRequest({
+    autoApprove: AUTO_APPROVE,
+    toolName: tool_name,
+    inputPreview: input_preview,
+    record: floorRecord,
+    previewMatch:
+      floorRecord === null && AUTO_APPROVE
+        ? classifyPermissionRequest(tool_name, input_preview)
+        : null,
+  })
+  if (floorPlan.action === 'consult') return settleFloorRequest(params, floorPlan)
+  if (floorPlan.action === 'ask_elided') {
+    log(`Floor asks about ${tool_name} [${request_id}]: ${floorPlan.reason}`)
+    return settleElidedFloorRequest(params)
+  }
 
   if (AUTO_APPROVE) {
     // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
@@ -2418,6 +2490,23 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         log(`Failed to send auto-approve verdict: ${err}`)
       })
   }
+
+  return relayPermissionToOwner(params)
+})
+
+/**
+ * The interactive path, whole: the drain exit, the no chat exit, and the real
+ * approval card with its wait. The handler above takes it for every request on
+ * an install with auto approve off, and settleFloorRequest below takes it for
+ * a request the hard floor HOLDS, so a held request meets the same two
+ * refusals as any other here and the same card as any other.
+ */
+function relayPermissionToOwner(
+  params: PermissionRequestParams,
+  floorEvidence?: string,
+  floorHeld = false,
+): Promise<void> {
+  const { request_id, tool_name, description, input_preview } = params
 
   if (updateDrainMode) {
     // An update is draining this daemon: inbound intake is closed, so nobody
@@ -2477,6 +2566,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     createdAt: Date.now(),
     requesterUserId,
     resolve: resolveButtonChoice,
+    floorHeld,
   })
 
   // Post a REAL approval card: messageType approval_request, two ea: options
@@ -2507,6 +2597,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         toolName: tool_name,
         description,
         inputPreview: input_preview,
+        floorEvidence,
       }),
     )
     const cardMessageId = cardMessageIdFrom(posted)
@@ -2550,6 +2641,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
         cardMessageId,
         permissionBackstopMs(storedWait),
         requesterUserId,
+        floorHeld,
       ),
     ])
     const behavior = choiceToBehavior(choice)
@@ -2572,7 +2664,198 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     }).catch(() => {})
   }
   })
+}
+
+/**
+ * A request the hard floor matched: ask the server whether this agent's owner
+ * holds it, then hold it for the owner, allow it as before, refuse it, or
+ * (auto approve off) send it to the owner as that install always did
+ * (lib/floor-check.ts). Tracked like the interactive path, so an update drain
+ * waits for the answer instead of cutting it off halfway.
+ */
+function settleFloorRequest(
+  params: PermissionRequestParams,
+  plan: Extract<FloorPlan, { action: 'consult' }>,
+): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  const { match } = plan
+  return trackMessageOperation(async () => {
+    const decision = await consultFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      match,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+      autoApprove: AUTO_APPROVE,
+      permissionMode: plan.record?.permissionMode ?? null,
+    })
+    log(`${decision.line} (from the ${plan.source === 'record' ? "hook's floor record" : 'preview'})`)
+    switch (decision.route) {
+      case 'hold':
+        // The whole interactive path: its drain and no chat exits refuse a
+        // held request exactly as they refuse any other request there. The
+        // matched command rides along so the card shows it and the server can
+        // stamp the floor on it even when the preview lost it. HELD: only a
+        // tap may allow it, never a typed yes (typedPermissionVerdict).
+        return relayPermissionToOwner(params, match.evidence, true)
+      case 'owner':
+        // Auto approve off, and the owner's floor does not hold it: the card
+        // this install always posts, nothing more.
+        return relayPermissionToOwner(params, match.evidence)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      case 'refuse':
+        // A listed action whose check could not reach the owner is never
+        // allowed silently: the line above says why, and the model is told.
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'deny' },
+          })
+          .catch((err) => {
+            log(`Failed to send the floor refusal verdict: ${err}`)
+          })
+        return
+    }
+  })
+}
+
+/**
+ * A cut shell command no floor record names (lib/floor-check.ts
+ * consultElidedFloor, the stage 6 backend review): the server says whether
+ * the owner's switch holds what the relay cannot read. hold is the owner's
+ * card, held, so only a tap allows it; proceed and an API key connection
+ * auto approve as before; an error asks the owner, never a silent allow.
+ */
+function settleElidedFloorRequest(params: PermissionRequestParams): Promise<void> {
+  const { request_id, tool_name, input_preview } = params
+  return trackMessageOperation(async () => {
+    const decision = await consultElidedFloor({
+      toolName: tool_name,
+      inputPreview: input_preview,
+      requestId: request_id,
+      path: floorCheckPath(AUTH.mode, ASSISTANT_ID),
+      send: postFloorCheck,
+    })
+    log(decision.line)
+    switch (decision.route) {
+      case 'hold':
+        return relayPermissionToOwner(params, undefined, true)
+      case 'auto_approve':
+        log(`Auto-approving: ${tool_name} [${request_id}]`)
+        await mcp
+          .notification({
+            method: 'notifications/claude/channel/permission',
+            params: { request_id, behavior: 'allow' },
+          })
+          .catch((err) => {
+            log(`Failed to send auto-approve verdict: ${err}`)
+          })
+        return
+      default:
+        return relayPermissionToOwner(params)
+    }
+  })
+}
+
+/**
+ * The folders this daemon's floor marker and the hook's records are keyed by
+ * (lib/floor-state.mjs daemonFloorFolders): LAUNCH_CWD first, because
+ * bin/bgos-launch.mjs moves this process's working folder to the plugin folder
+ * and only LAUNCH_CWD still names the session's project folder, then the CLI's
+ * CLAUDE_PROJECT_DIR when it passed one down, then the process's own folder.
+ * Keyed by process.cwd() and CLAUDE_PROJECT_DIR alone, a launcher start
+ * depended on CLAUDE_PROJECT_DIR, and where that was lost the floor did not ask.
+ */
+const FLOOR_STATE_ROOT = floorStateRoot(process.env)
+const FLOOR_FOLDERS: string[] = daemonFloorFolders({
+  launchCwd: LAUNCH_CWD,
+  cwd: process.cwd(),
+  env: process.env,
 })
+const FLOOR_KEYS = [...new Set(FLOOR_FOLDERS.map((folder) => floorKey(folder)).filter(Boolean))]
+let floorMarkerKeys: string[] = []
+
+/**
+ * Say to the floor hook that a HOAI daemon is attached to this project folder,
+ * so a listed action here asks (bin/hoai-floor-hook.mjs asks nowhere else).
+ * Written while this daemon holds its pairing lock, taken down when it stands
+ * down or exits. Never throws.
+ */
+function markFloorAttachedIfHolder(): void {
+  if (!lockHeld) return
+  try {
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS })
+    if (floorMarkerKeys.length === 0) {
+      log('floor: could not write the attached marker; the floor hook stays silent in this session')
+    }
+  } catch (err) {
+    log(`floor: could not write the attached marker (${err})`)
+  }
+}
+
+function clearFloorAttachedMarker(): void {
+  try {
+    clearFloorAttached({ root: FLOOR_STATE_ROOT, keys: floorMarkerKeys })
+  } catch {
+    /* gone already */
+  }
+  floorMarkerKeys = []
+}
+
+/** The hook's floor record for this request, taken synchronously, or null. */
+function takeOwnFloorRecord(toolName: string, inputPreview: string | undefined): FloorRecord | null {
+  try {
+    return takeFloorRecord({
+      root: FLOOR_STATE_ROOT,
+      keys: FLOOR_KEYS,
+      toolName,
+      inputPreview: inputPreview ?? '',
+    }) as FloorRecord | null
+  } catch (err) {
+    log(`floor: could not read the floor records (${err}); reading the preview instead`)
+    return null
+  }
+}
+
+/**
+ * The floor check's one network call. It hands back the status and the raw
+ * body rather than throwing on a non 2xx, because a 404 (a backend without the
+ * floor) and a refusal mean different things (lib/floor-check.ts). Bounded
+ * like every other call through bgosCall, on the floor's own short deadline.
+ */
+function postFloorCheck(
+  path: string,
+  body: FloorCheckBody,
+): Promise<{ status: number; text: string }> {
+  const url = `${API_BASE}/${path.replace(/^\//, '')}`
+  return bgosCall(
+    {
+      url,
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        body: JSON.stringify(body),
+      },
+      timeoutMs: FLOOR_CHECK_TIMEOUT_MS,
+      label: `POST ${path}`,
+    },
+    async (response) => ({
+      status: response.status,
+      text: await response.text().catch(() => ''),
+    }),
+  )
+}
 
 /**
  * Wait for a permission request to be settled, by the owner or by the server.
@@ -2602,11 +2885,16 @@ async function waitForVerdict(
   cardMessageId: number | null,
   timeoutMs: number,
   requesterUserId: string,
+  floorHeld = false,
 ): Promise<PermissionChoice> {
   const baselineId = chatLastSeen.get(chatId) ?? 0
   // See answeredOn below: the card is re-read every tick, so its mismatch line
   // is said once rather than once per look.
   let foreignTapLogged = false
+  // The same rule for verdictFrom's two refusal lines: a refused row sits above
+  // baselineId, so every tick reads it again, and it is said once per request
+  // (lib/permission-relay.ts oncePerRow).
+  const firstRefusalOf = oncePerRow()
 
   const verdict = await watchPermissionVerdict<ChatMessage>({
     requestId,
@@ -2762,15 +3050,30 @@ async function waitForVerdict(
       // answeredOn above is null aware and this arm is not.
       const resolverUserId = senderUserIdOf(msg.message)
       if (resolverUserId !== requesterUserId) {
-        log(
-          `Ignoring permission verdict for [${requestId}] from user ` +
-            `${resolverUserId} (request belongs to ${requesterUserId})`,
-        )
+        if (firstRefusalOf(msg.message.id)) {
+          log(
+            `Ignoring permission verdict for [${requestId}] from user ` +
+              `${resolverUserId} (request belongs to ${requesterUserId})`,
+          )
+        }
         return null
       }
 
       const text = msg.message.text ?? ''
-      const choice = parsePermissionChoice(text, requestId)
+      // A request the floor HOLDS takes only a deny on this lane: the row's
+      // sender is not proven to be a person (lib/permission-relay.ts,
+      // typedPermissionVerdict), and the person only gate is on the tap.
+      const { choice, refused } = typedPermissionVerdict(text, requestId, floorHeld)
+      if (refused) {
+        if (firstRefusalOf(msg.message.id)) {
+          log(
+            `Ignoring typed ${refused} for [${requestId}] in message ${msg.message.id}: ` +
+              `the hard floor holds this request, so only a tap on its card can allow it`,
+          )
+        }
+        advanceChatCursor(chatId, msg.message.id)
+        return null
+      }
       if (!choice) return null
 
       // Update last seen so we don't re-process this message
@@ -3023,7 +3326,9 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'poll, do not wait, do not call reply to ask the same question again. ' +
         'CHANGE NOTHING UNTIL GO AHEAD, and understand what that means here: ' +
         'NOTHING IN THIS CHANNEL ENFORCES IT. This agent runs with permissions ' +
-        'skipped, so no tool call is blocked, no hook can stop one, and this ' +
+        'skipped, so no ordinary tool call is blocked (only the short list of ' +
+        'risky actions your owner may have asked to hold), no hook can stop an ' +
+        'ordinary edit, and this ' +
         'plugin cannot prevent you editing a file the moment after you propose. ' +
         'The card tells the user "Nothing changes until you answer", so every ' +
         'edit before their answer makes that line a lie. The wait is a promise ' +
@@ -8039,6 +8344,8 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
  */
 function startHookIntakeIfHolder(): void {
   if (!lockHeld) return
+  // The floor's attached marker rides the same holder rule as the intake.
+  markFloorAttachedIfHolder()
   if (hookIntake !== null) return
   try {
     const root = hookStateRoot()
@@ -8083,6 +8390,7 @@ function stopHookIntake(): void {
     /* already closed */
   }
   hookIntake = null
+  clearFloorAttachedMarker()
   if (hookCardTimer !== null) {
     clearTimeout(hookCardTimer)
     hookCardTimer = null
@@ -10071,6 +10379,30 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
+
+/**
+ * Is the blocking floor hook registered for this session? Looked up ONCE, at
+ * boot, because the CLI reads its hooks when it launches, and hard_floor is
+ * declared only when it is (lib/floor-hook-presence.ts): a clone updated in
+ * place has no floor entry until a launcher or bgos-agent writes one, and an
+ * agent told that a hook stops a listed action when none does is the defect.
+ */
+const FLOOR_HOOK: FloorHookPresence = (() => {
+  try {
+    return floorHookPresence({
+      installMethod: INSTALL_METHOD,
+      pluginRoot: PLUGIN_ROOT,
+      folders: FLOOR_FOLDERS,
+      configDir: CLAUDE_CONFIG_DIR,
+      env: process.env,
+      readFile: (path) => readFileSync(path, 'utf8'),
+      exists: (path) => existsSync(path),
+      join: pathJoin,
+    })
+  } catch (err) {
+    return { registered: false, where: `could not look (${err})` }
+  }
+})()
 
 function safeUsername(): string {
   try {
@@ -12549,6 +12881,9 @@ async function main(): Promise<void> {
   // process and, unbounded, the one most likely to strand a daemon that could
   // otherwise have polled. loadServedCapabilities is single-flight, so a tool
   // call arriving while this is in flight joins it rather than refetching.
+  // What the declaration REALLY carries, which needs a pairing as well as the
+  // hook (lib/floor-hook-presence.ts floorBootLine).
+  log(floorBootLine(FLOOR_HOOK, AUTH.mode))
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.
@@ -13415,7 +13750,9 @@ async function main(): Promise<void> {
       // the four tokens depend on whether this daemon can type into its own
       // CLI's composer, and lib/compact-capability.ts can discover that up to
       // thirty minutes after boot. See lib/declared-capabilities.ts.
-      capabilities: () => [...declaredCapabilities({ canInjectGoal: compactTarget !== null })],
+      capabilities: () => [
+        ...declaredCapabilities({ canInjectGoal: compactTarget !== null, floorHook: FLOOR_HOOK.registered, authMode: AUTH.mode }),
+      ],
       // One-click update telemetry (wire contract v1): the newest version this
       // daemon found at its own pinned source (origin/main for a clone, the
       // local marketplace files for a marketplace install), and what would

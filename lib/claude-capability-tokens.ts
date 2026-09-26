@@ -28,15 +28,20 @@
  *   honours the owner's ea: answer to it.
  * plan_card: the daemon has the propose_plan tool and the /plan builtin,
  *   which post the plan card.
+ * hard_floor: the daemon installs the blocking floor hook and, for an action
+ *   on the owner's Always ask list, holds it for the owner before any auto
+ *   approve (after asking the server's floor-check route).
  *
  * Not every token the canon gates on lives here: boards_playbook is older and
  * is declared and gated from its own files.
  */
 export const PERMISSION_CARD = 'permission_card';
 export const PLAN_CARD = 'plan_card';
+export const HARD_FLOOR_TOKEN = 'hard_floor';
 
 /** Every token this file names, in the order above. */
 export const CLAUDE_CAPABILITY_TOKENS: readonly string[] = Object.freeze([
   PERMISSION_CARD,
   PLAN_CARD,
+  HARD_FLOOR_TOKEN,
 ]);

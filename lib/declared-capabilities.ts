@@ -81,6 +81,29 @@
  *                       permission_card: the backend tells the canon's plan
  *                       card sentences only to a connection that declares
  *                       this token, never by version.
+ *   hard_floor          this daemon installs the blocking floor hook
+ *                       (bin/hoai-floor-hook.mjs, a PreToolUse entry in
+ *                       hooks/hooks.json that asks and never denies) and,
+ *                       for an action on the owner's Always ask list, holds
+ *                       it for the owner BEFORE any auto approve: the relay
+ *                       asks the server's floor-check route first
+ *                       (lib/floor-check.ts) and a hold takes the owner's
+ *                       request card (0.53.0). Every host: the hook is a
+ *                       plain node script and the relay is the permission
+ *                       relay above, with no platform limit. The backend
+ *                       tells the canon's floor sentence (a hook stops a
+ *                       listed action and the relay holds it) only to a
+ *                       connection that declares this token WITH
+ *                       permission_card, never by version. PAIRING
+ *                       CONNECTIONS ONLY: the floor check route is pairing
+ *                       scoped, so on a legacy API key connection the relay
+ *                       cannot hold anything and this token is not declared
+ *                       (DECLARED_CAPABILITIES_PAIRING). AND ONLY WHERE THE
+ *                       HOOK IS REGISTERED: a marketplace install always has
+ *                       it, a clone only once a launcher or bgos-agent wrote
+ *                       it into a settings file the CLI reads, so the daemon
+ *                       looks at boot (lib/floor-hook-presence.ts) and does
+ *                       not declare a stop its session cannot make.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -89,7 +112,7 @@
  * poison the next beat; test/declared-capabilities.test.ts holds all of it in
  * place.
  *
- * The canon gated tokens (permission_card and plan_card) are NOT spelled
+ * The canon gated tokens (permission_card, plan_card and hard_floor) are NOT spelled
  * here. They come from lib/claude-capability-tokens.ts, a byte-for-byte copy
  * of the BGOS file the canon gates on
  * (backend/src/integrations/claude-capability-tokens.ts), whose sha256 both
@@ -98,9 +121,9 @@
  * agent silently untold.
  */
 
-import { PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 
-/** Declared wherever this plugin runs, on every host. */
+/** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
@@ -108,6 +131,25 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   PERMISSION_CARD,
   PLAN_CARD,
 ])
+
+/**
+ * Declared only on a PAIRING connection (AUTH.mode === 'pairing').
+ *
+ * hard_floor promises that a listed action is held for the owner, and the
+ * hold is the floor check route, which is pairing scoped: floorCheckPath
+ * answers null for an API key connection, consultFloor then reads
+ * `unsupported` and the relay auto approves as before the floor
+ * (lib/floor-check.ts). The canon fetch carries this list, and the backend
+ * counts the fetch's own list for a caller with no pairing, so an API key
+ * daemon that declared it would be told "a hook stops a listed action and the
+ * relay holds it" while its relay let the same action through. Fail closed:
+ * declare it only where the hold is real.
+ *
+ * permission_card and plan_card do NOT have this flaw and stay in the base:
+ * the card is a POST to `messages` and propose_plan is a typed tool, both of
+ * which an API key connection can do.
+ */
+export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
@@ -123,9 +165,27 @@ export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
  * an install with no tmux target declares the read half and the owner is
  * offered neither the Keep working switch nor Pause, rather than being offered
  * a control that would quietly do nothing.
+ *
+ * `authMode` is AUTH.mode, and it is REQUIRED so no call site can forget it:
+ * hard_floor is declared only on a pairing connection (see
+ * DECLARED_CAPABILITIES_PAIRING), and only where the floor hook is really
+ * registered for the session (`floorHook`, found once at boot).
  */
-export function declaredCapabilities(input: { canInjectGoal: boolean }): readonly string[] {
-  return input.canInjectGoal === true
-    ? [...DECLARED_CAPABILITIES_BASE, ...DECLARED_CAPABILITIES_INJECTOR]
-    : [...DECLARED_CAPABILITIES_BASE]
+export function declaredCapabilities(input: {
+  canInjectGoal: boolean
+  /**
+   * Is the blocking floor hook registered for this session
+   * (lib/floor-hook-presence.ts)? REQUIRED for the same reason as authMode.
+   * With no hook the CLI never raises a request for a listed action, so the
+   * relay has nothing to hold, and hard_floor would promise a stop that
+   * cannot happen: an always on clone updated in place is the case.
+   */
+  floorHook: boolean
+  authMode: 'pairing' | 'apikey'
+}): readonly string[] {
+  return [
+    ...DECLARED_CAPABILITIES_BASE,
+    ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
+    ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
+  ]
 }

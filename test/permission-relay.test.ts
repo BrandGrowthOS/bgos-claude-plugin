@@ -14,9 +14,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
+import { classifyCommand, classifyToolName, readToolInput } from '../lib/hard-floor.ts'
 
 import {
   APPROVAL_TOOL_MAX_CHARS,
+  FLOOR_EVIDENCE_LEAD_MAX,
   PENDING_PERMISSION_FAST_MAX_MS,
   PERMISSION_AGENT_ROUTE,
   PERMISSION_CLICK_RE,
@@ -37,11 +39,14 @@ import {
   permissionApprovalOptions,
   permissionBackstopMs,
   permissionCardText,
+  permissionCardTool,
   permissionPollIntervalMs,
   permissionRowsReader,
   resolvePermissionClick,
   senderUserIdCandidate,
   storedWaitSeconds,
+  typedPermissionVerdict,
+  oncePerRow,
   watchPermissionVerdict,
   type PendingPermissionLike,
   type PermissionCardRowLike,
@@ -152,6 +157,63 @@ test('approvalMeta.tool is the input preview when there is one, else the tool na
   // can see what they are allowing, and a silent prefix reads as a complete,
   // shorter command: the owner would approve a tail they never saw.
   assert.ok(huge.approvalMeta.tool.endsWith('...'))
+})
+
+test('an MCP tool card carries `<tool_name> <input_preview>`, so the server can stamp a held send (spec 3)', () => {
+  const send = buildPermissionRequestBody({
+    chatId: 1,
+    requestId: REQ,
+    toolName: 'mcp__gmail__send_email',
+    description: 'ask',
+    inputPreview: '{ "to": "a@b.c", "body": "hi" }',
+  }) as { approvalMeta: { tool: string } }
+  assert.equal(send.approvalMeta.tool, 'mcp__gmail__send_email { "to": "a@b.c", "body": "hi" }')
+  // The server reads an MCP card by its first word; the arguments alone named no tool.
+  assert.equal(classifyToolName(send.approvalMeta.tool.split(/\s+/, 1)[0]), 'acts_on_owners_behalf')
+  assert.equal(
+    permissionCardTool({ toolName: 'mcp__stripe__create_payment', inputPreview: '  ' }),
+    'mcp__stripe__create_payment',
+    'the bare name when there is no preview',
+  )
+  const long = permissionCardTool({ toolName: 'mcp__x__post_note', inputPreview: `{ "body": "${'z'.repeat(5000)}" }` })
+  assert.equal(long.length, APPROVAL_TOOL_MAX_CHARS)
+  assert.ok(long.startsWith('mcp__x__post_note { "body"'))
+})
+
+test('a held long command LEADS with the matched command, so the owner sees it and the server reads it', () => {
+  // Capped from its head: the rm sits past the 2000 characters the card keeps.
+  const capped = `{ "command": "echo ${'y'.repeat(2000)} && rm -rf build", "description": "d" }`
+  const fromHead = permissionCardTool({ toolName: 'Bash', inputPreview: capped })
+  assert.equal(classifyCommand(readToolInput('Bash', fromHead).command), null, 'without the lead the card shows no rm')
+  const led = permissionCardTool({ toolName: 'Bash', inputPreview: capped, floorEvidence: 'rm -rf build' })
+  assert.ok(led.startsWith('{"command":"rm -rf build"}\n{ "command": "echo yyy'))
+  assert.equal(led.length, APPROVAL_TOOL_MAX_CHARS)
+  // The server's card reader takes the FIRST command key of a text that is not JSON.
+  assert.equal(classifyCommand(readToolInput('Bash', led).command), 'recursive_delete')
+
+  // Cut in the middle by the CLI, short enough to fit the card whole.
+  const elided = `{ "command": "echo aa\n\u22EF 2600 code points elided \u22EF\necho bb", "description": "d" }`
+  const ledElided = permissionCardTool({ toolName: 'PowerShell', inputPreview: elided, floorEvidence: 'rm -rf ~/work' })
+  assert.ok(ledElided.startsWith('{"command":"rm -rf ~/work"}\n'))
+  assert.equal(classifyCommand(readToolInput('Bash', ledElided).command), 'recursive_delete')
+
+  // A preview the card shows whole is left exactly as it was.
+  const whole = '{ "command": "rm -rf doomed", "description": "d" }'
+  assert.equal(permissionCardTool({ toolName: 'Bash', inputPreview: whole, floorEvidence: 'rm -rf doomed' }), whole)
+  // The lead is bounded, and stays JSON.
+  const lead = permissionCardTool({ toolName: 'Bash', inputPreview: capped, floorEvidence: `rm -rf ${'p'.repeat(4000)}` })
+  const firstLine = lead.split('\n', 1)[0]
+  assert.doesNotThrow(() => JSON.parse(firstLine))
+  assert.ok(JSON.parse(firstLine).command.length <= FLOOR_EVIDENCE_LEAD_MAX)
+  // And the body carries the lead through.
+  const body = buildPermissionRequestBody({
+    chatId: 1,
+    requestId: REQ,
+    toolName: 'Bash',
+    inputPreview: capped,
+    floorEvidence: 'rm -rf build',
+  }) as { approvalMeta: { tool: string } }
+  assert.equal(body.approvalMeta.tool, led)
 })
 
 // ── The wait the SERVER stored ───────────────────────────────────────────────
@@ -1544,4 +1606,145 @@ test('the daemon no longer runs a clock of its own', () => {
   assert.match(handler, /bgosPost\(\s*'messages',/)
   assert.equal(/bgosPost\(\s*'send-message'/.test(handler), false)
   assert.ok(handler.includes('buildPermissionRequestBody({'))
+})
+
+// ── A request the hard floor HOLDS takes no typed yes (P2 stage 6 review) ────
+
+/**
+ * THE REVIEW: a held floor request was settled by waitForVerdict's
+ * verdictFrom too, which takes any sender='user' row with the requester's id
+ * whose text is `yes <id>` or just the label `Yes, this once`. The server does
+ * not tell a person from a machine on that row (a pairing principal posting
+ * sender='user' is only warned about unless REJECT_PAIRING_USER_SENDER is set,
+ * an API key principal may always post one), so the agent's own credential,
+ * from a background job or a subagent, could say yes to its own held
+ * `rm -rf build`. The person only gate lives on the callback route (the tap),
+ * so a held request takes only a deny on the typed lane.
+ *
+ * MUTATION PROOF (applied to lib/permission-relay.ts, confirmed red,
+ * restored): typedPermissionVerdict's refusal line
+ * `if (choice !== null && floorHeld && choice !== 'deny') return ...` removed
+ * -> the first case below red, 1 of 54.
+ */
+test('a request the floor holds takes no typed or label yes, from anyone; a typed no still ends it', () => {
+  const id = 'abcde'
+  for (const text of [`yes ${id}`, `y ${id}`, 'Yes, this once', 'Allow once', `ea:once:${id}`, 'allow for session']) {
+    const verdict = typedPermissionVerdict(text, id, true)
+    assert.equal(verdict.choice, null, text)
+    assert.notEqual(verdict.refused, null, text)
+  }
+  for (const text of [`no ${id}`, `ea:deny:${id}`, 'Deny']) {
+    assert.deepEqual(typedPermissionVerdict(text, id, true), { choice: 'deny', refused: null }, text)
+  }
+})
+
+test('a request the floor does not hold reads a typed verdict exactly as before', () => {
+  const id = 'abcde'
+  for (const text of [`yes ${id}`, 'Yes, this once', `no ${id}`, 'hello', `yes zzzzz`]) {
+    assert.deepEqual(typedPermissionVerdict(text, id, false), {
+      choice: parsePermissionChoice(text, id),
+      refused: null,
+    }, text)
+  }
+})
+
+test('server.ts: the typed lane asks typedPermissionVerdict with the request\'s floorHeld, and only a HOLD sets it', () => {
+  const verdictFrom = SRC.slice(SRC.indexOf('    verdictFrom: (msg) => {'), SRC.indexOf('    retireCard: async () => {'))
+  assert.match(verdictFrom, /typedPermissionVerdict\(text, requestId, floorHeld\)/)
+  assert.doesNotMatch(verdictFrom, /parsePermissionChoice\(/, 'the typed lane must not bypass the floor check')
+  assert.match(SRC, /case 'hold':[\s\S]{0,400}?return relayPermissionToOwner\(params, match\.evidence, true\)/)
+  assert.match(SRC, /case 'owner':[\s\S]{0,300}?return relayPermissionToOwner\(params, match\.evidence\)\n/)
+  assert.match(SRC, /permissionBackstopMs\(storedWait\),\n\s*requesterUserId,\n\s*floorHeld,\n/)
+})
+
+// ── A refused row is said once, not once per tick ───────────────────────────
+
+/**
+ * The final live proof's first plugin minor. verdictFrom skips rows at or below
+ * a baselineId fixed when the wait starts, so a row it REFUSES (a typed yes on
+ * a held request, or a verdict from another user) is read again on every poll
+ * tick, and the daemon logged "Ignoring typed once" 57 times in 37 s for two
+ * rows. Refusing it again is right; saying so again is noise that buries the
+ * one line the owner needs. Now each refused row is said once per request.
+ *
+ * MUTATION PROOF (applied to lib/permission-relay.ts, confirmed red,
+ * restored): oncePerRow's `if (said.has(rowId)) return false` removed -> the
+ * first two tests below red, 2 of 79 in this run (the wait logged 40 lines for
+ * the two refused rows instead of 2).
+ */
+test('a refused typed yes on a held request is logged once per row across every tick of the wait', async () => {
+  const id = 'abcde'
+  interface TypedRow { id: number; text: string }
+  const rows: TypedRow[] = [
+    { id: 10, text: `yes ${id}` },
+    { id: 11, text: 'Yes, this once' },
+    { id: 12, text: 'hello' },
+  ]
+  const runOnce = async () => {
+    let clock = 0
+    const logs: string[] = []
+    const firstRefusalOf = oncePerRow()
+    const verdict = await watchPermissionVerdict<TypedRow>({
+      requestId: id,
+      // Twenty ticks at the fast cadence, every one re-serving the same page,
+      // which is what a baseline fixed at the start of the wait does.
+      timeoutMs: PERMISSION_POLL_FAST_MS * 20,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      stillPending: () => true,
+      rows: async () => rows,
+      expiredOn: () => false,
+      answeredOn: () => null,
+      verdictFrom: (row) => {
+        const { choice, refused } = typedPermissionVerdict(row.text, id, true)
+        if (refused) {
+          if (firstRefusalOf(row.id)) logs.push(`Ignoring typed ${refused} in message ${row.id}`)
+          return null
+        }
+        return choice
+      },
+      retireCard: async () => {},
+      log: (line) => logs.push(line),
+    })
+    return { verdict, refusals: logs.filter((l) => l.startsWith('Ignoring typed')) }
+  }
+  const first = await runOnce()
+  // Still refused on every tick: the wait ran to its backstop, nothing allowed it.
+  assert.equal(first.verdict.via, 'backstop')
+  assert.deepEqual(first.refusals, ['Ignoring typed once in message 10', 'Ignoring typed once in message 11'])
+  // A NEW request gets a new latch, so it still says why it refused the same rows.
+  const second = await runOnce()
+  assert.equal(second.refusals.length, 2)
+})
+
+test('oncePerRow answers true the first time a row id is seen and false after', () => {
+  const first = oncePerRow()
+  assert.equal(first(7), true)
+  assert.equal(first(7), false)
+  assert.equal(first(8), true)
+  assert.equal(first(7), false)
+  assert.equal(oncePerRow()(7), true, 'each latch is its own')
+})
+
+test('server.ts: both of verdictFrom\'s refusal lines are behind the once per request latch', () => {
+  const watch = SRC.slice(
+    SRC.indexOf('async function waitForVerdict('),
+    SRC.indexOf('async function retireOrphanedPermissionCards('),
+  )
+  // Made inside the wait, so the latch is per request.
+  assert.match(watch, /const firstRefusalOf = oncePerRow\(\)/)
+  const verdictFrom = watch.slice(watch.indexOf('    verdictFrom: (msg) => {'), watch.indexOf('    retireCard: async () => {'))
+  assert.match(
+    verdictFrom,
+    /if \(firstRefusalOf\(msg\.message\.id\)\) \{\n\s*log\(\n\s*`Ignoring permission verdict for/,
+  )
+  assert.match(
+    verdictFrom,
+    /if \(firstRefusalOf\(msg\.message\.id\)\) \{\n\s*log\(\n\s*`Ignoring typed \$\{refused\}/,
+  )
+  // And no unguarded copy of either line is left behind.
+  assert.equal(verdictFrom.split('Ignoring typed').length - 1, 1)
+  assert.equal(verdictFrom.split('Ignoring permission verdict').length - 1, 1)
 })

@@ -10,10 +10,13 @@
 // agent honours, not a lock. Every HOAI agent is launched with
 // `--dangerously-skip-permissions` (bin/hoai-core.mjs, bin/bgos-agent) and the
 // shipped manifest sets `BGOS_AUTO_APPROVE: "true"`, which the permission relay
-// answers `allow` to before anything else runs. The hook rail cannot gate
-// either: every entry is `async: true` and bin/hoai-hook.mjs always exits 0 by
-// explicit rule. So nothing in this plugin can stop a model editing a file
-// before its plan is approved. The tool description and the served canon both
+// answers `allow` to (since 0.53.0 after asking the server about the hard
+// floor's short list of risky actions, and only those). The hook rail cannot
+// gate a plan either: every forwarder entry is `async: true` and
+// bin/hoai-hook.mjs always exits 0 by explicit rule, and the one blocking
+// entry, bin/hoai-floor-hook.mjs, asks only about that same short list, never
+// about an ordinary edit. So nothing in this plugin can stop a model editing a
+// file before its plan is approved. The tool description and the served canon both
 // say so in as many words, and the card's `enforced` flag is FALSE on this
 // channel for exactly that reason. Codex, which has a real read only mode,
 // sends `true`.
