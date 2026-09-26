@@ -41,6 +41,13 @@
  *                       skipSlashCommands, see
  *                       docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
  *                       and the model has no tool for it.
+ *   mission_set_goals   the model has set_mission_goals, which writes the
+ *                       mini goals of an open mission that has none yet
+ *                       (every /goal mission starts that way). The backend
+ *                       arms a Keep working wake on a goal-less mission only
+ *                       for a daemon declaring this, because that wake asks
+ *                       the agent to write its goals. Every host: it is a
+ *                       plain HTTP write the model makes itself.
  *   mission_pause       a pause truly stops the work. ONLY where the injector
  *                       answers, because the pause this daemon can enforce IS
  *                       clearing the native goal. It is honest about its
@@ -53,7 +60,7 @@
  *   permission_card     this daemon relays Claude Code's permission prompt
  *                       as a BGOS request card (an `approval_request` with
  *                       an `approvalMeta`, Allow once and Deny) and honours
- *                       the owner's `ea:` answers to it (0.47.0,
+ *                       the owner's `ea:` answers to it (0.49.0,
  *                       lib/permission-relay.ts). Every host: the prompt
  *                       arrives over the channel's own permission
  *                       notification and the answer goes back the same way,
@@ -68,7 +75,7 @@
  *   plan_card           this daemon has the propose_plan tool and posts the
  *                       plan card (an `event` row whose payload kind is
  *                       `plan_card`, with Go ahead, Change the plan and Do
- *                       not do this) in the owner's agent chat (0.48.0,
+ *                       not do this) in the owner's agent chat (0.50.0,
  *                       lib/plan-card.ts). Every host: it is a typed MCP tool
  *                       with no platform limit. Gated exactly like
  *                       permission_card: the backend tells the canon's plan
@@ -81,7 +88,7 @@
  *                       it for the owner BEFORE any auto approve: the relay
  *                       asks the server's floor-check route first
  *                       (lib/floor-check.ts) and a hold takes the owner's
- *                       request card (0.49.0). Every host: the hook is a
+ *                       request card (0.52.0). Every host: the hook is a
  *                       plain node script and the relay is the permission
  *                       relay above, with no platform limit. The backend
  *                       tells the canon's floor sentence (a hook stops a
@@ -120,6 +127,7 @@ import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capabilit
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_events',
   'mission_goal_checks',
+  'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
 ])

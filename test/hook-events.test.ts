@@ -312,6 +312,7 @@ test('the mapper never mutates the state it is handed', () => {
 test("the channel's own tools and the task tools never draw a row", () => {
   for (const name of ['reply', 'mcp__bgos__reply', 'ask_user_input', 'show_component',
     'rename_chat', 'set_status', 'create_mission', 'tick_mini_goal', 'complete_mission',
+    'set_mission_goals',
     'boards_query', 'ToolSearch', 'TaskGet', 'TaskList']) {
     const out = feed(emptyTurn(), base('PreToolUse', {
       tool_name: name,

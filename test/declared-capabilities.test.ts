@@ -83,6 +83,15 @@ test('the goal loop and the pause are declared ONLY where the daemon can type', 
   assert.ok(canType.includes('mission_pause'))
 })
 
+test('mission_set_goals is declared on every host: set_mission_goals is a plain tool call', () => {
+  // A Keep working wake on a mission with NO goals asks the agent to write
+  // them, and the backend only arms that wake for a daemon declaring this. The
+  // tool is an HTTP write the model makes itself, so no tmux is needed.
+  for (const canInjectGoal of SHAPES) {
+    assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('mission_set_goals'))
+  }
+})
+
 test('a host that cannot type declares the READ half only', () => {
   // The Windows case, and a Mac or Linux host whose CLI is not in a tmux pane.
   // Arming a goal is the injector and nothing else, and a pause this daemon
@@ -91,12 +100,12 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'hard_floor'],
   )
 })
 
 /**
- * permission_card (0.47.0, the permission relay on the request rail).
+ * permission_card (0.49.0, the permission relay on the request rail).
  *
  * The BGOS canon tells an agent about the permission request card only when
  * its daemon declares this token, with no version floor (BGOS #1624), so the
@@ -118,12 +127,21 @@ test('permission_card is declared on every host, because the relay has no platfo
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('permission_card'))
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'permission_card', 'plan_card', 'hard_floor', 'mission_goal_loop', 'mission_pause'],
+    [
+      'mission_events',
+      'mission_goal_checks',
+      'mission_set_goals',
+      'permission_card',
+      'plan_card',
+      'hard_floor',
+      'mission_goal_loop',
+      'mission_pause',
+    ],
   )
 })
 
 /**
- * plan_card (0.48.0, the propose_plan tool and its card).
+ * plan_card (0.50.0, the propose_plan tool and its card).
  *
  * The BGOS canon tells an agent about propose_plan and the plan card only
  * when its daemon declares this token, with no version floor (BGOS #1624):
@@ -144,7 +162,7 @@ test('plan_card is declared on every host, because propose_plan is a typed tool 
 })
 
 /**
- * hard_floor (0.49.0, the Always ask floor: the blocking hook and the hold).
+ * hard_floor (0.52.0, the Always ask floor: the blocking hook and the hold).
  *
  * The promise: this daemon installs the blocking floor hook
  * (bin/hoai-floor-hook.mjs, registered in hooks/hooks.json) and holds an
@@ -271,7 +289,7 @@ test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at
  * THE REVIEW: hard_floor was declared on every pairing whether or not the
  * session's CLI carried the blocking hook. A clone gets the entry only when a
  * launcher or bgos-agent install writes it into a settings file; an always on
- * agent installed at 0.48.0 and moved to 0.49.0 by `bgos-agent update` starts
+ * agent installed at 0.48.0 and moved to 0.52.0 by `bgos-agent update` starts
  * `claude` from its service with 0.48.0's settings, so no request is ever
  * raised for `rm -rf` under --dangerously-skip-permissions, while the canon
  * told its agent (and the owner turned the switch on believing) a hook stops
@@ -317,7 +335,7 @@ const presence = (over: Partial<FloorHookPresenceInput> & { files: Record<string
   })
 }
 
-/** What the clone launchers write today (ensureHookEntries, 0.49.0), read back. */
+/** What the clone launchers write today (ensureHookEntries, 0.52.0), read back. */
 function cloneSettings(floorHookPath?: string | null): string {
   let text = ''
   const fs = {

@@ -22,7 +22,7 @@
  * permission to try, or as a reason to restate in prose what the card already
  * carries.
  *
- * The hard floor bullet (0.49.0) carries the sentences of the served canon's
+ * The hard floor bullet (0.52.0) carries the sentences of the served canon's
  * approvals section that this release makes true, in the words the stage 6
  * spec (section 4.5) gives them: the core floor sentences (the list, the
  * narrowed card, and that only the owner signed in to the app can allow such

@@ -178,7 +178,7 @@ test('both supervisors run claude in the workspace, which is what loads that .mc
  *
  * THE REVIEW: the CLI reads a clone's hooks only from the workspace settings
  * file, and only install wrote it, so an always on agent installed at 0.48.0
- * and updated to 0.49.0 restarted `claude` with no floor entry at all: no
+ * and updated to 0.52.0 restarted `claude` with no floor entry at all: no
  * request is ever raised for a listed action under full access, and the
  * unattended agent was the one with no floor. The daemon no longer declares
  * hard_floor without the hook (lib/floor-hook-presence.ts); this is the half

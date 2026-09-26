@@ -1,5 +1,5 @@
 /**
- * The canon fetch carries this daemon's declared list (0.47.0).
+ * The canon fetch carries this daemon's declared list (0.49.0).
  *
  * The BGOS canon tells the permission request card sentence only to a
  * connection that DECLARES `permission_card`, with no version floor (BGOS
@@ -48,7 +48,7 @@ test('the daemon\'s own base declaration reaches the fetch, permission_card incl
   assert.ok(query.get('capabilities')!.split(',').includes('permission_card'))
 })
 
-test('the plan card token reaches the fetch too (0.48.0)', () => {
+test('the plan card token reaches the fetch too (0.50.0)', () => {
   // The canon's plan card sentences are gated on plan_card exactly as the
   // permission card sentence is on permission_card, so the fetch at connect
   // must carry it for the same reason.
@@ -57,7 +57,7 @@ test('the plan card token reaches the fetch too (0.48.0)', () => {
   assert.ok(query.get('capabilities')!.split(',').includes('plan_card'))
 })
 
-test('the hard floor token reaches the fetch too (0.49.0)', () => {
+test('the hard floor token reaches the fetch too (0.52.0)', () => {
   // The canon's floor sentence is gated on hard_floor (with permission_card),
   // so the fetch at connect, which runs before the first heartbeat, must carry
   // it or a fresh boot is told nothing about the hook it installed.

@@ -168,6 +168,11 @@ import {
   buildMissionCreatePath,
   buildMissionActivePath,
   buildMissionTickPath,
+  buildMissionAddGoalsBody,
+  buildMissionAddGoalsPath,
+  buildMissionCancelGoalPath,
+  buildMissionSetGoalsBody,
+  buildMissionSetGoalsPath,
   buildMissionCompletePath,
   buildMissionFailPath,
   buildMissionProgressPath,
@@ -379,7 +384,9 @@ import {
   planCardChatRefusal,
   planAnswerDirective,
   planChipFor,
+  planRequesterFor,
   planSettlement,
+  planTapAuthority,
   planStatusClearBody,
   planStatusBody,
   resolvePlanChoice,
@@ -1893,7 +1900,7 @@ interface PendingPermission {
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
   /**
-   * True when the hard floor HOLDS this request for the owner (0.49.0): only a
+   * True when the hard floor HOLDS this request for the owner (0.52.0): only a
    * tap may allow it, never a typed verdict (typedPermissionVerdict).
    */
   floorHeld?: boolean
@@ -2428,7 +2435,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 
   log(`Permission request: ${tool_name} [${request_id}], ${description}`)
 
-  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.49.0).
+  // THE HARD FLOOR, ABOVE AUTO APPROVE, AND THE ORDER IS THE FEATURE (0.52.0).
   // Under --dangerously-skip-permissions the CLI raises a request for a listed
   // action only because the floor hook asked it to (bin/hoai-floor-hook.mjs),
   // and the auto approve branch below would answer `allow` to it in
@@ -2464,7 +2471,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
 
   if (AUTO_APPROVE) {
     // AUTO APPROVE ANSWERS FIRST, ABOVE THE DRAIN, and the order is the fix.
-    // 0.47.0 put the drain branch in front of this one, so a default auto
+    // 0.49.0 put the drain branch in front of this one, so a default auto
     // approve install got a hard DENY for every tool raised inside an update
     // drain, on a path that needs nothing the drain closes: no chat, no
     // network, no intake, one notification back to the CLI it came from. A
@@ -2857,7 +2864,7 @@ function postFloorCheck(
  * typed "yes <id>" / "no <id>" fallback), the SERVER's own
  * `approval_meta.expired` flag on the card, and a local backstop that sits 90
  * s behind the owner's whole wait and exists only for a server that never
- * answers at all. Before 0.47.0 this was a flat 120 s clock, which is how a
+ * answers at all. Before 0.49.0 this was a flat 120 s clock, which is how a
  * request could be declined here while the card in the owner's hand was still
  * perfectly tappable.
  *
@@ -3094,7 +3101,7 @@ async function waitForVerdict(
  * to the CLI, and, worse for the owner, nothing retires the CARD. Its buttons
  * came off at the watch's backstop, and the watch died with the process, so
  * the row sat there tappable until the server's own expiry at
- * `created_at + wait_seconds`. That was 60 s before 0.47.0 and is up to half
+ * `created_at + wait_seconds`. That was 60 s before 0.49.0 and is up to half
  * an hour now, during which a tap tells the owner the request was approved
  * while nothing at all is listening.
  *
@@ -4018,7 +4025,10 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         'steps or work spanning tools and minutes), then work normally and ' +
         'tick goals with `tick_mini_goal` as their checks come true. One ' +
         'open mission per CHAT; creating a new one sets aside that chat\'s ' +
-        'previous open mission and leaves every other chat alone. Maps to ' +
+        'previous open mission and leaves every other chat alone. NEVER call ' +
+        'this to change a mission that is already running: use ' +
+        'add_mission_goals or cancel_mission_goal, which keep the card and ' +
+        'every tick on it. Maps to ' +
         'POST /api/v1/assistants/:id/missions (user-scoped, X-API-Key).',
       inputSchema: {
         type: 'object' as const,
@@ -4098,6 +4108,138 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
               'The chat whose open mission you are ticking; omit to use the ' +
               'chat you are answering in. An explicit mission_id wins over ' +
               'this.',
+          },
+        },
+        required: ['goal_id'],
+      },
+    },
+    {
+      name: 'set_mission_goals',
+      description:
+        'Write the mini-goals of an OPEN mission that has NONE yet, keeping ' +
+        'the same mission (a /goal mission, or one your owner started, begins ' +
+        'with none). A Keep working card asks for this on a goal-less mission. ' +
+        'Pass 2 to 12 binary goals (aim for 4 to 10), each { name, done_when } ' +
+        'where done_when is the observable check that proves it. Refused on a ' +
+        'mission that already has goals: tick those, or ADD to them with ' +
+        'add_mission_goals. Never use create_mission for either, it would ' +
+        'replace the mission. Targets your ' +
+        'active mission unless mission_id is passed. Maps to PUT ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description: '2 to 12 binary goals, each { name, done_when }.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are filling; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'add_mission_goals',
+      description:
+        'ADD one or more mini-goals to a mission that ALREADY has some, ' +
+        'keeping the same mission: its ticks, its history and its Keep ' +
+        'working switch all stay. This is the tool to use when your owner ' +
+        'asks for a goal to be added to work already under way, and it is ' +
+        'the only correct answer on a mission the app will not let them edit ' +
+        'themselves (every /goal mission), where the card tells them to ask ' +
+        'you. NEVER call create_mission to add a goal: that sets the mission ' +
+        'aside and discards every tick on it. Send ONLY the new goals, 1 to ' +
+        '12, each { name, done_when }; never restate the goals the mission ' +
+        'already has. A mission holds 12 in all, so an add that would pass ' +
+        'that is refused with both numbers. Refused on a mission with NO ' +
+        'goals yet: use set_mission_goals for that. Targets your active ' +
+        'mission unless mission_id is passed. Maps to POST ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          mini_goals: {
+            type: 'array',
+            description:
+              'The goals to ADD, 1 to 12, each { name, done_when }. Only the ' +
+              'new ones.',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Short goal name (<=120 chars).' },
+                done_when: {
+                  type: 'string',
+                  description: 'Observable check that proves it (<=200 chars).',
+                },
+              },
+              required: ['name', 'done_when'],
+            },
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are adding to; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
+          },
+        },
+        required: ['mini_goals'],
+      },
+    },
+    {
+      name: 'cancel_mission_goal',
+      description:
+        'CANCEL one mini-goal you are no longer going to do, by its id, ' +
+        'keeping the mission and everything else on it. Use it when your ' +
+        'owner drops a goal or the work turns out not to be needed, and say ' +
+        'in the chat why it went. A goal you have already TICKED cannot be ' +
+        'cancelled: it is a record of work that happened and it carries your ' +
+        'own evidence line, so if a tick was wrong, say so in the chat ' +
+        'instead. Cancelling the last unticked goal does NOT complete the ' +
+        'mission, because removing a promise is not keeping one; call ' +
+        'complete_mission yourself when the work is really done. One goal per ' +
+        'call. Targets your active mission unless mission_id is passed. Maps ' +
+        'to DELETE ' +
+        '/api/v1/integrations/assistants/:id/missions/:missionId/goals/:goalId.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          goal_id: {
+            type: 'number',
+            description: 'The mini-goal id to cancel, as the mission card shows it.',
+          },
+          mission_id: {
+            type: 'number',
+            description: 'Optional mission id; omit to target your active mission.',
+          },
+          chat_id: {
+            type: 'string',
+            description:
+              'The chat whose open mission you are changing; omit to use the ' +
+              'chat you are answering in. An explicit mission_id wins over this.',
           },
         },
         required: ['goal_id'],
@@ -4871,6 +5013,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
             revision: payload.revision,
             postedAtMs: Date.now(),
             payload,
+            // WHO this plan was proposed to, from the permission relay's own
+            // source for requesterUserId, so a tap on the card can be bound to
+            // that person exactly as a tap on a permission card is. See
+            // foreignPlanTap.
+            requesterUserId: lastInboundUserByChat.get(planChatId) ?? USER_ID,
           })
           // The CLI writes this tool result verbatim into the transcript, so
           // the minted id is proof of which transcript is ours, exactly as a
@@ -5971,6 +6118,200 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
     }
 
+    case 'set_mission_goals': {
+      const built = buildMissionSetGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to write goals for. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionSetGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPut(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Set goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `set_mission_goals: mission #${missionId} now has ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goals written.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to write the mission goals: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'add_mission_goals': {
+      const built = buildMissionAddGoalsBody({ mini_goals: rawArgs.mini_goals })
+      if (!built.ok) {
+        return {
+          content: [{ type: 'text', text: `Error: ${built.error}` }],
+          isError: true,
+        }
+      }
+
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'No active mission in this chat to add goals to. Create one ' +
+                  'with create_mission instead.',
+              },
+            ],
+            isError: true,
+          }
+        }
+        const builtPath = buildMissionAddGoalsPath(ASSISTANT_ID, missionId)
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        // BEFORE the request, for the reason tick_mini_goal gives: the
+        // mission_updated frame can land while this await is still pending.
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosPost(builtPath.path, {
+          ...built.body,
+        })) as { mission?: MissionSnapshot }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Add goals returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `add_mission_goals: mission #${missionId} gained ${built.body.miniGoals.length} goals`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `${built.body.miniGoals.length === 1 ? 'Goal' : 'Goals'} added.\n` +
+                formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to add the mission goals: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
+    case 'cancel_mission_goal': {
+      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      if (!chat.ok) return chat.error
+
+      try {
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        if (missionId == null) {
+          return {
+            content: [
+              { type: 'text', text: 'No active mission in this chat to cancel a goal on.' },
+            ],
+            isError: true,
+          }
+        }
+        // The goal id is validated by the PATH builder, so a bad one never
+        // reaches the network and the agent gets the sentence rather than a 400.
+        const builtPath = buildMissionCancelGoalPath(
+          ASSISTANT_ID,
+          missionId,
+          rawArgs.goal_id,
+        )
+        if (!builtPath.ok) {
+          return {
+            content: [{ type: 'text', text: `Error: ${builtPath.error}` }],
+            isError: true,
+          }
+        }
+        noteMissionPendingSelfWrite(missionId)
+        const result = (await bgosDelete(builtPath.path)) as {
+          mission?: MissionSnapshot
+        }
+        if (!result?.mission) {
+          return {
+            content: [{ type: 'text', text: 'Cancel goal returned no mission payload.' }],
+            isError: true,
+          }
+        }
+        rememberMissionSelfWrite(result.mission)
+        log(
+          `cancel_mission_goal: mission #${missionId} goal ${String(rawArgs.goal_id)} cancelled`,
+        )
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Goal cancelled.\n' + formatMissionSummary(result.mission),
+            },
+          ],
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `Failed to cancel the mission goal: ${errMsg}` }],
+          isError: true,
+        }
+      }
+    }
+
     case 'complete_mission': {
       const built = buildMissionCompleteBody({ summary: rawArgs.summary })
       if (!built.ok) {
@@ -6984,6 +7325,52 @@ function clearPlanStatusLine(): void {
 }
 
 /**
+ * Is this tap on a plan card from somebody OTHER than the person the plan was
+ * proposed to? True means refuse it, and the one log line is written here.
+ *
+ * Data's blocker on #150: applyPlanAnswer used to take no clicker id at all,
+ * while the permission intake beside it always passed clickerUserId, so on a
+ * SHARED assistant anyone who could see the chat could tap Go ahead on a plan
+ * proposed to someone else and the agent went to work as if its owner had
+ * approved. The rule is #142's, null aware, as the permission card watch
+ * applies it (planTapAuthority): a tap naming a different person is refused, a
+ * tap naming nobody is accepted, which is every tap on today's backend.
+ *
+ * `clickerUserId` MUST be read with senderUserIdCandidate, never with
+ * senderUserIdOf: the owner fallback would turn an unstamped tap into the
+ * owner's, and on a shared assistant, where the plan was proposed to the
+ * person it was shared with, that would refuse every real approval.
+ *
+ * The person is this process's record of the card, or the owner when a
+ * restart lost it (planRequesterFor says why, and why not the chat's latest
+ * inbound user). Its own function because the boot sweep must ask it BEFORE
+ * it strips the chips, and the two click intakes ask it through
+ * applyPlanAnswer.
+ */
+function foreignPlanTap(input: {
+  chatId: string
+  messageId: number
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the log line only. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): boolean {
+  const authority = planTapAuthority({
+    clickerUserId: input.clickerUserId,
+    requesterUserId: planRequesterFor({
+      open: openPlansByChat.get(input.chatId),
+      messageId: input.messageId,
+      ownerUserId: USER_ID,
+    }),
+  })
+  if (authority.kind !== 'foreign') return false
+  log(
+    `Ignoring plan card tap on card ${input.messageId} via ${input.via} from ` +
+      `user ${authority.clickerUserId} (plan belongs to ${authority.requesterUserId})`,
+  )
+  return true
+}
+
+/**
  * Everything that has to happen when a plan is answered, whichever chip it was:
  * the card is no longer open, the status line comes down, the chat leaves the
  * fast scope, and the app is told the mode is back to default so the chip goes.
@@ -7041,6 +7428,16 @@ function settlePlan(chatId: string, wasPlanMode: boolean): void {
  * value) precisely so it can never be read back as one of this plugin's
  * control codes, and that only holds while the classification happens before
  * the unescape. The permission intake has always worked this way.
+ *
+ * WHO TAPPED is an input too, required, so no intake can call this without
+ * saying: `clickerUserId` is senderUserIdCandidate of the RAW answer payload
+ * (null when it names nobody; the stream carries it as answer.clickerUserId,
+ * because its normalised answer keeps only the button fields). A tap from a person other than the one the plan was
+ * proposed to comes back `refused`, and the caller DROPS the click: the plan
+ * is not settled, the chip and the status line stay up, and nothing reaches
+ * the model, so the agent is NOT told to proceed. It does not re arm the card:
+ * the backend's markAnswered is first answer wins, so the row is answered and
+ * the plan's person has to type, or the agent re proposes. See foreignPlanTap.
  */
 function applyPlanAnswer(input: {
   chatId: string
@@ -7050,8 +7447,18 @@ function applyPlanAnswer(input: {
   customText?: string | null
   /** `eventMeta.payload` of the answered row, when the transport carries it. */
   eventMetaPayload?: unknown
-}): { summary: string | null; directive: string | null; callbackData: string | null } {
-  const none = { summary: null, directive: null, callbackData: null }
+  /** senderUserIdCandidate of the answer: null when the tap names nobody. */
+  clickerUserId: string | null
+  /** Which intake heard the tap, for the refusal's log line. */
+  via: 'poll' | 'stream' | 'boot sweep'
+}): {
+  summary: string | null
+  directive: string | null
+  callbackData: string | null
+  /** A foreign tap on a plan: the caller must drop the click entirely. */
+  refused: boolean
+} {
+  const none = { summary: null, directive: null, callbackData: null, refused: false }
   // Two independent ways to know the answered row is a plan card: the record
   // this process is holding, and the row's own payload. Either is enough, and
   // the second is what survives a restart, where the first is empty.
@@ -7063,6 +7470,18 @@ function applyPlanAnswer(input: {
   // say) is still an answer: the wait is over and the status line must come
   // down, even though there is no directive to give.
   if (choice === null && !onPlanCard) return none
+  // From here on this IS a plan answer, so from here on it is bound to the
+  // person the plan was proposed to, BEFORE anything is settled.
+  if (
+    foreignPlanTap({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      clickerUserId: input.clickerUserId,
+      via: input.via,
+    })
+  ) {
+    return { ...none, refused: true }
+  }
   // The DOOR of the row being answered, from this process's record first and
   // the row's own payload second, which is the pair that survives a restart.
   // Anything but `decided` is a door that could have lit the chip, and that is
@@ -7073,6 +7492,7 @@ function applyPlanAnswer(input: {
   settlePlan(input.chatId, answeredDoor !== undefined && answeredDoor !== 'decided')
   if (choice === null) return none
   return {
+    refused: false,
     summary: describePlanClick({ choice, customText: input.customText }),
     directive: planAnswerDirective(choice),
     // The code the model was PROMISED, put back on the meta. A revision
@@ -7207,6 +7627,16 @@ async function announceMissedPlanAnswers(): Promise<void> {
       const callbackData = payload.callbackData ?? payload.callback_data ?? ''
       const buttonText = payload.buttonText ?? payload.button_text ?? ''
       const customText = payload.customText ?? payload.custom_text ?? undefined
+      // WHO tapped, null aware, and asked BEFORE the strip: a refused tap must
+      // leave the card exactly as it is, chips and all, and the strip below is
+      // what makes a sweep final. Every row here is a plan card
+      // (missedPlanAnswers), so the question always applies.
+      const clickerUserId = senderUserIdCandidate(payload)
+      if (
+        foreignPlanTap({ chatId: String(chatId), messageId: row.id, clickerUserId, via: 'boot sweep' })
+      ) {
+        continue
+      }
       // Strip the chips FIRST. A failed announce then costs one delivery; a
       // failed strip after a successful announce would let the next boot
       // announce the same answer again, which is the louder failure.
@@ -7223,7 +7653,12 @@ async function announceMissedPlanAnswers(): Promise<void> {
         callbackData,
         customText,
         eventMetaPayload: mm.eventMeta?.payload,
+        clickerUserId,
+        via: 'boot sweep',
       })
+      // Asked above already, so this cannot be true today; kept so the drop is
+      // written wherever applyPlanAnswer is called.
+      if (planAnswer.refused) continue
       const contentLines = [
         `[button_clicked] ${planAnswer.summary ?? `Clicked: ${buttonText || callbackData}`}`,
         `(in reply to message_id=${row.id})`,
@@ -8480,7 +8915,14 @@ async function pollChat(chatId: string): Promise<void> {
         callbackData,
         customText,
         eventMetaPayload: mm.eventMeta?.payload,
+        // NULL AWARE, unlike the permission intake's senderUserIdOf above:
+        // see foreignPlanTap for why the owner fallback must not be used here.
+        clickerUserId: senderUserIdCandidate(payload),
+        via: 'poll',
       })
+      // A tap from someone other than the plan's person: drop it, the way the
+      // permission intake drops a foreign click. foreignPlanTap logged it.
+      if (planAnswer.refused) continue
 
       // Strip the `u:` namespace sentinel so the agent receives the exact value
       // it authored. Reserved sentinels (__skip__/__custom__) are never escaped
@@ -9933,7 +10375,7 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 
 // The daemon's live drain counters (shared with SelfUpdater in main()).
 //
-// KNOWN, NOT YET DECIDED (0.47.0 review, drafted as 0.44.1). A permission request holds BOTH
+// KNOWN, NOT YET DECIDED (0.49.0 review, drafted as 0.44.1 and 0.47.0). A permission request holds BOTH
 // `activeOperations` (the handler body runs inside trackMessageOperation) and
 // `pendingPermissions` for as long as the owner has to answer, which used to
 // be at most two minutes and can now be half an hour. The scheduled update
@@ -10562,7 +11004,23 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
     callbackData: answer.callbackData,
     customText: answer.customText,
     eventMetaPayload: view.eventMetaRaw?.payload,
+    // NULL AWARE: see foreignPlanTap. The id the normalisation CARRIED off the
+    // raw answer payload: `answer` itself keeps only the button fields, so
+    // senderUserIdCandidate(answer) read null on every stream tap.
+    clickerUserId: answer.clickerUserId,
+    via: 'stream',
   })
+  // A tap from someone other than the plan's person: drop it, the way the
+  // foreign permission click above is dropped. foreignPlanTap logged who and
+  // whose; this lane's own outcome line says where it stopped, like every
+  // other exit of this function.
+  if (planAnswer.refused) {
+    log(
+      `button_clicked DROPPED at plan binding: the tap on plan card ${view.messageId} ` +
+        `named someone other than the plan's person (streamAuthority=${authorityAtReceipt})`,
+    )
+    return
+  }
 
   const agentCallbackData = unescapeAgentButtonValue(answer.callbackData)
   const kind =

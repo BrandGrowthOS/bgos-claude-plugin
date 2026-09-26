@@ -21,7 +21,7 @@
  * - Exit 2 on PreToolUse BLOCKS the tool call, so the forwarder always exits
  *   0 (pinned in test/hoai-hook.test.ts, task C2).
  *
- * ONE DELIBERATE EXCEPTION SINCE 0.49.0, and it is a second script, not a
+ * ONE DELIBERATE EXCEPTION SINCE 0.52.0, and it is a second script, not a
  * change to the forwarder. Until then this file asserted that every entry is
  * async ("a hook that blocks a tool call is a defect"), one entry per event and
  * one matcher object per event. The hard floor reverses all three for exactly
@@ -134,7 +134,7 @@ test('every FORWARDER entry is the exec form, async, with the plugin root placeh
 })
 
 test('the floor hook is the ONE blocking entry, and the reason is written here', () => {
-  // Reversed on purpose in 0.49.0 (see the header): the owner's "Always ask
+  // Reversed on purpose in 0.52.0 (see the header): the owner's "Always ask
   // before risky actions" needs a hook that STOPS a listed call under full
   // access, and the probe proved nothing else does (map part 24, run D1). It
   // is safe to block on because it only asks, fails open and gives up inside

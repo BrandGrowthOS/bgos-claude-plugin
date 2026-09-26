@@ -1,5 +1,5 @@
 /**
- * The permission relay's half of the hard floor (0.49.0): what it asks the
+ * The permission relay's half of the hard floor (0.52.0): what it asks the
  * server about a request that matched the list, and what it does with the
  * answer.
  *
@@ -65,7 +65,7 @@
  * asked to hold it and the session runs with full access
  * (`permission_mode: bypassPermissions`, which the record carries), the
  * request exists ONLY because the floor hook asked, so it is allowed, exactly
- * as it ran before 0.49.0, instead of posting a card to an owner whose switch
+ * as it ran before 0.52.0, instead of posting a card to an owner whose switch
  * is off. In any other mode the CLI would have asked anyway, so it goes to
  * the owner as before. An error there also goes to the owner: the card is not
  * a silent allow, and it is what that install did before.
