@@ -858,7 +858,15 @@ describe('real git check in dry-run mode', () => {
     expect(loadAutoUpdateState(stateFilePath).targetCommit).toBe(COMMIT_B)
   })
 
-  test('lock loser waits for the holder and restarts without merge', async () => {
+  // 2026-09-20, 04:01 Dubai: two stdio-hosted daemons (947, 960) lost the
+  // update-lock race at boot+60s, waited for the winner, then took this
+  // branch's UNCONDITIONAL exit "to restart". Nothing relaunched them: Claude
+  // Code never respawns a stdio MCP server that exits mid-session, and the
+  // launchd job that does exist supervises the claude session, not the plugin.
+  // The channel was dead for 3h52m. The assertion that used to live here
+  // (`exits == [0]` with NO opt-in) pinned that outage as correct behaviour.
+  // The lock loser now honours the same opt-in as the acquired-lock path.
+  test('lock loser waits for the holder, records the install, un-drains, and KEEPS SERVING without opt-in', async () => {
     const rootDir = tempDir('self-update-lock-loser-root-')
     mkdirSync(join(rootDir, '.git'))
     const stateFilePath = join(tempDir('self-update-lock-loser-state-'), 'auto-update.json')
@@ -869,6 +877,8 @@ describe('real git check in dry-run mode', () => {
     expect(sharedLock.kind).toBe('acquired')
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const exits: number[] = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
     let waits = 0
     let revParseCalls = 0
     const baseRunner = gitRunner({ calls })
@@ -888,13 +898,13 @@ describe('real git check in dry-run mode', () => {
       stateFilePath,
       env: { BGOS_AUTO_UPDATE: 'on' },
       runningVersion: '0.26.0',
-      log: () => {},
+      log: (message) => logs.push(message),
       drainSnapshot: () => ({
         activeOperations: 0,
         pendingMessages: 0,
         pendingPermissions: 0,
       }),
-      setDrainMode: () => {},
+      setDrainMode: (enabled) => drainModes.push(enabled),
       exit: (code) => exits.push(code),
       runner,
       delay: async () => {
@@ -906,7 +916,76 @@ describe('real git check in dry-run mode', () => {
     })
     await updater!.checkNow()
     expect(waits).toBe(1)
+    // The whole fix: no exit, intake restored, install recorded for the next boot.
+    expect(exits).toEqual([])
+    expect(drainModes).toEqual([true, false])
+    expect(logs).toContain('Auto-update is being applied by another daemon. Waiting for it to finish.')
+    expect(
+      logs.some((line) =>
+        line.startsWith('Auto-update staged by another daemon. This daemon keeps serving 0.26.0'),
+      ),
+    ).toBe(true)
+    expect(logs.some((line) => line.includes('Restarting this daemon'))).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
+    expect(calls.some((call) => call.file === 'bun')).toBe(false)
+    expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
+    const state = loadAutoUpdateState(stateFilePath)
+    expect(state.validationPending).toBe(true)
+    expect(state.targetCommit).toBe(COMMIT_B)
+    expect(updater!.pendingRestartVersion()).toBe('0.27.0')
+  })
+
+  test('lock loser exits after the holder finishes ONLY when BGOS_EXIT_AFTER_UPDATE opts in', async () => {
+    const rootDir = tempDir('self-update-lock-loser-optin-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
+    const stateFilePath = join(tempDir('self-update-lock-loser-optin-state-'), 'auto-update.json')
+    const sharedLock = tryAcquireUpdateLock(lockPath, 1_000)
+    expect(sharedLock.kind).toBe('acquired')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    let revParseCalls = 0
+    const baseRunner = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (args.join(' ') === 'rev-parse HEAD') {
+        calls.push({ file, args: [...args] })
+        revParseCalls += 1
+        return {
+          stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`,
+          stderr: '',
+        }
+      }
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => {
+        // The lock is released before the exit, as on the acquired path.
+        expect(existsSync(lockPath)).toBe(false)
+        exits.push(code)
+      },
+      runner,
+      delay: async () => {
+        if (sharedLock.kind === 'acquired') sharedLock.release()
+      },
+      schedule: () => setTimeout(() => {}, 60_000),
+      now: () => 1_001,
+    })
+    await updater!.checkNow()
+    // Supervised host (opted in): the old cycle-on-update behaviour, unchanged.
     expect(exits).toEqual([0])
+    expect(drainModes).toEqual([true])
     expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
     expect(calls.some((call) => call.file === 'bun')).toBe(false)
   })
