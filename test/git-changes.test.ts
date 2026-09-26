@@ -15,23 +15,28 @@
  *  - buffering a huge diff instead of cutting the stream and killing Git,
  *  - trusting caps from the frame above the backend's own numbers,
  *  - sending an absolute path (it names the operating system user),
- *  - hanging past the budget.
+ *  - hanging past the budget,
+ *  - running a Git older than 2.36, which reads core.fsmonitor=false as the
+ *    path of a program to run (fix round w5, W4-N3),
+ *  - starting a fetch from a partial clone's promisor remote (W4-N1),
+ *  - reading outside the agent's folder, where a core.worktree points (W4-N4).
  *
- * Git is faked for all but one test: a scripted runGit records argv, cwd and
- * env, and an in memory fs answers the untracked reads. The real Git test at
- * the end runs the node adapter against a scratch repository, and skips on a
- * host without Git.
+ * Git is faked for most tests: a scripted runGit records argv, cwd and env,
+ * and an in memory fs answers the untracked reads. The real Git tests at the
+ * end run the node adapter against scratch repositories, and skip on a host
+ * without Git.
  */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
-import { spawnSync } from 'node:child_process'
+import { spawn as nodeSpawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import {
   CHANGES_DEFAULT_CAPS,
@@ -44,6 +49,7 @@ import {
   type ChangesFs,
   type GitRun,
   type RunGit,
+  type SpawnLike,
 } from '../lib/git-changes.ts'
 
 // ---------------------------------------------------------------------------
@@ -116,6 +122,18 @@ const PATCH = [
 ].join('\n')
 const UNTRACKED = 'notes.md\0'
 
+/**
+ * The two refusals the owner reads, in their plain words, written out (fix
+ * round w5): a Git below the 2.36 floor (W4-N3), and a top folder that is not
+ * the agent's folder or a folder above it (W4-N4). Both answer read_failed.
+ */
+const TOO_OLD = { ok: false, code: 'read_failed', message: 'Git 2.36 or later is needed to read changes safely' }
+const OUTSIDE = {
+  ok: false,
+  code: 'read_failed',
+  message: "the repository's top folder is not the agent's folder or a folder above it, so nothing was read",
+}
+
 type Reply = Partial<GitRun>
 
 const ok = (text: string): Reply => ({ code: 0, stdout: Buffer.from(text, 'utf8') })
@@ -167,7 +185,11 @@ type MemEntry = {
   open?: MemEntry
 }
 
-function memFs(entries: Record<string, MemEntry>) {
+/**
+ * `realpaths` maps a path to what the host resolves it to (a link, a junction,
+ * another spelling); any other path resolves to itself.
+ */
+function memFs(entries: Record<string, MemEntry>, realpaths: Record<string, string> = {}) {
   const lstats: string[] = []
   /** Every read that returned bytes, with what it asked for. */
   const reads: Array<{ path: string; maxBytes: number }> = []
@@ -185,6 +207,7 @@ function memFs(entries: Record<string, MemEntry>) {
     ino: o.ino ?? inoOf(p, e),
   })
   const fs = {
+    realpath: async (p: string) => realpaths[p] ?? p,
     lstat: async (p: string) => {
       lstats.push(p)
       const e = entries[p]
@@ -243,6 +266,8 @@ async function collect(
     caps?: ChangesCaps
     workdir?: string
     runGit?: RunGit
+    env?: Record<string, string | undefined>
+    platform?: string
   } = {},
 ) {
   const git = fakeGit(opts.reply ?? repoReply())
@@ -257,7 +282,8 @@ async function collect(
         [`${ROOT}/notes.md`]: { kind: 'file', data: Buffer.from('# Notes\n') },
       }).fs,
     now: () => NOW,
-    env: BASE_ENV,
+    env: opts.env ?? BASE_ENV,
+    ...(opts.platform ? { platform: opts.platform } : {}),
   })
   return { result, calls: git.calls }
 }
@@ -570,6 +596,73 @@ test('every Git command turns off an fsmonitor hook the repository names, before
   }
 })
 
+test('every Git read turns off lazy fetching, by the variable, so a partial clone never starts a fetch from its promisor remote', async () => {
+  // Fix round w5 (W4-N1). In a partial clone, a read that needs an object the
+  // clone left out asks the promisor remote for it, and that fetch runs the
+  // programs the repository's config names (remote.<name>.uploadpack, a
+  // transport helper) and can wait on the network. GIT_NO_LAZY_FETCH=1 turns
+  // it off; the --no-lazy-fetch flag would too, but an older Git rejects it as
+  // an unknown option, so the variable it is. The daemon's own value never
+  // wins over it.
+  const { calls } = await collect({ env: { ...BASE_ENV, GIT_NO_LAZY_FETCH: '0' } })
+  assert.equal(calls.length, 7, 'all seven commands ran')
+  for (const c of calls) {
+    assert.equal(c.env.GIT_NO_LAZY_FETCH, '1', `git ${c.args.join(' ')} may start a lazy fetch`)
+    assert.ok(!c.args.includes('--no-lazy-fetch'), 'the variable, never the flag an older Git rejects')
+    assert.equal(c.env.PATH, '/usr/bin', 'the rest of the environment rides along')
+  }
+})
+
+test("a top folder that is not the working folder or above it is refused, and nothing else runs or is read (a core.worktree pointing elsewhere)", async () => {
+  // Fix round w5 (W4-N4). The repository's own config can set core.worktree,
+  // and then rev-parse --show-toplevel prints THAT folder, wherever it is;
+  // every later command ran there and the untracked reads opened files there
+  // (measured, the real Git case below). The top folder must be the working
+  // folder or one of its ancestors, compared by what the host resolves each
+  // to; anything else answers read_failed at once.
+  const outside: Array<[string, string, string]> = [
+    // [why, the working folder, the top folder Git printed]
+    ['another folder', WORKDIR, 'E:/elsewhere/other'],
+    ['a sibling whose name starts the same', 'E:/agents/billing/services', 'E:/agents/bill'],
+    ['a folder below the working folder', 'E:/agents/billing', 'E:/agents/billing/services'],
+    ['another drive', WORKDIR, 'D:/agents/billing'],
+  ]
+  for (const [why, workdir, top] of outside) {
+    const mem = memFs({ [workdir]: { kind: 'dir' }, [`${top}/notes.md`]: { kind: 'file', data: Buffer.from('outside\n') } })
+    const { result, calls } = await collect({ workdir, fs: mem.fs, reply: repoReply([[ARGV_TOPLEVEL, ok(top + '\n')]]) })
+    assert.deepEqual(result, OUTSIDE, why)
+    assert.deepEqual(calls.map((c) => c.args), [ARGV_TOPLEVEL], `${why}: nothing runs after the top folder`)
+    assert.deepEqual(mem.lstats, [], `${why}: nothing is read`)
+    assert.deepEqual(mem.events, [], `${why}: nothing is opened`)
+  }
+  // Read: the working folder itself, an ancestor, and on Windows the same
+  // folder in another case or with other slashes (its names are case blind).
+  const inside: Array<[string, string, string, string]> = [
+    ['the working folder itself', 'linux', 'E:/agents/billing', 'E:/agents/billing'],
+    ['an ancestor', 'linux', WORKDIR, ROOT],
+    ['the drive itself', 'linux', WORKDIR, 'E:/'],
+    ['another case and other slashes, on Windows', 'win32', 'E:\\agents\\billing\\services', 'e:/Agents/Billing'],
+  ]
+  for (const [why, platform, workdir, top] of inside) {
+    const { result, calls } = await collect({ workdir, platform, reply: repoReply([[ARGV_TOPLEVEL, ok(top + '\n')]]) })
+    assert.equal(result.ok && result.payload.state, 'ok', `${why}: ${JSON.stringify(result)}`)
+    assert.equal(calls.length, 7, why)
+  }
+  // Elsewhere names are case sensitive: another case is another folder.
+  const cased = await collect({ workdir: WORKDIR, platform: 'linux', reply: repoReply([[ARGV_TOPLEVEL, ok('E:/Agents/Billing\n')]]) })
+  assert.deepEqual(cased.result, OUTSIDE, 'another case on a case sensitive host')
+  // Compared by what the host resolves: a working folder reached through a
+  // link is inside its real repository, and a top folder that resolves
+  // elsewhere is outside, whatever the two paths spell.
+  const viaLink = memFs({}, { 'E:/link/services': WORKDIR })
+  const linked = await collect({ workdir: 'E:/link/services', fs: viaLink.fs })
+  assert.equal(linked.result.ok && linked.result.payload.state, 'ok', `through a link: ${JSON.stringify(linked.result)}`)
+  const junction = memFs({}, { [ROOT]: 'E:/elsewhere/billing' })
+  const away = await collect({ fs: junction.fs })
+  assert.deepEqual(away.result, OUTSIDE, 'a top folder that resolves elsewhere')
+  assert.equal(away.calls.length, 1)
+})
+
 const WRITING_COMMANDS = [
   'add',
   'status',
@@ -650,12 +743,25 @@ class StubbornChild extends FakeChild {
 
 type SpawnPlan = { out?: string; code?: number; stream?: { chunk: Buffer; count: number }; error?: string }
 
-function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan, make: () => FakeChild = () => new FakeChild()) {
+/** What this host's Git prints for `git version`, the form Git for Windows writes. */
+const MODERN_GIT = 'git version 2.55.0.windows.3\n'
+const ARGV_VERSION = ['version']
+
+/**
+ * A scripted spawn. `git version` (fix round w5, W4-N3: the adapter reads it
+ * once per Git path, before any other command) answers `version`, a modern
+ * Git unless a test says otherwise; every other command answers `plan`.
+ */
+function fakeSpawn(
+  plan: (args: readonly string[]) => SpawnPlan,
+  make: () => FakeChild = () => new FakeChild(),
+  version: SpawnPlan | (() => SpawnPlan) = { out: MODERN_GIT },
+) {
   const children: Array<{ cmd: string; args: string[]; cwd: string; child: FakeChild }> = []
   const spawnImpl = (cmd: string, args: readonly string[], options: { cwd: string }) => {
     const child = make()
     children.push({ cmd, args: [...args], cwd: options.cwd, child })
-    const p = plan(args)
+    const p = same(args, ARGV_VERSION) ? (typeof version === 'function' ? version() : version) : plan(args)
     setImmediate(async () => {
       if (p.error) {
         child.emit('error', Object.assign(new Error(`spawn git ${p.error}`), { code: p.error }))
@@ -683,6 +789,26 @@ function fakeSpawn(plan: (args: readonly string[]) => SpawnPlan, make: () => Fak
 const GIT_EXE = 'C:\\Program Files\\Git\\cmd\\git.exe'
 const findGitExe = async () => GIT_EXE
 
+/**
+ * The node adapter over a scripted spawn, with a version cache of its own, so
+ * no test sees another's version read (the default cache is the module's).
+ */
+function nodeRunGit(spawnImpl: unknown, findGit: (env: Record<string, string | undefined>) => Promise<string | null> = findGitExe) {
+  return createNodeRunGit(spawnImpl as SpawnLike, findGit, new Map())
+}
+
+/** A repository with one commit and changes, answered through the node adapter. */
+const readPlan = (args: readonly string[]): SpawnPlan => {
+  if (same(args, ARGV_TOPLEVEL)) return { out: ROOT + '\n' }
+  if (same(args, ARGV_VERIFY)) return { out: 'abc\n' }
+  if (same(args, ARGV_BRANCH)) return { out: 'main\n' }
+  if (same(args, ARGV_SHORT)) return { out: 'abc1234\n' }
+  if (same(args, ARGV_NUMSTAT)) return { out: NUMSTAT }
+  if (same(args, ARGV_PATCH)) return { out: PATCH }
+  return { out: '' }
+}
+const SEVEN = [ARGV_TOPLEVEL, ARGV_VERIFY, ARGV_BRANCH, ARGV_SHORT, ARGV_NUMSTAT, ARGV_PATCH, ARGV_UNTRACKED]
+
 test('stops reading at the byte cap, says it was cut, and kills the child', async () => {
   const MB = 1024 * 1024
   const chunk = Buffer.alloc(64 * 1024, 'x')
@@ -696,7 +822,7 @@ test('stops reading at the byte cap, says it was cut, and kills the child', asyn
     // The patch: three megabytes, far past the one megabyte cap.
     return { stream: { chunk, count: 48 } }
   })
-  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe) })
+  const { result } = await collect({ runGit: nodeRunGit(spawn.spawnImpl) })
   assert.equal(result.ok, true)
   if (!result.ok) return
   assert.ok(Buffer.byteLength(result.payload.patch, 'utf8') <= CHANGES_DEFAULT_CAPS.maxPatchBytes)
@@ -721,7 +847,7 @@ test('at the byte cap the node adapter answers at once, even when the killed Git
   const MB = 1024 * 1024
   const chunk = Buffer.alloc(64 * 1024, 'x')
   const spawn = fakeSpawn(() => ({ stream: { chunk, count: 48 } }), () => new StubbornChild())
-  const runGit = createNodeRunGit(spawn.spawnImpl as never, findGitExe)
+  const runGit = nodeRunGit(spawn.spawnImpl)
   const read = runGit(ARGV_PATCH, { cwd: ROOT, env: { ...BASE_ENV }, maxBytes: MB, signal: new AbortController().signal })
   let timer: ReturnType<typeof setTimeout> | undefined
   const late = new Promise<'still waiting'>((resolve) => {
@@ -734,15 +860,21 @@ test('at the byte cap the node adapter answers at once, even when the killed Git
   assert.equal(run.truncated, true)
   assert.equal(run.stdout.length, MB, 'everything up to the cap is kept')
   assert.equal(run.code, null, 'a read cut at the cap has no exit code')
-  assert.equal(spawn.children.length, 1)
-  assert.equal(spawn.children[0].child.killed, true, 'Git is still told to stop')
-  assert.equal(spawn.children[0].child.stdout.destroyed, true, 'our end of stdout is closed')
+  assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION, ARGV_PATCH], 'the version read, then the patch')
+  const patchChild = spawn.children[1]
+  assert.equal(patchChild.child.killed, true, 'Git is still told to stop')
+  assert.equal(patchChild.child.stdout.destroyed, true, 'our end of stdout is closed')
 })
 
-test('the node adapter reads a spawn ENOENT as Git missing', async () => {
+test('the node adapter reads a spawn ENOENT as Git missing, the version read\'s too', async () => {
   const spawn = fakeSpawn(() => ({ error: 'ENOENT' }))
-  const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe) })
+  const { result } = await collect({ runGit: nodeRunGit(spawn.spawnImpl) })
   assert.deepEqual(result, emptyAnswer('git_missing', 'services'))
+  // Fix round w5: the version read is the first spawn now, and its ENOENT is Git missing just the same.
+  const first = fakeSpawn(() => ({ out: ROOT + '\n' }), undefined, { error: 'ENOENT' })
+  const missing = await collect({ runGit: nodeRunGit(first.spawnImpl) })
+  assert.deepEqual(missing.result, emptyAnswer('git_missing', 'services'))
+  assert.deepEqual(first.children.map((c) => c.args), [ARGV_VERSION], 'nothing runs after a version read that could not start')
 })
 
 // Review round 1 (D-R2). spawn('git', ..., { cwd }) on Windows looks in cwd
@@ -756,26 +888,18 @@ test('the node adapter reads a spawn ENOENT as Git missing', async () => {
 
 test('the node adapter runs the Git that PATH names by its absolute path, never a bare git a folder could answer', async () => {
   const asked: Array<Record<string, string | undefined>> = []
-  const spawn = fakeSpawn((args) => {
-    if (same(args, ARGV_TOPLEVEL)) return { out: ROOT + '\n' }
-    if (same(args, ARGV_VERIFY)) return { out: 'abc\n' }
-    if (same(args, ARGV_BRANCH)) return { out: 'main\n' }
-    if (same(args, ARGV_SHORT)) return { out: 'abc1234\n' }
-    if (same(args, ARGV_NUMSTAT)) return { out: NUMSTAT }
-    if (same(args, ARGV_PATCH)) return { out: PATCH }
-    return { out: '' }
-  })
+  const spawn = fakeSpawn(readPlan)
   const { result } = await collect({
-    runGit: createNodeRunGit(spawn.spawnImpl as never, async (env) => {
+    runGit: nodeRunGit(spawn.spawnImpl, async (env) => {
       asked.push(env)
       return GIT_EXE
     }),
   })
   assert.equal(result.ok && result.payload.state, 'ok')
-  assert.equal(spawn.children.length, 7)
+  assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION, ...SEVEN], 'the version read, then the seven')
   assert.deepEqual(
     spawn.children.map((c) => c.cmd),
-    Array(7).fill(GIT_EXE),
+    Array(8).fill(GIT_EXE),
     'every command runs the absolute path, never a bare name the working folder could answer',
   )
   assert.equal(asked.length, 1, 'PATH is looked up once per read')
@@ -824,6 +948,92 @@ test('a PATH with no Git answers git_missing and starts nothing', async () => {
   const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, async () => null) })
   assert.deepEqual(result, emptyAnswer('git_missing', 'services'))
   assert.equal(spawn.children.length, 0, 'nothing is started when no PATH entry holds Git')
+})
+
+// ---------------------------------------------------------------------------
+// the Git floor (fix round w5, W4-N3)
+// ---------------------------------------------------------------------------
+
+// Before Git 2.36, core.fsmonitor was a hook path only, so the -c
+// core.fsmonitor=false every command carries (fix round w4, F1) names a
+// program called "false" for Git to run. So the adapter reads `git version`
+// first, once per Git path, and a Git below 2.36, or a version it cannot read,
+// is refused in plain words with nothing else run.
+
+test('a Git older than 2.36, or a version that cannot be read, is refused in plain words and nothing else runs; 2.36 and later read', async () => {
+  const answers: Array<[SpawnPlan, 'refused' | 'read']> = [
+    [{ out: 'git version 2.35.1\n' }, 'refused'],
+    [{ out: 'git version 2.35.9.windows.2\n' }, 'refused'],
+    // 4 is below 36: the parts compare as numbers, never as text.
+    [{ out: 'git version 2.4.0\n' }, 'refused'],
+    [{ out: 'git version 1.99.0\n' }, 'refused'],
+    [{ out: 'git version 2.36.0\n' }, 'read'],
+    [{ out: MODERN_GIT }, 'read'],
+    [{ out: 'git version 2.39.3 (Apple Git-145)\n' }, 'read'],
+    [{ out: 'git version 3.0.0\n' }, 'read'],
+    // Not a version Git prints: refused.
+    [{ out: 'git version\n' }, 'refused'],
+    [{ out: 'git version 2.x\n' }, 'refused'],
+    [{ out: 'hello\n' }, 'refused'],
+    [{ out: '' }, 'refused'],
+    // A version read that fails is refused too, whatever it printed.
+    [{ out: MODERN_GIT, code: 1 }, 'refused'],
+  ]
+  for (const [version, want] of answers) {
+    const label = JSON.stringify(version)
+    const spawn = fakeSpawn(readPlan, undefined, version)
+    const { result } = await collect({ runGit: nodeRunGit(spawn.spawnImpl) })
+    if (want === 'refused') {
+      assert.deepEqual(result, TOO_OLD, label)
+      assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION], `${label}: no other command runs`)
+    } else {
+      assert.equal(result.ok && result.payload.state, 'ok', `${label}: ${JSON.stringify(result)}`)
+      assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION, ...SEVEN], label)
+    }
+    // The version read runs in the working folder, by the same absolute path.
+    assert.equal(spawn.children[0].cwd, WORKDIR, label)
+    assert.equal(spawn.children[0].cmd, GIT_EXE, label)
+  }
+})
+
+test('the Git version is read once per Git path, a refusal is kept too, and a version read that could not start is not kept', async () => {
+  // server.ts makes one adapter per read; the version is kept across them.
+  const versions = new Map()
+  const spawn = fakeSpawn(readPlan)
+  // Two reads at once share one version read.
+  const both = await Promise.all([0, 1].map(() => collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe, versions) })))
+  for (const { result } of both) assert.equal(result.ok && result.payload.state, 'ok')
+  // And two more, one after the other, read none.
+  for (let i = 0; i < 2; i += 1) {
+    const { result } = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe, versions) })
+    assert.equal(result.ok && result.payload.state, 'ok')
+  }
+  const OTHER_GIT = 'D:\\PortableGit\\cmd\\git.exe'
+  await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, async () => OTHER_GIT, versions) })
+  assert.deepEqual(
+    spawn.children.filter((c) => same(c.args, ARGV_VERSION)).map((c) => c.cmd),
+    [GIT_EXE, OTHER_GIT],
+    'one version read per Git path, across reads',
+  )
+  assert.equal(spawn.children.length, 2 + 5 * 7)
+
+  // A Git below the floor is asked once, and nothing else ever runs.
+  const old = fakeSpawn(readPlan, undefined, { out: 'git version 2.35.1\n' })
+  const oldVersions = new Map()
+  for (let i = 0; i < 2; i += 1) {
+    const { result } = await collect({ runGit: createNodeRunGit(old.spawnImpl as never, findGitExe, oldVersions) })
+    assert.deepEqual(result, TOO_OLD)
+  }
+  assert.deepEqual(old.children.map((c) => c.args), [ARGV_VERSION])
+
+  // A version read that could not start says nothing about the Git: the next read asks again.
+  let starts = 0
+  const flaky = fakeSpawn(readPlan, undefined, () => (starts++ === 0 ? { error: 'EAGAIN' } : { out: MODERN_GIT }))
+  const flakyVersions = new Map()
+  await assert.rejects(collect({ runGit: createNodeRunGit(flaky.spawnImpl as never, findGitExe, flakyVersions) }), /EAGAIN/)
+  const again = await collect({ runGit: createNodeRunGit(flaky.spawnImpl as never, findGitExe, flakyVersions) })
+  assert.equal(again.result.ok && again.result.payload.state, 'ok')
+  assert.deepEqual(flaky.children.map((c) => c.args), [ARGV_VERSION, ARGV_VERSION, ...SEVEN])
 })
 
 // ---------------------------------------------------------------------------
@@ -1041,7 +1251,8 @@ test('sends the basename, never the absolute path', async () => {
   assert.ok(!wire.includes('E:/agents'), 'the root never rides the answer')
   assert.ok(!wire.includes(WORKDIR))
   // A root at the top of a drive, a trailing slash, and a Windows working folder.
-  const drive = await collect({ reply: repoReply([[ARGV_TOPLEVEL, ok('D:/billing-export/\n')]]) })
+  // Each working folder sits inside the root Git prints (fix round w5, W4-N4: any other root is refused).
+  const drive = await collect({ workdir: 'D:/billing-export/api', reply: repoReply([[ARGV_TOPLEVEL, ok('D:/billing-export/\n')]]) })
   assert.equal(drive.result.ok && drive.result.payload.folder, 'billing-export')
   const notGit = await collect({
     workdir: 'C:\\Users\\kc\\agents\\nova\\',
@@ -1050,7 +1261,7 @@ test('sends the basename, never the absolute path', async () => {
   assert.equal(notGit.result.ok && notGit.result.payload.folder, 'nova')
   // At most 120 characters.
   const long = 'r'.repeat(200)
-  const longRoot = await collect({ reply: repoReply([[ARGV_TOPLEVEL, ok(`E:/${long}\n`)]]) })
+  const longRoot = await collect({ workdir: `E:/${long}/sub`, reply: repoReply([[ARGV_TOPLEVEL, ok(`E:/${long}\n`)]]) })
   assert.equal(longRoot.result.ok && longRoot.result.payload.folder, 'r'.repeat(120))
 })
 
@@ -1379,6 +1590,169 @@ test('real Git: a git planted in the folder Git runs in is never the one that ru
     assert.equal(result.payload.folder, 'repo')
     assert.equal(result.payload.branch, 'main')
     assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
+  } finally {
+    s.remove(t)
+  }
+})
+
+/** A spawn that records each argv and then runs the real one. */
+function recordingSpawn() {
+  const argvs: string[][] = []
+  const spawnImpl = ((cmd: string, args: readonly string[], options: Parameters<SpawnLike>[2]) => {
+    argvs.push([...args])
+    return nodeSpawn(cmd, args, options)
+  }) as unknown as SpawnLike
+  return { argvs, spawnImpl }
+}
+
+test('real Git: a partial clone never starts a fetch from its promisor remote during a read', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+  // Fix round w5 (W4-N1), against real Git: a clone of a file:// source made
+  // with --filter=blob:none and no checkout, so the object behind a.txt at
+  // HEAD is not in it, and the index read from HEAD. The repository's own
+  // config names the upload-pack program a fetch runs, a script that leaves a
+  // marker outside the clone; if a fetch started, the marker is there.
+  const s = scratchRepo()
+  try {
+    const run = (cwd: string, args: string[], extra: Record<string, string> = {}) => {
+      const r = spawnSync('git', args, { cwd, env: { ...s.env, ...extra } as NodeJS.ProcessEnv, encoding: 'utf8' })
+      assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`)
+      return r.stdout
+    }
+    // Setup never fetches, so the object is still missing when the read starts.
+    const setup = { GIT_NO_LAZY_FETCH: '1' }
+    s.git('init', '-q', '-b', 'main')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\ntwo\n')
+    s.commitAll()
+    s.git('config', 'uploadpack.allowFilter', 'true')
+    s.git('config', 'uploadpack.allowAnySHA1InWant', 'true')
+    const blob = s.git('rev-parse', 'HEAD:a.txt').trim()
+    const clone = join(s.base, 'clone')
+    run(s.base, ['clone', '-q', '--no-checkout', '--filter=blob:none', pathToFileURL(s.repo).href, clone], setup)
+    run(clone, ['read-tree', 'HEAD'], setup)
+    const fwd = (p: string) => p.replace(/\\/g, '/')
+    const marker = join(s.base, 'upload-pack-ran.txt')
+    const wrapper = join(s.base, 'upload-pack.sh')
+    writeFileSync(wrapper, `#!/bin/sh\necho ran >> '${fwd(marker)}'\nexec git upload-pack "$@"\n`)
+    run(clone, ['config', 'remote.origin.uploadpack', `sh '${fwd(wrapper)}'`])
+    writeFileSync(join(clone, 'a.txt'), 'one\n2\n')
+    const present = () =>
+      spawnSync('git', ['cat-file', '-e', blob], { cwd: clone, env: { ...s.env, ...setup } as NodeJS.ProcessEnv }).status === 0
+    assert.equal(run(clone, ['config', 'remote.origin.promisor']).trim(), 'true', 'a partial clone')
+    assert.equal(present(), false, 'the object behind a.txt at HEAD is not in the clone')
+
+    let outcome: unknown
+    try {
+      outcome = await s.read(clone)
+    } catch (err) {
+      outcome = err
+    }
+    assert.equal(existsSync(marker), false, `the read started a fetch from the promisor remote: ${JSON.stringify(outcome)}`)
+    assert.equal(present(), false, 'the missing object is still missing')
+    assert.ok(
+      outcome instanceof Error && /exited 128/.test(outcome.message),
+      `a read that needs a missing object fails, it never fetches it: ${outcome instanceof Error ? outcome.message : JSON.stringify(outcome)}`,
+    )
+
+    // The control, so this case can fail: the collector's numstat under its
+    // other variables, without GIT_NO_LAZY_FETCH, fetches the object and runs
+    // the program the repository's config names.
+    const env = { ...s.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } as Record<string, string | undefined>
+    delete env.GIT_NO_LAZY_FETCH
+    const control = spawnSync('git', ARGV_NUMSTAT, { cwd: clone, env: env as NodeJS.ProcessEnv, encoding: 'utf8' })
+    assert.equal(control.status, 0, control.stderr)
+    assert.equal(control.stdout, '1\t1\ta.txt\x00')
+    assert.ok(existsSync(marker), 'the control ran the upload-pack program the repository names')
+    assert.equal(present(), true, 'the control fetched the object')
+  } finally {
+    s.remove(t)
+  }
+})
+
+test("real Git: this host's Git passes the 2.36 floor, and its version is read once per Git path", { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+  // Fix round w5 (W4-N3), against this host's Git through the real PATH lookup.
+  const hostVersion = spawnSync('git', ['version'], { encoding: 'utf8' }).stdout.trim()
+  const s = scratchRepo()
+  try {
+    s.git('init', '-q', '-b', 'main')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+    s.commitAll()
+    writeFileSync(join(s.repo, 'a.txt'), 'two\n')
+    const rec = recordingSpawn()
+    const versions = new Map()
+    for (let i = 0; i < 2; i += 1) {
+      // One adapter per read, as server.ts makes them, over one version cache.
+      const result = await collectChanges({
+        workdir: s.repo,
+        caps: { ...CHANGES_DEFAULT_CAPS, budgetMs: 60_000 },
+        runGit: createNodeRunGit(rec.spawnImpl, undefined, versions),
+        fs: nodeChangesFs,
+        now: () => NOW,
+        env: s.env,
+      })
+      assert.equal(result.ok && result.payload.state, 'ok', `this host's Git (${hostVersion}) reads: ${JSON.stringify(result)}`)
+      if (result.ok) assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
+    }
+    assert.deepEqual(rec.argvs, [ARGV_VERSION, ...SEVEN, ...SEVEN], `one version read for this host's Git (${hostVersion})`)
+  } finally {
+    s.remove(t)
+  }
+})
+
+test("real Git: a repository whose core.worktree names a folder outside the agent's is refused, and nothing there is read", { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+  // Fix round w5 (W4-N4), against real Git. The agent's repository sets
+  // core.worktree to the owner's other project, a repository of its own
+  // beside it with a change and a new file.
+  const s = scratchRepo()
+  try {
+    s.git('init', '-q', '-b', 'main')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+    s.commitAll()
+    writeFileSync(join(s.repo, 'a.txt'), 'two\n')
+    const other = join(s.base, 'other')
+    s.git('init', '-q', '-b', 'other-branch', other)
+    writeFileSync(join(other, 'z.txt'), 'zed\n')
+    s.git('-C', other, 'add', '-A')
+    s.git('-C', other, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'other')
+    writeFileSync(join(other, 'z.txt'), 'zee\n')
+    writeFileSync(join(other, 'secret.txt'), "the owner's other project\n")
+
+    // The control: without core.worktree the agent's repository reads normally.
+    const control = await s.read(s.repo)
+    assert.equal(control.ok && control.payload.state, 'ok', JSON.stringify(control))
+    if (control.ok) {
+      assert.equal(control.payload.folder, 'repo')
+      assert.equal(control.payload.branch, 'main')
+      assert.equal(control.payload.numstat, '1\t1\ta.txt\x00')
+      assert.equal(control.payload.untracked, '')
+    }
+
+    s.git('config', 'core.worktree', other.replace(/\\/g, '/'))
+    // So the case can fail: Git now names the other folder as the top folder.
+    assert.equal(realpathSync(s.git('rev-parse', '--show-toplevel').trim()), realpathSync(other))
+    const rec = recordingSpawn()
+    const touched: string[] = []
+    const fs: ChangesFs = {
+      ...nodeChangesFs,
+      lstat: (p) => {
+        touched.push(p)
+        return nodeChangesFs.lstat(p)
+      },
+      open: (p) => {
+        touched.push(p)
+        return nodeChangesFs.open(p)
+      },
+    }
+    const result = await collectChanges({
+      workdir: s.repo,
+      caps: { ...CHANGES_DEFAULT_CAPS, budgetMs: 60_000 },
+      runGit: createNodeRunGit(rec.spawnImpl, undefined, new Map()),
+      fs,
+      now: () => NOW,
+      env: s.env,
+    })
+    assert.deepEqual(result, OUTSIDE, JSON.stringify(result))
+    assert.deepEqual(rec.argvs, [ARGV_VERSION, ARGV_TOPLEVEL], 'nothing runs after the top folder')
+    assert.deepEqual(touched, [], 'no file there is read')
   } finally {
     s.remove(t)
   }

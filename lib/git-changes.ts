@@ -19,10 +19,29 @@
  *    GIT_OPTIONAL_LOCKS=0 covers every other optional lock. The agent may be
  *    mid edit in this very folder; the panel must never be the thing that
  *    races it for the index lock.
+ *  - GIT 2.36 OR LATER. Before 2.36, core.fsmonitor=false (the next rule) is
+ *    read as the path of a program to run (the review's finding W4-N3; no Git
+ *    before 2.36 was run here). So the adapter reads `git version`
+ *    once per Git path it resolves, and keeps the answer; a Git below 2.36, or
+ *    a version it cannot read, answers read_failed in plain words ("Git 2.36
+ *    or later is needed to read changes safely") and no other command runs
+ *    (fix round w5, W4-N3).
  *  - NO FSMONITOR HOOK. core.fsmonitor in the repository's own config names
  *    a program Git runs when it reads the index; every command here turns it
- *    off on the command line (fix round w4, F1), so a panel read never runs a
- *    program the agent picked.
+ *    off on the command line (fix round w4, F1), so a panel read never runs
+ *    the fsmonitor program the agent's config names. That is the one program
+ *    this rule turns off; see NOT TURNED OFF below for one that still runs.
+ *  - NO LAZY FETCH. In a partial clone a read that needs an object the clone
+ *    left out asks the promisor remote for it, and that fetch runs the
+ *    programs the repository's config names (the upload-pack program, a
+ *    transport helper) and can wait on the network (measured on Git 2.55: the
+ *    numstat ran the upload-pack program a clone's config named). Every
+ *    command runs with GIT_NO_LAZY_FETCH=1, so such a read fails instead
+ *    (fix round w5, W4-N1). The variable, never the --no-lazy-fetch flag,
+ *    which an older Git rejects as an unknown option. The variable came with
+ *    that flag in Git 2.45 (Git's own release notes for 2.45.0 name the flag;
+ *    no older Git was run here), so a Git from 2.36 to 2.44 passes the floor
+ *    but ignores it, and there a partial clone can still fetch.
  *  - THE FOLDER IT IS GIVEN. The first command runs in the working folder and
  *    prints the repository root; every later command runs in that ROOT, so
  *    the tracked paths (Git prints them root relative) and the untracked names
@@ -31,6 +50,27 @@
  *    variables that would point Git at another repository whatever the
  *    folder says (GIT_DIR and friends) are dropped from its environment, in
  *    any spelling on Windows, whose names are case blind (fix round w4, F5).
+ *  - INSIDE THE AGENT'S FOLDER. core.worktree in the repository's own config
+ *    makes rev-parse print THAT folder as the root, wherever it is (measured
+ *    on Git 2.55: every later command then read the other folder's own
+ *    repository and a new file there was sent whole). So the root the first
+ *    command prints must be the working folder or one of its ancestors,
+ *    compared by what the host resolves each to (realpath, so a link, a
+ *    junction or another case on Windows compares as the folder it is);
+ *    anything else answers read_failed and nothing else runs or is read
+ *    (fix round w5, W4-N4).
+ *  - NOT TURNED OFF: A CLEAN FILTER. A filter.<name>.clean program that the
+ *    repository's own config names (and its attributes assign to a changed
+ *    file) still runs on both diffs: Git passes the working file through it
+ *    to compare it with HEAD (measured on Git 2.55, fix round w4). This is an
+ *    ACCEPTED LIMIT, not an oversight (fix round w5). It needs the
+ *    repository's local config, which no clone carries, so it is something
+ *    the agent set up on this host, and this daemon runs as the same user
+ *    with the same reach as the agent. Unlike the fsmonitor there is no one
+ *    switch that turns it off: filter names are free, so no -c can name them
+ *    all ahead of time. And reading attributes from an empty tree instead
+ *    needs Git 2.40 and does not cover .git/info/attributes. The long running
+ *    filter.<name>.process form is the same mechanism (not measured here).
  *  - GIT BY ITS ABSOLUTE PATH. spawn('git', { cwd }) on Windows looks in the
  *    working folder BEFORE PATH (libuv's search_path, which uv_spawn hands
  *    the child's cwd; git.com is tried before git.exe), and a relative PATH
@@ -62,7 +102,14 @@
 
 import { spawn } from 'node:child_process'
 import { constants as fsConstants } from 'node:fs'
-import { access as fsAccess, lstat as fsLstat, open as fsOpen, stat as fsStat } from 'node:fs/promises'
+import {
+  access as fsAccess,
+  lstat as fsLstat,
+  open as fsOpen,
+  realpath as fsRealpath,
+  stat as fsStat,
+} from 'node:fs/promises'
+import { posix as posixPath, win32 as win32Path } from 'node:path'
 
 export type ChangesCaps = {
   maxPatchBytes: number
@@ -133,6 +180,8 @@ export type GitRun = {
   spawnError?: string
   /** True when the budget ran out while it ran. */
   aborted?: boolean
+  /** Set when nothing was run because the Git is below the floor (fix round w5, W4-N3). */
+  refused?: 'git_too_old'
 }
 
 export type RunGit = (
@@ -223,16 +272,52 @@ export function createFindGit(deps: Partial<FindGitDeps> = {}): FindGit {
   }
 }
 
+/** The oldest Git whose core.fsmonitor=false means off (fix round w5, W4-N3). */
+export const CHANGES_GIT_FLOOR: Readonly<{ major: number; minor: number }> = Object.freeze({ major: 2, minor: 36 })
+
+/** `git version`, read once per Git path before any other command. It reads no repository. */
+const GIT_VERSION = ['version']
+
+/**
+ * True when `git version` printed a Git at or above the floor. It reads the
+ * first line as "git version <major>.<minor>" and whatever follows (".0",
+ * ".windows.3", " (Apple Git-145)"); anything else is not a version it can
+ * trust, so it is false.
+ */
+export function gitVersionMeetsFloor(text: string): boolean {
+  const line = String(text ?? '').split('\n')[0].replace(/\r$/, '').trim()
+  const m = /^git version (\d+)\.(\d+)(?:[.\s]|$)/.exec(line)
+  if (!m) return false
+  const major = Number(m[1])
+  const minor = Number(m[2])
+  return major > CHANGES_GIT_FLOOR.major || (major === CHANGES_GIT_FLOOR.major && minor >= CHANGES_GIT_FLOOR.minor)
+}
+
+/**
+ * What the adapter knows of each Git path it resolved: whether that Git meets
+ * the floor, or the version read still running. A version read that did not
+ * finish (it could not start, or the budget stopped it) says nothing about
+ * the Git and is never kept.
+ */
+export type GitVersionCache = Map<string, Promise<boolean | GitRun>>
+
+/** The daemon's one cache: server.ts makes an adapter per read, and the Git path rarely changes. */
+const SHARED_GIT_VERSIONS: GitVersionCache = new Map()
+
 /**
  * Run the Git that PATH names, by its absolute path (see the rule above),
  * through spawn, reading stdout until `maxBytes` and then killing the child.
  * Resolves once, never rejects: a spawn failure comes back as `spawnError`
- * (ENOENT too when no PATH entry holds Git), a budget abort as `aborted`.
- * PATH is looked up once per adapter; server.ts makes one per read.
+ * (ENOENT too when no PATH entry holds Git), a budget abort as `aborted`, and
+ * a Git below the floor as `refused`, with nothing run but `git version`.
+ * PATH is looked up once per adapter; server.ts makes one per read. The
+ * version is read once per Git path, in `versions` (the daemon's own cache
+ * unless a test passes one).
  */
 export function createNodeRunGit(
   spawnImpl: SpawnLike = spawn as unknown as SpawnLike,
   findGit: FindGit = createFindGit(),
+  versions: GitVersionCache = SHARED_GIT_VERSIONS,
 ): RunGit {
   let git: Promise<string | null> | null = null
   return async (args, opts) => {
@@ -240,7 +325,47 @@ export function createNodeRunGit(
     git ??= findGit(opts.env).catch(() => null)
     const bin = await git
     if (!bin) return { code: null, stdout: Buffer.alloc(0), stderr: '', truncated: false, spawnError: 'ENOENT' }
+    const floor = await meetsFloor(spawnImpl, bin, opts, versions)
+    if (floor !== true) return floor
     return spawnGit(spawnImpl, bin, args, opts)
+  }
+}
+
+/**
+ * True when the Git at `bin` meets the floor. Otherwise the run to answer
+ * with: `refused` for a Git below it (or a version it cannot read), or the
+ * version read's own spawn error or abort, which is not kept.
+ */
+async function meetsFloor(
+  spawnImpl: SpawnLike,
+  bin: string,
+  opts: { cwd: string; env: Record<string, string | undefined>; maxBytes: number; signal: AbortSignal },
+  versions: GitVersionCache,
+): Promise<true | GitRun> {
+  for (;;) {
+    let entry = versions.get(bin)
+    if (!entry) {
+      const reading: Promise<boolean | GitRun> = spawnGit(spawnImpl, bin, GIT_VERSION, {
+        ...opts,
+        maxBytes: SMALL_OUTPUT_BYTES,
+      }).then((run) => {
+        if (run.spawnError || run.aborted) {
+          if (versions.get(bin) === reading) versions.delete(bin)
+          return run
+        }
+        return run.code === 0 && !run.truncated && gitVersionMeetsFloor(run.stdout.toString('utf8'))
+      })
+      versions.set(bin, reading)
+      entry = reading
+    }
+    const known = await entry
+    if (known === true) return true
+    if (known === false) {
+      return { code: null, stdout: Buffer.alloc(0), stderr: '', truncated: false, refused: 'git_too_old' }
+    }
+    // Another read's budget stopped the version read this one was waiting on: read it again under this one's.
+    if (known.aborted && !opts.signal.aborted) continue
+    return known
   }
 }
 
@@ -337,8 +462,10 @@ export type ChangesFileHandle = {
   close(): Promise<void>
 }
 
-/** The file reads the untracked step needs. */
+/** The file reads the untracked step needs, and the realpath the folder check needs. */
 export type ChangesFs = {
+  /** What the host resolves a path to: links, junctions and, on Windows, its case (fix round w5, W4-N4). */
+  realpath(path: string): Promise<string>
   lstat(path: string): Promise<ChangesStat>
   /** Opens `path` once, never through a symlink where the host can refuse one. Reads nothing. */
   open(path: string): Promise<ChangesFileHandle>
@@ -353,6 +480,7 @@ export type ChangesFs = {
 const OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0)
 
 export const nodeChangesFs: ChangesFs = {
+  realpath: (path) => fsRealpath(path),
   lstat: (path) => fsLstat(path),
   open: async (path) => {
     const handle = await fsOpen(path, OPEN_FLAGS)
@@ -400,9 +528,14 @@ export type ChangesPayload = {
 
 export type ChangesCollectResult =
   | { ok: true; payload: ChangesPayload }
-  | { ok: false; code: 'too_slow'; message: string }
+  | { ok: false; code: 'too_slow' | 'read_failed'; message: string }
 
 export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than the time allowed'
+/** A Git below the floor (fix round w5, W4-N3), in the words the owner reads. */
+export const CHANGES_GIT_TOO_OLD_MESSAGE = 'Git 2.36 or later is needed to read changes safely'
+/** A root that is not the working folder or above it (fix round w5, W4-N4). */
+export const CHANGES_OUTSIDE_FOLDER_MESSAGE =
+  "the repository's top folder is not the agent's folder or a folder above it, so nothing was read"
 
 // The commands, whole. Nothing else is ever run (spec 10.1 item 7). The
 // patch asks for Git's own a/ and b/ prefixes: a host whose config sets
@@ -429,6 +562,10 @@ export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than th
 // agent picked, as the owner, outside the agent's own permission prompts. A
 // -c on the command line wins over every config file. The small commands
 // carry it too, so the rule is one line: no command here runs that hook.
+// Only on Git 2.36 or later, where false means off; the adapter refuses an
+// older Git before any of these runs (fix round w5, W4-N3). It turns off that
+// hook and nothing else: a clean filter still runs (the header's NOT TURNED
+// OFF rule).
 const NO_FSMONITOR = ['-c', 'core.fsmonitor=false']
 const GIT_TOPLEVEL = [...NO_FSMONITOR, 'rev-parse', '--show-toplevel']
 const GIT_VERIFY_HEAD = [...NO_FSMONITOR, 'rev-parse', '--verify', '--quiet', 'HEAD']
@@ -498,7 +635,26 @@ function gitEnv(base: Record<string, string | undefined>, platform: string): Rec
   env.GIT_OPTIONAL_LOCKS = '0'
   env.GIT_TERMINAL_PROMPT = '0'
   env.LC_ALL = 'C'
+  // No fetch from a partial clone's promisor remote (fix round w5, W4-N1,
+  // the header's NO LAZY FETCH rule). Set in capitals over whatever the
+  // daemon had: on Windows, where a second spelling could ride along, node's
+  // spawn and bun's both hand the child the capital one (measured, node
+  // 24.16 and bun 1.3.9).
+  env.GIT_NO_LAZY_FETCH = '1'
   return env
+}
+
+/**
+ * True when `top` is `work` or one of its ancestors. Windows compares names
+ * case blind with either slash; elsewhere a name is exact. Another drive, a
+ * folder below, or a sibling whose name only starts the same is not.
+ */
+function isSameOrAncestor(top: string, work: string, platform: string): boolean {
+  const p = platform === 'win32' ? win32Path : posixPath
+  const rel = p.relative(top, work)
+  if (rel === '') return true
+  if (p.isAbsolute(rel)) return false
+  return rel.split(p.sep)[0] !== '..'
 }
 
 /** The last name of a path, either slash, trailing slashes ignored, cut at 120. */
@@ -534,13 +690,18 @@ function firstLine(run: GitRun): string | null {
 /** Stops the read quietly once the budget has already answered. */
 class BudgetSpent extends Error {}
 
+/** Stops the read with a read_failed the owner reads in these words (fix round w5). */
+class ReadRefused extends Error {}
+
 /**
  * Collect the uncommitted changes of the repository holding `workdir`.
  *
  * Resolves `{ ok: true, payload }` for every state (ok, not_git, no_commits,
- * git_missing), `{ ok: false, code: 'too_slow' }` past the budget, and
- * REJECTS on anything else (a Git failure that is not one of those states);
- * the handler answers a rejection read_failed.
+ * git_missing), `{ ok: false, code: 'too_slow' }` past the budget,
+ * `{ ok: false, code: 'read_failed' }` in plain words for a Git below 2.36 or
+ * a root outside the working folder, and REJECTS on anything else (a Git
+ * failure that is not one of those states); the handler answers a rejection
+ * read_failed with its own words.
  */
 export async function collectChanges(input: {
   workdir: string
@@ -560,9 +721,11 @@ export async function collectChanges(input: {
       resolve({ ok: false, code: 'too_slow', message: CHANGES_TOO_SLOW_MESSAGE })
     }, input.caps.budgetMs)
   })
-  const reading = readChanges(input, controller.signal).catch((err: unknown) => {
-    // A read the budget already answered ends quietly; anything else is real.
+  const reading = readChanges(input, controller.signal).catch((err: unknown): Promise<ChangesCollectResult> => {
+    // A read the budget already answered ends quietly; a refusal answers in
+    // its own words; anything else is real.
     if (err instanceof BudgetSpent) return new Promise<ChangesCollectResult>(() => {})
+    if (err instanceof ReadRefused) return Promise.resolve({ ok: false, code: 'read_failed', message: err.message })
     throw err
   })
   try {
@@ -585,12 +748,15 @@ async function readChanges(
   signal: AbortSignal,
 ): Promise<ChangesCollectResult> {
   const { caps } = input
-  const env = gitEnv(input.env ?? process.env, input.platform ?? process.platform)
+  const platform = input.platform ?? process.platform
+  const env = gitEnv(input.env ?? process.env, platform)
   const takenAt = new Date(input.now()).toISOString()
   const run = async (args: readonly string[], cwd: string, maxBytes: number): Promise<GitRun> => {
     if (signal.aborted) throw new BudgetSpent()
     const r = await input.runGit(args, { cwd, env, maxBytes, signal })
     if (signal.aborted || r.aborted) throw new BudgetSpent()
+    // A Git below the floor ran nothing but its version (fix round w5, W4-N3).
+    if (r.refused) throw new ReadRefused(CHANGES_GIT_TOO_OLD_MESSAGE)
     return r
   }
   const done = (payload: ChangesPayload): ChangesCollectResult => ({ ok: true, payload })
@@ -613,6 +779,11 @@ async function readChanges(
   }
   const root = firstLine(top)
   if (!root) throw new Error('git printed no repository root')
+  // The root must be the working folder or above it, as the host resolves
+  // both (fix round w5, W4-N4): a core.worktree can name any folder at all.
+  const [realRoot, realWork] = await Promise.all([input.fs.realpath(root), input.fs.realpath(input.workdir)])
+  if (signal.aborted) throw new BudgetSpent()
+  if (!isSameOrAncestor(realRoot, realWork, platform)) throw new ReadRefused(CHANGES_OUTSIDE_FOLDER_MESSAGE)
   const folder = folderName(root)
 
   // 2. A first commit.
