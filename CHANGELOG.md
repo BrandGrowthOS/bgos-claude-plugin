@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.51.0
+## 0.55.0
 
 **A Stop is asked for honestly and never closes the mission, and the owner can find this agent's sessions in the app.**
 P6 stage 3 (HOAI's Resume button and Sessions sheet). The tokens, op names, words and limits below come from
