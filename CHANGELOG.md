@@ -23,20 +23,22 @@ its own panel; the checks below that exist for those (the top folder rule, `GIT_
 defence in depth, and each line says what it covers. The git dir and the common dir are not contained, on purpose: an
 agent that runs in a Git worktree keeps its common dir outside its folder.
 
-- **Read only, and it stays off the index.** The whole list is `rev-parse`, `symbolic-ref`, `diff --numstat`, `diff`
-  and `ls-files`, run with `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on
-  Git 2.55, a file touched but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off,
-  which would race the agent's own `git add` for the index lock. None of these writes the index, the working tree or a
-  ref; a lazy fetch, on a Git that does not know `GIT_NO_LAZY_FETCH`, would still add objects (below).
+- **Read only, and it stays off the index.** The whole list is the one `git version` read per Git path (the floor,
+  below), then `rev-parse`, `symbolic-ref`, `diff --numstat`, `diff` and `ls-files`, all run with
+  `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on Git 2.55, a file touched
+  but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off, which would race the
+  agent's own `git add` for the index lock. None of these writes the index, the working tree or a ref; a lazy fetch, on
+  a Git that does not know `GIT_NO_LAZY_FETCH`, would still add objects (below).
 - **No fsmonitor hook runs, on Git 2.36 or later.** Every Git command turns `core.fsmonitor` off on its command line.
   The repository's own config can point that setting at a program, and measured on Git 2.55 both diffs and `ls-files`
   ran it, so each panel read would have run that program, which the agent picked, as the owner. That setting lives in
   the repository's local config, which no clone carries, so this is defence in depth. From Git 2.36 the flag reads as
   off; before it, the same `core.fsmonitor=false` is read as the path of a program to run, so the daemon reads
   `git version` for the Git it finds before any other command, and an older Git, or a version it cannot read, is
-  refused with "Git 2.36 or later is needed to read changes safely" and nothing else runs. Only an accepted Git is
-  remembered: a refused one is asked again at the next read, so an owner who updates Git needs no daemon restart. The
-  floor stays 2.36: 2.45 would refuse Ubuntu 24.04's Git 2.43, which honours `GIT_NO_LAZY_FETCH`.
+  refused with "changes could not be read on the agent host: Git 2.36 or later is needed to read changes safely", the
+  sentence the Codex daemon sends for it too, and nothing else runs. Only an accepted Git is remembered: a refused one
+  is asked again at the next read, so an owner who updates Git needs no daemon restart. The floor stays 2.36: 2.45
+  would refuse Ubuntu 24.04's Git 2.43, which honours `GIT_NO_LAZY_FETCH`.
 - **No lazy fetch from a partial clone, on a Git that knows `GIT_NO_LAZY_FETCH`.** Every Git command runs with
   `GIT_NO_LAZY_FETCH=1`, so on such a Git a read that needs an object a partial clone left out fails instead of asking
   the promisor remote for it, a fetch that runs the programs the repository's config names and can wait on the network
