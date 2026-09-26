@@ -100,7 +100,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'changes_rpc', 'hard_floor'],
   )
 })
 
@@ -134,6 +134,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'permission_card',
       'plan_card',
       'memory_rpc',
+      'changes_rpc',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -172,6 +173,35 @@ test('memory_rpc is declared on every host: the memory folder is plain files', (
     assert.equal(declared.filter((t) => t === 'memory_rpc').length, 1)
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('memory_rpc'))
+})
+
+/**
+ * changes_rpc (P7 stage 3, C-31, the owner's Changes panel).
+ *
+ * The backend sends a changes frame to a Claude Code pairing only while this
+ * is declared (backend changes-capability-tokens.ts reads this exact name),
+ * and shows the owner "Update its BGOS connector" otherwise. Reading the
+ * agent's own folder with Git needs no tmux and no pairing only route, so it
+ * is in the base: every host, every connection, once.
+ *
+ * MUTATION PROOF: moved 'changes_rpc' from DECLARED_CAPABILITIES_BASE into
+ * DECLARED_CAPABILITIES_INJECTOR -> this test and the two whole list pins
+ * above red (red-proofs-claude.md, D3).
+ */
+test('changes_rpc is declared on every host: every host can read its own folder with Git', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = declaredCapabilities({ canInjectGoal, floorHook, authMode })
+        assert.equal(
+          declared.filter((t) => t === 'changes_rpc').length,
+          1,
+          `once on ${authMode}, canInjectGoal ${canInjectGoal}, floorHook ${floorHook}`,
+        )
+      }
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('changes_rpc'))
 })
 
 /**

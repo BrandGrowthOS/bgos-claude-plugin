@@ -66,6 +66,8 @@ import {
 } from './lib/voice-rpc.js'
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
+import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
+import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { pluginStateDirFor } from './lib/agent-inventory.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
@@ -10734,6 +10736,36 @@ const memoryRpc = new MemoryRpcHandler({
   log,
 })
 
+// ── Changes (changes_rpc, P7 stage 3) ─────────────────────────────────────────
+// The owner's Changes panel reads this agent's uncommitted changes.
+// lib/git-changes.ts runs read only Git in the agent's folder and sends the
+// raw output, cut at the frame's caps; the backend splits, counts, masks and
+// caps it. lib/changes-rpc.ts is the wire contract around it. The folder is
+// LAUNCH_CWD and never process.cwd(): a marketplace install runs this process
+// in the plugin cache, and a panel read from there would show the plugin's
+// own repository. CHANGES_WORKDIR is LAUNCH_CWD under a name of its own so
+// the counted identity sites stay at six (test/agent-credentials.test.ts).
+// This daemon never reads the owner's switch for the panel: the backend sends
+// a frame only while it is on.
+const CHANGES_WORKDIR = LAUNCH_CWD
+const changesRpc = new ChangesRpcHandler({
+  collect: ({ workdir, caps }) =>
+    collectChanges({ workdir, caps, runGit: createNodeRunGit(), fs: nodeChangesFs, now: () => Date.now() }),
+  workdir: () => CHANGES_WORKDIR,
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  // The memory lane's rule: sure of its home at once when the binding needed
+  // no record, else only once it has recorded it.
+  homeConfirmed: () => HOME_BINDING.action === 'allow' || homeDirRecorded,
+  postAck: (rpcId) =>
+    bgosPost(`integrations/changes-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/changes-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
@@ -11622,6 +11654,25 @@ function connectWebsocket(): void {
       })
     } catch (err) {
       log(`memory_rpc handler error: ${err}`)
+    }
+  }))
+
+  // Changes (P7 stage 3): the owner's Changes panel reads this agent's
+  // uncommitted changes with read only Git in its launch folder. A frame
+  // without an rpcId drops; anything with one is answered, and a re sent
+  // frame is answered again from memory, never run twice
+  // (lib/changes-rpc.ts). Only the lock holder answers (whenArmed).
+  realtimeSocket.on('changes_rpc', whenArmed('changes_rpc', (payload: any) => {
+    if (updateDrainMode) return
+    try {
+      const frame = normalizeChangesRpc(payload)
+      if (!frame) return
+      log(`changes_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => changesRpc.handle(frame)).catch((err) => {
+        log(`changes_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`changes_rpc handler error: ${err}`)
     }
   }))
 

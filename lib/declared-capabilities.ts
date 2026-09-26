@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The nine tokens, and what each one PROMISES the owner:
+ * The ten tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -110,6 +110,14 @@
  *                       host: every host can read and write its own memory
  *                       folder. The backend sends a memory frame to a Claude
  *                       Code pairing only while this is declared (P7 stage 2).
+ *   changes_rpc         this daemon answers the owner's Changes panel: the
+ *                       agent's uncommitted changes, read with read only Git
+ *                       in its launch folder (lib/changes-rpc.ts over
+ *                       lib/git-changes.ts). Every host: every host can read
+ *                       its own folder with Git, and a host without Git says
+ *                       so in the answer. The backend sends a changes frame to
+ *                       a Claude Code pairing only while this is declared, and
+ *                       only while the owner's switch is on (P7 stage 3).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -137,6 +145,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',
+  'changes_rpc',
 ])
 
 /**

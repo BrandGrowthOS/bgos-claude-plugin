@@ -388,6 +388,8 @@ describe('declared capabilities on the heartbeat', () => {
     // its hold rides the permission relay. It is declared on a pairing
     // connection only, and only a pairing connection beats
     // (shouldSendVersionHeartbeat), so every beat carries it.
+    // changes_rpc (P7 stage 3) likewise: every host can read its own folder
+    // with Git, so it rides every beat after memory_rpc.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
@@ -395,6 +397,7 @@ describe('declared capabilities on the heartbeat', () => {
       'permission_card',
       'plan_card',
       'memory_rpc',
+      'changes_rpc',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -406,6 +409,7 @@ describe('declared capabilities on the heartbeat', () => {
       'permission_card',
       'plan_card',
       'memory_rpc',
+      'changes_rpc',
       'hard_floor',
     ])
   })
