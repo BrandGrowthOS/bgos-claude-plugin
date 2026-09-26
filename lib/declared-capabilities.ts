@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The ten tokens, and what each one PROMISES the owner:
+ * The eleven tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -126,6 +126,15 @@
  *                       canon's instruction sentence only to a connection
  *                       that declares this token, beside the phase 1
  *                       sentence and independently of it.
+ *   boards_runs         this daemon's model is told that a repeated run id
+ *                       is the same work and what a stop message means. It
+ *                       needs no tool; the id rides the hand over message.
+ *                       Every host: it is a sentence the model reads, with no
+ *                       platform limit. The backend serves the canon's run id
+ *                       sentence (Kanban phase 3) only to a connection that
+ *                       declares this token, independently of the two
+ *                       playbook sentences, and no bundled fallback mentions
+ *                       runs.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -154,6 +163,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   PLAN_CARD,
   'boards_playbook',
   'boards_playbook_does',
+  'boards_runs',
 ])
 
 /**

@@ -100,7 +100,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'boards_playbook', 'boards_playbook_does', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'hard_floor'],
   )
 })
 
@@ -131,6 +131,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'plan_card',
       'boards_playbook',
       'boards_playbook_does',
+      'boards_runs',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -165,6 +166,33 @@ test('boards_playbook_does is declared on every host, because the does part is a
 })
 
 /**
+ * boards_runs (Kanban phase 3, plan P3.6 and 3.7).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored from one pristine copy): moved 'boards_runs' from
+ * DECLARED_CAPABILITIES_BASE into DECLARED_CAPABILITIES_INJECTOR -> "boards_runs
+ * is declared on every host" fails on the host that cannot type, and so do the
+ * read half pin and the boards_playbook pin above (the order of the lists),
+ * test/capabilities.test.ts's "the daemon's own base declaration reaches the
+ * fetch" and "the canon fetch carries boards_playbook", and
+ * test/version-heartbeat.test.ts's "what rides the beat is what THIS host can
+ * do" (five node red, one bun red). The run id rides the hand over message
+ * on every host, so a Windows agent that is not told what it means would do
+ * the same work twice when a card is sent again.
+ */
+test('boards_runs is declared on every host, because the run id rides the hand over message and needs no tool', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
+    assert.ok(declared.includes('boards_runs'))
+    // Beside both playbook tokens, never instead of them: the served canon
+    // strips the three boards sentences independently.
+    assert.ok(declared.includes('boards_playbook'))
+    assert.ok(declared.includes('boards_playbook_does'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('boards_runs'))
+})
+
+/**
  * permission_card (0.49.0, the permission relay on the request rail).
  *
  * The BGOS canon tells an agent about the permission request card only when
@@ -195,6 +223,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'plan_card',
       'boards_playbook',
       'boards_playbook_does',
+      'boards_runs',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',

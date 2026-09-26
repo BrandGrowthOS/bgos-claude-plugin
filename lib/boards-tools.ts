@@ -164,7 +164,7 @@ const DOES_KEYS = [
   'plan_first',
 ] as const
 const DOES_KINDS = ['start', 'tell'] as const
-/** The one start phase 2 honours: a person moving a card into the column. */
+/** The one start an agent may suggest. A column that starts work when a card is created in it is set by the owner in the app. */
 const DOES_STARTS = ['person_moves_in'] as const
 const DOES_WHO_BY = ['agent', 'card_field', 'ask_at_drop'] as const
 const DOES_WHO_KEYS = ['by', 'assistant_id', 'field_key'] as const
@@ -512,8 +512,10 @@ export const BOARDS_TOOL_DECLS = [
                     type: 'array',
                     items: { type: 'string', enum: [...DOES_STARTS] },
                     description:
-                      'Only person_moves_in is honoured today: a person moving a ' +
-                      'card here. An agent moving a card never starts anything.',
+                      'The only start you can suggest is person_moves_in: a person ' +
+                      'moving a card here. Starting work when a card is created in ' +
+                      'a column is a setting your owner turns on in the app. An ' +
+                      'agent moving a card never starts anything.',
                   },
                   who: {
                     type: 'object',
@@ -1305,8 +1307,8 @@ function compileDoes(
       if (!DOES_STARTS.includes(item as (typeof DOES_STARTS)[number])) {
         return fail(
           `${tool} "${at}[${i}]" must be one of ${DOES_STARTS.join(', ')}, got ` +
-            `${JSON.stringify(item)}. Only a person moving a card here starts ` +
-            'anything today.',
+            `${JSON.stringify(item)}. The only start you can suggest is a ` +
+            'person moving a card here.',
         )
       }
     }

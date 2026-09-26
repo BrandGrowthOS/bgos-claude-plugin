@@ -233,6 +233,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'plan_card',
     'boards_playbook',
     'boards_playbook_does',
+    'boards_runs',
     'hard_floor',
   ])
 })
@@ -305,6 +306,42 @@ test('the canon fetch carries boards_playbook', () => {
       const declared = declaredCapabilities({ canInjectGoal: false, floorHook, authMode })
       assert.ok(declared.includes('boards_playbook'))
       assert.ok(declared.includes('boards_playbook_does'))
+      assert.ok(declared.includes('boards_runs'))
     }
+  }
+})
+
+// ── No bundled copy mentions runs (Kanban phase 3, plan P3.6) ────────────────
+//
+// The run id sentence is served only to a connection that declares
+// boards_runs, and only by the backend. The bundled fallback is what an agent
+// reads when the fetch failed, and the MCP instructions are what it reads
+// before it fetches, so neither may describe runs: a copy here could never be
+// withdrawn with the served canon, and the served canon is the one place the
+// sentence can change.
+//
+// MUTATION PROOFS (confirmed red, restored from one pristine copy): (1) "A card
+// handed to you carries a run id." appended to BGOS_CAPABILITIES_FALLBACK in
+// lib/capabilities.ts -> this case fails on the fallback; (2) the same line
+// added to the MCP instructions array in server.ts -> this case fails on the
+// instructions. One red each, of 147 in the three node files.
+
+test('neither the bundled fallback nor the MCP instructions mention a run id', () => {
+  const server = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'),
+    'utf8',
+  )
+  const start = server.indexOf('    instructions: [')
+  assert.ok(start > 0, 'the MCP instructions array is gone from server.ts')
+  const end = server.indexOf("].join('\\n')", start)
+  assert.ok(end > start, 'the MCP instructions array no longer ends in a join')
+  const instructions = server.slice(start, end)
+  assert.ok(instructions.includes('bgos_capabilities'), 'the slice is not the instructions')
+  for (const [where, text] of [
+    ['the bundled fallback', BGOS_CAPABILITIES_FALLBACK],
+    ['the MCP instructions', instructions],
+  ] as const) {
+    assert.equal(/\brun id\b/i.test(text), false, `${where} mentions a run id`)
+    assert.equal(/\brun_id\b|\brunId\b|boards_runs/.test(text), false, `${where} mentions runs`)
   }
 })
