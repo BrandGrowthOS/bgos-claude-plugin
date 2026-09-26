@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The seven tokens, and what each one PROMISES the owner:
+ * The nine tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -104,6 +104,12 @@
  *                       it into a settings file the CLI reads, so the daemon
  *                       looks at boot (lib/floor-hook-presence.ts) and does
  *                       not declare a stop its session cannot make.
+ *   memory_rpc          this daemon answers the owner's Memory screen: list,
+ *                       add, replace and remove over this agent's own Claude
+ *                       Code auto memory folder (lib/memory-rpc.ts). Every
+ *                       host: every host can read and write its own memory
+ *                       folder. The backend sends a memory frame to a Claude
+ *                       Code pairing only while this is declared (P7 stage 2).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -130,6 +136,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
+  'memory_rpc',
 ])
 
 /**

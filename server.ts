@@ -64,6 +64,9 @@ import {
   channelMeta,
   type AgentIdentity,
 } from './lib/voice-rpc.js'
+import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
+import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
+import { pluginStateDirFor } from './lib/agent-inventory.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import {
   buildReachableChatsPath,
@@ -10681,6 +10684,56 @@ const exportPack = new ExportPackHandler({
   log,
 })
 
+// ── Memory (memory_rpc, P7 stage 2) ─────────────────────────────────────────
+// The owner's Memory screen lists and changes this agent's Claude Code auto
+// memory. lib/memory.ts finds the folder by the CLI's own rule on every frame
+// and writes it safely; lib/memory-rpc.ts is the wire contract around it.
+// Unlike exportPack above, the agent folder is LAUNCH_CWD and never
+// process.cwd(): a marketplace install runs this process in the plugin cache,
+// and a memory keyed from there is a folder no agent reads. The config dir is
+// the one this daemon resolved, never a hardcoded ~/.claude. The trash that
+// makes an Undo possible lives in this agent's plugin state folder, outside
+// the memory folder the CLI reads. MEMORY_AGENT_DIR is LAUNCH_CWD under a name
+// of its own so the trash key does not add a seventh counted identity site
+// (test/agent-credentials.test.ts counts them).
+const MEMORY_AGENT_DIR = LAUNCH_CWD
+const memoryRpc = new MemoryRpcHandler({
+  store: createClaudeMemoryStore({
+    fs: nodeMemoryFs,
+    resolve: () =>
+      resolveMemoryFolder({
+        fs: nodeMemoryFs,
+        agentDir: LAUNCH_CWD,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        env: process.env,
+      }),
+    trashDir: pathJoin(
+      pluginStateDirFor({
+        env: process.env,
+        home: homedir(),
+        assistantId: String(ASSISTANT_ID ?? ''),
+        cwd: MEMORY_AGENT_DIR,
+      }),
+      'memory-trash',
+    ),
+    now: () => Date.now(),
+  }),
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  // A binding that needed no record (a pin, a match, an override) is sure of
+  // its home at once; one that must record it is sure only once it has, so a
+  // stray session holding the lock in its first minute edits nothing.
+  homeConfirmed: () => HOME_BINDING.action === 'allow' || homeDirRecorded,
+  postAck: (rpcId) =>
+    bgosPost(`integrations/memory-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/memory-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+})
+
 function rememberForwarded(id: number): void {
   if (forwardedMessageIds.has(id)) return
   forwardedMessageIds.add(id)
@@ -11551,6 +11604,24 @@ function connectWebsocket(): void {
       })
     } catch (err) {
       log(`voice_rpc handler error: ${err}`)
+    }
+  }))
+
+  // Memory (P7 stage 2): the owner's Memory screen lists and changes this
+  // agent's auto memory. A frame without an rpcId drops; anything with one is
+  // answered, and a re sent frame is answered again from memory, never run
+  // twice (lib/memory-rpc.ts). Only the lock holder answers (whenArmed).
+  realtimeSocket.on('memory_rpc', whenArmed('memory_rpc', (payload: any) => {
+    if (updateDrainMode) return
+    try {
+      const frame = normalizeMemoryRpc(payload)
+      if (!frame) return
+      log(`memory_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => memoryRpc.handle(frame)).catch((err) => {
+        log(`memory_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`memory_rpc handler error: ${err}`)
     }
   }))
 
