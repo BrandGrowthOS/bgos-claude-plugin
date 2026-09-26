@@ -141,7 +141,8 @@ export type RunGit = (
 ) => Promise<GitRun>
 
 type ChildLike = {
-  stdout: NodeJS.ReadableStream | null
+  /** A Readable, so the adapter can close its own end at the cap (fix round w4, R-6). */
+  stdout: (NodeJS.ReadableStream & { destroy(error?: Error): unknown }) | null
   stderr: NodeJS.ReadableStream | null
   on(event: 'error', listener: (err: Error) => void): unknown
   on(event: 'close', listener: (code: number | null) => void): unknown
