@@ -2,6 +2,27 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.57.0 (2026-09-26)
+
+- **The agent is told what a run id and a stop message mean.** A card handed
+  to an agent now carries a run id, and one message may hand it several
+  cards, each with its own. This daemon declares `boards_runs` on every host,
+  on its heartbeat and on the capabilities fetch, and the backend serves the
+  canon's run id sentence only to a connection that declares it: a run id
+  the agent has already seen is the same work sent again, so it does it once,
+  and a message that starts "Stop working on" names a card the owner took
+  back or closed. It needs no tool and adds no argument; the id rides the
+  hand over message. The bundled fallback and the MCP instructions say
+  nothing about runs, so an agent reads it only from the served canon.
+- **The column instruction text says what stays true.** `starts_when` still
+  takes only `person_moves_in`, and its description and its refusal now say
+  it is the only start an agent can suggest, while starting work when a card
+  is created in a column is a setting the owner turns on in the app.
+- The version is the first minor above every number an open or shipped
+  release held on 2026-09-26 (main 0.53.0, #161 0.54.0, and room for this
+  branch's two parents, #149 and #159, to be renumbered level with main
+  first); the release that ships it confirms the number.
+
 ## 0.51.0 (2026-09-25)
 
 - **An agent can suggest what a column asks of the agent a card is handed

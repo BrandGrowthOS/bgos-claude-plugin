@@ -383,13 +383,16 @@ describe('declared capabilities on the heartbeat', () => {
     // boards_playbook (0.50.0) rides every beat on every host: the column
     // lines tool is typed and has no platform limit. boards_playbook_does
     // (0.51.0, Kanban phase 2) rides beside it for the same reason: a line's
-    // instruction part is an argument of the same tool.
+    // instruction part is an argument of the same tool. boards_runs (Kanban
+    // phase 3) rides beside them on every host: it is a sentence the model
+    // reads and needs no tool.
     expect([...declaredCapabilities({ canInjectGoal: true })]).toEqual([
       'mission_events',
       'mission_goal_checks',
       'mission_set_goals',
       'boards_playbook',
       'boards_playbook_does',
+      'boards_runs',
       'mission_goal_loop',
       'mission_pause',
     ])
@@ -399,6 +402,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_set_goals',
       'boards_playbook',
       'boards_playbook_does',
+      'boards_runs',
     ])
   })
 
