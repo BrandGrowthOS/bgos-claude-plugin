@@ -9,39 +9,70 @@
  * the byte cap the frame carries, plus the text of the first few untracked
  * files. The answer is spec 9.3's payload, `v: 1`.
  *
+ * WHAT THE READ DEFENDS AGAINST, AND WHAT IT DOES NOT (fix round w6). It
+ * defends the owner against untrusted repository CONTENT, what a clone
+ * carries (a git binary planted in the folder, attributes, the files
+ * themselves), and against Git WRITING the repository (the index refresh,
+ * its locks). It does NOT defend against the agent itself: the agent runs as
+ * the same user, with the same reach, on the same machine, and can already
+ * run any program and read any file there, and the answer goes only to the
+ * owner who owns that machine. A setting only the agent's own local config
+ * or its .git file can make (core.worktree, a gitfile or GIT_DIR pointing
+ * elsewhere, a clean filter, a promisor remote's programs) can mislead its
+ * own panel; the checks that exist for those (the top folder rule,
+ * GIT_NO_LAZY_FETCH, the Git floor) are defence in depth, and each rule
+ * below says exactly what it covers. The git dir and the common dir are NOT
+ * contained, on purpose: an agent that runs in a Git worktree keeps its
+ * common dir outside its folder.
+ *
  * The rules, and why each one is here (spec 10.1):
  *  - READ ONLY. The commands below are the whole list. None of them writes the
- *    index, the working tree or a ref. One read still WOULD write: a diff
- *    that finds a file touched but unchanged refreshes its stat data and
- *    rewrites .git/index, and GIT_OPTIONAL_LOCKS=0 alone does not stop that
- *    (measured on Git 2.55, a scratch repository, 2026-09-26). The refresh is
+ *    index, the working tree or a ref (a lazy fetch, on a Git that does not
+ *    know GIT_NO_LAZY_FETCH, would still add objects: see NO LAZY FETCH).
+ *    One read still WOULD write: a diff that finds a file touched but
+ *    unchanged refreshes its stat data and rewrites .git/index, and
+ *    GIT_OPTIONAL_LOCKS=0 alone does not stop that (measured on Git 2.55, a
+ *    scratch repository, 2026-09-26). The refresh is
  *    diff.autoRefreshIndex, so both diffs run with it off, and
  *    GIT_OPTIONAL_LOCKS=0 covers every other optional lock. The agent may be
  *    mid edit in this very folder; the panel must never be the thing that
  *    races it for the index lock.
- *  - GIT 2.36 OR LATER. Before 2.36, core.fsmonitor=false (the next rule) is
- *    read as the path of a program to run (the review's finding W4-N3; no Git
- *    before 2.36 was run here). So the adapter reads `git version`
- *    once per Git path it resolves, and keeps the answer; a Git below 2.36, or
- *    a version it cannot read, answers read_failed in plain words ("Git 2.36
- *    or later is needed to read changes safely") and no other command runs
- *    (fix round w5, W4-N3).
+ *  - GIT 2.36 OR LATER. From Git 2.36 core.fsmonitor=false (the next rule)
+ *    reads as off; before it, the same setting is read as the path of a
+ *    program to run (the review's finding W4-N3; Git's own 2.36.0 release
+ *    notes do not name it, and no Git before 2.36 was run here). So the
+ *    adapter reads `git version` for the Git path it resolves before any
+ *    other command; a Git below 2.36, or a version it cannot read, answers
+ *    read_failed in plain words ("Git 2.36 or later is needed to read changes
+ *    safely") and no other command runs (fix round w5, W4-N3). Only an
+ *    ACCEPTED Git is kept, once per Git path: a refusal is read again at the
+ *    next read, so an owner who updates Git needs no daemon restart (fix
+ *    round w6, as lane C does). The floor stays 2.36: 2.45 would refuse
+ *    Ubuntu 24.04's Git 2.43, which honours GIT_NO_LAZY_FETCH (measured for
+ *    fix round w6, not on this host). What the floor covers: the meaning of
+ *    the fsmonitor flag below, nothing more; it is defence in depth.
  *  - NO FSMONITOR HOOK. core.fsmonitor in the repository's own config names
  *    a program Git runs when it reads the index; every command here turns it
- *    off on the command line (fix round w4, F1), so a panel read never runs
- *    the fsmonitor program the agent's config names. That is the one program
- *    this rule turns off; see NOT TURNED OFF below for one that still runs.
- *  - NO LAZY FETCH. In a partial clone a read that needs an object the clone
- *    left out asks the promisor remote for it, and that fetch runs the
- *    programs the repository's config names (the upload-pack program, a
- *    transport helper) and can wait on the network (measured on Git 2.55: the
- *    numstat ran the upload-pack program a clone's config named). Every
- *    command runs with GIT_NO_LAZY_FETCH=1, so such a read fails instead
- *    (fix round w5, W4-N1). The variable, never the --no-lazy-fetch flag,
- *    which an older Git rejects as an unknown option. The variable came with
- *    that flag in Git 2.45 (Git's own release notes for 2.45.0 name the flag;
- *    no older Git was run here), so a Git from 2.36 to 2.44 passes the floor
- *    but ignores it, and there a partial clone can still fetch.
+ *    off on the command line (fix round w4, F1), so on a Git that passes the
+ *    floor a panel read never runs the fsmonitor program that config names.
+ *    That is the repository's local config, which no clone carries, so this
+ *    is defence in depth. It is the one program this rule turns off: NOT
+ *    TURNED OFF below names one that still runs, and NO LAZY FETCH the ones
+ *    an older Git can still start.
+ *  - NO LAZY FETCH, ON A GIT THAT KNOWS GIT_NO_LAZY_FETCH. In a partial
+ *    clone a read that needs an object the clone left out asks the promisor
+ *    remote for it, and that fetch runs the programs the repository's config
+ *    names (the upload-pack program, a transport helper) and can wait on the
+ *    network (measured on Git 2.55: the numstat ran the upload-pack program a
+ *    clone's config named). Every command runs with GIT_NO_LAZY_FETCH=1, so
+ *    on a Git that knows the variable such a read fails instead (fix round
+ *    w5, W4-N1). Git's release notes first name it in 2.45.0 (with its
+ *    --no-lazy-fetch flag), and Ubuntu 24.04's build of Git 2.43.0 honours it
+ *    too (measured for fix round w6, not on this host). A Git from 2.36 that
+ *    does not know it passes the floor and can still fetch lazily in a
+ *    partial clone: a documented gap. The variable, never the flag, which an
+ *    older Git rejects as an unknown option. A promisor remote is the
+ *    clone's local config, so this is defence in depth.
  *  - THE FOLDER IT IS GIVEN. The first command runs in the working folder and
  *    prints the repository root; every later command runs in that ROOT, so
  *    the tracked paths (Git prints them root relative) and the untracked names
@@ -50,36 +81,45 @@
  *    variables that would point Git at another repository whatever the
  *    folder says (GIT_DIR and friends) are dropped from its environment, in
  *    any spelling on Windows, whose names are case blind (fix round w4, F5).
- *  - INSIDE THE AGENT'S FOLDER. core.worktree in the repository's own config
- *    makes rev-parse print THAT folder as the root, wherever it is (measured
- *    on Git 2.55: every later command then read the other folder's own
- *    repository and a new file there was sent whole). So the root the first
- *    command prints must be the working folder or one of its ancestors,
- *    compared by what the host resolves each to (realpath, so a link, a
- *    junction or another case on Windows compares as the folder it is);
- *    anything else answers read_failed and nothing else runs or is read
- *    (fix round w5, W4-N4).
+ *  - THE TOP FOLDER INSIDE THE AGENT'S FOLDER. core.worktree in the
+ *    repository's own config makes rev-parse print THAT folder as the root,
+ *    wherever it is (measured on Git 2.55: every later command then read the
+ *    other folder's own repository and a new file there was sent whole). So
+ *    the root the first command prints must be the working folder or one of
+ *    its ancestors, compared by what the host resolves each to (realpath, so
+ *    a link, a junction or another case on Windows compares as the folder it
+ *    is); anything else answers read_failed in the words the Codex daemon
+ *    sends for it too ("changes could not be read on the agent host", fix
+ *    round w6) and nothing else runs or is read (fix round w5, W4-N4). What
+ *    it covers: the top folder, so the working tree the read walks and the
+ *    files it opens. core.worktree is local config, so this is defence in
+ *    depth. The git dir and the common dir are NOT checked (the threat model
+ *    above): a gitfile pointing elsewhere still reads that repository's index
+ *    and history against this folder.
  *  - NOT TURNED OFF: A CLEAN FILTER. A filter.<name>.clean program that the
  *    repository's own config names (and its attributes assign to a changed
  *    file) still runs on both diffs: Git passes the working file through it
  *    to compare it with HEAD (measured on Git 2.55, fix round w4). This is an
- *    ACCEPTED LIMIT, not an oversight (fix round w5). It needs the
- *    repository's local config, which no clone carries, so it is something
- *    the agent set up on this host, and this daemon runs as the same user
- *    with the same reach as the agent. Unlike the fsmonitor there is no one
- *    switch that turns it off: filter names are free, so no -c can name them
- *    all ahead of time. And reading attributes from an empty tree instead
- *    needs Git 2.40 and does not cover .git/info/attributes. The long running
+ *    ACCEPTED LIMIT, not an oversight (fix round w5), and the threat model
+ *    above is why: it needs the repository's local config, which no clone
+ *    carries, so it is something the agent set up on this host, and this
+ *    daemon runs as the same user with the same reach as the agent. Unlike
+ *    the fsmonitor there is no one switch that turns it off: filter names are
+ *    free, so no -c can name them all ahead of time. And reading attributes
+ *    from an empty tree instead (the --attr-source flag from Git 2.41, the
+ *    attr.tree setting from Git 2.43, by Git's release notes) would raise the
+ *    floor and still not cover .git/info/attributes. The long running
  *    filter.<name>.process form is the same mechanism (not measured here).
  *  - GIT BY ITS ABSOLUTE PATH. spawn('git', { cwd }) on Windows looks in the
  *    working folder BEFORE PATH (libuv's search_path, which uv_spawn hands
  *    the child's cwd; git.com is tried before git.exe), and a relative PATH
- *    entry does the same on any host. The agent writes that folder, so a
- *    git.exe it left there would run as the owner, outside the agent's own
- *    permission prompts, each time the owner opened the panel. Measured on
- *    node 24.16 and bun 1.3.9 on Windows (review round 1, D-R2). So Git is
- *    looked up on PATH's ABSOLUTE entries only and spawned by that path; no
- *    Git there reads as git_missing.
+ *    entry does the same on any host. That folder holds the repository's
+ *    files, and a cloned repository can carry a git.exe as an ordinary file
+ *    (the untrusted CONTENT of the threat model), so that git.exe would run
+ *    as the owner, outside the agent's own permission prompts, each time the
+ *    owner opened the panel. Measured on node 24.16 and bun 1.3.9 on Windows
+ *    (review round 1, D-R2). So Git is looked up on PATH's ABSOLUTE entries
+ *    only and spawned by that path; no Git there reads as git_missing.
  *  - A STREAM CAP, NOT A BUFFER. stdout is read until the cap and then the
  *    child is killed and the read answers at once, never waiting on a close a
  *    launcher's grandchild can hold off (fix round w4, R-6), so a huge diff
@@ -294,10 +334,12 @@ export function gitVersionMeetsFloor(text: string): boolean {
 }
 
 /**
- * What the adapter knows of each Git path it resolved: whether that Git meets
- * the floor, or the version read still running. A version read that did not
- * finish (it could not start, or the budget stopped it) says nothing about
- * the Git and is never kept.
+ * What the adapter knows of each Git path it resolved: a Git that met the
+ * floor, or the version read still running. Only an acceptance stays once
+ * the read settles (fix round w6, as lane C does). A refusal is let go, so the
+ * next read asks again and a Git the owner updates in place is seen without a
+ * restart; a version read that did not finish (it could not start, or the
+ * budget stopped it) says nothing about the Git and is let go too.
  */
 export type GitVersionCache = Map<string, Promise<boolean | GitRun>>
 
@@ -310,9 +352,10 @@ const SHARED_GIT_VERSIONS: GitVersionCache = new Map()
  * Resolves once, never rejects: a spawn failure comes back as `spawnError`
  * (ENOENT too when no PATH entry holds Git), a budget abort as `aborted`, and
  * a Git below the floor as `refused`, with nothing run but `git version`.
- * PATH is looked up once per adapter; server.ts makes one per read. The
- * version is read once per Git path, in `versions` (the daemon's own cache
- * unless a test passes one).
+ * PATH is looked up once per adapter; server.ts makes one per read. An
+ * accepted Git's version is read once per Git path, in `versions` (the
+ * daemon's own cache unless a test passes one); a refusal is read again at
+ * the next read (fix round w6).
  */
 export function createNodeRunGit(
   spawnImpl: SpawnLike = spawn as unknown as SpawnLike,
@@ -334,7 +377,7 @@ export function createNodeRunGit(
 /**
  * True when the Git at `bin` meets the floor. Otherwise the run to answer
  * with: `refused` for a Git below it (or a version it cannot read), or the
- * version read's own spawn error or abort, which is not kept.
+ * version read's own spawn error or abort. None of those is kept.
  */
 async function meetsFloor(
   spawnImpl: SpawnLike,
@@ -349,11 +392,17 @@ async function meetsFloor(
         ...opts,
         maxBytes: SMALL_OUTPUT_BYTES,
       }).then((run) => {
-        if (run.spawnError || run.aborted) {
-          if (versions.get(bin) === reading) versions.delete(bin)
-          return run
-        }
-        return run.code === 0 && !run.truncated && gitVersionMeetsFloor(run.stdout.toString('utf8'))
+        // A version read that did not finish says nothing about the Git.
+        const answer: boolean | GitRun =
+          run.spawnError || run.aborted
+            ? run
+            : run.code === 0 && !run.truncated && gitVersionMeetsFloor(run.stdout.toString('utf8'))
+        // Only an ACCEPTED Git is kept (fix round w6, as lane C does): a
+        // refusal is read again at the next read, so a Git the owner updates
+        // in place reads without a daemon restart. The reads already waiting
+        // on this one still share its answer.
+        if (answer !== true && versions.get(bin) === reading) versions.delete(bin)
+        return answer
       })
       versions.set(bin, reading)
       entry = reading
@@ -533,9 +582,13 @@ export type ChangesCollectResult =
 export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than the time allowed'
 /** A Git below the floor (fix round w5, W4-N3), in the words the owner reads. */
 export const CHANGES_GIT_TOO_OLD_MESSAGE = 'Git 2.36 or later is needed to read changes safely'
-/** A root that is not the working folder or above it (fix round w5, W4-N4). */
-export const CHANGES_OUTSIDE_FOLDER_MESSAGE =
-  "the repository's top folder is not the agent's folder or a folder above it, so nothing was read"
+/**
+ * A root that is not the working folder or above it (fix round w5, W4-N4), in
+ * the very words the Codex daemon sends for the same refusal (its
+ * READ_FAILED_MESSAGE, fix round w6), so the owner reads one sentence whatever
+ * the agent. It names neither folder.
+ */
+export const CHANGES_OUTSIDE_FOLDER_MESSAGE = 'changes could not be read on the agent host'
 
 // The commands, whole. Nothing else is ever run (spec 10.1 item 7). The
 // patch asks for Git's own a/ and b/ prefixes: a host whose config sets
@@ -635,11 +688,12 @@ function gitEnv(base: Record<string, string | undefined>, platform: string): Rec
   env.GIT_OPTIONAL_LOCKS = '0'
   env.GIT_TERMINAL_PROMPT = '0'
   env.LC_ALL = 'C'
-  // No fetch from a partial clone's promisor remote (fix round w5, W4-N1,
-  // the header's NO LAZY FETCH rule). Set in capitals over whatever the
-  // daemon had: on Windows, where a second spelling could ride along, node's
-  // spawn and bun's both hand the child the capital one (measured, node
-  // 24.16 and bun 1.3.9).
+  // No lazy fetch from a partial clone's promisor remote, on a Git that
+  // knows the variable (fix round w5, W4-N1, the header's NO LAZY FETCH
+  // rule, which names the gap on one that does not). Set in capitals over
+  // whatever the daemon had: on Windows, where a second spelling could ride
+  // along, node's spawn and bun's both hand the child the capital one
+  // (measured, node 24.16 and bun 1.3.9).
   env.GIT_NO_LAZY_FETCH = '1'
   return env
 }

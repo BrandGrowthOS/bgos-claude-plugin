@@ -126,13 +126,12 @@ const UNTRACKED = 'notes.md\0'
  * The two refusals the owner reads, in their plain words, written out (fix
  * round w5): a Git below the 2.36 floor (W4-N3), and a top folder that is not
  * the agent's folder or a folder above it (W4-N4). Both answer read_failed.
+ * The second is the very sentence the Codex daemon sends for the same
+ * refusal (lane C's READ_FAILED_MESSAGE, fix round w6), so the owner reads
+ * one sentence whatever the agent.
  */
 const TOO_OLD = { ok: false, code: 'read_failed', message: 'Git 2.36 or later is needed to read changes safely' }
-const OUTSIDE = {
-  ok: false,
-  code: 'read_failed',
-  message: "the repository's top folder is not the agent's folder or a folder above it, so nothing was read",
-}
+const OUTSIDE = { ok: false, code: 'read_failed', message: 'changes could not be read on the agent host' }
 
 type Reply = Partial<GitRun>
 
@@ -957,8 +956,10 @@ test('a PATH with no Git answers git_missing and starts nothing', async () => {
 // Before Git 2.36, core.fsmonitor was a hook path only, so the -c
 // core.fsmonitor=false every command carries (fix round w4, F1) names a
 // program called "false" for Git to run. So the adapter reads `git version`
-// first, once per Git path, and a Git below 2.36, or a version it cannot read,
-// is refused in plain words with nothing else run.
+// first, and a Git below 2.36, or a version it cannot read, is refused in
+// plain words with nothing else run. Only an accepted Git is kept, once per
+// Git path; a refusal is read again at the next read (fix round w6, as lane C
+// does), so an owner who updates Git needs no daemon restart.
 
 test('a Git older than 2.36, or a version that cannot be read, is refused in plain words and nothing else runs; 2.36 and later read', async () => {
   const answers: Array<[SpawnPlan, 'refused' | 'read']> = [
@@ -996,7 +997,7 @@ test('a Git older than 2.36, or a version that cannot be read, is refused in pla
   }
 })
 
-test('the Git version is read once per Git path, a refusal is kept too, and a version read that could not start is not kept', async () => {
+test('the Git version is read once per Git path while it is accepted; a refusal and a version read that could not start are not kept', async () => {
   // server.ts makes one adapter per read; the version is kept across them.
   const versions = new Map()
   const spawn = fakeSpawn(readPlan)
@@ -1016,15 +1017,24 @@ test('the Git version is read once per Git path, a refusal is kept too, and a ve
     'one version read per Git path, across reads',
   )
   assert.equal(spawn.children.length, 2 + 5 * 7)
+  assert.equal(versions.size, 2, 'each accepted Git path is kept')
 
-  // A Git below the floor is asked once, and nothing else ever runs.
+  // A Git below the floor is refused and nothing else ever runs. Two reads at
+  // once share the one version read they both wait on, but the refusal is
+  // not kept: the next read asks again (fix round w6).
   const old = fakeSpawn(readPlan, undefined, { out: 'git version 2.35.1\n' })
   const oldVersions = new Map()
-  for (let i = 0; i < 2; i += 1) {
-    const { result } = await collect({ runGit: createNodeRunGit(old.spawnImpl as never, findGitExe, oldVersions) })
-    assert.deepEqual(result, TOO_OLD)
-  }
-  assert.deepEqual(old.children.map((c) => c.args), [ARGV_VERSION])
+  const together = await Promise.all([0, 1].map(() => collect({ runGit: createNodeRunGit(old.spawnImpl as never, findGitExe, oldVersions) })))
+  for (const { result } of together) assert.deepEqual(result, TOO_OLD)
+  assert.deepEqual(old.children.map((c) => c.args), [ARGV_VERSION], 'two reads at once share one version read')
+  const later = await collect({ runGit: createNodeRunGit(old.spawnImpl as never, findGitExe, oldVersions) })
+  assert.deepEqual(later.result, TOO_OLD)
+  assert.deepEqual(
+    old.children.map((c) => c.args),
+    [ARGV_VERSION, ARGV_VERSION],
+    'a refusal is not kept: the next read asks again, and nothing else runs',
+  )
+  assert.equal(oldVersions.size, 0, 'no refusal stays in the cache')
 
   // A version read that could not start says nothing about the Git: the next read asks again.
   let starts = 0
@@ -1034,6 +1044,29 @@ test('the Git version is read once per Git path, a refusal is kept too, and a ve
   const again = await collect({ runGit: createNodeRunGit(flaky.spawnImpl as never, findGitExe, flakyVersions) })
   assert.equal(again.result.ok && again.result.payload.state, 'ok')
   assert.deepEqual(flaky.children.map((c) => c.args), [ARGV_VERSION, ARGV_VERSION, ...SEVEN])
+})
+
+test('a Git refused at one read is asked again at the next, so an owner who updates Git reads without a restart', async () => {
+  // Fix round w6, parity with lane C: only an accepted Git is kept. The owner
+  // reads the refusal, updates Git in place (the same path on PATH) and opens
+  // the panel again; the daemon, still running, must see the new Git.
+  let version: SpawnPlan = { out: 'git version 2.35.1\n' }
+  const spawn = fakeSpawn(readPlan, undefined, () => version)
+  const versions = new Map()
+  const first = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe, versions) })
+  assert.deepEqual(first.result, TOO_OLD, 'the old Git is refused')
+  assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION], 'nothing else ran')
+
+  version = { out: MODERN_GIT }
+  const second = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe, versions) })
+  assert.equal(second.result.ok && second.result.payload.state, 'ok', `the updated Git reads: ${JSON.stringify(second.result)}`)
+  assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION, ARGV_VERSION, ...SEVEN], 'its version read again, then the seven')
+
+  // The acceptance is kept: a third read asks no version.
+  const third = await collect({ runGit: createNodeRunGit(spawn.spawnImpl as never, findGitExe, versions) })
+  assert.equal(third.result.ok && third.result.payload.state, 'ok')
+  assert.deepEqual(spawn.children.map((c) => c.args), [ARGV_VERSION, ARGV_VERSION, ...SEVEN, ...SEVEN], 'an accepted Git is kept')
+  assert.ok(spawn.children.every((c) => c.cmd === GIT_EXE), 'every command by the same absolute path')
 })
 
 // ---------------------------------------------------------------------------
