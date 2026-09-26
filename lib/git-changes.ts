@@ -43,10 +43,11 @@
  *  - A STREAM CAP, NOT A BUFFER. stdout is read until the cap and then the
  *    child is killed, so a huge diff costs one megabyte and a flag, never a
  *    failed read (a maxBuffer overflow fails the whole call). An untracked
- *    file is the same: one handle, at most the text cap and one byte read,
- *    and it must still be the regular file the lstat saw (review round 1,
- *    D-R3), so a file that grows or a name swapped between the two is never
- *    loaded whole.
+ *    file is the same: one handle, fstat'd before any byte is read, and read
+ *    (at most the text cap and one byte) only while it is still the regular
+ *    file the lstat saw (review round 1, D-R3; fix round w4, F7), so a file
+ *    that grows is never loaded whole and a name swapped between the two is
+ *    never read at all.
  *  - A BUDGET. Past budgetMs the running child is killed and the answer is
  *    too_slow; nothing more runs.
  *  - CAPS FROM THE FRAME, NEVER ABOVE THE DEFAULTS. The defaults are the
@@ -311,16 +312,23 @@ function spawnGit(
 /** What the untracked step reads of a file: its kind, size and identity. */
 export type ChangesStat = { isFile(): boolean; size: number; dev?: number; ino?: number }
 
+/**
+ * One open file. The untracked step calls stat() first and read() only when
+ * the handle is still the regular file the lstat saw (fix round w4, F7).
+ */
+export type ChangesFileHandle = {
+  /** The OPEN file's kind, size and identity (fstat), so a name swapped after an lstat shows. */
+  stat(): Promise<ChangesStat>
+  /** Reads at most `maxBytes` from the start, into a buffer of that size. */
+  read(maxBytes: number): Promise<Uint8Array>
+  close(): Promise<void>
+}
+
 /** The file reads the untracked step needs. */
 export type ChangesFs = {
   lstat(path: string): Promise<ChangesStat>
-  /**
-   * Opens `path` once (never through a symlink, where the host can refuse
-   * one) and reads at most `maxBytes` from the start. `stat` is the OPEN
-   * file's, so a name swapped after an lstat shows. Nothing is read from
-   * anything that is not a regular file.
-   */
-  readAtMost(path: string, maxBytes: number): Promise<{ stat: ChangesStat; data: Uint8Array }>
+  /** Opens `path` once, never through a symlink where the host can refuse one. Reads nothing. */
+  open(path: string): Promise<ChangesFileHandle>
 }
 
 /**
@@ -333,21 +341,21 @@ const OPEN_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsCon
 
 export const nodeChangesFs: ChangesFs = {
   lstat: (path) => fsLstat(path),
-  readAtMost: async (path, maxBytes) => {
+  open: async (path) => {
     const handle = await fsOpen(path, OPEN_FLAGS)
-    try {
-      const stat = await handle.stat()
-      if (!stat.isFile()) return { stat, data: new Uint8Array(0) }
-      const buf = Buffer.alloc(Math.max(0, maxBytes))
-      let got = 0
-      while (got < buf.length) {
-        const { bytesRead } = await handle.read(buf, got, buf.length - got, got)
-        if (bytesRead === 0) break
-        got += bytesRead
-      }
-      return { stat, data: buf.subarray(0, got) }
-    } finally {
-      await handle.close().catch(() => {})
+    return {
+      stat: () => handle.stat(),
+      read: async (maxBytes) => {
+        const buf = Buffer.alloc(Math.max(0, maxBytes))
+        let got = 0
+        while (got < buf.length) {
+          const { bytesRead } = await handle.read(buf, got, buf.length - got, got)
+          if (bytesRead === 0) break
+          got += bytesRead
+        }
+        return buf.subarray(0, got)
+      },
+      close: () => handle.close(),
     }
   },
 }
@@ -669,12 +677,15 @@ function sameFile(a: ChangesStat, b: ChangesStat): boolean {
  * One untracked name, read under the root. A regular file within the text cap
  * is read: a NUL in its first 8,000 bytes makes it binary, else it is text. A
  * larger one is its size only. A symlink or anything that is not a regular
- * file is binary with its size, never followed. The read is ONE handle and at
- * most the cap and one byte: a file that grew past the cap since the lstat is
- * its size only, and a name that is no longer the regular file the lstat saw
- * (swapped for a link or a device) is not read. A name that cannot be read
- * (gone since the list, or refused) is its name with no text, which the
- * backend shows as not drawn.
+ * file is binary with its size, never followed. The read is ONE handle, and
+ * that handle is fstat'd BEFORE any byte is read (fix round w4, F7): a name
+ * that is no longer the regular file the lstat saw (swapped for a link or a
+ * device) is its lstat size with not one byte read, and a file the fstat shows
+ * already past the cap is its size, unread. Only the same regular file is
+ * read, at most the cap and one byte, so one that grows between the fstat and
+ * the read is still its size only. A name that cannot be read (gone since the
+ * list, or refused) is its name with no text, which the backend shows as not
+ * drawn. The handle is always closed.
  */
 async function readUntracked(fs: ChangesFs, root: string, name: string, maxText: number): Promise<ChangesUntrackedFile> {
   const full = `${root.replace(/[\\/]+$/, '')}/${name}`
@@ -687,17 +698,28 @@ async function readUntracked(fs: ChangesFs, root: string, name: string, maxText:
   const size = wholeSize(st.size)
   if (!st.isFile()) return { path: name, bytes: size, binary: true }
   if (size > maxText) return { path: name, bytes: size }
-  let opened: { stat: ChangesStat; data: Uint8Array }
+  let handle: ChangesFileHandle
   try {
-    opened = await fs.readAtMost(full, maxText + 1)
+    handle = await fs.open(full)
   } catch {
     return { path: name, bytes: size }
   }
-  // Swapped since the lstat: no longer a regular file, or another file.
-  if (!opened.stat.isFile() || !sameFile(st, opened.stat)) return { path: name, bytes: size }
-  const data = Buffer.from(opened.data.buffer, opened.data.byteOffset, opened.data.byteLength)
-  // It grew past the cap between the two calls.
-  if (data.length > maxText) return { path: name, bytes: Math.max(wholeSize(opened.stat.size), data.length) }
-  if (data.subarray(0, CHANGES_BINARY_SNIFF_BYTES).includes(0)) return { path: name, bytes: data.length, binary: true }
-  return { path: name, bytes: data.length, text: data.toString('utf8') }
+  try {
+    const now = await handle.stat()
+    // Swapped since the lstat: no longer a regular file, or another file. Nothing is read.
+    if (!now.isFile() || !sameFile(st, now)) return { path: name, bytes: size }
+    // Grown past the cap since the lstat: its size, nothing read.
+    const nowSize = wholeSize(now.size)
+    if (nowSize > maxText) return { path: name, bytes: nowSize }
+    const read = await handle.read(maxText + 1)
+    const data = Buffer.from(read.buffer, read.byteOffset, read.byteLength)
+    // It grew past the cap between the fstat and the read.
+    if (data.length > maxText) return { path: name, bytes: Math.max(nowSize, data.length) }
+    if (data.subarray(0, CHANGES_BINARY_SNIFF_BYTES).includes(0)) return { path: name, bytes: data.length, binary: true }
+    return { path: name, bytes: data.length, text: data.toString('utf8') }
+  } catch {
+    return { path: name, bytes: size }
+  } finally {
+    await handle.close().catch(() => {})
+  }
 }
