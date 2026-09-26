@@ -170,6 +170,14 @@ export const RESTART_WATCHDOG_MS = 3 * 60 * 1000
 /** The terminal error the watchdog reports (wire contract v1.1 machine token). */
 export const RESTART_DID_NOT_ARRIVE = 'restart_did_not_arrive'
 
+/**
+ * The rpc id a SCHEDULED restart runs under. There is no rpc: the nightly
+ * update was not asked for by anyone, so there is no caller waiting on
+ * progress. The ladder is shared with the clicked path, so it still wants an
+ * id; this one means "report to the log, not to the backend".
+ */
+export const SCHEDULED_RESTART_RPC = 'scheduled-auto-update' 
+
 /** The backend caps progress messages at 300 chars (design 2.2). */
 export const PROGRESS_MESSAGE_MAX_CHARS = 300
 
@@ -287,6 +295,12 @@ export class UpdateRpcHandler {
   /** Progress is reporting, never control flow: a failed POST is logged and
    *  the update continues (the backend's own timeouts cover a silent rpc). */
   private async progress(rpcId: string, body: UpdateRpcProgress): Promise<void> {
+    if (rpcId === SCHEDULED_RESTART_RPC) {
+      // Nobody asked, so there is nobody to answer. Posting would be a
+      // progress report for an rpc the backend never issued.
+      this.deps.log(`auto-update restart: ${body.stage}`)
+      return
+    }
     try {
       await this.deps.postProgress(rpcId, body as unknown as Record<string, unknown>)
     } catch (err) {
@@ -463,7 +477,7 @@ export class UpdateRpcHandler {
    * walk, lib/update-readiness.ts resolveKeepalive); the service rung is a name
    * that is checked for ownership here, one rung later.
    */
-  private async restartLadder(rpcId: string, targetVersion: string | null): Promise<void> {
+  private async restartLadder(rpcId: string, targetVersion: string | null): Promise<boolean> {
     const versionField = targetVersion ? { targetVersion } : {}
     const authority = this.deps.restartAuthority()
     if (authority.kind === 'keepalive') {
@@ -487,7 +501,7 @@ export class UpdateRpcHandler {
         // Drain stays on: no new work between now and the relaunch. The
         // watchdog lifts it if the keepalive never brings the session back.
         this.armRestartWatchdog(rpcId)
-        return
+        return true
       }
       this.deps.log(
         `update_rpc: could not signal the session (pid ${authority.sessionPid}); staging instead`,
@@ -504,7 +518,7 @@ export class UpdateRpcHandler {
       // Drain stays on: no new work between now and the restart. The
       // watchdog lifts it if the restart never comes.
       this.armRestartWatchdog(rpcId)
-      return
+      return true
     }
     if (authority.kind === 'service') {
       // Re-resolved after the drain and the install: a job that does not hold
@@ -519,7 +533,7 @@ export class UpdateRpcHandler {
           `update_rpc: restart marker written for the hoai launcher (${authority.markerPath})`,
         )
         this.armRestartWatchdog(rpcId)
-        return
+        return true
       }
       this.deps.log('update_rpc: could not write the restart marker; staging instead')
     }
@@ -529,6 +543,27 @@ export class UpdateRpcHandler {
     this.deps.setDrainMode(false)
     await this.progress(rpcId, { stage: 'staged', ...versionField })
     this.deps.requestHeartbeat()
+    return false
+  }
+
+  /**
+   * Restart this process after a SCHEDULED (nightly) update, by exactly the
+   * ladder a clicked update uses (KC, 2026-09-26: "our auto update of the
+   * plugin is working but the restart is still manual").
+   *
+   * THE SAME LADDER ON PURPOSE. Every safety on this path was paid for by an
+   * outage: the ownership pre-flight after 9 daemons were muted on 2026-09-11
+   * by a kickstart at a job that never held them, and the refusal to exit
+   * after 5 agents died overnight on 2026-08-06. A second implementation for
+   * the nightly path would be a second place for those to be forgotten.
+   *
+   * Returns true when the ladder took the restart on (this process is expected
+   * to die), false when it staged. A false is not a failure: it is the ladder
+   * correctly refusing to act on an authority it cannot prove owns us, and the
+   * caller then keeps serving the old code exactly as it does today.
+   */
+  async restartAfterScheduledUpdate(targetVersion: string | null): Promise<boolean> {
+    return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion)
   }
 
   /** Is the job a service authority names actually holding this process?

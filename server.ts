@@ -12939,6 +12939,15 @@ async function main(): Promise<void> {
     }),
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
+    // The nightly update asks the SAME ladder the clicked one uses (KC,
+    // 2026-09-26). Before this, only a click could reach it, so a scheduled
+    // update installed the new version and told nobody: 20 of 59 live agents
+    // were running code they had already replaced. The ladder is what keeps
+    // this safe, not this line: it signals a keepalive, restarts a service
+    // that provably owns us, or writes the marker the hoai launcher is
+    // already watching for, and it stages rather than acting on an authority
+    // it cannot prove.
+    requestRestart: (targetVersion) => updateRpc.restartAfterScheduledUpdate(targetVersion),
   })
   }
 
