@@ -23,15 +23,23 @@ folder (lib/changes-rpc.ts over lib/git-changes.ts).
   folder and every later one runs in that root, so tracked and untracked paths agree from a subfolder too. Variables
   that would point Git at another repository (`GIT_DIR` and its neighbours) are dropped for the call. A launch folder
   that is gone is a failed read, never "Git is not installed" (Node names both the same way).
+- **Git by its absolute path, never a git in the agent's folder.** Windows looks for a bare `git` in the working
+  folder before PATH, so a `git.exe` the agent left there would have run as the owner each time the panel opened
+  (measured on node 24.16 and bun 1.3.9). Git is looked up on PATH's absolute entries only and run by that path; an
+  empty, `.` or other relative entry is never looked at, and no Git on PATH still reads as "Git is not installed".
 - **New files count.** The first 20 untracked files are read: text up to 64 KB is sent whole, a file with a NUL in
-  its first 8,000 bytes is binary, a larger one is its size only, a symlink is never followed.
+  its first 8,000 bytes is binary, a larger one is its size only, a symlink is never followed. Each is read through
+  one handle, at most 64 KB and one byte, and only while it is still the regular file first checked, so a file that
+  grows or is swapped for a link in between is never loaded whole.
 - **Raw and capped, never processed here.** Each stream is cut at the byte cap the frame carries (never above the
   backend's own numbers) and Git is killed at the cap, so a huge diff costs a flag, not a failed read. Past the
   frame's budget (10 s) the read stops and answers too slow. The backend, not this daemon, splits the patch, counts,
   masks secrets and caps what reaches the app. The folder is sent as its last name only.
 - **Only this agent answers.** A frame for another agent gets no answer at all, a re sent frame is answered again and
   never runs Git twice, only the pairing lock holder answers, a draining daemon takes none, and nothing is read before
-  the agent's home folder is confirmed. The log carries sizes, never a path or a line.
+  the agent's home folder is confirmed. The log carries sizes, never a path or a line. An answer is held for a re send
+  only through the backend's own 20 s wait, and at most the newest four, so old diffs never pile up in a daemon that
+  runs for days.
 - **Declares `changes_rpc` on every host.** The backend sends a changes frame to a Claude Code pairing only while it is
   declared and only while the owner has turned the panel on for this agent; this daemon never reads that switch.
 
