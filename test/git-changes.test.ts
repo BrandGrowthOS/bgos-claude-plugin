@@ -29,7 +29,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -57,12 +57,18 @@ const ROOT = 'E:/agents/billing'
 const NOW = Date.parse('2026-09-26T10:00:00.000Z')
 const TAKEN_AT = '2026-09-26T10:00:00.000Z'
 
-/** The seven commands of spec 10.1 item 7, in order, written out whole. */
-const ARGV_TOPLEVEL = ['rev-parse', '--show-toplevel']
-const ARGV_VERIFY = ['rev-parse', '--verify', '--quiet', 'HEAD']
-const ARGV_BRANCH = ['symbolic-ref', '--quiet', '--short', 'HEAD']
-const ARGV_SHORT = ['rev-parse', '--short', 'HEAD']
+/**
+ * The seven commands of spec 10.1 item 7, in order, written out whole. Each
+ * starts with -c core.fsmonitor=false (fix round w4, F1): a hook the
+ * repository's own config names never runs, whatever the command.
+ */
+const ARGV_TOPLEVEL = ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel']
+const ARGV_VERIFY = ['-c', 'core.fsmonitor=false', 'rev-parse', '--verify', '--quiet', 'HEAD']
+const ARGV_BRANCH = ['-c', 'core.fsmonitor=false', 'symbolic-ref', '--quiet', '--short', 'HEAD']
+const ARGV_SHORT = ['-c', 'core.fsmonitor=false', 'rev-parse', '--short', 'HEAD']
 const ARGV_NUMSTAT = [
+  '-c',
+  'core.fsmonitor=false',
   '-c',
   'core.quotepath=false',
   '-c',
@@ -77,6 +83,8 @@ const ARGV_NUMSTAT = [
   '--',
 ]
 const ARGV_PATCH = [
+  '-c',
+  'core.fsmonitor=false',
   '-c',
   'core.quotepath=false',
   '-c',
@@ -93,7 +101,7 @@ const ARGV_PATCH = [
   'HEAD',
   '--',
 ]
-const ARGV_UNTRACKED = ['ls-files', '--others', '--exclude-standard', '-z']
+const ARGV_UNTRACKED = ['-c', 'core.fsmonitor=false', 'ls-files', '--others', '--exclude-standard', '-z']
 
 const NUMSTAT = '5\t2\tservices/export.py\0-\t-\tassets/logo.png\0' + '1\t1\t\0src/old.ts\0src/new.ts\0'
 const PATCH = [
@@ -438,6 +446,36 @@ test("asks Git for its short submodule format on the patch, whatever the host's 
   )
   const at = patch.args.indexOf('--submodule=short')
   assert.ok(at > patch.args.indexOf('diff') && at < patch.args.indexOf('HEAD'), 'an option of the diff, before HEAD')
+})
+
+test('every Git command turns off an fsmonitor hook the repository names, before its subcommand', async () => {
+  // Fix round w4 (F1). core.fsmonitor in the agent's own repository config
+  // names a program Git runs whenever it reads the index: both diffs and
+  // ls-files ran it on Git 2.55 (the four small commands did not, measured).
+  // The agent writes that config, so the owner's panel would run what the
+  // agent picked. A -c on the command line wins over the repository's config.
+  // Every command is answered whatever its argv here, so this fails on the
+  // flag, not on a fixture that no longer matches.
+  const reply = (args: readonly string[]): Reply => {
+    if (args.includes('--show-toplevel')) return ok(ROOT + '\n')
+    if (args.includes('--verify')) return ok('0123456789abcdef0123456789abcdef01234567\n')
+    if (args.includes('symbolic-ref')) return ok('main\n')
+    if (args.includes('--short')) return ok('0123456\n')
+    if (args.includes('--numstat')) return ok(NUMSTAT)
+    if (args.includes('--no-color')) return ok(PATCH)
+    if (args.includes('ls-files')) return ok('')
+    return { code: 129 }
+  }
+  const { calls } = await collect({ reply })
+  assert.equal(calls.length, 7, 'all seven commands ran')
+  for (const c of calls) {
+    // Git's own options come before the subcommand: the first word that is
+    // neither an option nor the value of a -c.
+    const sub = c.args.findIndex((a, i) => !a.startsWith('-') && c.args[i - 1] !== '-c')
+    const globals = c.args.slice(0, sub)
+    const at = globals.indexOf('core.fsmonitor=false')
+    assert.ok(at > 0 && globals[at - 1] === '-c', `git ${c.args.join(' ')} lets the repository's fsmonitor hook run`)
+  }
 })
 
 const WRITING_COMMANDS = [
@@ -1050,7 +1088,52 @@ for (const setting of ['log', 'diff']) {
   })
 }
 
-test('real Git: a git planted in the folder Git runs in is never the one that runs', { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+test("real Git: an fsmonitor hook the repository's own config names never runs", { skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
+  // Fix round w4 (F1), against real Git. The hook writes a marker file
+  // outside the repository; if it ran, the marker is there.
+  const s = scratchRepo()
+  try {
+    s.git('init', '-q', '-b', 'main')
+    writeFileSync(join(s.repo, 'a.txt'), 'one\n')
+    s.commitAll()
+    writeFileSync(join(s.repo, 'a.txt'), 'two\n')
+    writeFileSync(join(s.repo, 'new.md'), 'hello\n')
+    const fwd = (p: string) => p.replace(/\\/g, '/')
+    const marker = join(s.base, 'fsmonitor-ran.txt')
+    const hook = join(s.base, 'fsmonitor-hook.sh')
+    writeFileSync(hook, `#!/bin/sh\necho ran >> '${fwd(marker)}'\nexit 1\n`)
+    chmodSync(hook, 0o755)
+    s.git('config', 'core.fsmonitor', fwd(hook))
+    // The control, so this case can fail: each command that reads the index,
+    // WITHOUT the flag, under the collector's own variables, runs the hook.
+    const withoutFlag = (argv: readonly string[]) => {
+      const at = argv.indexOf('core.fsmonitor=false')
+      return [...argv.slice(0, at - 1), ...argv.slice(at + 1)]
+    }
+    for (const argv of [ARGV_NUMSTAT, ARGV_PATCH, ARGV_UNTRACKED]) {
+      rmSync(marker, { force: true })
+      const control = spawnSync('git', withoutFlag(argv), {
+        cwd: s.repo,
+        env: { ...s.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' } as NodeJS.ProcessEnv,
+        encoding: 'utf8',
+      })
+      assert.equal(control.status, 0, control.stderr)
+      assert.ok(existsSync(marker), `the control ran the hook: git ${withoutFlag(argv).join(' ')}`)
+    }
+    rmSync(marker, { force: true })
+    const result = await s.read(s.repo)
+    assert.equal(existsSync(marker), false, `the hook ran during the read: ${existsSync(marker) ? readFileSync(marker, 'utf8') : ''}`)
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.payload.state, 'ok')
+    assert.equal(result.payload.numstat, '1\t1\ta.txt\x00')
+    assert.equal(result.payload.untracked, 'new.md\x00')
+  } finally {
+    s.remove(t)
+  }
+})
+
+test('real Git: a git planted in the folder Git runs in is never the one that runs',{ skip: !HAS_GIT, timeout: 120_000 }, async (t) => {
   // Review round 1 (D-R2), against the real node adapter and its real PATH
   // lookup. The planted binary is harmless (whoami on Windows, a script that
   // exits 3 elsewhere); if it ran, the first command would fail.

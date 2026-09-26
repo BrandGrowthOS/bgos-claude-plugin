@@ -19,6 +19,10 @@
  *    GIT_OPTIONAL_LOCKS=0 covers every other optional lock. The agent may be
  *    mid edit in this very folder; the panel must never be the thing that
  *    races it for the index lock.
+ *  - NO FSMONITOR HOOK. core.fsmonitor in the repository's own config names
+ *    a program Git runs when it reads the index; every command here turns it
+ *    off on the command line (fix round w4, F1), so a panel read never runs a
+ *    program the agent picked.
  *  - THE FOLDER IT IS GIVEN. The first command runs in the working folder and
  *    prints the repository root; every later command runs in that ROOT, so
  *    the tracked paths (Git prints them root relative) and the untracked names
@@ -394,11 +398,22 @@ export const CHANGES_TOO_SLOW_MESSAGE = 'reading the changes took longer than th
 // "diff --git a/<path> b/<path>" section whose two lines are the old and the
 // new "Subproject commit" (lane C's review, C-R3, measured on Git 2.55).
 // numstat is one "1 1 <path>" record under every setting, so it needs none.
-const GIT_TOPLEVEL = ['rev-parse', '--show-toplevel']
-const GIT_VERIFY_HEAD = ['rev-parse', '--verify', '--quiet', 'HEAD']
-const GIT_BRANCH = ['symbolic-ref', '--quiet', '--short', 'HEAD']
-const GIT_SHORT_HEAD = ['rev-parse', '--short', 'HEAD']
+//
+// And every command starts with -c core.fsmonitor=false. core.fsmonitor in
+// the repository's own config names a program Git runs each time it reads
+// the index: both diffs and ls-files ran it, twice each, on Git 2.55 (fix
+// round w4, F1, measured; the four small commands did not). The agent writes
+// that config, so without the flag each panel read would run a program the
+// agent picked, as the owner, outside the agent's own permission prompts. A
+// -c on the command line wins over every config file. The small commands
+// carry it too, so the rule is one line: no command here runs that hook.
+const NO_FSMONITOR = ['-c', 'core.fsmonitor=false']
+const GIT_TOPLEVEL = [...NO_FSMONITOR, 'rev-parse', '--show-toplevel']
+const GIT_VERIFY_HEAD = [...NO_FSMONITOR, 'rev-parse', '--verify', '--quiet', 'HEAD']
+const GIT_BRANCH = [...NO_FSMONITOR, 'symbolic-ref', '--quiet', '--short', 'HEAD']
+const GIT_SHORT_HEAD = [...NO_FSMONITOR, 'rev-parse', '--short', 'HEAD']
 const GIT_NUMSTAT = [
+  ...NO_FSMONITOR,
   '-c',
   'core.quotepath=false',
   '-c',
@@ -413,6 +428,7 @@ const GIT_NUMSTAT = [
   '--',
 ]
 const GIT_PATCH = [
+  ...NO_FSMONITOR,
   '-c',
   'core.quotepath=false',
   '-c',
@@ -429,7 +445,7 @@ const GIT_PATCH = [
   'HEAD',
   '--',
 ]
-const GIT_UNTRACKED = ['ls-files', '--others', '--exclude-standard', '-z']
+const GIT_UNTRACKED = [...NO_FSMONITOR, 'ls-files', '--others', '--exclude-standard', '-z']
 
 /** Variables that would make Git read another repository whatever cwd says. */
 const REPOSITORY_OVERRIDES = [
