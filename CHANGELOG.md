@@ -17,9 +17,23 @@ folder (lib/changes-rpc.ts over lib/git-changes.ts).
   and `ls-files`, run with `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on
   Git 2.55, a file touched but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off,
   which would race the agent's own `git add` for the index lock.
-- **No fsmonitor hook runs.** Every Git command turns `core.fsmonitor` off on its command line. The repository's own
-  config can point that setting at a program, and measured on Git 2.55 both diffs and `ls-files` ran it, so each panel
-  read would have run a program the agent picked, as the owner.
+- **No fsmonitor hook runs, on Git 2.36 or later.** Every Git command turns `core.fsmonitor` off on its command line.
+  The repository's own config can point that setting at a program, and measured on Git 2.55 both diffs and `ls-files`
+  ran it, so each panel read would have run that program, which the agent picked, as the owner. Before Git 2.36 the
+  same `core.fsmonitor=false` is read as the path of a program to run, so the daemon reads `git version` once for each
+  Git it finds, and an older Git, or a version it cannot read, is refused with "Git 2.36 or later is needed to read
+  changes safely" before any other command runs.
+- **No fetch from a partial clone.** Every Git command runs with `GIT_NO_LAZY_FETCH=1`, so a read that needs an object a
+  partial clone left out fails instead of asking the promisor remote for it, a fetch that runs the programs the
+  repository's config names and can wait on the network (measured on Git 2.55: the numstat ran the upload-pack program
+  a clone's config named). The variable, not the `--no-lazy-fetch` flag an older Git rejects. The variable came with
+  that flag in Git 2.45 (Git's own release notes for 2.45.0 name the flag; no older Git was run here), so a Git from
+  2.36 to 2.44 passes the floor but ignores it.
+- **One program still runs: a clean filter.** A clean filter the repository's own config and attributes name still
+  runs on the two diffs; no flag here stops it. This is an accepted limit: it needs the repository's local config,
+  which no clone carries, and this daemon runs as the same user with the same reach as the agent. Unlike the fsmonitor
+  there is no one switch for it (filter names are free), and reading attributes from an empty tree needs Git 2.40 and
+  does not cover `.git/info/attributes`.
 - **Git's own `a/` and `b/` prefixes**, asked for on the patch, so a host whose Git config sets
   `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix` or `diff.dstPrefix` still reads right.
 - **A moved submodule is one section of its own.** The patch asks for Git's short submodule format too, so a host
@@ -29,7 +43,10 @@ folder (lib/changes-rpc.ts over lib/git-changes.ts).
   folder and every later one runs in that root, so tracked and untracked paths agree from a subfolder too. Variables
   that would point Git at another repository (`GIT_DIR` and its neighbours) are dropped for the call, in any spelling on
   Windows, whose names are case blind (measured: a `Git_Dir` there made Git read the other repository). A launch folder
-  that is gone is a failed read, never "Git is not installed" (Node names both the same way).
+  that is gone is a failed read, never "Git is not installed" (Node names both the same way). The repository's top
+  folder must be the launch folder or a folder above it, as the host resolves both: a `core.worktree` in the
+  repository's config that names any other folder is refused and nothing there is read (measured on Git 2.55: without
+  the check, the read went on in that folder's own repository and sent a new file from it whole).
 - **Git by its absolute path, never a git in the agent's folder.** Windows looks for a bare `git` in the working
   folder before PATH, so a `git.exe` the agent left there would have run as the owner each time the panel opened
   (measured on node 24.16 and bun 1.3.9). Git is looked up on PATH's absolute entries only and run by that path; an
