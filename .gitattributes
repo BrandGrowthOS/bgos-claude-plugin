@@ -16,3 +16,8 @@ lib/hard-floor-fixture.ts text eol=lf
 # backend/src/integrations/claude-capability-tokens.ts, pinned by sha256 on
 # both sides, so it must not pick up CRLF on a Windows checkout.
 lib/claude-capability-tokens.ts text eol=lf
+# The session controls contract is a byte-identical copy of the BGOS source of
+# truth (backend/src/integrations/session-controls-contract.ts), pinned by
+# sha256 in test/session-controls-contract.pin.test.ts, so it must not pick up
+# CRLF on a Windows checkout either.
+lib/session-controls-contract.ts text eol=lf

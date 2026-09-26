@@ -34,6 +34,15 @@ import {
   type VoiceRpcFrame,
   type VoiceRpcResultBody,
 } from '../lib/voice-rpc.ts'
+import {
+  LIST_SESSIONS,
+  RENAME_SESSION,
+  RESUME_SESSION,
+  SESSION_OPS,
+  SESSION_QUERY_MAX,
+  SESSIONS_LIST_MAX,
+  STOP_CONFIRMATION_COOPERATIVE,
+} from '../lib/session-controls-contract.ts'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -631,8 +640,10 @@ test('stop_turn notifies the live session, confirms in-chat, and results coopera
   assert.match(note.content, /Keep any partial results/)
   assert.equal(note.meta.event_type, 'stop_turn')
   assert.equal(note.meta.chat_id, '42')
-  // The plain confirmation rides the normal outbound send path.
-  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_TURN_CONFIRMATION }])
+  // The plain confirmation rides the normal outbound send path, and it is the
+  // contract file's cooperative line: this daemon ASKED the model to stop.
+  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_CONFIRMATION_COOPERATIVE }])
+  assert.equal(rec.sends[0]!.text, 'Asked to stop.')
   // Wire contract: {stopped:true} on success, cooperative mode declared.
   assert.deepEqual(rec.results, [
     {
@@ -707,6 +718,86 @@ test('buildStopTurnNotification names the chat and the stand-down rules', () => 
   assert.match(text, /chat 7/)
   assert.match(text, /ONE short reply line/)
   assert.match(text, /other chats is unaffected/)
+})
+
+// P6 stage 3 (C-32, spec 4.3 and D13 items 1 and 2). Claude Code has
+// create_mission and complete_mission and no fail tool, so a Stop cannot fail
+// a mission here; the risk is a WRONG DONE, a model that reads "stop" and
+// closes the chat's open mission on its way out. The notice says not to.
+
+/** The one sentence the notice gains, word for word (spec 4.3). */
+const STOP_MISSION_SENTENCE =
+  'If that chat has an open mission, leave it open: do not call complete_mission ' +
+  'for it because of this stop. Your owner can resume.'
+
+test('the stop notice tells the model to leave the chat open mission open, and not to complete it', () => {
+  const text = buildStopTurnNotification({ chatId: '7' })
+  assert.ok(
+    text.includes(STOP_MISSION_SENTENCE),
+    'the [stop_turn] notice must carry the complete_mission sentence of spec 4.3',
+  )
+  // Added, not swapped: every stand-down rule the model already follows stays.
+  assert.match(text, /do not start any new tool calls/)
+  assert.match(text, /Keep any partial results/)
+  // Rule 3 of lib/mission-events.ts: nothing that reaches the model carries an
+  // em or en dash (escaped here so this file carries neither).
+  assert.doesNotMatch(text, new RegExp('[\\u2013\\u2014]'))
+})
+
+test('the delivered stop notice is the one that carries the sentence', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.equal(rec.notifications.length, 1)
+  assert.ok(rec.notifications[0]!.content.includes(STOP_MISSION_SENTENCE))
+  assert.ok(rec.notifications[0]!.content.includes('chat 42'))
+})
+
+// P6 stage 3 (spec 4.3, D13 item 3): the armed goal case hangs off a stop that
+// REACHED the model, and off nothing else. server.ts passes onStopDelivered;
+// lib/stop-pause.ts decides what, if anything, is paused.
+
+test('a delivered stop hands its chat to onStopDelivered, once', async () => {
+  const { deps, rec } = makeDeps({})
+  const handed: string[] = []
+  deps.onStopDelivered = (chatId) => {
+    handed.push(chatId)
+  }
+  await new VoiceRpcHandler(deps).handle(stopFrame({ chatId: 42 }))
+  assert.deepEqual(handed, ['42'])
+  assert.deepEqual(rec.results[0]!.body.payload, { stopped: true, mode: 'cooperative' })
+})
+
+test('a stop that never reached the model hands nothing on', async () => {
+  for (const over of [{ notifyFails: true }, {}] as const) {
+    const { deps } = makeDeps(over)
+    const handed: string[] = []
+    deps.onStopDelivered = (chatId) => {
+      handed.push(chatId)
+    }
+    const f = 'notifyFails' in over ? stopFrame() : stopFrame({ chatId: null })
+    await new VoiceRpcHandler(deps).handle(f)
+    assert.deepEqual(handed, [], 'an undelivered or unscoped stop must not pause anything')
+  }
+})
+
+test('a hook that throws never flips a delivered stop, and the confirmation still goes', async () => {
+  const { deps, rec } = makeDeps({})
+  deps.onStopDelivered = () => {
+    throw new Error('lane exploded')
+  }
+  await new VoiceRpcHandler(deps).handle(stopFrame())
+  assert.deepEqual(rec.sends, [{ chatId: '42', text: STOP_CONFIRMATION_COOPERATIVE }])
+  assert.deepEqual(rec.results[0]!.body.payload, { stopped: true, mode: 'cooperative' })
+})
+
+test('the stop confirmation is the contract file cooperative line, Asked to stop.', () => {
+  // Posted the moment the notice is delivered, before the model has stood
+  // down, so it may claim the asking and nothing more (spec D7). The words
+  // come from lib/session-controls-contract.ts, the file BGOS and Codex pin
+  // too, so the canon's mirror and this daemon cannot say different things.
+  assert.equal(STOP_TURN_CONFIRMATION, STOP_CONFIRMATION_COOPERATIVE)
+  assert.equal(STOP_TURN_CONFIRMATION, 'Asked to stop.')
+  assert.notEqual(STOP_TURN_CONFIRMATION, 'Run stopped at your request.')
 })
 
 // ── dedupe + unsupported ops ─────────────────────────────────────────────────
@@ -1143,4 +1234,192 @@ test('a dispatch with no brief anywhere is refused as BAD_DISPATCH, never delive
   assert.equal(rec.results[0]!.body.ok, false)
   assert.equal(rec.results[0]!.body.error!.code, 'BAD_DISPATCH')
   assert.match(String(rec.results[0]!.body.error!.message ?? ''), /empty brief/)
+})
+
+// ── Sessions ops (P6 stage 3, C-32, spec 5.7: Claude Code lists, list only) ──
+//
+// The app's Sessions sheet asks this daemon for the sessions in the agent's
+// own folder. Resume and rename are a later slice (D20): the answer says so
+// with the contract's `unsupported`, and the list says so up front with
+// abilities {resume:false, rename:false}, so the sheet never offers either.
+
+function sessionFrame(over: Partial<VoiceRpcFrame> & { op: string }): VoiceRpcFrame {
+  return frame({ rpcId: 'rpc-s1', chatId: '12', payload: { limit: 50 }, ...over } as Partial<VoiceRpcFrame>)
+}
+
+interface SessionListCall {
+  query?: string
+  limit: number
+}
+
+function withLibrary(
+  answer: () => { sessions: unknown[]; truncated: boolean },
+  over: Parameters<typeof makeDeps>[0] = {},
+) {
+  const made = makeDeps(over)
+  const calls: SessionListCall[] = []
+  ;(made.deps as unknown as Record<string, unknown>).listSessions = (input: SessionListCall) => {
+    calls.push(input)
+    return answer()
+  }
+  return { ...made, calls }
+}
+
+const ROWS = [
+  {
+    id: '00000001-1111-4222-8333-000000000001',
+    title: 'Launch plan',
+    preview: 'Now the budget',
+    lastActivityAt: '2026-09-25T08:00:00.000Z',
+    branch: 'main',
+    current: true,
+  },
+  {
+    id: '00000002-1111-4222-8333-000000000002',
+    title: '',
+    withheld: 'secret',
+    preview: null,
+    lastActivityAt: '2026-09-24T08:00:00.000Z',
+    branch: null,
+    current: false,
+  },
+]
+
+test('normalizeVoiceRpc admits the three Sessions ops, spelled by the contract file', () => {
+  assert.deepEqual([...SESSION_OPS], ['list_sessions', 'resume_session', 'rename_session'])
+  for (const op of SESSION_OPS) {
+    const out = normalizeVoiceRpc({ rpcId: 'r1', op, assistantId: 901, agentRoute: '', chatId: 12, payload: { limit: 50 } })
+    assert.ok(out, `${op} must pass the normalizer`)
+    assert.equal(out.op, op)
+    assert.deepEqual(out.payload, { limit: 50 })
+  }
+  assert.equal(normalizeVoiceRpc({ rpcId: 'r1', op: 'list_session' }), null)
+})
+
+test('list_sessions answers the library rows, with resume and rename off, for claude-code', async () => {
+  const { deps, rec, calls } = withLibrary(() => ({ sessions: ROWS, truncated: true }))
+  await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS }))
+  assert.deepEqual(rec.acks, ['rpc-s1'])
+  assert.equal(rec.results.length, 1)
+  assert.deepEqual(rec.results[0]!.body, {
+    ok: true,
+    payload: {
+      sessions: ROWS,
+      abilities: { resume: false, rename: false },
+      truncated: true,
+      runtime: 'claude-code',
+    },
+  })
+  assert.deepEqual(calls, [{ query: undefined, limit: 50 }])
+  assert.equal(rec.notifications.length, 0, 'listing never reaches the live session')
+  assert.equal(rec.sends.length, 0, 'listing never posts into the chat')
+})
+
+test('list_sessions passes a trimmed query, and a limit no higher than 50', async () => {
+  const cases: Array<[Record<string, unknown>, SessionListCall]> = [
+    [{ query: '  launch ', limit: 20 }, { query: 'launch', limit: 20 }],
+    [{ query: '', limit: 50 }, { query: undefined, limit: 50 }],
+    [{ query: null }, { query: undefined, limit: SESSIONS_LIST_MAX }],
+    [{ limit: 500 }, { query: undefined, limit: SESSIONS_LIST_MAX }],
+    [{ limit: 0 }, { query: undefined, limit: SESSIONS_LIST_MAX }],
+    [{ limit: 'ten' }, { query: undefined, limit: SESSIONS_LIST_MAX }],
+    [{ limit: 7.5 }, { query: undefined, limit: SESSIONS_LIST_MAX }],
+  ]
+  for (const [payload, expected] of cases) {
+    const { deps, rec, calls } = withLibrary(() => ({ sessions: [], truncated: false }))
+    await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS, payload }))
+    assert.equal(rec.results[0]!.body.ok, true, JSON.stringify(payload))
+    assert.deepEqual(calls, [expected], JSON.stringify(payload))
+  }
+})
+
+test('list_sessions refuses a search that is not text or is too long, as invalid, and reads nothing', async () => {
+  for (const query of [42, { q: 'x' }, 'x'.repeat(SESSION_QUERY_MAX + 1)]) {
+    const { deps, rec, calls } = withLibrary(() => ({ sessions: ROWS, truncated: false }))
+    await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS, payload: { query, limit: 50 } }))
+    assert.equal(rec.results[0]!.body.ok, false)
+    assert.equal(rec.results[0]!.body.error!.code, 'invalid')
+    assert.equal(calls.length, 0)
+  }
+  // Exactly the maximum, counted in characters, is fine.
+  const { deps, rec } = withLibrary(() => ({ sessions: [], truncated: false }))
+  await new VoiceRpcHandler(deps).handle(
+    sessionFrame({ op: LIST_SESSIONS, payload: { query: '\u{1F600}'.repeat(SESSION_QUERY_MAX), limit: 50 } }),
+  )
+  assert.equal(rec.results[0]!.body.ok, true)
+})
+
+test('list_sessions for an assistant this daemon does not serve is refused as invalid', async () => {
+  const { deps, rec, calls } = withLibrary(() => ({ sessions: ROWS, truncated: false }))
+  await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS, assistantId: 902 }))
+  assert.equal(rec.results[0]!.body.ok, false)
+  assert.equal(rec.results[0]!.body.error!.code, 'invalid')
+  assert.equal(calls.length, 0)
+
+  // The backend sends the id as a number; this daemon keeps it as a string.
+  const same = withLibrary(() => ({ sessions: [], truncated: false }))
+  await new VoiceRpcHandler(same.deps).handle(sessionFrame({ op: LIST_SESSIONS, assistantId: 901 }))
+  assert.equal(same.rec.results[0]!.body.ok, true)
+})
+
+test('a library that throws answers failed, with its words, never PLUGIN_ERROR', async () => {
+  const { deps, rec } = withLibrary(() => {
+    throw new Error('EACCES: the agent folder could not be read')
+  })
+  await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS }))
+  assert.equal(rec.results[0]!.body.ok, false)
+  assert.equal(rec.results[0]!.body.error!.code, 'failed')
+  assert.match(rec.results[0]!.body.error!.message, /EACCES/)
+})
+
+test('list_sessions with no library wired answers failed, never an empty list', async () => {
+  const { deps, rec } = makeDeps({})
+  await new VoiceRpcHandler(deps).handle(sessionFrame({ op: LIST_SESSIONS }))
+  assert.equal(rec.results[0]!.body.ok, false)
+  assert.equal(rec.results[0]!.body.error!.code, 'failed')
+})
+
+test('resume_session and rename_session answer unsupported, and touch nothing', async () => {
+  for (const [op, payload] of [
+    [RESUME_SESSION, { sessionId: ROWS[0]!.id }],
+    [RENAME_SESSION, { sessionId: ROWS[0]!.id, title: 'New name' }],
+  ] as const) {
+    const { deps, rec, calls } = withLibrary(() => ({ sessions: ROWS, truncated: false }))
+    await new VoiceRpcHandler(deps).handle(sessionFrame({ op, rpcId: `rpc-${op}`, payload }))
+    assert.deepEqual(rec.acks, [`rpc-${op}`])
+    assert.equal(rec.results.length, 1)
+    assert.equal(rec.results[0]!.body.ok, false)
+    assert.equal(rec.results[0]!.body.error!.code, 'unsupported')
+    assert.match(rec.results[0]!.body.error!.message, /later update/)
+    assert.doesNotMatch(rec.results[0]!.body.error!.message, /[\u2013\u2014]/)
+    assert.equal(calls.length, 0)
+    assert.equal(rec.notifications.length, 0)
+    assert.equal(rec.sends.length, 0)
+  }
+})
+
+test('a Sessions frame delivered twice runs once, even after the first has answered (the rpcId dedupe)', async () => {
+  const { deps, rec, calls } = withLibrary(() => ({ sessions: ROWS, truncated: false }))
+  const handler = new VoiceRpcHandler(deps)
+  // The backend re-emits once at 1.5 s when the ACK has not landed; by then
+  // a fast list has already answered, so the in flight guard alone is not
+  // enough.
+  await handler.handle(sessionFrame({ op: LIST_SESSIONS }))
+  await handler.handle(sessionFrame({ op: LIST_SESSIONS }))
+  // And the two arriving together.
+  await Promise.all([
+    handler.handle(sessionFrame({ op: LIST_SESSIONS, rpcId: 'rpc-s2' })),
+    handler.handle(sessionFrame({ op: LIST_SESSIONS, rpcId: 'rpc-s2' })),
+  ])
+  assert.equal(calls.length, 2)
+  assert.deepEqual(
+    rec.results.map((r) => r.rpcId),
+    ['rpc-s1', 'rpc-s2'],
+  )
+
+  const refused = withLibrary(() => ({ sessions: [], truncated: false }))
+  const again = new VoiceRpcHandler(refused.deps)
+  await again.handle(sessionFrame({ op: RESUME_SESSION, rpcId: 'rpc-r1', payload: { sessionId: ROWS[0]!.id } }))
+  await again.handle(sessionFrame({ op: RESUME_SESSION, rpcId: 'rpc-r1', payload: { sessionId: ROWS[0]!.id } }))
+  assert.equal(refused.rec.results.length, 1)
 })

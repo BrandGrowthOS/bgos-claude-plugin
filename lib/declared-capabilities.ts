@@ -104,6 +104,30 @@
  *                       it into a settings file the CLI reads, so the daemon
  *                       looks at boot (lib/floor-hook-presence.ts) and does
  *                       not declare a stop its session cannot make.
+ *   stop_pauses_mission an owner Stop pauses the chat's open mission with the
+ *                       reason "Stopped by you" instead of letting it run on,
+ *                       and the owner's next message there resumes it (P6
+ *                       stage 3). ONLY where the injector answers, beside
+ *                       mission_pause and for the same reason: the pause is
+ *                       what clears a Keep working goal whose own Stop hook
+ *                       would otherwise re prompt the model after it stood
+ *                       down (lib/stop-pause.ts, gated on mission_pause being
+ *                       declared on the same beat). BGOS serves the sentence
+ *                       that tells the agent so only to a daemon declaring
+ *                       it, so the token ships with the code that keeps it.
+ *                       Spelled by lib/session-controls-contract.ts, the file
+ *                       BGOS and codex-channel-bgos pin too.
+ *   sessions_library    the owner can find this agent's sessions from the
+ *                       app's Sessions sheet: the list_sessions op answers
+ *                       the sessions in the agent's own folder, titles and
+ *                       previews that hold a secret withheld on this machine
+ *                       (lib/session-library.ts, P6 stage 3). Every host:
+ *                       it is a read of the agent folder and needs no tmux.
+ *                       It promises the LIST only. Resume and rename are a
+ *                       later slice and answer unsupported, and the list's
+ *                       own abilities {resume:false, rename:false} say so,
+ *                       so the sheet never offers either. Spelled by the
+ *                       same contract file.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -122,6 +146,7 @@
  */
 
 import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -130,6 +155,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
+  SESSIONS_LIBRARY,
 ])
 
 /**
@@ -155,6 +181,7 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
   'mission_pause',
+  STOP_PAUSES_MISSION,
 ])
 
 /**

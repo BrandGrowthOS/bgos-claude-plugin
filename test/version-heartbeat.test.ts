@@ -379,7 +379,10 @@ describe('declared capabilities on the heartbeat', () => {
     // the current turn. It is host shaped, so the beat carries a different
     // answer on a machine that cannot type into its own session, and the
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
-    // upgrade starts declaring without a restart.
+    // upgrade starts declaring without a restart. stop_pauses_mission (P6
+    // stage 3) rides with mission_pause: the Stop pause it promises is the
+    // same goal clear, so it is host shaped too. sessions_library (P6 stage
+    // 3) is a read of the agent folder, so every host declares it.
     // permission_card (0.49.0) rides every beat on every host: the relay
     // speaks the channel's own permission notification, which has no
     // platform limit. plan_card (0.50.0) likewise: propose_plan is a typed
@@ -394,9 +397,11 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'sessions_library',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
+      'stop_pauses_mission',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
@@ -404,6 +409,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'sessions_library',
       'hard_floor',
     ])
   })
