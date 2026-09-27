@@ -110,6 +110,17 @@
  *                       host: every host can read and write its own memory
  *                       folder. The backend sends a memory frame to a Claude
  *                       Code pairing only while this is declared (P7 stage 2).
+ *   boards_playbook     this daemon's boards_update_schema tool can describe
+ *                       what each column of a workflow select means (the
+ *                       set_column_lines op, 0.56.0), and it checks the
+ *                       server's echo, so a server that cannot store a line
+ *                       is reported as one. Every host: it is a typed tool
+ *                       argument and has no platform limit. The backend
+ *                       serves the canon's column lines sentence only to a
+ *                       connection that declares this token, on its
+ *                       heartbeat or on the capabilities fetch itself
+ *                       (lib/capabilities.ts, capabilitiesFetchPath), so an
+ *                       agent is never told about a tool it does not have.
  *   changes_rpc         this daemon answers the owner's Changes panel: the
  *                       agent's uncommitted changes, read with read only Git
  *                       in its launch folder (lib/changes-rpc.ts over
@@ -145,6 +156,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   PERMISSION_CARD,
   PLAN_CARD,
   'memory_rpc',
+  'boards_playbook',
   'changes_rpc',
 ])
 
