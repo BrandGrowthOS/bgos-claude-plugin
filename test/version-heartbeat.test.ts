@@ -394,6 +394,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'memory_rpc',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -404,6 +405,7 @@ describe('declared capabilities on the heartbeat', () => {
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'memory_rpc',
       'hard_floor',
     ])
   })
