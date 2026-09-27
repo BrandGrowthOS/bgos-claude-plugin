@@ -231,6 +231,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'mission_set_goals',
     'permission_card',
     'plan_card',
+    'memory_rpc',
     'boards_playbook',
     'boards_playbook_does',
     'hard_floor',

@@ -1,0 +1,1227 @@
+/**
+ * The Claude Code auto memory store behind memory_rpc (HOAI P7 stage 2, C-39).
+ *
+ * An owner changes this agent's memory from the app, and the daemon edits the
+ * SAME folder the CLI reads at the agent's next start. Two things make that
+ * dangerous, and most of this file is about them:
+ *
+ * 1. The wrong folder looks exactly like the right one. The CLI keys the folder
+ *    by the git root of the agent folder (a worktree shares the main
+ *    repository's), lets a setting move it, and creates it at every session
+ *    start. So the store finds it by the CLI's own rule, never creates it, and
+ *    refuses rather than guesses.
+ * 2. The model and the CLI write the same folder while we do. Every write goes
+ *    through a temp file and a rename, the index is compared right before it is
+ *    replaced, and whatever we take away is kept in a trash OUTSIDE the memory
+ *    folder so an Undo brings the whole note back.
+ *
+ * Everything runs over the in memory fs in test/helpers/memory-fs.ts; one test
+ * at the end drives the node adapter over a real temporary folder.
+ */
+
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { memoryFs, type MemoryFs as TestFs } from './helpers/memory-fs.ts'
+import {
+  createClaudeMemoryStore,
+  mungeMemoryKey,
+  nodeMemoryFs,
+  parseMemoryIndexLine,
+  resolveMemoryFolder,
+  type MemoryFolderAnswer,
+} from '../lib/memory.ts'
+
+const CFG = '/cfg'
+const HOME = '/home/k'
+const AGENT = '/home/k/agent'
+const MEM = '/cfg/projects/-home-k-agent/memory'
+const INDEX = `${MEM}/MEMORY.md`
+const TRASH = '/state/701/memory-trash'
+const NOW = Date.parse('2026-09-25T10:00:00.000Z')
+const EM = '\u2014'
+const EN = '\u2013'
+
+/** A topic file in the CLI's own shape: nested metadata with the type. */
+function note(name: string, type: string, body: string): string {
+  return `---\nname: ${name}\ndescription: ${body}\nmetadata:\n  type: ${type}\n---\n\n${body}\n`
+}
+
+/** The fs the store sees, with every write, rename, removal and mkdir logged in order. */
+function harness(initial: Record<string, string> = {}, dirs: string[] = [MEM]) {
+  const raw = memoryFs(initial, dirs)
+  const log: string[] = []
+  const fs: TestFs = {
+    ...raw,
+    writeFile: (p, t, o) => {
+      log.push(`write ${p}`)
+      raw.writeFile(p, t, o)
+    },
+    rename: (a, b) => {
+      log.push(`rename ${a} -> ${b}`)
+      raw.rename(a, b)
+    },
+    rm: (p) => {
+      log.push(`rm ${p}`)
+      raw.rm(p)
+    },
+    mkdir: (p) => {
+      log.push(`mkdir ${p}`)
+      raw.mkdir(p)
+    },
+  }
+  return { fs, raw, log }
+}
+
+function storeOver(fs: TestFs, resolve?: () => MemoryFolderAnswer) {
+  return createClaudeMemoryStore({
+    fs,
+    resolve: resolve ?? (() => ({ ok: true, memDir: MEM })),
+    trashDir: TRASH,
+    now: () => NOW,
+  })
+}
+
+function texts(answer: any, store: 'memory' | 'user'): string[] {
+  assert.equal(answer.ok, true, `expected ok, got ${JSON.stringify(answer)}`)
+  return answer.stores[store].entries.map((e: { text: string }) => e.text)
+}
+
+function trashNames(raw: TestFs): string[] {
+  return raw.listDir(TRASH).filter((n) => n.endsWith('.json'))
+}
+
+function filesUnder(raw: TestFs, dir: string): string[] {
+  return [...raw.files.keys()].filter((k) => k.startsWith(dir + '/')).sort()
+}
+
+// ── Which folder ─────────────────────────────────────────────────────────────
+
+test('a plain folder: every character that is not a letter or digit becomes a hyphen', () => {
+  const fs = memoryFs({}, ['/cfg/projects/-home-k-agent-f-1-v-2/memory'])
+  assert.deepEqual(
+    resolveMemoryFolder({ fs, agentDir: '/home/k/agent f_1.v 2', configDir: CFG, home: HOME, env: {} }),
+    { ok: true, memDir: '/cfg/projects/-home-k-agent-f-1-v-2/memory' },
+  )
+  assert.equal(mungeMemoryKey('/home/k/agent f_1.v 2'), '-home-k-agent-f-1-v-2')
+  assert.equal(mungeMemoryKey('C:\\Users\\k\\agent'), 'C--Users-k-agent')
+  // A Windows host joins with its own separator, so the folder the CLI made is the one found.
+  const win = memoryFs({}, ['C:\\Users\\k\\.claude\\projects\\C--Users-k-agent\\memory'])
+  assert.deepEqual(
+    resolveMemoryFolder({
+      fs: win,
+      agentDir: 'C:\\Users\\k\\agent',
+      configDir: 'C:\\Users\\k\\.claude',
+      home: 'C:\\Users\\k',
+      env: {},
+    }),
+    { ok: true, memDir: 'C:\\Users\\k\\.claude\\projects\\C--Users-k-agent\\memory' },
+  )
+})
+
+test("a subfolder of a git repository uses the repository's root", () => {
+  const fs = memoryFs({}, ['/r/.git', '/r/sub', '/cfg/projects/-r/memory', '/cfg/projects/-r-sub/memory'])
+  assert.deepEqual(
+    resolveMemoryFolder({ fs, agentDir: '/r/sub', configDir: CFG, home: HOME, env: {} }),
+    { ok: true, memDir: '/cfg/projects/-r/memory' },
+  )
+})
+
+test('a git worktree uses the main repository', () => {
+  const fs = memoryFs(
+    {
+      '/w/.git': 'gitdir: /r/.git/worktrees/w\n',
+      '/r/.git/worktrees/w/commondir': '../..\n',
+      // The back link git writes for a worktree, which the CLI checks (review fix P1).
+      '/r/.git/worktrees/w/gitdir': '/w/.git\n',
+      // A relative gitdir, the way some tools write it.
+      '/w2/.git': 'gitdir: ../r/.git/worktrees/w2\n',
+      '/r/.git/worktrees/w2/commondir': '../..\n',
+      '/r/.git/worktrees/w2/gitdir': '/w2/.git\n',
+      // A submodule: a .git FILE with no commondir is its own repository.
+      '/s/.git': 'gitdir: /r/.git/modules/s\n',
+      '/r/.git/HEAD': 'ref: refs/heads/main\n',
+    },
+    ['/cfg/projects/-r/memory', '/cfg/projects/-w/memory', '/cfg/projects/-w2/memory', '/cfg/projects/-s/memory'],
+  )
+  const at = (agentDir: string) => resolveMemoryFolder({ fs, agentDir, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at('/w'), { ok: true, memDir: '/cfg/projects/-r/memory' })
+  assert.deepEqual(at('/w2'), { ok: true, memDir: '/cfg/projects/-r/memory' })
+  assert.deepEqual(at('/s'), { ok: true, memDir: '/cfg/projects/-s/memory' })
+})
+
+// Review fix P1 (P7 stage 2 review): the CLI's own root function (2.1.282)
+// trusts a worktree only when its git dir sits in <common>/worktrees and its
+// gitdir back link points at this folder's .git; otherwise it keys by the
+// worktree itself. A bare common dir (not named .git) is itself the key.
+test('a worktree the CLI cannot confirm keys by itself, as the CLI does', () => {
+  const fs = memoryFs(
+    {
+      // No back link at all.
+      '/w/.git': 'gitdir: /r/.git/worktrees/w\n',
+      '/r/.git/worktrees/w/commondir': '../..\n',
+      // A stale back link: the worktree was moved with a plain mv.
+      '/moved/.git': 'gitdir: /r/.git/worktrees/moved\n',
+      '/r/.git/worktrees/moved/commondir': '../..\n',
+      '/r/.git/worktrees/moved/gitdir': '/old/.git\n',
+      // A git dir outside <common>/worktrees.
+      '/w3/.git': 'gitdir: /elsewhere/wt\n',
+      '/elsewhere/wt/commondir': '/r/.git\n',
+      '/elsewhere/wt/gitdir': '/w3/.git\n',
+      '/r/.git/HEAD': 'ref: refs/heads/main\n',
+    },
+    [
+      '/cfg/projects/-r/memory',
+      '/cfg/projects/-w/memory',
+      '/cfg/projects/-moved/memory',
+      '/cfg/projects/-w3/memory',
+    ],
+  )
+  const at = (agentDir: string) => resolveMemoryFolder({ fs, agentDir, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at('/w'), { ok: true, memDir: '/cfg/projects/-w/memory' })
+  assert.deepEqual(at('/moved'), { ok: true, memDir: '/cfg/projects/-moved/memory' })
+  assert.deepEqual(at('/w3'), { ok: true, memDir: '/cfg/projects/-w3/memory' })
+})
+
+test('a worktree of a bare repository keys by the bare folder, as the CLI does', () => {
+  const fs = memoryFs(
+    {
+      '/p/main/.git': 'gitdir: /p/.bare/worktrees/main\n',
+      '/p/.bare/worktrees/main/commondir': '../..\n',
+      '/p/.bare/worktrees/main/gitdir': '/p/main/.git\n',
+      '/p/.bare/HEAD': 'ref: refs/heads/main\n',
+      // A bare common that holds its own .git: the CLI keys by the worktree.
+      '/q/main/.git': 'gitdir: /q/.bare/worktrees/main\n',
+      '/q/.bare/worktrees/main/commondir': '../..\n',
+      '/q/.bare/worktrees/main/gitdir': '/q/main/.git\n',
+      '/q/.bare/.git': 'gitdir: /somewhere\n',
+    },
+    [
+      '/cfg/projects/-p/memory',
+      '/cfg/projects/-p--bare/memory',
+      '/cfg/projects/-p-main/memory',
+      '/cfg/projects/-q/memory',
+      '/cfg/projects/-q--bare/memory',
+      '/cfg/projects/-q-main/memory',
+    ],
+  )
+  const at = (agentDir: string) => resolveMemoryFolder({ fs, agentDir, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at('/p/main'), { ok: true, memDir: '/cfg/projects/-p--bare/memory' })
+  assert.deepEqual(at('/q/main'), { ok: true, memDir: '/cfg/projects/-q-main/memory' })
+})
+
+test('the memory folder setting wins, local before project before user', () => {
+  const files: Record<string, string> = {
+    [`${AGENT}/.claude/settings.local.json`]: JSON.stringify({ autoMemoryDirectory: '/m/local' }),
+    [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/project' }),
+    [`${CFG}/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/user' }),
+  }
+  const dirs = ['/m/local', '/m/project', '/m/user', MEM, '/home/k/m']
+  const at = (fs: TestFs) => resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(at(memoryFs(files, dirs)), { ok: true, memDir: '/m/local' })
+  const noLocal = { ...files }
+  delete noLocal[`${AGENT}/.claude/settings.local.json`]
+  assert.deepEqual(at(memoryFs(noLocal, dirs)), { ok: true, memDir: '/m/project' })
+  const userOnly = { [`${CFG}/settings.json`]: files[`${CFG}/settings.json`] }
+  assert.deepEqual(at(memoryFs(userOnly, dirs)), { ok: true, memDir: '/m/user' })
+  // A file that does not set it passes the question on to the next one.
+  const passOn = { ...files, [`${AGENT}/.claude/settings.local.json`]: JSON.stringify({ model: 'x' }) }
+  assert.deepEqual(at(memoryFs(passOn, dirs)), { ok: true, memDir: '/m/project' })
+  const tilde = { [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: '~/m' }) }
+  assert.deepEqual(at(memoryFs(tilde, dirs)), { ok: true, memDir: '/home/k/m' })
+})
+
+test('a relative memory folder setting is refused, not guessed', () => {
+  const fs = memoryFs(
+    { [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: 'mem/here' }) },
+    [`${AGENT}/mem/here`, MEM],
+  )
+  const answer = resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} })
+  assert.equal(answer.ok, false)
+  assert.equal((answer as any).code, 'unavailable')
+  assert.equal((answer as any).message, 'the memory folder setting is not a full path')
+})
+
+// Review fix P5: the CLI takes the FIRST settings file whose value is not null
+// (an empty string included) and validates it, with no trim. The plugin
+// refuses an invalid value rather than guess (spec 10.4).
+test('the memory folder setting is read and checked the way the CLI does', () => {
+  const at = (files: Record<string, string>, dirs: string[] = []) =>
+    resolveMemoryFolder({
+      fs: memoryFs(files, ['/m/user', '/home/k/m', '/home/k', '/', '/a', MEM, ...dirs]),
+      agentDir: AGENT,
+      configDir: CFG,
+      home: HOME,
+      env: {},
+    })
+  const project = (value: unknown) => ({
+    [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: value }),
+    [`${CFG}/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/user' }),
+  })
+  const refused = { ok: false, code: 'unavailable', message: 'the memory folder setting is not a full path' }
+  // A blank left in a template stops the search: never the user's folder.
+  assert.deepEqual(at(project('')), refused)
+  // The home folder itself, and a way out of it, are refused.
+  assert.deepEqual(at(project('~/')), refused)
+  assert.deepEqual(at(project('~/..')), refused)
+  assert.deepEqual(at(project('~/../x')), refused)
+  // A Windows style home shorthand is accepted, like the CLI.
+  assert.deepEqual(at(project('~\\m')), { ok: true, memDir: '/home/k/m' })
+  // A share, a root, a bare drive and anything too short are refused.
+  assert.deepEqual(at(project('\\\\srv\\share\\m')), refused)
+  assert.deepEqual(at(project('//srv/share/m')), refused)
+  assert.deepEqual(at(project('/')), refused)
+  assert.deepEqual(at(project('C:\\')), refused)
+  assert.deepEqual(at(project('/a')), refused)
+  assert.deepEqual(at(project(5)), refused)
+  // A null is "not set": the next file decides.
+  assert.deepEqual(at(project(null)), { ok: true, memDir: '/m/user' })
+})
+
+// Review fix P6 (map part 10, 5.3): with blockReadsOutsideWorkingDirectories
+// set, a memory folder chosen by the repository's own settings is not loaded
+// by the CLI, so editing it would look right while the agent never sees it.
+test("a folder the repository chose is refused when reads outside the working folder are blocked", () => {
+  const block = JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } })
+  const { fs, raw, log } = harness(
+    {
+      [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/project' }),
+      [`${CFG}/settings.json`]: block,
+    },
+    ['/m/project', MEM],
+  )
+  const resolve = () => resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} })
+  assert.deepEqual(resolve(), {
+    ok: false,
+    code: 'unavailable',
+    message: "this agent's settings stop Claude Code from reading the memory folder its project chose",
+  })
+  const store = storeOver(fs, resolve)
+  assert.equal((store.add('memory', 'Prefers tea') as any).code, 'unavailable')
+  assert.deepEqual(log, [])
+  assert.deepEqual(filesUnder(raw, '/m/project'), [])
+  // Control: the same permission with the folder chosen by the user's own settings is read as before.
+  const userChose = memoryFs(
+    { [`${CFG}/settings.json`]: JSON.stringify({ autoMemoryDirectory: '/m/user', permissions: { blockReadsOutsideWorkingDirectories: true } }) },
+    ['/m/user', MEM],
+  )
+  assert.deepEqual(
+    resolveMemoryFolder({ fs: userChose, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }),
+    { ok: true, memDir: '/m/user' },
+  )
+})
+
+// Review fix P7: Windows Notepad saves settings.json with a byte order mark.
+// The BOM is built here with fromCharCode so no editor can drop it unseen.
+test('a settings file or a note that starts with a byte order mark still reads', () => {
+  const BOM = String.fromCharCode(0xfeff)
+  const moved = memoryFs(
+    { [`${AGENT}/.claude/settings.json`]: BOM + JSON.stringify({ autoMemoryDirectory: '/m/project' }) },
+    ['/m/project', MEM],
+  )
+  assert.deepEqual(resolveMemoryFolder({ fs: moved, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }), {
+    ok: true,
+    memDir: '/m/project',
+  })
+  const off = memoryFs({ [`${AGENT}/.claude/settings.json`]: BOM + JSON.stringify({ autoMemoryEnabled: false }) }, [MEM])
+  assert.equal((resolveMemoryFolder({ fs: off, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }) as any).code, 'memory_off')
+  const { fs } = harness({
+    [INDEX]: '- [Home](home.md) - lives in Dubai\n',
+    [`${MEM}/home.md`]: BOM + note('home', 'user', 'lives in Dubai'),
+  })
+  assert.deepEqual(texts(storeOver(fs).list(), 'user'), ['lives in Dubai'])
+})
+
+test('the config dir is the one given, never ~/.claude', () => {
+  const fs = memoryFs(
+    // The owner's own ~/.claude settings must not steer a daemon that runs on another config dir.
+    { '/home/k/.claude/settings.json': JSON.stringify({ autoMemoryDirectory: '/m/wrong' }) },
+    [MEM, '/home/k/.claude/projects/-home-k-agent/memory', '/m/wrong'],
+  )
+  assert.deepEqual(resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }), {
+    ok: true,
+    memDir: MEM,
+  })
+})
+
+test('memory turned off is said so', () => {
+  const at = (fs: TestFs, env: Record<string, string>) =>
+    resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env })
+  const plain = memoryFs({}, [MEM])
+  for (const value of ['1', 'true', 'TRUE', 'yes', 'on']) {
+    assert.deepEqual(at(plain, { CLAUDE_CODE_DISABLE_AUTO_MEMORY: value }), {
+      ok: false,
+      code: 'memory_off',
+      message: 'auto memory is turned off for this agent',
+    })
+  }
+  const projectOff = memoryFs(
+    { [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryEnabled: false }) },
+    [MEM],
+  )
+  assert.equal((at(projectOff, {}) as any).code, 'memory_off')
+  // The first file that sets it decides: local turns it back on over the project.
+  const localOn = memoryFs(
+    {
+      [`${AGENT}/.claude/settings.local.json`]: JSON.stringify({ autoMemoryEnabled: true }),
+      [`${AGENT}/.claude/settings.json`]: JSON.stringify({ autoMemoryEnabled: false }),
+    },
+    [MEM],
+  )
+  assert.deepEqual(at(localOn, {}), { ok: true, memDir: MEM })
+  // The CLI's own switch set to a false value forces memory on whatever the settings say.
+  assert.deepEqual(at(projectOff, { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0' }), { ok: true, memDir: MEM })
+})
+
+test('a key over 200 characters is refused', () => {
+  const long = '/' + 'a'.repeat(209)
+  const longMem = `/cfg/projects/${mungeMemoryKey(long)}/memory`
+  const fs = memoryFs({}, [long, longMem])
+  assert.deepEqual(resolveMemoryFolder({ fs, agentDir: long, configDir: CFG, home: HOME, env: {} }), {
+    ok: false,
+    code: 'unavailable',
+    message: 'the agent folder path is too long to find its memory',
+  })
+  // Exactly 200 is still found.
+  const edge = '/' + 'b'.repeat(199)
+  const edgeMem = `/cfg/projects/${mungeMemoryKey(edge)}/memory`
+  assert.equal(mungeMemoryKey(edge).length, 200)
+  assert.deepEqual(
+    resolveMemoryFolder({ fs: memoryFs({}, [edge, edgeMem]), agentDir: edge, configDir: CFG, home: HOME, env: {} }),
+    { ok: true, memDir: edgeMem },
+  )
+})
+
+test('a missing memory folder is refused and nothing is created', () => {
+  const { fs, raw, log } = harness({}, [AGENT])
+  const store = storeOver(fs, () =>
+    resolveMemoryFolder({ fs, agentDir: AGENT, configDir: CFG, home: HOME, env: {} }),
+  )
+  const expected = { ok: false, code: 'unavailable', message: 'no memory folder found for this agent' }
+  assert.deepEqual(store.list(), expected)
+  assert.deepEqual(store.add('memory', 'Prefers tea'), expected)
+  assert.deepEqual(store.remove('memory', 'Prefers tea'), expected)
+  const underProjects = [...raw.files.keys(), ...raw.dirs].filter((p) => p.startsWith('/cfg'))
+  assert.deepEqual(underProjects, [])
+  assert.deepEqual(log, [])
+})
+
+// ── What an entry is ─────────────────────────────────────────────────────────
+
+test('parses the index lines the CLI writes and the ones this store writes', () => {
+  assert.deepEqual(parseMemoryIndexLine('- [Home](home.md) - lives in Dubai'), {
+    title: 'Home',
+    fileName: 'home.md',
+    hook: 'lives in Dubai',
+    text: 'lives in Dubai',
+  })
+  assert.equal(parseMemoryIndexLine(`- [Nick](nick.md) ${EM} call me Kc`)?.text, 'call me Kc')
+  assert.equal(parseMemoryIndexLine(`- [Nick](nick.md) ${EN} call me Kc`)?.text, 'call me Kc')
+  assert.equal(parseMemoryIndexLine('- [Proj](proj.md): ships on Fridays')?.text, 'ships on Fridays')
+  assert.equal(parseMemoryIndexLine('  - [Titled](titled.md)')?.text, 'Titled')
+  assert.equal(parseMemoryIndexLine('- [Neg](neg.md) - -5 degrees is cold')?.text, '-5 degrees is cold')
+  assert.equal(parseMemoryIndexLine('# Memory index'), null)
+  assert.equal(parseMemoryIndexLine('- a plain bullet'), null)
+  assert.equal(parseMemoryIndexLine('- [x](../x.md) - escape'), null)
+  assert.equal(parseMemoryIndexLine('- [x](sub/x.md) - nested'), null)
+  assert.equal(parseMemoryIndexLine('- [x](sub\\x.md) - nested'), null)
+  assert.equal(parseMemoryIndexLine('- [x](x.txt) - not a note'), null)
+  assert.equal(parseMemoryIndexLine('- [x](MEMORY.md) - the index itself'), null)
+})
+
+test("lists index lines as entries, split by the linked file's type", () => {
+  const index = [
+    '# Memory index',
+    '- [Home](home.md) - lives in Dubai',
+    `- [Nick](nick.md) ${EM} call me Kc`,
+    '- [Short](short.md) - wants short answers',
+    '- [Proj](proj.md): ships on Fridays',
+    '- [Gone](gone.md) - the file is missing',
+    '- [Titled](titled.md)',
+    `- [Top](top.md) ${EN} top level type`,
+    '',
+  ].join('\n')
+  const { fs } = harness({
+    [INDEX]: index,
+    [`${MEM}/home.md`]: note('home', 'user', 'lives in Dubai'),
+    [`${MEM}/nick.md`]:
+      '---\nname: nick\ndescription: call me Kc\nmetadata: {node_type: memory, type: user, originSessionId: 62a4}\n---\n\ncall me Kc\n',
+    [`${MEM}/short.md`]: note('short', 'feedback', 'wants short answers'),
+    [`${MEM}/proj.md`]: note('proj', 'project', 'ships on Fridays'),
+    [`${MEM}/titled.md`]: note('titled', 'user', 'a titled note'),
+    [`${MEM}/top.md`]: '---\nname: top\ntype: user\n---\n\ntop level type\n',
+  })
+  const answer = storeOver(fs).list() as any
+  assert.deepEqual(texts(answer, 'user'), ['lives in Dubai', 'call me Kc', 'Titled', 'top level type'])
+  assert.deepEqual(texts(answer, 'memory'), ['wants short answers', 'ships on Fridays', 'the file is missing'])
+  assert.deepEqual(answer.stores.user.entries[0], { text: 'lives in Dubai', flagged: false, patterns: [] })
+  const userLines = [
+    '- [Home](home.md) - lives in Dubai',
+    `- [Nick](nick.md) ${EM} call me Kc`,
+    '- [Titled](titled.md)',
+    `- [Top](top.md) ${EN} top level type`,
+  ]
+  assert.equal(answer.stores.user.chars, userLines.join('\n').length)
+  assert.equal(answer.stores.user.limit, 25000)
+  assert.equal(answer.stores.memory.limit, 25000)
+})
+
+test('shows only what the model reads', () => {
+  const { fs } = harness({
+    [INDEX]: [
+      '- [a](../escape.md) - up and out',
+      '- [b](sub/b.md) - nested',
+      '- [c](c.txt) - not a note',
+      'some prose the model wrote',
+      '## A heading',
+      '- [d](d.md) - the real one',
+      '',
+    ].join('\n'),
+    [`${MEM}/d.md`]: note('d', 'user', 'the real one'),
+    [`${MEM}/orphan.md`]: note('orphan', 'user', 'a topic file with no index line'),
+    [`${MEM}/sub/b.md`]: note('b', 'user', 'nested'),
+  })
+  const answer = storeOver(fs).list() as any
+  assert.deepEqual(texts(answer, 'user'), ['the real one'])
+  assert.deepEqual(texts(answer, 'memory'), [])
+})
+
+// ── add ──────────────────────────────────────────────────────────────────────
+
+test('adds a file and one index line, file first', () => {
+  // An empty folder, the way the CLI leaves it at a first start: no index yet.
+  const { fs, raw, log } = harness()
+  const answer = storeOver(fs).add('memory', 'Prefers tea over coffee') as any
+  assert.deepEqual(texts(answer, 'memory'), ['Prefers tea over coffee'])
+  assert.equal(
+    raw.readFile(`${MEM}/prefers-tea-over-coffee.md`),
+    [
+      '---',
+      'name: prefers-tea-over-coffee',
+      'description: "Prefers tea over coffee"',
+      'metadata:',
+      '  node_type: memory',
+      '  type: feedback',
+      '  modified: 2026-09-25T10:00:00.000Z',
+      '---',
+      '',
+      'Prefers tea over coffee',
+      '',
+    ].join('\n'),
+  )
+  assert.equal(
+    raw.readFile(INDEX),
+    '- [Prefers tea over coffee](prefers-tea-over-coffee.md) - Prefers tea over coffee\n',
+  )
+  const fileRename = log.findIndex((l) => l.endsWith(`-> ${MEM}/prefers-tea-over-coffee.md`))
+  const indexRename = log.findIndex((l) => l.endsWith(`-> ${INDEX}`))
+  assert.ok(fileRename >= 0 && indexRename >= 0, log.join('\n'))
+  assert.ok(fileRename < indexRename, `the file must land before the line that points at it:\n${log.join('\n')}`)
+  // No temp file is left behind.
+  assert.deepEqual(filesUnder(raw, MEM), [INDEX, `${MEM}/prefers-tea-over-coffee.md`])
+
+  // The owner's own facts land in the user store, typed so the CLI files them the same way.
+  const user = storeOver(fs).add('user', 'My name is Kc') as any
+  assert.deepEqual(texts(user, 'user'), ['My name is Kc'])
+  assert.match(raw.readFile(`${MEM}/my-name-is-kc.md`)!, /\n {2}type: user\n/)
+  // An index without a final line break still gets the new line on a line of its own.
+  raw.writeFile(INDEX, '- [a](a.md) - first')
+  raw.writeFile(`${MEM}/a.md`, note('a', 'feedback', 'first'))
+  storeOver(fs).add('memory', 'second')
+  assert.equal(raw.readFile(INDEX), '- [a](a.md) - first\n- [second](second.md) - second\n')
+})
+
+test('a fact with no plain letters gets a hashed file name, and a taken name gets a number', () => {
+  const { fs, raw } = harness({ [`${MEM}/tea.md`]: 'someone else wrote this\n' })
+  storeOver(fs).add('user', '\u0623\u062d\u0628 \u0627\u0644\u0634\u0627\u064a')
+  const names = filesUnder(raw, MEM).map((p) => p.slice(MEM.length + 1))
+  assert.ok(names.some((n) => /^memory-[0-9a-f]{8}\.md$/.test(n)), names.join(', '))
+  storeOver(fs).add('memory', 'Tea')
+  assert.equal(raw.readFile(`${MEM}/tea.md`), 'someone else wrote this\n')
+  assert.match(raw.readFile(`${MEM}/tea-2.md`)!, /\nTea\n$/)
+  // A fact that slugs to "memory" never becomes memory.md, which IS the index on a case blind disk.
+  storeOver(fs).add('memory', 'Memory')
+  assert.equal(raw.readFile(`${MEM}/memory.md`), null)
+  assert.match(raw.readFile(INDEX)!, /\(memory-2\.md\) - Memory\n/)
+})
+
+test('never leaves half a file', () => {
+  const index = '- [a](a.md) - first\n'
+  const { fs, raw } = harness({ [INDEX]: index, [`${MEM}/a.md`]: note('a', 'feedback', 'first') })
+  const failOn = (target: string) => ({
+    ...fs,
+    rename: (a: string, b: string) => {
+      if (b === target) throw new Error('EPERM: the disk said no')
+      fs.rename(a, b)
+    },
+  })
+  // The topic file's rename fails: nothing changes and nothing is left behind.
+  const first = storeOver(failOn(`${MEM}/second.md`)).add('memory', 'second') as any
+  assert.equal(first.ok, false)
+  assert.equal(first.code, 'write_failed')
+  assert.equal(raw.readFile(INDEX), index)
+  assert.deepEqual(filesUnder(raw, MEM), [INDEX, `${MEM}/a.md`])
+  // The index's rename fails: the note written for it is taken back, so no orphan is left either.
+  const second = storeOver(failOn(INDEX)).add('memory', 'second') as any
+  assert.equal(second.code, 'write_failed')
+  assert.equal(raw.readFile(INDEX), index)
+  assert.deepEqual(filesUnder(raw, MEM), [INDEX, `${MEM}/a.md`])
+})
+
+test('adding the same words twice adds nothing', () => {
+  const { fs, raw } = harness()
+  const store = storeOver(fs)
+  store.add('memory', 'Prefers tea')
+  const once = raw.readFile(INDEX)
+  const again = store.add('memory', '  Prefers\n tea ') as any
+  assert.deepEqual(texts(again, 'memory'), ['Prefers tea'])
+  assert.equal(raw.readFile(INDEX), once)
+  assert.equal(once!.split('\n').filter(Boolean).length, 1)
+})
+
+test('a long fact keeps its full text in the file and a short line in the index', () => {
+  const words = Array.from({ length: 80 }, (_, i) => `word${i}`).join(' ')
+  const long = (words + ' tail').slice(0, 400)
+  assert.equal(long.length, 400)
+  const { fs, raw } = harness()
+  const answer = storeOver(fs).add('memory', long) as any
+  const [hook] = texts(answer, 'memory')
+  assert.ok(hook.length <= 300, `hook is ${hook.length} characters`)
+  assert.ok(hook.endsWith('...'))
+  const kept = hook.slice(0, -3)
+  assert.ok(long.startsWith(kept), 'the hook is the start of the fact')
+  assert.equal(long[kept.length], ' ', 'the hook is cut at a word, not inside one')
+  const [line] = raw.readFile(INDEX)!.split('\n')
+  assert.ok(line.endsWith(` - ${hook}`))
+  const file = [...raw.files.entries()].find(([k]) => k !== INDEX)![1]
+  assert.ok(file.endsWith(`\n${long}\n`), 'the note holds every character')
+})
+
+test('a full index refuses the add', () => {
+  const lines = Array.from({ length: 200 }, (_, i) => `- [n${i}](n${i}.md) - fact ${i}`)
+  const full = lines.join('\n') + '\n'
+  const { fs, raw } = harness({ [INDEX]: full })
+  const answer = storeOver(fs).add('memory', 'one too many') as any
+  assert.equal(answer.ok, false)
+  assert.equal(answer.code, 'over_budget')
+  assert.equal(raw.readFile(INDEX), full)
+  assert.deepEqual(filesUnder(raw, MEM), [INDEX])
+
+  const heavy = `- [big](big.md) - ${'x'.repeat(24_980)}\n`
+  const byBytes = harness({ [INDEX]: heavy, [`${MEM}/big.md`]: note('big', 'feedback', 'big') })
+  assert.equal((storeOver(byBytes.fs).add('memory', 'small') as any).code, 'over_budget')
+  assert.equal(byBytes.raw.readFile(INDEX), heavy)
+})
+
+// ── replace and remove ───────────────────────────────────────────────────────
+
+function twoOfAKind() {
+  return harness({
+    [INDEX]: [
+      '- [Addr](addr.md) - my old address is 5 Main St',
+      '- [Tea](tea.md) - likes tea',
+      '- [Tea2](tea2.md) - likes tea',
+      '- [Name](name.md) - called Kc',
+      '',
+    ].join('\n'),
+    [`${MEM}/addr.md`]: note('addr', 'feedback', 'my old address is 5 Main St'),
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/tea2.md`]: note('tea2', 'feedback', 'likes tea'),
+    [`${MEM}/name.md`]: note('name', 'user', 'called Kc'),
+  })
+}
+
+test('replace and remove match one entry exactly, never a part of one', () => {
+  const { fs, raw } = twoOfAKind()
+  const before = raw.readFile(INDEX)
+  const store = storeOver(fs)
+  const code = (a: any) => (a.ok ? 'ok' : a.code)
+  assert.equal(code(store.replace('memory', 'old address', 'x')), 'no_match')
+  assert.equal(code(store.remove('memory', 'old address')), 'no_match')
+  assert.equal(code(store.remove('memory', 'likes tea')), 'ambiguous')
+  assert.equal(code(store.replace('memory', 'likes tea', 'likes green tea')), 'ambiguous')
+  // The right words in the wrong store are not a match either.
+  assert.equal(code(store.remove('memory', 'called Kc')), 'no_match')
+  assert.equal(raw.readFile(INDEX), before)
+  assert.deepEqual(trashNames(raw), [])
+  // The whole entry, exactly, is.
+  assert.equal(code(store.remove('memory', 'my old address is 5 Main St')), 'ok')
+  assert.equal(raw.readFile(`${MEM}/addr.md`), null)
+})
+
+test('remove takes the line first, then the file, and keeps both in the trash outside the memory folder', () => {
+  const { fs, raw, log } = twoOfAKind()
+  const original = raw.readFile(`${MEM}/name.md`)
+  const answer = storeOver(fs).remove('user', 'called Kc') as any
+  assert.deepEqual(texts(answer, 'user'), [])
+  const indexRename = log.findIndex((l) => l.endsWith(`-> ${INDEX}`))
+  const fileRemoval = log.indexOf(`rm ${MEM}/name.md`)
+  assert.ok(indexRename >= 0 && fileRemoval > indexRename, log.join('\n'))
+  const [record] = trashNames(raw)
+  const saved = JSON.parse(raw.readFile(`${TRASH}/${record}`)!)
+  assert.equal(saved.op, 'remove')
+  assert.equal(saved.target, 'user')
+  assert.equal(saved.text, 'called Kc')
+  assert.equal(saved.fileName, 'name.md')
+  assert.equal(saved.fileContent, original)
+  assert.deepEqual(saved.lines, [{ text: '- [Name](name.md) - called Kc', position: 3 }])
+  assert.equal(typeof saved.at, 'string')
+  // Nothing new inside the memory folder: the trash would otherwise be read as memory.
+  assert.deepEqual(filesUnder(raw, MEM), [INDEX, `${MEM}/addr.md`, `${MEM}/tea.md`, `${MEM}/tea2.md`])
+})
+
+test('an undo add brings the whole note back where it was', () => {
+  const cliNote =
+    '---\nname: home\ndescription: lives in Dubai\nmetadata:\n  node_type: memory\n  type: user\n  originSessionId: 62a4\n  modified: 2026-09-20T08:00:00.000Z\n---\n\nLives in Dubai, near the marina.\n'
+  const index = ['- [Tea](tea.md) - likes tea', `- [Home](home.md) ${EM} lives in Dubai`, '- [Name](name.md) - called Kc', ''].join('\n')
+  const { fs, raw } = harness({
+    [INDEX]: index,
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/home.md`]: cliNote,
+    [`${MEM}/name.md`]: note('name', 'user', 'called Kc'),
+  })
+  const store = storeOver(fs)
+  assert.equal((store.remove('user', 'lives in Dubai') as any).ok, true)
+  assert.equal(raw.readFile(`${MEM}/home.md`), null)
+  const back = store.add('user', 'lives in Dubai') as any
+  assert.deepEqual(texts(back, 'user'), ['lives in Dubai', 'called Kc'])
+  assert.equal(raw.readFile(`${MEM}/home.md`), cliNote)
+  assert.equal(raw.readFile(INDEX), index)
+  assert.deepEqual(trashNames(raw), [], 'the record used by the restore is gone')
+})
+
+test('a note the agent removed itself comes back whole while it is remembered', () => {
+  const cliNote = note('home', 'user', 'Lives in Dubai, near the marina.')
+  const index = ['- [Tea](tea.md) - likes tea', `- [Home](home.md) ${EM} lives in Dubai`, '- [Name](name.md) - called Kc', ''].join('\n')
+  const { fs, raw } = harness({
+    [INDEX]: index,
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/home.md`]: cliNote,
+    [`${MEM}/name.md`]: note('name', 'user', 'called Kc'),
+  })
+  const store = storeOver(fs)
+  store.list()
+  // The model forgets it on its own, outside the store.
+  raw.rm(`${MEM}/home.md`)
+  raw.writeFile(INDEX, ['- [Tea](tea.md) - likes tea', '- [Name](name.md) - called Kc', ''].join('\n'))
+  const back = store.add('user', 'lives in Dubai') as any
+  assert.deepEqual(texts(back, 'user'), ['lives in Dubai', 'called Kc'])
+  assert.equal(raw.readFile(`${MEM}/home.md`), cliNote)
+  assert.equal(raw.readFile(INDEX), index)
+})
+
+// Fix round 2, E11: a correction always retitles the line with the new words,
+// a title written by hand ("Home") included; the link stays.
+test('replace changes the note, retitles its line with the new words and keeps its link', () => {
+  const cliNote =
+    '---\nname: home\ndescription: lives in Dubai\nmetadata:\n  node_type: memory\n  type: user\n  originSessionId: 62a4\n  modified: 2026-09-20T08:00:00.000Z\n---\n\nLives in Dubai.\n'
+  const { fs, raw } = harness({
+    [INDEX]: `- [Tea](tea.md) - likes tea\n- [Home](home.md) ${EM} lives in Dubai\n`,
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/home.md`]: cliNote,
+  })
+  const answer = storeOver(fs).replace('user', 'lives in Dubai', 'lives in Abu Dhabi') as any
+  assert.deepEqual(texts(answer, 'user'), ['lives in Abu Dhabi'])
+  assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes tea\n- [lives in Abu Dhabi](home.md) - lives in Abu Dhabi\n')
+  assert.equal(
+    raw.readFile(`${MEM}/home.md`),
+    '---\nname: home\ndescription: "lives in Abu Dhabi"\nmetadata:\n  node_type: memory\n  type: user\n  originSessionId: 62a4\n  modified: 2026-09-25T10:00:00.000Z\n---\n\nlives in Abu Dhabi\n',
+  )
+  const [record] = trashNames(raw)
+  const saved = JSON.parse(raw.readFile(`${TRASH}/${record}`)!)
+  assert.equal(saved.op, 'replace')
+  assert.equal(saved.text, 'lives in Dubai')
+  assert.equal(saved.fileContent, cliNote)
+  assert.deepEqual(saved.lines, [{ text: `- [Home](home.md) ${EM} lives in Dubai`, position: 1 }])
+})
+
+test('an undo correction brings the old note back', () => {
+  const original = note('home', 'user', 'Lives in Dubai, near the marina, since 2019.')
+  const { fs, raw } = harness({
+    [INDEX]: '- [Home](home.md) - lives in Dubai\n',
+    [`${MEM}/home.md`]: original,
+  })
+  const store = storeOver(fs)
+  assert.equal((store.replace('user', 'lives in Dubai', 'lives in Abu Dhabi') as any).ok, true)
+  assert.notEqual(raw.readFile(`${MEM}/home.md`), original)
+  const back = store.replace('user', 'lives in Abu Dhabi', 'lives in Dubai') as any
+  assert.deepEqual(texts(back, 'user'), ['lives in Dubai'])
+  assert.equal(raw.readFile(`${MEM}/home.md`), original)
+})
+
+test('a correction to words another note still holds rewrites this note, never copies the other', () => {
+  // Restoring a note whole is for words that are GONE (an Undo). Words another
+  // note still holds are not an undo, so this note gets the new words, not a
+  // copy of that other note's body.
+  const coffee = note('coffee', 'feedback', 'Likes coffee, black, no sugar, before nine.')
+  const { fs, raw } = harness({
+    [INDEX]: '- [Tea](tea.md) - likes tea\n- [Coffee](coffee.md) - likes coffee\n',
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${MEM}/coffee.md`]: coffee,
+  })
+  const store = storeOver(fs)
+  store.list()
+  const answer = store.replace('memory', 'likes tea', 'likes coffee') as any
+  assert.deepEqual(texts(answer, 'memory'), ['likes coffee', 'likes coffee'])
+  assert.match(raw.readFile(`${MEM}/tea.md`)!, /\n\nlikes coffee\n$/)
+  assert.equal(raw.readFile(`${MEM}/coffee.md`), coffee)
+})
+
+// Review fix P2: the app's 30 second Undo of a correction by hand sends the
+// words the owner typed as oldText, and the store keeps only their hook (white
+// space folded, cut at 300). So a match falls back to the hook of oldText.
+test('an undo of a typed correction matches its folded words', () => {
+  const original = note('tea', 'feedback', 'likes tea')
+  const fresh = () =>
+    harness({ [INDEX]: '- [Tea](tea.md) - likes tea\n', [`${MEM}/tea.md`]: original })
+  const long = `likes tea ${'and green tea in the afternoon '.repeat(13)}`.trim()
+  assert.ok(long.length > 380)
+  for (const typed of ['likes tea\nbut only green', 'likes  green tea', long]) {
+    const { fs, raw } = fresh()
+    const store = storeOver(fs)
+    assert.equal((store.replace('memory', 'likes tea', typed) as any).ok, true)
+    const back = store.replace('memory', typed, 'likes tea') as any
+    assert.deepEqual(texts(back, 'memory'), ['likes tea'], `undo of ${JSON.stringify(typed.slice(0, 30))}`)
+    assert.equal(raw.readFile(`${MEM}/tea.md`), original)
+  }
+  // remove with the words as typed, over several lines.
+  const { fs } = fresh()
+  const store = storeOver(fs)
+  assert.equal((store.add('memory', 'likes coffee\nblack') as any).ok, true)
+  assert.deepEqual(texts(store.remove('memory', 'likes coffee\nblack'), 'memory'), ['likes tea'])
+})
+
+// Review fix P3: trash records and remembered entries are keyed by the text as
+// LISTED (the CLI's hook, trimmed, not folded, not cut). An Undo sends that
+// text back, so the exact words are tried before their hook.
+test('an undo of a long or oddly spaced CLI line brings the note back whole', () => {
+  const long = `works on the platform team ${'and owns the billing service end to end '.repeat(8)}`.trim()
+  assert.ok(long.length > 300)
+  for (const words of [long, 'likes  green tea']) {
+    const stack = '---\nname: stack\ndescription: x\nmetadata:\n  node_type: memory\n  type: project\n  originSessionId: 62a4\n---\n\nThe full note.\n'
+    const index = `- [Tea](tea.md) - likes tea\n- [Stack](stack.md) ${EM} ${words}\n`
+    const make = () =>
+      harness({ [INDEX]: index, [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'), [`${MEM}/stack.md`]: stack })
+    // (d) adding it while it is still listed is a no-op.
+    {
+      const { fs, raw, log } = make()
+      const answer = storeOver(fs).add('memory', words) as any
+      assert.equal(answer.ok, true)
+      assert.deepEqual(log, [], 'nothing written')
+      assert.equal(raw.readFile(INDEX), index)
+    }
+    // (a), (b) removed, then added back: byte for byte, and the trash is empty.
+    {
+      const { fs, raw } = make()
+      const store = storeOver(fs)
+      assert.equal((store.remove('memory', words) as any).ok, true)
+      const back = store.add('memory', words) as any
+      assert.deepEqual(texts(back, 'memory'), ['likes tea', words])
+      assert.equal(raw.readFile(INDEX), index)
+      assert.equal(raw.readFile(`${MEM}/stack.md`), stack)
+      assert.deepEqual(trashNames(raw), [])
+    }
+    // (c) corrected, then corrected back to the words as listed.
+    {
+      const { fs, raw } = make()
+      const store = storeOver(fs)
+      assert.equal((store.replace('memory', words, 'moved to the data team') as any).ok, true)
+      const back = store.replace('memory', 'moved to the data team', words) as any
+      assert.deepEqual(texts(back, 'memory'), ['likes tea', words])
+      assert.equal(raw.readFile(`${MEM}/stack.md`), stack)
+    }
+  }
+})
+
+// Review fix P4: an old trash record must not win over the newer note this
+// daemon listed after it. Ties, and a record with no readable time, keep the
+// trash first (spec 10.6).
+test('an undo restores the newest version of a note, not an old trash record', () => {
+  let clock = NOW
+  const c1 = note('tea', 'feedback', 'likes tea, June version')
+  const c2 = note('tea-pref', 'feedback', 'likes tea, September version')
+  const { fs, raw } = harness({ [INDEX]: '- [Tea](tea.md) - likes tea\n', [`${MEM}/tea.md`]: c1 })
+  const store = createClaudeMemoryStore({
+    fs,
+    resolve: () => ({ ok: true, memDir: MEM }),
+    trashDir: TRASH,
+    now: () => clock,
+  })
+  // June: the owner deletes it in the panel and never undoes.
+  assert.equal((store.remove('memory', 'likes tea') as any).ok, true)
+  // Later the agent writes a new note with the same words.
+  clock = NOW + 90 * 24 * 3600 * 1000
+  raw.writeFile(`${MEM}/tea-pref.md`, c2)
+  raw.writeFile(INDEX, '- [Tea pref](tea-pref.md) - likes tea\n')
+  store.list()
+  // September: the agent removes it on the owner's request, outside the store.
+  raw.rm(`${MEM}/tea-pref.md`)
+  raw.writeFile(INDEX, '')
+  const back = store.add('memory', 'likes tea') as any
+  assert.deepEqual(texts(back, 'memory'), ['likes tea'])
+  assert.equal(raw.readFile(`${MEM}/tea-pref.md`), c2)
+  assert.equal(raw.readFile(`${MEM}/tea.md`), null)
+})
+
+test('a correction that would overflow the index is refused', () => {
+  const filler = `- [big](big.md) - ${'x'.repeat(24_900)}`
+  const index = `${filler}\n- [s](s.md) - short\n`
+  const { fs, raw } = harness({
+    [INDEX]: index,
+    [`${MEM}/big.md`]: note('big', 'feedback', 'big'),
+    [`${MEM}/s.md`]: note('s', 'feedback', 'short'),
+  })
+  const answer = storeOver(fs).replace('memory', 'short', 'y '.repeat(140).trim()) as any
+  assert.equal(answer.code, 'over_budget')
+  assert.equal(raw.readFile(INDEX), index)
+})
+
+// ── The live round trip (V2): findings F1 and F2 ─────────────────────────────
+//
+// BGOS docs/reports/2026-09-25-memory-box/live-round-trip/README.md ran this
+// store under the real daemon against a real backend. Two things it measured
+// are pinned here, with the seed exactly as that run wrote it
+// (raw/memory-states/S0-seed, sha256 checked below).
+
+const SEED_A = "- [Owner lives on Probe Street](owner-home-address.md) - Owner's home address is 12 Probe Street"
+const SEED_B = '- [Owner wants short bullets](owner-prefers-short-bullets.md) - Owner wants answers in short bullets'
+const SEED_INDEX = ['# Memory index', SEED_A, SEED_B, ''].join('\n')
+const SEED_ADDRESS = [
+  '---',
+  'name: owner-home-address',
+  `description: "Owner's home address is 12 Probe Street"`,
+  'metadata:',
+  '  node_type: memory',
+  '  type: user',
+  '  originSessionId: p7s2-live-seed',
+  '  modified: 2026-09-25T10:00:00.000Z',
+  '---',
+  '',
+  'The owner lives at 12 Probe Street, flat 3. Use it only for deliveries.',
+  '',
+].join('\n')
+const SEED_BULLETS = [
+  '---',
+  'name: owner-prefers-short-bullets',
+  'description: "Owner wants answers in short bullets"',
+  'metadata:',
+  '  node_type: memory',
+  '  type: feedback',
+  '  modified: 2026-09-25T10:00:00.000Z',
+  '---',
+  '',
+  'Keep answers to short bullets, no long paragraphs.',
+  '',
+].join('\n')
+/** The round trip's folder hash (memdump.sh): sha256 of "<file sha256>  <name>\n" per file, names sorted. */
+const SEED_FOLDER_SHA = '7ef2dc15927bebb9192ecbeb5f9a3d4d69d36bba86f46c271aed8dbf13c430fe'
+
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
+
+function seedFolder(): Record<string, string> {
+  return {
+    [INDEX]: SEED_INDEX,
+    [`${MEM}/owner-home-address.md`]: SEED_ADDRESS,
+    [`${MEM}/owner-prefers-short-bullets.md`]: SEED_BULLETS,
+  }
+}
+
+/** Every file in the memory folder (hidden temp files included), name to bytes. */
+function folderOf(raw: TestFs): Record<string, string> {
+  return Object.fromEntries(filesUnder(raw, MEM).map((k) => [k.slice(MEM.length + 1), raw.readFile(k)!]))
+}
+
+function folderSha(raw: TestFs): string {
+  const folder = folderOf(raw)
+  return sha256(
+    Object.keys(folder)
+      .sort()
+      .map((name) => `${sha256(folder[name])}  ${name}\n`)
+      .join(''),
+  )
+}
+
+function okAnswer(answer: any): any {
+  assert.equal(answer.ok, true, `expected ok, got ${JSON.stringify(answer)}`)
+  return answer
+}
+
+test("the round trip's seed is the one it measured", () => {
+  assert.equal(sha256(SEED_INDEX), 'e27f0ae866f213b33f927912c0c6f31bf5620452c82a822387c31c699dd1c6f8')
+  assert.equal(sha256(SEED_ADDRESS), '5c6860e3a62bf5949cff99749b216ffcb3631537421e2d7e7097a4c2c7020f1c')
+  assert.equal(sha256(SEED_BULLETS), '4140f0478484e208656f4bb33c887807fc3d49afa29d3715966e8ac19633db54')
+  assert.equal(folderSha(harness(seedFolder()).raw), SEED_FOLDER_SHA)
+})
+
+// F1. The owner adds C and removes B in the same store and corrects A. The
+// app's diff pairs "B gone, C came" in one store as ONE change (spec 6.6), so
+// its What changed Undo sends replace(memory, oldText: C, newContent: B). The
+// store found B's note in the trash but wrote it under C's file name and C's
+// line title, so the agent's next start read C, the fact just undone.
+test('the What changed Undo of an add and a remove in one store puts the folder back byte for byte (live round trip F1)', () => {
+  let clock = Date.parse('2026-09-25T10:10:37.000Z')
+  const { fs, raw } = harness(seedFolder())
+  const store = createClaudeMemoryStore({
+    fs,
+    resolve: () => ({ ok: true, memDir: MEM }),
+    trashDir: TRASH,
+    now: () => (clock += 1000),
+  })
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+  okAnswer(store.list())
+  // S1, S2, S3: the owner's three edits, as the round trip sent them.
+  okAnswer(store.add('memory', "The owner's manager is Sara"))
+  const saraNote = raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`)
+  const saraLine = "- [The owner's manager is Sara](the-owner-s-manager-is-sara.md) - The owner's manager is Sara"
+  assert.equal(raw.readFile(INDEX), ['# Memory index', SEED_A, SEED_B, saraLine, ''].join('\n'))
+  okAnswer(store.replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  okAnswer(store.remove('memory', 'Owner wants answers in short bullets'))
+  // U1, U2: the plan the app's diffMemoryStores and undoPlanFor computed
+  // from the S0 and S3 lists (raw/evidence/undo-plan-S0-S3.json).
+  okAnswer(store.replace('user', "Owner's home address is 40 Harbour Road", "Owner's home address is 12 Probe Street"))
+  const undone = okAnswer(store.replace('memory', "The owner's manager is Sara", 'Owner wants answers in short bullets'))
+  assert.deepEqual(texts(undone, 'user'), ["Owner's home address is 12 Probe Street"])
+  assert.deepEqual(texts(undone, 'memory'), ['Owner wants answers in short bullets'])
+  // The folder, not only the list: every file, byte for byte, and no other.
+  assert.deepEqual(folderOf(raw), {
+    'MEMORY.md': SEED_INDEX,
+    'owner-home-address.md': SEED_ADDRESS,
+    'owner-prefers-short-bullets.md': SEED_BULLETS,
+  })
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+  // C's line and note went to the trash, outside the folder, whole.
+  const records = trashNames(raw).map((n) => JSON.parse(raw.readFile(`${TRASH}/${n}`)!))
+  const sara = records.find((r) => r.text === "The owner's manager is Sara")
+  assert.ok(sara, JSON.stringify(records.map((r) => r.text)))
+  assert.equal(sara.target, 'memory')
+  assert.equal(sara.fileName, 'the-owner-s-manager-is-sara.md')
+  assert.equal(sara.fileContent, saraNote)
+  // Line 2: after S3 took B's line the index was heading, A, C.
+  assert.deepEqual(sara.lines, [{ text: saraLine, position: 2 }])
+  assert.ok(!records.some((r) => r.text === 'Owner wants answers in short bullets'), 'the record used by the restore is gone')
+  // And an Undo of that Undo brings C back under its own name and line, B to the trash.
+  okAnswer(store.replace('memory', 'Owner wants answers in short bullets', "The owner's manager is Sara"))
+  assert.deepEqual(folderOf(raw), {
+    'MEMORY.md': ['# Memory index', SEED_A, saraLine, ''].join('\n'),
+    'owner-home-address.md': SEED_ADDRESS,
+    'the-owner-s-manager-is-sara.md': saraNote,
+  })
+})
+
+test('a restore whose note name differs only in case keeps the note where its line points', () => {
+  // On Windows "Tea.md" and "tea.md" are one file: writing the first and then
+  // removing the second would delete the restored note.
+  const old = note('tea-old', 'feedback', 'Likes green tea, no sugar.')
+  const { fs, raw } = harness({
+    [INDEX]: '- [Tea](tea.md) - likes tea\n',
+    [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+    [`${TRASH}/000000000000001-000001.json`]: JSON.stringify({
+      at: '2026-09-01T00:00:00.000Z',
+      op: 'remove',
+      target: 'memory',
+      text: 'likes green tea',
+      fileName: 'Tea.md',
+      fileContent: old,
+      lines: [{ text: '- [Tea](Tea.md) - likes green tea', position: 0 }],
+    }),
+  })
+  const answer = okAnswer(storeOver(fs).replace('memory', 'likes tea', 'likes green tea'))
+  assert.deepEqual(texts(answer, 'memory'), ['likes green tea'])
+  assert.equal(raw.readFile(`${MEM}/tea.md`), old)
+  assert.equal(raw.readFile(`${MEM}/Tea.md`), null)
+  assert.equal(raw.readFile(INDEX), '- [Tea](tea.md) - likes green tea\n')
+})
+
+// F2. A correction kept the line's title (spec 10.6), and the titles this
+// store writes are the first six words of the fact, so the old fact stayed in
+// the line the model reads at start. A title derived from the old words then
+// followed the new words, and since fix round 2 (E11) every title does: a
+// title written by hand can restate the old fact just as well.
+test('a correction retitles a line whose title this store derived from the fact (live round trip F2, U2)', () => {
+  const { fs, raw } = harness({ [INDEX]: '# Memory index\n' })
+  const store = storeOver(fs)
+  okAnswer(store.add('memory', "The owner's manager is Sara"))
+  const added = raw.readFile(INDEX)
+  const note0 = raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`)
+  assert.equal(
+    added,
+    "# Memory index\n- [The owner's manager is Sara](the-owner-s-manager-is-sara.md) - The owner's manager is Sara\n",
+  )
+  const fixed = okAnswer(store.replace('memory', "The owner's manager is Sara", "The owner's manager is Omar"))
+  assert.deepEqual(texts(fixed, 'memory'), ["The owner's manager is Omar"])
+  assert.equal(
+    raw.readFile(INDEX),
+    "# Memory index\n- [The owner's manager is Omar](the-owner-s-manager-is-sara.md) - The owner's manager is Omar\n",
+  )
+  // The per edit Undo still lands byte for byte.
+  okAnswer(store.replace('memory', "The owner's manager is Omar", "The owner's manager is Sara"))
+  assert.equal(raw.readFile(INDEX), added)
+  assert.equal(raw.readFile(`${MEM}/the-owner-s-manager-is-sara.md`), note0)
+})
+
+test('a correction retitles a CLI line whose title is the first words of its fact (live round trip F2, S2)', () => {
+  const { fs, raw } = harness({
+    ...seedFolder(),
+    [INDEX]: `# Memory index\n- [Owner's home address is 12 Probe](owner-home-address.md) ${EM} Owner's home address is 12 Probe Street\n${SEED_B}\n`,
+  })
+  okAnswer(storeOver(fs).replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  assert.equal(
+    raw.readFile(INDEX),
+    `# Memory index\n- [Owner's home address is 40 Harbour](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
+  )
+})
+
+// Fix round 2, E11 (this was the F2 control, "a correction keeps a title
+// written by hand"). The round trip's seed title "Owner lives on Probe Street"
+// is a label written by hand, and it restates the OLD fact: kept through the
+// correction, the agent's next start read "Owner lives on Probe Street" beside
+// "40 Harbour Road". A correction now always retitles with the new words, and
+// the Undo still puts the hand title back from the trash, byte for byte.
+test('a correction retitles a title written by hand too, and its Undo puts that title back byte for byte (E11)', () => {
+  const { fs, raw } = harness(seedFolder())
+  const store = storeOver(fs)
+  okAnswer(store.replace('user', "Owner's home address is 12 Probe Street", "Owner's home address is 40 Harbour Road"))
+  assert.equal(
+    raw.readFile(INDEX),
+    `# Memory index\n- [Owner's home address is 40 Harbour](owner-home-address.md) - Owner's home address is 40 Harbour Road\n${SEED_B}\n`,
+  )
+  okAnswer(store.replace('user', "Owner's home address is 40 Harbour Road", "Owner's home address is 12 Probe Street"))
+  assert.equal(raw.readFile(INDEX), SEED_INDEX)
+  assert.equal(raw.readFile(`${MEM}/owner-home-address.md`), SEED_ADDRESS)
+  assert.equal(folderSha(raw), SEED_FOLDER_SHA)
+})
+
+// Fix round 2, E12, the probe of the live round trip fixes
+// (s2-logs/rt-fix/probe-emdash.ts): the Undo of a correction over a CLI line
+// brought the note back byte for byte but REBUILT the line with this store's
+// hyphen, so the CLI's em dash separator was lost. An Undo whose saved line
+// points at the same note now puts that line back verbatim. The store never
+// writes an em dash of its own: it only puts the CLI's own bytes back.
+test('an Undo of a correction puts the CLI line back verbatim, its em dash separator included (E12)', () => {
+  const probeNote = '---\nname: home\nmetadata:\n  type: user\n---\n\nLives in Dubai.\n'
+  const cliLine = '- [Home](home.md) \u2014 lives in Dubai'
+  const emDashBytes = Buffer.from([0xe2, 0x80, 0x94])
+  for (const eol of ['\n', '\r\n']) {
+    const index = ['- [Tea](tea.md) - likes tea', cliLine, ''].join(eol)
+    const { fs, raw } = harness({
+      [INDEX]: index,
+      [`${MEM}/tea.md`]: note('tea', 'feedback', 'likes tea'),
+      [`${MEM}/home.md`]: probeNote,
+    })
+    const store = storeOver(fs)
+    okAnswer(store.replace('user', 'lives in Dubai', 'lives in Abu Dhabi'))
+    const corrected = raw.readFile(INDEX)!
+    assert.ok(!Buffer.from(corrected, 'utf8').includes(emDashBytes), `the store wrote an em dash: ${JSON.stringify(corrected)}`)
+    okAnswer(store.replace('user', 'lives in Abu Dhabi', 'lives in Dubai'))
+    const undone = raw.readFile(INDEX)!
+    assert.equal(undone, index, `eol ${JSON.stringify(eol)}`)
+    assert.ok(Buffer.from(undone, 'utf8').equals(Buffer.from(index, 'utf8')), 'the index bytes')
+    assert.ok(Buffer.from(undone, 'utf8').includes(emDashBytes), "the CLI's em dash is back")
+    assert.equal(raw.readFile(`${MEM}/home.md`), probeNote)
+  }
+})
+
+// E12, the other half: a saved record can hold SEVERAL lines that point at one
+// note (remove keeps every line to the note it takes). The line put back is
+// the one that holds the words coming back, never the first to that note.
+test('a restore puts back the saved line that holds the words, not another line to the same note (E12)', () => {
+  const both = note('home', 'user', 'Lives in Dubai and likes the sea.')
+  const homeLine = '- [Home](home.md) \u2014 lives in Dubai'
+  const seaLine = '- [Sea](home.md) \u2014 likes the sea'
+  const { fs, raw } = harness({ [INDEX]: `${homeLine}\n${seaLine}\n`, [`${MEM}/home.md`]: both })
+  const store = storeOver(fs)
+  okAnswer(store.remove('user', 'likes the sea'))
+  assert.equal(raw.readFile(INDEX), '')
+  // The agent writes a new note under the same name, outside the store.
+  raw.writeFile(`${MEM}/home.md`, note('home', 'user', 'lives in Abu Dhabi'))
+  raw.writeFile(INDEX, '- [Home](home.md) - lives in Abu Dhabi\n')
+  const back = okAnswer(store.replace('user', 'lives in Abu Dhabi', 'likes the sea'))
+  assert.deepEqual(texts(back, 'user'), ['likes the sea'])
+  assert.equal(raw.readFile(INDEX), `${seaLine}\n`)
+  assert.equal(raw.readFile(`${MEM}/home.md`), both)
+})
+
+// ── Other writers ────────────────────────────────────────────────────────────
+
+test('a change on disk during a write is not overwritten', () => {
+  const other = (n: number) => `- [other${n}](other${n}.md) - another writer ${n}`
+  const setup = (races: number) => {
+    const { fs, raw } = harness({ [INDEX]: '- [a](a.md) - first\n', [`${MEM}/a.md`]: note('a', 'feedback', 'first') })
+    let raced = 0
+    // Another writer lands between our read and our rename, each time our new index is staged.
+    const racing: TestFs = {
+      ...fs,
+      writeFile: (p, t, o) => {
+        fs.writeFile(p, t, o)
+        if (p.startsWith(`${MEM}/.`) && p.includes('MEMORY.md') && raced < races) {
+          raced += 1
+          raw.writeFile(`${MEM}/other${raced}.md`, note(`other${raced}`, 'feedback', `another writer ${raced}`))
+          raw.writeFile(INDEX, raw.readFile(INDEX)! + other(raced) + '\n')
+        }
+      },
+    }
+    return { raw, store: storeOver(racing) }
+  }
+  // Twice in a row: the store gives up and says so, and keeps what the other writer wrote.
+  const busy = setup(2)
+  const answer = busy.store.add('memory', 'mine') as any
+  assert.equal(answer.ok, false)
+  assert.equal(answer.code, 'store_busy')
+  assert.equal(busy.raw.readFile(INDEX), `- [a](a.md) - first\n${other(1)}\n${other(2)}\n`)
+  assert.equal(busy.raw.readFile(`${MEM}/mine.md`), null, 'the note staged for the lost race is taken back')
+  // Once: it starts over from a fresh read and both lines survive.
+  const once = setup(1)
+  const ok = once.store.add('memory', 'mine') as any
+  assert.deepEqual(texts(ok, 'memory'), ['first', 'another writer 1', 'mine'])
+})
+
+test('the trash keeps the newest 50', () => {
+  const initial: Record<string, string> = {}
+  const lines: string[] = []
+  for (let i = 0; i < 55; i += 1) {
+    lines.push(`- [n${i}](n${i}.md) - fact ${i}`)
+    initial[`${MEM}/n${i}.md`] = note(`n${i}`, 'feedback', `fact ${i}`)
+  }
+  initial[INDEX] = lines.join('\n') + '\n'
+  const { fs, raw } = harness(initial)
+  const store = storeOver(fs)
+  for (let i = 0; i < 55; i += 1) assert.equal((store.remove('memory', `fact ${i}`) as any).ok, true)
+  const kept = trashNames(raw)
+  assert.equal(kept.length, 50)
+  const facts = kept.map((n) => JSON.parse(raw.readFile(`${TRASH}/${n}`)!).text)
+  for (let i = 0; i < 5; i += 1) assert.ok(!facts.includes(`fact ${i}`), `fact ${i} is one of the oldest`)
+  for (let i = 5; i < 55; i += 1) assert.ok(facts.includes(`fact ${i}`), `fact ${i} is one of the newest`)
+})
+
+// ── The real disk ────────────────────────────────────────────────────────────
+
+test('the node adapter reads a missing file as null and renames over an existing file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bgos-memory-'))
+  try {
+    const target = join(dir, 'MEMORY.md')
+    assert.equal(nodeMemoryFs.readFile(target), null)
+    assert.equal(nodeMemoryFs.stat(target), null)
+    writeFileSync(target, 'old\n')
+    const tmp = join(dir, '.MEMORY.md.bgos-tmp')
+    nodeMemoryFs.writeFile(tmp, 'new\n')
+    nodeMemoryFs.rename(tmp, target)
+    assert.equal(readFileSync(target, 'utf8'), 'new\n')
+    assert.equal(existsSync(tmp), false)
+    assert.equal(nodeMemoryFs.stat(dir)?.isDirectory, true)
+    assert.deepEqual(nodeMemoryFs.listDir(dir), ['MEMORY.md'])
+    assert.deepEqual(nodeMemoryFs.listDir(join(dir, 'absent')), [])
+    nodeMemoryFs.mkdir(join(dir, 'trash', 'deep'))
+    assert.equal(nodeMemoryFs.stat(join(dir, 'trash', 'deep'))?.isDirectory, true)
+    nodeMemoryFs.rm(target)
+    assert.equal(nodeMemoryFs.exists(target), false)
+    // Review fix P1: the CLI compares real paths, and a missing one is null.
+    assert.equal(typeof nodeMemoryFs.realpath?.(dir), 'string')
+    assert.equal(nodeMemoryFs.realpath?.(join(dir, 'absent')), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

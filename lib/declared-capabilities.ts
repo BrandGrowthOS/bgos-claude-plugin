@@ -104,6 +104,12 @@
  *                       it into a settings file the CLI reads, so the daemon
  *                       looks at boot (lib/floor-hook-presence.ts) and does
  *                       not declare a stop its session cannot make.
+ *   memory_rpc          this daemon answers the owner's Memory screen: list,
+ *                       add, replace and remove over this agent's own Claude
+ *                       Code auto memory folder (lib/memory-rpc.ts). Every
+ *                       host: every host can read and write its own memory
+ *                       folder. The backend sends a memory frame to a Claude
+ *                       Code pairing only while this is declared (P7 stage 2).
  *   boards_playbook     this daemon's boards_update_schema tool can describe
  *                       what each column of a workflow select means (the
  *                       set_column_lines op, 0.56.0), and it checks the
@@ -152,6 +158,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'mission_set_goals',
   PERMISSION_CARD,
   PLAN_CARD,
+  'memory_rpc',
   'boards_playbook',
   'boards_playbook_does',
 ])
