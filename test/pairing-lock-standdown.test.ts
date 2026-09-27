@@ -67,6 +67,10 @@ const PAIRING_FRAMES = [
   'mission_abandoned',
   'mission_failed',
   'mission_updated',
+  // Memory (P7 stage 2): the owner's Memory screen lists and changes this
+  // agent's auto memory. Only the lock holder may answer: a passive daemon on a
+  // shared host answering too would race the real one for the first result.
+  'memory_rpc',
 ]
 
 // Transport bookkeeping, not work done on the pairing's behalf: a passive

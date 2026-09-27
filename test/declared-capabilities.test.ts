@@ -100,7 +100,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'boards_playbook', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'hard_floor'],
   )
 })
 
@@ -129,6 +129,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'memory_rpc',
       'boards_playbook',
       'hard_floor',
       'mission_goal_loop',
@@ -166,6 +167,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'mission_set_goals',
       'permission_card',
       'plan_card',
+      'memory_rpc',
       'boards_playbook',
       'hard_floor',
       'mission_goal_loop',
@@ -193,6 +195,18 @@ test('plan_card is declared on every host, because propose_plan is a typed tool 
     assert.ok(declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).includes('plan_card'))
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('plan_card'))
+})
+
+test('memory_rpc is declared on every host: the memory folder is plain files', () => {
+  // The owner's Memory screen reaches this agent only while the pairing has
+  // declared memory_rpc (backend memory-capability-tokens.ts reads this exact
+  // name). Reading and writing the agent's own auto memory folder needs no
+  // tmux, so it is not gated on the injector, and it is declared once.
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
+    assert.equal(declared.filter((t) => t === 'memory_rpc').length, 1)
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('memory_rpc'))
 })
 
 /**
