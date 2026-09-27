@@ -388,6 +388,8 @@ describe('declared capabilities on the heartbeat', () => {
     // its hold rides the permission relay. It is declared on a pairing
     // connection only, and only a pairing connection beats
     // (shouldSendVersionHeartbeat), so every beat carries it.
+    // boards_playbook (0.56.0) rides every beat on every host: the column
+    // lines tool is typed and has no platform limit.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
@@ -395,6 +397,7 @@ describe('declared capabilities on the heartbeat', () => {
       'permission_card',
       'plan_card',
       'memory_rpc',
+      'boards_playbook',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -406,6 +409,7 @@ describe('declared capabilities on the heartbeat', () => {
       'permission_card',
       'plan_card',
       'memory_rpc',
+      'boards_playbook',
       'hard_floor',
     ])
   })
