@@ -2,10 +2,11 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.56.0
+## 0.60.0
 
-**Numbered 0.56.0, the next free number.** The plugin's main took 0.54.0 on 2026-09-26 (#164) while the memory lane
-this stacks on (#161) was open at 0.54.0 too, so that one re takes 0.55.0 and merges first, and this ships above it.
+**Numbered 0.60.0, the next free number.** The plugin's main took 0.54.0 on 2026-09-26 (#164) while the memory lane
+this stacks on (#161) was open at 0.54.0 too, so that one re takes 0.55.0 and merges first; 0.56.0 to 0.59.0 are
+claimed by other open work (the Kanban boards PRs and P6), so this ships at 0.60.0.
 Nothing is gated on the number: the backend reaches this lane only through the declared `changes_rpc` token.
 
 **The owner's Changes panel can read this agent's uncommitted changes.**
