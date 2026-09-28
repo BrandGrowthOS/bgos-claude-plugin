@@ -2,12 +2,34 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.60.0
+## 0.60.0 (2026-09-28)
 
-**Numbered 0.60.0, the next free number.** The plugin's main took 0.54.0 on 2026-09-26 (#164) while the memory lane
-this stacks on (#161) was open at 0.54.0 too, so that one re takes 0.55.0 and merges first; 0.56.0 to 0.59.0 are
-claimed by other open work (the Kanban boards PRs and P6), so this ships at 0.60.0.
-Nothing is gated on the number: the backend reaches this lane only through the declared `changes_rpc` token.
+**One release for four changes: the owner's Changes panel, a truthful browser shim, the browser rule file the desktop
+uses, and a nightly update that no longer leaves the second daemon on old code.** Published once, as one version, so
+the fleet takes all four on the same restart.
+
+**A daemon that waited for another daemon's nightly update now restarts onto it the same way the one that installed it
+does.** When several daemons share one checkout, one of them takes the update lock and installs the update, and the
+others wait for it. Since 0.54.0 the installer asks the restart ladder to restart its session (the same ladder a click
+on Update uses, which acts only on an authority that proves it owns the process and otherwise leaves the update staged).
+The daemons that waited did not: they kept running the old code they had already replaced until someone restarted them
+by hand, and an older version of that path exited outright with nothing to bring it back (two agents dark for about
+four hours, twice). Now the waiting daemon takes exactly the installer's decision: it exits only where the operator set
+`BGOS_EXIT_AFTER_UPDATE`; otherwise it asks the restart ladder when one is wired in; otherwise, or when the ladder
+stages, it keeps serving, takes messages again, and logs that the update waits for the next restart. An update started
+from the app is unchanged: the app's own restart step still decides for it.
+
+**The browser tools say what really happened when a call is refused or a connection drops.** The HOAI browser shim
+(`bin/hoai-browser-mcp.mjs`) is re vendored from HOAI's source, sha256 `24470ac3` (it was `aaaff4b6`). A rate limit, a
+general request limit, a host whose connection dropped mid call, a refusal met while the shim was still connecting,
+a result that could not be collected for a call already sent, and a status check the backend refused each get words
+that are true for that case. Before, most of them told the agent that the owner's desktop app "is not running or not
+signed in", or invited a blind retry of a call that may already have clicked, bought or sent something. The relay
+tests carried over from HOAI now cover each of these (32 cases here, 20 of which fail against the old copy).
+
+**The daemon's browser rules are the desktop's rules again.** `lib/browser-host-core/policy.js` is re vendored from
+the desktop Agent Browser (sha256 `7541a0c3`), so a browser run on the agent's own machine keeps the same truthful
+step trail the desktop keeps (BGOS #1634).
 
 **The owner's Changes panel can read this agent's uncommitted changes.**
 The HOAI Changes panel (HOAI P7 stage 3, C-31) shows the files a coding agent has changed and not committed yet. This
