@@ -184,6 +184,40 @@ test('generated run.sh: WEDGED reports what run.expect measured instead of guess
     `bash could not open ${parseFile} (126), so this says nothing about the script: ${parsed.stderr}`,
   )
   assert.equal(parsed.status, 0, `generated run.sh must parse: ${parsed.stderr}`)
+  // and the installer that GENERATES it, under whatever bash this machine has (3.2 on macOS, 5.x on CI)
+  const parsedAgent = spawnSync('bash', ['-n', agentPath], { encoding: 'utf8' })
+  assert.equal(parsedAgent.status, 0, `bin/bgos-agent itself must parse: ${parsedAgent.stderr}`)
+})
+
+test('behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it', SLOW, async () => {
+  if (!hasBash) return requireTools()
+  // Parsing is not running. run.sh is what launchd and systemd execute on the
+  // OWNER'S machine, with the owner's bash (3.2 on macOS, 5.x on Linux), so it
+  // is executed here for real against a stand-in for expect that fails fast,
+  // the way a declined gate does. Three laps take the fail count to the WEDGED
+  // branch; the 60 s sleep there is the only thing stubbed out.
+  const { dir } = generate()
+  const stub = join(dir, 'fake-expect')
+  writeFileSync(stub, `#!/bin/sh\necho "2026-09-22 00:00:00 outcome=gate-unrecognised answered=[] screen=\\"shiny new telemetry\\"" > "${dir}/launch-status"\nexit 3\n`)
+  chmodSync(stub, 0o755)
+  const runShPath = join(dir, 'run.sh')
+  writeFileSync(
+    runShPath,
+    readFileSync(runShPath, 'utf8')
+      .replace(/^expect_bin=.*$/m, `expect_bin="${stub}"`)
+      .replace(/^  sleep 60$/m, '  : # the 60 s back-off, skipped in the test'),
+  )
+  const workdir = mkdtempSync(join(tmpdir(), 'hoai-agent-cwd-'))
+  for (let lap = 1; lap <= 3; lap++) {
+    const run = spawnSync('bash', [runShPath], { cwd: workdir, encoding: 'utf8', timeout: 60_000 })
+    assert.equal(run.status, 0, `lap ${lap}: run.sh itself must not die (${run.stderr})`)
+    assert.equal(readFileSync(join(dir, 'failcount'), 'utf8').trim(), String(lap))
+  }
+  const log = readFileSync(join(dir, 'agent.log'), 'utf8')
+  assert.match(log, /starting agent \(consecutive fast-fails: 2\)/)
+  assert.match(log, /WEDGED: agent exited after \d+s \(expect exit 3\), 3 times in a row\./, 'the exit code survives `|| rc=$?`')
+  assert.match(log, /Last launch: .*outcome=gate-unrecognised .*shiny new telemetry/, 'the MEASURED reason, not a guess')
+  assert.doesNotMatch(log, /syntax error|command not found|unbound variable|bad substitution/)
 })
 
 test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here)', SLOW, async () => {
