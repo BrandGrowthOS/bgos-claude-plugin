@@ -68,10 +68,15 @@ BGOS, then bring the copy across with this list.
 ## What none of this catches
 
 Nothing in THIS repo fires when the BGOS shim changes and this copy does not
-move, which is the drift that actually happened (2026-09-12). A check for that
-has to live on the BGOS side: a BGOS test that fails when the shim's hash is not
-the one the plugins pin. Until that exists, step 1 of a BGOS shim fix is
-"re-vendor both plugins", and the only automatic protection here is
-behavioural: the relay suite fails against a shim that regresses the body-status
-reading or the pairing-lane assistant id (proven: 6 of 9 cases fail against the
-pre-fix blob).
+move, which is the drift that actually happened (2026-09-12). That check lives
+on the BGOS side now: `frontend/electron-app/agent-browser/shim/hoai-browser-mcp.pin.json`
+holds the shim's sha256 and `agent-browser/__tests__/shim.vendor-pin.test.js`
+fails on the BGOS side the moment the shim's bytes stop matching it, with a message
+that names both plugin copies. It stops a BGOS change from landing without a
+deliberate pin bump; it cannot re-vendor this repo, so step 1 of a BGOS shim
+fix is still "re-vendor both plugins". Here, the automatic protection is
+behavioural: the relay suite fails against a shim that regresses what it pins.
+As of the 2026-09-28 re-vendor (sha256 `24470ac3`, BGOS `8daa845bc`) the ported
+relay suite holds 32 cases, and 20 of them fail against the previous copy
+(`aaaff4b6`): the rate limit and throttle words, the dropped host, the refusals
+met while connecting, the collect of a sent call, and the refused host probe.
