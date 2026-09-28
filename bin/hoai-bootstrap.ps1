@@ -403,6 +403,7 @@ Say 'Verifying the launch end to end before claiming success...'
 # launch) never stall on a hidden question:
 #   .claude.json  projects[<workdir>].hasTrustDialogAccepted (trust dialog)
 #                 hasCompletedOnboarding + theme (first-run wizard)
+#   settings.json permissions.deny AskUserQuestion (the agent asks through the app)
 #   settings.json skipDangerousModePermissionPrompt (bypass warning, whose
 #                 DEFAULT answer is exit, so it must never be blind-Entered)
 $preseed = @'
@@ -439,6 +440,16 @@ fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const setPath = path.join(configDir, "settings.json");
 const settings = load(setPath);
 settings.skipDangerousModePermissionPrompt = true;
+// Questions reach the owner through the HOAI app (ask_user_input), wherever
+// they are. Claude Code's own AskUserQuestion tool stops the session at a
+// terminal nobody watches, so it is denied here (board row 01a07b28). Any
+// existing permissions (allow, deny, defaultMode) are kept, and the entry is
+// added to an existing deny list once, never doubled.
+const perms = settings.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions) ? settings.permissions : {};
+const deny = Array.isArray(perms.deny) ? perms.deny : [];
+if (!deny.includes("AskUserQuestion")) deny.push("AskUserQuestion");
+perms.deny = deny;
+settings.permissions = perms;
 fs.writeFileSync(setPath, JSON.stringify(settings, null, 2));
 console.log("[hoai] pre-seeded trust + prompt acceptance for " + workdir);
 '@
