@@ -536,9 +536,11 @@ say 'Verifying the launch end to end before claiming success...'
 # launch) never stall on a hidden question:
 #   .claude.json  projects[<workdir>].hasTrustDialogAccepted (trust dialog)
 #                 hasCompletedOnboarding + theme (first-run wizard)
-#   settings.json permissions.deny AskUserQuestion (the agent asks through the app)
 #   settings.json skipDangerousModePermissionPrompt (bypass warning, whose
 #                 DEFAULT answer is exit, so it must never be blind-Entered)
+#   <workdir>/.claude/settings.local.json permissions.deny AskUserQuestion
+#                 (the agent asks through the app; the AGENT's file, never
+#                 the owner's own settings.json)
 # The heredoc delimiter is quoted so nothing in the script expands here.
 # Run from a file, argv[0] is node and argv[1] is the script path, so the
 # real arguments start at index 2.
@@ -575,17 +577,35 @@ fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 const setPath = path.join(configDir, "settings.json");
 const settings = load(setPath);
 settings.skipDangerousModePermissionPrompt = true;
+fs.writeFileSync(setPath, JSON.stringify(settings, null, 2));
 // Questions reach the owner through the HOAI app (ask_user_input), wherever
 // they are. Claude Code's own AskUserQuestion tool stops the session at a
-// terminal nobody watches, so it is denied here (board row 01a07b28). Any
-// existing permissions (allow, deny, defaultMode) are kept, and the entry is
-// added to an existing deny list once, never doubled.
-const perms = settings.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions) ? settings.permissions : {};
-const deny = Array.isArray(perms.deny) ? perms.deny : [];
-if (!deny.includes("AskUserQuestion")) deny.push("AskUserQuestion");
-perms.deny = deny;
-settings.permissions = perms;
-fs.writeFileSync(setPath, JSON.stringify(settings, null, 2));
+// terminal nobody watches, so it is denied (board row 01a07b28), in the AGENT
+// folder's .claude/settings.local.json (the file the activity hooks use too).
+// Never in settings.json above: with CLAUDE_CONFIG_DIR unset that is the
+// owner's own ~/.claude/settings.json, read by every Claude Code session they
+// run. Existing permissions (allow, deny, defaultMode) and every other key
+// are kept, the entry is added once, never doubled, and a file that does not
+// parse is left as it is.
+const localDir = path.join(workdir, ".claude");
+const localPath = path.join(localDir, "settings.local.json");
+let local = {};
+let localOk = true;
+if (fs.existsSync(localPath)) {
+  try { local = JSON.parse(fs.readFileSync(localPath, "utf8")); } catch { localOk = false; }
+  if (!local || typeof local !== "object" || Array.isArray(local)) localOk = false;
+}
+if (localOk) {
+  const perms = local.permissions && typeof local.permissions === "object" && !Array.isArray(local.permissions) ? local.permissions : {};
+  const deny = Array.isArray(perms.deny) ? perms.deny : [];
+  if (!deny.includes("AskUserQuestion")) deny.push("AskUserQuestion");
+  perms.deny = deny;
+  local.permissions = perms;
+  fs.mkdirSync(localDir, { recursive: true });
+  fs.writeFileSync(localPath, JSON.stringify(local, null, 2));
+} else {
+  console.log("[hoai] warning: " + localPath + " does not parse; AskUserQuestion is not denied there.");
+}
 console.log("[hoai] pre-seeded trust + prompt acceptance for " + workdir);
 JS
 node "$PRESEED_JS" "$CONFIG_DIR" "$WORKDIR" \
