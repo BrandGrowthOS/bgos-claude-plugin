@@ -46,6 +46,14 @@
  *             no chatId or the live session is unreachable, result
  *             {stopped:false, supported:false}. Never kills the daemon,
  *             never touches other chats.
+ *   list_sessions → the app's Sessions sheet (P6 stage 3, spec 5.7): the
+ *             sessions in this agent's own folder, from lib/session-library.ts,
+ *             answered {sessions, abilities:{resume:false, rename:false},
+ *             truncated, runtime:'claude-code'}. Titles and previews that
+ *             hold a secret are withheld on this machine, before they leave.
+ *   resume_session, rename_session → a later slice (spec D20): refused with
+ *             the contract's `unsupported`, and the list already says so.
+ *             A Sessions frame is run once per rpcId, even after it answered.
  *
  * Deadline discipline (ported from openclaw-channel-bgos/voice-rpc-handler):
  * the daemon's inner cap must stay UNDER the backend's, because the backend
@@ -56,7 +64,23 @@
 import { readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 
-export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn'
+import {
+  LIST_SESSIONS,
+  SESSION_OPS,
+  SESSION_QUERY_MAX,
+  SESSIONS_LIST_MAX,
+  STOP_CONFIRMATION_COOPERATIVE,
+  type ListSessionsAnswer,
+  type SessionOp,
+  type SessionRow,
+} from './session-controls-contract.ts'
+
+export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp
+
+/** True for the three Sessions ops the contract file names. */
+function isSessionOp(op: unknown): op is SessionOp {
+  return (SESSION_OPS as readonly unknown[]).includes(op)
+}
 
 export interface VoiceRpcFrame {
   rpcId: string
@@ -86,11 +110,13 @@ export function normalizeVoiceRpc(raw: unknown): VoiceRpcFrame | null {
   if (!raw || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
   const rpcId = typeof r.rpcId === 'string' ? r.rpcId : ''
+  // The Sessions ops are spelled by the contract file BGOS pins too.
   const op =
     r.op === 'mint' ||
     r.op === 'consult' ||
     r.op === 'dispatch' ||
-    r.op === 'stop_turn'
+    r.op === 'stop_turn' ||
+    isSessionOp(r.op)
       ? r.op
       : null
   if (!rpcId || !op) return null
@@ -348,6 +374,22 @@ export interface VoiceRpcDeps {
    *  send-message). Used by stop_turn for its short confirmation line.
    *  Optional and best-effort: a failure never fails the op. */
   sendChatMessage?(chatId: string, text: string): Promise<unknown>
+  /** Told once, synchronously, when a stop_turn notice REACHED the live
+   *  session for this chat (P6 stage 3, the armed goal case in
+   *  lib/stop-pause.ts). Never called for a stop that could not be scoped
+   *  or delivered. Fire and forget: it must not throw into the op, and a
+   *  throw is logged and swallowed, never a flipped result. */
+  onStopDelivered?(chatId: string): void
+  /** The Sessions sheet's list (P6 stage 3, spec 5.7): the sessions in this
+   *  agent's own folder, newest first, at most `limit`, filtered by `query`,
+   *  secrets already withheld (lib/session-library.ts). server.ts builds it
+   *  from the same folder and binding the context gauge reads. Absent, a
+   *  list answers `failed`: never an empty list that would read as "no
+   *  sessions". */
+  listSessions?(input: {
+    query?: string
+    limit: number
+  }): { sessions: SessionRow[]; truncated: boolean }
   log(msg: string): void
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
@@ -634,20 +676,32 @@ export function normalizeVoiceTaskDispatch(
   }
 }
 
-/** Confirmation line posted to the chat after a delivered stop request. */
-export const STOP_TURN_CONFIRMATION = 'Run stopped at your request.'
+/** Confirmation line posted to the chat after a delivered stop request.
+ *  The contract file's cooperative line (P6 stage 3, spec D7): it is posted
+ *  the moment the notice is delivered, BEFORE the model has stood down, so
+ *  it claims the asking and nothing more. The old "Run stopped at your
+ *  request." claimed a stop this plugin cannot back. BGOS and Codex pin the
+ *  same file, so the canon's mirror and this daemon say the same words. */
+export const STOP_TURN_CONFIRMATION: string = STOP_CONFIRMATION_COOPERATIVE
 
 /** The [stop_turn] channel-notification text (session controls). Honest
  *  cooperative semantics: this plugin cannot kill an in-flight model turn,
  *  so it tells the live agent, in plain words, to stand down on that ONE
- *  chat immediately. Exported for tests. */
+ *  chat immediately. Exported for tests.
+ *
+ *  The last sentence is P6 stage 3 (spec 4.3, D13 item 1). A Stop is neither
+ *  a finish nor a failure, and this runtime has complete_mission and no fail
+ *  tool, so the one wrong write a stop can cause here is a model closing the
+ *  chat's open mission on its way out. The notice says not to. */
 export function buildStopTurnNotification(args: { chatId: string }): string {
   return (
     `[stop_turn] Your user pressed STOP for chat ${args.chatId}. ` +
     `Stop working on that chat NOW: do not start any new tool calls for ` +
     `it and abandon its remaining steps. Send ONE short reply line to ` +
     `that chat acknowledging where you stopped. Keep any partial results ` +
-    `you already sent. Work for other chats is unaffected.`
+    `you already sent. Work for other chats is unaffected. ` +
+    `If that chat has an open mission, leave it open: do not call ` +
+    `complete_mission for it because of this stop. Your owner can resume.`
   )
 }
 
@@ -686,6 +740,12 @@ export class VoiceRpcHandler {
    *  is the fresh answer and rides the backend's task-result path so it is
    *  spoken in the call. Same TTL and bound as expiredConsults. */
   private readonly continuations = new Map<string, number>()
+  /** Sessions frames already taken, answered or not (spec 5.4, the Codex
+   *  rpcSeen rule). The backend re-emits a frame once at 1.5 s when its ACK
+   *  has not landed, and a list answers in milliseconds, so the in flight
+   *  guard alone would run it twice and post a second result. Bounded like
+   *  the consult maps. */
+  private readonly sessionRpcsSeen = new Set<string>()
 
   constructor(deps: VoiceRpcDeps) {
     this.deps = deps
@@ -697,6 +757,17 @@ export class VoiceRpcHandler {
     if (this.inFlight.has(frame.rpcId)) {
       this.deps.log(`voice_rpc duplicate frame ignored (rpc=${frame.rpcId})`)
       return
+    }
+    if (isSessionOp(frame.op)) {
+      if (this.sessionRpcsSeen.has(frame.rpcId)) {
+        this.deps.log(`voice_rpc duplicate sessions frame ignored (rpc=${frame.rpcId})`)
+        return
+      }
+      this.sessionRpcsSeen.add(frame.rpcId)
+      if (this.sessionRpcsSeen.size > 200) {
+        const first = this.sessionRpcsSeen.values().next().value
+        if (first !== undefined) this.sessionRpcsSeen.delete(first)
+      }
     }
     this.inFlight.add(frame.rpcId)
     try {
@@ -720,6 +791,17 @@ export class VoiceRpcHandler {
         payload = await this.stopTurn(frame)
       } else if (frame.op === 'dispatch') {
         payload = await this.dispatch(frame)
+      } else if (frame.op === LIST_SESSIONS) {
+        payload = { ...this.listSessions(frame) }
+      } else if (isSessionOp(frame.op)) {
+        // resume_session and rename_session: a later slice (spec D20). The
+        // per agent supervisor reads its pinned session once at start and
+        // cannot be told to switch, and a rename would race the CLI's own
+        // appends to a live transcript. Answered honestly, never faked.
+        throw new VoiceRpcError(
+          'unsupported',
+          'Resuming or renaming a Claude Code session from the app comes in a later update.',
+        )
       } else {
         // Answer loudly so a future backend change fails fast, never silently.
         throw new VoiceRpcError(
@@ -731,7 +813,14 @@ export class VoiceRpcHandler {
       }
       await this.postResult(frame.rpcId, { ok: true, payload })
     } catch (err) {
-      const code = err instanceof VoiceRpcError ? err.code : 'PLUGIN_ERROR'
+      // A Sessions op speaks the contract's refusal codes, so anything that
+      // is not a named refusal there is `failed`.
+      const code =
+        err instanceof VoiceRpcError
+          ? err.code
+          : isSessionOp(frame.op)
+            ? 'failed'
+            : 'PLUGIN_ERROR'
       await this.postResult(frame.rpcId, {
         ok: false,
         error: {
@@ -935,6 +1024,18 @@ export class VoiceRpcHandler {
       )
       return { stopped: false, supported: false }
     }
+    // The stop reached the model. Hand the chat on for the armed goal case
+    // (a Keep working loop would re prompt the model, so its mission is
+    // paused), without waiting on it and without letting it fail the op.
+    try {
+      this.deps.onStopDelivered?.(chatId)
+    } catch (err) {
+      this.deps.log(
+        `stop_turn: the armed goal hand off failed (chat=${chatId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
     // Short plain confirmation into the chat via the normal outbound send
     // path. Best-effort: the stop already reached the agent, so a failed
     // confirmation must not flip the result.
@@ -948,6 +1049,54 @@ export class VoiceRpcHandler {
       )
     }
     return { stopped: true, mode: 'cooperative' }
+  }
+
+  // ── list_sessions (the Sessions sheet, list only) ─────────────────────────
+
+  /**
+   * The sessions in this agent's own folder, for the app's Sessions sheet.
+   * The backend already checked that the caller owns this agent and that the
+   * chat is its main chat; this daemon re-checks that the frame names the
+   * agent it serves, and that the payload is inside the contract's limits.
+   * Resume and rename are off (D19, D20), so the sheet offers neither.
+   * Refusals speak the contract's codes: `invalid` for a frame that is not
+   * ours or a search that is not text or is too long, `failed` for anything
+   * the library could not do.
+   */
+  private listSessions(frame: VoiceRpcFrame): ListSessionsAnswer {
+    if (String(frame.assistantId) !== String(this.deps.config.assistantId)) {
+      throw new VoiceRpcError('invalid', 'This agent does not serve that assistant.')
+    }
+    const raw = frame.payload?.query
+    if (raw !== undefined && raw !== null && typeof raw !== 'string') {
+      throw new VoiceRpcError('invalid', 'A session search must be text.')
+    }
+    const trimmed = typeof raw === 'string' ? raw.trim() : ''
+    // Counted in characters, as the backend's own limit counts them.
+    if (Array.from(trimmed).length > SESSION_QUERY_MAX) {
+      throw new VoiceRpcError(
+        'invalid',
+        `A session search holds at most ${SESSION_QUERY_MAX} characters.`,
+      )
+    }
+    const asked = frame.payload?.limit
+    const limit =
+      typeof asked === 'number' && Number.isInteger(asked) && asked >= 1
+        ? Math.min(asked, SESSIONS_LIST_MAX)
+        : SESSIONS_LIST_MAX
+    if (!this.deps.listSessions) {
+      throw new VoiceRpcError('failed', 'This agent cannot list its sessions here.')
+    }
+    const { sessions, truncated } = this.deps.listSessions({
+      query: trimmed || undefined,
+      limit,
+    })
+    return {
+      sessions,
+      abilities: { resume: false, rename: false },
+      truncated,
+      runtime: 'claude-code',
+    }
   }
 
   // ── dispatch ──────────────────────────────────────────────────────────────
