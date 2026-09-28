@@ -112,11 +112,11 @@ test('login gate polls auth status and never proceeds logged-out', () => {
   assert.ok(ps1.includes("Fail 'login-timeout'"))
 })
 
-test('PowerShell 5.1 parses the script cleanly (win32 only)', (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('powershell parser check runs on Windows')
-    return
-  }
+// The skip is an option, not t.skip(): bun's node:test does not implement
+// t.skip() and ignores the option, so the early return is what skips there.
+const notWindows = process.platform !== 'win32'
+test('PowerShell 5.1 parses the script cleanly (win32 only)', { skip: notWindows ? 'powershell parser check runs on Windows' : false }, () => {
+  if (notWindows) return
   const check = spawnSync(
     'powershell',
     [

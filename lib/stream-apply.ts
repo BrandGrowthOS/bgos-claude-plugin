@@ -33,6 +33,7 @@ import {
   type AgentOriginLike,
   isSelfAuthoredAgentOrigin,
 } from './inbound-channel.ts'
+import { senderUserIdCandidate } from './permission-relay.ts'
 
 // ── Payload normalization ────────────────────────────────────────────────────
 
@@ -40,6 +41,23 @@ export interface StreamAnswerPayload {
   callbackData: string
   buttonText: string
   customText: string | undefined
+  /**
+   * WHO TAPPED, as the RAW answer payload names them, read with the null aware
+   * senderUserIdCandidate (the keys it knows: sender.userId, senderUserId,
+   * sender_user_id, userId, user_id). Null when the tap names nobody, which is
+   * every tap on today's backend. This is the only place the stream keeps the
+   * id: everything else on the raw answer is dropped by the normalisation, and
+   * reading senderUserIdCandidate off THIS object instead of the raw payload
+   * is the defect the checker found on #150 (always null, so a stamped tap
+   * from the wrong person was accepted as an unstamped one).
+   *
+   * NAMED clickerUserId, NOT senderUserId, ON PURPOSE. senderUserIdCandidate
+   * reads a `senderUserId` key, so a field of that name here would silently
+   * change what `senderUserIdOf(answer)` returns in server.ts's stream
+   * PERMISSION intake and in the click meta, which are #142's merged code and
+   * not this change's to move. Only the plan binding reads this field.
+   */
+  clickerUserId: string | null
 }
 
 export interface StreamMessageView {
@@ -80,7 +98,7 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
   const buttonText = String(r.buttonText ?? r.button_text ?? '')
   const customText = str(r.customText ?? r.custom_text)
   if (!callbackData && !buttonText && !customText) return null
-  return { callbackData, buttonText, customText }
+  return { callbackData, buttonText, customText, clickerUserId: senderUserIdCandidate(r) }
 }
 
 /**

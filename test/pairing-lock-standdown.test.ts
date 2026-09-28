@@ -67,6 +67,10 @@ const PAIRING_FRAMES = [
   'mission_abandoned',
   'mission_failed',
   'mission_updated',
+  // Memory (P7 stage 2): the owner's Memory screen lists and changes this
+  // agent's auto memory. Only the lock holder may answer: a passive daemon on a
+  // shared host answering too would race the real one for the first result.
+  'memory_rpc',
 ]
 
 // Transport bookkeeping, not work done on the pairing's behalf: a passive
@@ -469,7 +473,9 @@ test('a turn end AWAITS the card already on the wire before its final one', () =
   assert.ok(start > 0, 'the turn end must be the awaiting one')
   const body = server.slice(start, server.indexOf('\nfunction runHookEffects(', start))
   const capture = body.indexOf('const pending = hookCardPending')
-  const clear = body.indexOf('endHookTurn()')
+  // The CALL, whatever it is handed: stage 8 gave it the keep flag, which is
+  // the mapper's answer to "is a child agent still working".
+  const clear = body.indexOf('endHookTurn(')
   const awaitFlight = body.indexOf('await flight')
   const finalWrite = body.indexOf('await writeHookCard(')
   assert.ok(capture > 0, 'the final card must be taken out of the state first')
@@ -478,7 +484,7 @@ test('a turn end AWAITS the card already on the wire before its final one', () =
   assert.ok(finalWrite > awaitFlight, 'and only then does the final done card go out')
   assert.match(
     server,
-    /case 'turn_end': \{\s*\n\s*void finishHookTurn\(\)/,
+    /case 'turn_end': \{\s*\n\s*void finishHookTurn\(effect\.keepCard\)/,
     'the turn_end effect must run the awaiting version',
   )
 })

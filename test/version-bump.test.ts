@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -17,6 +18,24 @@ import {
 // parity test below compares it against the real runtime parser rather than
 // against a copy of the regex that could drift out from under it.
 import { parseSemver as runtimeParseSemver } from '../lib/update-planner.mjs'
+
+test('the two shipped manifests really do agree, not just the gate logic', () => {
+  // Everything else in this file drives the decision function on literals.
+  // This one reads the files a release actually ships: Claude Code loads the
+  // plugin manifest and npm loads package.json, so a bump applied to one of
+  // them gives the owner an update whose two halves disagree about what they
+  // are, and the CI gate only catches it on a pull request that touches code.
+  const read = (name: string): string =>
+    JSON.parse(readFileSync(new URL(`../${name}`, import.meta.url), 'utf8')).version
+  const pkg = read('package.json')
+  const manifest = read('.claude-plugin/plugin.json')
+  assert.equal(
+    manifest,
+    pkg,
+    'package.json and .claude-plugin/plugin.json must be bumped together',
+  )
+  assert.ok(parseSemver(pkg), `${pkg} is not a version the daemons can act on`)
+})
 
 test('passes when the version advances and both manifests agree', () => {
   const r = decideVersionBump({

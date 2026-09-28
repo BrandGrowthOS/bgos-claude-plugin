@@ -21,6 +21,7 @@ import {
   viewStreamMessage,
 } from '../lib/stream-apply.ts'
 import { selectClickTransitions } from '../lib/poll-core.ts'
+import { senderUserIdCandidate } from '../lib/permission-relay.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 
 function upd(
@@ -176,6 +177,7 @@ test('answerPayload is surfaced for buttons_answered rows, both casings', () => 
     callbackData: 'go',
     buttonText: 'Go',
     customText: undefined,
+    clickerUserId: null,
   })
   const snake = viewStreamMessage(
     upd({ answer_payload: { callback_data: 'go2', button_text: 'Go2', custom_text: 'why' } }),
@@ -184,7 +186,37 @@ test('answerPayload is surfaced for buttons_answered rows, both casings', () => 
     callbackData: 'go2',
     buttonText: 'Go2',
     customText: 'why',
+    clickerUserId: null,
   })
+})
+
+test('answerPayload CARRIES the tapper id off the raw answer, null aware, every key the reader knows', () => {
+  // The normalisation keeps only the button fields, so the tapper id has to be
+  // carried across explicitly, or the stream's plan binding reads null on every
+  // tap (the checker's major on #150).
+  for (const [answer, expected] of [
+    [{ callbackData: 'go', userId: 'user-b', senderUserId: 'user-b' }, 'user-b'],
+    [{ callbackData: 'go', sender: { userId: 'user-c' } }, 'user-c'],
+    [{ callbackData: 'go', sender_user_id: 'user-d' }, 'user-d'],
+    [{ callback_data: 'go', user_id: 'user-e' }, 'user-e'],
+    [{ callbackData: 'go' }, null],
+    [{ callbackData: 'go', userId: '' }, null],
+  ] as const) {
+    const view = viewStreamMessage(upd({ answerPayload: answer }, { kind: 'buttons_answered' }))
+    assert.equal(view!.answerPayload!.clickerUserId, expected, JSON.stringify(answer))
+  }
+  // The message's AUTHOR is not the tapper: an id on the row does not leak in.
+  const authored = viewStreamMessage(
+    upd({ senderUserId: 'author', answerPayload: { callbackData: 'go' } }),
+  )
+  assert.equal(authored!.answerPayload!.clickerUserId, null)
+  // And no `senderUserId` key, which the null aware reader would pick up and
+  // so change what the stream PERMISSION intake decides (#142's code).
+  const stamped = viewStreamMessage(
+    upd({ answerPayload: { callbackData: 'go', senderUserId: 'user-b' } }),
+  )
+  assert.equal(stamped!.answerPayload!.clickerUserId, 'user-b')
+  assert.equal(senderUserIdCandidate(stamped!.answerPayload), null)
 })
 
 // ── decideMessageNew (5.7) ──────────────────────────────────────────────────

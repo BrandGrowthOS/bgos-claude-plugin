@@ -621,6 +621,54 @@ The daemon always SENDS: the backend derives the agent's live working status
 from these rows arriving, and a shared agent has several viewers. Nothing in
 this plugin reads that setting.
 
+**What a finished turn says (v0.43.0+).** The folded card carries the turn's
+own clock, so it can say how long the turn took, how many tools ran, how many
+failed and how many files changed. A shell row carries what the command
+printed and the code it exited with; an edit row carries the lines it added and
+removed. Every part of that is drawn only where its datum exists: a card with
+no clock shows no minutes, a row with no output has no chevron, and a command
+whose non zero exit was not a failure (a grep that matched nothing) carries the
+runtime's own one line reading instead of a code nobody measured.
+
+**The output is masked, then capped, and never leaves the machine in full.**
+The secret scan runs over what a command printed BEFORE the tail is taken,
+because cutting first can slice a token in half and hand the scanner a value
+its pattern no longer matches. What ships is the LAST 2048 characters and the
+last 200 lines of a row, and at most 8192 characters of output across a whole
+card, spent from the newest row backwards. Those caps are applied before every
+card write and not only the last one, because the whole tool list rides every
+update while a turn is live. A private key is the one secret whose value is not
+on the line that gives it away, so a `-----BEGIN ... PRIVATE KEY-----` line
+takes its whole body with it, up to and including the `-----END` line. The two
+moments the card reports are the receipts the hook process stamped, not the
+moment this daemon read the spool file.
+
+**What a turn's helpers say (v0.44.0+).** A child agent the turn hands work to
+gets a row of its own: the kind of helper it is, the one line description it
+was given, a state, an elapsed time that ticks while it works, what it is doing
+right now, and its last message once it finishes. The row opens when the launch
+is asked for and stays open until the child's own stop, because the launch
+itself returns in a few milliseconds and that number is not how long the child
+worked. The elapsed time is the difference between two of this host's own
+receipts, and a child that never reports back carries no time and no result at
+all. The child's own commands still draw their ordinary rows, so nothing was
+taken away to make room for this, and helpers never count as tools in the
+folded head's count.
+
+**A card stays open while a helper is still working, even after the turn has
+ended.** A finished card folds, and a helper ticking behind a fold helps
+nobody. So a turn that stops with a child still running leaves its card behind
+and the child's stop, minutes later, updates that same card rather than posting
+a second one. That card is kept under a name of its own, so a later turn cannot
+write over it, and a second turn that ends the same way keeps the first card
+too. The commands the child runs after the turn has ended land on that same
+card, beside the helper row they belong to: one delegating turn is one card,
+however long the child goes on working. There is no token count for a child and
+no way to stop one: this runtime hands the host neither, and both are recorded
+as blocked rather than postponed. `SubagentStop` is the one new hook event;
+`SubagentStart` is deliberately not registered, because it carries no
+description and no tool id, so it can name nothing and be joined to nothing.
+
 **The shape.** Claude Code runs `bin/hoai-hook.mjs` once per hook event, with
 the payload as JSON on stdin. The forwarder appends one line to
 `<state>/hooks/<session_id>/events.jsonl` and exits 0, always. The daemon
@@ -643,8 +691,11 @@ therefore write the same entries into the workspace's
 absolute path (`${CLAUDE_PLUGIN_ROOT}` does not resolve outside a plugin's own
 hooks file). Each of them skips a marketplace install, which already has the
 rail, so no event fires twice. It is idempotent and `hoai` does it on EVERY
-launch, so an existing agent folder gains the rail the next time it starts. To
-do it by hand:
+launch, so an existing agent folder gains the rail the next time it starts. A
+release that registers a NEW event therefore reaches a clone install on its
+next launch and not at the moment it updates: the whole block is rewritten from
+one list, so the folder heals itself, but it heals when it next starts.
+To do it by hand:
 
 ```jsonc
 // <agent folder>/.claude/settings.local.json
@@ -657,7 +708,8 @@ do it by hand:
                      "timeout": 5, "async": true } ] }
     ]
     // ... the same entry for SessionStart, UserPromptSubmit, PostToolUse,
-    // PostToolUseFailure, Stop, PreCompact, PostCompact, SessionEnd
+    // PostToolUseFailure, Stop, PreCompact, PostCompact, SessionEnd,
+    // SubagentStop
   }
 }
 ```
@@ -740,7 +792,21 @@ What the flag turns on, when the backend serves the feature:
 
 **Auto-approve** (`BGOS_AUTO_APPROVE=true`): All tool permissions are automatically approved. Best for trusted environments.
 
-**Interactive** (default, v0.8.0+): Permission prompts appear in the BGOS chat as an inline-button card with **✅ Allow** and **❌ Deny** buttons. Tapping a button resolves the verdict immediately. The legacy text-reply path (`yes <code>` / `no <code>`) still works as a fallback for older clients. 120s timeout auto-denies.
+**Interactive** (default): a tool permission is posted to the BGOS chat as a real approval card, carrying the tool, the command it wants to run, and two buttons: **Allow once** and **Deny**. Tapping one answers the request.
+
+**How long it waits is the owner's choice, not this daemon's.** Every card carries this daemon's offer, `1800` seconds, which is the longest it can hold its side of a request open. The server stores the smaller of that and the per agent wait set for this agent, and the stored number is what the card in your hand counts down. Behind it this daemon keeps a local backstop of that stored wait plus `90` seconds, for the one case the card cannot cover: a server that never answers at all. The old two minute auto deny is gone, because it declared a refusal while the card in the owner's hand was still perfectly tappable.
+
+**The answer is read off the card row itself**, so a tap lands even when the card has scrolled off the chat's newest page and while the daemon is draining for a self update. Typing `yes <code>` or `no <code>` still works as a fallback for clients that do not render buttons, and every dead end (no monitored chat, a card that could not be posted, the backstop) fails closed as a deny.
+
+Permission requests need the matching BGOS backend (the per agent wait clamp and the approval push). The daemon names that dependency in one line at boot; on an older backend a request waits the full offer and sends no device notification.
+
+### Always ask before risky actions (v0.53.0+)
+
+A per agent switch in the app, **OFF by default**, stored on the server and nowhere else. With it on, a short fixed list of actions stops and asks the owner on the request card even though the agent runs with full access: deleting a folder and everything in it (`rm -r`, `rm --rec`, `Remove-Item -Recurse`, `rd /s`, `find ... -delete`, `git clean -fd` or `-fx`, `rsync --delete`), force pushing (`--force`, `-f`, `--force-with-lease`, a `+` refspec, `--mirror`, `--delete`, `git push origin :branch`), changing a file inside `.git`, changing an `.env` file, changing a settings file in the home folder (a dot file directly in it, or a file directly in one of its dot folders: `~/.bashrc`, `~/.ssh/config`), whether an edit tool writes that file or the shell does (a redirect `>` or `>>`, `tee`, `sed -i`, `cp` or `mv` onto it; reading it is not a change), and an MCP tool whose name sends, posts, pays or deletes (this channel's own server, by its exact names, excepted). A command that only MENTIONS a listed action (a commit message, a PR body, a grep, `echo "rm -rf x" >> Makefile`), a `# comment`, and a heredoc body written to a file are not that action; the text is read as a command only when it is handed to a shell (`bash -c`, `eval`, a heredoc or pipe into a shell). The list is `lib/hard-floor-core.mjs`, a port of the server's reader, held to it by a shared fixture copied byte for byte from the server's (each repo pins the sha256 of the file's bytes and of its data, and the reconciliation step compares the two files); its header says what it deliberately does not catch.
+
+**How it stops a call.** `bin/hoai-floor-hook.mjs` is the one BLOCKING hook this plugin registers (`hooks/hooks.json`, a second `PreToolUse` entry, `async: false`, 3 s timeout; a clone install gets the same entry in `.claude/settings.local.json`, from a launcher, `bgos-agent install`, or `bgos-agent update` before it restarts the service; the daemon declares `hard_floor` only when it finds that blocking entry in a file the CLI reads for its session, `lib/floor-hook-presence.ts`). It asks only in a session a HOAI daemon is attached to: the daemon, while it holds its pairing lock, marks its project folder under the plugin state folder, and the hook looks for that mark with a live pid; anywhere else it prints nothing, as before. For a listed action it writes a floor record (the rule, the matched command, the session's permission mode) and answers `ask`, which Claude Code honours even under `--dangerously-skip-permissions`, and the request reaches the relay. The relay takes that record, synchronously, before its auto approve branch (the request's own preview is a copy the CLI cuts in the middle when a value is long, so a listed action in a long command is not in it), and asks the server whether this agent's owner holds it (`POST /api/v1/integrations/assistants/:id/floor-check`, sent the matched command): **hold** posts the Allow once / Deny card, leading with the matched command (or an edit's path) when the preview lost it, and waits for the owner, and only a TAP on that card allows it (a typed `yes <id>` or the button's label as text is taken only when it is a no, because the server cannot tell a person from the agent's own credential on a typed message); **proceed** auto approves as before; a check that fails or times out **refuses** the action. A shell command the CLI cut in the middle that no floor record names is asked about with `elided: true`: the server holds it only when the owner's switch is on, so with the switch off it auto approves as before instead of posting a card the owner never asked for. A long command is fitted to the check's 4000 characters and to the card's lead by dropping arguments, never the operator (`lib/floor-evidence.mjs`), and a proceed about a body in which the list no longer reads the action (the listed part could not fit) goes to the owner rather than auto approving. With auto approve off, a proceed in a full access session allows the call (it exists only because the hook asked), and anything else is the card that install always posts. The hook only ever asks (never deny), prints nothing for anything else, and fails open inside 1.5 s, so a broken hook can never stop an unlisted call. With the switch off a listed action costs one round trip and runs as before.
+
+**Where it does not reach, said plainly.** A legacy API key connection has no pairing scoped route to ask, and a backend without the route cannot have the switch on, so both auto approve a listed action as before (logged); for an API key agent the owner's switch therefore does nothing yet, which is an open product call on the app side. A person's own `claude` opened in the agent's folder while the agent runs sees Claude Code's own Yes / No for a listed action, because the mark is per folder. And the list reads text: a delete done by a script, an alias, a variable or `python -c` is not on it, nor are writers it does not name (`dd`, `touch`, `install`, PowerShell's `Set-Content`).
 
 ## Slash Commands (v0.8.0+)
 

@@ -21,6 +21,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import {
@@ -49,6 +50,15 @@ import {
   type IntakeFs,
 } from '../lib/hook-intake.ts'
 import { resolveCursorFilePath } from '../lib/cursor-store.ts'
+
+/** The stage 8 probe: one live turn with two real subagents, copied out of
+ *  docs/reports/2026-09-21-subagents-card/probe/hooks.jsonl (plus the four
+ *  records that survived only in the raw driver log) with the paths scrubbed. */
+const PROBE = readFileSync(new URL('./fixtures/stage8-hooks.jsonl', import.meta.url), 'utf8')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter((line) => line !== '')
+  .map((line) => JSON.parse(line) as { hook: string; payload: Record<string, unknown> })
 
 const PROJECT_DIR = '/home/kc/.claude/projects/-work-atlas'
 const OURS = `${PROJECT_DIR}/sess-ours.jsonl`
@@ -309,6 +319,35 @@ test('an id less event takes the line id, so a second genuine occurrence survive
       `${event} has no occurrence identity of its own`,
     )
   }
+})
+
+test('two children stopping in ONE prompt are two occurrences, not one', () => {
+  // The real defect, on the real payloads: the stage 8 probe's two SubagentStop
+  // records share their session, their event name and their prompt id, and a
+  // SubagentStop carries no tool_use_id and no task_id at all. Before
+  // SubagentStop joined ID_LESS_EVENTS their keys were byte identical and the
+  // second child's stop was dropped in silence, so the second helper row never
+  // closed. The loop above iterates a constant and would not have named this.
+  const stops = PROBE.filter((record) => record.hook === 'SubagentStop')
+  assert.ok(stops.length >= 2, 'the probe should carry both children stopping')
+  const [first, second] = stops
+  assert.equal(
+    first!.payload.prompt_id,
+    second!.payload.prompt_id,
+    'the fixture only proves the rule if both stops really are in one prompt',
+  )
+  assert.notEqual(first!.payload.agent_id, second!.payload.agent_id, 'two different children')
+  assert.equal(first!.payload.tool_use_id, undefined, 'a stop carries no id of its own')
+  assert.notEqual(
+    dedupeKeyOf(first!.payload, 'line-1'),
+    dedupeKeyOf(second!.payload, 'line-2'),
+    'the second child stop must survive the dedupe',
+  )
+  assert.equal(
+    dedupeKeyOf(first!.payload, 'line-1'),
+    dedupeKeyOf(first!.payload, 'line-1'),
+    'and the SAME line re-read is still one occurrence',
+  )
 })
 
 test('the dedupe set is bounded, so a long lived daemon cannot grow forever', () => {

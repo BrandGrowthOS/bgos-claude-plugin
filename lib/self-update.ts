@@ -106,6 +106,43 @@ export function shouldExitAfterUpdate(env: Record<string, string | undefined>): 
   return value === '1' || value === 'true' || value === 'on' || value === 'yes'
 }
 
+/** What a SCHEDULED update does once the new code is on disk. */
+export type ScheduledRestartDecision = 'exit' | 'ladder' | 'stay'
+
+/**
+ * Whether a nightly update asks to be restarted, and how (KC, 2026-09-26:
+ * "our auto update of the plugin is working but the restart is still manual").
+ *
+ * THE GAP THIS CLOSES. The restart ladder (lib/update-rpc.ts) already knows how
+ * to replace this process safely: it signals a keepalive, restarts a service
+ * that provably owns us, or writes the marker the hoai launcher is already
+ * watching for, and it STAGES when it can prove none of those. But the ladder
+ * was only ever reachable from a TRIGGERED update, the one a person clicks. A
+ * scheduled update installed the new version and then said nothing to anybody,
+ * so 20 of 59 live agents were running older code than they held.
+ *
+ * WHY THIS IS NOT THE 2026-08-06 OUTAGE AGAIN. That outage was a daemon exiting
+ * on the ASSUMPTION a supervisor existed; five of seven agents on one machine
+ * went silent overnight. 'exit' here still requires the operator's explicit
+ * BGOS_EXIT_AFTER_UPDATE opt in, unchanged. 'ladder' is different in the way
+ * that matters: it does not exit, it asks an authority that has to PROVE it
+ * owns this process, and stages when it cannot. The proof step is the whole
+ * safety, and it is the same code the click has used since.
+ *
+ * Order matters. The opt in wins, because an operator who set it chose the
+ * old cycle-on-update behaviour deliberately and a host that sets it is by
+ * definition supervised.
+ */
+export function decideScheduledRestart(input: {
+  /** shouldExitAfterUpdate(env): the operator's explicit opt in. */
+  exitOptIn: boolean
+  /** Whether a restart authority is wired in at all (server.ts injects it). */
+  canAskLadder: boolean
+}): ScheduledRestartDecision {
+  if (input.exitOptIn) return 'exit'
+  return input.canAskLadder ? 'ladder' : 'stay'
+}
+
 /**
  * The line that keeps a not-exiting daemon honest.
  *
@@ -863,6 +900,19 @@ export interface SelfUpdaterOptions {
   now?: () => number
   schedule?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
   delay?: (ms: number) => Promise<void>
+  /**
+   * Ask the restart ladder to replace this process after a SCHEDULED update
+   * (KC, 2026-09-26). server.ts wires this to the same ladder the clicked
+   * update uses, so a nightly update reaches the hoai launcher's marker, a
+   * keepalive signal or an owning service by exactly the path a click does,
+   * including its refusal to act on an authority it cannot prove owns us.
+   *
+   * Resolves true when the ladder took the restart on (this process is
+   * expected to die), false when it staged. OPTIONAL: a host that wires
+   * nothing keeps today's behaviour, which is what makes this safe to ship
+   * ahead of the wiring.
+   */
+  requestRestart?: (targetVersion: string | null) => Promise<boolean>
 }
 
 export class SelfUpdater {
@@ -1347,13 +1397,47 @@ export class SelfUpdater {
         return 'installed'
       }
       // A DAEMON NEVER EXITS UNLESS SOMETHING WILL RESTART IT (kc-server,
-      // 2026-08-06). Exiting is opt in; see shouldExitAfterUpdate.
-      if (shouldExitAfterUpdate(this.opts.env)) {
+      // 2026-08-06). Exiting is opt in; see shouldExitAfterUpdate. The ladder
+      // is the third answer and the one that closes KC's gap: it does not
+      // exit, it asks an authority that must PROVE it owns this process.
+      const decision = decideScheduledRestart({
+        exitOptIn: shouldExitAfterUpdate(this.opts.env),
+        canAskLadder: typeof this.opts.requestRestart === 'function',
+      })
+      if (decision === 'exit') {
         this.opts.log('Auto-update complete. Exiting so the supervisor can restart the daemon.')
         this.exiting = true
         lock.release()
         this.opts.exit(0)
         return 'exited'
+      }
+      if (decision === 'ladder') {
+        // Drain stays ON while the ladder works: no new work between now and
+        // the relaunch. The ladder's own watchdog lifts it if the restart
+        // never arrives, which is the 2026-09-11 mute's guard.
+        const target = inspection.latestVersion ?? null
+        let took = false
+        try {
+          took = await this.opts.requestRestart!(target)
+        } catch (error) {
+          // Never let a restart attempt become the outage. Fall through to
+          // staging, which is exactly today's behaviour.
+          this.opts.log(
+            `Auto-update: the restart request failed (${
+              error instanceof Error ? error.message : String(error)
+            }); staging instead.`,
+          )
+        }
+        if (took) {
+          this.opts.log(
+            `Auto-update complete. Restart requested so this session picks up ${target ?? 'the new version'}.`,
+          )
+          lock.release()
+          return 'installed'
+        }
+        this.opts.log(
+          'Auto-update: no authority could prove it owns this session, so the update is staged.',
+        )
       }
       this.opts.log(
         `Auto-update complete. This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +

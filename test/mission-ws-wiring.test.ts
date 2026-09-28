@@ -30,6 +30,85 @@ import { readFileSync } from 'node:fs'
 
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
+/**
+ * Every tool case in server.ts, as { name, body }, derived from the source
+ * rather than listed.
+ *
+ * THE LISTS THIS REPLACES WERE THE DEFECT. Four separate tests named
+ * create_mission, tick_mini_goal, complete_mission and set_mission_goals as
+ * literals, so the "a FOURTH mission tool must not forget the stamp quietly"
+ * promise in this file's own header was not kept: a fifth and a sixth
+ * (add_mission_goals, cancel_mission_goal) were added and every one of those
+ * tests stayed green while neither was checked at all. A literal scope list
+ * always passes the case it guards.
+ */
+function toolCases(): Array<{ name: string; body: string }> {
+  // ONLY the tool dispatch switch. server.ts holds several switches and one of
+  // the others dispatches WS frames, whose `goal_cleared` case builds a mission
+  // too, so a scan of the whole file collects frames as if they were tools and
+  // then looks for a tool declaration that does not exist.
+  const switchAt = server.indexOf('switch (req.params.name) {')
+  assert.ok(switchAt > 0, 'the tool dispatch switch must be findable')
+  const switchEnd = server.indexOf('\n    default:', switchAt)
+  assert.ok(switchEnd > switchAt, 'the tool switch must have a default')
+  const dispatch = server.slice(switchAt, switchEnd)
+
+  const out: Array<{ name: string; body: string }> = []
+  for (const m of dispatch.matchAll(/\n    case '([a-z_]+)': \{/g)) {
+    const start = m.index as number
+    // The last case of the switch ends at the switch, not 6000 characters
+    // later: an unbounded slice is how `show_component` first appeared to build
+    // a mission and to require chat_id, on a body that was not its own.
+    const nextCase = dispatch.indexOf("\n    case '", start + 10)
+    const end = nextCase > 0 ? nextCase : dispatch.length
+    out.push({ name: m[1] as string, body: dispatch.slice(start, end) })
+  }
+  return out
+}
+
+/**
+ * The mission tools: every case that builds a mission path or body.
+ *
+ * NOT "every case that calls resolveMissionToolChat", which was the first
+ * derivation I tried and which over-collected: `show_component` resolves a
+ * mission chat too, and it legitimately REQUIRES chat_id, so three tests here
+ * failed on it. The build helpers are the thing only a mission tool touches.
+ */
+function missionToolCases(): Array<{ name: string; body: string }> {
+  return toolCases().filter((c) => /buildMission[A-Za-z]*\(/.test(c.body))
+}
+
+/**
+ * The mission tools that write a mission that ALREADY exists, which is the set
+ * that can lose the stamp race. Derived by "it resolves an existing mission
+ * id", which is exactly what create_mission does not do.
+ */
+function missionWriteCases(): Array<{ name: string; body: string }> {
+  return missionToolCases().filter((c) => c.body.includes('resolveMissionId('))
+}
+
+test('the derived tool-case scan can actually see the cases (control for every derived test below)', () => {
+  // Without this, a regex that matched nothing would make every derived test
+  // below vacuously green, which is the failure the lists at least could not
+  // have. Both counts are floors, not equalities, so adding a tool is not a
+  // test change.
+  const mission = missionToolCases().map((c) => c.name)
+  const writes = missionWriteCases().map((c) => c.name)
+  assert.ok(toolCases().length > 20, `tool-case scan found only ${toolCases().length}`)
+  for (const known of [
+    'create_mission',
+    'tick_mini_goal',
+    'complete_mission',
+    'set_mission_goals',
+    'add_mission_goals',
+    'cancel_mission_goal',
+  ]) {
+    assert.ok(mission.includes(known), `${known} missing from the derived mission set`)
+  }
+  assert.ok(!writes.includes('create_mission'), 'create_mission has no mission to resolve')
+  assert.ok(writes.length >= 5, `only ${writes.length} mission-write cases derived`)
+})
+
 const MISSION_FRAMES = [
   'mission_created',
   'mission_ticked',
@@ -88,15 +167,10 @@ test('every mission handler hands the frame to the one function that cannot thro
 })
 
 test('each mission tool case stamps its own write, so the echo can never start', () => {
-  const cases = ['create_mission', 'tick_mini_goal', 'complete_mission']
-  for (let i = 0; i < cases.length; i++) {
-    const start = server.indexOf(`case '${cases[i]}': {`)
-    assert.ok(start > 0, `${cases[i]} case not found`)
-    const nextCase = server.indexOf("\n    case '", start + 10)
-    const body = server.slice(start, nextCase > 0 ? nextCase : start + 6000)
+  for (const c of missionToolCases()) {
     assert.ok(
-      body.includes('rememberMissionSelfWrite('),
-      `${cases[i]} must stamp its own write, or the daemon narrates the model's own write back to it`,
+      c.body.includes('rememberMissionSelfWrite('),
+      `${c.name} must stamp its own write, or the daemon narrates the model's own write back to it`,
     )
   }
 })
@@ -108,14 +182,14 @@ test('the writing tools stamp the mission BEFORE the request, not after the answ
   // model is told its owner marked done the mission it had just ticked shut.
   // An explicit mission_id is not required for the stamp: both tools resolve a
   // mission id before they write, which is exactly what the stamp is keyed on.
-  for (const tool of ['tick_mini_goal', 'complete_mission']) {
-    const start = server.indexOf(`case '${tool}': {`)
-    assert.ok(start > 0, `${tool} case not found`)
-    const nextCase = server.indexOf("\n    case '", start + 10)
-    const bodyText = server.slice(start, nextCase > 0 ? nextCase : start + 6000)
-
+  for (const c of missionWriteCases()) {
+    const { name: tool, body: bodyText } = c
     const stamp = bodyText.indexOf('noteMissionPendingSelfWrite(')
-    const request = bodyText.indexOf('await bgosPatch(')
+    // Every verb a mission write can use. Naming only Patch and Put here was
+    // the same literal-list defect: a tool writing by POST or DELETE would
+    // have found no request at all and failed on a confusing message, or worse,
+    // passed once the search was widened without the ordering being checked.
+    const request = bodyText.search(/await bgos(Patch|Put|Post|Delete)\(/)
     assert.ok(stamp > 0, `${tool} must stamp the mission before it writes it`)
     assert.ok(request > 0, `${tool} request call not found`)
     assert.ok(
@@ -191,14 +265,13 @@ test('the implicit mission chat goes through the pure rule, never straight to th
   // still green while resolveMissionToolChat sits in the file uncalled and the
   // cases pick monitoredChatIds[0] inline, which is the one shape this test
   // exists to forbid, so the call sites are pinned here rather than assumed.
-  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission']) {
-    const at = server.indexOf(`case '${tool}': {`)
-    assert.ok(at > 0, `${tool} case not found`)
-    const nextCase = server.indexOf("\n    case '", at + 10)
-    const caseBody = server.slice(at, nextCase > 0 ? nextCase : at + 6000)
+  // Derived the other way round, because "the mission tools" above IS the set
+  // that calls resolveMissionToolChat: here the DECLARED tool names are the
+  // input, so a tool declared and then wired to an inline chat guess is caught.
+  for (const c of missionToolCases()) {
     assert.ok(
-      caseBody.includes('resolveMissionToolChat('),
-      `${tool} must take its chat from resolveMissionToolChat, not from an inline guess`,
+      c.body.includes('resolveMissionToolChat('),
+      `${c.name} must take its chat from resolveMissionToolChat, not from an inline guess`,
     )
   }
 })
@@ -207,7 +280,7 @@ test('the mission tools accept an optional chat, and it stays optional', () => {
   // Making chat_id required would break every 0.40.0-era prompt habit and
   // every single-chat agent, and an omitted chat is DEFINED to mean the main
   // chat.
-  for (const tool of ['create_mission', 'tick_mini_goal', 'complete_mission']) {
+  for (const tool of missionToolCases().map((c) => c.name)) {
     const at = server.indexOf(`name: '${tool}',`)
     assert.ok(at > 0, `${tool} declaration not found`)
     const end = server.indexOf("    {\n      name: '", at)

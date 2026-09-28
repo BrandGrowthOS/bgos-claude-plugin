@@ -232,35 +232,31 @@ const GOALS_HELP =
   `(aim for ${MISSION_TARGET_RANGE}), each { name, done_when } where done_when states the ` +
   'observable check that proves the goal, e.g. "the URL returns 200".'
 
-/** Build the POST assistants/:id/missions body from snake_case tool args. */
-export function buildMissionCreateBody(input: {
-  title?: unknown
-  mini_goals?: unknown
-  chat_id?: unknown
-}): MissionBuildResult<MissionCreateBody> {
-  const { title, mini_goals, chat_id } = input
-
-  if (typeof title !== 'string' || !title.trim()) {
-    return { ok: false, error: 'title is required: a short mission headline the user will see on the card.' }
-  }
-  const trimmedTitle = title.trim()
-  if (trimmedTitle.length > MISSION_TITLE_MAX) {
-    return {
-      ok: false,
-      error: `title is too long (${trimmedTitle.length} chars, max ${MISSION_TITLE_MAX}).`,
-    }
-  }
-
+/**
+ * The 2..12 { name, done_when } goals a create and a set-goals write share,
+ * validated once so the two tools can never disagree about what a goal is.
+ */
+function parseMissionGoals(
+  mini_goals: unknown,
+  // The FLOOR, defaulted so every caller that had no opinion keeps the one it
+  // had. Only the ADD door lowers it to 1: a mission needs a plan, so a whole
+  // plan of one goal is a plan that was not made, but adding one goal to a
+  // plan that exists is the ordinary case.
+  min: number = MISSION_MIN_GOALS,
+): MissionBuildResult<MissionGoalBody[]> {
   if (!Array.isArray(mini_goals)) {
     return { ok: false, error: GOALS_HELP }
   }
-  if (mini_goals.length < MISSION_MIN_GOALS || mini_goals.length > MISSION_MAX_GOALS) {
+  if (mini_goals.length < min || mini_goals.length > MISSION_MAX_GOALS) {
     return {
       ok: false,
       error:
-        `A mission needs ${MISSION_MIN_GOALS} to ${MISSION_MAX_GOALS} mini-goals, got ` +
-        `${mini_goals.length}. Aim for ${MISSION_TARGET_RANGE}: decompose the request into ` +
-        'binary outcomes, not keystrokes.',
+        min === MISSION_MIN_GOALS
+          ? `A mission needs ${MISSION_MIN_GOALS} to ${MISSION_MAX_GOALS} mini-goals, got ` +
+            `${mini_goals.length}. Aim for ${MISSION_TARGET_RANGE}: decompose the request into ` +
+            'binary outcomes, not keystrokes.'
+          : `Send ${min} to ${MISSION_MAX_GOALS} mini-goals to add, got ${mini_goals.length}. ` +
+            'Send only the NEW goals, never the ones the mission already has.',
     }
   }
 
@@ -303,6 +299,74 @@ export function buildMissionCreateBody(input: {
     }
     miniGoals.push({ name: trimmedName, doneWhen: trimmedDoneWhen })
   }
+  return { ok: true, body: miniGoals }
+}
+
+/** PUT integrations/assistants/:id/missions/:missionId/goals body. */
+export interface MissionSetGoalsBody {
+  miniGoals: MissionGoalBody[]
+}
+
+/**
+ * Build the set_mission_goals body: the mini goals of an open mission that has
+ * NONE yet. Same shape and bounds as create's, and nothing else goes on the
+ * wire (the backend keeps the mission's own title, chat and switch).
+ */
+export function buildMissionSetGoalsBody(input: {
+  mini_goals?: unknown
+}): MissionBuildResult<MissionSetGoalsBody> {
+  const goals = parseMissionGoals(input.mini_goals)
+  if (!goals.ok) return goals
+  return { ok: true, body: { miniGoals: goals.body } }
+}
+
+/** POST integrations/assistants/:id/missions/:missionId/goals body. */
+export interface MissionAddGoalsBody {
+  miniGoals: MissionGoalBody[]
+}
+
+/**
+ * Build the add_mission_goals body: goals to APPEND to a mission that already
+ * has some.
+ *
+ * ONE to twelve, not two: the set-goals door writes a whole plan and a plan of
+ * one goal is a plan that was not made, but adding a single goal to a plan that
+ * exists is the normal case and the reason this door exists at all.
+ *
+ * Only the new rows go on the wire. The backend appends them and never reads a
+ * row the mission already holds, which is what keeps a restated list from being
+ * able to drop one silently.
+ */
+export function buildMissionAddGoalsBody(input: {
+  mini_goals?: unknown
+}): MissionBuildResult<MissionAddGoalsBody> {
+  const goals = parseMissionGoals(input.mini_goals, 1)
+  if (!goals.ok) return goals
+  return { ok: true, body: { miniGoals: goals.body } }
+}
+
+/** Build the POST assistants/:id/missions body from snake_case tool args. */
+export function buildMissionCreateBody(input: {
+  title?: unknown
+  mini_goals?: unknown
+  chat_id?: unknown
+}): MissionBuildResult<MissionCreateBody> {
+  const { title, mini_goals, chat_id } = input
+
+  if (typeof title !== 'string' || !title.trim()) {
+    return { ok: false, error: 'title is required: a short mission headline the user will see on the card.' }
+  }
+  const trimmedTitle = title.trim()
+  if (trimmedTitle.length > MISSION_TITLE_MAX) {
+    return {
+      ok: false,
+      error: `title is too long (${trimmedTitle.length} chars, max ${MISSION_TITLE_MAX}).`,
+    }
+  }
+
+  const goals = parseMissionGoals(mini_goals)
+  if (!goals.ok) return goals
+  const miniGoals = goals.body
 
   const body: MissionCreateBody = { title: trimmedTitle, miniGoals }
   // A chat is OPTIONAL and, when absent, the key must not exist at all. A
@@ -629,6 +693,60 @@ export function buildMissionCompletePath(assistantId: unknown, missionId: unknow
     return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
   }
   return { ok: true, path: `assistants/${assistantId}/missions/${missionId}/complete` }
+}
+
+/**
+ * The set_mission_goals write. The PAIRING family, like the goal lane's
+ * /stopped report: goals are the agent's own promise, and the backend gives
+ * the owner no twin of this door.
+ */
+export function buildMissionSetGoalsPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  return { ok: true, path: `integrations/assistants/${assistantId}/missions/${missionId}/goals` }
+}
+
+/**
+ * The add_mission_goals write. The SAME path as set goals, by POST instead of
+ * PUT: the PUT fills a mission that has NONE and the POST adds to one that has
+ * some, and each door refuses the other's mission with a sentence naming the
+ * one to use. PAIRING family, like the fill.
+ */
+export function buildMissionAddGoalsPath(assistantId: unknown, missionId: unknown): MissionPathResult {
+  return buildMissionSetGoalsPath(assistantId, missionId)
+}
+
+/**
+ * The cancel_mission_goal write, a DELETE of one goal by its id.
+ *
+ * The goal is named in the PATH and there is no body at all, so there is
+ * nothing to get wrong on the wire, and it is an ID rather than a position
+ * because a position moves under a concurrent add and would cancel the wrong
+ * promise.
+ */
+export function buildMissionCancelGoalPath(
+  assistantId: unknown,
+  missionId: unknown,
+  goalId: unknown,
+): MissionPathResult {
+  if (!isPositiveIntLike(assistantId)) return { ok: false, error: BAD_ASSISTANT }
+  if (!isPositiveIntLike(missionId)) {
+    return { ok: false, error: `mission id must be a positive integer (got ${JSON.stringify(missionId)}).` }
+  }
+  if (!isPositiveIntLike(goalId)) {
+    return {
+      ok: false,
+      error:
+        `goal_id must be a positive integer, the id shown on the mission card ` +
+        `(got ${JSON.stringify(goalId)}).`,
+    }
+  }
+  return {
+    ok: true,
+    path: `integrations/assistants/${assistantId}/missions/${missionId}/goals/${goalId}`,
+  }
 }
 
 /** The goal lane's check write. */

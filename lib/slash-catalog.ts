@@ -71,6 +71,14 @@ export type SlashCommandRoute =
   | { kind: 'not_slash' }
   | { kind: 'compact'; commandName: string; commandArgs: string }
   | { kind: 'status'; commandName: string; commandArgs: string }
+  // `/code` is the plan chip's CLOSE, not a command the model performs. The app
+  // sends it when the owner dismisses the Plan mode chip above the composer,
+  // and the only thing it means on this channel is "report the session mode
+  // back to default so the chip comes off". Handing it to the model would get
+  // a paraphrase about coding, and the unregistered branch would tell the owner
+  // their own close button is unavailable. So the daemon answers it, the way it
+  // answers /compact and /status, and nothing is forwarded.
+  | { kind: 'plan_mode_off'; commandName: string; commandArgs: string }
   | { kind: 'directive'; delivery: SlashCommandDelivery }
 
 export function slashCommandSyncPath(
@@ -180,6 +188,11 @@ export function isReservedHostSlashCommand(raw: unknown): boolean {
  */
 export function isDaemonAnsweredSlashCommand(raw: unknown): boolean {
   return commandToken(raw).toLowerCase() === 'status'
+}
+
+/** The plan chip's close. See the `plan_mode_off` arm of SlashCommandRoute. */
+export function isPlanModeOffSlashCommand(raw: unknown): boolean {
+  return commandToken(raw).toLowerCase() === 'code'
 }
 
 function slashTextParts(raw: string | undefined): {
@@ -506,6 +519,13 @@ export function routeSlashCommand(input: {
     return { kind: 'status', commandName, commandArgs: resolvedArgs }
   }
 
+  // Also before the registry, and for the same reason: a project command named
+  // /code would otherwise shadow the chip's close and leave the owner with a
+  // chip they cannot dismiss.
+  if (isPlanModeOffSlashCommand(commandName)) {
+    return { kind: 'plan_mode_off', commandName, commandArgs: resolvedArgs }
+  }
+
   return {
     kind: 'directive',
     delivery: buildSlashCommandDelivery({
@@ -803,6 +823,31 @@ export const BUILTIN_COMMANDS: SlashCommandEntry[] = [
       'each one fires and what it runs.',
       'You CANNOT register or re-register a hook on the running session. An edit applies at the next',
       'start, and you should say so.',
+    ].join('\n'),
+  },
+  {
+    command: '/plan',
+    description: 'Plan the job first, and change nothing until you say go',
+    scope: 'all',
+    prompt: [
+      'The user wants a PLAN before anything is changed. Do this in order.',
+      '1. Read enough of the working directory to plan honestly: the files the task names, the',
+      '   ones they import, the tests that cover them. Reading is fine. Changing anything is not.',
+      '2. Call the `propose_plan` tool, in this chat, with a short title, the numbered steps you',
+      '   intend to take, and for each step the file it touches. Add a one sentence `check` saying',
+      '   how the user will know it worked. Keep it to the steps that matter; a plan nobody can',
+      '   read is not a plan.',
+      '3. STOP THERE. `propose_plan` returns immediately and the turn ends. Do NOT edit a file, run',
+      '   a command that writes, or start the work. The user answers with Go ahead, Change the plan,',
+      '   or Do not do this, and their answer comes back to you as a channel event that starts a new',
+      '   turn.',
+      '4. On Go ahead, carry out the plan you proposed and keep your live Steps honest as you go.',
+      '   On Change the plan, their words arrive with the click: revise and call `propose_plan`',
+      '   again with `supersedes` set to the old card id. On Do not do this, stop and wait.',
+      'Say plainly, in your reply, that nothing has been changed yet.',
+      'NOTHING IN THIS CHANNEL ENFORCES THAT WAIT. This agent runs with permissions skipped, so no',
+      'tool call is blocked and no hook can stop one. The wait is a promise you are making, and the',
+      'user is told as much on their side, so keep it.',
     ].join('\n'),
   },
   {
