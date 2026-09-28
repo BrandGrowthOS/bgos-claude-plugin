@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The nine tokens, and what each one PROMISES the owner:
+ * The eleven tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -121,6 +121,50 @@
  *                       heartbeat or on the capabilities fetch itself
  *                       (lib/capabilities.ts, capabilitiesFetchPath), so an
  *                       agent is never told about a tool it does not have.
+ *   boards_playbook_does the same set_column_lines op takes a line's
+ *                       instruction part (`does`, 0.57.0, Kanban phase 2):
+ *                       what the agent a card is handed to should do. The
+ *                       server files an agent's instruction as a suggestion
+ *                       the owner approves word for word in the app, and
+ *                       this daemon reads the echo's `suggested` and
+ *                       `declined` lists back to its model. Every host, for
+ *                       the reason boards_playbook is. The backend serves the
+ *                       canon's instruction sentence only to a connection
+ *                       that declares this token, beside the phase 1
+ *                       sentence and independently of it.
+ *   boards_runs         this daemon's model is told that a repeated run id
+ *                       is the same work and what a stop message means. It
+ *                       needs no tool; the id rides the hand over message.
+ *                       Every host: it is a sentence the model reads, with no
+ *                       platform limit. The backend serves the canon's run id
+ *                       sentence (Kanban phase 3) only to a connection that
+ *                       declares this token, independently of the two
+ *                       playbook sentences, and no bundled fallback mentions
+ *                       runs.
+ *   stop_pauses_mission an owner Stop pauses the chat's open mission with the
+ *                       reason "Stopped by you" instead of letting it run on,
+ *                       and the owner's next message there resumes it (P6
+ *                       stage 3). ONLY where the injector answers, beside
+ *                       mission_pause and for the same reason: the pause is
+ *                       what clears a Keep working goal whose own Stop hook
+ *                       would otherwise re prompt the model after it stood
+ *                       down (lib/stop-pause.ts, gated on mission_pause being
+ *                       declared on the same beat). BGOS serves the sentence
+ *                       that tells the agent so only to a daemon declaring
+ *                       it, so the token ships with the code that keeps it.
+ *                       Spelled by lib/session-controls-contract.ts, the file
+ *                       BGOS and codex-channel-bgos pin too.
+ *   sessions_library    the owner can find this agent's sessions from the
+ *                       app's Sessions sheet: the list_sessions op answers
+ *                       the sessions in the agent's own folder, titles and
+ *                       previews that hold a secret withheld on this machine
+ *                       (lib/session-library.ts, P6 stage 3). Every host:
+ *                       it is a read of the agent folder and needs no tmux.
+ *                       It promises the LIST only. Resume and rename are a
+ *                       later slice and answer unsupported, and the list's
+ *                       own abilities {resume:false, rename:false} say so,
+ *                       so the sheet never offers either. Spelled by the
+ *                       same contract file.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -139,6 +183,7 @@
  */
 
 import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -149,6 +194,9 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   PLAN_CARD,
   'memory_rpc',
   'boards_playbook',
+  'boards_playbook_does',
+  'boards_runs',
+  SESSIONS_LIBRARY,
 ])
 
 /**
@@ -174,6 +222,7 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
   'mission_pause',
+  STOP_PAUSES_MISSION,
 ])
 
 /**

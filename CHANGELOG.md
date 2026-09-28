@@ -2,6 +2,103 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.59.0
+
+**A Stop is asked for honestly and never closes the mission, and the owner can find this agent's sessions in the app.**
+P6 stage 3 (HOAI's Resume button and Sessions sheet). The tokens, op names, words and limits below come from
+`lib/session-controls-contract.ts`, BGOS's session controls contract copied byte for byte and pinned by sha256,
+the same digest BGOS and codex-channel-bgos pin.
+
+- **Claude Code's own AskUserQuestion is denied for the agent, in the agent's own folder** (board row 01a07b28, skipped by six releases). Both `bin/hoai-bootstrap.sh` and `bin/hoai-bootstrap.ps1` now write `permissions.deny: ["AskUserQuestion"]` into the workspace's `.claude/settings.local.json`, the file the bootstrap already manages there for the activity hooks, added to an existing deny list once and never doubled, every other key kept, and a file that does not parse left as it is. It is never written to the settings.json in the Claude config folder: with `CLAUDE_CONFIG_DIR` unset that is the owner's own `~/.claude/settings.json`, which every Claude Code session they run reads, so a deny there would switch AskUserQuestion off in all their personal sessions (found in review before release). The owner's file still gets only the bypass prompt acceptance it got before. The agent asks its owner through the HOAI app (`ask_user_input`); the built in tool stopped the session at a terminal nobody watches. Proven by `test/bootstrap-askuserquestion-deny.test.ts`, which runs the real pre-seed of each script against a temporary HOME and agent folder and fails if `$HOME/.claude/settings.json` gains the deny.
+- **"Asked to stop."** The line posted after a Stop replaces "Run stopped at your request.". It is posted the
+  moment the notice reaches the session, before the model has stood down, so it claims the asking and nothing more.
+- **The stop notice keeps the mission open.** The `[stop_turn]` notice now tells the model to leave the chat's
+  open mission open and not to call `complete_mission` for it because of the stop. A Stop is neither a finish nor
+  a failure.
+- **A Stop pauses the mission an armed goal loops on.** Where this daemon can type into its session and Keep
+  working is armed on the stopped chat's open mission, the Stop pauses that mission with the reason "Stopped by
+  you", so the goal's own Stop hook cannot re prompt the model, and the owner's next message in that chat resumes
+  it. An owner's own Pause is never resumed by a message. After a daemon restart the owner's first message in a
+  chat asks the server, and a read that fails is asked again on the next message, so a Stop pause from before the
+  restart is never left behind. Declares `stop_pauses_mission` beside `mission_pause`.
+- **The Sessions library, list only.** New `list_sessions` op: the sessions in this agent's own folder, newest
+  first, with a title, last activity, a preview, the branch and the Current session, searchable. The 200 newest
+  transcripts at most, their first and last 64 KB only, cached while unchanged. Titles and previews that hold a
+  secret are withheld whole before they leave the machine. `resume_session` and `rename_session` answer
+  `unsupported`: switching the session a running agent is pinned to needs a supervisor change that reaches an
+  agent only when its owner runs `hoai` again, so it is a later update. Declares `sessions_library` on every host.
+  The bundled MCP instructions, what the model reads when the served canon cannot be fetched, carry the served
+  Sessions sentence word for word, and say resuming from the app is not available yet.
+
+## 0.58.0 (2026-09-26)
+
+- **The agent is told what a run id and a stop message mean.** A card handed
+  to an agent now carries a run id, and one message may hand it several
+  cards, each with its own. This daemon declares `boards_runs` on every host,
+  on its heartbeat and on the capabilities fetch, and the backend serves the
+  canon's run id sentence only to a connection that declares it: a run id
+  the agent has already seen is the same work sent again, so it does it once,
+  and a message that starts "Stop working on" names a card the owner took
+  back or closed. It needs no tool and adds no argument; the id rides the
+  hand over message. The bundled fallback and the MCP instructions say
+  nothing about runs, so an agent reads it only from the served canon.
+- **The column instruction text says what stays true.** `starts_when` still
+  takes only `person_moves_in`, and its description and its refusal now say
+  it is the only start an agent can suggest, while starting work when a card
+  is created in a column is a setting the owner turns on in the app.
+- The version is the first minor above every number an open or shipped
+  release held on 2026-09-26 (main 0.54.0, #161 0.55.0, and this branch's
+  two parents, #149 at 0.56.0 and #159 at 0.57.0, renumbered level with main
+  that day); the release that ships it confirms the number.
+
+## 0.57.0 (2026-09-26)
+
+- **An agent can suggest what a column asks of the agent a card is handed
+  to.** A column line gains an instruction part: `set_column_lines` takes a
+  `does` per line, with `kind` (start work, or only tell), the `instruction`
+  itself, `starts_when` (only `person_moves_in`, a person moving a card
+  there, is honoured today; an agent moving a card never starts anything),
+  `who` gets the card (one agent by `assistant_id`, the agent a card field
+  names, or ask the owner at each drop), one `only_when` condition, the
+  `needs` that must be filled before a hand over, `ask_for_note`, the
+  `fills` the agent is expected to write, the columns finished work
+  `lands_in`, and `plan_first`. The tool sends the server's camel case,
+  rebuilt key by key from a closed schema.
+  - **It is a suggestion until the owner approves the exact words.** The
+    server files an agent's instruction as a suggestion the owner reads and
+    approves in the app, and nothing starts until then. The echo lists those
+    columns in `suggested`, and the tool answers with one sentence naming
+    them: saved as a suggestion, nothing starts until the owner approves
+    those exact words, do not send it again. Words the owner already turned
+    down come back in `declined`, answered with their own sentence: do not
+    send it again unless the owner asks for a different one. The filed
+    sentence of 0.50.0 is unchanged, and "Everything else in this call was
+    saved." now closes the answer once, when something else in the call was.
+  - **The approval is the owner's alone.** The tool never sends `approved`,
+    `textHash` or `v`, and refuses them by name, with the owner's `paused`
+    switch, as keys an instruction does not take.
+  - **The shape is checked here, the rules are the server's.** A misspelt
+    key, a wrong type, a value outside an enum, a `who` whose parts do not fit
+    its `by`, or an `only_when` with both or neither of `in` and `empty` is
+    answered before anything leaves the machine. Every length (1200
+    characters of instruction, 20 items a list) and every reference (a field
+    of the table, an option of the select, an agent of the owner's fleet) is
+    the server's, and its sentence reaches the model word for word.
+  - **The instruction sentence reaches only an agent that can write one.**
+    This daemon declares `boards_playbook_does` on every host, beside
+    `boards_playbook`, on its heartbeat and on the capabilities fetch. The
+    backend serves the canon's instruction sentence only to a connection that
+    declares it, and the phase 1 column lines sentence is unchanged.
+  - **The `lines` text says what changed.** Its last sentence now reads: a
+    line's sentence and facts only describe the board; its does part is a
+    suggestion until the owner approves it. Everything else a line describes
+    is still description only, and every other op, argument and answer of
+    the board tools is exactly as it was.
+  - **Release order.** Against a server from before instructions, a `does`
+    is filed with the line's other structural changes and answered `filed`
+    (reported as not applied), or dropped by an older whitelist and reported
+    as nothing written. Update the server first.
+
 ## 0.56.1 (2026-09-28)
 
 Desktop one-click could not start a background agent on a fresh workspace, and
@@ -2012,7 +2109,7 @@ for one assistant silently rebound another.
 - **Honest restart instructions** for both topologies: the packaged
   `plugin:hoai@hoai` channel and a checkout-based `server:bgos` host.
 
-## 0.31.0 — 27 July 2026
+## 0.31.0 (27 July 2026)
 
 The first release since 0.21.1. Twenty-two commits, and the reason it is being
 cut now is that the app already requires it: HOAI raised its Claude Code

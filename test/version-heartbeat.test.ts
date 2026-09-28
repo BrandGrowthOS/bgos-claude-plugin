@@ -379,7 +379,10 @@ describe('declared capabilities on the heartbeat', () => {
     // the current turn. It is host shaped, so the beat carries a different
     // answer on a machine that cannot type into its own session, and the
     // heartbeat evaluates the thunk on every beat precisely so a late tmux
-    // upgrade starts declaring without a restart.
+    // upgrade starts declaring without a restart. stop_pauses_mission (P6
+    // stage 3) rides with mission_pause: the Stop pause it promises is the
+    // same goal clear, so it is host shaped too. sessions_library (P6 stage
+    // 3) is a read of the agent folder, so every host declares it.
     // permission_card (0.49.0) rides every beat on every host: the relay
     // speaks the channel's own permission notification, which has no
     // platform limit. plan_card (0.50.0) likewise: propose_plan is a typed
@@ -389,7 +392,11 @@ describe('declared capabilities on the heartbeat', () => {
     // connection only, and only a pairing connection beats
     // (shouldSendVersionHeartbeat), so every beat carries it.
     // boards_playbook (0.56.0) rides every beat on every host: the column
-    // lines tool is typed and has no platform limit.
+    // lines tool is typed and has no platform limit. boards_playbook_does
+    // (0.57.0, Kanban phase 2) rides beside it for the same reason: a line's
+    // instruction part is an argument of the same tool. boards_runs (Kanban
+    // phase 3) rides beside them on every host: it is a sentence the model
+    // reads and needs no tool.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
@@ -398,9 +405,13 @@ describe('declared capabilities on the heartbeat', () => {
       'plan_card',
       'memory_rpc',
       'boards_playbook',
+      'boards_playbook_does',
+      'boards_runs',
+      'sessions_library',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
+      'stop_pauses_mission',
     ])
     expect([...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
@@ -410,6 +421,9 @@ describe('declared capabilities on the heartbeat', () => {
       'plan_card',
       'memory_rpc',
       'boards_playbook',
+      'boards_playbook_does',
+      'boards_runs',
+      'sessions_library',
       'hard_floor',
     ])
   })

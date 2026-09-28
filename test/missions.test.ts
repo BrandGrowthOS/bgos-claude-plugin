@@ -46,8 +46,12 @@ import {
   buildMissionProgressBody,
   buildMissionProgressPath,
   formatMissionSummary,
+  type MissionPathResult,
   type MissionSnapshot,
 } from '../lib/missions.ts'
+// Read through the namespace for the two stage 3 builders, so a builder that
+// is missing fails its own assertion instead of the whole file's import.
+import * as missionsModule from '../lib/missions.ts'
 
 const goals = (n: number) =>
   Array.from({ length: n }, (_v, i) => ({
@@ -322,6 +326,26 @@ test('progress: clips the feed line and the reason to their own wire limits', ()
 test('progress: refuses a body that would change nothing', () => {
   const r = buildMissionProgressBody({})
   assert.equal(r.ok, false, 'the backend would answer 200 and do nothing, which reads as a write that worked')
+})
+
+test('pause and resume: the stop pause and its resume ride the user scoped routes (P6 stage 3)', () => {
+  // The armed goal case (lib/stop-pause.ts) pauses the chat's open mission
+  // on an owner Stop and resumes it on the owner's next message. The user
+  // scoped family is the one every goal lane write uses, and it admits both
+  // an X-API-Key install and a paired one (assertPairingScope).
+  type PathBuilder = (assistantId: unknown, missionId: unknown) => MissionPathResult
+  const lib = missionsModule as unknown as Record<string, PathBuilder | undefined>
+  const pause = lib.buildMissionPausePath
+  const resume = lib.buildMissionResumePath
+  assert.equal(typeof pause, 'function', 'lib/missions.ts must export buildMissionPausePath')
+  assert.equal(typeof resume, 'function', 'lib/missions.ts must export buildMissionResumePath')
+  assert.deepEqual(pause!('873', 42), { ok: true, path: 'assistants/873/missions/42/pause' })
+  assert.deepEqual(resume!('873', 42), { ok: true, path: 'assistants/873/missions/42/resume' })
+  for (const build of [pause!, resume!]) {
+    assert.equal(build('873', 0).ok, false)
+    assert.equal(build('873', 'x').ok, false)
+    assert.equal(build('', 42).ok, false)
+  }
 })
 
 test('fail: builds the body and the path this repository did not have', () => {

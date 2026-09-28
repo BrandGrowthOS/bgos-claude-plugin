@@ -21,6 +21,7 @@ import {
   DECLARED_CAPABILITIES_PAIRING,
   declaredCapabilities,
 } from '../lib/declared-capabilities.ts'
+import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from '../lib/session-controls-contract.ts'
 import { capabilitiesFetchPath } from '../lib/capabilities.ts'
 import { consultFloor, floorCheckPath } from '../lib/floor-check.ts'
 import { classifyToolCall } from '../lib/hard-floor.ts'
@@ -100,7 +101,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'hard_floor'],
   )
 })
 
@@ -131,11 +132,68 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'plan_card',
       'memory_rpc',
       'boards_playbook',
+      'boards_playbook_does',
+      'boards_runs',
+      'sessions_library',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
+      'stop_pauses_mission',
     ],
   )
+})
+
+/**
+ * boards_playbook_does (0.57.0, Kanban phase 2).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored): moved 'boards_playbook_does' from DECLARED_CAPABILITIES_BASE into
+ * DECLARED_CAPABILITIES_INJECTOR -> "boards_playbook_does is declared on every
+ * host" fails on the host that cannot type, and so do the read half pin above,
+ * the boards_playbook pin (the order of the base), test/capabilities.test.ts's
+ * "the daemon's own base declaration reaches the fetch" and "the canon fetch
+ * carries boards_playbook" (five node red), and test/version-heartbeat.test.ts's
+ * "what rides the beat is what THIS host can do" (one bun red). The
+ * set_column_lines op takes a `does` on every host, so an agent that is not
+ * told the canon's instruction sentence would write instructions without
+ * knowing they are suggestions the owner approves.
+ */
+test('boards_playbook_does is declared on every host, because the does part is a typed argument of the same tool', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
+    assert.ok(declared.includes('boards_playbook_does'))
+    // Beside the phase 1 token, never instead of it: the served canon strips
+    // the two sentences independently, so an agent needs both to read both.
+    assert.ok(declared.includes('boards_playbook'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('boards_playbook_does'))
+})
+
+/**
+ * boards_runs (Kanban phase 3, plan P3.6 and 3.7).
+ *
+ * MUTATION PROOF (applied to lib/declared-capabilities.ts, confirmed red,
+ * restored from one pristine copy): moved 'boards_runs' from
+ * DECLARED_CAPABILITIES_BASE into DECLARED_CAPABILITIES_INJECTOR -> "boards_runs
+ * is declared on every host" fails on the host that cannot type, and so do the
+ * read half pin and the boards_playbook pin above (the order of the lists),
+ * test/capabilities.test.ts's "the daemon's own base declaration reaches the
+ * fetch" and "the canon fetch carries boards_playbook", and
+ * test/version-heartbeat.test.ts's "what rides the beat is what THIS host can
+ * do" (five node red, one bun red). The run id rides the hand over message
+ * on every host, so a Windows agent that is not told what it means would do
+ * the same work twice when a card is sent again.
+ */
+test('boards_runs is declared on every host, because the run id rides the hand over message and needs no tool', () => {
+  for (const canInjectGoal of SHAPES) {
+    const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' })
+    assert.ok(declared.includes('boards_runs'))
+    // Beside both playbook tokens, never instead of them: the served canon
+    // strips the three boards sentences independently.
+    assert.ok(declared.includes('boards_playbook'))
+    assert.ok(declared.includes('boards_playbook_does'))
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('boards_runs'))
 })
 
 /**
@@ -169,9 +227,13 @@ test('permission_card is declared on every host, because the relay has no platfo
       'plan_card',
       'memory_rpc',
       'boards_playbook',
+      'boards_playbook_does',
+      'boards_runs',
+      'sessions_library',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
+      'stop_pauses_mission',
     ],
   )
 })
@@ -321,7 +383,9 @@ test('hard_floor is declared exactly where the relay can really hold a listed ac
 test('server.ts passes the live AUTH.mode and the boot time floor hook lookup at every declaration, never a literal', () => {
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const calls = server.match(/declaredCapabilities\(\{[^}]*\}\)/g) ?? []
-  assert.equal(calls.length, 2, 'the canon fetch and the heartbeat, and nothing else')
+  // Three since P6 stage 3: the Stop pause gate (stopGoalView) reads the
+  // heartbeat's own declaration, so it carries the same live values.
+  assert.equal(calls.length, 3, 'the canon fetch, the heartbeat and the Stop pause gate, and nothing else')
   for (const call of calls) {
     assert.match(call, /authMode: AUTH\.mode \}\)$/)
     assert.match(call, /floorHook: FLOOR_HOOK\.registered,/)
@@ -443,6 +507,54 @@ test('an async floor entry cannot stop anything and does not count; a user or pr
   assert.equal(registersFloorHook(JSON.parse(variable), { exists: () => true, pluginRootVariable: true }), true)
 })
 
+test('stop_pauses_mission is declared ONLY where the daemon can type, spelled by the contract file', () => {
+  // P6 stage 3 (spec 4.3, D13 item 4). The token tells BGOS to serve the
+  // sentence "your host also pauses the goal and the mission" to this agent,
+  // so it ships only with the code that keeps it: the armed goal case
+  // (lib/stop-pause.ts), which pauses on a Stop only where this daemon can
+  // clear the native goal, which is where it declares mission_pause.
+  assert.equal(STOP_PAUSES_MISSION, 'stop_pauses_mission')
+  for (const authMode of ['pairing', 'apikey'] as const) {
+    for (const floorHook of [true, false]) {
+      assert.ok(declaredCapabilities({ canInjectGoal: true, floorHook, authMode }).includes(STOP_PAUSES_MISSION))
+      assert.ok(!declaredCapabilities({ canInjectGoal: false, floorHook, authMode }).includes(STOP_PAUSES_MISSION))
+    }
+  }
+})
+
+test('the stop pause token rides with mission_pause and nothing else, the gate the stop pause runs behind', () => {
+  // server.ts stopGoalView gates the stop pause on
+  // declaredCapabilities(...).includes('mission_pause'), so a daemon that
+  // declared stop_pauses_mission without mission_pause would promise a pause
+  // it never makes, and one declaring mission_pause without it would make a
+  // pause the canon never tells its agent about.
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode })
+      assert.equal(declared.includes(STOP_PAUSES_MISSION), declared.includes('mission_pause'))
+    }
+  }
+  assert.deepEqual(
+    [...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })],
+    [
+      'mission_events',
+      'mission_goal_checks',
+      'mission_set_goals',
+      'permission_card',
+      'plan_card',
+      'memory_rpc',
+      'boards_playbook',
+      'boards_playbook_does',
+      'boards_runs',
+      'sessions_library',
+      'hard_floor',
+      'mission_goal_loop',
+      'mission_pause',
+      'stop_pauses_mission',
+    ],
+  )
+})
+
 test('a late tmux upgrade changes the answer, because it is computed per beat', () => {
   // lib/compact-capability.ts can upgrade the target up to thirty minutes
   // after boot, and the heartbeat sends a THUNK, so the same process must be
@@ -451,6 +563,25 @@ test('a late tmux upgrade changes the answer, because it is computed per beat', 
   const after = declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })
   assert.ok(!before.includes('mission_goal_loop'))
   assert.ok(after.includes('mission_goal_loop'))
+})
+
+test('sessions_library is declared on every host, spelled by the contract file', () => {
+  // P6 stage 3 (spec 5.7, D18). The token lights the Sessions circle in the
+  // app and lets the backend forward a list request to this daemon. Listing
+  // is a read of the agent folder and needs no tmux, so every host declares
+  // it; resume and rename are a later slice (D20) and answer unsupported,
+  // which the list's own abilities say up front, so the token promises the
+  // list and nothing more.
+  assert.equal(SESSIONS_LIBRARY, 'sessions_library')
+  // Every connection too: listing needs neither a pairing nor the floor hook.
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        assert.ok(declaredCapabilities({ canInjectGoal, floorHook, authMode }).includes(SESSIONS_LIBRARY))
+      }
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes(SESSIONS_LIBRARY))
 })
 
 // ── The boot line says what is really declared (final live proof) ───────────
