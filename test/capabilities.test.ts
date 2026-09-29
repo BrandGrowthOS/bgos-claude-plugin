@@ -236,6 +236,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'boards_playbook_does',
     'boards_runs',
     'sessions_library',
+    'changes_rpc',
     'hard_floor',
   ])
 })

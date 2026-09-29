@@ -858,7 +858,15 @@ describe('real git check in dry-run mode', () => {
     expect(loadAutoUpdateState(stateFilePath).targetCommit).toBe(COMMIT_B)
   })
 
-  test('lock loser waits for the holder and restarts without merge', async () => {
+  // 2026-09-20, 04:01 Dubai: two stdio-hosted daemons (947, 960) lost the
+  // update-lock race at boot+60s, waited for the winner, then took this
+  // branch's UNCONDITIONAL exit "to restart". Nothing relaunched them: Claude
+  // Code never respawns a stdio MCP server that exits mid-session, and the
+  // launchd job that does exist supervises the claude session, not the plugin.
+  // The channel was dead for 3h52m. The assertion that used to live here
+  // (`exits == [0]` with NO opt-in) pinned that outage as correct behaviour.
+  // The lock loser now honours the same opt-in as the acquired-lock path.
+  test('lock loser waits for the holder, records the install, un-drains, and KEEPS SERVING without opt-in', async () => {
     const rootDir = tempDir('self-update-lock-loser-root-')
     mkdirSync(join(rootDir, '.git'))
     const stateFilePath = join(tempDir('self-update-lock-loser-state-'), 'auto-update.json')
@@ -869,6 +877,8 @@ describe('real git check in dry-run mode', () => {
     expect(sharedLock.kind).toBe('acquired')
     const calls: Array<{ file: string; args: readonly string[] }> = []
     const exits: number[] = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
     let waits = 0
     let revParseCalls = 0
     const baseRunner = gitRunner({ calls })
@@ -888,13 +898,13 @@ describe('real git check in dry-run mode', () => {
       stateFilePath,
       env: { BGOS_AUTO_UPDATE: 'on' },
       runningVersion: '0.26.0',
-      log: () => {},
+      log: (message) => logs.push(message),
       drainSnapshot: () => ({
         activeOperations: 0,
         pendingMessages: 0,
         pendingPermissions: 0,
       }),
-      setDrainMode: () => {},
+      setDrainMode: (enabled) => drainModes.push(enabled),
       exit: (code) => exits.push(code),
       runner,
       delay: async () => {
@@ -906,7 +916,76 @@ describe('real git check in dry-run mode', () => {
     })
     await updater!.checkNow()
     expect(waits).toBe(1)
+    // The whole fix: no exit, intake restored, install recorded for the next boot.
+    expect(exits).toEqual([])
+    expect(drainModes).toEqual([true, false])
+    expect(logs).toContain('Auto-update is being applied by another daemon. Waiting for it to finish.')
+    expect(
+      logs.some((line) =>
+        line.startsWith('Auto-update staged by another daemon. This daemon keeps serving 0.26.0'),
+      ),
+    ).toBe(true)
+    expect(logs.some((line) => line.includes('Restarting this daemon'))).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
+    expect(calls.some((call) => call.file === 'bun')).toBe(false)
+    expect(existsSync(join(rootDir, '.git', 'bgos-auto-update.lock'))).toBe(false)
+    const state = loadAutoUpdateState(stateFilePath)
+    expect(state.validationPending).toBe(true)
+    expect(state.targetCommit).toBe(COMMIT_B)
+    expect(updater!.pendingRestartVersion()).toBe('0.27.0')
+  })
+
+  test('lock loser exits after the holder finishes ONLY when BGOS_EXIT_AFTER_UPDATE opts in', async () => {
+    const rootDir = tempDir('self-update-lock-loser-optin-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
+    const stateFilePath = join(tempDir('self-update-lock-loser-optin-state-'), 'auto-update.json')
+    const sharedLock = tryAcquireUpdateLock(lockPath, 1_000)
+    expect(sharedLock.kind).toBe('acquired')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    let revParseCalls = 0
+    const baseRunner = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (args.join(' ') === 'rev-parse HEAD') {
+        calls.push({ file, args: [...args] })
+        revParseCalls += 1
+        return {
+          stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`,
+          stderr: '',
+        }
+      }
+      return baseRunner(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      runningVersion: '0.26.0',
+      log: () => {},
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: (enabled) => drainModes.push(enabled),
+      exit: (code) => {
+        // The lock is released before the exit, as on the acquired path.
+        expect(existsSync(lockPath)).toBe(false)
+        exits.push(code)
+      },
+      runner,
+      delay: async () => {
+        if (sharedLock.kind === 'acquired') sharedLock.release()
+      },
+      schedule: () => setTimeout(() => {}, 60_000),
+      now: () => 1_001,
+    })
+    await updater!.checkNow()
+    // Supervised host (opted in): the old cycle-on-update behaviour, unchanged.
     expect(exits).toEqual([0])
+    expect(drainModes).toEqual([true])
     expect(calls.some((call) => call.args[0] === 'merge')).toBe(false)
     expect(calls.some((call) => call.file === 'bun')).toBe(false)
   })
@@ -1590,6 +1669,184 @@ describe('the kc-server outage, end to end', () => {
     expect(updater).not.toBeNull()
     await updater!.checkNow()
     expect(exits).toEqual([0])
+  })
+})
+
+// THE LOCK LOSER ON THE RESTART LADDER (#148 carried onto #164). Since #164 the
+// lock WINNER of a scheduled update decides by decideScheduledRestart: exit
+// only on the operator's opt in, else ask the restart ladder when one is wired
+// in, else stay up and say the update is staged. #148 (written before #164)
+// taught the LOSER only the first and last of those, so a loser on a host with
+// a ladder sat on code it already held until someone restarted it by hand,
+// which is the 20 of 59 gap #164 closed for the winner. The loser now takes
+// the SAME decision through the SAME branches. The triggered mode keeps its
+// early return: the rpc caller owns the ladder there.
+describe('the lock loser takes the same restart decision as the winner', () => {
+  function loserHarness(opts: {
+    env?: Record<string, string | undefined>
+    requestRestart?: (targetVersion: string | null) => Promise<boolean>
+  }) {
+    const rootDir = tempDir('self-update-loser-ladder-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const lockPath = join(rootDir, '.git', 'bgos-auto-update.lock')
+    const stateFilePath = join(tempDir('self-update-loser-ladder-state-'), 'auto-update.json')
+    const sharedLock = tryAcquireUpdateLock(lockPath, 1_000)
+    expect(sharedLock.kind).toBe('acquired')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    const logs: string[] = []
+    const lockHeldAtRestart: boolean[] = []
+    let revParseCalls = 0
+    const baseRunner = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, runnerOpts) => {
+      if (args.join(' ') === 'rev-parse HEAD') {
+        calls.push({ file, args: [...args] })
+        revParseCalls += 1
+        // The first read is the inspection (the old commit); after the holder
+        // finishes, HEAD is the inspected target.
+        return { stdout: `${revParseCalls === 1 ? COMMIT_A : COMMIT_B}\n`, stderr: '' }
+      }
+      return baseRunner(file, args, runnerOpts)
+    }
+    const build = () =>
+      initializeSelfUpdater({
+        rootDir,
+        stateFilePath,
+        env: opts.env ?? { BGOS_AUTO_UPDATE: 'on' },
+        runningVersion: '0.26.0',
+        log: (message) => logs.push(message),
+        drainSnapshot: () => ({ activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }),
+        setDrainMode: (enabled) => drainModes.push(enabled),
+        exit: (code) => {
+          expect(existsSync(lockPath)).toBe(false)
+          exits.push(code)
+        },
+        runner,
+        delay: async () => {
+          if (sharedLock.kind === 'acquired') sharedLock.release()
+        },
+        schedule: () => setTimeout(() => {}, 60_000),
+        now: () => 1_001,
+        requestRestart: opts.requestRestart
+          ? async (target) => {
+              lockHeldAtRestart.push(existsSync(lockPath))
+              return opts.requestRestart!(target)
+            }
+          : undefined,
+      })
+    return { lockPath, stateFilePath, calls, exits, drainModes, logs, lockHeldAtRestart, build }
+  }
+
+  test('loser plus ladder: asks the ladder for the inspected version, never exits, and keeps the drain ON when the ladder took it', async () => {
+    const asked: Array<string | null> = []
+    const h = loserHarness({
+      requestRestart: async (target) => {
+        asked.push(target)
+        return true
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(asked).toEqual(['0.27.0'])
+    expect(h.exits).toEqual([])
+    // As on the winner's ladder branch: no new work between now and the
+    // relaunch; the ladder's own watchdog lifts the drain if it never comes.
+    expect(h.drainModes).toEqual([true])
+    expect(h.logs).toContain('Auto-update complete. Restart requested so this session picks up 0.27.0.')
+    expect(h.logs.some((line) => line.startsWith('Auto-update staged by another daemon'))).toBe(false)
+    // The lock is held while the ladder is asked (as the winner holds its own)
+    // and released afterwards.
+    expect(h.lockHeldAtRestart).toEqual([true])
+    expect(existsSync(h.lockPath)).toBe(false)
+    expect(h.calls.some((call) => call.args[0] === 'merge')).toBe(false)
+    const state = loadAutoUpdateState(h.stateFilePath)
+    expect(state.validationPending).toBe(true)
+    expect(state.targetCommit).toBe(COMMIT_B)
+  })
+
+  test('loser plus a ladder that stages: stays up, un-drains, and logs that the update is staged', async () => {
+    const asked: Array<string | null> = []
+    const h = loserHarness({
+      requestRestart: async (target) => {
+        asked.push(target)
+        return false
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(asked).toEqual(['0.27.0'])
+    expect(h.exits).toEqual([])
+    expect(h.drainModes).toEqual([true, false])
+    expect(h.logs).toContain('Auto-update: no authority could prove it owns this session, so the update is staged.')
+    expect(
+      h.logs.some((line) => line.startsWith('Auto-update staged by another daemon. This daemon keeps serving 0.26.0')),
+    ).toBe(true)
+    expect(existsSync(h.lockPath)).toBe(false)
+    expect(updater.pendingRestartVersion()).toBe('0.27.0')
+  })
+
+  test('loser plus a ladder that throws: the failure never becomes the outage, it stages and un-drains', async () => {
+    const h = loserHarness({
+      requestRestart: async () => {
+        throw new Error('marker dir is read only')
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(h.exits).toEqual([])
+    expect(h.drainModes).toEqual([true, false])
+    expect(h.logs).toContain('Auto-update: the restart request failed (marker dir is read only); staging instead.')
+    expect(existsSync(h.lockPath)).toBe(false)
+  })
+
+  test('loser plus opt in: exits (lock released first) even with a ladder wired, and never asks the ladder', async () => {
+    const asked: Array<string | null> = []
+    const h = loserHarness({
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      requestRestart: async (target) => {
+        asked.push(target)
+        return true
+      },
+    })
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(h.exits).toEqual([0])
+    expect(asked).toEqual([])
+    expect(h.drainModes).toEqual([true])
+  })
+
+  test('loser with neither: keeps serving, un-drained, install recorded, no ladder asked', async () => {
+    const h = loserHarness({})
+    const updater = (await h.build())!
+    await updater.checkNow()
+    expect(h.exits).toEqual([])
+    expect(h.drainModes).toEqual([true, false])
+    expect(
+      h.logs.some((line) => line.startsWith('Auto-update staged by another daemon. This daemon keeps serving 0.26.0')),
+    ).toBe(true)
+    const state = loadAutoUpdateState(h.stateFilePath)
+    expect(state.validationPending).toBe(true)
+    expect(state.targetCommit).toBe(COMMIT_B)
+    expect(updater.pendingRestartVersion()).toBe('0.27.0')
+  })
+
+  test('a TRIGGERED loser keeps its early return: no exit and no ladder here, even with the opt in and a ladder wired', async () => {
+    const asked: Array<string | null> = []
+    const h = loserHarness({
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      requestRestart: async (target) => {
+        asked.push(target)
+        return true
+      },
+    })
+    const updater = (await h.build())!
+    const outcome = await updater.updateNow(async () => {})
+    expect(outcome).toEqual({ kind: 'installed', targetVersion: '0.27.0' })
+    expect(h.exits).toEqual([])
+    expect(asked).toEqual([])
+    expect(h.logs).toContain('The shared checkout update was completed by another daemon.')
+    expect(existsSync(h.lockPath)).toBe(false)
   })
 })
 

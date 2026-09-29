@@ -1179,6 +1179,82 @@ export class SelfUpdater {
     this.state = transition.state
   }
 
+  /**
+   * What a SCHEDULED update does once the new code is on disk and recorded,
+   * for the daemon that installed it ('this', the lock winner) AND for the
+   * lock loser that waited for another daemon to install it ('another').
+   * One decision (decideScheduledRestart) and one set of branches, so the two
+   * paths cannot drift apart again: #148 found the loser still carrying the
+   * pre kc-server unconditional exit, and #164 then taught the ladder to the
+   * winner alone.
+   *
+   *  - 'exit' (operator opt in): release the lock, then exit for the
+   *    supervisor.
+   *  - 'ladder': ask the restart ladder with the lock held and the drain ON;
+   *    a ladder that took it leaves the drain on (its watchdog lifts it if the
+   *    relaunch never comes); a ladder that staged or threw falls through.
+   *  - 'stay' (and a staged ladder): keep serving, un-drain, and say that the
+   *    update is staged for the next restart.
+   */
+  private async finishScheduledUpdate(
+    targetVersion: string | null,
+    releaseLock: () => void,
+    installedBy: 'this' | 'another',
+  ): Promise<'installed' | 'exited'> {
+    const decision = decideScheduledRestart({
+      exitOptIn: shouldExitAfterUpdate(this.opts.env),
+      canAskLadder: typeof this.opts.requestRestart === 'function',
+    })
+    if (decision === 'exit') {
+      this.opts.log(
+        installedBy === 'this'
+          ? 'Auto-update complete. Exiting so the supervisor can restart the daemon.'
+          : 'The shared checkout update is complete. Exiting so the supervisor can restart the daemon.',
+      )
+      this.exiting = true
+      releaseLock()
+      this.opts.exit(0)
+      return 'exited'
+    }
+    if (decision === 'ladder') {
+      // Drain stays ON while the ladder works: no new work between now and
+      // the relaunch. The ladder's own watchdog lifts it if the restart
+      // never arrives, which is the 2026-09-11 mute's guard.
+      let took = false
+      try {
+        took = await this.opts.requestRestart!(targetVersion)
+      } catch (error) {
+        // Never let a restart attempt become the outage. Fall through to
+        // staging, which is exactly today's behaviour.
+        this.opts.log(
+          `Auto-update: the restart request failed (${
+            error instanceof Error ? error.message : String(error)
+          }); staging instead.`,
+        )
+      }
+      if (took) {
+        this.opts.log(
+          `Auto-update complete. Restart requested so this session picks up ${targetVersion ?? 'the new version'}.`,
+        )
+        releaseLock()
+        return 'installed'
+      }
+      this.opts.log(
+        'Auto-update: no authority could prove it owns this session, so the update is staged.',
+      )
+    }
+    this.opts.log(
+      `${installedBy === 'this' ? 'Auto-update complete.' : 'Auto-update staged by another daemon.'} ` +
+        `This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +
+        'the update takes effect when this session restarts.',
+    )
+    // Un-drain, or the daemon stays up and mute, which is the same outage
+    // wearing a healthier-looking process list.
+    this.opts.setDrainMode(false)
+    releaseLock()
+    return 'installed'
+  }
+
   private async applyUpdate(
     inspection: Extract<GitUpdateInspection, { kind: 'checked' }>,
     mode: 'scheduled' | 'triggered' = 'scheduled',
@@ -1186,7 +1262,7 @@ export class SelfUpdater {
     await this.waitForDrain()
     const lock = tryAcquireUpdateLock(this.lockPath, this.now())
     if (lock.kind === 'held') {
-      this.opts.log('Auto-update is being applied by another daemon. Waiting to restart safely.')
+      this.opts.log('Auto-update is being applied by another daemon. Waiting for it to finish.')
       let completedLock: Extract<UpdateLockResult, { kind: 'acquired' }> | null = null
       while (true) {
         await this.delay(UPDATE_DRAIN_POLL_MS)
@@ -1213,12 +1289,23 @@ export class SelfUpdater {
           completedLock = null
           return 'installed'
         }
-        this.opts.log('The shared checkout update is complete. Restarting this daemon.')
-        this.exiting = true
-        completedLock.release()
-        completedLock = null
-        this.opts.exit(0)
-        return 'exited'
+        // A DAEMON NEVER EXITS UNLESS SOMETHING WILL RESTART IT (kc-server,
+        // 2026-08-06). 2026-09-20 04:01 Dubai: three validating daemons
+        // re-checked in lock-step at boot+60s, 963 won the lock, 947 and 960
+        // landed here, took this branch's then UNCONDITIONAL exit "to
+        // restart", and nothing relaunched them: Claude Code does not respawn
+        // a stdio MCP server that exits mid-session. The channel was dead for
+        // 3h52m (#148). The loser now takes the SAME decision as the winner,
+        // through the same branches (#164's restart ladder included): exit
+        // only on the opt in, else ask the ladder, else stay up and un-drain.
+        // The lock stays held while the ladder is asked, as the winner holds
+        // its own; release is idempotent, so the finally below stays the net.
+        const heldLock = completedLock
+        return await this.finishScheduledUpdate(
+          inspection.latestVersion ?? null,
+          () => heldLock.release(),
+          'another',
+        )
       } finally {
         completedLock?.release()
       }
@@ -1400,54 +1487,11 @@ export class SelfUpdater {
       // 2026-08-06). Exiting is opt in; see shouldExitAfterUpdate. The ladder
       // is the third answer and the one that closes KC's gap: it does not
       // exit, it asks an authority that must PROVE it owns this process.
-      const decision = decideScheduledRestart({
-        exitOptIn: shouldExitAfterUpdate(this.opts.env),
-        canAskLadder: typeof this.opts.requestRestart === 'function',
-      })
-      if (decision === 'exit') {
-        this.opts.log('Auto-update complete. Exiting so the supervisor can restart the daemon.')
-        this.exiting = true
-        lock.release()
-        this.opts.exit(0)
-        return 'exited'
-      }
-      if (decision === 'ladder') {
-        // Drain stays ON while the ladder works: no new work between now and
-        // the relaunch. The ladder's own watchdog lifts it if the restart
-        // never arrives, which is the 2026-09-11 mute's guard.
-        const target = inspection.latestVersion ?? null
-        let took = false
-        try {
-          took = await this.opts.requestRestart!(target)
-        } catch (error) {
-          // Never let a restart attempt become the outage. Fall through to
-          // staging, which is exactly today's behaviour.
-          this.opts.log(
-            `Auto-update: the restart request failed (${
-              error instanceof Error ? error.message : String(error)
-            }); staging instead.`,
-          )
-        }
-        if (took) {
-          this.opts.log(
-            `Auto-update complete. Restart requested so this session picks up ${target ?? 'the new version'}.`,
-          )
-          lock.release()
-          return 'installed'
-        }
-        this.opts.log(
-          'Auto-update: no authority could prove it owns this session, so the update is staged.',
-        )
-      }
-      this.opts.log(
-        `Auto-update complete. This daemon keeps serving ${this.opts.runningVersion ?? 'its current version'}; ` +
-          'the update takes effect when this session restarts.',
+      return await this.finishScheduledUpdate(
+        inspection.latestVersion ?? null,
+        () => lock.release(),
+        'this',
       )
-      // Un-drain, or the daemon stays up and mute, which is the same outage
-      // wearing a healthier-looking process list.
-      this.opts.setDrainMode(false)
-      lock.release()
-      return 'installed'
     } finally {
       lock.release()
     }

@@ -397,6 +397,8 @@ describe('declared capabilities on the heartbeat', () => {
     // instruction part is an argument of the same tool. boards_runs (Kanban
     // phase 3) rides beside them on every host: it is a sentence the model
     // reads and needs no tool.
+    // changes_rpc (P7 stage 3) likewise: every host can read its own folder
+    // with Git, so it rides every beat after memory_rpc.
     expect([...declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' })]).toEqual([
       'mission_events',
       'mission_goal_checks',
@@ -408,6 +410,7 @@ describe('declared capabilities on the heartbeat', () => {
       'boards_playbook_does',
       'boards_runs',
       'sessions_library',
+      'changes_rpc',
       'hard_floor',
       'mission_goal_loop',
       'mission_pause',
@@ -424,6 +427,7 @@ describe('declared capabilities on the heartbeat', () => {
       'boards_playbook_does',
       'boards_runs',
       'sessions_library',
+      'changes_rpc',
       'hard_floor',
     ])
   })

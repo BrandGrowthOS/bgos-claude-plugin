@@ -2,6 +2,119 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.60.0 (2026-09-28)
+
+**One release for four changes: the owner's Changes panel, a truthful browser shim, the browser rule file the desktop
+uses, and a nightly update that no longer leaves the second daemon on old code.** Published once, as one version, so
+the fleet takes all four on the same restart.
+
+**A daemon that waited for another daemon's nightly update now restarts onto it the same way the one that installed it
+does.** When several daemons share one checkout, one of them takes the update lock and installs the update, and the
+others wait for it. Since 0.54.0 the installer asks the restart ladder to restart its session (the same ladder a click
+on Update uses, which acts only on an authority that proves it owns the process and otherwise leaves the update staged).
+The daemons that waited did not: they kept running the old code they had already replaced until someone restarted them
+by hand, and an older version of that path exited outright with nothing to bring it back (two agents dark for about
+four hours, twice). Now the waiting daemon takes exactly the installer's decision: it exits only where the operator set
+`BGOS_EXIT_AFTER_UPDATE`; otherwise it asks the restart ladder when one is wired in; otherwise, or when the ladder
+stages, it keeps serving, takes messages again, and logs that the update waits for the next restart. An update started
+from the app is unchanged: the app's own restart step still decides for it.
+
+**The browser tools say what really happened when a call is refused or a connection drops.** The HOAI browser shim
+(`bin/hoai-browser-mcp.mjs`) is re vendored from HOAI's source, sha256 `24470ac3` (it was `aaaff4b6`). A rate limit, a
+general request limit, a host whose connection dropped mid call, a refusal met while the shim was still connecting,
+a result that could not be collected for a call already sent, and a status check the backend refused each get words
+that are true for that case. Before, most of them told the agent that the owner's desktop app "is not running or not
+signed in", or invited a blind retry of a call that may already have clicked, bought or sent something. The relay
+tests carried over from HOAI now cover each of these (32 cases here, 20 of which fail against the old copy).
+
+**The daemon's browser rules are the desktop's rules again.** `lib/browser-host-core/policy.js` is re vendored from
+the desktop Agent Browser (sha256 `7541a0c3`), so a browser run on the agent's own machine keeps the same truthful
+step trail the desktop keeps (BGOS #1634).
+
+**The owner's Changes panel can read this agent's uncommitted changes.**
+The HOAI Changes panel (HOAI P7 stage 3, C-31) shows the files a coding agent has changed and not committed yet. This
+daemon answers a new `changes_rpc` lane (op `diff`, scope `uncommitted`) with read only Git in the agent's launch
+folder (lib/changes-rpc.ts over lib/git-changes.ts).
+
+**What the read defends against, and what it does not.** It defends the owner against untrusted repository content,
+what a clone carries (a `git` binary planted in the folder, attributes, the files themselves), and against Git writing
+the repository (the index refresh, its locks). It does not defend against the agent itself: the agent runs as the same
+user with the same reach on the same machine and can already run any program and read any file there, and the answer
+goes only to the owner who owns that machine. A setting only the agent's own local config or its `.git` file can make
+(`core.worktree`, a gitfile or `GIT_DIR` pointing elsewhere, a clean filter, a promisor remote's programs) can mislead
+its own panel; the checks below that exist for those (the top folder rule, `GIT_NO_LAZY_FETCH`, the Git floor) are
+defence in depth, and each line says what it covers. The git dir and the common dir are not contained, on purpose: an
+agent that runs in a Git worktree keeps its common dir outside its folder.
+
+- **Read only, and it stays off the index.** The whole list is the one `git version` read per Git path (the floor,
+  below), then `rev-parse`, `symbolic-ref`, `diff --numstat`, `diff` and `ls-files`, all run with
+  `GIT_OPTIONAL_LOCKS=0`. Both diffs also run with `diff.autoRefreshIndex` off: measured on Git 2.55, a file touched
+  but unchanged makes `git diff HEAD` rewrite `.git/index` even with the optional locks off, which would race the
+  agent's own `git add` for the index lock. None of these writes the index, the working tree or a ref; a lazy fetch, on
+  a Git that does not know `GIT_NO_LAZY_FETCH`, would still add objects (below).
+- **No fsmonitor hook runs, on Git 2.36 or later.** Every Git command turns `core.fsmonitor` off on its command line.
+  The repository's own config can point that setting at a program, and measured on Git 2.55 both diffs and `ls-files`
+  ran it, so each panel read would have run that program, which the agent picked, as the owner. That setting lives in
+  the repository's local config, which no clone carries, so this is defence in depth. From Git 2.36 the flag reads as
+  off; before it, the same `core.fsmonitor=false` is read as the path of a program to run, so the daemon reads
+  `git version` for the Git it finds before any other command, and an older Git, or a version it cannot read, is
+  refused with "changes could not be read on the agent host: Git 2.36 or later is needed to read changes safely", the
+  sentence the Codex daemon sends for it too, and nothing else runs. Only an accepted Git is remembered: a refused one
+  is asked again at the next read, so an owner who updates Git needs no daemon restart. The floor stays 2.36: 2.45
+  would refuse Ubuntu 24.04's Git 2.43, which honours `GIT_NO_LAZY_FETCH`.
+- **No lazy fetch from a partial clone, on a Git that knows `GIT_NO_LAZY_FETCH`.** Every Git command runs with
+  `GIT_NO_LAZY_FETCH=1`, so on such a Git a read that needs an object a partial clone left out fails instead of asking
+  the promisor remote for it, a fetch that runs the programs the repository's config names and can wait on the network
+  (measured on Git 2.55: the numstat ran the upload-pack program a clone's config named). The variable, not the
+  `--no-lazy-fetch` flag an older Git rejects. Git's release notes first name it in 2.45.0, and Ubuntu 24.04's build of
+  Git 2.43.0 honours it too (measured); a Git from 2.36 that does not know it passes the floor and can still fetch
+  lazily in a partial clone, a documented gap. A promisor remote is the clone's local config, so this too is defence in
+  depth.
+- **A clean filter still runs, on every Git.** A clean filter the repository's own config and attributes name still
+  runs on the two diffs; no flag here stops it (and on a Git that does not know `GIT_NO_LAZY_FETCH`, a lazy fetch's
+  programs can run too, above). This is an accepted limit: it needs the repository's local config, which no clone
+  carries, and this daemon runs as the same user with the same reach as the agent. Unlike the fsmonitor there is no
+  one switch for it (filter names are free), and reading attributes from an empty tree (`--attr-source` from Git 2.41,
+  `attr.tree` from Git 2.43) would raise the floor and still not cover `.git/info/attributes`.
+- **Git's own `a/` and `b/` prefixes**, asked for on the patch, so a host whose Git config sets
+  `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix` or `diff.dstPrefix` still reads right.
+- **A moved submodule is one section of its own.** The patch asks for Git's short submodule format too, so a host
+  whose Git config sets `diff.submodule` to `log` or `diff` still writes a moved submodule as one `diff --git` section
+  with its old and new commit, never lines the backend would hang on the file before it (measured on Git 2.55).
+- **The launch folder, never the process folder.** The first command finds the repository root from the agent's
+  folder and every later one runs in that root, so tracked and untracked paths agree from a subfolder too. Variables
+  that would point Git at another repository (`GIT_DIR` and its neighbours) are dropped for the call, in any spelling on
+  Windows, whose names are case blind (measured: a `Git_Dir` there made Git read the other repository). A launch folder
+  that is gone is a failed read, never "Git is not installed" (Node names both the same way). The repository's top
+  folder must be the launch folder or a folder above it, as the host resolves both: a `core.worktree` in the
+  repository's config that names any other folder is refused and nothing there is read (measured on Git 2.55: without
+  the check, the read went on in that folder's own repository and sent a new file from it whole). The refusal reads
+  "changes could not be read on the agent host", the sentence the Codex daemon sends for it too. `core.worktree` is
+  local config, so this is defence in depth, and it covers the top folder only: the git dir and the common dir are not
+  checked, so a gitfile pointing elsewhere still reads that repository against this folder.
+- **Git by its absolute path, never a git in the agent's folder.** Windows looks for a bare `git` in the working
+  folder before PATH, so a `git.exe` there, which a cloned repository can carry as an ordinary file, would have run as
+  the owner each time the panel opened (measured on node 24.16 and bun 1.3.9). Git is looked up on PATH's absolute
+  entries only and run by that path; an empty, `.` or other relative entry is never looked at, and no Git on PATH still
+  reads as "Git is not installed".
+- **New files count.** The first 20 untracked files are read: text up to 64 KB is sent whole, a file with a NUL in
+  its first 8,000 bytes is binary, a larger one is its size only, a symlink is never followed. Each is opened once and
+  checked through that handle before any byte is read: it is read, at most 64 KB and one byte, only while it is still
+  the regular file first checked and within the cap, so a file that grows is never loaded whole and a name swapped for
+  a link or a device is not read at all.
+- **Raw and capped, never processed here.** Each stream is cut at the byte cap the frame carries (never above the
+  backend's own numbers) and Git is killed at the cap, and the read answers then, never waiting on a process Git for
+  Windows' launcher leaves holding the pipes, so a huge diff costs a flag, not a failed read. Past the
+  frame's budget (10 s) the read stops and answers too slow. The backend, not this daemon, splits the patch, counts,
+  masks secrets and caps what reaches the app. The folder is sent as its last name only.
+- **Only this agent answers.** A frame for another agent gets no answer at all, a re sent frame is answered again and
+  never runs Git twice, only the pairing lock holder answers, a draining daemon takes none, and nothing is read before
+  the agent's home folder is confirmed. The log carries sizes, never a path or a line. An answer is held for a re send
+  only through the backend's own 20 s wait, and at most the newest four, so old diffs never pile up in a daemon that
+  runs for days.
+- **Declares `changes_rpc` on every host.** The backend sends a changes frame to a Claude Code pairing only while it is
+  declared and only while the owner has turned the panel on for this agent; this daemon never reads that switch.
+
 ## 0.59.0
 
 **A Stop is asked for honestly and never closes the mission, and the owner can find this agent's sessions in the app.**

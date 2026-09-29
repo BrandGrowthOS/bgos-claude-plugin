@@ -71,6 +71,9 @@ const PAIRING_FRAMES = [
   // agent's auto memory. Only the lock holder may answer: a passive daemon on a
   // shared host answering too would race the real one for the first result.
   'memory_rpc',
+  // Changes (P7 stage 3): the owner's Changes panel reads this agent's
+  // uncommitted changes. The same race: only the lock holder answers.
+  'changes_rpc',
 ]
 
 // Transport bookkeeping, not work done on the pairing's behalf: a passive
