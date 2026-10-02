@@ -22,6 +22,7 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { DENIED_TOOLS, ensureDeniedTools } from '../lib/claude-preseed.mjs'
 
@@ -112,4 +113,23 @@ test('a settings file that does not parse is left exactly as it was', () => {
 
 test('settingsPath is required rather than silently defaulted', () => {
   assert.throws(() => ensureDeniedTools({ settingsPath: '' }), /settingsPath is required/)
+})
+
+// DRIFT GUARD. The bootstraps cannot import this library: they inline the same
+// JS in a heredoc and a here-string, and they run BEFORE the plugin checkout is
+// guaranteed to be in place, which is what bootstrapping means. So one shared
+// source is not available to them, and the next best thing is that they cannot
+// silently disagree with it. If DENIED_TOOLS ever gains a tool, this fails
+// until both bootstraps gain it too.
+test('both bootstraps deny exactly the tools DENIED_TOOLS names', () => {
+  const here = fileURLToPath(new URL('.', import.meta.url))
+  for (const script of ['hoai-bootstrap.sh', 'hoai-bootstrap.ps1']) {
+    const text = readFileSync(join(here, '..', 'bin', script), 'utf8')
+    for (const tool of DENIED_TOOLS) {
+      assert.ok(
+        text.includes(`"${tool}"`) || text.includes(`'${tool}'`),
+        `${script} does not deny ${tool}, which lib/claude-preseed.mjs does`,
+      )
+    }
+  }
 })
