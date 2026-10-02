@@ -42,8 +42,9 @@ import {
 } from '../lib/hard-floor.ts'
 import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
-test('the six rules, their ids and their words, exactly as spec section 1 writes them', () => {
-  assert.equal(HARD_FLOOR_RULES_VERSION, 1)
+test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
+  // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
+  assert.equal(HARD_FLOOR_RULES_VERSION, 2)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
     [
@@ -53,6 +54,7 @@ test('the six rules, their ids and their words, exactly as spec section 1 writes
       ['env_file_write', 'changing an .env file'],
       ['home_dotfile_write', 'changing a settings file in your home folder'],
       ['acts_on_owners_behalf', 'sending, posting, paying or deleting on your behalf'],
+      ['adds_skill_or_plugin', 'installing a new plugin or tool that stays after this chat'],
     ],
   )
   assert.deepEqual([...HARD_FLOOR_RULE_IDS], HARD_FLOOR_RULES.map((r) => r.id))
@@ -75,7 +77,7 @@ test('a match carries the rule, the version, the words and what matched', () => 
   const match = classifyToolCall('Bash', { command: 'cd app && rm -rf build', description: 'x' })
   assert.deepEqual(match, {
     ruleId: 'recursive_delete',
-    rulesVersion: 1,
+    rulesVersion: 2,
     words: 'deleting a folder and everything in it',
     evidence: 'rm -rf build',
   })
@@ -445,4 +447,74 @@ test('the core is pure plain JavaScript that a bare node can load', () => {
   // No TypeScript syntax a node without a loader would choke on.
   assert.equal(/^\s*(export\s+)?(interface|type)\s+\w+/m.test(src), false)
   assert.equal(/\)\s*:\s*[A-Z][A-Za-z]+\s*[{=]/.test(src), false, 'no annotated signatures')
+})
+
+/**
+ * Rules version 2, the same cases as BGOS backend/src/services/hard-floor.spec.ts
+ * ("adding a skill or plugin that stays"). A plugin or an MCP server the agent
+ * installs outlives the chat that added it. Commands only: a skill file the
+ * agent writes itself is the Teach flow, gated by its own draft and Approve.
+ * Read as the CLI's own subcommand pair, after nothing but options and their
+ * values, and never after `--`.
+ */
+test('installing a plugin or tool that stays asks', () => {
+  for (const command of [
+    'claude plugin install page-checker@site-tools',
+    'claude plugin i page-checker',
+    'claude plugins install page-checker',
+    'claude --verbose plugin install page-checker',
+    'claude --model opus plugin install page-checker',
+    'claude mcp add github -- npx -y @modelcontextprotocol/server-github',
+    'claude mcp add --scope user notion https://mcp.notion.com/mcp',
+    'claude mcp add-json weather \'{"type":"stdio","command":"wx"}\'',
+    'claude mcp add-from-claude-desktop',
+    'C:\\Users\\kc\\.local\\bin\\claude.exe plugin install x',
+    '/usr/local/bin/claude mcp add x -- y',
+    'codex plugin add latex@openai-bundled',
+    'codex mcp add docs -- npx docs-mcp',
+    'codex -c model=o4 mcp add docs -- npx docs-mcp',
+    'cd site && claude plugin install page-checker',
+    'bash -c "claude mcp add x -- y"',
+    'sudo -u kc claude plugin install x',
+  ]) {
+    assert.equal(classifyCommand(command), 'adds_skill_or_plugin', command)
+  }
+})
+
+test('listing, updating, removing, a marketplace, a prompt or a mention does not ask', () => {
+  for (const command of [
+    'claude plugin list',
+    'claude plugin update page-checker',
+    'claude plugin marketplace add site-tools/marketplace',
+    'claude plugin uninstall page-checker',
+    'claude mcp list',
+    'claude mcp get github',
+    'claude mcp remove github',
+    'claude -p "install the plugin" --output-format json',
+    'claude -p hello',
+    'codex plugin list --available --json',
+    'codex mcp list',
+    'codex exec "claude plugin install x"',
+    'claude mcp get x -- plugin install y',
+    'claude -- plugin install page-checker',
+    'claude --verbose -- plugin install page-checker',
+    'echo claude plugin install x',
+    'git commit -m "claude plugin install x"',
+    'grep -r "claude mcp add" docs',
+    'claudette plugin install x',
+  ]) {
+    assert.equal(classifyCommand(command), null, command)
+  }
+  assert.equal(classifyPath('.claude/skills/invoice-reader/SKILL.md'), null)
+})
+
+test('a plugin install reads in a Claude Code permission request and names its words', () => {
+  const match = classifyFloor({
+    kind: 'request',
+    toolName: 'Bash',
+    inputPreview: JSON.stringify({ command: 'claude plugin install page-checker@site-tools', description: 'Add it' }),
+  })
+  assert.equal(match?.ruleId, 'adds_skill_or_plugin')
+  assert.equal(match?.rulesVersion, 2)
+  assert.equal(match?.words, 'installing a new plugin or tool that stays after this chat')
 })

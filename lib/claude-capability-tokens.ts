@@ -31,6 +31,10 @@
  * hard_floor: the daemon installs the blocking floor hook and, for an action
  *   on the owner's Always ask list, holds it for the owner before any auto
  *   approve (after asking the server's floor-check route).
+ * hard_floor_rules_2: that hook's own copy of the Always ask list reads
+ *   floor rules version 2 (installing a new plugin or tool), so the app may
+ *   tell a paired owner the hook stops a plugin install too. Declared exactly
+ *   where hard_floor is.
  *
  * Not every token the canon gates on lives here: boards_playbook is older and
  * is declared and gated from its own files.
@@ -38,10 +42,12 @@
 export const PERMISSION_CARD = 'permission_card';
 export const PLAN_CARD = 'plan_card';
 export const HARD_FLOOR_TOKEN = 'hard_floor';
+export const HARD_FLOOR_RULES_2_TOKEN = 'hard_floor_rules_2';
 
 /** Every token this file names, in the order above. */
 export const CLAUDE_CAPABILITY_TOKENS: readonly string[] = Object.freeze([
   PERMISSION_CARD,
   PLAN_CARD,
   HARD_FLOOR_TOKEN,
+  HARD_FLOOR_RULES_2_TOKEN,
 ]);
