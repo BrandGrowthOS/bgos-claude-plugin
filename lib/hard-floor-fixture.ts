@@ -1,5 +1,6 @@
 /**
- * Cross-repo hard floor fixture, rules_version 1 (P2 stage 6, C-19).
+ * Cross-repo hard floor fixture, rules_version 2 (P2 stage 6, C-19; version
+ * 2 adds adds_skill_or_plugin, DSH parity item 10, 2026-10-02).
  *
  * THE ANTI-DRIFT GUARD, on the secret-scan pattern. The floor list ("Always
  * ask before risky actions") is implemented twice: once in the platform
@@ -104,7 +105,7 @@ export interface HardFloorFixtureCardCase {
 }
 
 /** The cross repo key. Both classifiers export the same number. */
-export const HARD_FLOOR_FIXTURE_RULES_VERSION = 1;
+export const HARD_FLOOR_FIXTURE_RULES_VERSION = 2;
 
 export const HARD_FLOOR_FIXTURE_RULES: HardFloorFixtureRule[] = [
   { id: "recursive_delete", words: "deleting a folder and everything in it" },
@@ -118,6 +119,10 @@ export const HARD_FLOOR_FIXTURE_RULES: HardFloorFixtureRule[] = [
   {
     id: "acts_on_owners_behalf",
     words: "sending, posting, paying or deleting on your behalf",
+  },
+  {
+    id: "adds_skill_or_plugin",
+    words: "installing a new plugin or tool that stays after this chat",
   },
 ];
 
@@ -1766,6 +1771,109 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "tool", toolName: "mcp__plugin_mail_hoai-browser__delete_message" },
     ruleId: "acts_on_owners_behalf",
   },
+  // Rules version 2: adding a skill or plugin that stays after the chat. The
+  // CLI's own subcommand pair, after nothing but options and their values,
+  // and never after `--`. A skill file the agent writes itself is the Teach
+  // flow, gated by its own Approve, and is not on the list.
+  {
+    name: "claude_plugin_install",
+    input: { kind: "command", command: "claude plugin install page-checker@site-tools" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_plugin_install_short_alias",
+    input: { kind: "command", command: "claude plugin i page-checker" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_plugin_install_after_an_option_and_its_value",
+    input: { kind: "command", command: "claude --model opus plugin install page-checker" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_mcp_add",
+    input: { kind: "command", command: "claude mcp add github -- npx -y @modelcontextprotocol/server-github" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_mcp_add_json",
+    input: { kind: "command", command: "claude mcp add-json weather '{\"type\":\"stdio\",\"command\":\"wx\"}'" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_mcp_add_from_claude_desktop",
+    input: { kind: "command", command: "claude mcp add-from-claude-desktop" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "codex_plugin_add",
+    input: { kind: "command", command: "codex plugin add latex@openai-bundled" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "codex_mcp_add_after_a_config_override",
+    input: { kind: "command", command: "codex -c model=o4 mcp add docs -- npx docs-mcp" },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "claude_plugin_list",
+    input: { kind: "command", command: "claude plugin list" },
+    ruleId: null,
+  },
+  {
+    name: "claude_plugin_update",
+    input: { kind: "command", command: "claude plugin update page-checker" },
+    ruleId: null,
+  },
+  {
+    name: "claude_plugin_marketplace_add",
+    input: { kind: "command", command: "claude plugin marketplace add site-tools/marketplace" },
+    ruleId: null,
+  },
+  {
+    name: "claude_mcp_list",
+    input: { kind: "command", command: "claude mcp list" },
+    ruleId: null,
+  },
+  {
+    name: "claude_print_prompt_names_a_plugin",
+    input: { kind: "command", command: "claude -p \"install the plugin\" --output-format json" },
+    ruleId: null,
+  },
+  {
+    name: "claude_mcp_words_after_double_dash",
+    input: { kind: "command", command: "claude mcp get x -- plugin install y" },
+    ruleId: null,
+  },
+  {
+    name: "claude_words_after_double_dash_are_the_prompt",
+    input: { kind: "command", command: "claude --verbose -- plugin install page-checker" },
+    ruleId: null,
+  },
+  {
+    name: "claude_plugin_install_mentioned_in_quotes",
+    input: { kind: "command", command: "git commit -m \"claude plugin install x\"" },
+    ruleId: null,
+  },
+  {
+    name: "codex_plugin_list",
+    input: { kind: "command", command: "codex plugin list --available --json" },
+    ruleId: null,
+  },
+  {
+    name: "request_bash_claude_plugin_install",
+    input: {
+      kind: "request",
+      toolName: "Bash",
+      inputPreview: "{\"command\":\"claude plugin install page-checker@site-tools\",\"description\":\"Add the Page checker plugin\"}",
+    },
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "path_skill_file_the_agent_writes_is_the_teach_flow",
+    input: { kind: "path", path: ".claude/skills/invoice-reader/SKILL.md" },
+    ruleId: null,
+  },
 ];
 
 /**
@@ -1997,16 +2105,34 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
     tool: "bash -lc 'git status --short'",
     ruleId: null,
   },
+  {
+    name: "card_codex_command_plugin_add",
+    writer: "codex_command",
+    tool: "/bin/bash -lc 'codex plugin add latex@openai-bundled'",
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "card_codex_command_mcp_add",
+    writer: "codex_command",
+    tool: "bash -lc 'codex mcp add docs -- npx docs-mcp'",
+    ruleId: "adds_skill_or_plugin",
+  },
+  {
+    name: "card_codex_command_plugin_list",
+    writer: "codex_command",
+    tool: "bash -lc 'codex plugin list --available --json'",
+    ruleId: null,
+  },
 ];
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "5217fd850181a05dcdbb6a994e48deeb10a618c0a9cfbb4f96f949bd40b50486";
+  "348c65c0cb60e83150c5d002bd7781275ecdae8d5be55bc6f97823a8e7af87b8";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
-  "dee81aa8df1f5c008b5af7a4b8ab464ca46d7a56d5e3116693007499cb7dd280";
+  "babfef7b64bf5b817b59ff8d8b0163d99553e138307e9e71005ff87449f26f0f";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE_RULES). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_RULES_DIGEST =
-  "15ad13aa06d250721c6982382132b05f9f351f59944923bf6b8e29c4a37bd359";
+  "f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b2189c8f6d5c75e9";
