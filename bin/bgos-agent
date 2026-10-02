@@ -215,6 +215,7 @@ cmd_install() {
       ;;
     *)
       install_hook_entries "$workdir" "$PLUGIN_DIR"
+      install_denied_tools "$workdir" "$PLUGIN_DIR"
       ;;
   esac
 
@@ -588,6 +589,37 @@ install_hook_entries() { # $1 workdir $2 plugin_dir
     || warn "could not register the activity hooks (the agent works, tool detail will not show)"
 }
 
+# Deny the Claude Code tools that stop an unattended session at a terminal
+# prompt (AskUserQuestion: the agent waits for a keypress nobody will press
+# while its daemon still reports online). Both bootstraps write this at first
+# install, which is the problem: an agent installed before the deny existed
+# never gets it. This runs on install AND on restart.
+#
+# Deliberately NOT inside install_hook_entries, and not behind that function's
+# gate. refresh_hook_entries only touches a workspace that already names
+# hoai-hook.mjs, because stacking a second hook entry on a workspace that gets
+# its hooks elsewhere would leave a dead one firing. A permission cannot
+# duplicate anything, so it must not inherit that condition.
+#
+# Best effort: a failure costs one tool staying allowed, never the install.
+install_denied_tools() { # $1 workdir $2 plugin_dir
+  local workdir="$1" plugin_dir="$2"
+  if ! command -v node >/dev/null 2>&1; then
+    warn "node not found, skipping the tool deny (an unattended session could stop on a question)"
+    return 0
+  fi
+  HOAI_PRESEED="$plugin_dir/lib/claude-preseed.mjs" \
+  HOAI_SETTINGS="$workdir/.claude/settings.local.json" \
+  node -e '
+    const { pathToFileURL } = require("node:url");
+    import(pathToFileURL(process.env.HOAI_PRESEED).href)
+      .then((m) => m.ensureDeniedTools({ settingsPath: process.env.HOAI_SETTINGS }))
+      .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
+  ' 2>/dev/null \
+    && ok "terminal-only tools denied in $workdir/.claude/settings.local.json" \
+    || warn "could not write the tool deny (an unattended session could stop on a question)"
+}
+
 say_launch_hint() { # $1 workdir $2 channel
   echo
   ok "Config ready (no supervisor, foreground mode)."
@@ -690,6 +722,13 @@ refresh_hook_entries() { # $1 assistant id
   esac
   [ -n "$workdir" ] || workdir="$(default_workdir_for "$id")"
   local settings="$workdir/.claude/settings.local.json"
+  # The deny first, and ungated: it is a permission, not a hook, so it cannot
+  # stack a duplicate and every agent folder wants it. Only a workdir that
+  # already has a .claude directory is touched, so a restart never invents
+  # configuration for a folder that has none.
+  if [ -d "$workdir/.claude" ]; then
+    install_denied_tools "$workdir" "$PLUGIN_DIR"
+  fi
   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
     install_hook_entries "$workdir" "$PLUGIN_DIR"
   fi
