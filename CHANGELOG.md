@@ -2,6 +2,21 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.60.1 (2026-10-02)
+
+**The deny that stops an agent wedging on a terminal question now reaches agents that were already installed.** Claude
+Code's own `AskUserQuestion` tool halts a session at a prompt nobody is watching, waiting for a keypress that never
+comes, while the daemon still reports online. Both bootstraps have denied it since 0.56.0, and a bootstrap runs once, at
+first install, so every agent installed before that never received it and nothing revisited them. Measured on a nine
+agent machine on 2026-10-02: one carried it.
+
+`ensureDeniedTools` writes the deny into one agent folder's `settings.local.json`, and `bgos-agent` calls it on install
+and on restart, so a restart is enough. It is not folded into `ensureHookEntries`, which writes the same file, because
+the restart path calls that function only for a workspace that already names `hoai-hook.mjs`: a permission cannot
+duplicate anything, so it must not inherit a gate that exists to stop a second hook entry firing. Folding it in would
+have skipped exactly the agents it is for. A workdir with no `.claude` directory is left alone rather than having
+configuration invented for it, and a settings file that does not parse is returned untouched.
+
 ## 0.60.0 (2026-09-28)
 
 **One release for four changes: the owner's Changes panel, a truthful browser shim, the browser rule file the desktop
