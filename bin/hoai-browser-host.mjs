@@ -806,6 +806,23 @@ export function readDevToolsActivePort(profileDir, readText = defaultReadText) {
  * Starts Chrome on one profile and resolves its browser CDP endpoint, read
  * from the "DevTools listening on" line Chrome prints for port 0.
  */
+/**
+ * Every Chrome this host started that has not exited yet, including one still launching. When a
+ * stop runs out of time (stopWithin) the host kills these before it exits: off Windows nothing
+ * ends a node child when its parent exits, so a Chrome still launching, or one whose close hung,
+ * would otherwise be left running headless on its profile.
+ */
+export const startedChromes = new Set()
+
+/** SIGKILLs every Chrome this host started that is still running. */
+export function killStartedChromes(chromes = startedChromes) {
+  for (const child of chromes) {
+    try {
+      child.kill('SIGKILL')
+    } catch {}
+  }
+}
+
 export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
   return new Promise((resolve, reject) => {
     let child
@@ -815,6 +832,10 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
       reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
       return
     }
+    startedChromes.add(child)
+    const forget = () => startedChromes.delete(child)
+    child.once('exit', forget)
+    child.once('error', forget)
     let tail = ''
     let settled = false
     const finish = (err, endpoint) => {
@@ -2023,15 +2044,19 @@ export class BrowserHost {
 }
 
 /**
- * Runs a stop to its end and says so, or exits with 1 once `ms` has passed without it finishing
- * (STOP_DEADLINE_MS). The deadline is unref'd: a stop that finishes never waits for it.
+ * Runs a stop to its end and says so, or, once `ms` has passed without it finishing
+ * (STOP_DEADLINE_MS), kills the browsers this host started (onDeadline) and exits with 1. The
+ * deadline is unref'd: a stop that finishes never waits for it.
  * @param {() => unknown} stopFn
- * @param {{ ms?: number, log?: (line: string) => void, exit?: (code: number) => void }} [opts]
+ * @param {{ ms?: number, log?: (line: string) => void, exit?: (code: number) => void, onDeadline?: () => void }} [opts]
  * @returns {Promise<void>}
  */
-export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code) } = {}) {
+export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code), onDeadline = () => killStartedChromes() } = {}) {
   const deadline = setTimeout(() => {
-    log(`the stop did not finish within ${Math.round(ms / 1000)} s; exiting anyway`)
+    log(`the stop did not finish within ${Math.round(ms / 1000)} s; killing its browsers and exiting anyway`)
+    try {
+      onDeadline()
+    } catch {}
     exit(1)
   }, ms)
   deadline.unref?.()

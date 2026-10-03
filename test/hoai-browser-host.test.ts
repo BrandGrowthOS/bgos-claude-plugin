@@ -63,6 +63,8 @@ import {
   resultBody,
   resultUrl,
   servedBrowserTools,
+  startedChromes,
+  killStartedChromes,
   stopWithin,
 } from '../bin/hoai-browser-host.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
@@ -635,6 +637,33 @@ test('a stop that never finishes still ends the host, at its deadline', async ()
   assert.ok(lines.some((l) => /did not finish within/.test(l)), lines.join('\n'))
 })
 
+test('a stop that runs out of time kills the browsers this host started BEFORE it exits, so none is left behind', async () => {
+  // Off Windows nothing ends a node child when its parent exits, so a Chrome still launching (or
+  // one whose close hung) would outlive the host. The deadline kills them first, by default.
+  const events: string[] = []
+  const chrome = { kill: (sig: string) => (events.push(`kill ${sig}`), true) }
+  startedChromes.add(chrome as any)
+  try {
+    stopWithin(() => new Promise(() => {}), { ms: 60, log: () => {}, exit: (code: number) => events.push(`exit ${code}`) })
+    await new Promise((r) => setTimeout(r, 300))
+    assert.deepEqual(events, ['kill SIGKILL', 'exit 1'])
+  } finally {
+    startedChromes.delete(chrome as any)
+  }
+})
+
+test('launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits', async () => {
+  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), signals: [] as string[], kill(sig: string) { child.signals.push(sig); return true } })
+  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, spawnImpl: (() => child) as any, platform: 'linux', env: {} })
+  launching.catch(() => {})
+  assert.ok(startedChromes.has(child as any), 'tracked from the moment it is spawned, before it is ready')
+  killStartedChromes()
+  assert.deepEqual(child.signals, ['SIGKILL'])
+  child.emit('exit', null, 'SIGKILL')
+  await launching.catch(() => {})
+  assert.equal(startedChromes.has(child as any), false, 'and forgotten once it has exited')
+})
+
 test('a stop that finishes says so, and its deadline never fires afterwards', async () => {
   const lines: string[] = []
   const codes: number[] = []
@@ -755,6 +784,9 @@ test(
     // the one stop a host can handle on Windows too.
     const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
     child.stderr.on('data', (c: Buffer) => logs.push(c.toString()))
+    // The stop is asserted only after a body that passed, so a stop that fails after an earlier
+    // failure can never replace that first, more useful error.
+    let bodyPassed = false
     try {
       const sock = await relay.waitForHost(30_000)
       assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel })
@@ -873,6 +905,7 @@ test(
       assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
       for (const p of profiles) assert.ok(existsSync(join(browserDir, p, 'Local State')), `${p} is a real Chrome profile`)
       assert.equal(site.hits.filter((h) => h.includes('who=alice')).length >= 2, true)
+      bodyPassed = true
     } finally {
       // The daemon's stop: close the host's stdin. It closes every Chrome through CDP (which
       // writes their cookies to disk first) and exits 0.
@@ -882,8 +915,10 @@ test(
       if (code === 'still running') child.kill('SIGKILL')
       await relay.close()
       site.server.close()
-      assert.equal(code, 0, `the host closed its browsers and exited cleanly:\n${logs.join('')}`)
-      assert.match(logs.join(''), /stopped cleanly/)
+      if (bodyPassed) {
+        assert.equal(code, 0, `the host closed its browsers and exited cleanly:\n${logs.join('')}`)
+        assert.match(logs.join(''), /stopped cleanly/)
+      }
     }
     // No Chrome is left running on any of these profiles. The temp home's own name is in every
     // profile path Chrome was started with, whatever spelling the OS gave the temp folder (a short
