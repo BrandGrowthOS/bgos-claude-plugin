@@ -558,8 +558,17 @@ test('resolveChromeExecutable: an installed browser is found, none is said plain
   const linux = chromeCandidates({ platform: 'linux', env: { PATH: '/usr/local/bin:/usr/bin' }, home: '/home/kc' })
   assert.equal(linux[0], '/usr/local/bin/google-chrome')
   assert.ok(linux.includes('/usr/bin/chromium'))
+  // The candidates are spelled by the PLATFORM asked about, not by the host running the test, so
+  // this one list pins the Windows branch exactly on a Linux runner and the posix ones on Windows.
   const win = chromeCandidates({ platform: 'win32', env: { PROGRAMFILES: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\kc\\AppData\\Local' }, home: 'C:\\Users\\kc' })
-  assert.ok(win.some((p: string) => p.endsWith(join('Google', 'Chrome', 'Application', 'chrome.exe'))))
+  assert.deepEqual(win, [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe',
+    'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe',
+  ])
 
   const found = resolveChromeExecutable({ platform: 'linux', env: { PATH: '/usr/bin' }, exists: (p: any) => p === '/usr/bin/chromium' })
   assert.equal(found.path, '/usr/bin/chromium')

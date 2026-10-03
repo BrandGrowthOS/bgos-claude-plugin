@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -523,8 +523,12 @@ test('chooseAgentSlug never trusts a hostile network slug (falls back to the loc
 
 test('resolveAgentDir keeps the scaffold strictly inside the agents root', () => {
   const root = '/home/kc/bgos-agents'
-  assert.equal(resolveAgentDir(root, 'atlas'), '/home/kc/bgos-agents/atlas')
-  for (const evil of ['..', '../evil', '../../x', '.']) {
+  // resolve() of the whole expected path: '/home/kc/bgos-agents/atlas' on posix, the same folder
+  // on the current drive on Windows ('E:\home\kc\bgos-agents\atlas'), which is what the product returns.
+  assert.equal(resolveAgentDir(root, 'atlas'), resolve('/home/kc/bgos-agents/atlas'))
+  // Backslash traversal only means traversal on Windows; on posix it is a legal file name.
+  const windowsOnly = process.platform === 'win32' ? ['..\\evil', '..\\..\\x'] : []
+  for (const evil of ['..', '../evil', '../../x', '.', ...windowsOnly]) {
     assert.throws(
       () => resolveAgentDir(root, evil),
       /outside the agents root/,

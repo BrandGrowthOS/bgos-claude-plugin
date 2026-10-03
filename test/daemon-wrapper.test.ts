@@ -5,11 +5,12 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   stat,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { readFileSync } from 'node:fs'
 
 import {
@@ -183,9 +184,11 @@ test('intentional rollback exit requires the durable disabled state', () => {
 })
 
 test('daemon spawn uses fixed bun argv without a shell', () => {
+  // One argument, the space kept inside it; joined in the host's own spelling, as the
+  // product does (\opt\bgos plugin\server.ts on Windows).
   assert.deepEqual(daemonSpawnSpec('/opt/bgos plugin'), {
     file: 'bun',
-    args: ['/opt/bgos plugin/server.ts'],
+    args: [join('/opt/bgos plugin', 'server.ts')],
   })
 })
 
@@ -477,10 +480,32 @@ test('stable wrapper installation is atomic and executable outside checkout', as
   const target = stableWrapperPath(join(root, 'home'))
   await mkdir(join(root, 'checkout', 'bin'), { recursive: true })
   await writeFile(source, '#!/usr/bin/env node\nprocess.exit(0)\n')
-  await chmod(source, 0o644)
+  // A READ-ONLY source: the copy inherits it (the read-only attribute on Windows), so only the
+  // installer's own chmod can make the installed wrapper what it must be.
+  await chmod(source, 0o444)
   installStableWrapper(source, target)
   assert.equal(await readFile(target, 'utf8'), await readFile(source, 'utf8'))
-  assert.equal((await stat(target)).mode & 0o777, 0o755)
+  const first = await stat(target, { bigint: true })
+
+  // An update replaces the installed wrapper by rename: a new file (a new inode, or file id on
+  // NTFS) lands whole, never a rewrite in place, and no temp file is left behind.
+  await chmod(source, 0o644)
+  await writeFile(source, '#!/usr/bin/env node\nprocess.exit(3)\n')
+  await chmod(source, 0o444)
+  installStableWrapper(source, target)
+  assert.equal(await readFile(target, 'utf8'), await readFile(source, 'utf8'))
+  assert.notEqual((await stat(target, { bigint: true })).ino, first.ino, 'replaced by rename, not rewritten in place')
+  assert.deepEqual(await readdir(dirname(target)), [basename(target)], 'no temp file left behind')
+
+  const mode = (await stat(target)).mode & 0o777
+  if (process.platform === 'win32') {
+    // NTFS has no exec bit (a writable file reads back 0o666) and the wrapper always runs as
+    // `bun <file>`. What Windows can show, and what matters, is that the wrapper is not left
+    // read-only: a read-only target would refuse the next update's rename.
+    assert.equal(mode & 0o200, 0o200, 'the installed wrapper must not be read-only')
+  } else {
+    assert.equal(mode, 0o755)
+  }
   assert.equal(target.startsWith(join(root, 'checkout')), false)
 })
 

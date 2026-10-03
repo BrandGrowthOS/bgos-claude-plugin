@@ -62,7 +62,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, hostname } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { dirname, join, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -640,8 +640,11 @@ export function pidAlive(pid) {
 
 // ── An installed Chrome or Chromium ──────────────────────────────────────────
 
-/** Every place this host looks, in order, for the platform. */
+/** Every place this host looks, in order, for the platform. Spelled with THAT platform's path
+ *  rules rather than the host's, so a Windows run of the tests sees real mac and linux paths and
+ *  a Linux run sees real Windows ones; on a real host the two are the same. */
 export function chromeCandidates({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+  const { join, delimiter } = platform === 'win32' ? win32Path : posixPath
   if (platform === 'darwin') {
     const apps = [
       'Google Chrome.app/Contents/MacOS/Google Chrome',

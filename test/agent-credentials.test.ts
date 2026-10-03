@@ -268,13 +268,17 @@ test('credentials path keeps the existing default when no override is set', () =
 // ── Defect 2 (read side): per-assistant file, strict total precedence ───────
 
 test('per-assistant credentials file is preferred when it exists for the configured id', () => {
+  // Built the way server.ts builds the default (joinPath(homedir(), ...)), so the fixture
+  // and the per-assistant path the lib joins share one separator on every host.
+  const defaultPath = join('/home/kc', '.bgos-agent', 'credentials.json')
+  const perAssistant = join('/home/kc', '.bgos-agent', 'credentials-871.json')
   assert.equal(
     resolveCredentialsPath({
       env: { BGOS_ASSISTANT_ID: '871' },
-      defaultPath: '/home/kc/.bgos-agent/credentials.json',
-      exists: (p) => p === '/home/kc/.bgos-agent/credentials-871.json',
+      defaultPath,
+      exists: (p) => p === perAssistant,
     }),
-    '/home/kc/.bgos-agent/credentials-871.json',
+    perAssistant,
   )
 })
 
@@ -341,7 +345,9 @@ test('unsubstituted assistant id placeholder never selects a per-assistant path'
 
 test('read order in lib and the bgos-pair mirror never drift apart', () => {
   const home = '/home/kc'
-  const defaultPath = '/home/kc/.bgos-agent/credentials.json'
+  // Exactly what server.ts passes (joinPath(homedir(), '.bgos-agent', 'credentials.json')),
+  // which is also what the mirror joins from home: one spelling on every host.
+  const defaultPath = join(home, '.bgos-agent', 'credentials.json')
   const cases = [
     { env: { BGOS_CREDENTIALS_PATH: '/x/c.json', BGOS_ASSISTANT_ID: '871' }, exists: () => true },
     { env: { BGOS_ASSISTANT_ID: '871' }, exists: (p: string) => p.endsWith('credentials-871.json') },
@@ -633,8 +639,10 @@ function stubHost(opts: {
   }
 }
 
-const AGENT_DIR = '/home/kc/.bgos-agent'
-const DEFAULT_PATH = '/home/kc/.bgos-agent/credentials.json'
+// Joined, as server.ts joins the real default from homedir(): stubHost registers its files
+// with join(), and dirname(DEFAULT_PATH) must be AGENT_DIR in the host's own spelling.
+const AGENT_DIR = join('/home/kc', '.bgos-agent')
+const DEFAULT_PATH = join(AGENT_DIR, 'credentials.json')
 
 test('selection: BGOS_CREDENTIALS_PATH override wins as ok/env-path', () => {
   const sel = resolveCredentialsSelection({
@@ -941,9 +949,10 @@ test('env-only identity on a multi-credential host is WARNED about', () => {
 test('a folder pin makes the same host safe, and silent', () => {
   const warn = describeEnvOnlyIdentityRisk({
     env: { BGOS_ASSISTANT_ID: '888' },
-    defaultPath: '/agent/credentials.json',
+    // Joined like the real default, so the pinned file the lib joins is the one that exists.
+    defaultPath: join('/agent', 'credentials.json'),
     cwd: '/agents/mark',
-    exists: (p) => p === '/agent/credentials-888.json',
+    exists: (p) => p === join('/agent', 'credentials-888.json'),
     readText: (p) => (p.endsWith(FOLDER_PIN_FILE) ? '888' : null),
     listDir: () => ['credentials-888.json', 'credentials-972.json'],
   })
