@@ -780,9 +780,22 @@ test(
     mkdirSync(agentRoot, { recursive: true })
     writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 900 }))
     const logs: string[] = []
+    // On Windows the temp home must be a whole profile, not just a folder: Chrome reads its default
+    // data directory through USERPROFILE, and with USERPROFILE at a folder that has no
+    // AppData\Local it refuses remote debugging ("requires a non-default data directory") and never
+    // reports an endpoint (measured with Chrome 154 on Windows 11, and on GitHub's runner). A real
+    // user's profile always has one. Pointing LOCALAPPDATA and APPDATA inside it also keeps this
+    // Chrome off the real per-user folders.
+    const profileEnv: Record<string, string> = {}
+    if (process.platform === 'win32') {
+      for (const [name, rel] of [['LOCALAPPDATA', join('AppData', 'Local')], ['APPDATA', join('AppData', 'Roaming')]] as const) {
+        mkdirSync(join(home, rel), { recursive: true })
+        profileEnv[name] = join(home, rel)
+      }
+    }
     // Started as the daemon starts it: stdin is the stop (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF),
     // the one stop a host can handle on Windows too.
-    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
+    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, ...profileEnv, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
     child.stderr.on('data', (c: Buffer) => logs.push(c.toString()))
     // The stop is asserted only after a body that passed, so a stop that fails after an earlier
     // failure can never replace that first, more useful error.

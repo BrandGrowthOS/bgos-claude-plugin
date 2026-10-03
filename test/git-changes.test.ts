@@ -1765,8 +1765,10 @@ test("real Git: a repository whose core.worktree names a folder outside the agen
     }
 
     s.git('config', 'core.worktree', other.replace(/\\/g, '/'))
-    // So the case can fail: Git now names the other folder as the top folder.
-    assert.equal(realpathSync(s.git('rev-parse', '--show-toplevel').trim()), realpathSync(other))
+    // So the case can fail: Git now names the other folder as the top folder. Compared through the
+    // OS's own realpath: node's JS realpathSync keeps an 8.3 short name (C:\Users\RUNNER~1\..., the
+    // temp folder on GitHub's Windows runners) while Git prints the long one.
+    assert.equal(realpathSync.native(s.git('rev-parse', '--show-toplevel').trim()), realpathSync.native(other))
     const rec = recordingSpawn()
     const touched: string[] = []
     const fs: ChangesFs = {
