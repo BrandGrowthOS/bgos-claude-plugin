@@ -939,8 +939,8 @@ What the machine needs:
   (Windows batch files CRLF) whatever `core.autocrlf` says, and
   `test/line-endings.test.ts` keeps it that way. A clone made before that rule
   still holds CRLF copies of files nobody has touched since; refresh it once
-  (`git stash -u` first if it has local changes):
-  `git rm -r -q --cached . && git reset -q --hard`.
+  (`git stash -u` first if it has local changes) with two commands, one after
+  the other: `git rm -r -q --cached .` and then `git reset -q --hard`.
 
 Skipped on Windows by design, each with its reason in the output: the
 `run.expect` behaviour tests (there is no `expect` on Windows, and run.expect

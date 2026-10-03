@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Tests read the repo and nothing else: the token they get cannot write to it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -34,6 +38,7 @@ jobs:
           HOAI_REQUIRE_BASH: '1'
 
       - name: Type check
+        if: success() || failure()
         run: bun run build
 
   # The same suite on Windows, the other host this plugin ships to. Before this leg existed the suite
@@ -50,6 +55,7 @@ jobs:
   test-windows:
     name: test (windows)
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -58,22 +64,30 @@ jobs:
 
       - name: The checkout is LF, with the runner's default core.autocrlf
         run: |
-          echo "core.autocrlf=$(git config --get core.autocrlf || echo unset)"
-          crlf=$(git ls-files --eol | grep 'w/crlf' || true)
-          echo "files checked out CRLF:"; echo "${crlf:-  none}"
-          if echo "$crlf" | grep -v 'bin/hoai.cmd' | grep -q .; then
-            echo "::error::a text file other than the batch file was checked out CRLF; .gitattributes no longer covers it"
+          autocrlf=$(git config --get core.autocrlf || echo unset)
+          echo "core.autocrlf=$autocrlf"
+          if [ "$autocrlf" != "true" ]; then
+            echo "::warning::this runner does not use core.autocrlf=true, so this step does not reproduce a default Windows clone; test/line-endings.test.ts (a forced autocrlf=true checkout) still guards the rule"
+          fi
+          eol=$(git ls-files --eol)
+          crlf=$(printf '%s\n' "$eol" | awk -F'\t' '$1 ~ /w\/crlf/ { print $2 }')
+          echo "files checked out CRLF: ${crlf:-none}"
+          if [ "$crlf" != "bin/hoai.cmd" ]; then
+            echo "::error::exactly bin/hoai.cmd (a batch file) must be CRLF in the working tree, found: ${crlf:-none}"
             exit 1
           fi
 
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile || bun install
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      # npm's install from package-lock.json, as the Windows runs behind this leg were measured: bun
+      # writes different .bin shims on Windows, and npx resolves tsx through them. bun is still
+      # installed above, for the bun:test files and the type check.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
       - name: Run tests
         run: npm test
@@ -81,4 +95,5 @@ jobs:
           HOAI_REQUIRE_BASH: '1'
 
       - name: Type check
+        if: success() || failure()
         run: bun run build
