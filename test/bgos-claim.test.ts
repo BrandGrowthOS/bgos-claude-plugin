@@ -15,8 +15,9 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,6 +41,7 @@ import {
   buildLaunchCommand,
   MCP_SERVER_NAME,
   writeMcpJsonFile,
+  mcpJsonWrittenLine,
   installPluginWrapper,
   scaffoldWorkspace,
   MCP_JSON_MODE,
@@ -265,23 +267,103 @@ test('buildMcpJson launches the stable wrapper with exact server env keys', () =
   assert.equal(flat.includes('"API_BASE"'), false)
 })
 
+const MCP_CONFIG = buildMcpJson({
+  pluginWrapperPath: '/home/u/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
+  pluginDir: '/p',
+  backendUrl: 'https://b',
+  apiKey: 'k',
+  userId: 'u',
+  assistantId: '1',
+})
+
 test('MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk', async () => {
   assert.equal(MCP_JSON_MODE, 0o600)
   const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-test-'))
   try {
     const path = join(dir, '.mcp.json')
-    const config = buildMcpJson({
-      pluginWrapperPath: '/home/u/.bgos-agent/runtime/bgos-daemon-wrapper.mjs',
-      pluginDir: '/p',
-      backendUrl: 'https://b',
-      apiKey: 'k',
-      userId: 'u',
-      assistantId: '1',
+    // A re-claim writes over an EXISTING .mcp.json, and writeFile keeps an existing file's
+    // mode (and on Windows its ACL): only the explicit protection step brings a world-readable
+    // leftover back to owner-only.
+    await writeFile(path, '{}')
+    await chmod(path, 0o644)
+    const protection = await writeMcpJsonFile(path, MCP_CONFIG)
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), MCP_CONFIG)
+    if (process.platform === 'win32') {
+      // NTFS has no mode bits (a 0600 file reads back 0o666): the API key is protected by the
+      // file's ACL. This runs the REAL icacls: no inherited entry may survive, and the user
+      // keeps full control.
+      assert.equal(protection.aclApplied, true, JSON.stringify(protection))
+      const acl = execFileSync('icacls', [path], { encoding: 'utf8', windowsHide: true }).toLowerCase()
+      assert.ok(!acl.includes('(i)'), `no inherited access may survive on the file holding the API key:\n${acl}`)
+      assert.ok(acl.includes(`\\${String(process.env.USERNAME).toLowerCase()}:(f)`), `the user keeps full control:\n${acl}`)
+    } else {
+      assert.equal(protection.aclApplied, null)
+      assert.equal((await stat(path)).mode & 0o777, 0o600)
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// The Windows lock, driven with an injected runner so it is proven on every host, Linux CI
+// included. .mcp.json carries the agent's API key; on Windows chmod does nothing, so without
+// this an agents folder outside the profile (BGOS_AGENTS_ROOT=E:\\agents) leaves the key
+// readable by every local user while the installer said "chmod 600". bgos-pair already locks
+// its credentials file this way; the claim installer now does the same.
+
+test('on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-'))
+  try {
+    const path = join(dir, '.mcp.json')
+    const calls: Array<{ file: string; args: string[] }> = []
+    const result = await writeMcpJsonFile(path, MCP_CONFIG, {
+      platform: 'win32',
+      username: 'karim',
+      run: async (file: string, args: string[]) => {
+        calls.push({ file, args })
+      },
     })
-    await writeMcpJsonFile(path, config)
-    const s = await stat(path)
-    assert.equal(s.mode & 0o777, 0o600)
-    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), config)
+    assert.deepEqual(calls, [{ file: 'icacls', args: [path, '/inheritance:r', '/grant:r', 'karim:F'] }])
+    assert.equal(result.aclApplied, true)
+    assert.equal(mcpJsonWrittenLine(result), '[bgos-claim] wrote .mcp.json (locked to your Windows user)')
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), MCP_CONFIG)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a Windows lock that fails says UNPROTECTED, never chmod 600', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-fail-'))
+  try {
+    const result = await writeMcpJsonFile(join(dir, '.mcp.json'), MCP_CONFIG, {
+      platform: 'win32',
+      username: 'karim',
+      run: async () => {
+        throw Object.assign(new Error('Access is denied.'), { code: 5 })
+      },
+    })
+    assert.equal(result.aclApplied, false)
+    const line = mcpJsonWrittenLine(result)
+    assert.match(line, /UNPROTECTED.*Access is denied/)
+    assert.doesNotMatch(line, /chmod 600/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('off Windows no icacls runs and the line says chmod 600', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bgos-claim-acl-posix-'))
+  try {
+    const calls: string[] = []
+    const result = await writeMcpJsonFile(join(dir, '.mcp.json'), MCP_CONFIG, {
+      platform: 'linux',
+      run: async (file: string) => {
+        calls.push(file)
+      },
+    })
+    assert.deepEqual(calls, [])
+    assert.equal(result.aclApplied, null)
+    assert.equal(mcpJsonWrittenLine(result), '[bgos-claim] wrote .mcp.json (chmod 600)')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

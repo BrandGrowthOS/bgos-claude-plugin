@@ -16,7 +16,8 @@
  *      .claude/settings.local.json)
  *   4. prompt for the RECIPIENT'S OWN X-API-Key (hidden input; keys are
  *      never shipped in packs)
- *   5. write .mcp.json (chmod 600) with the REAL env keys server.ts
+ *   5. write .mcp.json (chmod 600; on Windows locked to the user with
+ *      icacls, as bgos-pair does) with the REAL env keys server.ts
  *      requires: BGOS_BACKEND_URL, BGOS_API_KEY, BGOS_USER_ID,
  *      BGOS_ASSISTANT_ID
  *   6. print the required_env key NAMES the agent still needs and the
@@ -45,6 +46,7 @@ import {
   stableWrapperPath,
 } from './bgos-daemon-wrapper.mjs'
 import { launchCommand } from './bgos-install-method.mjs'
+import { describeFileProtection, lockFileToWindowsUser } from './bgos-pair.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -442,13 +444,24 @@ export const LAUNCH_ENV_PREFIX = 'CLAUDE_CODE_ENABLE_TODO_TOOLS=1 '
 
 // ── Effectful pieces (kept small; main() composes them) ──────────────────────
 
-/** Write .mcp.json with mode 600 (writeFile mode is umask-affected, so an
- *  explicit chmod pins the exact bits). */
-export async function writeMcpJsonFile(path, config) {
+/** Write .mcp.json, which carries the agent's API key, owner-only: mode 600 (writeFile mode is
+ *  umask-affected and keeps an existing file's mode, so an explicit chmod pins the exact bits),
+ *  and on Windows, where chmod does nothing, an ACL locked to the current user, exactly as
+ *  bgos-pair locks its credentials file. Returns what protection the file ACTUALLY got. */
+export async function writeMcpJsonFile(path, config, opts = {}) {
+  const platform = opts.platform ?? process.platform
   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
     mode: MCP_JSON_MODE,
   })
   await chmod(path, MCP_JSON_MODE)
+  if (platform !== 'win32') return { platform, aclApplied: null }
+  return lockFileToWindowsUser(path, opts)
+}
+
+/** The line main() prints once .mcp.json is written: the protection it really got, so a
+ *  Windows lock that failed says UNPROTECTED instead of promising a chmod that did nothing. */
+export function mcpJsonWrittenLine(protection) {
+  return `[bgos-claim] wrote .mcp.json (${describeFileProtection(protection)})`
 }
 
 /** Hidden terminal prompt (no echo). Falls back to visible input when not
@@ -828,8 +841,8 @@ export async function main(argv = process.argv.slice(2)) {
     userId: pack.recipientUserId ?? '',
     assistantId: pack.assistantId ?? '',
   })
-  await writeMcpJsonFile(join(dir, '.mcp.json'), mcpConfig)
-  console.log('[bgos-claim] wrote .mcp.json (chmod 600)')
+  const protection = await writeMcpJsonFile(join(dir, '.mcp.json'), mcpConfig)
+  console.log(mcpJsonWrittenLine(protection))
 
   const stillNeeded = requiredEnvStillNeeded(
     pack.requiredEnv ?? manifest?.required_env ?? [],

@@ -508,7 +508,7 @@ The recipient installs their own independent copy with one command (shown on the
 npx --yes --package github:BrandGrowthOS/bgos-claude-plugin bgos-claim <claimToken>
 ```
 
-The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` with chmod 600, prints the env key NAMES the agent still needs, and prints the launch command.
+The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` owner-only (chmod 600 on macOS and Linux; on Windows, where chmod does nothing, locked to your user with icacls, as `bgos-pair` does for its credentials, and it says UNPROTECTED if that lock fails), prints the env key NAMES the agent still needs, and prints the launch command.
 
 ## Session Controls (v0.19.0+)
 
