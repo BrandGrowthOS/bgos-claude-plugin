@@ -917,6 +917,40 @@ bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon
 Then restart the agent: type `/exit` in its session and run `hoai` from the
 same folder. The wrapper path in `.mcp.json` stays unchanged.
 
+## Running the tests
+
+`npm test` runs the whole suite (the node:test files under tsx, the bun:test
+files under bun) and `bun run build` type checks it, tests included. CI runs
+both on Linux and on Windows (`.github/workflows/tests.yml`) for every pull
+request and every push to main, so a change that breaks either host is red
+before it merges.
+
+**On Windows** the same two commands work from PowerShell, cmd or Git Bash.
+What the machine needs:
+
+- **node and bun on PATH**, as for running the plugin.
+- **Git for Windows.** The tests that parse or run this repo's bash scripts
+  (`bin/bgos-agent`, `bin/hoai-bootstrap.sh`) use Git for Windows' bash, found
+  next to `git` (or set `HOAI_TEST_BASH` to a `bash.exe`). They never use
+  `C:\Windows\System32\bash.exe`: that is the WSL launcher, which cannot open
+  a Windows path. Without a usable bash those tests skip with the reason, and
+  `HOAI_REQUIRE_BASH=1` (CI sets it) makes that a failure instead.
+- **Nothing for line endings.** `.gitattributes` makes every checkout LF
+  (Windows batch files CRLF) whatever `core.autocrlf` says, and
+  `test/line-endings.test.ts` keeps it that way. A clone made before that rule
+  still holds CRLF copies of files nobody has touched since; refresh it once
+  (`git stash -u` first if it has local changes):
+  `git rm -r -q --cached . && git reset -q --hard`.
+
+Skipped on Windows by design, each with its reason in the output: the
+`run.expect` behaviour tests (there is no `expect` on Windows, and run.expect
+only ever runs under launchd or systemd, so the Linux leg runs them), and the
+two cases that create a FILE symlink, unless Developer Mode is on (Settings >
+System > For developers) or the shell is elevated; a directory junction case
+covers the same export gate without either. The browser end to end tests
+launch the installed Chrome headless; point `HOAI_BROWSER_EXECUTABLE` at a
+path that does not exist to skip them.
+
 ## Troubleshooting
 
 | Problem | Solution |

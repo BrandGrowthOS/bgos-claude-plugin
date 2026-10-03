@@ -21,8 +21,9 @@ jobs:
           node-version: 24
 
       # The startup gate tests run the real lib/gate-block.tcl under a real expect and assert the exact
-      # bytes it sends. Where expect is missing they return early, which reports PASS. So install it,
-      # and make its absence a failure rather than a green run that proved nothing.
+      # bytes it sends. Where expect or bash is missing they skip, which a green run does not show at a
+      # glance. So install expect, and make a missing expect or bash a failure rather than a green run
+      # that proved nothing.
       - name: Install expect
         run: sudo apt-get update && sudo apt-get install -y expect
 
@@ -30,6 +31,54 @@ jobs:
         run: npm test
         env:
           HOAI_REQUIRE_EXPECT: '1'
+          HOAI_REQUIRE_BASH: '1'
+
+      - name: Type check
+        run: bun run build
+
+  # The same suite on Windows, the other host this plugin ships to. Before this leg existed the suite
+  # had only ever run on Linux, and on a Windows box it went 31 to 44 red: path, line ending and
+  # process bugs, three of them real ones that Windows users had (a Full handoff failing on its own
+  # files, an API key left readable, Chrome cut off on every daemon stop).
+  #
+  # The checkout keeps the runner's own git config, as a user's clone does (Git for Windows ships
+  # core.autocrlf=true; the first step prints what this runner has), so this leg also proves
+  # .gitattributes hands Windows the LF bytes Linux tests. expect does not
+  # exist on Windows (run.expect only runs under launchd or systemd), so its tests skip here and run
+  # in the Linux leg; bash is Git for Windows' and is required. Chrome is on this image, so the real
+  # browser end to end runs here too.
+  test-windows:
+    name: test (windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The checkout is LF, with the runner's default core.autocrlf
+        run: |
+          echo "core.autocrlf=$(git config --get core.autocrlf || echo unset)"
+          crlf=$(git ls-files --eol | grep 'w/crlf' || true)
+          echo "files checked out CRLF:"; echo "${crlf:-  none}"
+          if echo "$crlf" | grep -v 'bin/hoai.cmd' | grep -q .; then
+            echo "::error::a text file other than the batch file was checked out CRLF; .gitattributes no longer covers it"
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || bun install
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run tests
+        run: npm test
+        env:
+          HOAI_REQUIRE_BASH: '1'
 
       - name: Type check
         run: bun run build
