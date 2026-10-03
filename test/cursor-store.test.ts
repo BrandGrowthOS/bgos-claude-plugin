@@ -30,11 +30,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -97,10 +98,15 @@ test('atomic write: no tempfile or partial file remains after a save', () => {
 test('simulated crash: a failed save leaves the previous file intact', () => {
   const dir = freshDir('cursor-crash-')
   const file = join(dir, CURSOR_FILE_NAME)
-  saveCursorFile(file, new Map([['1', 10]]))
+  assert.equal(saveCursorFile(file, new Map([['1', 10]])), true)
 
-  // Make the directory unwritable so the tempfile write fails mid-save.
-  chmodSync(dir, 0o500)
+  // Make the tempfile write fail mid-save by putting a DIRECTORY where the sibling tempfile
+  // goes (`${file}.${pid}.tmp`, the name saveCursorFile writes). This fails on every OS and
+  // for root alike; a read-only directory does not, because NTFS ignores the read-only bit on
+  // a folder and root ignores it on posix. If the tempfile name ever moves, the save succeeds
+  // and this test goes red rather than passing on nothing.
+  const blocker = `${file}.${process.pid}.tmp`
+  mkdirSync(blocker)
   try {
     assert.equal(
       saveCursorFile(file, new Map([['1', 99]])),
@@ -108,12 +114,13 @@ test('simulated crash: a failed save leaves the previous file intact', () => {
       'save must report failure, not throw',
     )
   } finally {
-    chmodSync(dir, 0o700)
+    rmSync(blocker, { recursive: true, force: true })
   }
 
   const loaded = loadCursorFile(file)
   assert.equal(loaded.fileExisted, true)
   assert.equal(loaded.cursors.get('1'), 10, 'previous cursors must survive')
+  assert.deepEqual(readdirSync(dir), [CURSOR_FILE_NAME], 'nothing but the cursor file is left')
 })
 
 // ── 3. Tolerant load ─────────────────────────────────────────────────────────
@@ -270,21 +277,22 @@ test('after a restart the next poll is a delta poll from the restored cursor', (
 })
 
 test('flushIfDirty failure keeps the store dirty so a later flush retries', () => {
-  const dir = freshDir('cursor-retry-')
-  const file = join(dir, CURSOR_FILE_NAME)
+  // The state folder's path is taken by a regular FILE, so creating the folder fails (EEXIST or
+  // ENOTDIR) on every OS and for root alike; removing it lets the retry through. A read-only
+  // directory would not do it: NTFS ignores that bit on a folder, root ignores it on posix.
+  const parent = join(freshDir('cursor-retry-'), 'state')
+  writeFileSync(parent, 'not a directory')
+  const file = join(parent, CURSOR_FILE_NAME)
   const store = new CursorStore(file)
   const map = store.load().cursors
   map.set('1', 5)
   store.markDirty()
 
-  chmodSync(dir, 0o500)
-  try {
-    assert.equal(store.flushIfDirty(), false)
-    assert.equal(store.isDirty, true, 'failed flush must not clear the dirty flag')
-  } finally {
-    chmodSync(dir, 0o700)
-  }
+  assert.equal(store.flushIfDirty(), false)
+  assert.equal(store.isDirty, true, 'failed flush must not clear the dirty flag')
+  rmSync(parent)
   assert.equal(store.flushIfDirty(), true)
+  assert.equal(store.isDirty, false)
   assert.equal(loadCursorFile(file).cursors.get('1'), 5)
 })
 
