@@ -32,6 +32,8 @@ test('the WSL launchers are recognised under every name Windows gives them', () 
 test('Windows resolves Git for Windows\' bash, found from git itself, ahead of the install folders', () => {
   const env = { ProgramFiles: 'D:\\Apps' }
   assert.deepEqual(windowsBashCandidates(env, GIT_EXEC), [GIT_BASH, 'D:\\Apps\\Git\\bin\\bash.exe'])
+  // `git --exec-path` really prints forward slashes on Windows; the same bash comes out.
+  assert.equal(windowsBashCandidates({}, 'C:/Program Files/Git/mingw64/libexec/git-core')[0], GIT_BASH)
   assert.equal(resolvePosixBash({ platform: 'win32', env, gitExecPath: GIT_EXEC, exists: () => true }), GIT_BASH)
 })
 

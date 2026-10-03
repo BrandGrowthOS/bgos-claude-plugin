@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, win32 as win32Path } from 'node:path'
 import type { TestContext } from 'node:test'
@@ -92,9 +92,11 @@ export function bashOrSkip(t: TestContext): string | null {
  * which would otherwise pass as "parses" the moment someone forgets to check the status.
  */
 export function assertBashParses(bash: string, file: string): void {
-  const broken = join(mkdtempSync(join(tmpdir(), 'hoai-bash-ctl-')), 'broken.sh')
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-bash-ctl-'))
+  const broken = join(dir, 'broken.sh')
   writeFileSync(broken, 'if true; then\n')
   const control = spawnSync(bash, ['-n', bashPath(broken)], { encoding: 'utf8', windowsHide: true })
+  rmSync(dir, { recursive: true, force: true })
   assert.equal(
     control.status,
     2,

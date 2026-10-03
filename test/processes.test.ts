@@ -26,7 +26,9 @@ test('a live process is found by a string on its command line, and is gone once 
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], { stdio: 'ignore', windowsHide: true })
   try {
     await until('the marked process to be found', () => processesMatching(marker).includes(child.pid!))
-    assert.ok(!processesMatching(marker).includes(process.pid), 'the test process itself is never reported')
+    // This file's own name IS on the test process's command line, so this can only pass because
+    // the lookup leaves its caller out.
+    assert.ok(!processesMatching('processes.test').includes(process.pid), 'the test process itself is never reported')
   } finally {
     child.kill('SIGKILL')
   }
