@@ -28,13 +28,14 @@ import { EventEmitter } from 'node:events'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   BROWSER_HOST_KILL_SWITCH_ENV,
   HOST_ENV,
   browserHostKillSwitchOn,
   browserHostLockPath,
+  browserHostLogPath,
   browserHostPairingKey,
   hostEnv,
   startBrowserHostSupervisor,
@@ -42,6 +43,7 @@ import {
   type BrowserHostSupervisorOptions,
 } from '../lib/browser-host-supervisor.ts'
 import { resolveNodePath } from '../lib/watcher-install.mjs'
+import { pidAlive } from '../bin/hoai-browser-host.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -60,7 +62,8 @@ async function until(what: string, check: () => boolean, ms = 10_000): Promise<v
   }
 }
 
-type FakeChild = EventEmitter & { pid: number; exitCode: number | null; signalCode: string | null; signals: string[]; kill(sig?: string): boolean; unref(): void }
+type FakeStdin = { ended: boolean; end(): void; on(): FakeStdin; unref(): void }
+type FakeChild = EventEmitter & { pid: number; exitCode: number | null; signalCode: string | null; signals: string[]; stdin: FakeStdin; kill(sig?: string): boolean; unref(): void }
 
 function fakeChild(pid = 4242): FakeChild {
   const c = new EventEmitter() as FakeChild
@@ -68,6 +71,16 @@ function fakeChild(pid = 4242): FakeChild {
   c.exitCode = null
   c.signalCode = null
   c.signals = []
+  c.stdin = {
+    ended: false,
+    end() {
+      this.ended = true
+    },
+    on() {
+      return this
+    },
+    unref() {},
+  }
   c.kill = (sig = 'SIGTERM') => {
     c.signals.push(sig)
     return true
@@ -101,6 +114,8 @@ function harness(overrides: Partial<BrowserHostSupervisorOptions> = {}) {
     openLog: () => 'ignore',
     recheckMs: 40,
     heartbeatMs: 40,
+    // The posix lifecycle unless a case asks for Windows, whatever the host running the test.
+    platform: 'linux',
     ...overrides,
   })
   return { sup, calls, logs, agentRoot, lockPath: browserHostLockPath(agentRoot, browserHostPairingKey(AUTH.backendUrl, AUTH.pairingToken)) }
@@ -114,7 +129,9 @@ test('the daemon spawns the host once, detached from its stdio, scoped to its pa
   const [call] = h.calls
   assert.equal(call.command, '/usr/local/bin/node')
   assert.deepEqual(call.args, ['/plugin/bin/hoai-browser-host.mjs'])
-  assert.equal(call.options.stdio[0], 'ignore', 'stdin is not the daemon MCP channel')
+  assert.equal(call.options.stdio[0], 'pipe', 'stdin is a pipe this daemon holds, never its MCP channel: closing it is the stop')
+  assert.equal(call.options.env[HOST_ENV.stopOnStdinEof], '1', 'and the host is told so')
+  assert.equal(call.options.detached, false, 'off Windows the host stays in the daemon process group')
   assert.ok(!['inherit', 'pipe'].includes(call.options.stdio[1]) && !['inherit', 'pipe'].includes(call.options.stdio[2]), 'stdout and stderr never reach the daemon stdio')
   assert.equal(call.options.env[HOST_ENV.pairingToken], 'tok-1')
   assert.equal(call.options.env[HOST_ENV.backendUrl], 'https://api.test/api/v1')
@@ -126,10 +143,35 @@ test('the daemon spawns the host once, detached from its stdio, scoped to its pa
   await sleep(200) // several heartbeats and would-be rechecks
   assert.equal(h.calls.length, 1, 'still exactly one spawn')
   h.sup.stop()
-  assert.deepEqual(call.child.signals, ['SIGTERM'], 'stopped with the daemon')
+  assert.equal(call.child.stdin.ended, true, 'stopped with the daemon: its stdin closed')
+  assert.deepEqual(call.child.signals, ['SIGTERM'], 'and, where a process can handle it, SIGTERM')
   assert.ok(!existsSync(h.lockPath), 'and the lock released')
   h.sup.stop()
   assert.deepEqual(call.child.signals, ['SIGTERM'], 'stop is idempotent')
+})
+
+test('on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess', async () => {
+  // On Windows kill('SIGTERM') is TerminateProcess: no handler runs, so Chrome is cut off mid
+  // write. And a host left in the daemon's libuv job is killed the moment the daemon exits.
+  const h = harness({ platform: 'win32', stopBackstopMs: 80 })
+  const [call] = h.calls
+  assert.equal(call.options.detached, true, 'out of the daemon job, so it can close Chrome after the daemon has gone')
+  assert.equal(call.options.stdio[0], 'pipe')
+  h.sup.stop()
+  assert.equal(call.child.stdin.ended, true, 'the stop is the closed stdin')
+  assert.deepEqual(call.child.signals, [], 'and no TerminateProcess')
+  // Only a host that is still running well past its own stop deadline is killed, as a backstop
+  // while this daemon is alive to do it.
+  await sleep(250)
+  assert.equal(call.child.signals.length, 1, 'a wedged host is killed late')
+
+  const clean = harness({ platform: 'win32', stopBackstopMs: 80 })
+  clean.sup.stop()
+  const child = clean.calls[0].child
+  child.exitCode = 0
+  child.emit('exit', 0, null)
+  await sleep(250)
+  assert.deepEqual(child.signals, [], 'a host that stopped cleanly is never killed')
 })
 
 test('with the real log opener, the host writes to its own log file, never the daemon stdio', () => {
@@ -294,13 +336,25 @@ test(
     const agentRoot = join(home, '.bgos-agent')
     const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: TOKEN }
     const logs: string[] = []
+    // Every host the supervisors start, tracked by its own process handle, so "none left behind"
+    // is a fact about these processes rather than a pgrep (which Windows does not have, and whose
+    // match on the home folder never named a host anyway: the folder is only in the env).
+    const spawned: ChildProcess[] = []
+    const track: NonNullable<BrowserHostSupervisorOptions['spawn']> = (command, args, options) => {
+      const child = spawn(command, args, options)
+      spawned.push(child)
+      return child
+    }
     const daemon = (selfPid: number, env: Record<string, string> = {}) =>
-      startBrowserHostSupervisor({ env: { ...process.env, HOME: home, USERPROFILE: home, ...env }, auth, agentRoot, hostScript: HOST_BIN, nodePath, log: (l) => logs.push(`[${selfPid}] ${l}`), selfPid, recheckMs: 200 })
+      startBrowserHostSupervisor({ env: { ...process.env, HOME: home, USERPROFILE: home, ...env }, auth, agentRoot, hostScript: HOST_BIN, nodePath, log: (l) => logs.push(`[${selfPid}] ${l}`), selfPid, recheckMs: 200, spawn: track })
     const hostHandshakes = () => relay.handshakes.filter((h) => h.auth.role === 'browser_host')
     const sups: BrowserHostSupervisor[] = []
+    // The second daemon's pid must be LIVE: a host whose daemon pid is dead stops itself within
+    // seconds (the watchdog), which would race the stop this case is about.
+    const standIn = spawn(nodePath!, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
     try {
       const a = daemon(process.pid)
-      const b = daemon(OTHER_DAEMON_PID)
+      const b = daemon(standIn.pid!)
       sups.push(a, b)
       assert.equal(a.state, 'running')
       assert.equal(b.state, 'waiting')
@@ -328,20 +382,16 @@ test(
       const secondHost = b.child!
       const exited = new Promise((r) => secondHost.once('exit', r))
       b.stop()
-      await exited
+      assert.ok(await Promise.race([exited.then(() => true), sleep(20_000).then(() => false)]), 'the stopped daemon took its host with it')
       await sleep(1_000)
       assert.equal(hostHandshakes().length, 2, 'the kill switch and the stop started nothing new')
     } finally {
       for (const s of sups) s.stop()
+      standIn.kill('SIGKILL')
       await relay.close()
     }
-    let left = ''
-    for (let i = 0; i < 50; i++) {
-      left = spawnSync('pgrep', ['-f', home], { encoding: 'utf8' }).stdout.trim()
-      if (!left) break
-      await sleep(200)
-    }
-    assert.equal(left, '', `no host left behind: ${left}`)
+    assert.equal(spawned.length, 2, 'exactly two hosts were ever started: one, then its takeover')
+    await until('every host to be gone', () => spawned.every((c) => c.exitCode !== null || c.signalCode !== null), 20_000)
   },
 )
 
@@ -373,6 +423,86 @@ test('END TO END: a host whose daemon is killed outright stops itself', { timeou
   } finally {
     standIn.kill('SIGKILL')
     host.kill('SIGKILL')
+    await relay.close()
+  }
+})
+
+test('END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped', { timeout: 60_000, skip: e2eSkip }, async () => {
+  if (e2eSkip) return
+  // On Windows the old stop was kill('SIGTERM'), which is TerminateProcess there: the host never
+  // ran its stop, so its Chrome was cut off mid write on every daemon stop or restart.
+  const TOKEN = 'tok-stop'
+  const relay = await startFakeRelay({ token: TOKEN, admissible: [900] })
+  const home = mkdtempSync(join(tmpdir(), 'bh-stop-'))
+  const agentRoot = join(home, '.bgos-agent')
+  const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: TOKEN }
+  const sup = startBrowserHostSupervisor({ env: { ...process.env, HOME: home, USERPROFILE: home }, auth, agentRoot, hostScript: HOST_BIN, nodePath, log: () => {} })
+  try {
+    await relay.waitForHost(30_000)
+    const host = sup.child!
+    const exited = new Promise<number | null>((r) => host.once('exit', (code) => r(code)))
+    sup.stop()
+    const code = await Promise.race([exited, sleep(20_000).then(() => 'still running' as const)])
+    const log = readFileSync(browserHostLogPath(agentRoot, browserHostPairingKey(auth.backendUrl, TOKEN)), 'utf8')
+    assert.equal(code, 0, `the host must close its browsers and sockets, not be cut off:\n${log}`)
+    assert.match(log, /closing the browsers/)
+    assert.match(log, /stopped cleanly/)
+  } finally {
+    sup.stop()
+    sup.child?.kill('SIGKILL')
+    await relay.close()
+  }
+})
+
+const bunOk = spawnSync('bun', ['--version'], { windowsHide: true }).status === 0
+const standInSkip = e2eSkip || (bunOk ? false : 'bun is not on PATH (the daemon runs under bun)')
+
+test('END TO END: a daemon that stops its host and exits AT ONCE, as server.ts shutdown() does, still gets a clean close', { timeout: 90_000, skip: standInSkip }, async () => {
+  if (standInSkip) return
+  // server.ts shutdown() calls browserHost.stop() and then process.exit() on the next line. On
+  // Windows libuv puts every child that is not detached into a job object that kills it when the
+  // parent exits, so a host left in the daemon's job would be killed before it could close Chrome.
+  // This stand-in is a real daemon process under bun doing exactly that.
+  const TOKEN = 'tok-standin'
+  const relay = await startFakeRelay({ token: TOKEN, admissible: [900] })
+  const home = mkdtempSync(join(tmpdir(), 'bh-standin-'))
+  const agentRoot = join(home, '.bgos-agent')
+  const auth = { ...AUTH, backendUrl: relay.backendUrl, pairingToken: TOKEN }
+  const script = join(home, 'stand-in-daemon.ts')
+  writeFileSync(
+    script,
+    [
+      `import { startBrowserHostSupervisor } from ${JSON.stringify(pathToFileURL(join(HERE, '..', 'lib', 'browser-host-supervisor.ts')).href)}`,
+      'const e = process.env',
+      'const sup = startBrowserHostSupervisor({ env: e, auth: JSON.parse(e.STANDIN_AUTH!), agentRoot: e.STANDIN_AGENT_ROOT!, hostScript: e.STANDIN_HOST_BIN!, nodePath: e.STANDIN_NODE!, log: (l) => console.log(l) })',
+      "process.stdin.once('data', () => { sup.stop(); process.exit(0) })",
+      '',
+    ].join('\n'),
+  )
+  const daemon = spawn('bun', [script], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, HOME: home, USERPROFILE: home, STANDIN_AUTH: JSON.stringify(auth), STANDIN_AGENT_ROOT: agentRoot, STANDIN_HOST_BIN: HOST_BIN, STANDIN_NODE: nodePath! },
+    windowsHide: true,
+  })
+  let out = ''
+  daemon.stdout!.on('data', (c: Buffer) => (out += c.toString()))
+  daemon.stderr!.on('data', (c: Buffer) => (out += c.toString()))
+  const logPath = browserHostLogPath(agentRoot, browserHostPairingKey(auth.backendUrl, TOKEN))
+  const hostLog = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8') : '')
+  let hostPid = 0
+  try {
+    await relay.waitForHost(30_000)
+    hostPid = Number(/started \(pid (\d+)\)/.exec(out)?.[1] ?? 0)
+    assert.ok(hostPid > 0, `the stand-in daemon started a host:\n${out}`)
+    const daemonGone = new Promise((r) => daemon.once('exit', r))
+    daemon.stdin!.write('stop\n')
+    await daemonGone
+    // The daemon has exited. Its host must still finish the whole stop on its own.
+    await until(`the host to finish its stop after its daemon exited:\n${hostLog()}`, () => /stopped cleanly/.test(hostLog()), 20_000)
+    await until('the host process to end', () => !pidAlive(hostPid), 20_000)
+  } finally {
+    daemon.kill('SIGKILL')
+    if (hostPid && pidAlive(hostPid)) process.kill(hostPid, 'SIGKILL')
     await relay.close()
   }
 })

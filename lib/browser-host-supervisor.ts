@@ -34,11 +34,17 @@
  * restarted by the daemon that saw it die.
  *
  * DETACHED FROM STDIO. The daemon's stdout is its MCP channel, so the child
- * never inherits it: stdin is ignored and the host's output goes to its own
- * log file next to the lock. It stays in the daemon's process group and is
- * stopped with SIGTERM when the daemon exits (the host closes Chrome cleanly
- * on SIGTERM); if the daemon is killed outright, the host notices the
- * daemon's pid is gone (HOAI_BROWSER_HOST_PARENT_PID) and stops itself.
+ * never inherits it: the host's output goes to its own log file next to the
+ * lock, and its stdin is a pipe only this daemon holds. CLOSING THAT PIPE IS
+ * THE STOP (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF): the host closes Chrome
+ * cleanly and exits. It is the one stop that works on Windows, where
+ * kill('SIGTERM') is TerminateProcess and no handler runs, so Chrome was cut
+ * off mid write on every daemon stop. On Windows the host is also started
+ * detached, out of the job object libuv would kill it with the moment the
+ * daemon exits (shutdown() exits right after stop()). Off Windows it stays in
+ * the daemon's process group and also gets SIGTERM, as before. If the daemon
+ * is killed outright the pipe still closes, and the host also notices the
+ * daemon's pid is gone (HOAI_BROWSER_HOST_PARENT_PID).
  *
  * No credential is logged; the lock and log names carry a digest, never the
  * token.
@@ -85,7 +91,16 @@ export const HOST_ENV = {
   backendUrl: 'HOAI_BROWSER_HOST_BACKEND_URL',
   assistantId: 'HOAI_BROWSER_HOST_ASSISTANT_ID',
   parentPid: 'HOAI_BROWSER_HOST_PARENT_PID',
+  /** 1: closing the host's stdin is the stop (bin/hoai-browser-host.mjs STOP_ON_STDIN_EOF_ENV). */
+  stopOnStdinEof: 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF',
 } as const
+
+/**
+ * On Windows a host still running this long after its stop is killed, while this daemon is alive
+ * to do it: later than the host's own stop deadline (STOP_DEADLINE_MS, 15 s), so it only ever
+ * meets a host that is wedged past ending itself.
+ */
+export const BROWSER_HOST_STOP_BACKSTOP_MS = 20_000
 
 type Env = Record<string, string | undefined>
 
@@ -142,8 +157,9 @@ export interface BrowserHostSupervisor {
   readonly state: BrowserHostState
   readonly child: ChildProcess | null
   readonly lockPath: string | null
-  /** Stops the host (SIGTERM) and releases the lock. Safe to call twice, and
-   *  synchronous, so the daemon's process 'exit' hook can call it. */
+  /** Stops the host (closes its stdin, and off Windows sends SIGTERM) and
+   *  releases the lock. Safe to call twice, and synchronous, so the daemon's
+   *  process 'exit' hook can call it. */
   stop(): void
 }
 
@@ -165,6 +181,9 @@ export interface BrowserHostSupervisorOptions {
   heartbeatMs?: number
   recheckMs?: number
   openLog?: (path: string) => number | 'ignore'
+  /** Whose process rules apply; defaults to process.platform. */
+  platform?: string
+  stopBackstopMs?: number
 }
 
 /**
@@ -215,6 +234,7 @@ export function startBrowserHostSupervisor(opts: BrowserHostSupervisorOptions): 
   }
 
   const selfPid = opts.selfPid ?? process.pid
+  const platform = opts.platform ?? process.platform
   const now = opts.now ?? Date.now
   const spawn = opts.spawn ?? nodeSpawn
   const nodePath = opts.nodePath
@@ -276,14 +296,20 @@ export function startBrowserHostSupervisor(opts: BrowserHostSupervisorOptions): 
     let started: ChildProcess
     try {
       started = spawn(nodePath, [opts.hostScript], {
-        stdio: ['ignore', out, out],
+        stdio: ['pipe', out, out],
         env: {
           ...hostEnv(opts.env),
           [HOST_ENV.pairingToken]: auth.pairingToken,
           [HOST_ENV.backendUrl]: auth.backendUrl,
           [HOST_ENV.assistantId]: String(auth.assistantId),
           [HOST_ENV.parentPid]: String(selfPid),
+          [HOST_ENV.stopOnStdinEof]: '1',
         },
+        // On Windows libuv puts every child that is not detached into a job object that kills it
+        // the moment this process exits, and shutdown() exits on the line after stop(): the host
+        // would be killed mid close. Detached, it outlives the daemon long enough to close Chrome,
+        // and its own stop deadline bounds that. Off Windows it stays in the process group.
+        detached: platform === 'win32',
         windowsHide: true,
       })
     } catch (err) {
@@ -298,6 +324,10 @@ export function startBrowserHostSupervisor(opts: BrowserHostSupervisorOptions): 
     }
     child = started
     state = 'running'
+    // The stop pipe must never hold the daemon open, and a write error on it (the host already
+    // gone) is not the daemon's to throw.
+    started.stdin?.on('error', () => {})
+    ;(started.stdin as { unref?: () => void } | null)?.unref?.()
     // A missing binary arrives here, not as a throw: without this listener
     // the error event would be thrown into the daemon. Both only speak for the
     // CURRENT child: one stood down earlier is allowed to exit quietly.
@@ -345,11 +375,28 @@ export function startBrowserHostSupervisor(opts: BrowserHostSupervisorOptions): 
 
   function stopChild(): void {
     const c = child
-    if (c && c.exitCode === null && c.signalCode === null) {
+    if (!c || c.exitCode !== null || c.signalCode !== null) return
+    // The stop every platform can handle: the host reads the end of its stdin, closes Chrome
+    // cleanly and exits.
+    try {
+      c.stdin?.end()
+    } catch {}
+    if (platform !== 'win32') {
       try {
         c.kill('SIGTERM')
       } catch {}
+      return
     }
+    // Never kill() first on Windows, where it is TerminateProcess. Only a host still running
+    // long after its own stop deadline is killed, and only while this daemon is alive to do it.
+    const backstop = setTimeout(() => {
+      if (c.exitCode === null && c.signalCode === null) {
+        try {
+          c.kill()
+        } catch {}
+      }
+    }, opts.stopBackstopMs ?? BROWSER_HOST_STOP_BACKSTOP_MS)
+    backstop.unref?.()
   }
 
   function stop(): void {
