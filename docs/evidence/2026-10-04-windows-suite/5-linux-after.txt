@@ -1,0 +1,15 @@
+# Linux (WSL Ubuntu, ext4), node 24.16.0, bun 1.3.9, branch fix/windows-suite 2ebfbf3
+$ HOAI_REQUIRE_BASH=1 npm test
+[run-tests] 149 node:test files via tsx, 11 bun:test files via bun
+ℹ tests 3377
+ℹ suites 60
+ℹ pass 3363
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 14
+ℹ todo 0
+ 330 pass
+ 0 fail
+Ran 330 tests across 11 files. [195.00ms]
+[run-tests] both families green
+linux npm test exit 0

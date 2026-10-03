@@ -1,0 +1,23 @@
+# Windows 11, branch fix/windows-suite 7c04821 (PR #172), LF clone
+$ npm test   (E:\bgos-worktrees\plugin-win-suite, profile sandboxed, Chrome hidden)
+[run-suite] repo E:\bgos-worktrees\plugin-win-suite sandbox E:\bgos-worktrees\win-b3\sandboxes\G-lf-final2 at Sun 10/04/2026  3:25:27.14 
+7c048215f545e7f16e1430b44689326679b6ffaf
+false
+v24.16.0
+1.3.9
+> claude-channel-bgos@0.60.2 test
+[run-tests] 149 node:test files via tsx, 11 bun:test files via bun
+ℹ tests 3377
+ℹ suites 60
+ℹ pass 3361
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 15
+ℹ todo 0
+ 330 pass
+ 0 fail
+Ran 330 tests across 11 files. [758.00ms]
+[run-tests] FAILED (node family exit 1, bun family exit 0)
+[run-suite] npm test exit 1 
+# failing tests, read name by name from the log's own failing block (node) and (fail) lines (bun):
+  node  service-supervision.test.ts  ::  the daemon and the watcher resolve the same authority and the same handle

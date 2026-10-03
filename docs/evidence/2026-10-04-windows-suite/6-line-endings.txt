@@ -1,0 +1,13 @@
+# The fresh default clone of 2ebfbf3: what Windows' default git config checks out
+$ git config --get core.autocrlf
+true
+$ git ls-files --eol | awk '{print $1, $2}' | sort | uniq -c
+      1 i/-text w/-text
+      1 i/lf w/crlf
+    365 i/lf w/lf
+$ git ls-files --eol | grep w/crlf
+i/lf    w/crlf  attr/text eol=crlf    	bin/hoai.cmd
+# the same, on the untouched main a2712b4 (E:\bgos-worktrees\win-b3\crlf-main):
+      1 i/-text w/-text
+    349 i/lf w/crlf
+     11 i/lf w/lf
