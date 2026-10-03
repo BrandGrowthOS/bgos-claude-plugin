@@ -540,9 +540,11 @@ async function isDirNonEmpty(dir) {
   }
 }
 
-async function hasCommand(cmd) {
+/** Is `cmd` (git, bun) on PATH? It runs `<cmd> --version` with no shell: asking /bin/sh failed on
+ *  Windows, which has none, so every claim there stopped at "git is required" with git installed. */
+export async function hasCommand(cmd) {
   try {
-    await execFileAsync('/bin/sh', ['-c', `command -v ${cmd}`])
+    await execFileAsync(cmd, ['--version'], { windowsHide: true, timeout: 30_000 })
     return true
   } catch {
     return false

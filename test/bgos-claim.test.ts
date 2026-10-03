@@ -42,6 +42,7 @@ import {
   MCP_SERVER_NAME,
   writeMcpJsonFile,
   mcpJsonWrittenLine,
+  hasCommand,
   installPluginWrapper,
   scaffoldWorkspace,
   MCP_JSON_MODE,
@@ -367,6 +368,13 @@ test('off Windows no icacls runs and the line says chmod 600', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('hasCommand finds a command on PATH on every OS, so a Windows claim gets past its git check', async () => {
+  // It asked /bin/sh, which Windows does not have, so every claim on Windows stopped at
+  // "git is required" with git installed, before .mcp.json (and its lock) was ever written.
+  assert.equal(await hasCommand('git'), true, 'git runs this suite, so it is on PATH')
+  assert.equal(await hasCommand(`hoai-no-such-command-${process.pid}`), false)
 })
 
 test('claim installer copies the daemon wrapper outside the plugin checkout', async () => {
