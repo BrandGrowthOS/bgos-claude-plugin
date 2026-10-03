@@ -19,7 +19,7 @@
  *
  * Run: npm test, or npx tsx --test test/bgos-agent.gate.test.ts
  */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -232,7 +232,7 @@ test('behaviour: the generated run.sh really RUNS under the bash of this machine
   )
   const workdir = mkdtempSync(join(tmpdir(), 'hoai-agent-cwd-'))
   for (let lap = 1; lap <= 3; lap++) {
-    const run = spawnSync(bash, [bashPath(runShPath)], { cwd: workdir, encoding: 'utf8', timeout: 60_000, windowsHide: true })
+    const run: SpawnSyncReturns<string> = spawnSync(bash, [bashPath(runShPath)], { cwd: workdir, encoding: 'utf8', timeout: 60_000, windowsHide: true })
     assert.equal(run.status, 0, `lap ${lap}: run.sh itself must not die (${run.stderr})`)
     assert.equal(readFileSync(join(dir, 'failcount'), 'utf8').trim(), String(lap))
   }

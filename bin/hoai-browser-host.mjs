@@ -2025,6 +2025,9 @@ export class BrowserHost {
 /**
  * Runs a stop to its end and says so, or exits with 1 once `ms` has passed without it finishing
  * (STOP_DEADLINE_MS). The deadline is unref'd: a stop that finishes never waits for it.
+ * @param {() => unknown} stopFn
+ * @param {{ ms?: number, log?: (line: string) => void, exit?: (code: number) => void }} [opts]
+ * @returns {Promise<void>}
  */
 export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code) } = {}) {
   const deadline = setTimeout(() => {

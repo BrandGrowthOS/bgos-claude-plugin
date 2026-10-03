@@ -641,13 +641,13 @@ test('a stop that finishes says so, and its deadline never fires afterwards', as
   await stopWithin(async () => {}, { ms: 60, log: (l: string) => lines.push(l), exit: (code: number) => codes.push(code) })
   assert.ok(lines.includes('stopped cleanly'), lines.join('\n'))
   await new Promise((r) => setTimeout(r, 200))
-  assert.deepEqual(codes, [])
+  assert.equal(codes.length, 0, `no deadline exit after a stop that finished: ${codes}`)
   // A stop that throws on the way is still a stop that ended, and says what went wrong.
   const failed: string[] = []
   await stopWithin(async () => { throw new Error('socket already closed') }, { ms: 60, log: (l: string) => failed.push(l), exit: (code: number) => codes.push(code) })
   assert.ok(failed.some((l) => /stopped, with an error on the way: socket already closed/.test(l)), failed.join('\n'))
   await new Promise((r) => setTimeout(r, 200))
-  assert.deepEqual(codes, [])
+  assert.equal(codes.length, 0, `no deadline exit after a stop that threw: ${codes}`)
 })
 
 // ── 5. The real process ──────────────────────────────────────────────────────
