@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.60.2 (2026-10-04)
+## 0.60.3 (2026-10-04)
 
 **Windows is a tested host now: the suite runs on Windows in CI, and three bugs Windows users had are fixed.** Until
 now the suite had only run on Linux and macOS. Run on Windows it went 31 red on a clone made with
@@ -32,6 +32,31 @@ now the suite had only run on Linux and macOS. Run on Windows it went 31 red on 
   `pgrep`, or a 400 ms cold start, now written to hold on both hosts without being weakened. A new
   `test (windows)` job runs the suite and the type check on `windows-latest`; the README says what a Windows machine
   needs to run it (Git for Windows) and what skips there by design.
+
+## 0.60.2 (2026-10-04)
+
+**Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored
+2026-09-28). `bin/hoai-browser-mcp.mjs` is a byte-identical copy and the pin in
+`bin/hoai-browser-mcp.vendor.json` names the new hash, so the guard states the identity in the tree.
+
+Two things ride this copy. The status line that `hoai_browser_status` appends now reads
+`Reached on <host>.` It read "Reached through your owner's account on <host>", which was already loose
+(an account is not an app) and became wrong outright when BGOS shipped the acting-principal election:
+the backend elects a desktop belonging to the ACTING human, so for a shared agent the page does not run
+on the owner's machine at all and the old sentence could name the wrong person. And the copy had been
+three days behind, missing MCP request cancellation entirely.
+
+Verified on this tree rather than asserted: the vendor guard's cross-tree case PASSED rather than
+skipped (`HOAI_BROWSER_SHIM_SOURCE` armed at BGOS main's shim, 5 of 5), the ported relay and shim
+suites are 34 of 34, `npm test` is 3,346 tests with 0 failures, and `npm run build` is clean.
+
+**The version moves because this repo's `version advances against base` check requires it on every
+PR, and that is not the same as a release.** Publishing is a separate act: the tag, the marketplace
+ref and the app's own plugin version floor, none of which move here. So a machine installing through
+the pin is unaffected.
+
+What IS delivery, and it is easy to miss: a host that TRACKS this repo picks the new shim up at its
+next session restart, so merging reaches those machines even with nothing released.
 
 ## 0.60.1 (2026-10-02)
 
