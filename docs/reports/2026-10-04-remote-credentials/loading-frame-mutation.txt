@@ -1,0 +1,21 @@
+✖ restoring registers open SPA origins without replacing saved state or navigating pages (709.41ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1253.3473
+
+✖ failing tests:
+
+test at test\agent-browser-vault.test.ts:1:11390
+✖ restoring registers open SPA origins without replacing saved state or navigating pages (709.41ms)
+  TypeError: Invalid URL
+      at new URL (node:internal/url:840:25)
+      at AgentBrowserVault._restore (file:///E:/bgos-worktrees/remote-browser-plugin-host/lib/agent-browser-vault.mjs:201:15)
+      at file:///E:/bgos-worktrees/remote-browser-plugin-host/lib/agent-browser-vault.mjs:186:94 {
+    code: 'ERR_INVALID_URL',
+    input: ''
+  }

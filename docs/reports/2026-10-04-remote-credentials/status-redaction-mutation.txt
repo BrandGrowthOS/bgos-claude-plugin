@@ -1,0 +1,28 @@
+Ã¢Å“â€“ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2756.5436ms)
+Ã¢â€žÂ¹ tests 1
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 0
+Ã¢â€žÂ¹ fail 1
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 0
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 7908.4079
+
+Ã¢Å“â€“ failing tests:
+
+test at test\remote-credentials.chromium.test.ts:1:769
+Ã¢Å“â€“ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2756.5436ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  true !== false
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-credentials.chromium.test.ts:52:106)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

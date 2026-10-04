@@ -1,0 +1,133 @@
+{
+  "completedAt": "2026-10-04T17:25:12.547Z",
+  "platform": "win32",
+  "node": "v24.16.0",
+  "version": "0.60.5",
+  "manifestVersion": "0.60.5",
+  "repository": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\package",
+  "root": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1",
+  "hostPid": 81528,
+  "startup": "startBrowserHostSupervisor from unpacked artifact",
+  "restartedHostPid": 56188,
+  "hostProcessRestartReopenedProfile": true,
+  "installedBrowserFoundInitially": false,
+  "browserCacheInitiallyAbsent": true,
+  "browserExecutable": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe",
+  "firstUseMs": 22396,
+  "freshDependencyPath": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\package\\node_modules\\playwright-core",
+  "packageRequiredFiles": [
+    "skills/hoai-browser/SKILL.md",
+    "lib/browser-bootstrap.mjs",
+    "lib/agent-browser-vault.mjs",
+    "lib/remote-credentials.mjs",
+    "lib/remote-credentials-crypto.cjs",
+    "lib/browser-secret-redactor.mjs",
+    "lib/browser-host-supervisor.ts",
+    "bin/hoai-browser-host.mjs"
+  ],
+  "requiredFileSha256": {
+    "skills/hoai-browser/SKILL.md": "75a63243184ab72a8e71a693b7dd3acd1dc5dd06137a022396f0643988e042e2",
+    "lib/browser-bootstrap.mjs": "afd690386d5edaa82fdfbc1b35203e50a74abd038249405452c706b885515f92",
+    "lib/agent-browser-vault.mjs": "174e50c59c132dae93f18a3cc963a9717cbdf17f35223f5a1e859c71b8bd358c",
+    "lib/remote-credentials.mjs": "a437c4061e88709beebfb82370eebd43f6bfe869b957befc21ebdc37c5ef9878",
+    "lib/remote-credentials-crypto.cjs": "6b4df88c241b6e34c7c23819ed55632636c751c0537f0870470418bf6e355574",
+    "lib/browser-secret-redactor.mjs": "d19227c106183c6ccf9408db1ec8e832a0805d38d79ae338ecfdd97262f6a8a4",
+    "lib/browser-host-supervisor.ts": "b30fc13759c73376f24b0e62e7d5948ebbc12eef8ea7886e15edf9525ef1d1cb",
+    "bin/hoai-browser-host.mjs": "a80102b496a4880eb49468d4a48a4759739485b305f34b0dfaca83dbaf941261"
+  },
+  "remoteCredentialsAdvertised": true,
+  "initialStorage": {
+    "configured": false,
+    "unlocked": false,
+    "legacy": false
+  },
+  "lockedCookiePresentBeforeClose": true,
+  "lockedCookieAbsentAfterReopen": true,
+  "unsafeSandboxFlags": false,
+  "chromiumProcessCount": 14,
+  "chromiumProcesses": [
+    {
+      "ProcessId": 21320,
+      "ParentProcessId": 56188,
+      "CommandLine": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe --remote-debugging-port=0 --user-data-dir=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX --no-first-run --no-default-browser-check --window-size=1280,800 --headless=new about:blank"
+    },
+    {
+      "ProcessId": 84980,
+      "ParentProcessId": 21320,
+      "CommandLine": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe --type=crashpad-handler --user-data-dir=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX /prefetch:4 --monitor-self --monitor-self-argument=--type=crashpad-handler --monitor-self-argument=--user-data-dir=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX --monitor-self-argument=/prefetch:4 --monitor-self-annotation=ptype=crashpad-handler --database=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\\Crashpad --annotation=plat=Win64 \"--annotation=prod=Google Chrome for Testing\" --annotation=ver=153.0.8010.12 --initial-client-data=0x150,0x154,0x158,0x12c,0x15c,0x7ffdcedbce80,0x7ffdcedbce90,0x7ffdcedbcea0"
+    },
+    {
+      "ProcessId": 21492,
+      "ParentProcessId": 84980,
+      "CommandLine": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe --type=crashpad-handler --user-data-dir=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX /prefetch:4 --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler --database=C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\\Crashpad --annotation=plat=Win64 \"--annotation=prod=Google Chrome for Testing\" --annotation=ver=153.0.8010.12 --initial-client-data=0x1bc,0x1c0,0x1c4,0x1b8,0x1ec,0x7ff717fc9440,0x7ff717fc9450,0x7ff717fc9460"
+    },
+    {
+      "ProcessId": 11120,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=gpu-process --headless=new --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --start-stack-profiler --gpu-preferences=WAAAAAAAAADgAQAEAAAAAAAAAAAAAMAAQAAAAAAAAAADAAAAAAAAADgAAAAAAAAAAAAAAAAAAAACAAAAAAAAAAAAAAAAAAAAKAAAAAAAAAAoAAAAAAAAAAgAAAAAAAAAEAAAAAIAAAABAAAAAAAAAAgAAAAAAAAACAAAAAAAAAA= --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708988185955192 --mojo-platform-channel-handle=1940 /prefetch:2"
+    },
+    {
+      "ProcessId": 18192,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=utility --utility-sub-type=storage.mojom.StorageService --lang=en-US --service-sandbox-type=service --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708990060038890 --mojo-platform-channel-handle=2404 /prefetch:13"
+    },
+    {
+      "ProcessId": 73000,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US --service-sandbox-type=none --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --start-stack-profiler --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708990997080739 --mojo-platform-channel-handle=3380 /prefetch:11"
+    },
+    {
+      "ProcessId": 81248,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --top-chrome-webui --gpu-client-id=6 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --disallow-v8-feature-flag-overrides --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=6 --gpu-channel-request-start-time-ticks=34992423302 --launch-time-ticks=34992424027 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708991934122588 --mojo-platform-channel-handle=4212 /prefetch:1"
+    },
+    {
+      "ProcessId": 84796,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=7 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=7 --gpu-channel-request-start-time-ticks=34992474269 --launch-time-ticks=34992474467 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708992871164437 --mojo-platform-channel-handle=4640 /prefetch:1"
+    },
+    {
+      "ProcessId": 76816,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --top-chrome-webui --gpu-client-id=10 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --disallow-v8-feature-flag-overrides --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=10 --gpu-channel-request-start-time-ticks=34992542122 --launch-time-ticks=34992542479 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708995682289984 --mojo-platform-channel-handle=5012 /prefetch:1"
+    },
+    {
+      "ProcessId": 82236,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=12 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=12 --gpu-channel-request-start-time-ticks=34992579849 --launch-time-ticks=34992580217 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708997556373682 --mojo-platform-channel-handle=5532 /prefetch:1"
+    },
+    {
+      "ProcessId": 39784,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=11 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=11 --gpu-channel-request-start-time-ticks=34992580361 --launch-time-ticks=34992580665 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190708996619331833 --mojo-platform-channel-handle=5476 /prefetch:1"
+    },
+    {
+      "ProcessId": 8132,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=15 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --extension-process --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=15 --gpu-channel-request-start-time-ticks=34992834645 --launch-time-ticks=34992835330 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190709000367499229 --mojo-platform-channel-handle=5920 /prefetch:9"
+    },
+    {
+      "ProcessId": 22396,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=16 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --extension-process --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=16 --gpu-channel-request-start-time-ticks=34992836267 --launch-time-ticks=34992836631 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190709001304541078 --mojo-platform-channel-handle=5948 /prefetch:9"
+    },
+    {
+      "ProcessId": 26548,
+      "ParentProcessId": 21320,
+      "CommandLine": "\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\home\\AppData\\Local\\ms-playwright\\chromium-1243\\chrome-win64\\chrome.exe\" --type=renderer --gpu-client-id=17 --noerrdialogs --user-data-dir=\"C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\temp\\hoai-browser-runtime-ollBNX\" --extension-process --no-pre-read-main-dll --remote-debugging-port=0 --video-capture-use-gpu-memory-buffer --lang=en-US --device-scale-factor=1.5 --num-raster-threads=4 --enable-main-frame-before-activation --renderer-client-id=17 --gpu-channel-request-start-time-ticks=34992840131 --launch-time-ticks=34992845919 --field-trial-handle=1920,i,7262560338905831751,13106486032196946779,262144 --disable-features=PaintHolding --variations-seed-version --pseudonymization-salt-handle=1884,i,10820821927986071390,484276544910962896,4 --trace-process-track-uuid=3190709002241582927 --mojo-platform-channel-handle=5952 /prefetch:9"
+    }
+  ],
+  "profileFilesWhileLocked": [],
+  "localRelayOnly": true,
+  "requiredSourceMatches": {
+    "skills/hoai-browser/SKILL.md": true,
+    "lib/browser-bootstrap.mjs": true,
+    "lib/agent-browser-vault.mjs": true,
+    "lib/remote-credentials.mjs": true,
+    "lib/remote-credentials-crypto.cjs": true,
+    "lib/browser-secret-redactor.mjs": true,
+    "lib/browser-host-supervisor.ts": true,
+    "bin/hoai-browser-host.mjs": true
+  },
+  "chromiumProcessesAfterCleanup": 0
+}

@@ -1,0 +1,50 @@
+
+lib\remote-input.mjs:225:      } else await Promise.resolve({ text: key })
+
+
+âœ” B reserves owner control before awaiting physical agent work and gates late held actions (5.04ms)
+âœ– B dispatches a safe key once and refuses token replay, stale focus, and credential changes (2.2478ms)
+âœ” B pointer input uses remote coordinates and invalidates the preceding focus token (0.6104ms)
+âœ” B expired focus and lease fail closed and emit revocation (0.2498ms)
+âœ” B released owner input retains the agent block until its physical command and keyup settle (1.3886ms)
+âœ” B hide during a pending pointer down releases the remote button before the agent resumes (0.537ms)
+âœ” B host status exposes owner control and refuses agent tools or close before permission work (0.5469ms)
+âœ” B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure (0.5653ms)
+âœ” B pointer move preserves pressed-button masks for drag handlers (0.2693ms)
+âœ” B cleanup failure blocks its affected engine but not a browser started after successful shutdown (1.8693ms)
+â„¹ tests 10
+â„¹ suites 0
+â„¹ pass 9
+â„¹ fail 1
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 527.5509
+
+âœ– failing tests:
+
+test at test\remote-input.test.ts:1:1881
+âœ– B dispatches a safe key once and refuses token replay, stale focus, and credential changes (2.2478ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+  + []
+  - [
+  -   {
+  -     method: 'Input.insertText',
+  -     params: {
+  -       text: 'K'
+  -     }
+  -   }
+  - ]
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-input.test.ts:45:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: [],
+    expected: [ { method: 'Input.insertText', params: [Object] } ],
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

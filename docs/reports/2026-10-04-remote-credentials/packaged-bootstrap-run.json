@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "root": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1",
+  "installed": "C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-packaged-browser-UbeQg1\\package",
+  "archiveSha256": "911755444fe52661829aa66cc576e997a9dae93cadfe991cf2fe71ee39ef64cd",
+  "command": "node --import tsx test/helpers/packaged-browser-bootstrap-smoke.ts",
+  "completedAt": "2026-10-04T17:25:14.099Z"
+}

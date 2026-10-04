@@ -1,0 +1,15 @@
+✔ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (2.3135ms)
+✔ remote view A refuses other principals, raw input, stale identities, and oversized frames (1.583ms)
+✔ remote view A serializes commands while a paint acknowledgement bypasses a blocked command (3.9247ms)
+✔ remote view A retains target identity across viewers and revokes on page close or socket loss (0.8118ms)
+✔ remote view A revokes an attachment that finishes after socket disconnect (0.2957ms)
+✔ remote view A can restart after a stopped stream has an unacknowledged frame (0.2427ms)
+✔ PairingConnection binds remote views to the admitting socket and this pairing agents only (0.4183ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 519.934

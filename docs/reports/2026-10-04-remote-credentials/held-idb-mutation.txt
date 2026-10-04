@@ -1,0 +1,28 @@
+✖ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (3334.211ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3855.8151
+
+✖ failing tests:
+
+test at test\agent-browser-vault.chromium.test.ts:1:997
+✖ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (3334.211ms)
+  AssertionError [ERR_ASSERTION]: Unlock must invalidate live handles to discarded locked IndexedDB state
+
+  'open' !== 'closed'
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\agent-browser-vault.chromium.test.ts:70:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 'open',
+    expected: 'closed',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

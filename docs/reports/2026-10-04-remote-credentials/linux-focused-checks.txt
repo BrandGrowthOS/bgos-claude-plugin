@@ -1,0 +1,623 @@
+TAP version 13
+# Subtest: actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock
+ok 1 - actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock
+  ---
+  duration_ms: 7501.568442
+  type: 'test'
+  ...
+# Subtest: locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries
+ok 2 - locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries
+  ---
+  duration_ms: 304.649602
+  type: 'test'
+  ...
+# Subtest: restart restores session cookies and storage only after correct owner unlock; deletion is persisted
+ok 3 - restart restores session cookies and storage only after correct owner unlock; deletion is persisted
+  ---
+  duration_ms: 1174.522227
+  type: 'test'
+  ...
+# Subtest: ciphertext tampering and copying ciphertext across a profile fail authentication
+ok 4 - ciphertext tampering and copying ciphertext across a profile fail authentication
+  ---
+  duration_ms: 463.256061
+  type: 'test'
+  ...
+# Subtest: explicit legacy consent clears only fixed Chrome artifacts and preserves policy
+ok 5 - explicit legacy consent clears only fixed Chrome artifacts and preserves policy
+  ---
+  duration_ms: 168.277213
+  type: 'test'
+  ...
+# Subtest: unknown legacy files, live legacy browser and symbolic profile refuse clearing
+ok 6 - unknown legacy files, live legacy browser and symbolic profile refuse clearing
+  ---
+  duration_ms: 302.131145
+  type: 'test'
+  ...
+# Subtest: saved login metadata is origin scoped and locked vault never returns entries
+ok 7 - saved login metadata is origin scoped and locked vault never returns entries
+  ---
+  duration_ms: 201.465855
+  type: 'test'
+  ...
+# Subtest: snapshot between unlock and restore cannot replace saved auth state with an empty browser
+ok 8 - snapshot between unlock and restore cannot replace saved auth state with an empty browser
+  ---
+  duration_ms: 671.013295
+  type: 'test'
+  ...
+# Subtest: locking while scrypt is in flight forbids late key installation and disk writes
+ok 9 - locking while scrypt is in flight forbids late key installation and disk writes
+  ---
+  duration_ms: 157.246687
+  type: 'test'
+  ...
+# Subtest: PROFILE ISOLATION: two different principal values never resolve to one profile directory
+ok 10 - PROFILE ISOLATION: two different principal values never resolve to one profile directory
+  ---
+  duration_ms: 6.227157
+  type: 'test'
+  ...
+# Subtest: PROFILE ISOLATION: the frame path launches one browser per principal, and the same principal reuses its own
+ok 11 - PROFILE ISOLATION: the frame path launches one browser per principal, and the same principal reuses its own
+  ---
+  duration_ms: 41.993639
+  type: 'test'
+  ...
+# Subtest: the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent
+ok 12 - the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent
+  ---
+  duration_ms: 0.680608
+  type: 'test'
+  ...
+# Subtest: a principal can never name a directory outside the agent browser folder
+ok 13 - a principal can never name a directory outside the agent browser folder
+  ---
+  duration_ms: 1.38984
+  type: 'test'
+  ...
+# Subtest: readFramePrincipal: absent is the owner, a present value is used exactly, an unreadable one is refused
+ok 14 - readFramePrincipal: absent is the owner, a present value is used exactly, an unreadable one is refused
+  ---
+  duration_ms: 1.821196
+  type: 'test'
+  ...
+# Subtest: a frame whose principal cannot be read is refused and launches nothing
+ok 15 - a frame whose principal cannot be read is refused and launches nothing
+  ---
+  duration_ms: 0.380668
+  type: 'test'
+  ...
+# Subtest: relay: initialize, ping, tools/list and a notification, as the desktop answers them
+ok 16 - relay: initialize, ping, tools/list and a notification, as the desktop answers them
+  ---
+  duration_ms: 10.29276
+  type: 'test'
+  ...
+# Subtest: relay: a clientId stays bound to its assistant, and malformed frames are refused
+ok 17 - relay: a clientId stays bound to its assistant, and malformed frames are refused
+  ---
+  duration_ms: 3.757866
+  type: 'test'
+  ...
+# Subtest: relay: session tools answer for this host, unknown and never-exposed tools are refused, wait_seconds never reaches the engine
+ok 18 - relay: session tools answer for this host, unknown and never-exposed tools are refused, wait_seconds never reaches the engine
+  ---
+  duration_ms: 15.412733
+  type: 'test'
+  ...
+# Subtest: relay: no installed browser is a clear tool error, not a crash
+ok 19 - relay: no installed browser is a clear tool error, not a crash
+  ---
+  duration_ms: 3.263689
+  type: 'test'
+  ...
+# Subtest: handshake: the token rides in the query, role, agents and label in the auth
+ok 20 - handshake: the token rides in the query, role, agents and label in the auth
+  ---
+  duration_ms: 0.464148
+  type: 'test'
+  ...
+# Subtest: readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason
+ok 21 - readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason
+  ---
+  duration_ms: 2.704456
+  type: 'test'
+  ...
+# Subtest: the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on
+ok 22 - the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on
+  ---
+  duration_ms: 3676.015926
+  type: 'test'
+  ...
+# Subtest: a socket the backend refuses is retried on a backoff, not dropped for good
+ok 23 - a socket the backend refuses is retried on a backoff, not dropped for good
+  ---
+  duration_ms: 207.800609
+  type: 'test'
+  ...
+# Subtest: resultBody and resultUrl match the backend route and DTO limits
+ok 24 - resultBody and resultUrl match the backend route and DTO limits
+  ---
+  duration_ms: 0.562158
+  type: 'test'
+  ...
+# Subtest: relay: ids 1 and "1" in flight together each get their own answer
+ok 25 - relay: ids 1 and "1" in flight together each get their own answer
+  ---
+  duration_ms: 59.84845
+  type: 'test'
+  ...
+# Subtest: the pool: stopping during a launch waits for it and stops the browser it started
+ok 26 - the pool: stopping during a launch waits for it and stops the browser it started
+  ---
+  duration_ms: 100.795713
+  type: 'test'
+  ...
+# Subtest: postResult: a 5xx or a network failure is retried, a 4xx is final
+ok 27 - postResult: a 5xx or a network failure is retried, a 4xx is final
+  ---
+  duration_ms: 2005.936314
+  type: 'test'
+  ...
+# Subtest: the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer
+ok 28 - the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer
+  ---
+  duration_ms: 23.065951
+  type: 'test'
+  ...
+# Subtest: Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)
+ok 29 - Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)
+  ---
+  duration_ms: 9.966808
+  type: 'test'
+  ...
+# Subtest: scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine
+ok 30 - scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine
+  ---
+  duration_ms: 1.080724
+  type: 'test'
+  ...
+# Subtest: the browser_ roster is loaded on first use, once, and a failed load is retried
+ok 31 - the browser_ roster is loaded on first use, once, and a failed load is retried
+  ---
+  duration_ms: 4.712414
+  type: 'test'
+  ...
+# Subtest: the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise
+ok 32 - the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise
+  ---
+  duration_ms: 966.60534
+  type: 'test'
+  ...
+# Subtest: resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded
+ok 33 - resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded
+  ---
+  duration_ms: 2.506853
+  type: 'test'
+  ...
+# Subtest: a Snap Chromium is skipped on linux, and the message says why
+ok 34 - a Snap Chromium is skipped on linux, and the message says why
+  ---
+  duration_ms: 1.185405
+  type: 'test'
+  ...
+# Subtest: chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked
+ok 35 - chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked
+  ---
+  duration_ms: 0.24855
+  type: 'test'
+  ...
+# Subtest: readDevToolsActivePort: only a well formed endpoint is reattached to
+ok 36 - readDevToolsActivePort: only a well formed endpoint is reattached to
+  ---
+  duration_ms: 1.640055
+  type: 'test'
+  ...
+# Subtest: the host process stays up with no live socket: no credentials yet, or refused by the gateway
+ok 37 - the host process stays up with no live socket: no credentials yet, or refused by the gateway
+  ---
+  duration_ms: 4546.068718
+  type: 'test'
+  ...
+# Subtest: a daemon-started host connects only its daemon pairing, even with another pairing on disk
+ok 38 - a daemon-started host connects only its daemon pairing, even with another pairing on disk
+  ---
+  duration_ms: 2450.650557
+  type: 'test'
+  ...
+# Subtest: END TO END: the host process, real Chromium and fake relay isolate principals and discard locked browsing state on restart
+ok 39 - END TO END: the host process, real Chromium and fake relay isolate principals and discard locked browsing state on restart
+  ---
+  duration_ms: 28787.078839
+  type: 'test'
+  ...
+# Subtest: new login fills exact captured fields, never submits, and waits for separate save consent
+ok 40 - new login fills exact captured fields, never submits, and waits for separate save consent
+  ---
+  duration_ms: 28.021276
+  type: 'test'
+  ...
+# Subtest: declining save discards the pending secret and frees the agent lease
+ok 41 - declining save discards the pending secret and frees the agent lease
+  ---
+  duration_ms: 7.855841
+  type: 'test'
+  ...
+# Subtest: saved fill and forget bind lookup to exact current origin
+ok 42 - saved fill and forget bind lookup to exact current origin
+  ---
+  duration_ms: 13.054376
+  type: 'test'
+  ...
+# Subtest: unlock supports a fresh blank document and restores into its exact browser context
+ok 43 - unlock supports a fresh blank document and restores into its exact browser context
+  ---
+  duration_ms: 5.855918
+  type: 'test'
+  ...
+# Subtest: unlock metadata contains only logins for the exact current safe origin
+ok 44 - unlock metadata contains only logins for the exact current safe origin
+  ---
+  duration_ms: 3.747406
+  type: 'test'
+  ...
+# Subtest: cancelling physical unlock locks its late result before the agent lease is released
+ok 45 - cancelling physical unlock locks its late result before the agent lease is released
+  ---
+  duration_ms: 25.644334
+  type: 'test'
+  ...
+# Subtest: cancelling physical restore locks the vault after restoration finishes
+ok 46 - cancelling physical restore locks the vault after restoration finishes
+  ---
+  duration_ms: 13.241779
+  type: 'test'
+  ...
+# Subtest: a failed engine stop after restore keeps the slot blocked
+ok 47 - a failed engine stop after restore keeps the slot blocked
+  ---
+  duration_ms: 5.852732
+  type: 'test'
+  ...
+# Subtest: normal operation completion is quiet and involuntary revocation emits once
+ok 48 - normal operation completion is quiet and involuntary revocation emits once
+  ---
+  duration_ms: 9.446761
+  type: 'test'
+  ...
+# Subtest: browser and vault failures expose only fixed safe errors
+ok 49 - browser and vault failures expose only fixed safe errors
+  ---
+  duration_ms: 3.17181
+  type: 'test'
+  ...
+# Subtest: a locked vault refuses login, fill and forget without reserving a lease
+ok 50 - a locked vault refuses login, fill and forget without reserving a lease
+  ---
+  duration_ms: 2.123741
+  type: 'test'
+  ...
+# Subtest: reserves before draining physical agent work and refuses an existing B lease
+ok 51 - reserves before draining physical agent work and refuses an existing B lease
+  ---
+  duration_ms: 3.798215
+  type: 'test'
+  ...
+# Subtest: a rejected second prepare revokes the old credential offer without stealing any B lease
+ok 52 - a rejected second prepare revokes the old credential offer without stealing any B lease
+  ---
+  duration_ms: 3.233962
+  type: 'test'
+  ...
+# Subtest: agent work drain has a bounded deadline and does not capture a target on timeout
+ok 53 - agent work drain has a bounded deadline and does not capture a target on timeout
+  ---
+  duration_ms: 16.984216
+  type: 'test'
+  ...
+# Subtest: offers are one use and authenticated against tampering
+ok 54 - offers are one use and authenticated against tampering
+  ---
+  duration_ms: 19.767866
+  type: 'test'
+  ...
+# Subtest: a successful offer cannot be reused while save confirmation is pending
+ok 55 - a successful offer cannot be reused while save confirmation is pending
+  ---
+  duration_ms: 7.935465
+  type: 'test'
+  ...
+# Subtest: expiry and engine replacement revoke without applying or retaining pending secrets
+ok 56 - expiry and engine replacement revoke without applying or retaining pending secrets
+  ---
+  duration_ms: 23.017577
+  type: 'test'
+  ...
+# Subtest: same-origin document replacement and same-selector input replacement both fail closed
+ok 57 - same-origin document replacement and same-selector input replacement both fail closed
+  ---
+  duration_ms: 22.282505
+  type: 'test'
+  ...
+# Subtest: navigation while a physical fill is pending retains the lease until that work settles
+ok 58 - navigation while a physical fill is pending retains the lease until that work settles
+  ---
+  duration_ms: 10.77342
+  type: 'test'
+  ...
+# Subtest: cancellation during save retains the slot until physical storage work drains
+ok 59 - cancellation during save retains the slot until physical storage work drains
+  ---
+  duration_ms: 18.391329
+  type: 'test'
+  ...
+# Subtest: page events that change the form invalidate the fill result and never create pending save
+ok 60 - page events that change the form invalidate the fill result and never create pending save
+  ---
+  duration_ms: 17.934385
+  type: 'test'
+  ...
+# Subtest: strict policy accepts only ordinary exact-origin login forms
+    # Subtest: insecure origin
+    ok 1 - insecure origin
+      ---
+      duration_ms: 4.134836
+      type: 'test'
+      ...
+    # Subtest: foreign form action
+    ok 2 - foreign form action
+      ---
+      duration_ms: 4.517696
+      type: 'test'
+      ...
+    # Subtest: foreign form target
+    ok 3 - foreign form target
+      ---
+      duration_ms: 2.08118
+      type: 'test'
+      ...
+    # Subtest: hidden password
+    ok 4 - hidden password
+      ---
+      duration_ms: 2.104845
+      type: 'test'
+      ...
+    # Subtest: transparent username
+    ok 5 - transparent username
+      ---
+      duration_ms: 2.249055
+      type: 'test'
+      ...
+    # Subtest: disabled password
+    ok 6 - disabled password
+      ---
+      duration_ms: 1.970064
+      type: 'test'
+      ...
+    # Subtest: readonly username
+    ok 7 - readonly username
+      ---
+      duration_ms: 2.539929
+      type: 'test'
+      ...
+    # Subtest: signup form
+    ok 8 - signup form
+      ---
+      duration_ms: 2.656062
+      type: 'test'
+      ...
+    # Subtest: signup form wording
+    ok 9 - signup form wording
+      ---
+      duration_ms: 2.161976
+      type: 'test'
+      ...
+    # Subtest: new password
+    ok 10 - new password
+      ---
+      duration_ms: 2.608771
+      type: 'test'
+      ...
+    # Subtest: OTP field
+    ok 11 - OTP field
+      ---
+      duration_ms: 2.309261
+      type: 'test'
+      ...
+    # Subtest: payment field
+    ok 12 - payment field
+      ---
+      duration_ms: 2.404546
+      type: 'test'
+      ...
+    # Subtest: credential file
+    ok 13 - credential file
+      ---
+      duration_ms: 2.326826
+      type: 'test'
+      ...
+    # Subtest: ambiguous username
+    ok 14 - ambiguous username
+      ---
+      duration_ms: 2.533586
+      type: 'test'
+      ...
+    # Subtest: second hidden password
+    ok 15 - second hidden password
+      ---
+      duration_ms: 2.19476
+      type: 'test'
+      ...
+    # Subtest: iframe
+    ok 16 - iframe
+      ---
+      duration_ms: 2.028078
+      type: 'test'
+      ...
+    # Subtest: embedded document
+    ok 17 - embedded document
+      ---
+      duration_ms: 2.213736
+      type: 'test'
+      ...
+    # Subtest: no form
+    ok 18 - no form
+      ---
+      duration_ms: 2.175291
+      type: 'test'
+      ...
+    1..18
+ok 61 - strict policy accepts only ordinary exact-origin login forms
+  ---
+  duration_ms: 50.017805
+  type: 'test'
+  ...
+# Subtest: loopback HTTP is accepted for disposable local login fixtures
+ok 62 - loopback HTTP is accepted for disposable local login fixtures
+  ---
+  duration_ms: 5.896117
+  type: 'test'
+  ...
+# Subtest: document recheck detects changed policy after prepare before any field is written
+ok 63 - document recheck detects changed policy after prepare before any field is written
+  ---
+  duration_ms: 5.299992
+  type: 'test'
+  ...
+# Subtest: save consent is tied to pending ID and expires without persisting
+ok 64 - save consent is tied to pending ID and expires without persisting
+  ---
+  duration_ms: 24.444019
+  type: 'test'
+  ...
+# Subtest: B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation
+ok 65 - B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation
+  ---
+  duration_ms: 3442.25254
+  type: 'test'
+  ...
+# Subtest: B reserves owner control before awaiting physical agent work and gates late held actions
+ok 66 - B reserves owner control before awaiting physical agent work and gates late held actions
+  ---
+  duration_ms: 10.605814
+  type: 'test'
+  ...
+# Subtest: B dispatches a safe key once and refuses token replay, stale focus, and credential changes
+ok 67 - B dispatches a safe key once and refuses token replay, stale focus, and credential changes
+  ---
+  duration_ms: 4.234859
+  type: 'test'
+  ...
+# Subtest: B pointer input uses remote coordinates and invalidates the preceding focus token
+ok 68 - B pointer input uses remote coordinates and invalidates the preceding focus token
+  ---
+  duration_ms: 1.659334
+  type: 'test'
+  ...
+# Subtest: B expired focus and lease fail closed and emit revocation
+ok 69 - B expired focus and lease fail closed and emit revocation
+  ---
+  duration_ms: 0.817713
+  type: 'test'
+  ...
+# Subtest: B released owner input retains the agent block until its physical command and keyup settle
+ok 70 - B released owner input retains the agent block until its physical command and keyup settle
+  ---
+  duration_ms: 3.918267
+  type: 'test'
+  ...
+# Subtest: B hide during a pending pointer down releases the remote button before the agent resumes
+ok 71 - B hide during a pending pointer down releases the remote button before the agent resumes
+  ---
+  duration_ms: 2.835521
+  type: 'test'
+  ...
+# Subtest: B host status exposes owner control and refuses agent tools or close before permission work
+ok 72 - B host status exposes owner control and refuses agent tools or close before permission work
+  ---
+  duration_ms: 1.685945
+  type: 'test'
+  ...
+# Subtest: B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure
+ok 73 - B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure
+  ---
+  duration_ms: 2.682825
+  type: 'test'
+  ...
+# Subtest: B pointer move preserves pressed-button masks for drag handlers
+ok 74 - B pointer move preserves pressed-button masks for drag handlers
+  ---
+  duration_ms: 1.63747
+  type: 'test'
+  ...
+# Subtest: B cleanup failure blocks its affected engine but not a browser started after successful shutdown
+ok 75 - B cleanup failure blocks its affected engine but not a browser started after successful shutdown
+  ---
+  duration_ms: 2.735046
+  type: 'test'
+  ...
+# Subtest: remote view A streams changing pixels from a real agent Chromium through the pool seam
+ok 76 - remote view A streams changing pixels from a real agent Chromium through the pool seam
+  ---
+  duration_ms: 1909.649889
+  type: 'test'
+  ...
+# Subtest: remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements
+ok 77 - remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements
+  ---
+  duration_ms: 7.670673
+  type: 'test'
+  ...
+# Subtest: remote view A preserves the last static page change while owner paint is pending
+ok 78 - remote view A preserves the last static page change while owner paint is pending
+  ---
+  duration_ms: 1.659894
+  type: 'test'
+  ...
+# Subtest: remote view A refuses other principals, raw input, stale identities, and oversized frames
+ok 79 - remote view A refuses other principals, raw input, stale identities, and oversized frames
+  ---
+  duration_ms: 11.51166
+  type: 'test'
+  ...
+# Subtest: remote view A serializes commands while a paint acknowledgement bypasses a blocked command
+ok 80 - remote view A serializes commands while a paint acknowledgement bypasses a blocked command
+  ---
+  duration_ms: 8.04603
+  type: 'test'
+  ...
+# Subtest: remote view A retains target identity across viewers and revokes on page close or socket loss
+ok 81 - remote view A retains target identity across viewers and revokes on page close or socket loss
+  ---
+  duration_ms: 2.47969
+  type: 'test'
+  ...
+# Subtest: remote view A revokes an attachment that finishes after socket disconnect
+ok 82 - remote view A revokes an attachment that finishes after socket disconnect
+  ---
+  duration_ms: 0.92431
+  type: 'test'
+  ...
+# Subtest: remote view A can restart after a stopped stream has an unacknowledged frame
+ok 83 - remote view A can restart after a stopped stream has an unacknowledged frame
+  ---
+  duration_ms: 1.015638
+  type: 'test'
+  ...
+# Subtest: PairingConnection binds remote views to the admitting socket and this pairing agents only
+ok 84 - PairingConnection binds remote views to the admitting socket and this pairing agents only
+  ---
+  duration_ms: 1.505555
+  type: 'test'
+  ...
+1..84
+# tests 102
+# suites 0
+# pass 102
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 44778.711065

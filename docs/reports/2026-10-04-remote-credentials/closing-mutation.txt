@@ -1,0 +1,20 @@
+1130:    while (false) await slot.stopping
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (3.2608ms)
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ tests 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ suites 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ pass 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ fail 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ cancelled 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ skipped 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ todo 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ duration_ms 481.6685
+
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ failing tests:
+
+test at test\agent-browser-vault.test.ts:1:7377
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (3.2608ms)
+  Error: The browser is closing. Try again after it finishes.
+      at BrowserPool.acquire (file:///E:/bgos-worktrees/remote-browser-plugin-host/bin/hoai-browser-host.mjs:1152:30) {
+    code: 'browser_stopping'
+  }
+1130:    while (slot.stopping) await slot.stopping

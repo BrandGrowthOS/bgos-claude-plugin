@@ -1,0 +1,194 @@
+Ã¢Å“â€ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (6794.1966ms)
+Ã¢Å“â€ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (783.4416ms)
+Ã¢Å“â€ restart restores session cookies and storage only after correct owner unlock; deletion is persisted (1570.5849ms)
+Ã¢Å“â€ ciphertext tampering and copying ciphertext across a profile fail authentication (1942.9083ms)
+Ã¢Å“â€ explicit legacy consent clears only fixed Chrome artifacts and preserves policy (926.1793ms)
+Ã¢Å“â€ unknown legacy files, live legacy browser and symbolic profile refuse clearing (910.5398ms)
+Ã¢Å“â€ saved login metadata is origin scoped and locked vault never returns entries (924.4305ms)
+Ã¢Å“â€ snapshot between unlock and restore cannot replace saved auth state with an empty browser (838.8291ms)
+Ã¢Å“â€ locking while scrypt is in flight forbids late key installation and disk writes (752.152ms)
+Ã¢Å“â€ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (2.7826ms)
+Ã¢Å“â€“ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (811.5938ms)
+Ã¢Å“â€ confirmed closed storage failure is reported but permits a fresh locked browser on retry (2.3241ms)
+Ã¢Å“â€ a new host process can reopen the already protected profile without elevated ACL privileges (1542.5712ms)
+Ã¢Å“â€ installed browser wins without loading a downloader or touching cache (0.8942ms)
+Ã¢Å“â€ first use provisions pinned bundled Chromium once using a secretless installer environment (13.3731ms)
+Ã¢Å“â€ failed installation cleans its lock and a later request can retry (7.6254ms)
+Ã¢Å“â€ an explicit invalid browser override cannot silently choose a different browser (0.231ms)
+Ã¢Å“â€ Chrome gets an allow-listed environment: no ssh-agent socket, no key or token of any name, but PATH and HOME (1.0343ms)
+Ã¢Å“â€ the host gets an allow-listed environment from the daemon: its own settings, and still no ssh-agent socket or key (0.1671ms)
+Ã¢Å“â€ a shown Chrome on linux also gets the display and the session, a headless one does not (0.194ms)
+Ã¢Å“â€ on windows the system folders pass, matched whatever their case (0.5431ms)
+Ã¢Å“â€ the locale family is exactly LC_ followed by letters: every near miss stays out, the real categories pass (0.2309ms)
+Ã¢Å“â€ anything else is the owner opting in by name, and even then a credential-looking name stays out (0.1357ms)
+Ã¯Â¹Â£ END TO END: the daemon starts the host, the host starts Chrome, and Chrome receives only the allow-list (0.1292ms) # the recording wrapper is a shell script
+Ã¢Å“â€ PROFILE ISOLATION: two different principal values never resolve to one profile directory (2.3637ms)
+Ã¢Å“â€ PROFILE ISOLATION: the frame path launches one browser per principal, and the same principal reuses its own (12.7261ms)
+Ã¢Å“â€ the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent (0.2273ms)
+Ã¢Å“â€ a principal can never name a directory outside the agent browser folder (0.4353ms)
+Ã¢Å“â€ readFramePrincipal: absent is the owner, a present value is used exactly, an unreadable one is refused (0.4817ms)
+Ã¢Å“â€ a frame whose principal cannot be read is refused and launches nothing (0.1212ms)
+Ã¢Å“â€ relay: initialize, ping, tools/list and a notification, as the desktop answers them (4.2026ms)
+Ã¢Å“â€ relay: a clientId stays bound to its assistant, and malformed frames are refused (0.6944ms)
+Ã¢Å“â€ relay: session tools answer for this host, unknown and never-exposed tools are refused, wait_seconds never reaches the engine (2.4646ms)
+Ã¢Å“â€ relay: no installed browser is a clear tool error, not a crash (0.7188ms)
+Ã¢Å“â€ handshake: the token rides in the query, role, agents and label in the auth (0.1253ms)
+Ã¢Å“â€ readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason (0.659ms)
+Ã¢Å“â€ the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on (3685.7031ms)
+Ã¢Å“â€ a socket the backend refuses is retried on a backoff, not dropped for good (250.2608ms)
+Ã¢Å“â€ resultBody and resultUrl match the backend route and DTO limits (0.2572ms)
+Ã¢Å“â€ relay: ids 1 and "1" in flight together each get their own answer (61.24ms)
+Ã¢Å“â€ the pool: stopping during a launch waits for it and stops the browser it started (107.5164ms)
+Ã¢Å“â€ postResult: a 5xx or a network failure is retried, a 4xx is final (2016.4308ms)
+Ã¢Å“â€ the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer (30.0071ms)
+Ã¢Å“â€ Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts) (1.7631ms)
+Ã¢Å“â€ scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine (0.3542ms)
+Ã¢Å“â€ the browser_ roster is loaded on first use, once, and a failed load is retried (0.6619ms)
+Ã¢Å“â€ the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise (296.1494ms)
+Ã¢Å“â€“ resolveChromeExecutable: detection is read only and absence explains automatic provisioning (3.0364ms)
+Ã¢Å“â€ a Snap Chromium is skipped on linux, and the message says why (0.6438ms)
+Ã¢Å“â€ chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked (0.0811ms)
+Ã¢Å“â€ readDevToolsActivePort: only a well formed endpoint is reattached to (5.6789ms)
+Ã¢Å“â€“ the host process stays up with no live socket: no credentials yet, or refused by the gateway (4136.22ms)
+Ã¢Å“â€ a daemon-started host connects only its daemon pairing, even with another pairing on disk (2393.6099ms)
+Ã¢Å“â€“ END TO END: the host process, real Chromium and fake relay isolate principals and discard locked browsing state on restart (31658.3938ms)
+Ã¢Å“â€ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (4107.9965ms)
+Ã¢Å“â€ new login fills exact captured fields, never submits, and waits for separate save consent (12.1797ms)
+Ã¢Å“â€ declining save discards the pending secret and frees the agent lease (4.4689ms)
+Ã¢Å“â€ saved fill and forget bind lookup to exact current origin (3.5303ms)
+Ã¢Å“â€ unlock supports a fresh blank document and restores into its exact browser context (2.2772ms)
+Ã¢Å“â€ unlock metadata contains only logins for the exact current safe origin (1.6887ms)
+Ã¢Å“â€ cancelling physical unlock locks its late result before the agent lease is released (8.5896ms)
+Ã¢Å“â€ cancelling physical restore locks the vault after restoration finishes (17.7221ms)
+Ã¢Å“â€ a failed engine stop after restore keeps the slot blocked (1.9141ms)
+Ã¢Å“â€ normal operation completion is quiet and involuntary revocation emits once (2.8112ms)
+Ã¢Å“â€ browser and vault failures expose only fixed safe errors (1.1349ms)
+Ã¢Å“â€ a locked vault refuses login, fill and forget without reserving a lease (0.7845ms)
+Ã¢Å“â€ reserves before draining physical agent work and refuses an existing B lease (1.6851ms)
+Ã¢Å“â€ a rejected second prepare revokes the old credential offer without stealing any B lease (1.2112ms)
+Ã¢Å“â€ agent work drain has a bounded deadline and does not capture a target on timeout (21.117ms)
+Ã¢Å“â€ offers are one use and authenticated against tampering (2.3524ms)
+Ã¢Å“â€ a successful offer cannot be reused while save confirmation is pending (2.1916ms)
+Ã¢Å“â€ expiry and engine replacement revoke without applying or retaining pending secrets (2.4596ms)
+Ã¢Å“â€ same-origin document replacement and same-selector input replacement both fail closed (3.8347ms)
+Ã¢Å“â€ navigation while a physical fill is pending retains the lease until that work settles (20.4201ms)
+Ã¢Å“â€ cancellation during save retains the slot until physical storage work drains (15.0123ms)
+Ã¢Å“â€ page events that change the form invalidate the fill result and never create pending save (1.9103ms)
+Ã¢â€“Â¶ strict policy accepts only ordinary exact-origin login forms
+  Ã¢Å“â€ insecure origin (0.6251ms)
+  Ã¢Å“â€ foreign form action (0.6272ms)
+  Ã¢Å“â€ foreign form target (0.669ms)
+  Ã¢Å“â€ hidden password (0.5631ms)
+  Ã¢Å“â€ transparent username (0.5555ms)
+  Ã¢Å“â€ disabled password (0.5255ms)
+  Ã¢Å“â€ readonly username (1.1403ms)
+  Ã¢Å“â€ signup form (0.8899ms)
+  Ã¢Å“â€ signup form wording (0.5941ms)
+  Ã¢Å“â€ new password (0.6502ms)
+  Ã¢Å“â€ OTP field (0.5422ms)
+  Ã¢Å“â€ payment field (0.7502ms)
+  Ã¢Å“â€ credential file (0.6892ms)
+  Ã¢Å“â€ ambiguous username (0.5727ms)
+  Ã¢Å“â€ second hidden password (0.6032ms)
+  Ã¢Å“â€ iframe (1.8226ms)
+  Ã¢Å“â€ embedded document (0.5663ms)
+  Ã¢Å“â€ no form (0.6547ms)
+Ã¢Å“â€ strict policy accepts only ordinary exact-origin login forms (14.1184ms)
+Ã¢Å“â€ loopback HTTP is accepted for disposable local login fixtures (1.4602ms)
+Ã¢Å“â€ document recheck detects changed policy after prepare before any field is written (1.0846ms)
+Ã¢Å“â€ save consent is tied to pending ID and expires without persisting (2.37ms)
+Ã¢Å“â€ B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation (2914.8553ms)
+Ã¢Å“â€ B reserves owner control before awaiting physical agent work and gates late held actions (8.9819ms)
+Ã¢Å“â€ B dispatches a safe key once and refuses token replay, stale focus, and credential changes (3.1824ms)
+Ã¢Å“â€ B pointer input uses remote coordinates and invalidates the preceding focus token (1.0722ms)
+Ã¢Å“â€ B expired focus and lease fail closed and emit revocation (0.378ms)
+Ã¢Å“â€ B released owner input retains the agent block until its physical command and keyup settle (1.9677ms)
+Ã¢Å“â€ B hide during a pending pointer down releases the remote button before the agent resumes (0.6864ms)
+Ã¢Å“â€ B host status exposes owner control and refuses agent tools or close before permission work (0.5992ms)
+Ã¢Å“â€ B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure (0.8943ms)
+Ã¢Å“â€ B pointer move preserves pressed-button masks for drag handlers (0.475ms)
+Ã¢Å“â€ B cleanup failure blocks its affected engine but not a browser started after successful shutdown (1.9919ms)
+Ã¢Å“â€ remote view A streams changing pixels from a real agent Chromium through the pool seam (3037.5141ms)
+Ã¢Å“â€ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (3.8739ms)
+Ã¢Å“â€ remote view A preserves the last static page change while owner paint is pending (0.6019ms)
+Ã¢Å“â€ remote view A refuses other principals, raw input, stale identities, and oversized frames (2.94ms)
+Ã¢Å“â€ remote view A serializes commands while a paint acknowledgement bypasses a blocked command (7.4037ms)
+Ã¢Å“â€ remote view A retains target identity across viewers and revokes on page close or socket loss (1.0711ms)
+Ã¢Å“â€ remote view A revokes an attachment that finishes after socket disconnect (0.3496ms)
+Ã¢Å“â€ remote view A can restart after a stopped stream has an unacknowledged frame (0.5024ms)
+Ã¢Å“â€ PairingConnection binds remote views to the admitting socket and this pairing agents only (0.5211ms)
+Ã¢â€žÂ¹ tests 118
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 113
+Ã¢â€žÂ¹ fail 4
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 1
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 45736.1924
+
+Ã¢Å“â€“ failing tests:
+
+test at test\agent-browser-vault.test.ts:1:8429
+Ã¢Å“â€“ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (811.5938ms)
+  TypeError: Cannot read properties of undefined (reading 'patterns')
+      at ChromiumEngine.resultRedactor (file:///E:/bgos-worktrees/remote-browser-plugin-host/bin/hoai-browser-host.mjs:1066:52)
+      at BrowserHostCore.callTool (file:///E:/bgos-worktrees/remote-browser-plugin-host/bin/hoai-browser-host.mjs:1463:65)
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\agent-browser-vault.test.ts:170:29)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7)
+
+test at test\hoai-browser-host.test.ts:1:24953
+Ã¢Å“â€“ resolveChromeExecutable: detection is read only and absence explains automatic provisioning (3.0364ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + '\\Applications\\Google Chrome.app\\Contents\\MacOS\\Google Chrome'
+  - '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\hoai-browser-host.test.ts:556:10)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1306:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:897:18)
+      at Test.postRun (node:internal/test_runner/test:1447:19)
+      at Test.run (node:internal/test_runner/test:1372:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: '\\Applications\\Google Chrome.app\\Contents\\MacOS\\Google Chrome',
+    expected: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test\hoai-browser-host.test.ts:1:28758
+Ã¢Å“â€“ the host process stays up with no live socket: no credentials yet, or refused by the gateway (4136.22ms)
+  AssertionError [ERR_ASSERTION]: and still stops cleanly on SIGTERM
+
+  null !== 0
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\hoai-browser-host.test.ts:651:12)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: null,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test\hoai-browser-host.test.ts:1:31985
+Ã¢Å“â€“ END TO END: the host process, real Chromium and fake relay isolate principals and discard locked browsing state on restart (31658.3938ms)
+  AssertionError [ERR_ASSERTION]: {"result":{"content":[{"type":"text","text":"### Error\nbrowser_start_failed: Chrome did not report its DevTools endpoint within 30000 ms. Last output: [10780:5036:1004/205953.567:ERROR:chrome\\updater\\ipc\\update_service_dialer_win.cc:75] Failed to open named pipe server process 27388: Access is denied. (0x5) | [10780:31984:1004/205955.731:ERROR:chrome\\updater\\ipc\\update_service_dialer_win.cc:75] Failed to open named pipe server process 48232: Access is denied. (0x5) | [10780:5036:1004/205957.946:ERROR:chrome\\updater\\ipc\\update_service_dialer_win.cc:75] Failed to open named pipe server process 34616: Access is denied. (0x5)"}],"isError":true},"jsonrpc":"2.0","id":3}
+      at tool (E:\bgos-worktrees\remote-browser-plugin-host\test\hoai-browser-host.test.ts:723:16)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\hoai-browser-host.test.ts:761:7)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: true,
+    operator: 'notStrictEqual',
+    diff: 'simple'
+  }

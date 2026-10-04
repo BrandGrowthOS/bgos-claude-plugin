@@ -1,0 +1,32 @@
+15:  text(value) { for (const pattern of []) value = value.replaceAll(pattern, '[REDACTED]'); return value }
+17:    if (typeof value === 'string') return this.text(value)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2420.007ms)
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ tests 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ suites 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ pass 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ fail 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ cancelled 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ skipped 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ todo 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ duration_ms 7616.4201
+
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ failing tests:
+
+test at test\remote-credentials.chromium.test.ts:1:699
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2420.007ms)
+  AssertionError [ERR_ASSERTION]: CANARY_pw_"quotes"_\slash
+
+  true !== false
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-credentials.chromium.test.ts:45:106)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+15:  text(value) { for (const pattern of this.patterns) value = value.replaceAll(pattern, '[REDACTED]'); return value }
+17:    if (typeof value === 'string') return this.text(value)

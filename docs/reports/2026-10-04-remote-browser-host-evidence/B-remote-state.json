@@ -1,0 +1,26 @@
+﻿{
+  "hostname": "kc-server",
+  "fixturePid": 2993012,
+  "state": {
+    "counter": "782",
+    "text": "hoai relay proof",
+    "passwordLength": 0,
+    "focusedId": "owner-text",
+    "targetRects": {
+      "text": {
+        "x": 60,
+        "y": 457,
+        "width": 898,
+        "height": 61
+      },
+      "password": {
+        "x": 60,
+        "y": 576,
+        "width": 898,
+        "height": 61
+      }
+    }
+  },
+  "observedAtUtc": "2026-10-04T15:27:12.864284+00:00",
+  "evidenceMethod": "Read-only SSH GET of task fixture loopback /state on kc-server"
+}

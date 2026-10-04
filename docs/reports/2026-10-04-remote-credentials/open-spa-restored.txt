@@ -1,0 +1,9 @@
+âœ” actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (6161.0205ms)
+â„¹ tests 1
+â„¹ suites 0
+â„¹ pass 1
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 6672.9779

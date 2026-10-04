@@ -1,0 +1,30 @@
+✖ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection (2222.7872ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 0
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2754.2505
+
+✖ failing tests:
+
+test at test\agent-browser-vault.chromium.test.ts:1:7401
+✖ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection (2222.7872ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+
+  + 'HISTORICAL_LOCKED_IDB_PROBE'
+  - 'closed'
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\agent-browser-vault.chromium.test.ts:178:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'HISTORICAL_LOCKED_IDB_PROBE',
+    expected: 'closed',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

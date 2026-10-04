@@ -1,0 +1,18 @@
+✔ B reserves owner control before awaiting physical agent work and gates late held actions (4.7163ms)
+✔ B dispatches a safe key once and refuses token replay, stale focus, and credential changes (1.0539ms)
+✔ B pointer input uses remote coordinates and invalidates the preceding focus token (0.5198ms)
+✔ B expired focus and lease fail closed and emit revocation (0.224ms)
+✔ B released owner input retains the agent block until its physical command and keyup settle (0.9088ms)
+✔ B hide during a pending pointer down releases the remote button before the agent resumes (0.5652ms)
+✔ B host status exposes owner control and refuses agent tools or close before permission work (0.5784ms)
+✔ B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure (0.5915ms)
+✔ B pointer move preserves pressed-button masks for drag handlers (0.3266ms)
+✔ B cleanup failure blocks its affected engine but not a browser started after successful shutdown (1.9082ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 10
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 505.0699

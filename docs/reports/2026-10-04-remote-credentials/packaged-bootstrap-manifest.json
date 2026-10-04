@@ -1,0 +1,1778 @@
+{
+  "version": "0.60.5",
+  "filename": "claude-channel-bgos-0.60.5.tgz",
+  "integrity": "sha512-9VhEiyJ1cQ5UC2HFbtHJK5Yjw8nZTK96ulvp6KlRWHpO5bYIvaF6V1XFpNMTqoxQl9gO/eYdFsH89UpmK44qZQ==",
+  "shasum": "20f8ef34a730dd48db1e45c03d34b45ca980a642",
+  "requiredFiles": [
+    "skills/hoai-browser/SKILL.md",
+    "lib/browser-bootstrap.mjs",
+    "lib/agent-browser-vault.mjs",
+    "lib/remote-credentials.mjs",
+    "lib/remote-credentials-crypto.cjs",
+    "lib/browser-secret-redactor.mjs",
+    "lib/browser-host-supervisor.ts",
+    "bin/hoai-browser-host.mjs"
+  ],
+  "files": [
+    {
+      "path": ".claude-plugin/plugin.json",
+      "size": 2248
+    },
+    {
+      "path": ".gitattributes",
+      "size": 1287
+    },
+    {
+      "path": ".github/workflows/release-tag.yml",
+      "size": 744
+    },
+    {
+      "path": ".github/workflows/tests.yml",
+      "size": 934
+    },
+    {
+      "path": ".github/workflows/version-check.yml",
+      "size": 3475
+    },
+    {
+      "path": ".mcp.json.example",
+      "size": 422
+    },
+    {
+      "path": "CHANGELOG.md",
+      "size": 163643
+    },
+    {
+      "path": "README.md",
+      "size": 65159
+    },
+    {
+      "path": "REALCOMPACT-REPORT.md",
+      "size": 9132
+    },
+    {
+      "path": "bin/bgos-agent",
+      "size": 48997
+    },
+    {
+      "path": "bin/bgos-claim.mjs",
+      "size": 32981
+    },
+    {
+      "path": "bin/bgos-daemon-wrapper.mjs",
+      "size": 29244
+    },
+    {
+      "path": "bin/bgos-doctor.mjs",
+      "size": 91095
+    },
+    {
+      "path": "bin/bgos-install-method.mjs",
+      "size": 32065
+    },
+    {
+      "path": "bin/bgos-launch.mjs",
+      "size": 11359
+    },
+    {
+      "path": "bin/bgos-pair.mjs",
+      "size": 84921
+    },
+    {
+      "path": "bin/hoai",
+      "size": 1455
+    },
+    {
+      "path": "bin/hoai-add-to-path.ps1",
+      "size": 2217
+    },
+    {
+      "path": "bin/hoai-bootstrap.ps1",
+      "size": 28051
+    },
+    {
+      "path": "bin/hoai-bootstrap.sh",
+      "size": 31667
+    },
+    {
+      "path": "bin/hoai-browser-creds.ts",
+      "size": 2503
+    },
+    {
+      "path": "bin/hoai-browser-host.mjs",
+      "size": 98541
+    },
+    {
+      "path": "bin/hoai-browser-launch.mjs",
+      "size": 12688
+    },
+    {
+      "path": "bin/hoai-browser-mcp.mjs",
+      "size": 37972
+    },
+    {
+      "path": "bin/hoai-browser-mcp.vendor.json",
+      "size": 852
+    },
+    {
+      "path": "bin/hoai-core.mjs",
+      "size": 115951
+    },
+    {
+      "path": "bin/hoai-floor-hook.mjs",
+      "size": 10938
+    },
+    {
+      "path": "bin/hoai-hook.mjs",
+      "size": 18484
+    },
+    {
+      "path": "bin/hoai-keepalive-marker.mjs",
+      "size": 5626
+    },
+    {
+      "path": "bin/hoai-watcher.mjs",
+      "size": 20742
+    },
+    {
+      "path": "bin/hoai.cmd",
+      "size": 252
+    },
+    {
+      "path": "bin/hoai.ps1",
+      "size": 1311
+    },
+    {
+      "path": "bin/win32-accept-dev-channels.ps1",
+      "size": 6167
+    },
+    {
+      "path": "bun.lock",
+      "size": 32218
+    },
+    {
+      "path": "commands/doctor.md",
+      "size": 1293
+    },
+    {
+      "path": "commands/pair.md",
+      "size": 3448
+    },
+    {
+      "path": "docs/evidence/2026-09-26-restart-live-proof.md",
+      "size": 3043
+    },
+    {
+      "path": "docs/evidence/2026-09-26-restart-live-proof.mjs",
+      "size": 3601
+    },
+    {
+      "path": "docs/learnings/a-channel-push-cannot-arm-a-native-goal.md",
+      "size": 5100
+    },
+    {
+      "path": "docs/learnings/a-declared-restart-authority-must-own-the-process.md",
+      "size": 3800
+    },
+    {
+      "path": "docs/learnings/a-derivation-is-only-as-good-as-its-evidence.md",
+      "size": 3731
+    },
+    {
+      "path": "docs/learnings/a-logger-that-can-throw-into-its-own-handler.md",
+      "size": 2691
+    },
+    {
+      "path": "docs/learnings/a-machine-has-no-single-agent-registry.md",
+      "size": 6550
+    },
+    {
+      "path": "docs/learnings/a-one-way-liveness-flag-cannot-see-a-session-that-stopped.md",
+      "size": 4864
+    },
+    {
+      "path": "docs/learnings/a-paired-daemon-is-in-both-machine-rooms.md",
+      "size": 3315
+    },
+    {
+      "path": "docs/learnings/a-plugin-hooks-file-reaches-marketplace-installs-only.md",
+      "size": 3440
+    },
+    {
+      "path": "docs/learnings/a-vendored-copy-is-only-as-good-as-its-hash-check.md",
+      "size": 3480
+    },
+    {
+      "path": "docs/learnings/an-assertion-on-a-value-the-code-already-normalised.md",
+      "size": 2764
+    },
+    {
+      "path": "docs/learnings/an-unbounded-fetch-in-startup-is-a-silent-daemon.md",
+      "size": 8270
+    },
+    {
+      "path": "docs/learnings/channel-only-sessions-write-no-transcript.md",
+      "size": 1975
+    },
+    {
+      "path": "docs/learnings/cli-classifiers-pin-captured-output.md",
+      "size": 1678
+    },
+    {
+      "path": "docs/learnings/dev-channels-gate-on-marketplace-installs-and-the-windows-console.md",
+      "size": 2328
+    },
+    {
+      "path": "docs/learnings/directory-marketplaces-and-the-version-field.md",
+      "size": 1934
+    },
+    {
+      "path": "docs/learnings/home-override-on-windows-is-userprofile.md",
+      "size": 2314
+    },
+    {
+      "path": "docs/learnings/INDEX.md",
+      "size": 21218
+    },
+    {
+      "path": "docs/learnings/marketplace-cache-dir-is-a-git-clone.md",
+      "size": 2113
+    },
+    {
+      "path": "docs/learnings/restart-authority-detected-not-guessed.md",
+      "size": 9407
+    },
+    {
+      "path": "docs/learnings/silence-is-not-proof-of-deafness.md",
+      "size": 4147
+    },
+    {
+      "path": "docs/learnings/the-event-beats-the-answer-home.md",
+      "size": 3640
+    },
+    {
+      "path": "docs/learnings/two-state-roots-and-the-silent-probe.md",
+      "size": 2436
+    },
+    {
+      "path": "docs/learnings/where-code-runs-is-not-what-is-installed.md",
+      "size": 4648
+    },
+    {
+      "path": "docs/learnings/windows-test-baseline.md",
+      "size": 4214
+    },
+    {
+      "path": "docs/learnings/windows-watcher-service-task-scheduler-api.md",
+      "size": 1980
+    },
+    {
+      "path": "docs/one-click-restart-helper.md",
+      "size": 20925
+    },
+    {
+      "path": "docs/remote-input-b-pr-draft.md",
+      "size": 4441
+    },
+    {
+      "path": "docs/remote-view-a-pr-draft.md",
+      "size": 2996
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/audit-deltas-restored.txt",
+      "size": 4168
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/bootstrap-mutation.txt",
+      "size": 1316
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/bootstrap-restored.txt",
+      "size": 540
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/closing-mutation.txt",
+      "size": 861
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/credential-mutation.txt",
+      "size": 1172
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/credential-restored.txt",
+      "size": 3863
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/durability-checks.txt",
+      "size": 1274
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/durability-submit-restored.txt",
+      "size": 1403
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/final-focused-checks.txt",
+      "size": 27403
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/final-tsc.txt",
+      "size": 0
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/held-idb-context-fixed.txt",
+      "size": 3974
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/held-idb-installer-before.txt",
+      "size": 4174
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/held-idb-installer-fixed.txt",
+      "size": 1228
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/held-idb-mutation.txt",
+      "size": 2100
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/historical-idb-fixed.txt",
+      "size": 728
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/historical-idb-mutation.txt",
+      "size": 2062
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/implementation-handoff.md",
+      "size": 10201
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/installer-optin-mutation.txt",
+      "size": 2324
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/late-secret-mutation.txt",
+      "size": 1121
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/late-secret-restored.txt",
+      "size": 394
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/linux-final-attempt.txt",
+      "size": 29841
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/linux-focused-checks.txt",
+      "size": 22543
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/loading-frame-mutation.txt",
+      "size": 1458
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/manual-submit-checks.txt",
+      "size": 5700
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/open-spa-fixed.txt",
+      "size": 1666
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/open-spa-mutation.txt",
+      "size": 1146
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/open-spa-regression-before.txt",
+      "size": 1146
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/open-spa-restored.txt",
+      "size": 268
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/origin-history-unit.txt",
+      "size": 3378
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-evidence.json",
+      "size": 15107
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-host.txt",
+      "size": 4760
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-inner.txt",
+      "size": 117
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-install.txt",
+      "size": 27
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-manifest.json",
+      "size": 35838
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-run.json",
+      "size": 413
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-summary.md",
+      "size": 1698
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/packaged-bootstrap-transcript.txt",
+      "size": 578
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/persistence-mutation.txt",
+      "size": 1070
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/redaction-mutation.txt",
+      "size": 1467
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/security-restored.txt",
+      "size": 1419
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/status-redaction-mutation.txt",
+      "size": 1029
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/submit-once-mutation.txt",
+      "size": 1022
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/submitter-mutation.txt",
+      "size": 1383
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/vault-mutation.txt",
+      "size": 1947
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/vault-restored.txt",
+      "size": 1260
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/windows-broad-attempt.txt",
+      "size": 15807
+    },
+    {
+      "path": "docs/reports/2026-10-04-remote-credentials/windows-security-final.txt",
+      "size": 0
+    },
+    {
+      "path": "docs/superpowers/plans/2026-05-13-claude-slash-commands.md",
+      "size": 20767
+    },
+    {
+      "path": "docs/superpowers/specs/2026-05-13-telegram-parity-gap-analysis.md",
+      "size": 20622
+    },
+    {
+      "path": "docs/vendoring-the-hoai-browser-shim.md",
+      "size": 4166
+    },
+    {
+      "path": "evidence/A-final-frame-mutation.txt",
+      "size": 5214
+    },
+    {
+      "path": "evidence/A-final-frame-restored.txt",
+      "size": 1846
+    },
+    {
+      "path": "evidence/A-stream-mutation.txt",
+      "size": 4430
+    },
+    {
+      "path": "evidence/A-stream-restored.txt",
+      "size": 1480
+    },
+    {
+      "path": "evidence/A-touched-suites-kc-server.txt",
+      "size": 9061
+    },
+    {
+      "path": "evidence/A-tsc.txt",
+      "size": 0
+    },
+    {
+      "path": "evidence/A-unit-restored.txt",
+      "size": 1658
+    },
+    {
+      "path": "evidence/B-key-mutation.txt",
+      "size": 2165
+    },
+    {
+      "path": "evidence/B-key-restored.txt",
+      "size": 1135
+    },
+    {
+      "path": "evidence/B-remote-state.json",
+      "size": 589
+    },
+    {
+      "path": "evidence/B-touched-suites-kc-server.txt",
+      "size": 12066
+    },
+    {
+      "path": "hooks/hooks.json",
+      "size": 3870
+    },
+    {
+      "path": "idcheck.mjs",
+      "size": 737
+    },
+    {
+      "path": "lib/acting-user.ts",
+      "size": 4729
+    },
+    {
+      "path": "lib/agent-browser-vault.mjs",
+      "size": 19302
+    },
+    {
+      "path": "lib/agent-credentials.ts",
+      "size": 28045
+    },
+    {
+      "path": "lib/agent-inventory.mjs",
+      "size": 29453
+    },
+    {
+      "path": "lib/agent-restart.mjs",
+      "size": 12846
+    },
+    {
+      "path": "lib/agent-verify.mjs",
+      "size": 6682
+    },
+    {
+      "path": "lib/always-on-grace.ts",
+      "size": 1796
+    },
+    {
+      "path": "lib/auth-recheck.ts",
+      "size": 5950
+    },
+    {
+      "path": "lib/auth-rejection.ts",
+      "size": 9459
+    },
+    {
+      "path": "lib/boards-tools.ts",
+      "size": 104719
+    },
+    {
+      "path": "lib/boot-hello.ts",
+      "size": 10611
+    },
+    {
+      "path": "lib/bounded-fetch.ts",
+      "size": 12830
+    },
+    {
+      "path": "lib/browser-bootstrap.mjs",
+      "size": 4750
+    },
+    {
+      "path": "lib/browser-env.mjs",
+      "size": 5328
+    },
+    {
+      "path": "lib/browser-gate.mjs",
+      "size": 20468
+    },
+    {
+      "path": "lib/browser-host-core/package.json",
+      "size": 80
+    },
+    {
+      "path": "lib/browser-host-core/policy.js",
+      "size": 48866
+    },
+    {
+      "path": "lib/browser-host-core/profiles.js",
+      "size": 7440
+    },
+    {
+      "path": "lib/browser-host-core/settings.js",
+      "size": 3913
+    },
+    {
+      "path": "lib/browser-host-core/vendor.json",
+      "size": 2243
+    },
+    {
+      "path": "lib/browser-host-supervisor.ts",
+      "size": 14225
+    },
+    {
+      "path": "lib/browser-secret-redactor.mjs",
+      "size": 1838
+    },
+    {
+      "path": "lib/call-owner.ts",
+      "size": 6901
+    },
+    {
+      "path": "lib/capabilities.ts",
+      "size": 12201
+    },
+    {
+      "path": "lib/changes-rpc.ts",
+      "size": 12127
+    },
+    {
+      "path": "lib/channel-liveness.ts",
+      "size": 22171
+    },
+    {
+      "path": "lib/channel-transport.ts",
+      "size": 3319
+    },
+    {
+      "path": "lib/claude-capability-tokens.ts",
+      "size": 2289
+    },
+    {
+      "path": "lib/claude-preseed.mjs",
+      "size": 38828
+    },
+    {
+      "path": "lib/compact-capability.ts",
+      "size": 5687
+    },
+    {
+      "path": "lib/compact-confirm.ts",
+      "size": 3042
+    },
+    {
+      "path": "lib/compact-inject.ts",
+      "size": 9827
+    },
+    {
+      "path": "lib/cursor-store.ts",
+      "size": 8259
+    },
+    {
+      "path": "lib/daemon-command-sender.ts",
+      "size": 11661
+    },
+    {
+      "path": "lib/declared-capabilities.ts",
+      "size": 16879
+    },
+    {
+      "path": "lib/export-pack.ts",
+      "size": 30485
+    },
+    {
+      "path": "lib/floor-check.ts",
+      "size": 22901
+    },
+    {
+      "path": "lib/floor-evidence.mjs",
+      "size": 8526
+    },
+    {
+      "path": "lib/floor-hook-presence.ts",
+      "size": 8638
+    },
+    {
+      "path": "lib/floor-state.mjs",
+      "size": 18011
+    },
+    {
+      "path": "lib/gate-block.tcl",
+      "size": 11677
+    },
+    {
+      "path": "lib/git-changes.ts",
+      "size": 44011
+    },
+    {
+      "path": "lib/goal-cap.ts",
+      "size": 3954
+    },
+    {
+      "path": "lib/goal-status.ts",
+      "size": 12298
+    },
+    {
+      "path": "lib/goal-tail.ts",
+      "size": 4625
+    },
+    {
+      "path": "lib/goal-writes.ts",
+      "size": 22448
+    },
+    {
+      "path": "lib/hard-floor-core.mjs",
+      "size": 63156
+    },
+    {
+      "path": "lib/hard-floor-fixture.ts",
+      "size": 57961
+    },
+    {
+      "path": "lib/hard-floor.ts",
+      "size": 6709
+    },
+    {
+      "path": "lib/health-log.ts",
+      "size": 13177
+    },
+    {
+      "path": "lib/helpers.ts",
+      "size": 3615
+    },
+    {
+      "path": "lib/hoai-wrapper-install.mjs",
+      "size": 18614
+    },
+    {
+      "path": "lib/hook-card-body.ts",
+      "size": 5024
+    },
+    {
+      "path": "lib/hook-card-pending.ts",
+      "size": 3578
+    },
+    {
+      "path": "lib/hook-events.ts",
+      "size": 64911
+    },
+    {
+      "path": "lib/hook-intake.ts",
+      "size": 29756
+    },
+    {
+      "path": "lib/inbound-channel.ts",
+      "size": 11661
+    },
+    {
+      "path": "lib/known-good-store.mjs",
+      "size": 8102
+    },
+    {
+      "path": "lib/log-path.ts",
+      "size": 2200
+    },
+    {
+      "path": "lib/machine-id.mjs",
+      "size": 3392
+    },
+    {
+      "path": "lib/marketplace-update.mjs",
+      "size": 22984
+    },
+    {
+      "path": "lib/meeting-card.ts",
+      "size": 6660
+    },
+    {
+      "path": "lib/memory-rpc.ts",
+      "size": 10265
+    },
+    {
+      "path": "lib/memory.ts",
+      "size": 47822
+    },
+    {
+      "path": "lib/message-text.ts",
+      "size": 20474
+    },
+    {
+      "path": "lib/mission-events.ts",
+      "size": 21462
+    },
+    {
+      "path": "lib/missions.ts",
+      "size": 33779
+    },
+    {
+      "path": "lib/pack-zip.ts",
+      "size": 12334
+    },
+    {
+      "path": "lib/pair-required-server.mjs",
+      "size": 9447
+    },
+    {
+      "path": "lib/pairing-lock.ts",
+      "size": 21146
+    },
+    {
+      "path": "lib/permission-relay.ts",
+      "size": 50688
+    },
+    {
+      "path": "lib/plan-card.ts",
+      "size": 38431
+    },
+    {
+      "path": "lib/plan-verifier.ts",
+      "size": 8137
+    },
+    {
+      "path": "lib/plugin-cli.mjs",
+      "size": 32596
+    },
+    {
+      "path": "lib/poll-core.ts",
+      "size": 27019
+    },
+    {
+      "path": "lib/process-lifecycle.ts",
+      "size": 7246
+    },
+    {
+      "path": "lib/reachable-chats.ts",
+      "size": 1318
+    },
+    {
+      "path": "lib/remote-credentials-crypto.cjs",
+      "size": 5092
+    },
+    {
+      "path": "lib/remote-credentials.mjs",
+      "size": 20383
+    },
+    {
+      "path": "lib/remote-input.mjs",
+      "size": 13084
+    },
+    {
+      "path": "lib/remote-view.mjs",
+      "size": 11381
+    },
+    {
+      "path": "lib/renderables.ts",
+      "size": 15684
+    },
+    {
+      "path": "lib/resting.ts",
+      "size": 22065
+    },
+    {
+      "path": "lib/schedule.ts",
+      "size": 18012
+    },
+    {
+      "path": "lib/secret-scan-fixture.ts",
+      "size": 5751
+    },
+    {
+      "path": "lib/secret-scan.ts",
+      "size": 8048
+    },
+    {
+      "path": "lib/self-update.ts",
+      "size": 63066
+    },
+    {
+      "path": "lib/service-supervision.mjs",
+      "size": 36703
+    },
+    {
+      "path": "lib/session-binding.ts",
+      "size": 15927
+    },
+    {
+      "path": "lib/session-controls-contract.ts",
+      "size": 7098
+    },
+    {
+      "path": "lib/session-library.ts",
+      "size": 20524
+    },
+    {
+      "path": "lib/session-mode.ts",
+      "size": 4527
+    },
+    {
+      "path": "lib/slash-catalog.ts",
+      "size": 35751
+    },
+    {
+      "path": "lib/slash-status.ts",
+      "size": 4545
+    },
+    {
+      "path": "lib/stop-pause.ts",
+      "size": 14298
+    },
+    {
+      "path": "lib/stream-apply.ts",
+      "size": 16006
+    },
+    {
+      "path": "lib/stream-client.ts",
+      "size": 12115
+    },
+    {
+      "path": "lib/stream-cursor-store.ts",
+      "size": 4112
+    },
+    {
+      "path": "lib/tool-outcome.ts",
+      "size": 12777
+    },
+    {
+      "path": "lib/turn-chat.ts",
+      "size": 7644
+    },
+    {
+      "path": "lib/update-diagnostics.mjs",
+      "size": 18525
+    },
+    {
+      "path": "lib/update-executor.mjs",
+      "size": 64270
+    },
+    {
+      "path": "lib/update-planner.mjs",
+      "size": 30108
+    },
+    {
+      "path": "lib/update-readiness.ts",
+      "size": 46572
+    },
+    {
+      "path": "lib/update-rpc.ts",
+      "size": 28385
+    },
+    {
+      "path": "lib/update-stream.ts",
+      "size": 12104
+    },
+    {
+      "path": "lib/usage-report.ts",
+      "size": 18214
+    },
+    {
+      "path": "lib/version-heartbeat.ts",
+      "size": 8899
+    },
+    {
+      "path": "lib/voice-rpc.ts",
+      "size": 58029
+    },
+    {
+      "path": "lib/watcher-bundle.mjs",
+      "size": 16292
+    },
+    {
+      "path": "lib/watcher-core.mjs",
+      "size": 58666
+    },
+    {
+      "path": "lib/watcher-install.mjs",
+      "size": 15750
+    },
+    {
+      "path": "lib/watcher-service.mjs",
+      "size": 22532
+    },
+    {
+      "path": "package.json",
+      "size": 1062
+    },
+    {
+      "path": "probe87.mjs",
+      "size": 832
+    },
+    {
+      "path": "scripts/check-version-bump.mjs",
+      "size": 7747
+    },
+    {
+      "path": "scripts/run-tests.mjs",
+      "size": 2368
+    },
+    {
+      "path": "server.ts",
+      "size": 640447
+    },
+    {
+      "path": "skills/bgos-partner-setup/SKILL.md",
+      "size": 5824
+    },
+    {
+      "path": "skills/hoai-browser/SKILL.md",
+      "size": 4696
+    },
+    {
+      "path": "spec90.mjs",
+      "size": 274
+    },
+    {
+      "path": "test/acting-user.test.ts",
+      "size": 9986
+    },
+    {
+      "path": "test/agent-browser-vault.chromium.test.ts",
+      "size": 11900
+    },
+    {
+      "path": "test/agent-browser-vault.test.ts",
+      "size": 15420
+    },
+    {
+      "path": "test/agent-credentials.test.ts",
+      "size": 39621
+    },
+    {
+      "path": "test/agent-inventory.test.ts",
+      "size": 32377
+    },
+    {
+      "path": "test/agent-restart.test.ts",
+      "size": 21492
+    },
+    {
+      "path": "test/agent-verify.test.ts",
+      "size": 11797
+    },
+    {
+      "path": "test/always-on-grace.test.ts",
+      "size": 3104
+    },
+    {
+      "path": "test/auth-recheck.test.ts",
+      "size": 8941
+    },
+    {
+      "path": "test/auth-rejection.test.ts",
+      "size": 11701
+    },
+    {
+      "path": "test/bgos-agent.gate.test.ts",
+      "size": 15752
+    },
+    {
+      "path": "test/bgos-agent.install.test.ts",
+      "size": 15584
+    },
+    {
+      "path": "test/bgos-agent.static.test.ts",
+      "size": 14192
+    },
+    {
+      "path": "test/bgos-claim.test.ts",
+      "size": 23492
+    },
+    {
+      "path": "test/bgos-doctor.test.ts",
+      "size": 96790
+    },
+    {
+      "path": "test/bgos-install-method.test.ts",
+      "size": 29026
+    },
+    {
+      "path": "test/bgos-launch.test.ts",
+      "size": 15397
+    },
+    {
+      "path": "test/bgos-pair.test.ts",
+      "size": 97356
+    },
+    {
+      "path": "test/boards-tools.test.ts",
+      "size": 93836
+    },
+    {
+      "path": "test/boot-hello.test.ts",
+      "size": 6164
+    },
+    {
+      "path": "test/bootstrap-askuserquestion-deny.test.ts",
+      "size": 8174
+    },
+    {
+      "path": "test/bootstrap-ps1.static.test.ts",
+      "size": 5930
+    },
+    {
+      "path": "test/bootstrap-sh.static.test.ts",
+      "size": 5498
+    },
+    {
+      "path": "test/bounded-fetch.test.ts",
+      "size": 17297
+    },
+    {
+      "path": "test/browser-bootstrap.test.ts",
+      "size": 3080
+    },
+    {
+      "path": "test/browser-env.test.ts",
+      "size": 12207
+    },
+    {
+      "path": "test/browser-gate.test.ts",
+      "size": 16759
+    },
+    {
+      "path": "test/browser-host-core.vendor.test.ts",
+      "size": 9862
+    },
+    {
+      "path": "test/browser-host-supervisor.test.ts",
+      "size": 20425
+    },
+    {
+      "path": "test/browser-secret-redactor.test.ts",
+      "size": 1910
+    },
+    {
+      "path": "test/bundled-instructions.test.ts",
+      "size": 6195
+    },
+    {
+      "path": "test/button-click-observability.test.ts",
+      "size": 4155
+    },
+    {
+      "path": "test/call-owner.test.ts",
+      "size": 9010
+    },
+    {
+      "path": "test/capabilities-fetch-path.test.ts",
+      "size": 6892
+    },
+    {
+      "path": "test/capabilities.test.ts",
+      "size": 19984
+    },
+    {
+      "path": "test/changes-rpc.test.ts",
+      "size": 16907
+    },
+    {
+      "path": "test/changes-wiring.test.ts",
+      "size": 5333
+    },
+    {
+      "path": "test/channel-ack.test.ts",
+      "size": 7023
+    },
+    {
+      "path": "test/channel-liveness.test.ts",
+      "size": 14582
+    },
+    {
+      "path": "test/channel-transport.test.ts",
+      "size": 7038
+    },
+    {
+      "path": "test/claude-capability-tokens.pin.test.ts",
+      "size": 11323
+    },
+    {
+      "path": "test/claude-preseed.test.ts",
+      "size": 53062
+    },
+    {
+      "path": "test/compact-capability.test.ts",
+      "size": 7813
+    },
+    {
+      "path": "test/compact-confirm.test.ts",
+      "size": 4294
+    },
+    {
+      "path": "test/compact-inject.test.ts",
+      "size": 9643
+    },
+    {
+      "path": "test/cursor-store.test.ts",
+      "size": 14155
+    },
+    {
+      "path": "test/daemon-command-sender.test.ts",
+      "size": 26232
+    },
+    {
+      "path": "test/daemon-wrapper.test.ts",
+      "size": 21495
+    },
+    {
+      "path": "test/declared-capabilities.test.ts",
+      "size": 33356
+    },
+    {
+      "path": "test/denied-tools-reach.test.ts",
+      "size": 6055
+    },
+    {
+      "path": "test/export-pack.test.ts",
+      "size": 35477
+    },
+    {
+      "path": "test/first-poll-gate.test.ts",
+      "size": 15868
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/garbage-list.json",
+      "size": 270
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/hang-update.json",
+      "size": 329
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/happy-converge.json",
+      "size": 258
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/update-ok.json",
+      "size": 199
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/update-rc1-reinstall-ok.json",
+      "size": 442
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/update-reinstall-fail.json",
+      "size": 709
+    },
+    {
+      "path": "test/fixtures/executor-scenarios/wrong-version.json",
+      "size": 346
+    },
+    {
+      "path": "test/fixtures/fake-claude.mjs",
+      "size": 23992
+    },
+    {
+      "path": "test/fixtures/goal-status-interactive.jsonl",
+      "size": 5707
+    },
+    {
+      "path": "test/fixtures/goal-status-stops.jsonl",
+      "size": 2538
+    },
+    {
+      "path": "test/fixtures/goal-status-stream-json.jsonl",
+      "size": 1411
+    },
+    {
+      "path": "test/fixtures/set-column-lines-does.json",
+      "size": 410
+    },
+    {
+      "path": "test/fixtures/stage7-hooks.jsonl",
+      "size": 31267
+    },
+    {
+      "path": "test/fixtures/stage8-hooks.jsonl",
+      "size": 17750
+    },
+    {
+      "path": "test/fixtures/update-planner-cases.json",
+      "size": 69674
+    },
+    {
+      "path": "test/floor-check.test.ts",
+      "size": 30365
+    },
+    {
+      "path": "test/floor-evidence.test.ts",
+      "size": 14205
+    },
+    {
+      "path": "test/floor-state.test.ts",
+      "size": 16178
+    },
+    {
+      "path": "test/forwarded-dedupe.test.ts",
+      "size": 3083
+    },
+    {
+      "path": "test/gate-block.test.ts",
+      "size": 21137
+    },
+    {
+      "path": "test/git-changes.test.ts",
+      "size": 88187
+    },
+    {
+      "path": "test/goal-cap.test.ts",
+      "size": 4720
+    },
+    {
+      "path": "test/goal-status.test.ts",
+      "size": 16192
+    },
+    {
+      "path": "test/goal-tail.test.ts",
+      "size": 6212
+    },
+    {
+      "path": "test/goal-writes.test.ts",
+      "size": 30688
+    },
+    {
+      "path": "test/hard-floor-fixture.test.ts",
+      "size": 10877
+    },
+    {
+      "path": "test/hard-floor.test.ts",
+      "size": 24603
+    },
+    {
+      "path": "test/health-log.test.ts",
+      "size": 9383
+    },
+    {
+      "path": "test/helpers/fake-browser-relay.ts",
+      "size": 12607
+    },
+    {
+      "path": "test/helpers/memory-fs.ts",
+      "size": 4705
+    },
+    {
+      "path": "test/helpers/packaged-browser-bootstrap-smoke.ts",
+      "size": 18990
+    },
+    {
+      "path": "test/helpers/remote-storage-fixture.mjs",
+      "size": 6409
+    },
+    {
+      "path": "test/helpers/remote-view-fixture.mjs",
+      "size": 5215
+    },
+    {
+      "path": "test/helpers/sandbox.ts",
+      "size": 5992
+    },
+    {
+      "path": "test/hoai-browser-host.test.ts",
+      "size": 56131
+    },
+    {
+      "path": "test/hoai-browser-launch.test.ts",
+      "size": 21940
+    },
+    {
+      "path": "test/hoai-browser-mcp.relay.test.ts",
+      "size": 59993
+    },
+    {
+      "path": "test/hoai-browser-mcp.test.ts",
+      "size": 5961
+    },
+    {
+      "path": "test/hoai-browser-mcp.vendor.test.ts",
+      "size": 6686
+    },
+    {
+      "path": "test/hoai-core.test.ts",
+      "size": 106747
+    },
+    {
+      "path": "test/hoai-floor-hook.test.ts",
+      "size": 19962
+    },
+    {
+      "path": "test/hoai-hook.test.ts",
+      "size": 26035
+    },
+    {
+      "path": "test/hoai-supervise.test.ts",
+      "size": 40678
+    },
+    {
+      "path": "test/hoai-wrapper-install.test.ts",
+      "size": 22296
+    },
+    {
+      "path": "test/home-binding.test.ts",
+      "size": 8677
+    },
+    {
+      "path": "test/hook-card-clock.test.ts",
+      "size": 9150
+    },
+    {
+      "path": "test/hook-card-pending.test.ts",
+      "size": 9039
+    },
+    {
+      "path": "test/hook-clock-wiring.test.ts",
+      "size": 5086
+    },
+    {
+      "path": "test/hook-events.redaction.test.ts",
+      "size": 16866
+    },
+    {
+      "path": "test/hook-events.test.ts",
+      "size": 38827
+    },
+    {
+      "path": "test/hook-intake.test.ts",
+      "size": 28679
+    },
+    {
+      "path": "test/hook-late-card-wiring.test.ts",
+      "size": 13244
+    },
+    {
+      "path": "test/hook-subagent-rows.test.ts",
+      "size": 37881
+    },
+    {
+      "path": "test/hooks-manifest.test.ts",
+      "size": 10232
+    },
+    {
+      "path": "test/inbound-channel.test.ts",
+      "size": 6931
+    },
+    {
+      "path": "test/known-good-store.test.ts",
+      "size": 8306
+    },
+    {
+      "path": "test/liveness-recency.test.ts",
+      "size": 17494
+    },
+    {
+      "path": "test/log-path.test.ts",
+      "size": 3861
+    },
+    {
+      "path": "test/machine-id.test.ts",
+      "size": 4892
+    },
+    {
+      "path": "test/marketplace-update.test.ts",
+      "size": 25347
+    },
+    {
+      "path": "test/matrix/run-wsl-state.sh",
+      "size": 6412
+    },
+    {
+      "path": "test/meeting-card.test.ts",
+      "size": 8152
+    },
+    {
+      "path": "test/memory-rpc.test.ts",
+      "size": 12240
+    },
+    {
+      "path": "test/memory-wiring.test.ts",
+      "size": 4477
+    },
+    {
+      "path": "test/memory.test.ts",
+      "size": 61206
+    },
+    {
+      "path": "test/message-text.test.ts",
+      "size": 19853
+    },
+    {
+      "path": "test/mission-chat-scope.test.ts",
+      "size": 8120
+    },
+    {
+      "path": "test/mission-events.test.ts",
+      "size": 24018
+    },
+    {
+      "path": "test/mission-ws-wiring.test.ts",
+      "size": 28344
+    },
+    {
+      "path": "test/missions.test.ts",
+      "size": 24259
+    },
+    {
+      "path": "test/pack-zip.test.ts",
+      "size": 8397
+    },
+    {
+      "path": "test/pair-required-server.test.ts",
+      "size": 12881
+    },
+    {
+      "path": "test/pairing-lock-standdown.test.ts",
+      "size": 28424
+    },
+    {
+      "path": "test/pairing-lock.test.ts",
+      "size": 24662
+    },
+    {
+      "path": "test/peer-timeout-bound.test.ts",
+      "size": 1834
+    },
+    {
+      "path": "test/pending-empty-system.test.ts",
+      "size": 7041
+    },
+    {
+      "path": "test/permission-relay.test.ts",
+      "size": 81702
+    },
+    {
+      "path": "test/plan-card.test.ts",
+      "size": 27613
+    },
+    {
+      "path": "test/plan-tap-authority.test.ts",
+      "size": 20043
+    },
+    {
+      "path": "test/plan-verifier.test.ts",
+      "size": 9269
+    },
+    {
+      "path": "test/plan-wiring.test.ts",
+      "size": 33267
+    },
+    {
+      "path": "test/plugin-cli.test.ts",
+      "size": 53148
+    },
+    {
+      "path": "test/poll-core.test.ts",
+      "size": 36731
+    },
+    {
+      "path": "test/process-lifecycle.test.ts",
+      "size": 13678
+    },
+    {
+      "path": "test/reachable-chats.test.ts",
+      "size": 1383
+    },
+    {
+      "path": "test/reconcile-missing-binary.test.ts",
+      "size": 3122
+    },
+    {
+      "path": "test/remote-credentials.chromium.test.ts",
+      "size": 6877
+    },
+    {
+      "path": "test/remote-credentials.test.ts",
+      "size": 22058
+    },
+    {
+      "path": "test/remote-input.chromium.test.ts",
+      "size": 4062
+    },
+    {
+      "path": "test/remote-input.test.ts",
+      "size": 10224
+    },
+    {
+      "path": "test/remote-view.chromium.test.ts",
+      "size": 3108
+    },
+    {
+      "path": "test/remote-view.test.ts",
+      "size": 10240
+    },
+    {
+      "path": "test/renderables.test.ts",
+      "size": 18765
+    },
+    {
+      "path": "test/reply-overdue.test.ts",
+      "size": 7574
+    },
+    {
+      "path": "test/restart-deny-routing.test.ts",
+      "size": 4295
+    },
+    {
+      "path": "test/restart-recovery.test.ts",
+      "size": 10368
+    },
+    {
+      "path": "test/resting.test.ts",
+      "size": 28245
+    },
+    {
+      "path": "test/schedule.test.ts",
+      "size": 20246
+    },
+    {
+      "path": "test/scheduled-restart.test.ts",
+      "size": 4107
+    },
+    {
+      "path": "test/secret-scan-fixture.test.ts",
+      "size": 2857
+    },
+    {
+      "path": "test/secret-scan.test.ts",
+      "size": 9606
+    },
+    {
+      "path": "test/self-update.test.ts",
+      "size": 83795
+    },
+    {
+      "path": "test/service-supervision.test.ts",
+      "size": 47056
+    },
+    {
+      "path": "test/session-binding.test.ts",
+      "size": 18133
+    },
+    {
+      "path": "test/session-controls-contract.pin.test.ts",
+      "size": 11277
+    },
+    {
+      "path": "test/session-library.test.ts",
+      "size": 27960
+    },
+    {
+      "path": "test/session-mode.test.ts",
+      "size": 5423
+    },
+    {
+      "path": "test/slash-catalog.test.ts",
+      "size": 30492
+    },
+    {
+      "path": "test/slash-inbound-routing.test.ts",
+      "size": 10803
+    },
+    {
+      "path": "test/slash-status.test.ts",
+      "size": 9135
+    },
+    {
+      "path": "test/startup-reaches-poll.test.ts",
+      "size": 12016
+    },
+    {
+      "path": "test/stdin-shutdown-runtime.test.ts",
+      "size": 10101
+    },
+    {
+      "path": "test/steps-body.test.ts",
+      "size": 4107
+    },
+    {
+      "path": "test/stop-pause-wiring.test.ts",
+      "size": 7189
+    },
+    {
+      "path": "test/stop-pause.test.ts",
+      "size": 19819
+    },
+    {
+      "path": "test/stream-apply.test.ts",
+      "size": 21524
+    },
+    {
+      "path": "test/stream-client.test.ts",
+      "size": 13629
+    },
+    {
+      "path": "test/stream-cursor-store.test.ts",
+      "size": 4464
+    },
+    {
+      "path": "test/stream-wiring.test.ts",
+      "size": 14106
+    },
+    {
+      "path": "test/tool-outcome.test.ts",
+      "size": 15024
+    },
+    {
+      "path": "test/turn-chat.test.ts",
+      "size": 8833
+    },
+    {
+      "path": "test/unresponsive-heartbeat.test.ts",
+      "size": 5553
+    },
+    {
+      "path": "test/update-diagnostics.test.ts",
+      "size": 14194
+    },
+    {
+      "path": "test/update-executor.test.ts",
+      "size": 95253
+    },
+    {
+      "path": "test/update-planner.test.ts",
+      "size": 27222
+    },
+    {
+      "path": "test/update-readiness.test.ts",
+      "size": 47079
+    },
+    {
+      "path": "test/update-rpc.test.ts",
+      "size": 46341
+    },
+    {
+      "path": "test/update-stream.test.ts",
+      "size": 14435
+    },
+    {
+      "path": "test/usage-report.test.ts",
+      "size": 15726
+    },
+    {
+      "path": "test/version-bump.test.ts",
+      "size": 14313
+    },
+    {
+      "path": "test/version-heartbeat.test.ts",
+      "size": 18334
+    },
+    {
+      "path": "test/voice-rpc.test.ts",
+      "size": 59606
+    },
+    {
+      "path": "test/watcher-bundle.test.ts",
+      "size": 11400
+    },
+    {
+      "path": "test/watcher-core.test.ts",
+      "size": 51572
+    },
+    {
+      "path": "test/watcher-install.test.ts",
+      "size": 22529
+    },
+    {
+      "path": "test/watcher-service.test.ts",
+      "size": 21639
+    },
+    {
+      "path": "test/ws-inbound-meta.test.ts",
+      "size": 6973
+    },
+    {
+      "path": "tsconfig.json",
+      "size": 373
+    }
+  ]
+}

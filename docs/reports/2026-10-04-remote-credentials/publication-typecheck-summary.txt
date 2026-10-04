@@ -1,0 +1,3 @@
+Publication branch ea34c3098bf8552da5571de3fa9777c884a5fdee
+plugin npx tsc --noEmit: exit 0
+Raw compiler output was empty for the successful check.

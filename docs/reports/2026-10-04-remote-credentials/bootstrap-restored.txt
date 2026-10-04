@@ -1,0 +1,12 @@
+Ã¢Å“â€ installed browser wins without loading a downloader or touching cache (0.5472ms)
+Ã¢Å“â€ first use provisions pinned bundled Chromium once using a secretless installer environment (9.1059ms)
+Ã¢Å“â€ failed installation cleans its lock and a later request can retry (8.5882ms)
+Ã¢Å“â€ an explicit invalid browser override cannot silently choose a different browser (0.2748ms)
+Ã¢â€žÂ¹ tests 4
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 4
+Ã¢â€žÂ¹ fail 0
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 0
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 192.7998

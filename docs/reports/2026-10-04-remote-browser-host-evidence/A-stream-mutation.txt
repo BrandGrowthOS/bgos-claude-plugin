@@ -1,0 +1,54 @@
+
+lib\remote-view.mjs:92:    const sent = false && this._send(view, { method: 'Page.screencastFrame', params: frame,
+
+
+✖ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (4.8369ms)
+✔ remote view A refuses other principals, raw input, stale identities, and oversized frames (0.5626ms)
+✖ remote view A serializes commands while a paint acknowledgement bypasses a blocked command (6.7799ms)
+✔ remote view A retains target identity across viewers and revokes on page close or socket loss (1.4452ms)
+✔ remote view A revokes an attachment that finishes after socket disconnect (0.4053ms)
+✔ PairingConnection binds remote views to the admitting socket and this pairing agents only (0.6712ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 4
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 705.9412
+
+✖ failing tests:
+
+test at test\remote-view.test.ts:1:2079
+✖ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (4.8369ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  0 !== 1
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-view.test.ts:55:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test\remote-view.test.ts:1:4581
+✖ remote view A serializes commands while a paint acknowledgement bypasses a blocked command (6.7799ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  false !== true
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-view.test.ts:103:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
