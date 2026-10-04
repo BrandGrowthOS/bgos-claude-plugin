@@ -42,9 +42,9 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 
-import { KEEPALIVE_MARKER_FILE_NAME, keepaliveMarkerBody } from './hoai-core.mjs'
+import { KEEPALIVE_MARKER_FILE_NAME, joinDir, keepaliveMarkerBody } from './hoai-core.mjs'
 
 /**
  * `--flag value` and `--flag=value`, nothing else. Unknown flags are ignored
@@ -96,9 +96,12 @@ export function decideKeepaliveMarkerWrite({ argv, home, startedAt }) {
   const claudePid = validPid(flags['claude-pid'])
   if (!id || pid === null || claudePid === null) return { action: 'usage' }
   const tmuxSession = String(flags.tmux ?? '').trim() || null
+  // joinDir, not path.join: the daemon reads this file through the same
+  // separator preserving join (lib/update-readiness.ts keepaliveMarkerPath),
+  // so for one home both sides name one file on every OS.
   return {
     action: 'write',
-    path: join(home, '.bgos-agent', id, KEEPALIVE_MARKER_FILE_NAME),
+    path: joinDir(joinDir(joinDir(home, '.bgos-agent'), id), KEEPALIVE_MARKER_FILE_NAME),
     body: keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt }),
   }
 }
