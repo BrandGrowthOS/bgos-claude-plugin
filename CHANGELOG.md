@@ -2,7 +2,7 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## Unreleased
+## 0.60.2 (2026-10-04)
 
 **Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored
 2026-09-28). `bin/hoai-browser-mcp.mjs` is a byte-identical copy and the pin in
@@ -19,10 +19,13 @@ Verified on this tree rather than asserted: the vendor guard's cross-tree case P
 skipped (`HOAI_BROWSER_SHIM_SOURCE` armed at BGOS main's shim, 5 of 5), the ported relay and shim
 suites are 34 of 34, `npm test` is 3,346 tests with 0 failures, and `npm run build` is clean.
 
-**Not published.** No version, `plugin.json` or marketplace change rides this, so the pinned release
-floor is unmoved. Note the consequence, because it is easy to miss: a host that TRACKS this repo picks
-the new shim up at its next session restart, so merging is the delivery for those machines even though
-nothing was released.
+**The version moves because this repo's `version advances against base` check requires it on every
+PR, and that is not the same as a release.** Publishing is a separate act: the tag, the marketplace
+ref and the app's own plugin version floor, none of which move here. So a machine installing through
+the pin is unaffected.
+
+What IS delivery, and it is easy to miss: a host that TRACKS this repo picks the new shim up at its
+next session restart, so merging reaches those machines even with nothing released.
 
 ## 0.60.1 (2026-10-02)
 
