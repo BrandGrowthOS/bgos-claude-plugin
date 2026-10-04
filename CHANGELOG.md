@@ -2,6 +2,28 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+**Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored
+2026-09-28). `bin/hoai-browser-mcp.mjs` is a byte-identical copy and the pin in
+`bin/hoai-browser-mcp.vendor.json` names the new hash, so the guard states the identity in the tree.
+
+Two things ride this copy. The status line that `hoai_browser_status` appends now reads
+`Reached on <host>.` It read "Reached through your owner's account on <host>", which was already loose
+(an account is not an app) and became wrong outright when BGOS shipped the acting-principal election:
+the backend elects a desktop belonging to the ACTING human, so for a shared agent the page does not run
+on the owner's machine at all and the old sentence could name the wrong person. And the copy had been
+three days behind, missing MCP request cancellation entirely.
+
+Verified on this tree rather than asserted: the vendor guard's cross-tree case PASSED rather than
+skipped (`HOAI_BROWSER_SHIM_SOURCE` armed at BGOS main's shim, 5 of 5), the ported relay and shim
+suites are 34 of 34, `npm test` is 3,346 tests with 0 failures, and `npm run build` is clean.
+
+**Not published.** No version, `plugin.json` or marketplace change rides this, so the pinned release
+floor is unmoved. Note the consequence, because it is easy to miss: a host that TRACKS this repo picks
+the new shim up at its next session restart, so merging is the delivery for those machines even though
+nothing was released.
+
 ## 0.60.1 (2026-10-02)
 
 **The deny that stops an agent wedging on a terminal question now reaches agents that were already installed.** Claude
