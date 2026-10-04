@@ -2,6 +2,11 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.60.3 (2026-10-04)
+
+Daemon browser pages can stream into the HOAI owner pane through the authenticated server relay. The host attaches Page.startScreencast to its existing browser and retains the latest update while a prior frame is outstanding. Closing the view leaves the agent page running. This is the independent A release; it sends no owner input.
+
+Targeted browser-host/view tests and real Chromium streaming passed. Package and manifest versions advance together for the repository gate. No tag, marketplace pin, publish or deployment is performed here.
 ## 0.60.2 (2026-10-04)
 
 **Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored

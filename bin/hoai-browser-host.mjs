@@ -72,6 +72,7 @@ import { io as socketIoClient } from 'socket.io-client'
 
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
+import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 
 /**
  * The permission rules, byte-identical copies of the desktop Agent Browser's
@@ -1686,10 +1687,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * the id of the socket the frame arrived on.
  */
 export class PairingConnection {
-  constructor({ pairing, deviceLabel, relay, io = socketIoClient, fetchImpl = globalThis.fetch, log = () => {}, retryMinMs = REFUSED_RETRY_MIN_MS, retryMaxMs = REFUSED_RETRY_MAX_MS }) {
+  constructor({ pairing, deviceLabel, relay, remoteViews = null, io = socketIoClient, fetchImpl = globalThis.fetch, log = () => {}, retryMinMs = REFUSED_RETRY_MIN_MS, retryMaxMs = REFUSED_RETRY_MAX_MS }) {
     this.pairing = pairing
     this._label = deviceLabel
     this._relay = relay
+    this._remoteViews = remoteViews
     this._io = io
     this._fetch = fetchImpl
     this._log = log
@@ -1742,6 +1744,7 @@ export class PairingConnection {
       }
     })
     socket.on('disconnect', () => {
+      if (this.socketId) void this._remoteViews?.closeConnection(this.socketId)
       this.socketId = ''
     })
     socket.on('connect_error', (err) => {
@@ -1753,6 +1756,22 @@ export class PairingConnection {
       // have replaced it.
       const socketId = socket.id
       void this.handleFrame(frame, socketId).catch((err) => this._log(`${this._name}: frame failed: ${err?.message ?? err}`))
+    })
+    socket.on('browser_view_open', (input) => {
+      const connectionId = this.socketId
+      if (!connectionId || !this._remoteViews || !this.pairing.assistantIds.includes(input?.assistantId)) return
+      const current = () => !this._stopped && this.socketId === connectionId && socket.connected
+      void this._remoteViews.open(input, {
+        connectionId,
+        sendFrame: message => { if (!current()) return false; socket.emit('browser_view_frame', message); return true },
+        sendClose: message => { if (current()) socket.emit('browser_view_close', message) },
+      }).catch(() => { if (current()) socket.emit('browser_view_close', { viewId: input?.viewId, reason: 'view_start_failed' }) })
+    })
+    socket.on('browser_view_command', input => {
+      if (this.socketId) void this._remoteViews?.command(input, this.socketId).catch(() => {})
+    })
+    socket.on('browser_view_close', input => {
+      if (this.socketId) void this._remoteViews?.close(input?.viewId, this.socketId, 'viewer_closed')
     })
     return this
   }
@@ -1862,6 +1881,7 @@ export class PairingConnection {
 
   stop() {
     this._stopped = true
+    if (this.socketId) void this._remoteViews?.closeConnection(this.socketId)
     if (this._retryTimer) clearTimeout(this._retryTimer)
     this._retryTimer = null
     this.socket?.disconnect()
@@ -1911,6 +1931,7 @@ export class BrowserHost {
     this._readText = readText
     this._allow = parseAgentAllowList(env.HOAI_BROWSER_HOST_AGENTS)
     this.pool = new BrowserPool({ agentRoot, createEngine, log })
+    this.remoteViews = new RemoteBrowserViews({ pool: this.pool })
     this.connections = new Map()
     // The gate reaches the backend through whichever pairing serves the agent
     // the call is for, resolved at the moment of asking rather than captured:
@@ -1974,7 +1995,7 @@ export class BrowserHost {
     }
     for (const [key, pairing] of wanted) {
       if (this.connections.has(key)) continue
-      const conn = new PairingConnection({ pairing, deviceLabel: this.deviceLabel, relay: this.relay, io: this._io, fetchImpl: this._fetch, log: this._log })
+      const conn = new PairingConnection({ pairing, deviceLabel: this.deviceLabel, relay: this.relay, remoteViews: this.remoteViews, io: this._io, fetchImpl: this._fetch, log: this._log })
       this.connections.set(key, conn)
       this._log(`pairing ${pairing.pairingId ?? '(no id)'} on ${pairing.backendUrl}: serving agents [${pairing.assistantIds.join(', ')}]${pairing.staleTokens ? ` (${pairing.staleTokens} older token file(s) ignored)` : ''}`)
       conn.start()
@@ -1995,6 +2016,7 @@ export class BrowserHost {
     if (this._rescanTimer) clearInterval(this._rescanTimer)
     this._rescanTimer = null
     this.gates.closeAll()
+    await this.remoteViews.stop()
     for (const conn of this.connections.values()) conn.stop()
     this.connections.clear()
     this.relay.close()
