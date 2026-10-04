@@ -115,6 +115,36 @@ options: `hoai-agent help`.
 
 ## Quick Start
 
+### Agent browser and saved logins (0.60.5)
+
+The paired daemon starts its browser host automatically. On the first browser task, HOAI uses an installed Chrome or Chromium when available. Otherwise it downloads the Chromium revision pinned by the plugin's Playwright dependency into the machine user's browser cache. The initial download needs network access and a writable cache. Later starts reuse that revision. No separate browser-host command or executable wrapper is needed.
+
+Chromium keeps its normal sandbox. Linux still needs the browser's operating-system libraries and sandbox support. A missing prerequisite or failed download returns an installation error; HOAI does not install system packages or disable the sandbox. An explicitly configured `HOAI_BROWSER_EXECUTABLE` must name a working installed browser. Unset an invalid override to use automatic provisioning.
+
+On Linux, inspect missing dependencies from the installed plugin directory with its pinned CLI:
+
+```bash
+node node_modules/playwright-core/cli.js install-deps --dry-run chromium
+```
+
+This inspection does not modify the system. On supported Linux systems it simulates the package installation and exits nonzero when dependencies are missing. The owner or administrator must review the result and explicitly approve any privileged operating-system package changes. They can then install the required packages with:
+
+```bash
+node node_modules/playwright-core/cli.js install-deps chromium
+```
+
+That installation can request sudo privileges and change system packages. HOAI never runs it automatically. Run the browser host as a non-root user, with an operating-system or container policy that permits Chromium's user namespaces and sandbox operations. If the sandbox is unavailable, have the administrator configure a supported host or container policy. Do not add `--no-sandbox` or broadly disable security protections. See the official [system dependency instructions](https://playwright.dev/docs/browsers#install-system-dependencies) and [sandbox guidance](https://playwright.dev/docs/docker#crawling-and-scraping).
+
+Each agent and acting person have separate login storage. New browser sessions start locked and use a nonpersistent context. Browsing while locked is discarded when the browser closes. In the HOAI browser pane, the owner opens **Logins** to configure or unlock the encrypted vault with a passphrase entered in trusted HOAI UI. Do not send passwords or passphrases through chat or browser tool arguments.
+
+Unlock permits encrypted snapshots of cookies, including session cookies, localStorage and IndexedDB on the agent machine until the browser closes. The passphrase and key are not saved, so the owner must unlock again after a restart. A lost passphrase cannot recover existing saved state. Existing native Chrome profile data is not opened or imported automatically; clearing supported legacy artifacts requires the owner's explicit confirmation, and an active browser or unknown files block clearing.
+
+**Enter login** and **Fill saved login** fill an ordinary, visible sign-in form at the exact current HTTPS origin, with loopback HTTP allowed for local development. Filling never submits automatically. A new password is saved only after a separate **Save** confirmation. After **Save** or **Not now**, or after filling a saved login, the owner reviews the page, takes control and clicks its validated **Sign in** submit button within 30 seconds. That permission allows one explicit pointer down/up on the exact captured form and button. Navigation, a new form, releasing control or expiry revokes it. Signup, OTP, payment, file, hidden, ambiguous and iframe forms are refused. Ordinary remote keyboard input continues to refuse credential fields.
+
+Credential payloads pass through the authenticated HOAI relay in an encrypted envelope. The destination page and agent machine receive plaintext during use. Saved-file encryption does not protect live browser state from a compromised agent account, nor does the relay's public-key exchange protect against an actively malicious HOAI server substituting offers.
+
+The shipped [HOAI browser skill](skills/hoai-browser/SKILL.md) explains this owner workflow to the agent. The opt-in [packaged bootstrap smoke](test/helpers/packaged-browser-bootstrap-smoke.ts) checks a fresh Windows user/cache and dependency install through the production supervisor, using a disposable local relay.
+
 ### Step 1: Install the plugin (one-time per machine)
 
 ```bash

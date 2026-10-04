@@ -31,8 +31,8 @@
  * `tools.filteredTools` roster, called in process by name. The one swap: the
  * desktop connects to its Electron bridge, this host launches an INSTALLED
  * Chrome or Chromium with --remote-debugging-port and --user-data-dir and
- * connects over CDP. It never downloads a browser; when none is installed it
- * says so, at startup and in every tool call that needs one.
+ * connects over CDP. If no browser is installed, the pinned Playwright
+ * dependency installs its Chromium into the user cache on first use.
  *
  * THE PROFILE IS KEYED BY PRINCIPAL, NOT BY AGENT. A frame names the person
  * the agent is acting for (`principal`, today `user-<clerkUserId>`, `owner`
@@ -59,11 +59,14 @@
 
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { homedir, hostname } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { AgentBrowserVault, browserVaultScope } from '../lib/agent-browser-vault.mjs'
+import { ensureBrowser, bundledChromium } from '../lib/browser-bootstrap.mjs'
+import { BrowserSecretRedactor } from '../lib/browser-secret-redactor.mjs'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -73,6 +76,7 @@ import { io as socketIoClient } from 'socket.io-client'
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
+import { runAgentBrowserWork } from '../lib/remote-input.mjs'
 
 /**
  * The permission rules, byte-identical copies of the desktop Agent Browser's
@@ -160,7 +164,7 @@ export const SESSION_TOOLS = [
   {
     name: 'hoai_browser_open_session',
     description:
-      'Open the HOAI Agent Browser for this task. The owner sees a pane with the purpose you give. profile: preview (clean, wiped at close, localhost never asks) or signed-in (your own persistent profile: the logins the owner makes for you inside the pane and the sites they Always allow for you are remembered across your sessions and app restarts; asks per site). Returns the session state.',
+      'Open the HOAI Agent Browser for this task. The owner sees a pane with the purpose you give. Browsing starts without saved login state. Only the owner can unlock encrypted login storage for this agent and person through the pane; never ask for passwords or the vault passphrase in chat. Site permission grants remain separate. Returns the session state.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -169,7 +173,7 @@ export const SESSION_TOOLS = [
           type: 'string',
           enum: ['preview', 'signed-in'],
           description:
-            "Defaults to the owner's default profile (preview). signed-in needs a stable agent id; without one the session opens as a preview and says so.",
+            'Compatibility hint only. Login storage remains locked until the owner explicitly unlocks it in the browser pane.',
         },
         caps: {
           type: 'array',
@@ -184,7 +188,7 @@ export const SESSION_TOOLS = [
   {
     name: 'hoai_browser_close_session',
     description:
-      'Close the browser session (tabs close, a preview profile is wiped, a signed-in profile keeps its logins for next time). Call it when you are done.',
+      'Close the browser session. An unlocked vault saves encrypted login state and locks; browsing without an unlocked vault is discarded. Call it when you are done.',
     inputSchema: { type: 'object', properties: {} },
     annotations: { title: 'Close browser session', readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   },
@@ -299,10 +303,10 @@ export function hostInstructions(deviceLabel) {
   return `HOAI Agent Browser, served by your own browser host on ${deviceLabel}, the machine you run on. This is your DEFAULT browser: when a task needs a web page, use these tools before any other browser tool or MCP server.
 
 Workflow:
-1. hoai_browser_open_session with a one line purpose. The browser is your own: it keeps one persistent profile for you and for each person you act for, so a login made in it is remembered across your sessions and restarts, and one person's logins are never shown to another. If you skip this, the first browser_ tool opens the session for you.
+1. hoai_browser_open_session with a one line purpose. Browsing starts without saved logins. The owner can unlock encrypted login storage for this agent and person in the pane; never request passwords or the vault passphrase in chat. One person's saved state is never restored for another. If you skip this, the first browser_ tool opens the session for you.
 2. browser_navigate to a URL, then browser_snapshot: it returns the page as an accessibility tree with refs like [ref=e12]. Act with browser_click, browser_type, browser_select_option and friends by passing that ref as "target" plus a short human description as "element". Use browser_find for one element instead of a whole snapshot, and browser_wait_for instead of polling.
 3. Screenshots (browser_take_screenshot) are for visual checks.
-4. hoai_browser_close_session when you are done; the browser closes by itself after 30 idle minutes and its profile stays.
+4. hoai_browser_close_session when you are done; the browser closes by itself after 30 idle minutes. Unlocked login state is saved encrypted and locked. Other browsing state is discarded.
 
 Permissions work here, and nobody is watching this machine, so there is no strip to answer: the owner is asked as a CARD in their chat with you, and they may be minutes away from it. A new site, any write on one, a download, an upload, running scripts, and every sensitive action is asked for. If the answer does not come inside your call you get gate_parked with a gateId: call hoai_browser_wait_gate with it rather than retrying the action, which would ask them a second time. Use wait_seconds (up to 1800) when you know they are away. policy_denied is final, explain and ask, never retry it. You never type passwords, one time codes or card numbers: at a login, a CAPTCHA or a payment form, stop and tell the owner in one line.
 
@@ -398,6 +402,7 @@ export function browserPathsFor({ agentRoot, assistantId, principal }) {
   const key = principalDirName(principal)
   return {
     key,
+    scope: browserVaultScope({ assistantId: id, principal }),
     profileDir: join(agentRoot, String(id), 'browser', key),
     outputDir: join(agentRoot, String(id), 'browser-output', key),
   }
@@ -736,12 +741,12 @@ export function resolveChromeExecutable({ platform = process.platform, env = pro
 /** The plain sentence an owner or an agent reads when there is no browser. */
 export function browserNotFoundMessage(resolution) {
   if (resolution.via === 'HOAI_BROWSER_EXECUTABLE') {
-    return `HOAI_BROWSER_EXECUTABLE is set to ${resolution.tried[0]}, which does not exist on this machine. Point it at an installed Chrome or Chromium, or unset it to search the usual places. This host never downloads a browser.`
+    return `HOAI_BROWSER_EXECUTABLE is set to ${resolution.tried[0]}, which does not exist on this machine. Point it at an installed Chrome or Chromium, or unset it to use automatic browser provisioning.`
   }
   const snap = resolution.snapSkipped?.length
     ? ` Skipped ${resolution.snapSkipped.join(', ')}: a Snap Chromium cannot open a profile under ~/.bgos-agent; install Google Chrome from its .deb, or a Chromium that is not a Snap.`
     : ''
-  return `No installed Chrome or Chromium was found on this machine, so this agent's browser cannot start. Install Google Chrome or Chromium, or set HOAI_BROWSER_EXECUTABLE to one. This host never downloads a browser. Looked in: ${resolution.tried.join(', ')}.${snap}`
+  return `No installed Chrome or Chromium was found on this machine. On first use, the plugin downloads its pinned Chromium into the user cache. This needs network access and normal operating-system browser prerequisites. Looked in: ${resolution.tried.join(', ')}.${snap}`
 }
 
 /** A failure the agent should read with its own code. */
@@ -763,8 +768,8 @@ export function chromeArgs({ profileDir, headless = true, platform = process.pla
     '--no-default-browser-check',
     '--window-size=1280,800',
   ]
-  // A service must never stop at a keychain or keyring prompt nobody sees.
-  // The profile folder is 0700; that, not the OS keychain, guards it.
+  // This is a disposable shell profile. All browsing happens in a separate
+  // nonpersistent context; durable login state uses the passphrase vault.
   if (platform === 'darwin') args.push('--use-mock-keychain')
   if (platform === 'linux') args.push('--password-store=basic')
   if (headless) args.push('--headless=new')
@@ -904,19 +909,24 @@ export class PlaywrightEngine {
     this._context = null
     this._toolNames = new Set()
     this.onDisconnected = null
+    this._secrets = new BrowserSecretRedactor()
   }
 
   async start() {
     const { chromium, tools } = loadPlaywright()
     this._browser = await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true })
     this._browser.on('disconnected', () => this.onDisconnected?.())
-    const context = this._browser.contexts()[0]
-    if (!context) throw new Error('The browser exposed no default context')
+    const context = await this._browser.newContext({ viewport: { width: 1280, height: 800 } })
+    await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config)
     this._toolNames = new Set(filtered.map((t) => t.schema.name))
     this._backend = new tools.BrowserBackend(config, context, filtered)
     await this._backend.initialize({ cwd: this._outputDir, name: this._clientName, version: this._clientVersion })
+    // Playwright uses this hook for snapshots, console collection, artifacts
+    // and serialized MCP text. Hook before an owner can fill any login.
+    if (typeof this._backend._context?.redactSecrets !== 'function') throw new Error('Browser secret redaction unavailable')
+    this._backend._context.redactSecrets = text => this._secrets.text(text)
     this._context = context
     return this
   }
@@ -931,8 +941,11 @@ export class PlaywrightEngine {
 
   async callTool(name, args, signal) {
     if (!this._backend) throw new Error('Engine not started')
-    return this._backend.callTool(name, args || {}, signal)
+    try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
+    catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
   }
+
+  registerSecret(secret) { this._secrets.register(secret) }
 
   /** Asks Chrome itself to quit, which writes cookies to disk first. */
   async closeBrowserProcess() {
@@ -952,6 +965,7 @@ export class PlaywrightEngine {
     try {
       await browser?.close()
     } catch {}
+    this._secrets.clear()
   }
 }
 
@@ -967,14 +981,12 @@ function waitForExit(child, ms) {
 }
 
 /**
- * One Chrome on one profile directory and the Playwright engine over it.
- * Reattaches to a Chrome this host started before it was killed (the profile
- * still names its endpoint in DevToolsActivePort) instead of colliding with
- * it on the profile lock. The endpoint carries that browser's own id, so a
- * stale file can never attach to another profile's Chrome on a reused port.
+ * A fresh Chrome shell and a nonpersistent Playwright browsing context.
+ * The stable profile contains encrypted owner storage and policy only. Never
+ * attach an old native profile or recover its unauthenticated CDP endpoint.
  */
 export class ChromiumEngine {
-  constructor({ executable, profileDir, outputDir, headless = true, caps = DEFAULT_CAPS, clientName, clientVersion, log = () => {} }) {
+  constructor({ executable, profileDir, outputDir, scope = '', headless = true, caps = DEFAULT_CAPS, clientName = 'hoai-browser-host', clientVersion = '0.0.0', log = () => {} }) {
     this.profileDir = profileDir
     this.outputDir = outputDir
     this._executable = executable
@@ -987,26 +999,20 @@ export class ChromiumEngine {
     this._engine = null
     this.alive = false
     this.onGone = null
+    this._scope = scope || JSON.stringify({ profile: profileDir })
+    this.vault = null
+    this._runtimeDir = null
   }
 
   async start() {
-    ensurePrivateDir(this.profileDir)
+    this.vault = new AgentBrowserVault({ profileDir: this.profileDir, scope: this._scope })
     ensurePrivateDir(this.outputDir)
-    const stale = readDevToolsActivePort(this.profileDir)
-    if (stale) {
-      // Usually left behind by a clean exit, so the port is dead and this
-      // fails at once; Chrome answers 404 for any browser id but its own.
-      const engine = this._newEngine(stale, 5_000)
-      try {
-        await engine.start()
-        this._engine = engine
-        this._log(`reattached to the running Chrome on ${this.profileDir}`)
-      } catch {
-        await engine.stop().catch(() => {})
-      }
-    }
+    // Never attach to a legacy native profile: it may contain unencrypted
+    // login state. Owner consent can clear it through the vault protocol.
+    this._runtimeDir = mkdtempSync(join(tmpdir(), 'hoai-browser-runtime-'))
+    ensurePrivateDir(this._runtimeDir)
     if (!this._engine) {
-      const { child, endpoint } = await launchChromium({ executable: this._executable, profileDir: this.profileDir, headless: this._headless })
+      const { child, endpoint } = await launchChromium({ executable: this._executable, profileDir: this._runtimeDir, headless: this._headless })
       this._child = child
       child.on('exit', () => this._gone())
       // Bounded: a connect that hangs after Chrome printed its endpoint would
@@ -1023,6 +1029,7 @@ export class ChromiumEngine {
       this._log(`started Chrome (pid ${child.pid}) on ${this.profileDir}`)
     }
     this._engine.onDisconnected = () => this._gone()
+    this.vault.bind(this._engine._context)
     this.alive = true
     return this
   }
@@ -1034,6 +1041,7 @@ export class ChromiumEngine {
   _gone() {
     if (!this.alive) return
     this.alive = false
+    void this.vault?.lock()
     this.onGone?.()
   }
 
@@ -1046,8 +1054,26 @@ export class ChromiumEngine {
     return this._engine.callTool(name, args, signal)
   }
 
+  registerSecret(secret) {
+    if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser is unavailable.')
+    this._engine.registerSecret(secret)
+  }
+
+  resultRedactor() {
+    // A synthesized session result may finish after close dropped the engine.
+    // Capture patterns for that result without retaining secrets after it returns.
+    const redactor = new BrowserSecretRedactor()
+    redactor.patterns = this._engine?._secrets.patterns || []
+    return value => redactor.value(value)
+  }
+
   async stop() {
     const engine = this._engine
+    let persistenceFailed = false
+    // Stop during a pending unlock must invalidate its epoch before awaiting
+    // scrypt or restore; otherwise late work could install a key after stop.
+    if (this.vault && !this.vault.restored) await this.vault.lock()
+    else try { await this.vault?.snapshot() } catch { persistenceFailed = true; this._log('encrypted browser state could not be saved') }
     this._engine = null
     this.alive = false
     try {
@@ -1055,6 +1081,9 @@ export class ChromiumEngine {
     } catch {}
     await engine?.stop().catch(() => {})
     await this._killChild()
+    await this.vault?.lock()
+    if (this._runtimeDir) { rmSync(this._runtimeDir, { recursive: true, force: true }); this._runtimeDir = null }
+    if (persistenceFailed) throw Object.assign(new HostError('credential_storage', 'The browser closed and locked, but its latest state could not be saved encrypted. The previous saved state is retained.'), { browserClosed: true })
   }
 
   async _killChild() {
@@ -1069,6 +1098,7 @@ export class ChromiumEngine {
     try {
       child.kill('SIGKILL')
     } catch {}
+    if (!await waitForExit(child, 3_000)) throw new HostError('browser_stop_failed', 'The browser process did not finish closing safely.')
   }
 }
 
@@ -1106,14 +1136,16 @@ export class BrowserPool {
       slot = { paths, engine: null, starting: null, idleTimer: null, purpose: null, openedAt: null }
       this._slots.set(key, slot)
     }
+    while (slot.stopping) await slot.stopping
+    if (slot.stopError) throw new HostError('browser_stop_failed', 'The previous browser did not finish closing safely.')
     if (!(slot.engine && slot.engine.alive !== false)) {
       if (!slot.starting) {
         slot.starting = (async () => {
           const engine = await this._createEngine({ assistantId: ctx.assistantId, principal: ctx.principal, ...paths })
           engine.onGone = () => {
             if (slot.engine !== engine) return
-            slot.engine = null
             this._clearIdle(slot)
+            void this._stopSlot(slot).catch(() => {})
             this._log(`the browser on ${paths.profileDir} went away; the next call reopens it`)
           }
           await engine.start()
@@ -1126,6 +1158,7 @@ export class BrowserPool {
       }
       await slot.starting
     }
+    if (slot.stopping) throw new HostError('browser_stopping', 'The browser is closing. Try again after it finishes.')
     this._touch(slot)
     return slot
   }
@@ -1152,7 +1185,14 @@ export class BrowserPool {
     return [...this._slots.values()].filter((s) => s.engine && s.engine.alive !== false).map((s) => s.paths.profileDir)
   }
 
-  async _stopSlot(slot) {
+  _stopSlot(slot) {
+    if (slot.stopping) return slot.stopping
+    const stopping = Promise.resolve().then(() => this._finishStopSlot(slot))
+    slot.stopping = stopping.finally(() => { slot.stopping = null })
+    return slot.stopping
+  }
+
+  async _finishStopSlot(slot) {
     // A launch in flight finishes first: stopping before it lands would find
     // no engine, and the Chrome it then started would outlive the stop.
     if (slot.starting) await slot.starting.catch(() => {})
@@ -1162,7 +1202,18 @@ export class BrowserPool {
     slot.purpose = null
     slot.openedAt = null
     if (!engine) return false
-    await engine.stop().catch(() => {})
+    try {
+      await engine.stop()
+      // A failed input cleanup blocks this engine, not a replacement browser.
+      // Clear only after its shutdown settled successfully, never on a mere
+      // CDP disconnect or while another engine's lease occupies the slot.
+      if (slot.ownerInputLease?.view?.engine === engine) slot.ownerInputLease = null
+    } catch (error) {
+      if (error instanceof HostError && error.code === 'credential_storage' && error.browserClosed === true) {
+        if (slot.ownerInputLease?.view?.engine === engine) slot.ownerInputLease = null
+      } else slot.stopError = true
+      throw error
+    }
     return true
   }
 
@@ -1170,7 +1221,7 @@ export class BrowserPool {
     this._clearIdle(slot)
     slot.idleTimer = setTimeout(() => {
       this._log(`closing the idle browser on ${slot.paths.profileDir}; its profile stays`)
-      void this._stopSlot(slot)
+      void this._stopSlot(slot).catch(() => {})
     }, this._idleMs)
     slot.idleTimer.unref?.()
   }
@@ -1298,8 +1349,8 @@ export class BrowserHostCore {
     const classification = policy.classifyToolCall(name, engineArgs, { currentOrigin: await this._currentOrigin(slot) })
     const grants = slot.grants || (slot.grants = hostProfiles.sessionGrants(settings, this._profileKey(ctx)))
     const decision = policy.decide({
-      // This host's profile is always the persistent signed-in one: it keeps
-      // its logins by design (there is no preview profile here), and `decide`
+      // Site permission policy remains the signed-in policy even while the
+      // independent encrypted login vault is locked, and `decide`
       // reads `signed-in` as the stricter side of every branch.
       profile: 'signed-in',
       classification,
@@ -1307,7 +1358,7 @@ export class BrowserHostCore {
       settings,
       preapproved: [],
     })
-    const run = () => slot.engine.callTool(name, engineArgs, signal)
+    const run = () => runAgentBrowserWork(slot, () => slot.engine.callTool(name, engineArgs, signal))
     if (decision.verdict === 'allow') return { allowed: true, ran: Promise.resolve().then(run) }
     if (decision.verdict === 'deny') {
       return { allowed: false, message: this._refusedMessage(decision, classification) }
@@ -1409,11 +1460,12 @@ export class BrowserHostCore {
   }
 
   async callTool(ctx, name, args, signal) {
+    const redact = this.pool.peek(ctx)?.engine?.resultRedactor?.() || (value => value)
     try {
-      return await this._call(ctx, name, args || {}, signal)
+      return redact(await this._call(ctx, name, args || {}, signal))
     } catch (err) {
-      if (err instanceof HostError) return errorResult(err.code, err.message)
-      return errorResult('tool_error', String(err?.message ?? err))
+      if (err instanceof HostError) return redact(errorResult(err.code, err.message))
+      return redact(errorResult('tool_error', String(err?.message ?? err)))
     }
   }
 
@@ -1423,16 +1475,17 @@ export class BrowserHostCore {
       const purpose = typeof args.purpose === 'string' ? args.purpose.trim().slice(0, 200) : ''
       if (purpose) slot.purpose = purpose
       const lines = [
-        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with a persistent profile kept for you and the person you act for. Navigate with browser_navigate, then browser_snapshot.`,
+        `Browser session is open on ${this.deviceLabel}, the machine you run on: your own browser, headless, with login storage locked until the owner unlocks it in the pane. Navigate with browser_navigate, then browser_snapshot.`,
       ]
       if (args.profile === 'preview') {
-        lines.push('This host keeps no separate preview profile: logins made in this session are remembered for your next ones.')
+        lines.push('Browsing state is discarded at close unless the owner unlocks encrypted storage.')
       }
       return text(lines.join(' '))
     }
     if (name === 'hoai_browser_close_session') {
+      if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', 'The owner currently controls this browser.')
       const closed = await this.pool.release(ctx)
-      return text(closed ? 'Session closed. The profile keeps its logins for next time.' : 'No session was open.')
+      return text(closed ? 'Session closed. Any unlocked login state was saved encrypted; the vault is now locked.' : 'No session was open.')
     }
     if (name === 'hoai_browser_status') {
       const slot = this.pool.peek(ctx)
@@ -1448,8 +1501,9 @@ export class BrowserHostCore {
       )
       return text(
         [
-          `Session on ${this.deviceLabel}: agent_driving, persistent profile, opened ${slot.openedAt ?? 'earlier'}.`,
+          `Session on ${this.deviceLabel}: ${slot.ownerInputLease ? 'human_control' : 'agent_driving'}, login storage ${slot.engine.vault?.status().unlocked ? 'unlocked' : 'locked'}, opened ${slot.openedAt ?? 'earlier'}.`,
           `Purpose: ${slot.purpose ?? '(none given)'}`,
+          ...(slot.engine.vault?.lastError ? ['Persistence warning: the latest browser state could not be saved encrypted. Check available disk space and retry.'] : []),
           `Tabs: ${tabs.length ? tabs.join(' | ') : '(none)'}`,
           this._pendingLine(ctx),
         ].join('\n'),
@@ -1475,6 +1529,7 @@ export class BrowserHostCore {
     // wait_seconds is the gate's, never the engine's (host.js callTool).
     const { wait_seconds: waitSeconds, ...engineArgs } = args
     const slot = await this.pool.acquire(ctx)
+    if (slot.ownerInputLease) throw new HostError('owner_control', 'The owner currently controls this browser.')
     if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
@@ -2039,7 +2094,7 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
 
   const chrome = resolveChromeExecutable({ env })
   if (chrome.path) log(`browser: ${chrome.path} (${chrome.via === 'search' ? 'found installed' : 'from HOAI_BROWSER_EXECUTABLE'}), ${headless ? 'headless' : 'headed'}`)
-  else log(`browser: NONE. ${browserNotFoundMessage(chrome)}`)
+  else log(env.HOAI_BROWSER_EXECUTABLE ? `browser: NONE. ${browserNotFoundMessage(chrome)}` : 'browser: bundled Chromium will be provisioned automatically on first use if its user cache is empty.')
 
   const scope = scopeFromEnv(env)
   // Read once, then gone from this process, so nothing it starts inherits
@@ -2064,13 +2119,18 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
   const loadBrowserTools = async () => servedBrowserTools(await listTools({ caps: DEFAULT_CAPS, outputDir: join(agentRoot, 'browser-host') }))
   if (check) {
     log(`tools: ${SESSION_TOOLS.length} session tools and ${(await loadBrowserTools()).length} browser_ tools`)
+    if (!chrome.path && !env.HOAI_BROWSER_EXECUTABLE) {
+      const cached = bundledChromium().executable
+      if (existsSync(cached)) { log(`browser: ${cached} (bundled cache)`); return 0 }
+      log('browser: ready for automatic first-use download; --check does not install files.')
+      return 0
+    }
     return chrome.path ? 0 : 1
   }
 
-  const createEngine = ({ profileDir, outputDir }) => {
-    const found = resolveChromeExecutable({ env })
-    if (!found.path) throw new HostError('browser_not_installed', browserNotFoundMessage(found))
-    return new ChromiumEngine({ executable: found.path, profileDir, outputDir, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
+  const createEngine = async ({ profileDir, outputDir, scope }) => {
+    const executable = await ensureBrowser({ findInstalled: () => resolveChromeExecutable({ env }), env, log })
+    return new ChromiumEngine({ executable, profileDir, outputDir, scope, headless, clientName: 'hoai-browser-host', clientVersion: readPackageVersion(), log })
   }
   const host = new BrowserHost({ agentRoot, env, deviceLabel, browserTools: loadBrowserTools, createEngine, log, scope }).start()
 
