@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.61.1 (2026-10-05)
+
+**A daemon holding a staged update no longer goes blind to later releases.** Both `checkNow` and `updateNow` correctly decline to install while an update is already on disk awaiting a restart, but both writers of the version this daemon reports as latest sat after that early return. So staging an update froze `latestKnownVersion` at that moment, for as long as the restart never happened. Measured in production forty minutes after 0.61.0 was published: of 59 live daemons, twenty were staged on a version that had itself been superseded, each reporting that stale target AS the latest it knew, and nothing could tell them from a daemon that was genuinely current. The periodic check now LOOKS before it defers, and says what it saw. The triggered one-click deliberately does not, because a user can tap it repeatedly and its no-new-fetch property is pinned by a test. This does not unstick a staged daemon, which still needs its restart; it makes the stuck state visible, which is what anyone fixing it needs.
+
 ## 0.61.0 (2026-10-05)
 
 **One release carrying every plugin change since 0.60.2, batched on purpose (KC, 2026-10-05: "batch all the updates into one major update with a version change and then you publish instead of publishing every update on its own").** The five branches below each proposed their own number; they ship as this one.

@@ -1016,6 +1016,52 @@ export class SelfUpdater {
     timer.unref?.()
   }
 
+  /**
+   * RECORD WHAT THE LATEST VERSION IS, WITHOUT ACTING ON IT.
+   *
+   * A staged daemon used to go permanently blind. Both `checkNow` and
+   * `updateNow` return early while `validationPending` (correctly: an update
+   * is already on disk and pulling over it would rewrite the directory this
+   * process runs from), and BOTH writers of `lastInspectedVersion` sat after
+   * that return. So once a daemon staged an update, `latestKnownVersion`
+   * froze at whatever it was at that moment, for as long as the restart never
+   * happened. Only `checkNow` observes now: it runs on a timer, which is
+   * enough, and `updateNow` is a one-click whose no-new-fetch property is
+   * pinned by a test that is a deliberate decision record.
+   *
+   * MEASURED IN PRODUCTION, 2026-10-05, forty minutes after 0.61.0 was
+   * published: of 59 live claude-code daemons, 20 were staged on a version
+   * that had itself been superseded, and each one reported that stale version
+   * AS the latest it knew. Seven were pending 0.46.0 while running 0.44.0 and
+   * reporting latest 0.46.0. Nothing in the fleet view or the app's update
+   * prompt could tell them apart from a daemon that was genuinely current.
+   *
+   * The distinction the early return was missing is between ACTING and
+   * OBSERVING. Declining to install is right. Declining to look is not: the
+   * newest version on origin is a perfectly coherent answer mid-validation,
+   * and it is the one fact that makes a stuck daemon legible as stuck. This
+   * does not unstick anything by itself, it makes the stuck state visible,
+   * which is the precondition for anyone fixing it.
+   *
+   * Read only (a fetch and a rev-parse), never latches, and swallows its own
+   * failure: an observation that cannot be taken must not change the caller's
+   * outcome, because the caller's job is the restart ladder.
+   */
+  private async observeLatestVersion(): Promise<void> {
+    try {
+      const inspection = await inspectGitUpdate({
+        rootDir: this.opts.rootDir,
+        runningVersion: this.opts.runningVersion,
+        runner: this.runner,
+      })
+      if (inspection.kind === 'dirty-tree') return
+      this.lastInspectedVersion = inspection.latestVersion
+    } catch {
+      // Leave the previous reading in place. A failed observation is not a
+      // reason to report null, which would read as "never checked".
+    }
+  }
+
   async checkNow(): Promise<void> {
     if (this.checkRunning || this.exiting) return
     this.checkRunning = true
@@ -1026,7 +1072,14 @@ export class SelfUpdater {
         return
       }
       if (this.state.validationPending) {
-        this.opts.log('Auto-update check deferred while the new code is validating.')
+        // Still LOOK, so a staged daemon does not report its own stale
+        // target as the latest version for as long as it waits. See
+        // observeLatestVersion.
+        await this.observeLatestVersion()
+        this.opts.log(
+          'Auto-update check deferred while the new code is validating; ' +
+            `latest on origin is ${this.lastInspectedVersion ?? 'unknown'}.`,
+        )
         return
       }
       const inspection = await inspectGitUpdate({
@@ -1084,6 +1137,14 @@ export class SelfUpdater {
         // restarted code is inside its 60s validation window): nothing to
         // pull. With a pending version the caller goes straight to the
         // restart ladder; mid-validation there is no coherent answer yet.
+        //
+        // Deliberately NOT observing here. checkNow does that, on its own
+        // timer, which is enough to keep latestKnownVersion truthful. This is
+        // the TRIGGERED path, a one-click a user can tap repeatedly, and
+        // `a second updateNow short-circuits to the already-installed
+        // version` pins that it performs no new fetch. That test is a
+        // decision record, not an accident, and adding a read here breaks it
+        // for no gain. See observeLatestVersion.
         const pending = this.pendingRestartVersion()
         return pending ? { kind: 'installed', targetVersion: pending } : { kind: 'busy' }
       }
