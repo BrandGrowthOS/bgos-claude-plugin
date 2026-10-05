@@ -40,6 +40,10 @@ now the suite had only run on Linux and macOS. Run on Windows it went 31 red on 
   `test (windows)` job runs the suite and the type check on `windows-latest`; the README says what a Windows machine
   needs to run it (Git for Windows) and what skips there by design.
 
+
+Daemon browser pages can stream into the HOAI owner pane through the authenticated server relay. The host attaches Page.startScreencast to its existing browser and retains the latest update while a prior frame is outstanding. Closing the view leaves the agent page running. This is the independent A release; it sends no owner input.
+
+Targeted browser-host/view tests and real Chromium streaming passed. Package and manifest versions advance together for the repository gate. No tag, marketplace pin, publish or deployment is performed here.
 ## 0.60.2 (2026-10-04)
 
 **Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored
