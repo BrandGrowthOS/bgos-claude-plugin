@@ -38,6 +38,7 @@ export type HardFloorRuleId =
   | 'env_file_write'
   | 'home_dotfile_write'
   | 'acts_on_owners_behalf'
+  | 'adds_skill_or_plugin'
 
 export interface HardFloorRule {
   readonly id: HardFloorRuleId

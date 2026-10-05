@@ -2,6 +2,18 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased
+
+**Always ask now covers installing a plugin or tool (floor rules version 2).** With the owner's "Always ask before
+risky actions" switch on, the floor hook now holds `claude plugin install` (and `i`), `claude mcp add` (`add-json`,
+`add-from-claude-desktop`), `codex plugin add` and `codex mcp add` for the owner, even with full access: a plugin or
+tool the agent installs outlives the chat that added it. Listing, updating, removing and adding a marketplace do not
+ask, and neither does a skill file the agent writes itself (the Teach flow already asks first). The matcher, the words
+("installing a new plugin or tool that stays after this chat") and the byte identical fixture match BGOS
+`backend/src/services/hard-floor.ts` rules version 2. On a pairing with the hook, the daemon also declares
+`hard_floor_rules_2`, which the app reads before it tells the owner the hook stops a plugin install. Lands together with
+the BGOS change; no version is chosen here, the release that carries it is Kc's call.
+
 ## 0.60.5 (2026-10-04)
 
 The daemon provisions its browser on first use: an installed Chrome or Chromium is preferred, otherwise the pinned Playwright Chromium revision is downloaded into the user cache. The normal browser-host supervisor owns startup. The browser keeps its sandbox, and missing operating-system prerequisites return an installation error.

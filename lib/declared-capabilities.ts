@@ -190,7 +190,7 @@
  * agent silently untold.
  */
 
-import { HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
+import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
@@ -224,8 +224,14 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
  * permission_card and plan_card do NOT have this flaw and stay in the base:
  * the card is a POST to `messages` and propose_plan is a typed tool, both of
  * which an API key connection can do.
+ *
+ * hard_floor_rules_2 rides with it, under the same two conditions: it says the
+ * hook's own list reads floor rules version 2 (installing a new plugin or
+ * tool), which the BGOS app reads to tell the owner the hook stops a plugin
+ * install too. Only the hook keeps that promise, so it is declared only where
+ * hard_floor is.
  */
-export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN])
+export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN])
 
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
