@@ -1150,9 +1150,10 @@ test('a context that alone exceeds the budget drops memory entirely and trims co
 })
 
 test('loadVoiceMemory concatenates the agent home memory files, capped', () => {
+  // Keyed the way the lib builds them (join(cwd, name)), so the lookup hits on every host.
   const files: Record<string, string> = {
-    '/agent/USER.md': 'Owner is Kc, tz Asia/Dubai.',
-    '/agent/MEMORY.md': 'Active project: the launch.',
+    [join('/agent', 'USER.md')]: 'Owner is Kc, tz Asia/Dubai.',
+    [join('/agent', 'MEMORY.md')]: 'Active project: the launch.',
   }
   const mem = loadVoiceMemory({
     cwd: '/agent',

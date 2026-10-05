@@ -62,7 +62,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, hostname } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { dirname, join, posix as posixPath, win32 as win32Path } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -142,6 +142,23 @@ export const REFUSED_RETRY_MAX_MS = 15 * 60_000
 export const CREDENTIALS_RESCAN_MS = 60_000
 /** How often a daemon-started host checks that its daemon is still alive. */
 export const PARENT_CHECK_MS = 2_000
+
+/**
+ * How long a stop may take before the host exits anyway. A Chrome or a socket that never answers
+ * its close would otherwise keep the host, and its Chrome, running with no daemon: on Windows the
+ * daemon starts the host detached from its own lifetime precisely so the host can close Chrome
+ * after the daemon has exited, so nothing else would end it.
+ */
+export const STOP_DEADLINE_MS = 15_000
+
+/**
+ * Set to 1 by the daemon that starts this host: the daemon holds the host's stdin, and closing it
+ * is the stop. That is the one stop a process can handle on Windows, where a daemon's
+ * kill('SIGTERM') is TerminateProcess, and it also arrives when the daemon dies outright, because
+ * the OS closes the pipe. A host run by hand, or with stdin ignored, reads an immediate end of
+ * input that means nothing, so it is only armed on the daemon's word.
+ */
+export const STOP_ON_STDIN_EOF_ENV = 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF'
 
 /** The desktop's default cap set (engine.js DEFAULT_CAPS). */
 export const DEFAULT_CAPS = ['pdf']
@@ -640,8 +657,11 @@ export function pidAlive(pid) {
 
 // ── An installed Chrome or Chromium ──────────────────────────────────────────
 
-/** Every place this host looks, in order, for the platform. */
+/** Every place this host looks, in order, for the platform. Spelled with THAT platform's path
+ *  rules rather than the host's, so a Windows run of the tests sees real mac and linux paths and
+ *  a Linux run sees real Windows ones; on a real host the two are the same. */
 export function chromeCandidates({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+  const { join, delimiter } = platform === 'win32' ? win32Path : posixPath
   if (platform === 'darwin') {
     const apps = [
       'Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -786,6 +806,23 @@ export function readDevToolsActivePort(profileDir, readText = defaultReadText) {
  * Starts Chrome on one profile and resolves its browser CDP endpoint, read
  * from the "DevTools listening on" line Chrome prints for port 0.
  */
+/**
+ * Every Chrome this host started that has not exited yet, including one still launching. When a
+ * stop runs out of time (stopWithin) the host kills these before it exits: off Windows nothing
+ * ends a node child when its parent exits, so a Chrome still launching, or one whose close hung,
+ * would otherwise be left running headless on its profile.
+ */
+export const startedChromes = new Set()
+
+/** SIGKILLs every Chrome this host started that is still running. */
+export function killStartedChromes(chromes = startedChromes) {
+  for (const child of chromes) {
+    try {
+      child.kill('SIGKILL')
+    } catch {}
+  }
+}
+
 export function launchChromium({ executable, profileDir, headless = true, timeoutMs = BROWSER_START_TIMEOUT_MS, spawnImpl = spawn, platform = process.platform, env = process.env }) {
   return new Promise((resolve, reject) => {
     let child
@@ -795,6 +832,10 @@ export function launchChromium({ executable, profileDir, headless = true, timeou
       reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
       return
     }
+    startedChromes.add(child)
+    const forget = () => startedChromes.delete(child)
+    child.once('exit', forget)
+    child.once('error', forget)
     let tail = ''
     let settled = false
     const finish = (err, endpoint) => {
@@ -2002,13 +2043,47 @@ export class BrowserHost {
   }
 }
 
+/**
+ * Runs a stop to its end and says so, or, once `ms` has passed without it finishing
+ * (STOP_DEADLINE_MS), kills the browsers this host started (onDeadline) and exits with 1. The
+ * deadline is unref'd: a stop that finishes never waits for it.
+ * @param {() => unknown} stopFn
+ * @param {{ ms?: number, log?: (line: string) => void, exit?: (code: number) => void, onDeadline?: () => void }} [opts]
+ * @returns {Promise<void>}
+ */
+export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code), onDeadline = () => killStartedChromes() } = {}) {
+  const deadline = setTimeout(() => {
+    log(`the stop did not finish within ${Math.round(ms / 1000)} s; killing its browsers and exiting anyway`)
+    try {
+      onDeadline()
+    } catch {}
+    exit(1)
+  }, ms)
+  deadline.unref?.()
+  return Promise.resolve()
+    .then(stopFn)
+    .then(
+      () => log('stopped cleanly'),
+      (err) => log(`stopped, with an error on the way: ${err?.message ?? err}`),
+    )
+    .finally(() => clearTimeout(deadline))
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 function stamp(line) {
   return `${new Date().toISOString()} ${LOG_PREFIX} ${line}\n`
 }
 
-export async function main({ argv = process.argv.slice(2), env = process.env, writeErr = (s) => process.stderr.write(s), onSignal = (sig, fn) => process.on(sig, fn) } = {}) {
+export async function main({
+  argv = process.argv.slice(2),
+  env = process.env,
+  writeErr = (s) => process.stderr.write(s),
+  onSignal = (sig, fn) => process.on(sig, fn),
+  stdin = process.stdin,
+  exit = (code) => process.exit(code),
+  stopDeadlineMs = STOP_DEADLINE_MS,
+} = {}) {
   const log = (line) => writeErr(stamp(line))
   const check = argv.includes('--check')
   const agentRoot = defaultAgentRoot()
@@ -2065,13 +2140,21 @@ export async function main({ argv = process.argv.slice(2), env = process.env, wr
       stopping = true
       clearInterval(keepAlive)
       log(`${why}: closing the browsers (profiles stay) and the sockets`)
-      host.stop().finally(() => resolve(0))
+      stopWithin(() => host.stop(), { ms: stopDeadlineMs, log, exit }).then(() => resolve(0))
     }
     onSignal('SIGINT', () => stop('SIGINT'))
     onSignal('SIGTERM', () => stop('SIGTERM'))
-    // The daemon stops this host with SIGTERM when it exits. If the daemon is
-    // killed outright it cannot, so the host checks that the daemon's pid is
-    // still alive. Liveness of that pid, not "my parent changed": the daemon
+    if (String(env[STOP_ON_STDIN_EOF_ENV] ?? '').trim() === '1') {
+      const letGo = () => stop('the daemon let go of this host')
+      stdin.once('end', letGo)
+      stdin.once('close', letGo)
+      stdin.once('error', letGo)
+      stdin.resume()
+    }
+    // The daemon stops this host by closing its stdin (and, off Windows, with
+    // SIGTERM too). If the daemon is killed outright the pipe still closes,
+    // and as a second line the host checks that the daemon's pid is still
+    // alive. Liveness of that pid, not "my parent changed": the daemon
     // keeps its pid when it is reparented, which is what made a ppid
     // watchdog misfire in the daemon itself (test/process-lifecycle.test.ts).
     if (scope?.parentPid) {

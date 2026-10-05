@@ -63,8 +63,12 @@ import {
   resultBody,
   resultUrl,
   servedBrowserTools,
+  startedChromes,
+  killStartedChromes,
+  stopWithin,
 } from '../bin/hoai-browser-host.mjs'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
+import { processesMatching } from './helpers/processes.ts'
 
 const HOST_BIN = join(process.cwd(), 'bin', 'hoai-browser-host.mjs')
 const ROOT = join(sep, 'home', 'kc', '.bgos-agent')
@@ -558,8 +562,17 @@ test('resolveChromeExecutable: an installed browser is found, none is said plain
   const linux = chromeCandidates({ platform: 'linux', env: { PATH: '/usr/local/bin:/usr/bin' }, home: '/home/kc' })
   assert.equal(linux[0], '/usr/local/bin/google-chrome')
   assert.ok(linux.includes('/usr/bin/chromium'))
+  // The candidates are spelled by the PLATFORM asked about, not by the host running the test, so
+  // this one list pins the Windows branch exactly on a Linux runner and the posix ones on Windows.
   const win = chromeCandidates({ platform: 'win32', env: { PROGRAMFILES: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\kc\\AppData\\Local' }, home: 'C:\\Users\\kc' })
-  assert.ok(win.some((p: string) => p.endsWith(join('Google', 'Chrome', 'Application', 'chrome.exe'))))
+  assert.deepEqual(win, [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe',
+    'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe',
+    'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe',
+  ])
 
   const found = resolveChromeExecutable({ platform: 'linux', env: { PATH: '/usr/bin' }, exists: (p: any) => p === '/usr/bin/chromium' })
   assert.equal(found.path, '/usr/bin/chromium')
@@ -613,6 +626,59 @@ test('readDevToolsActivePort: only a well formed endpoint is reattached to', () 
   assert.equal(readDevToolsActivePort(dir), null)
 })
 
+// ── A stop always ends ───────────────────────────────────────────────────────
+
+test('a stop that never finishes still ends the host, at its deadline', async () => {
+  const lines: string[] = []
+  const codes: number[] = []
+  stopWithin(() => new Promise(() => {}), { ms: 60, log: (l: string) => lines.push(l), exit: (code: number) => codes.push(code) })
+  await new Promise((r) => setTimeout(r, 300))
+  assert.deepEqual(codes, [1], 'a wedged Chrome or socket cannot keep a host (and on Windows its Chrome) running with no daemon')
+  assert.ok(lines.some((l) => /did not finish within/.test(l)), lines.join('\n'))
+})
+
+test('a stop that runs out of time kills the browsers this host started BEFORE it exits, so none is left behind', async () => {
+  // Off Windows nothing ends a node child when its parent exits, so a Chrome still launching (or
+  // one whose close hung) would outlive the host. The deadline kills them first, by default.
+  const events: string[] = []
+  const chrome = { kill: (sig: string) => (events.push(`kill ${sig}`), true) }
+  startedChromes.add(chrome as any)
+  try {
+    stopWithin(() => new Promise(() => {}), { ms: 60, log: () => {}, exit: (code: number) => events.push(`exit ${code}`) })
+    await new Promise((r) => setTimeout(r, 300))
+    assert.deepEqual(events, ['kill SIGKILL', 'exit 1'])
+  } finally {
+    startedChromes.delete(chrome as any)
+  }
+})
+
+test('launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits', async () => {
+  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter(), signals: [] as string[], kill(sig: string) { child.signals.push(sig); return true } })
+  const launching = launchChromium({ executable: '/fake/chrome', profileDir: '/fake/profile', timeoutMs: 60_000, spawnImpl: (() => child) as any, platform: 'linux', env: {} })
+  launching.catch(() => {})
+  assert.ok(startedChromes.has(child as any), 'tracked from the moment it is spawned, before it is ready')
+  killStartedChromes()
+  assert.deepEqual(child.signals, ['SIGKILL'])
+  child.emit('exit', null, 'SIGKILL')
+  await launching.catch(() => {})
+  assert.equal(startedChromes.has(child as any), false, 'and forgotten once it has exited')
+})
+
+test('a stop that finishes says so, and its deadline never fires afterwards', async () => {
+  const lines: string[] = []
+  const codes: number[] = []
+  await stopWithin(async () => {}, { ms: 60, log: (l: string) => lines.push(l), exit: (code: number) => codes.push(code) })
+  assert.ok(lines.includes('stopped cleanly'), lines.join('\n'))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.equal(codes.length, 0, `no deadline exit after a stop that finished: ${codes}`)
+  // A stop that throws on the way is still a stop that ended, and says what went wrong.
+  const failed: string[] = []
+  await stopWithin(async () => { throw new Error('socket already closed') }, { ms: 60, log: (l: string) => failed.push(l), exit: (code: number) => codes.push(code) })
+  assert.ok(failed.some((l) => /stopped, with an error on the way: socket already closed/.test(l)), failed.join('\n'))
+  await new Promise((r) => setTimeout(r, 200))
+  assert.equal(codes.length, 0, `no deadline exit after a stop that threw: ${codes}`)
+})
+
 // ── 5. The real process ──────────────────────────────────────────────────────
 
 const nodeOnPath = spawnSync('node', ['--version']).status === 0
@@ -628,28 +694,42 @@ test('the host process stays up with no live socket: no credentials yet, or refu
     while (!exits.has(child) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
     return exits.has(child) ? exits.get(child)! : 'alive'
   }
+  // Both are started the way the daemon starts a host: stdin is a pipe the daemon holds, and
+  // closing it is the stop (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF). That is the only stop a process
+  // can handle on Windows, where kill('SIGTERM') is TerminateProcess.
+  const logs = new Map<ReturnType<typeof spawn>, string>()
+  const daemonStarted = (env: Record<string, string | undefined>) => {
+    const child = track(spawn('node', [HOST_BIN], { env: { ...process.env, ...env, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] }))
+    logs.set(child, '')
+    child.stderr!.on('data', (c: Buffer) => logs.set(child, logs.get(child) + c.toString()))
+    return child
+  }
   // No credentials at all: it waits for a pairing instead of exiting.
   const empty = mkdtempSync(join(tmpdir(), 'bh-empty-'))
-  const idle = track(spawn('node', [HOST_BIN], { env: { ...process.env, HOME: empty, USERPROFILE: empty }, stdio: 'ignore' }))
+  const idle = daemonStarted({ HOME: empty, USERPROFILE: empty })
   // Refused by the gateway: it waits out its backoff instead of exiting.
   const relay = await startFakeRelay({ token: 'tok-refused', admissible: [] })
   const refusedHome = mkdtempSync(join(tmpdir(), 'bh-refused-'))
-  const refused = track(
-    spawn('node', [HOST_BIN], {
-      env: { ...process.env, HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' },
-      stdio: 'ignore',
-    }),
-  )
+  const refused = daemonStarted({ HOME: refusedHome, USERPROFILE: refusedHome, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-refused', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900' })
   try {
     const deadline = Date.now() + 20_000
     while (!relay.handshakes.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50))
     assert.equal(relay.handshakes[0]?.refused, true, 'the gateway refused it')
     assert.equal(await waitExit(idle, 2_500), 'alive', 'a host with no pairing yet stays up')
     assert.equal(await waitExit(refused, 1_000), 'alive', 'a refused host stays up for its retry')
-    idle.kill('SIGTERM')
-    refused.kill('SIGTERM')
-    assert.equal(await waitExit(idle, 10_000), 0, 'and still stops cleanly on SIGTERM')
-    assert.equal(await waitExit(refused, 10_000), 0)
+    // The daemon lets go: the host closes its browsers and sockets and exits 0, on every OS.
+    idle.stdin!.end()
+    assert.equal(await waitExit(idle, 10_000), 0, `and stops cleanly when the daemon lets go:\n${logs.get(idle)}`)
+    assert.match(logs.get(idle)!, /the daemon let go of this host: closing the browsers/)
+    assert.match(logs.get(idle)!, /stopped cleanly/, 'the whole stop ran, not just its first line')
+    if (process.platform === 'win32') {
+      refused.stdin!.end()
+    } else {
+      // Where a process CAN handle SIGTERM (a host run by hand, or by an older daemon), that
+      // still stops it cleanly too.
+      refused.kill('SIGTERM')
+    }
+    assert.equal(await waitExit(refused, 10_000), 0, logs.get(refused))
   } finally {
     idle.kill('SIGKILL')
     refused.kill('SIGKILL')
@@ -700,8 +780,26 @@ test(
     mkdirSync(agentRoot, { recursive: true })
     writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 900 }))
     const logs: string[] = []
-    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: ['ignore', 'ignore', 'pipe'] })
+    // On Windows the temp home must be a whole profile, not just a folder: Chrome reads its default
+    // data directory through USERPROFILE, and with USERPROFILE at a folder that has no
+    // AppData\Local it refuses remote debugging ("requires a non-default data directory") and never
+    // reports an endpoint (measured with Chrome 154 on Windows 11, and on GitHub's runner). A real
+    // user's profile always has one. Pointing LOCALAPPDATA and APPDATA inside it also keeps this
+    // Chrome off the real per-user folders.
+    const profileEnv: Record<string, string> = {}
+    if (process.platform === 'win32') {
+      for (const [name, rel] of [['LOCALAPPDATA', join('AppData', 'Local')], ['APPDATA', join('AppData', 'Roaming')]] as const) {
+        mkdirSync(join(home, rel), { recursive: true })
+        profileEnv[name] = join(home, rel)
+      }
+    }
+    // Started as the daemon starts it: stdin is the stop (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF),
+    // the one stop a host can handle on Windows too.
+    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, ...profileEnv, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
     child.stderr.on('data', (c: Buffer) => logs.push(c.toString()))
+    // The stop is asserted only after a body that passed, so a stop that fails after an earlier
+    // failure can never replace that first, more useful error.
+    let bodyPassed = false
     try {
       const sock = await relay.waitForHost(30_000)
       assert.deepEqual(relay.handshakes[0].auth, { role: 'browser_host', agents: [900], deviceLabel: relay.handshakes[0].auth.deviceLabel })
@@ -820,21 +918,33 @@ test(
       assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
       for (const p of profiles) assert.ok(existsSync(join(browserDir, p, 'Local State')), `${p} is a real Chrome profile`)
       assert.equal(site.hits.filter((h) => h.includes('who=alice')).length >= 2, true)
+      bodyPassed = true
     } finally {
-      child.kill('SIGTERM')
-      await new Promise((r) => (child.exitCode !== null ? r(null) : child.once('exit', r)))
+      // The daemon's stop: close the host's stdin. It closes every Chrome through CDP (which
+      // writes their cookies to disk first) and exits 0.
+      const exited = new Promise<number | null>((r) => (child.exitCode !== null ? r(child.exitCode) : child.once('exit', (code) => r(code))))
+      child.stdin!.end()
+      const code = await Promise.race([exited, new Promise<'still running'>((r) => setTimeout(() => r('still running'), 30_000))])
+      if (code === 'still running') child.kill('SIGKILL')
       await relay.close()
       site.server.close()
+      if (bodyPassed) {
+        assert.equal(code, 0, `the host closed its browsers and exited cleanly:\n${logs.join('')}`)
+        assert.match(logs.join(''), /stopped cleanly/)
+      }
     }
-    // No Chrome is left running on any of these profiles. Chrome's helper
-    // processes can take a moment to follow the browser out, so poll.
-    let left = ''
-    for (let i = 0; i < 50; i++) {
-      left = spawnSync('pgrep', ['-f', home], { encoding: 'utf8' }).stdout.trim()
-      if (!left) break
-      await new Promise((r) => setTimeout(r, 200))
+    // No Chrome is left running on any of these profiles. The temp home's own name is in every
+    // profile path Chrome was started with, whatever spelling the OS gave the temp folder (a short
+    // RUNNER~1 name, or either slash). Chrome's helpers can take a moment to follow the browser
+    // out, so poll; a lookup that cannot run throws rather than reading as "none".
+    const needle = basename(home)
+    const deadline = Date.now() + 15_000
+    let left = processesMatching(needle)
+    while (left.length && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 300))
+      left = processesMatching(needle)
     }
-    assert.equal(left, '', `no browser left behind: ${left}`)
+    assert.deepEqual(left, [], `no browser left behind on ${needle}`)
   },
 )
 

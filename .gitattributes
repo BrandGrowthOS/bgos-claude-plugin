@@ -1,3 +1,13 @@
+# Every text file is LF in every working tree, whatever core.autocrlf says. A
+# Windows install of this plugin is a git clone made with the user's own config,
+# and Git for Windows defaults to core.autocrlf=true, so without this line a
+# Windows user ran CRLF bytes that CI (Linux, LF) never tested. Windows batch
+# files are the one exception: cmd.exe misreads labels in an LF-only batch file,
+# so they are CRLF on every OS. test/line-endings.test.ts pins both rules. The
+# explicit pins below predate this line and stay, because tests name them.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
 bin/bgos-agent text eol=lf
 bin/hoai text eol=lf
 # The browser shim is a byte-identical copy of the BGOS source of truth

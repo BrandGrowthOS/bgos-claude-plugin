@@ -8,9 +8,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { assertBashParses, bashOrSkip } from './helpers/posix-bash.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const shPath = join(repoRoot, 'bin', 'hoai-bootstrap.sh')
@@ -118,13 +119,8 @@ test('both bun and bunx land in ~/.local/bin (the Mac mini defect)', () => {
 })
 
 test('bash parses the script cleanly (bash -n)', (t) => {
-  const check = spawnSync('bash', ['-n', shPath.replace(/\\/g, '/')], {
-    encoding: 'utf8',
-    timeout: 60_000,
-  })
-  if (check.error && (check.error as NodeJS.ErrnoException).code === 'ENOENT') {
-    t.skip('bash is not installed on this machine')
-    return
-  }
-  assert.strictEqual(check.status, 0, `bash -n errors: ${check.stdout} ${check.stderr}`)
+  // Git for Windows' bash on Windows, never the WSL launcher (test/helpers/posix-bash.ts).
+  const bash = bashOrSkip(t)
+  if (!bash) return
+  assertBashParses(bash, shPath)
 })

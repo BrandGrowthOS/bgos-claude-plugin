@@ -952,15 +952,21 @@ test('fake claude: garbage outcome is rc 0 with junk bytes and every classifier 
   })
 })
 
-test('fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged', async () => {
+test('fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged', { timeout: 30_000 }, async () => {
   await withSandbox(async (sandbox) => {
     sandbox.writeScenario({ commands: { [updateArgs().join(' ')]: { outcome: 'hang' } } })
+    // The budget must outlast a cold node start of the fake, or it is killed before it can log
+    // the call. 400 ms did not on a loaded Windows box: 5 of 24 runs, 8 at a time, were killed
+    // first (2026-10-04). 3 s does, and the bounds below still pin the kill to the budget.
+    const budgetMs = 3_000
     const started = Date.now()
-    const result = await runClaudeCli(updateArgs(), { runner: cliRunnerFor(sandbox), timeoutMs: 400 })
+    const result = await runClaudeCli(updateArgs(), { runner: cliRunnerFor(sandbox), timeoutMs: budgetMs })
     const elapsed = Date.now() - started
     assert.equal(result.timedOut, true)
     assert.equal(result.code, null)
-    assert.ok(elapsed < 10_000, `killed promptly, took ${elapsed} ms`)
+    assert.ok(elapsed >= budgetMs - 50, `killed AT the budget, not before it: ${elapsed} ms`)
+    // Below budget + the 5 s SIGKILL fallback: a SIGTERM that never went out would land past it.
+    assert.ok(elapsed < budgetMs + 4_000, `killed promptly at the budget, took ${elapsed} ms`)
     assert.equal(classifyUpdate(result).kind, 'failed')
     assert.equal(sandbox.readCallLog().at(-1)?.outcome, 'hang')
   })

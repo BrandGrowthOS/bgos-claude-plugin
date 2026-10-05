@@ -508,7 +508,7 @@ The recipient installs their own independent copy with one command (shown on the
 npx --yes --package github:BrandGrowthOS/bgos-claude-plugin bgos-claim <claimToken>
 ```
 
-The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` with chmod 600, prints the env key NAMES the agent still needs, and prints the launch command.
+The installer downloads the pack, verifies EVERY file's sha256 against the manifest (any mismatch aborts before touching disk), scaffolds `~/bgos-agents/<slug>/`, asks for the recipient's OWN X-API-Key (hidden input; keys are never shipped in packs), writes `.mcp.json` owner-only (chmod 600 on macOS and Linux; on Windows, where chmod does nothing, locked to your user with icacls, as `bgos-pair` does for its credentials, and it says UNPROTECTED if that lock fails), prints the env key NAMES the agent still needs, and prints the launch command.
 
 ## Session Controls (v0.19.0+)
 
@@ -916,6 +916,40 @@ bun bin/bgos-daemon-wrapper.mjs --install "$HOME/.bgos-agent/runtime/bgos-daemon
 
 Then restart the agent: type `/exit` in its session and run `hoai` from the
 same folder. The wrapper path in `.mcp.json` stays unchanged.
+
+## Running the tests
+
+`npm test` runs the whole suite (the node:test files under tsx, the bun:test
+files under bun) and `bun run build` type checks it, tests included. CI runs
+both on Linux and on Windows (`.github/workflows/tests.yml`) for every pull
+request and every push to main, so a change that breaks either host is red
+before it merges.
+
+**On Windows** the same two commands work from PowerShell, cmd or Git Bash.
+What the machine needs:
+
+- **node and bun on PATH**, as for running the plugin.
+- **Git for Windows.** The tests that parse or run this repo's bash scripts
+  (`bin/bgos-agent`, `bin/hoai-bootstrap.sh`) use Git for Windows' bash, found
+  next to `git` (or set `HOAI_TEST_BASH` to a `bash.exe`). They never use
+  `C:\Windows\System32\bash.exe`: that is the WSL launcher, which cannot open
+  a Windows path. Without a usable bash those tests skip with the reason, and
+  `HOAI_REQUIRE_BASH=1` (CI sets it) makes that a failure instead.
+- **Nothing for line endings.** `.gitattributes` makes every checkout LF
+  (Windows batch files CRLF) whatever `core.autocrlf` says, and
+  `test/line-endings.test.ts` keeps it that way. A clone made before that rule
+  still holds CRLF copies of files nobody has touched since; refresh it once
+  (`git stash -u` first if it has local changes) with two commands, one after
+  the other: `git rm -r -q --cached .` and then `git reset -q --hard`.
+
+Skipped on Windows by design, each with its reason in the output: the
+`run.expect` behaviour tests (there is no `expect` on Windows, and run.expect
+only ever runs under launchd or systemd, so the Linux leg runs them), and the
+two cases that create a FILE symlink, unless Developer Mode is on (Settings >
+System > For developers) or the shell is elevated; a directory junction case
+covers the same export gate without either. The browser end to end tests
+launch the installed Chrome headless; point `HOAI_BROWSER_EXECUTABLE` at a
+path that does not exist to skip them.
 
 ## Troubleshooting
 

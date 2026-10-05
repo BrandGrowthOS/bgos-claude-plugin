@@ -697,6 +697,81 @@ test('the dry run silently drops symlink escapees from the listing', async () =>
   assert.ok(files.some((f) => f.path === 'CLAUDE.md'))
 })
 
+// ── The realpath gate on every host's path rules ─────────────────────────────
+//
+// server.ts hands the gate the OS realpath. On Windows that is 'C:\Users\k\agents\atlas\CLAUDE.md',
+// never '/'-separated, and a containment test written as startsWith(root + '/') rejected every
+// file: every Full handoff from a Windows agent failed PATH_ESCAPE and the dry run listed
+// nothing. These cases give the gate Windows-shaped realpaths with platform 'win32', so they
+// run (and would go red) on a Linux runner too, plus the posix edges the fix must keep.
+
+/** makeDeps over WORKSPACE, with realpaths spelled the way `platform` spells them under `rootReal`. */
+function depsOnHost(
+  platform: string,
+  rootReal: string,
+  realOverrides: Record<string, string> = {},
+): { deps: ExportPackDeps; rec: Recorded } {
+  const made = makeDeps({ files: WORKSPACE })
+  const sep = platform === 'win32' ? '\\' : '/'
+  const base = rootReal.endsWith(sep) ? rootReal : `${rootReal}${sep}`
+  made.deps.platform = platform
+  made.deps.realpath = async (relPath) => {
+    if (relPath === '') return rootReal
+    if (realOverrides[relPath]) return realOverrides[relPath]!
+    if (WORKSPACE[relPath] === undefined) throw new Error(`ENOENT: ${relPath}`)
+    return `${base}${relPath.split('/').join(sep)}`
+  }
+  return made
+}
+
+const WIN_ROOT = 'C:\\Users\\k\\agents\\atlas'
+
+test('a Windows host: backslash realpaths inside the workspace package, upload once, and list', async () => {
+  const exported = depsOnHost('win32', WIN_ROOT)
+  await new ExportPackHandler(exported.deps).handleExport(frame())
+  const body = lastResult(exported.rec)
+  assert.equal(body.ok, true, JSON.stringify(body))
+  assert.equal(exported.rec.puts.length, 1)
+
+  const listed = depsOnHost('win32', WIN_ROOT)
+  await new ExportPackHandler(listed.deps).handleManifest({ rpcId: 'm-w', assistantId: '901' })
+  const files = (lastResult(listed.rec).payload as any).files as Array<{ path: string }>
+  assert.deepEqual(
+    files.map((f) => f.path),
+    ['.claude/rules/style.md', '.claude/skills/research/SKILL.md', 'CLAUDE.md', '.claude/memory/deep.md', 'memory/notes.md'],
+    'the dry run offers the same files a posix host does',
+  )
+})
+
+test('a Windows host: a sibling folder that only starts with the root name, or another drive, is outside', async () => {
+  for (const escapee of ['C:\\Users\\k\\agents\\atlas-evil\\style.md', 'D:\\Users\\k\\agents\\atlas\\style.md']) {
+    const { deps, rec } = depsOnHost('win32', WIN_ROOT, { '.claude/rules/style.md': escapee })
+    await new ExportPackHandler(deps).handleExport(frame())
+    const body = lastResult(rec)
+    assert.equal(body.error?.code, 'PATH_ESCAPE', escapee)
+    assert.equal(rec.puts.length, 0, escapee)
+  }
+})
+
+test('a Windows host: a workspace at a drive root (E:\\) still packages', async () => {
+  const { deps, rec } = depsOnHost('win32', 'E:\\')
+  await new ExportPackHandler(deps).handleExport(frame())
+  assert.equal(lastResult(rec).ok, true, JSON.stringify(lastResult(rec)))
+})
+
+test('a posix workspace at / still packages', async () => {
+  const { deps, rec } = depsOnHost('linux', '/')
+  await new ExportPackHandler(deps).handleExport(frame())
+  assert.equal(lastResult(rec).ok, true, JSON.stringify(lastResult(rec)))
+})
+
+test('on posix a backslash is a file name byte, not a separator: /ws\\evil is outside /ws', async () => {
+  const { deps, rec } = depsOnHost('linux', '/ws', { '.claude/rules/style.md': '/ws\\evil/loot.md' })
+  await new ExportPackHandler(deps).handleExport(frame())
+  assert.equal(lastResult(rec).error?.code, 'PATH_ESCAPE')
+  assert.equal(rec.puts.length, 0)
+})
+
 test('the dry run reports PLUGIN_ERROR instead of going silent', async () => {
   const { deps, rec } = makeDeps({ listFails: true })
   await new ExportPackHandler(deps).handleManifest({
@@ -829,7 +904,7 @@ test('real fs: the walk + allowlist package a temp workspace end to end', async 
   }
 })
 
-test('real fs: an on-disk symlink escaping the workspace blocks the export', async () => {
+test('real fs: an on-disk symlink escaping the workspace blocks the export', async (t) => {
   const { mkdtemp, mkdir, writeFile, symlink, rm } = await import(
     'node:fs/promises'
   )
@@ -841,7 +916,18 @@ test('real fs: an on-disk symlink escaping the workspace blocks the export', asy
     await mkdir(join(root, '.claude/rules'), { recursive: true })
     await writeFile(join(root, 'CLAUDE.md'), '# Atlas\n')
     await writeFile(join(outside, 'loot.md'), 'private stuff outside the workspace')
-    await symlink(join(outside, 'loot.md'), join(root, '.claude/rules/evil.md'))
+    try {
+      await symlink(join(outside, 'loot.md'), join(root, '.claude/rules/evil.md'))
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        // A FILE symlink needs Developer Mode or an elevated shell on Windows. Honest skip, not
+        // a red: the junction case below covers the same gate on Windows with no privilege.
+        t.skip('win32 refused symlink creation (needs Developer Mode or an elevated shell)')
+        return
+      }
+      throw err
+    }
 
     const { deps, rec } = await makeRealFsDeps(root)
     await new ExportPackHandler(deps).handleExport(frame())
@@ -872,6 +958,57 @@ test('real fs: an on-disk symlink escaping the workspace blocks the export', asy
 // lossily decoded for the scan ("AKIA..." -> "A\0K\0I\0A...") while its RAW
 // bytes still shipped, smuggling a live key past the gate. normalizeToUtf8
 // makes the scanned text and the packed bytes identical.
+
+test('real fs: a junction escaping the workspace blocks the export, and one that stays inside packages', async () => {
+  // A directory junction needs no privilege on Windows (a file symlink does), so this proves the
+  // realpath gate on every Windows machine. On posix the 'junction' type is ignored and a
+  // directory symlink is made, which the walk follows the same way.
+  const { mkdtemp, mkdir, writeFile, symlink, rm, rmdir, unlink } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  // Remove a link without ever recursing through it into its target.
+  const removeLink = (link: string) => (process.platform === 'win32' ? rmdir(link) : unlink(link))
+  const root = await mkdtemp(join(tmpdir(), 'bgos-export-pack-'))
+  const outside = await mkdtemp(join(tmpdir(), 'bgos-outside-'))
+  const links: string[] = []
+  try {
+    await mkdir(join(root, '.claude'), { recursive: true })
+    await writeFile(join(root, 'CLAUDE.md'), '# Atlas\n')
+    await writeFile(join(outside, 'loot.md'), 'private stuff outside the workspace\n')
+    const escaping = join(root, '.claude', 'rules')
+    await symlink(outside, escaping, 'junction')
+    links.push(escaping)
+    const { deps, rec } = await makeRealFsDeps(root)
+    await new ExportPackHandler(deps).handleExport(frame())
+    const body = lastResult(rec)
+    assert.equal(body.error?.code, 'PATH_ESCAPE', JSON.stringify(body))
+    assert.ok(body.error!.message.includes('.claude/rules/loot.md'))
+    assert.equal(rec.puts.length, 0)
+
+    // The positive control, so the escape above cannot pass merely because every file is
+    // rejected: a junction whose target stays inside the workspace packages normally.
+    await removeLink(escaping)
+    links.pop()
+    await mkdir(join(root, 'skills-src', 'research'), { recursive: true })
+    await writeFile(join(root, 'skills-src', 'research', 'SKILL.md'), '---\nname: research\n---\nInside.\n')
+    const inside = join(root, '.claude', 'skills')
+    await symlink(join(root, 'skills-src'), inside, 'junction')
+    links.push(inside)
+    const second = await makeRealFsDeps(root)
+    await new ExportPackHandler(second.deps).handleExport(frame({ rpcId: 'rpc-2' }))
+    const ok = lastResult(second.rec)
+    assert.equal(ok.ok, true, JSON.stringify(ok))
+    assert.deepEqual(
+      readStoredZip(second.rec.puts[0]!.body).map((e) => e.path),
+      [MANIFEST_ENTRY_NAME, 'agent/CLAUDE.md', 'agent/skills/research/SKILL.md'],
+      'the skill reached through the inside junction is packed',
+    )
+  } finally {
+    for (const link of links) await removeLink(link).catch(() => {})
+    await rm(root, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
+  }
+})
 
 test('normalizeToUtf8 decodes a UTF-16LE BOM file and re-encodes as UTF-8', () => {
   const res = normalizeToUtf8(utf16leWithBom('héllo key'))

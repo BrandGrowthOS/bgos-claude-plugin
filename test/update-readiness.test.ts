@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { join } from 'node:path'
 
 import {
   ANCESTRY_MAX_DEPTH,
@@ -82,17 +81,45 @@ describe('service and state paths', () => {
     expect(serviceLabel('871')).toBe('ai.bgos.agent.871')
     expect(serviceUnit('871')).toBe('bgos-agent-871')
     expect(serviceFilePath('darwin', HOME, '871')).toBe(
-      join(HOME, 'Library', 'LaunchAgents', 'ai.bgos.agent.871.plist'),
+      '/home/kc/Library/LaunchAgents/ai.bgos.agent.871.plist',
     )
     expect(serviceFilePath('linux', HOME, '871')).toBe(
-      join(HOME, '.config', 'systemd', 'user', 'bgos-agent-871.service'),
+      '/home/kc/.config/systemd/user/bgos-agent-871.service',
     )
-    expect(agentStateDir(HOME, '871')).toBe(join(HOME, '.bgos-agent', '871'))
-    expect(supervisorFilePath(HOME, '871')).toBe(
-      join(HOME, '.bgos-agent', '871', 'supervisor.json'),
+    expect(agentStateDir(HOME, '871')).toBe('/home/kc/.bgos-agent/871')
+    expect(supervisorFilePath(HOME, '871')).toBe('/home/kc/.bgos-agent/871/supervisor.json')
+    expect(restartMarkerPath(HOME, '871')).toBe('/home/kc/.bgos-agent/871/restart-requested.json')
+  })
+
+  test('a path keeps the separator of the home it is given, on every host, as the watcher does', () => {
+    // The daemon and the watcher meet on these files, and the watcher builds
+    // them with joinDir. With the host's path.join a '/' home came back with
+    // '\' on Windows and a 'C:\' home came back mixed on posix, so handed the
+    // same home the two named different files. Literals, so it fails both ways.
+    const WIN_HOME = 'C:\\Users\\kc'
+    expect(agentStateDir(WIN_HOME, '871')).toBe('C:\\Users\\kc\\.bgos-agent\\871')
+    expect(supervisorFilePath(WIN_HOME, '871')).toBe(
+      'C:\\Users\\kc\\.bgos-agent\\871\\supervisor.json',
     )
-    expect(restartMarkerPath(HOME, '871')).toBe(
-      join(HOME, '.bgos-agent', '871', 'restart-requested.json'),
+    expect(restartMarkerPath(WIN_HOME, '871')).toBe(
+      'C:\\Users\\kc\\.bgos-agent\\871\\restart-requested.json',
+    )
+    expect(keepaliveMarkerPath(WIN_HOME, '871')).toBe(
+      'C:\\Users\\kc\\.bgos-agent\\871\\keepalive.json',
+    )
+    expect(keepaliveMarkerPath(HOME, '871')).toBe('/home/kc/.bgos-agent/871/keepalive.json')
+    expect(agentStateDir(`${HOME}/`, '871')).toBe('/home/kc/.bgos-agent/871')
+    expect(serviceFilePath('darwin', WIN_HOME, '871')).toBe(
+      'C:\\Users\\kc\\Library\\LaunchAgents\\ai.bgos.agent.871.plist',
+    )
+    expect(serviceFilePath('linux', WIN_HOME, '871')).toBe(
+      'C:\\Users\\kc\\.config\\systemd\\user\\bgos-agent-871.service',
+    )
+    expect(serviceFilePath('darwin', `${HOME}/`, '871')).toBe(
+      '/home/kc/Library/LaunchAgents/ai.bgos.agent.871.plist',
+    )
+    expect(serviceFilePath('linux', `${HOME}/`, '871')).toBe(
+      '/home/kc/.config/systemd/user/bgos-agent-871.service',
     )
   })
 
@@ -840,7 +867,7 @@ describe('the keepalive tier: a launcher that starts the session in a detached t
     // only through this file; a rename or a field drop on one side is a
     // silently dead restart authority.
     expect(KEEPALIVE_MARKER_FILE).toBe(KEEPALIVE_MARKER_FILE_NAME)
-    expect(markerPath).toBe(join(HOME, '.bgos-agent', '910', 'keepalive.json'))
+    expect(markerPath).toBe('/home/kc/.bgos-agent/910/keepalive.json')
     expect(parseKeepaliveMarker(body)).toEqual({
       pid: KEEPALIVE_PID,
       claudePid: CLAUDE_PID,
@@ -1087,6 +1114,16 @@ describe('bin/hoai-keepalive-marker: the writer a keepalive script calls', () =>
     expect(decision.action).toBe('write')
     if (decision.action !== 'write') throw new Error('unreachable')
     expect(decision.path).toBe(keepaliveMarkerPath(HOME_2, '910')!)
+    // One file for one home whatever its separator, so the guard holds on
+    // every host, not only on the one whose path.join matches the home.
+    const winHome = decideKeepaliveMarkerWrite({
+      argv: ['--assistant', '910', '--keepalive-pid', '33108', '--claude-pid', '35759'],
+      home: 'C:\\Users\\kc',
+      startedAt: at,
+    })
+    if (winHome.action !== 'write') throw new Error('unreachable')
+    expect(winHome.path).toBe(keepaliveMarkerPath('C:\\Users\\kc', '910')!)
+    expect(winHome.path).toBe('C:\\Users\\kc\\.bgos-agent\\910\\keepalive.json')
     // The end-to-end mirror: what bin writes is exactly what lib accepts.
     expect(parseKeepaliveMarker(decision.body)).toEqual({
       pid: 33108,

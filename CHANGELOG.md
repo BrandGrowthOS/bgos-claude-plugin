@@ -2,6 +2,44 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.60.3 (2026-10-04)
+
+**Windows is a tested host now: the suite runs on Windows in CI, and three bugs Windows users had are fixed.** Until
+now the suite had only run on Linux and macOS. Run on Windows it went 31 red on a clone made with
+`core.autocrlf=false`, and 44 on a default clone, which is what a Windows install really is. Every red was triaged.
+
+- **A Full handoff from an agent on Windows no longer fails on its own files.** The export pack's symlink gate checked
+  containment with a hardcoded `/` against the OS realpath, which on Windows uses backslashes, so every file "escaped"
+  the workspace: the export failed PATH_ESCAPE and the dry run offered the owner nothing. It now decides by the host's
+  own path rules (case blind on Windows, another drive is outside, a drive root works), and on posix a backslash stays
+  a file name byte, so `/ws\evil` is still outside `/ws`.
+- **`bgos-claim` locks the `.mcp.json` that holds the API key to your Windows user**, with icacls, as `bgos-pair`
+  already does for its credentials. On Windows chmod does nothing, so with an agents folder outside your profile the
+  key was readable by every local user while the installer said "chmod 600". It now reports the protection the file
+  really got, and says UNPROTECTED if the lock fails. It also gets that far on Windows now: its check for git asked
+  `/bin/sh`, which Windows does not have, so every claim there stopped at "git is required" with git installed.
+- **On Windows the daemon's stop closes Chrome cleanly.** It used to stop its browser host with `kill('SIGTERM')`,
+  which on Windows is TerminateProcess: Chrome was cut off on every daemon stop, restart and lock handover, and
+  logins from its last few seconds could be lost. The daemon now holds the host's stdin and closing it is the stop,
+  on every OS (off Windows it still sends SIGTERM as well). On Windows the host is started detached, so the daemon's
+  exit cannot kill it mid close, with a late backstop kill while the daemon lives. On every OS a stop is now bounded:
+  after 15 s the host kills the Chromes it started, launching ones included, and exits, where a hung close used to
+  keep it running forever.
+- **Every checkout is LF.** A Windows install is a git clone made with the user's `core.autocrlf=true`, so 349 files
+  reached Windows users as CRLF while CI tested LF. `.gitattributes` now pins every text file LF (batch files CRLF),
+  and `test/line-endings.test.ts` keeps it that way.
+- **The daemon builds an agent's supervisor paths with the watcher's join.** `lib/update-readiness.ts` built the
+  service file, `supervisor.json` and marker paths with the host's `path.join`, so on Windows a home written with
+  `/` came back with `\`, while the watcher keeps the separator of the home it is given (`joinDir`). Handed the same
+  home, the two named different files for one agent, which the new Windows leg showed as the one red parity test.
+  The daemon now uses that same `joinDir`, and so does `bin/hoai-keepalive-marker.mjs`, which writes the
+  `keepalive.json` the daemon reads. No real install moves: for a real home (`C:\Users\...` or `/Users/...`)
+  every path is byte for byte what it was.
+- The rest were tests that assumed POSIX paths, file modes, a bash on PATH (on Windows that is the WSL launcher),
+  `pgrep`, or a 400 ms cold start, now written to hold on both hosts without being weakened. A new
+  `test (windows)` job runs the suite and the type check on `windows-latest`; the README says what a Windows machine
+  needs to run it (Git for Windows) and what skips there by design.
+
 ## 0.60.2 (2026-10-04)
 
 **Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored

@@ -1548,7 +1548,12 @@ test('main: a pairing whose agent is not bound YET still puts hoai on PATH', asy
     assert.equal(installCli.calls.length, 1)
     assert.equal(installCli.calls[0]!.home, home)
     assert.deepEqual(installCli.calls[0]!.env, {})
-    assert.match(text, new RegExp(`the hoai command is on your PATH now \\(${join(home, '.local', 'bin')}\\)`))
+    // A plain substring, not a RegExp built from the path: a Windows path's backslashes would be
+    // read as regex escapes (\U, \b...) and the pattern could never match the real text.
+    assert.ok(
+      text.includes(`the hoai command is on your PATH now (${join(home, '.local', 'bin')}).`),
+      `the PATH line names the bin dir it installed into; got:\n${text}`,
+    )
   } finally {
     console.log = originalLog
     console.error = originalError
@@ -1737,7 +1742,12 @@ test('main: pairing runs install-cli itself, with the injected home, and says wh
     assert.equal(installCli.calls[0]!.home, home)
     assert.deepEqual(installCli.calls[0]!.env, {})
     const text = output.join('\n')
-    assert.match(text, new RegExp(`the hoai command is on your PATH now \\(${join(home, '.local', 'bin')}\\)`))
+    // A plain substring, not a RegExp built from the path: a Windows path's backslashes would be
+    // read as regex escapes (\U, \b...) and the pattern could never match the real text.
+    assert.ok(
+      text.includes(`the hoai command is on your PATH now (${join(home, '.local', 'bin')}).`),
+      `the PATH line names the bin dir it installed into; got:\n${text}`,
+    )
     // The closing block reports the install instead of handing back a chore.
     assert.match(text, /was just installed for you in/)
     assert.doesNotMatch(text, /hoai install-cli/)
@@ -2117,8 +2127,11 @@ test('main refuses a home-directory pairing BEFORE the code is spent, with the l
     assert.match(text, /that is your home directory/)
     assert.match(text, /pair code was NOT spent/)
     // Actionable, not a scold: the exact folder, and the exact lines to paste.
-    assert.match(text, new RegExp(`mkdir -p ${join(home, 'hoai-agents', 'my-agent')}`))
-    assert.match(text, new RegExp(`cd ${join(home, 'hoai-agents', 'my-agent')}`))
+    // platform 'linux' is injected, so the folder is spelled the posix way (home + '/' + ...)
+    // whatever the host; a substring, because a Windows temp home is full of regex escapes.
+    const agentFolder = `${home}/hoai-agents/my-agent`
+    assert.ok(text.includes(`mkdir -p ${agentFolder}`), `the refusal names the exact mkdir line; got:\n${text}`)
+    assert.ok(text.includes(`cd ${agentFolder}`), `the refusal names the exact cd line; got:\n${text}`)
     // The same pair command, carrying the same code, ready to run there.
     assert.match(text, /BGOS-7F3A-2K --backend https:\/\/pair\.test/)
     assert.match(text, /--allow-home/)
