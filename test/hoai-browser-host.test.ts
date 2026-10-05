@@ -9,7 +9,7 @@
  *      tests fail the moment any two distinct principal values share a
  *      directory, including on a case-insensitive disk, and the last test
  *      proves it with a real Chromium: a cookie set for one principal is not
- *      sent for another, and survives a browser restart for its own.
+ *      sent for another. Locked browsing state is discarded at close.
  *   2. The wire the backend already speaks: the handshake (token in the
  *      query; role, agents and label in the auth; only THIS pairing's
  *      agents), the browser_rpc frame, the result POST (same pairing token,
@@ -249,7 +249,7 @@ test('relay: session tools answer for this host, unknown and never-exposed tools
   const call = async (name: string, args: Record<string, unknown> = {}, principal = 'user-a') =>
     (await relay.relay({ clientId: 'c1', assistantId: 900, principal, message: { jsonrpc: '2.0', id: name + Math.random(), method: 'tools/call', params: { name, arguments: args } } })).message.result
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_status') } }), /No browser session is open/)
-  assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_open_session', { purpose: 'Check the seat map', profile: 'preview' }) } }), /open on test-box.*no separate preview profile/s)
+  assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_open_session', { purpose: 'Check the seat map', profile: 'preview' }) } }), /open on test-box.*discarded at close/s)
   assert.match(textOf({ ok: true, message: { result: await call('hoai_browser_status') } }), /Purpose: Check the seat map/)
   await call('browser_navigate', { url: 'https://x.test', wait_seconds: 600 })
   assert.deepEqual(calls.at(-1)?.args, { url: 'https://x.test' }, 'wait_seconds is stripped before the engine')
@@ -555,7 +555,7 @@ test('the roster is the desktop one: four session tools, Playwright tools minus 
   assert.ok(!/[\u2013\u2014]/.test(hostInstructions('box')), 'the instructions are dash free')
 })
 
-test('resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded', () => {
+test('resolveChromeExecutable: detection is read only and absence explains automatic provisioning', () => {
   const mac = chromeCandidates({ platform: 'darwin', env: {}, home: '/Users/kc' })
   assert.equal(mac[0], '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
   assert.ok(mac.includes('/Users/kc/Applications/Chromium.app/Contents/MacOS/Chromium'))
@@ -580,7 +580,7 @@ test('resolveChromeExecutable: an installed browser is found, none is said plain
   assert.equal(none.path, null)
   const msg = browserNotFoundMessage(none)
   assert.match(msg, /No installed Chrome or Chromium was found on this machine/)
-  assert.match(msg, /never downloads a browser/)
+  assert.match(msg, /downloads its pinned Chromium into the user cache/)
   assert.match(msg, /\/usr\/bin\/google-chrome/)
   const override = resolveChromeExecutable({ platform: 'linux', env: { HOAI_BROWSER_EXECUTABLE: '/opt/x/chrome' }, exists: () => false })
   assert.equal(override.path, null)
@@ -769,7 +769,7 @@ const nodeOk = spawnSync('node', ['--version']).status === 0
 const e2eSkip = !chrome.path ? 'no Chrome or Chromium is installed on this machine' : !nodeOk ? 'node is not on PATH' : false
 
 test(
-  'END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart',
+  'END TO END: the host process, real Chromium and fake relay isolate principals and discard locked browsing state on restart',
   { timeout: 180_000, skip: e2eSkip },
   async () => {
     if (e2eSkip) return // bun ignores the skip option; this is the same skip
@@ -777,7 +777,7 @@ test(
     const relay = await startFakeRelay({ token: 'tok-e2e', admissible: [900] })
     const home = mkdtempSync(join(tmpdir(), 'bh-e2e-'))
     const agentRoot = join(home, '.bgos-agent')
-    mkdirSync(agentRoot, { recursive: true })
+    mkdirSync(agentRoot, { recursive: true, mode: 0o700 })
     writeFileSync(join(agentRoot, 'credentials-900.json'), JSON.stringify({ backendUrl: relay.backendUrl, pairingToken: 'tok-e2e', pairingId: 5, assistantId: 900 }))
     const logs: string[] = []
     // On Windows the temp home must be a whole profile, not just a folder: Chrome reads its default
@@ -851,7 +851,7 @@ test(
       // file at all.
       for (const principal of ['user-user_2Alice', 'user-user_2Bob', 'owner', GROUP]) {
         const dir = browserPathsFor({ agentRoot, assistantId: 900, principal }).profileDir
-        mkdirSync(dir, { recursive: true })
+        mkdirSync(dir, { recursive: true, mode: 0o700 })
         writeFileSync(join(dir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, allowEvaluate: true }))
       }
 
@@ -879,9 +879,9 @@ test(
       // And the group's own login does not leak back to a member or the owner.
       assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
       assert.match(await cookieSeenBy(undefined), /cookie: none/)
-      // Alice's browser closes and reopens: her login is on disk, still hers.
+      // Alice has not unlocked encrypted storage. Her cookie is discarded.
       assert.match(await tool('user-user_2Alice', 'hoai_browser_close_session'), /Session closed/)
-      assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: who=alice/)
+      assert.match(await cookieSeenBy('user-user_2Alice'), /cookie: none/)
 
       // THE GATE ACTUALLY HAPPENED, through a real socket and a real HTTP
       // route. Without these the case could pass with permissions switched
@@ -916,7 +916,7 @@ test(
       const browserDir = join(agentRoot, '900', 'browser')
       const profiles = readdirSync(browserDir).sort()
       assert.deepEqual(profiles, ['owner', principalDirName('user-user_2Alice'), principalDirName('user-user_2Bob'), principalDirName(GROUP)].sort())
-      for (const p of profiles) assert.ok(existsSync(join(browserDir, p, 'Local State')), `${p} is a real Chrome profile`)
+      for (const p of profiles) assert.equal(existsSync(join(browserDir, p, 'Local State')), false, `${p} must not hold a native Chrome profile`)
       assert.equal(site.hits.filter((h) => h.includes('who=alice')).length >= 2, true)
       bodyPassed = true
     } finally {

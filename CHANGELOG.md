@@ -2,6 +2,19 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.60.5 (2026-10-04)
+
+The daemon provisions its browser on first use: an installed Chrome or Chromium is preferred, otherwise the pinned Playwright Chromium revision is downloaded into the user cache. The normal browser-host supervisor owns startup. The browser keeps its sandbox, and missing operating-system prerequisites return an installation error.
+
+Owner login entry uses a dedicated encrypted relay capability and trusted HOAI dialogs. Exact document, form and field checks guard filling, and filling never submits automatically. Saving a new password requires a separate confirmation. After saving or declining to save, the owner can review the page, take control and click the validated Sign in button within 30 seconds. This grants one explicit down/up on the captured form and button, revoked by navigation, a new form, input release or expiry. Ordinary remote keyboard input still refuses credential fields. Each agent and acting person have separate passphrase-encrypted login storage. Browsing starts locked and nonpersistent; unlocking enables encrypted cookie, localStorage and IndexedDB snapshots until close. No passphrase or encryption key is saved. Legacy native profiles require explicit owner confirmation before supported artifacts are cleared.
+
+The package includes the HOAI browser skill and the bootstrap, vault, credential and shared crypto modules. Targeted unit, mutation, real Chromium and packaged supervisor evidence is recorded under `docs/reports/2026-10-04-remote-credentials`. Version and manifest move together. No tag, marketplace pin, publication or deployment is performed here.
+
+## 0.60.4 (2026-10-04)
+
+The owner can explicitly control a daemon browser through the HOAI server. Exclusive leases fence agent tools and retain the reservation until pressed-key/button cleanup settles. Single-use focus tokens and host DOM checks refuse detected credential fields until KC decides otherwise. Allowed ordinary text crosses the server and agent machine; field detection cannot prove it contains no secrets.
+
+The native pane typing proof, credential refusal, targeted50-test host run and TypeScript check passed. B depends on the independent A release. Package and manifest versions advance together. No tag, marketplace pin, publish or deployment is performed here.
 ## 0.60.3 (2026-10-04)
 
 **Windows is a tested host now: the suite runs on Windows in CI, and three bugs Windows users had are fixed.** Until

@@ -35,8 +35,15 @@ let page
 const server = createServer(async (req, res) => {
   if (req.url === '/state') {
     res.setHeader('Content-Type', 'application/json')
-    const state = await page?.evaluate(() => ({ counter: document.querySelector('#counter')?.textContent,
-      text: document.querySelector('#owner-text')?.value, passwordLength: document.querySelector('#secret-text')?.value.length }))
+    const state = await page?.evaluate(() => {
+      const rect = id => {
+        const bounds = document.getElementById(id)?.getBoundingClientRect()
+        return bounds ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } : null
+      }
+      return { counter: document.querySelector('#counter')?.textContent,
+        text: document.querySelector('#owner-text')?.value, passwordLength: document.querySelector('#secret-text')?.value.length,
+        focusedId: document.activeElement?.id || null, targetRects: { text: rect('owner-text'), password: rect('secret-text') } }
+    })
     res.end(JSON.stringify({ hostname: hostname(), fixturePid: process.pid, state }))
   } else { res.setHeader('Content-Type', 'text/html'); res.end(pageMarkup) }
 })
