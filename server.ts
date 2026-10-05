@@ -510,6 +510,10 @@ import {
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
 import { servePairRequired } from './lib/pair-required-server.mjs'
 import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import {
+  drawCatchupDelayMs,
+  drawReconnectBaseDelayMs,
+} from './lib/reconnect-spread.js'
 import { readRollbackLatch } from './lib/watcher-core.mjs'
 import {
   applyWin32CredentialsAcl,
@@ -11989,10 +11993,15 @@ async function initUpdateStream(): Promise<void> {
 }
 
 function connectWebsocket(): void {
+  // Drawn ONCE per process, so 51 daemons dropped by one nginx reload do not
+  // all come back inside the same second and meet a cold auth cache. See
+  // lib/reconnect-spread.ts for the measurement this replaces.
+  const reconnectBaseMs = drawReconnectBaseDelayMs(Math.random())
+  log(`WS reconnect base for this process: ${reconnectBaseMs}ms`)
   realtimeSocket = socketIoClient(WS_URL, {
     transports: ['websocket'],
     reconnection: true,
-    reconnectionDelay: 1000,
+    reconnectionDelay: reconnectBaseMs,
     reconnectionDelayMax: 30000,
     // Auth rides in the handshake, never in the URL path or a proxy log:
     // pairing mode sends the token in the query (the backend gateway reads
@@ -12036,9 +12045,17 @@ function connectWebsocket(): void {
       }).catch((err) => log(`Post-reconnect stream catch-up failed: ${err}`))
       return
     }
-    pollAllChats().catch((err) => {
-      log(`Post-reconnect catch-up poll failed: ${err}`)
-    })
+    // Jittered for the same reason the stream catch-up above is: the FIRST
+    // authenticated request after a reconnect is the one that pays the
+    // backend's bcrypt verify against an empty cache, and on this path it used
+    // to be fired with no delay at all. One request per monitored chat, across
+    // every daemon on the fleet, at the same instant.
+    const catchupDelayMs = drawCatchupDelayMs(Math.random())
+    setTimeout(() => {
+      pollAllChats().catch((err) => {
+        log(`Post-reconnect catch-up poll failed: ${err}`)
+      })
+    }, catchupDelayMs)
   })
 
   realtimeSocket.on('disconnect', (reason: string) => {
