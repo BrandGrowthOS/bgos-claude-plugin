@@ -783,3 +783,65 @@ test('a blank condition builds no mission at all', () => {
   const built = buildGoalMissionCreateBody('   ', null)
   assert.equal(built.ok, false)
 })
+
+// ── A paste that joined two commands must create nothing ─────────────────────
+//
+// Four missions have ever been created by this path and THREE of them are
+// titled `clear/goal <something>`: a driver or a paste sent `clear` and
+// `/goal <condition>` with no newline between them and the TUI joined them.
+// The real cost is not the scruffy title: creating a mission SETS THE OPEN ONE
+// ASIDE, so on 2026-10-05 a mission at 11 of 12, about which the owner had been
+// asked a direct question, went `abandoned` in the same second one of these was
+// created. Refusing creates nothing, which is why it sets no card aside.
+
+test('a condition with a previous command joined to its front creates nothing', () => {
+  for (const raw of [
+    'clear/goal The two composer bugs KC reported: a staged attachment is lost',
+    'clear/goal Mission 37: group chats open instantly',
+    'resume/goal ship the thing',
+  ]) {
+    const built = buildGoalMissionCreateBody(raw, '4403')
+    assert.equal(built.ok, false, `expected a refusal for ${JSON.stringify(raw.slice(0, 24))}`)
+    if (built.ok) continue
+    // The error has to NAME what it saw, or the person cannot tell this apart
+    // from the blank-condition refusal and will simply send it again.
+    assert.match(built.error, /two commands run together/)
+    assert.ok(built.error.includes('/goal'), 'the refusal quotes the fragment it found')
+  }
+})
+
+test('a condition that is itself a command creates nothing', () => {
+  const built = buildGoalMissionCreateBody('/mission', '4403')
+  assert.equal(built.ok, false)
+})
+
+/**
+ * THE FALSE-POSITIVE CONTROL, and the reason the guard is narrow rather than
+ * "refuse anything with a slash". Each of these is a condition someone could
+ * reasonably mean, and refusing one would lose work rather than protect it.
+ */
+test('ordinary conditions that happen to contain a slash are still built', () => {
+  for (const raw of [
+    'docs/goals are indexed and every entry resolves',
+    'the q3/goal split is reported in one table',
+    'ship it and/or say why not',
+    'goal: the fleet is on one version',
+    'clear the goal queue before Friday',
+  ]) {
+    const built = buildGoalMissionCreateBody(raw, '4403')
+    assert.equal(built.ok, true, `expected ${JSON.stringify(raw)} to be accepted`)
+    if (!built.ok) continue
+    assert.equal(built.body.title, raw)
+  }
+})
+
+/**
+ * NON-VACUITY for the pair above: the refusal must come from the SHAPE of the
+ * condition and not from something incidental (the chat id, the length, the
+ * presence of the word goal). Same text, one joined prefix apart.
+ */
+test('the refusal tracks the joined prefix and nothing else about the text', () => {
+  const words = 'the fleet is on one version'
+  assert.equal(buildGoalMissionCreateBody(words, '4403').ok, true)
+  assert.equal(buildGoalMissionCreateBody(`clear/goal ${words}`, '4403').ok, false)
+})

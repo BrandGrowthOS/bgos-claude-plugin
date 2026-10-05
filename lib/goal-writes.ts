@@ -491,6 +491,42 @@ export type GoalMissionCreateResult =
  * so the card reads the way the owner's own Done when line reads. This is the
  * whole of the Windows story: no switch, and everything else.
  */
+/**
+ * The fragment of a PREVIOUS command still stuck to the front of this
+ * condition, or null when the condition is the person's own words.
+ *
+ * THE DEFECT THIS EXISTS FOR, measured 2026-10-05. Four missions have ever been
+ * created by this path and THREE of them are titled `clear/goal <something>`:
+ * a driver or a paste sent `clear` and `/goal <condition>` with no newline
+ * between them, and the TUI joined them into one line. The condition the
+ * runtime then reported, and the title this function built from it, began with
+ * the wreckage of the previous command.
+ *
+ * A scruffy title would be a cosmetic problem. THE REAL COST IS THAT CREATING A
+ * MISSION SETS THE OPEN ONE ASIDE. On 2026-10-05 a mission sitting at 11 of 12,
+ * about which the owner had been asked a direct question, went `abandoned` in
+ * the same second one of these was created. A typo closed a live card and
+ * answered his question for him.
+ *
+ * REFUSING is strictly better than stripping the prefix off. A refusal creates
+ * nothing, so it sets no card aside, and the person sees an error instead of a
+ * ruined card beside a destroyed one. A stripped condition would still be a
+ * guess about what they meant.
+ *
+ * Deliberately NARROW, because a false positive here refuses a goal someone
+ * meant. Two shapes only:
+ *   - a leading `/`, which is a command and never a condition;
+ *   - `<word>/goal `, letters with no space before this command's own name,
+ *     which is the join this function keeps receiving and cannot occur in a
+ *     sentence. `docs/goals are...` does not match (plural); neither does
+ *     `report on the q3/goal split` (not at the start).
+ */
+function joinedCommandPrefix(clean: string): string | null {
+  if (clean.startsWith('/')) return clean.slice(0, 24)
+  const joined = /^([A-Za-z]{1,16}\/goal)\b/.exec(clean)
+  return joined === null ? null : joined[1]
+}
+
 export function buildGoalMissionCreateBody(
   condition: string,
   chatId: string | number | null,
@@ -498,6 +534,16 @@ export function buildGoalMissionCreateBody(
   const clean = oneLine(condition)
   if (clean === '') {
     return { ok: false, error: 'a goal needs a condition before it can have a mission.' }
+  }
+  const joined = joinedCommandPrefix(clean)
+  if (joined !== null) {
+    return {
+      ok: false,
+      error:
+        `this goal's condition starts with "${joined}", which is two commands ` +
+        'run together rather than a condition. Nothing was created. Send the ' +
+        '/goal on its own line and try again.',
+    }
   }
   const body: GoalMissionCreateBody = {
     title: cut(clean, MISSION_TITLE_MAX),
