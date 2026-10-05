@@ -1,5 +1,5 @@
 /**
- * Cross-repo anti-drift test for the hard floor (rules_version 1).
+ * Cross-repo anti-drift test for the hard floor (rules_version 2).
  *
  * lib/hard-floor-fixture.ts is COPIED BYTE FOR BYTE from the platform
  * backend's backend/src/services/hard-floor-fixture.ts, whose own spec runs
@@ -59,7 +59,7 @@ import { permissionCardTool } from '../lib/permission-relay.ts'
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
 
 test('the rules version is the cross repo key, and both sides say 1', () => {
-  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 1)
+  assert.equal(HARD_FLOOR_FIXTURE_RULES_VERSION, 2)
   assert.equal(HARD_FLOOR_RULES_VERSION, HARD_FLOOR_FIXTURE_RULES_VERSION)
 })
 
@@ -75,16 +75,16 @@ test('this plugin carries exactly the fixture rule ids and words, in order', () 
  * and PINNED_RULES_DIGEST. Change these only together with a fixture copied
  * afresh from the backend.
  */
-const PINNED_FIXTURE_DIGEST = '5217fd850181a05dcdbb6a994e48deeb10a618c0a9cfbb4f96f949bd40b50486'
-const PINNED_CARD_FIXTURE_DIGEST = 'dee81aa8df1f5c008b5af7a4b8ab464ca46d7a56d5e3116693007499cb7dd280'
-const PINNED_RULES_DIGEST = '15ad13aa06d250721c6982382132b05f9f351f59944923bf6b8e29c4a37bd359'
+const PINNED_FIXTURE_DIGEST = '348c65c0cb60e83150c5d002bd7781275ecdae8d5be55bc6f97823a8e7af87b8'
+const PINNED_CARD_FIXTURE_DIGEST = 'babfef7b64bf5b817b59ff8d8b0163d99553e138307e9e71005ff87449f26f0f'
+const PINNED_RULES_DIGEST = 'f92093a8f99e6d472ddc5b5834d044cb628cb54727795247b2189c8f6d5c75e9'
 /**
  * sha256 of lib/hard-floor-fixture.ts's BYTES, equal to the backend spec's
  * PINNED_FIXTURE_FILE_SHA256 (the #1623 / #152 shape). The data digests
  * above let a comment, a type or the header drift in one copy while both
  * suites stay green; this does not.
  */
-const PINNED_FIXTURE_FILE_SHA256 = '7097fc0f1da07a74840405f30cddc7621637fef6a46aa3a2c9575e407f98d4aa'
+const PINNED_FIXTURE_FILE_SHA256 = 'b4ee2cb79ef0e2744a9fbb1564909878df45f839a7c3023ff0e193c13c647a2d'
 
 test('pins the fixture data and the rules against the file AND a literal here (regenerate BOTH repos together)', () => {
   const fixture = sha256(JSON.stringify(HARD_FLOOR_FIXTURE))

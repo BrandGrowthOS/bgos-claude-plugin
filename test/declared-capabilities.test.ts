@@ -101,7 +101,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'hard_floor'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -137,6 +137,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'sessions_library',
       'changes_rpc',
       'hard_floor',
+      'hard_floor_rules_2',
       'mission_goal_loop',
       'mission_pause',
       'stop_pauses_mission',
@@ -233,6 +234,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'sessions_library',
       'changes_rpc',
       'hard_floor',
+      'hard_floor_rules_2',
       'mission_goal_loop',
       'mission_pause',
       'stop_pauses_mission',
@@ -370,11 +372,12 @@ test('an API key connection does not declare hard_floor, on either host, and kee
   for (const canInjectGoal of SHAPES) {
     const declared = declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'apikey' })
     assert.equal(declared.includes('hard_floor'), false, 'an API key relay cannot hold a listed action')
+    assert.equal(declared.includes('hard_floor_rules_2'), false, 'nor promise which list it holds')
     assert.ok(declared.includes('permission_card'))
     assert.ok(declared.includes('plan_card'))
     assert.deepEqual(
       [...declared],
-      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor'),
+      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor' && t !== 'hard_floor_rules_2'),
     )
     // And the canon fetch at connect, which is what the backend counts for
     // a caller with no pairing, does not carry it either.
@@ -446,9 +449,10 @@ test('a pairing whose session has no floor hook does not declare hard_floor, and
   for (const canInjectGoal of SHAPES) {
     const without = declaredCapabilities({ canInjectGoal, floorHook: false, authMode: 'pairing' })
     assert.equal(without.includes('hard_floor'), false)
+    assert.equal(without.includes('hard_floor_rules_2'), false)
     assert.deepEqual(
       [...without],
-      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor'),
+      declaredCapabilities({ canInjectGoal, floorHook: true, authMode: 'pairing' }).filter((t) => t !== 'hard_floor' && t !== 'hard_floor_rules_2'),
     )
     const path = capabilitiesFetchPath('0.49.0', without)
     const sent = new URLSearchParams(path.slice(path.indexOf('?') + 1)).get('capabilities')!.split(',')
@@ -580,6 +584,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'sessions_library',
       'changes_rpc',
       'hard_floor',
+      'hard_floor_rules_2',
       'mission_goal_loop',
       'mission_pause',
       'stop_pauses_mission',
@@ -667,4 +672,23 @@ test('server.ts logs the floor boot line from the live AUTH.mode and the boot ti
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(server, /log\(floorBootLine\(FLOOR_HOOK, AUTH\.mode\)\)/)
   assert.ok(!server.includes('declaring the floor capability on a pairing'), 'the hook only sentence is gone')
+})
+
+/**
+ * hard_floor_rules_2 (floor rules version 2, BGOS DSH parity item 10): the
+ * hook's own list reads installing a plugin or tool. Declared exactly where
+ * hard_floor is (a pairing whose session has the hook), because the BGOS app
+ * reads it to tell the owner the hook stops a plugin install too, a promise
+ * only the hook keeps.
+ */
+test('hard_floor_rules_2 rides with hard_floor, and only with it', () => {
+  assert.deepEqual([...DECLARED_CAPABILITIES_PAIRING], ['hard_floor', 'hard_floor_rules_2'])
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = declaredCapabilities({ canInjectGoal, floorHook, authMode })
+        assert.equal(declared.includes('hard_floor_rules_2'), declared.includes('hard_floor'), `${authMode} ${floorHook}`)
+      }
+    }
+  }
 })

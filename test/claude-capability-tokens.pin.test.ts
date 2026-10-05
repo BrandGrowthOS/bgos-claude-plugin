@@ -92,6 +92,7 @@ import { join } from 'node:path'
 
 import {
   CLAUDE_CAPABILITY_TOKENS,
+  HARD_FLOOR_RULES_2_TOKEN,
   HARD_FLOOR_TOKEN,
   PERMISSION_CARD,
   PLAN_CARD,
@@ -103,13 +104,13 @@ import {
 } from '../lib/declared-capabilities.ts'
 
 /** The digest BGOS's claude-capability-tokens.pin.spec.ts pins too. */
-const SHA256 = 'a14ba628606269e463c38ac820f96860b1c2731a07ef088371bed6c24080ad75'
+const SHA256 = '3dcaaecff2f108b4e76a150cfa87255d7ac68813f27fbdb9575d5b3ae1114428'
 
 const ROOT = join(import.meta.dirname, '..')
 const FILE = join(ROOT, 'lib', 'claude-capability-tokens.ts')
 
 /** The tokens this release carries the code for, and so declares. */
-const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN]
+const DECLARED_BY_THIS_RELEASE: readonly string[] = [PERMISSION_CARD, PLAN_CARD, HARD_FLOOR_TOKEN, HARD_FLOOR_RULES_2_TOKEN]
 
 /**
  * Named in the file, NOT declared by this release, and who declares them.
@@ -134,8 +135,9 @@ test('the token file still has the bytes BGOS pins for its copy', () => {
   )
 })
 
-test('the file names exactly permission_card, plan_card and hard_floor, in that order', () => {
-  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor'])
+test('the file names exactly permission_card, plan_card, hard_floor and hard_floor_rules_2, in that order', () => {
+  assert.deepEqual([...CLAUDE_CAPABILITY_TOKENS], ['permission_card', 'plan_card', 'hard_floor', 'hard_floor_rules_2'])
+  assert.equal(HARD_FLOOR_RULES_2_TOKEN, 'hard_floor_rules_2')
   assert.equal(PERMISSION_CARD, 'permission_card')
   assert.equal(PLAN_CARD, 'plan_card')
   assert.equal(HARD_FLOOR_TOKEN, 'hard_floor')

@@ -28,12 +28,15 @@
  *   3. Ship all three in one set of PRs. A change in one tree only is the
  *      defect this exists to catch.
  *
- * WHY THE .gitattributes LINE. This repo has no blanket eol rule, and a
- * Windows checkout with core.autocrlf=true hands every text file CRLF. Without
- * `lib/session-controls-contract.ts text eol=lf` the copy on such a machine
- * has different bytes and this pin reads red on exactly the machines that
- * build the plugin (the vendored browser shim has the same line, for the same
- * reason).
+ * WHY THE .gitattributes LINE. A Windows checkout with core.autocrlf=true
+ * hands every text file CRLF unless .gitattributes says otherwise, and then the
+ * copy on such a machine has different bytes and this pin reads red on exactly
+ * the machines that build the plugin. The repo-wide `* text=auto eol=lf` rule
+ * (2026-10-04, test/line-endings.test.ts) now covers this file too, and the
+ * explicit `lib/session-controls-contract.ts text eol=lf` line stays beside it:
+ * it states the reason next to the file, and this test checks it, so the pin
+ * keeps its LF guarantee even if the blanket rule is ever narrowed (the
+ * vendored browser shim has the same line, for the same reason).
  *
  * MUTATION PROOF (recorded 2026-09-25 through the P6 test lock, file restored
  * byte for byte from a pristine copy and re-hashed to the digest below): one

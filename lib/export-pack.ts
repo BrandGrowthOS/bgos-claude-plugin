@@ -39,6 +39,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { posix as posixPath, win32 as win32Path } from 'node:path'
 
 import {
   scanFiles,
@@ -503,6 +504,9 @@ export interface ExportPackDeps {
   fetchImpl?: typeof fetch
   /** Injectable clock (packaged_at / scanned_at); defaults to Date. */
   now?: () => Date
+  /** Whose path rules the realpaths follow; defaults to process.platform. Injectable so a
+   *  Linux runner can prove the Windows gate. */
+  platform?: string
 }
 
 // ── Encoding normalization (scan input == packed bytes) ─────────────────────
@@ -604,6 +608,22 @@ export function normalizeToUtf8(data: Uint8Array): NormalizeResult {
   return { ok: true, file: { text, data: utf8Encoder.encode(text) } }
 }
 
+/**
+ * Is `real` the workspace root or inside it, by the host's own path rules? Both come from the
+ * host's realpath: 'C:\ws\x' on Windows, '/ws/x' elsewhere. relative() also copes with a root
+ * that is itself a filesystem root ('/' or 'E:\'), and on Windows it compares names case blind
+ * and sends another drive to an absolute answer. Never normalise '\' to '/' on posix, where it
+ * is a legal file name byte: '/ws\evil' is a sibling of '/ws', not inside it. The same rule as
+ * isSameOrAncestor in lib/git-changes.ts.
+ */
+export function isInsideRealRoot(rootReal: string, real: string, platform: string): boolean {
+  const p = platform === 'win32' ? win32Path : posixPath
+  const rel = p.relative(rootReal, real)
+  if (rel === '') return true
+  if (p.isAbsolute(rel)) return false
+  return rel.split(p.sep)[0] !== '..'
+}
+
 export class ExportPackHandler {
   private readonly deps: ExportPackDeps
   /** Duplicate-frame guard: the backend re-emits once when its ACK does not
@@ -691,8 +711,7 @@ export class ExportPackHandler {
   }
 
   private async rootRealpath(): Promise<string> {
-    const root = await this.deps.realpath('')
-    return root.endsWith('/') ? root.slice(0, -1) : root
+    return this.deps.realpath('')
   }
 
   private async resolvesInsideRoot(
@@ -701,7 +720,7 @@ export class ExportPackHandler {
   ): Promise<boolean> {
     try {
       const real = await this.deps.realpath(relPath)
-      return real === rootReal || real.startsWith(`${rootReal}/`)
+      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
     } catch {
       // Unresolvable (vanished, broken symlink): never inside.
       return false

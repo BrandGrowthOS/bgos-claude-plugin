@@ -34,23 +34,39 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
+import { resolvePosixBash } from './helpers/posix-bash.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const hasBash = spawnSync('bash', ['-c', 'exit 0']).status === 0
-const hasExpect = spawnSync('bash', ['-c', 'command -v expect']).status === 0
-const hasGit = spawnSync('bash', ['-c', 'command -v git']).status === 0
+// bin/bgos-agent is the macOS and Linux installer: it refuses any other OS by name (on Windows it
+// says to use WSL), so on Windows there is nothing here to run. Elsewhere the tools are probed
+// through the bash that will run the script, and a probe that cannot run reads as "missing", never
+// as an exception at import.
+const BASH = process.platform === 'win32' ? null : resolvePosixBash()
+const probe = (script: string) => (BASH ? spawnSync(BASH, ['-c', script], { encoding: 'utf8' }) : null)
+const hasExpect = probe('command -v expect')?.status === 0
+const hasGit = probe('command -v git')?.status === 0
 const SLOW = { timeout: 120_000 }
-const realBun = spawnSync('bash', ['-c', 'command -v bun'], { encoding: 'utf8' }).stdout.trim()
+const realBun = String(probe('command -v bun')?.stdout ?? '').trim()
 
-/** An early return reports PASS, so CI sets HOAI_REQUIRE_EXPECT=1 and a missing tool becomes a failure. */
-function requireTools(): void {
+/**
+ * True when this machine can run the installer; otherwise the test SKIPS with the reason. A skip,
+ * never an early return, which would report PASS: CI sets HOAI_REQUIRE_EXPECT=1, which turns a
+ * missing bash, git or expect into a failure there.
+ */
+function ready(t: TestContext): boolean {
+  if (process.platform === 'win32') {
+    t.skip('bin/bgos-agent is the macOS and Linux installer and refuses Windows by name; Windows installs through hoai-bootstrap.ps1')
+    return false
+  }
+  if (BASH && hasExpect && hasGit) return true
   assert.notEqual(process.env.HOAI_REQUIRE_EXPECT, '1', 'HOAI_REQUIRE_EXPECT=1 but bash, git or expect is missing')
+  t.skip(`needs bash, git and expect (bash ${BASH ? 'found' : 'missing'}, git ${hasGit ? 'found' : 'missing'}, expect ${hasExpect ? 'found' : 'missing'})`)
+  return false
 }
-const ready = hasBash && hasExpect && hasGit
 
 interface Machine {
   home: string
@@ -105,7 +121,7 @@ function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = tr
 
   const agentBin = join(pluginRoot, 'bin', 'bgos-agent')
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
-    const result = spawnSync('bash', [agentBin, 'install', ...args], {
+    const result = spawnSync(BASH!, [agentBin, 'install', ...args], {
       cwd: home,
       encoding: 'utf8',
       timeout: 100_000,
@@ -136,8 +152,8 @@ const callsOf = (m: Machine) => (existsSync(m.calls) ? readFileSync(m.calls, 'ut
 const spawnLine = (m: Machine, id: string) =>
   readFileSync(join(m.home, '.bgos-agent', id, 'run.expect'), 'utf8').split('\n').find((l) => l.startsWith('spawn ')) ?? ''
 
-test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the channel the resolver proved, and no .mcp.json is invented', SLOW, () => {
-  if (!ready) return requireTools()
+test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the channel the resolver proved, and no .mcp.json is invented', SLOW, (t) => {
+  if (!ready(t)) return
   const m = machine()
   const workspace = pair(m, '936')
   const result = m.run(['--assistant', '936', '--dir', workspace, '--always-on'])
@@ -157,8 +173,8 @@ test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the chann
   assert.equal(code.includes(MARKETPLACE_CHANNEL_SPEC), false)
 })
 
-test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always did, and the prover is never even started', SLOW, () => {
-  if (!ready) return requireTools()
+test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always did, and the prover is never even started', SLOW, (t) => {
+  if (!ready(t)) return
   // On the very machine where the paired topology WOULD be provable: pinned
   // folder, credentials, marketplace plugin installed. The .mcp.json still wins,
   // because that is what the folder publishes (2026-08-21: the other answer is
@@ -177,8 +193,8 @@ test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always
   assert.equal(existsSync(join(m.home, '.bgos-agent', '901', 'installed-at')), false, 'no stamp either: a clone-style install leaves exactly what it always left')
 })
 
-test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call', SLOW, () => {
-  if (!ready) return requireTools()
+test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call', SLOW, (t) => {
+  if (!ready(t)) return
   const cases: Array<{ name: string; reason: RegExp; setup: () => { m: Machine; args: string[]; env?: Record<string, string> } }> = [
     {
       name: 'never paired',

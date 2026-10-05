@@ -11,7 +11,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -56,11 +56,26 @@ test('save then load round-trips seq, epoch, and fingerprint', () => {
   assert.equal(raw.tokenFingerprint, FP)
 })
 
-test('the file is written 0600 (owner only), like the chat cursor store', () => {
-  const filePath = join(freshDir(), STREAM_CURSOR_FILE_NAME)
-  saveStreamCursorFile(filePath, { seq: 1, epoch: 1 }, FP)
+test('the file is written 0600 (owner only) like the chat cursor store, and replaced whole', () => {
+  const dir = freshDir()
+  const filePath = join(dir, STREAM_CURSOR_FILE_NAME)
+  assert.equal(saveStreamCursorFile(filePath, { seq: 1, epoch: 1 }, FP), true)
+  const first = statSync(filePath, { bigint: true })
+  // A second save replaces the file by rename (a new inode, or file id on NTFS), never a
+  // rewrite in place a crash could tear, and leaves no temp file behind.
+  assert.equal(saveStreamCursorFile(filePath, { seq: 2, epoch: 1 }, FP), true)
+  assert.deepEqual(loadStreamCursorFile(filePath, FP), { seq: 2, epoch: 1 })
+  assert.notEqual(statSync(filePath, { bigint: true }).ino, first.ino, 'replaced by rename, not rewritten in place')
+  assert.deepEqual(readdirSync(dir), [STREAM_CURSOR_FILE_NAME], 'no temp file left behind')
   const mode = statSync(filePath).mode & 0o777
-  assert.equal(mode, 0o600)
+  if (process.platform === 'win32') {
+    // NTFS has no POSIX mode bits: a writable file reads back 0o666 and the only bit Windows can
+    // show is read-only. The folder's profile ACL is what keeps it owner-only there. What must
+    // hold is that the cursor is never read-only, or the next save's rename would be refused.
+    assert.equal(mode & 0o200, 0o200, 'the cursor file must not be read-only')
+  } else {
+    assert.equal(mode, 0o600)
+  }
 })
 
 test('a missing file loads as first run (null)', () => {

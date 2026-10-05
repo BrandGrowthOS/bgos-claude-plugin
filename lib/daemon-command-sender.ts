@@ -52,9 +52,13 @@
  *     "is this agent up, and which version" is exactly the question a share
  *     recipient has when the agent looks dead, but only with those two facts.
  *     lib/slash-status.ts builds that reduced answer from the audience.
+ *   /login MUTATES the owner's machine: it signs the agent's Claude Code into
+ *     an Anthropic account (lib/auth-login.ts). A stranger is refused like
+ *     /compact, before the sign-in child is ever spawned and before the
+ *     agent's sign-in state is read, so the refusal says nothing about it.
  */
 
-export type DaemonCommand = 'compact' | 'status'
+export type DaemonCommand = 'compact' | 'status' | 'login'
 
 /** The backend's vocabulary; anything else reads as 'unrecognised'. */
 export type SenderRelationship = 'owner' | 'shared_recipient' | 'room_member'
@@ -179,7 +183,10 @@ export function isOwnerSender(sender: SlashSender, ownerUserId: string): boolean
 }
 
 function refusalReply(command: DaemonCommand, reason: DaemonCommandRefusal): string {
-  const rule = `only this agent's owner can ${command} its session.`
+  const rule =
+    command === 'login'
+      ? "only this agent's owner can sign it in."
+      : `only this agent's owner can ${command} its session.`
   switch (reason) {
     case 'sender_unknown':
       return `/${command} was not run: this message carried no sender identity, and ${rule}`
@@ -188,7 +195,11 @@ function refusalReply(command: DaemonCommand, reason: DaemonCommandRefusal): str
     case 'not_owner':
     default: {
       const why =
-        command === 'compact' ? ' Compacting changes the context the owner is working in.' : ''
+        command === 'compact'
+          ? ' Compacting changes the context the owner is working in.'
+          : command === 'login'
+            ? " Signing in changes which Anthropic account the owner's agent runs on."
+            : ''
       return `/${command} was not run: ${rule}${why}`
     }
   }

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -511,8 +512,22 @@ describe('durable state and shared lock', () => {
     expect(path).toBe(join(dir, 'auto-update.json'))
     const state = installedState()
     expect(saveAutoUpdateState(path, state)).toBe(true)
+    const first = statSync(path, { bigint: true })
+    // A second save replaces the file by rename (a new inode, or file id on NTFS), never a
+    // rewrite in place a crash could tear, and leaves no temp file behind.
+    expect(saveAutoUpdateState(path, state)).toBe(true)
     expect(loadAutoUpdateState(path)).toEqual(state)
-    expect(statSync(path).mode & 0o777).toBe(0o600)
+    expect(statSync(path, { bigint: true }).ino).not.toBe(first.ino)
+    expect(readdirSync(dir)).toEqual(['auto-update.json'])
+    const mode = statSync(path).mode & 0o777
+    if (process.platform === 'win32') {
+      // NTFS has no POSIX mode bits: a writable file reads back 0o666 and only read-only is
+      // observable (the profile ACL keeps it owner-only there). A read-only state file would
+      // refuse the next save's rename, so that is what must never happen.
+      expect(mode & 0o200).toBe(0o200)
+    } else {
+      expect(mode).toBe(0o600)
+    }
     expect(JSON.parse(readFileSync(path, 'utf8')).targetCommit).toBe(COMMIT_B)
   })
 

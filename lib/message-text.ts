@@ -157,8 +157,10 @@ export const RESERVED_VALUE_SENTINELS = new Set(['__skip__', '__custom__'])
 // be read by the daemon as the owner approving one: the status line cleared,
 // the fast scope released, the session mode reported back to default. Escaping
 // it to `u:plan:go` keeps the agent's own value intact on the way out and makes
-// it unmistakable on the way in.
-export const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:', 'plan:']
+// it unmistakable on the way in. `login:` is the daemon's own sign-in card
+// (lib/auth-login.ts) for the same reason: a bare `login:claudeai` from an
+// agent must never read as the owner picking a sign-in method.
+export const RESERVED_VALUE_PREFIXES = ['perm:', 'sc:', 'ea:', 'u:', 'plan:', 'login:']
 
 export function escapeAgentButtonValue(value: string): string {
   return `${AGENT_VALUE_PREFIX}${value}`

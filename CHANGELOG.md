@@ -2,6 +2,72 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.61.0 (2026-10-05)
+
+**One release carrying every plugin change since 0.60.2, batched on purpose (KC, 2026-10-05: "batch all the updates into one major update with a version change and then you publish instead of publishing every update on its own").** The five branches below each proposed their own number; they ship as this one.
+
+**`/login` works from the chat, and the daemon answers it.** An agent whose Anthropic session expires can be signed back in without anyone opening its terminal. Send `/login` and the agent offers Claude subscription or Anthropic Console; the tap returns the sign-in link; the code pasted back as the next message completes it. It is answered by the DAEMON and never by the model, which is the whole point: a logged out session cannot think, so a model-handled `/login` would be dead exactly when it is needed. Owner only, refused before anything spawns. The code is never logged, echoed or replied, child output is redacted at ingestion, a message that is not a code is not swallowed, one sign-in at a time, ten minute window, and no sign-in starts from a room or a meeting where the link would be posted to every member. It covers a session that expires while running, not a cold start that was already signed out: under the supervisor that case exits at the startup gate before any daemon exists.
+
+
+**Always ask now covers installing a plugin or tool (floor rules version 2).** With the owner's "Always ask before
+risky actions" switch on, the floor hook now holds `claude plugin install` (and `i`), `claude mcp add` (`add-json`,
+`add-from-claude-desktop`), `codex plugin add` and `codex mcp add` for the owner, even with full access: a plugin or
+tool the agent installs outlives the chat that added it. Listing, updating, removing and adding a marketplace do not
+ask, and neither does a skill file the agent writes itself (the Teach flow already asks first). The matcher, the words
+("installing a new plugin or tool that stays after this chat") and the byte identical fixture match BGOS
+`backend/src/services/hard-floor.ts` rules version 2. On a pairing with the hook, the daemon also declares
+`hard_floor_rules_2`, which the app reads before it tells the owner the hook stops a plugin install. Lands together with
+the BGOS change; no version is chosen here, the release that carries it is Kc's call.
+
+The daemon provisions its browser on first use: an installed Chrome or Chromium is preferred, otherwise the pinned Playwright Chromium revision is downloaded into the user cache. The normal browser-host supervisor owns startup. The browser keeps its sandbox, and missing operating-system prerequisites return an installation error.
+
+Owner login entry uses a dedicated encrypted relay capability and trusted HOAI dialogs. Exact document, form and field checks guard filling, and filling never submits automatically. Saving a new password requires a separate confirmation. After saving or declining to save, the owner can review the page, take control and click the validated Sign in button within 30 seconds. This grants one explicit down/up on the captured form and button, revoked by navigation, a new form, input release or expiry. Ordinary remote keyboard input still refuses credential fields. Each agent and acting person have separate passphrase-encrypted login storage. Browsing starts locked and nonpersistent; unlocking enables encrypted cookie, localStorage and IndexedDB snapshots until close. No passphrase or encryption key is saved. Legacy native profiles require explicit owner confirmation before supported artifacts are cleared.
+
+The package includes the HOAI browser skill and the bootstrap, vault, credential and shared crypto modules. Targeted unit, mutation, real Chromium and packaged supervisor evidence is recorded under `docs/reports/2026-10-04-remote-credentials`. Version and manifest move together. No tag, marketplace pin, publication or deployment is performed here.
+
+The owner can explicitly control a daemon browser through the HOAI server. Exclusive leases fence agent tools and retain the reservation until pressed-key/button cleanup settles. Single-use focus tokens and host DOM checks refuse detected credential fields until KC decides otherwise. Allowed ordinary text crosses the server and agent machine; field detection cannot prove it contains no secrets.
+
+The native pane typing proof, credential refusal, targeted50-test host run and TypeScript check passed. B depends on the independent A release. Package and manifest versions advance together. No tag, marketplace pin, publish or deployment is performed here.
+**Windows is a tested host now: the suite runs on Windows in CI, and three bugs Windows users had are fixed.** Until
+now the suite had only run on Linux and macOS. Run on Windows it went 31 red on a clone made with
+`core.autocrlf=false`, and 44 on a default clone, which is what a Windows install really is. Every red was triaged.
+
+- **A Full handoff from an agent on Windows no longer fails on its own files.** The export pack's symlink gate checked
+  containment with a hardcoded `/` against the OS realpath, which on Windows uses backslashes, so every file "escaped"
+  the workspace: the export failed PATH_ESCAPE and the dry run offered the owner nothing. It now decides by the host's
+  own path rules (case blind on Windows, another drive is outside, a drive root works), and on posix a backslash stays
+  a file name byte, so `/ws\evil` is still outside `/ws`.
+- **`bgos-claim` locks the `.mcp.json` that holds the API key to your Windows user**, with icacls, as `bgos-pair`
+  already does for its credentials. On Windows chmod does nothing, so with an agents folder outside your profile the
+  key was readable by every local user while the installer said "chmod 600". It now reports the protection the file
+  really got, and says UNPROTECTED if the lock fails. It also gets that far on Windows now: its check for git asked
+  `/bin/sh`, which Windows does not have, so every claim there stopped at "git is required" with git installed.
+- **On Windows the daemon's stop closes Chrome cleanly.** It used to stop its browser host with `kill('SIGTERM')`,
+  which on Windows is TerminateProcess: Chrome was cut off on every daemon stop, restart and lock handover, and
+  logins from its last few seconds could be lost. The daemon now holds the host's stdin and closing it is the stop,
+  on every OS (off Windows it still sends SIGTERM as well). On Windows the host is started detached, so the daemon's
+  exit cannot kill it mid close, with a late backstop kill while the daemon lives. On every OS a stop is now bounded:
+  after 15 s the host kills the Chromes it started, launching ones included, and exits, where a hung close used to
+  keep it running forever.
+- **Every checkout is LF.** A Windows install is a git clone made with the user's `core.autocrlf=true`, so 349 files
+  reached Windows users as CRLF while CI tested LF. `.gitattributes` now pins every text file LF (batch files CRLF),
+  and `test/line-endings.test.ts` keeps it that way.
+- **The daemon builds an agent's supervisor paths with the watcher's join.** `lib/update-readiness.ts` built the
+  service file, `supervisor.json` and marker paths with the host's `path.join`, so on Windows a home written with
+  `/` came back with `\`, while the watcher keeps the separator of the home it is given (`joinDir`). Handed the same
+  home, the two named different files for one agent, which the new Windows leg showed as the one red parity test.
+  The daemon now uses that same `joinDir`, and so does `bin/hoai-keepalive-marker.mjs`, which writes the
+  `keepalive.json` the daemon reads. No real install moves: for a real home (`C:\Users\...` or `/Users/...`)
+  every path is byte for byte what it was.
+- The rest were tests that assumed POSIX paths, file modes, a bash on PATH (on Windows that is the WSL launcher),
+  `pgrep`, or a 400 ms cold start, now written to hold on both hosts without being weakened. A new
+  `test (windows)` job runs the suite and the type check on `windows-latest`; the README says what a Windows machine
+  needs to run it (Git for Windows) and what skips there by design.
+
+
+Daemon browser pages can stream into the HOAI owner pane through the authenticated server relay. The host attaches Page.startScreencast to its existing browser and retains the latest update while a prior frame is outstanding. Closing the view leaves the agent page running. This is the independent A release; it sends no owner input.
+
+Targeted browser-host/view tests and real Chromium streaming passed. Package and manifest versions advance together for the repository gate. No tag, marketplace pin, publish or deployment is performed here.
 ## 0.60.2 (2026-10-04)
 
 **Re-vendored the HOAI browser shim from BGOS main, sha256 `b9a7c24b`** (was `24470ac3`, vendored

@@ -71,6 +71,11 @@ export type SlashCommandRoute =
   | { kind: 'not_slash' }
   | { kind: 'compact'; commandName: string; commandArgs: string }
   | { kind: 'status'; commandName: string; commandArgs: string }
+  // `/login` is answered by the daemon, because when the CLI is logged out the
+  // model cannot think: a model-handled /login is dead exactly when it is
+  // needed. lib/auth-login.ts runs `claude auth login` as a child and relays
+  // the URL and the code through the chat. Never forwarded to the model.
+  | { kind: 'login'; commandName: string; commandArgs: string }
   // `/code` is the plan chip's CLOSE, not a command the model performs. The app
   // sends it when the owner dismisses the Plan mode chip above the composer,
   // and the only thing it means on this channel is "report the session mode
@@ -188,6 +193,16 @@ export function isReservedHostSlashCommand(raw: unknown): boolean {
  */
 export function isDaemonAnsweredSlashCommand(raw: unknown): boolean {
   return commandToken(raw).toLowerCase() === 'status'
+}
+
+/**
+ * The daemon's own sign-in. Its own predicate, apart from /status, for the
+ * reason /status keeps apart from /compact: /status touches nothing, /login
+ * signs the machine into an account, and a call site that treated them as one
+ * thing would be one edit away from starting a sign-in on a status request.
+ */
+export function isDaemonLoginSlashCommand(raw: unknown): boolean {
+  return commandToken(raw).toLowerCase() === 'login'
 }
 
 /** The plan chip's close. See the `plan_mode_off` arm of SlashCommandRoute. */
@@ -519,6 +534,13 @@ export function routeSlashCommand(input: {
     return { kind: 'status', commandName, commandArgs: resolvedArgs }
   }
 
+  // Before the registry too: a project or user command called /login must not
+  // turn the one way back in for a logged out agent into a prompt for a model
+  // that cannot run.
+  if (isDaemonLoginSlashCommand(commandName)) {
+    return { kind: 'login', commandName, commandArgs: resolvedArgs }
+  }
+
   // Also before the registry, and for the same reason: a project command named
   // /code would otherwise shadow the chip's close and leave the owner with a
   // chip they cannot dismiss.
@@ -685,17 +707,36 @@ export const DAEMON_STATUS_COMMAND: SlashCommandEntry = {
 }
 
 /**
+ * The sign-in the daemon performs itself (lib/auth-login.ts). /login was
+ * REMOVED from BUILTIN_COMMANDS on 2026-08-30 because a model cannot perform
+ * it; it comes back here as daemon work, with no `prompt`, because nothing
+ * about it reaches a model. Advertised only when the daemon found a claude
+ * executable to run, which is the one thing it needs.
+ */
+export const DAEMON_LOGIN_COMMAND: SlashCommandEntry = {
+  command: '/login',
+  description: 'Sign this agent in to Claude again',
+  scope: 'all',
+}
+
+/**
  * The built-in catalog this daemon should advertise. `remoteCompact` MUST be
  * the boot-time capability detection result (resolveTmuxTarget(...) != null):
  * advertising /compact without the injection capability recreates the dead
- * Compact button.
+ * Compact button. `daemonLogin` MUST be whether a claude executable was
+ * resolved (resolveClaudeExecutable(...) != null), for the same reason:
+ * /login without one would be a button that can only explain why it failed.
  */
 export function catalogForCapabilities(opts: {
   remoteCompact: boolean
+  daemonLogin?: boolean
 }): SlashCommandEntry[] {
-  return opts.remoteCompact
-    ? [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND, REMOTE_COMPACT_COMMAND]
-    : [...BUILTIN_COMMANDS, DAEMON_STATUS_COMMAND]
+  return [
+    ...BUILTIN_COMMANDS,
+    DAEMON_STATUS_COMMAND,
+    ...(opts.daemonLogin ? [DAEMON_LOGIN_COMMAND] : []),
+    ...(opts.remoteCompact ? [REMOTE_COMPACT_COMMAND] : []),
+  ]
 }
 
 /**
@@ -724,7 +765,8 @@ export function catalogForCapabilities(opts: {
  *
  * REMOVED, cannot work: /clear (no mechanism exists for a model to reset its own context), /cost
  * (client-side accounting the model cannot read), /release-notes (not reachable), /login (a session
- * is already authenticated).
+ * is already authenticated). /login has since come back as DAEMON work (DAEMON_LOGIN_COMMAND, via
+ * catalogForCapabilities), never as a model builtin: a logged out model cannot run at all.
  * REMOVED, hazards: /logout (a model with shell access, told to execute and not to defer, ends the
  * session and daemon serving this chat; recovery needs a person at that machine) and /bug (could file
  * a real public issue on a stray tap).

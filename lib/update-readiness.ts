@@ -55,12 +55,13 @@
  * Pure and injectable throughout so every decision is unit-testable.
  */
 
-import { join } from 'node:path'
-
 import {
   isSafeServiceHandle,
+  joinDir,
+  launchAgentsDir,
   resolveSupervisingService,
   serviceRestartCommandForHandle,
+  systemdUserDir,
   type ResolvedService,
   type SyncExecResult,
 } from './service-supervision.mjs'
@@ -139,6 +140,11 @@ export function serviceUnit(assistantId: string): string {
   return `bgos-agent-${assistantId}`
 }
 
+// Every path below is built with the watcher's joinDir (lib/service-supervision.mjs),
+// never the host's path.join. joinDir keeps the separator of the home it is
+// given, so the daemon and the watcher name the same file for the same home on
+// every OS; path.join rewrote a '/' home with '\' on Windows, and they disagreed.
+
 /** The installed always-on service file for this assistant, or null when the
  *  platform has none (Windows) or the id is invalid. */
 export function serviceFilePath(
@@ -149,10 +155,10 @@ export function serviceFilePath(
   const id = validAssistantId(assistantId)
   if (!id) return null
   if (platform === 'darwin') {
-    return join(home, 'Library', 'LaunchAgents', `${serviceLabel(id)}.plist`)
+    return joinDir(launchAgentsDir(home), `${serviceLabel(id)}.plist`)
   }
   if (platform === 'linux') {
-    return join(home, '.config', 'systemd', 'user', `${serviceUnit(id)}.service`)
+    return joinDir(systemdUserDir(home), `${serviceUnit(id)}.service`)
   }
   return null
 }
@@ -163,7 +169,7 @@ export function agentStateDir(
   assistantId: string | number | null | undefined,
 ): string | null {
   const id = validAssistantId(assistantId)
-  return id ? join(home, '.bgos-agent', id) : null
+  return id ? joinDir(joinDir(home, '.bgos-agent'), id) : null
 }
 
 export function supervisorFilePath(
@@ -171,7 +177,7 @@ export function supervisorFilePath(
   assistantId: string | number | null | undefined,
 ): string | null {
   const dir = agentStateDir(home, assistantId)
-  return dir ? join(dir, SUPERVISOR_FILE) : null
+  return dir ? joinDir(dir, SUPERVISOR_FILE) : null
 }
 
 export function restartMarkerPath(
@@ -179,7 +185,7 @@ export function restartMarkerPath(
   assistantId: string | number | null | undefined,
 ): string | null {
   const dir = agentStateDir(home, assistantId)
-  return dir ? join(dir, RESTART_MARKER_FILE) : null
+  return dir ? joinDir(dir, RESTART_MARKER_FILE) : null
 }
 
 export function keepaliveMarkerPath(
@@ -187,7 +193,7 @@ export function keepaliveMarkerPath(
   assistantId: string | number | null | undefined,
 ): string | null {
   const dir = agentStateDir(home, assistantId)
-  return dir ? join(dir, KEEPALIVE_MARKER_FILE) : null
+  return dir ? joinDir(dir, KEEPALIVE_MARKER_FILE) : null
 }
 
 /** A relaunch command a launcher declared verbatim (structured, never a shell

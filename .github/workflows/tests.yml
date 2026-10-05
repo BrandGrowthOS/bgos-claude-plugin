@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Tests read the repo and nothing else: the token they get cannot write to it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,8 +25,9 @@ jobs:
           node-version: 24
 
       # The startup gate tests run the real lib/gate-block.tcl under a real expect and assert the exact
-      # bytes it sends. Where expect is missing they return early, which reports PASS. So install it,
-      # and make its absence a failure rather than a green run that proved nothing.
+      # bytes it sends. Where expect or bash is missing they skip, which a green run does not show at a
+      # glance. So install expect, and make a missing expect or bash a failure rather than a green run
+      # that proved nothing.
       - name: Install expect
         run: sudo apt-get update && sudo apt-get install -y expect
 
@@ -30,6 +35,65 @@ jobs:
         run: npm test
         env:
           HOAI_REQUIRE_EXPECT: '1'
+          HOAI_REQUIRE_BASH: '1'
 
       - name: Type check
+        if: success() || failure()
+        run: bun run build
+
+  # The same suite on Windows, the other host this plugin ships to. Before this leg existed the suite
+  # had only ever run on Linux, and on a Windows box it went 31 to 44 red: path, line ending and
+  # process bugs, three of them real ones that Windows users had (a Full handoff failing on its own
+  # files, an API key left readable, Chrome cut off on every daemon stop).
+  #
+  # The checkout keeps the runner's own git config, as a user's clone does (Git for Windows ships
+  # core.autocrlf=true; the first step prints what this runner has), so this leg also proves
+  # .gitattributes hands Windows the LF bytes Linux tests. expect does not
+  # exist on Windows (run.expect only runs under launchd or systemd), so its tests skip here and run
+  # in the Linux leg; bash is Git for Windows' and is required. Chrome is on this image, so the real
+  # browser end to end runs here too.
+  test-windows:
+    name: test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The checkout is LF, with the runner's default core.autocrlf
+        run: |
+          autocrlf=$(git config --get core.autocrlf || echo unset)
+          echo "core.autocrlf=$autocrlf"
+          if [ "$autocrlf" != "true" ]; then
+            echo "::warning::this runner does not use core.autocrlf=true, so this step does not reproduce a default Windows clone; test/line-endings.test.ts (a forced autocrlf=true checkout) still guards the rule"
+          fi
+          eol=$(git ls-files --eol)
+          crlf=$(printf '%s\n' "$eol" | awk -F'\t' '$1 ~ /w\/crlf/ { print $2 }')
+          echo "files checked out CRLF: ${crlf:-none}"
+          if [ "$crlf" != "bin/hoai.cmd" ]; then
+            echo "::error::exactly bin/hoai.cmd (a batch file) must be CRLF in the working tree, found: ${crlf:-none}"
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # npm's install from package-lock.json, as the Windows runs behind this leg were measured: bun
+      # writes different .bin shims on Windows, and npx resolves tsx through them. bun is still
+      # installed above, for the bun:test files and the type check.
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run tests
+        run: npm test
+        env:
+          HOAI_REQUIRE_BASH: '1'
+
+      - name: Type check
+        if: success() || failure()
         run: bun run build

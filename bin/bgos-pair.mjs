@@ -1254,6 +1254,18 @@ export async function writeCredentialsFile(path, creds, opts = {}) {
   })
   await chmod(path, CREDENTIALS_FILE_MODE)
   if (platform !== 'win32') return { platform, aclApplied: null }
+  return lockFileToWindowsUser(path, opts)
+}
+
+/**
+ * Lock one file to the current Windows user: remove inherited access, then grant that user
+ * full control, with the System32 icacls as the fallback when icacls is not on PATH. Never
+ * claims a lock that failed: the result says aclApplied false and why, for
+ * describeFileProtection to report UNPROTECTED. Shared with bin/bgos-claim.mjs, whose .mcp.json
+ * carries an API key the same way this file's credentials carry a pairing token.
+ */
+export async function lockFileToWindowsUser(path, opts = {}) {
+  const platform = 'win32'
   // chmod did nothing here, so the file is world-readable until icacls runs.
   // Doing it in the tool rather than in an operator's runbook: the manual
   // step worked eleven times and would fail on the twelfth.
