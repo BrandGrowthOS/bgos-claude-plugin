@@ -456,6 +456,20 @@ import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
 import { runDaemonCommand, type DaemonCommandAudience } from './lib/daemon-command-sender.js'
 import {
+  LoginController,
+  buildAuthStatusArgv,
+  buildLoginEnv,
+  isRoomContext,
+  mustDropMessage,
+  parseAuthStatusJson,
+  resolveClaudeExecutable,
+  type AuthStatus,
+  type ChildCommand,
+  type LoginButton,
+  type LoginChild,
+  type LoginChildHandlers,
+} from './lib/auth-login.js'
+import {
   agentStateDir,
   chooseRestartAuthority,
   decideSupervisorWrite,
@@ -1351,8 +1365,32 @@ function reportResting(): void {
 // OFF conclusion a throttled periodic recheck may make a ONE-TIME late
 // upgrade to ON. What the capability does is unchanged.
 let compactTarget: TmuxTarget | null = resolveTmuxTarget(process.env)
+// The claude executable /login runs (lib/auth-login.ts). Resolved at boot,
+// because that decides whether /login is advertised at all: a /login that can
+// only explain it has no claude to run is the dead button the catalog
+// invariant forbids. And resolved AGAIN at each use, because
+// CLAUDE_CODE_EXECPATH names a versioned binary that the CLI's own updater
+// prunes, so a daemon that has run for days can outlive it; the resolver then
+// falls back to PATH.
+function resolveClaude(): string | null {
+  return resolveClaudeExecutable({
+    env: process.env,
+    platform: process.platform,
+    isFile: (path) => {
+      try {
+        return statSync(path).isFile()
+      } catch {
+        return false
+      }
+    },
+  })
+}
+const CLAUDE_EXECUTABLE: string | null = resolveClaude()
 const bootSlashCommands = prepareSlashCommands(
-  catalogForCapabilities({ remoteCompact: compactTarget !== null }),
+  catalogForCapabilities({
+    remoteCompact: compactTarget !== null,
+    daemonLogin: CLAUDE_EXECUTABLE !== null,
+  }),
 )
 let registeredSlashCommands = bootSlashCommands.registry
 let registeredSlashCommandAliases = bootSlashCommands.legacyAliases
@@ -1543,6 +1581,183 @@ async function answerStatus(chatId: string, audience: DaemonCommandAudience): Pr
   })
 
   await sendDaemonText(chatId, text)
+}
+
+/**
+ * Message ids this process has already handled a /login for. Same shape and
+ * reason as handledStatusMsgIds: the poll, the socket and the stream can all
+ * deliver one message, and a second copy reaching the controller would answer
+ * the owner's own /login with "a sign-in is already running".
+ */
+const handledLoginMsgIds = new Set<string>()
+
+function alreadyHandledLogin(messageId: string): boolean {
+  if (handledLoginMsgIds.has(messageId)) return true
+  handledLoginMsgIds.add(messageId)
+  if (handledLoginMsgIds.size > 200) {
+    const first = handledLoginMsgIds.values().next().value
+    if (first !== undefined) handledLoginMsgIds.delete(first)
+  }
+  return false
+}
+
+/**
+ * `claude auth status --json`, argv exec. A logged out CLI exits 1 WITH the
+ * JSON on stdout (measured on 2.1.289), so a rejection still carries an
+ * answer when its stdout parses. Null only when nothing answered.
+ */
+async function readClaudeAuthStatus(): Promise<AuthStatus | null> {
+  const executable = resolveClaude()
+  if (!executable) return null
+  const cmd = buildAuthStatusArgv(executable)
+  try {
+    const { stdout } = await execFileAsync(cmd.command, cmd.args, { timeout: 20_000 })
+    return parseAuthStatusJson(String(stdout))
+  } catch (err) {
+    const stdout = (err as { stdout?: unknown } | null)?.stdout
+    return typeof stdout === 'string' ? parseAuthStatusJson(stdout) : null
+  }
+}
+
+/** Daemon text, with the sign-in chips when given; resolves to the posted id. */
+async function sendLoginText(
+  chatId: string,
+  text: string,
+  buttons?: readonly LoginButton[],
+): Promise<number | null> {
+  const options = (buttons ?? []).map((b) => ({
+    text: b.text,
+    callbackData: b.callbackData,
+    ...(b.style ? { style: b.style } : {}),
+  }))
+  const result = await bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+    options,
+    ...(options.length > 0 ? { renderMode: 'inline' } : {}),
+  })
+  const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
+  // The reply tool's fast-poll scope, for the same reason: without the update
+  // stream a tap otherwise reaches this daemon only on the slow chat sweep.
+  if (options.length > 0 && typeof msgId === 'number') {
+    recentButtonPrompts.set(chatId, { messageId: msgId, sentAtMs: Date.now() })
+  }
+  return typeof msgId === 'number' ? msgId : null
+}
+
+/**
+ * The sign-in child: argv exec with piped stdio, never a shell. `close`, not
+ * `exit`, so stderr is fully read before the failure reason is taken from it.
+ */
+function spawnLoginChild(cmd: ChildCommand, handlers: LoginChildHandlers): LoginChild {
+  const child = spawnProcess(cmd.command, cmd.args, {
+    env: buildLoginEnv(process.env),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: false,
+    windowsHide: true,
+  })
+  child.stdout?.setEncoding('utf8')
+  child.stderr?.setEncoding('utf8')
+  child.stdout?.on('data', (chunk: string) => handlers.onStdout(chunk))
+  child.stderr?.on('data', (chunk: string) => handlers.onStderr(chunk))
+  // A write after the child died is an EPIPE here; the close below reports it.
+  child.stdin?.on('error', () => {})
+  child.on('error', (err) => handlers.onExit(null, `could not start the claude CLI: ${err.message}`))
+  child.on('close', (code) => handlers.onExit(code))
+  return {
+    write: (text) => {
+      child.stdin?.write(text)
+    },
+    kill: () => {
+      child.kill()
+    },
+  }
+}
+
+/** The one sign-in flow of this daemon. See lib/auth-login.ts. */
+const loginController = new LoginController({
+  ownerUserId: USER_ID,
+  executable: resolveClaude,
+  spawn: spawnLoginChild,
+  readAuthStatus: readClaudeAuthStatus,
+  send: sendLoginText,
+  now: () => Date.now(),
+  setTimer: (fn, ms) => {
+    const timer = setTimeout(fn, ms)
+    timer.unref?.()
+    return timer
+  },
+  clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  log,
+})
+
+/**
+ * /login. Owner only: the seam judges the sender and, on a refusal, replies
+ * and returns without ever calling `act`, so a stranger never reaches the
+ * controller, which means never reaches the status read or the spawn
+ * (lib/daemon-command-sender.ts, driven with spies in its test, and the
+ * controller's own refusal test in test/auth-login.test.ts). Every rail lands
+ * here; `payload` is required so a caller cannot forget the sender. The
+ * arguments are never logged: an owner who typed `/login <code>` by mistake
+ * must not find the code in the log.
+ */
+async function handleLoginCommand(chatId: string, payload: unknown, commandArgs: string): Promise<void> {
+  await runDaemonCommand({
+    command: 'login',
+    payload,
+    ownerUserId: USER_ID,
+    chatId,
+    send: sendDaemonText,
+    log,
+    act: (verdict) =>
+      loginController.command(chatId, commandArgs, {
+        inRoom: isRoomContext({
+          relationship: verdict.sender.relationship,
+          payload,
+          isMeetingChat: meetingIdByChatId.has(chatId),
+        }),
+      }),
+  })
+}
+
+/**
+ * Offer an inbound message to the sign-in flow BEFORE anything logs, notes or
+ * forwards it. True means the rail must DROP it: it was the owner's code (it
+ * went to the sign-in child's stdin and nowhere else), or it carried a code
+ * outside its window (withheld, and the sender told why). Called by every rail
+ * that forwards human text (poll, ws, stream, meeting), because whichever rail
+ * claims a message id first is the only one that will ever offer it, so a rail
+ * without this call would forward a code to the model.
+ */
+function consumedAsLoginCode(input: {
+  chatId: string
+  messageId: string | number
+  payload: unknown
+  text: unknown
+  fromHuman: boolean
+  via: 'poll' | 'ws' | 'stream' | 'meeting'
+}): boolean {
+  if (!input.chatId) return false
+  const isSlash =
+    isSlashCommandPayload((input.payload ?? {}) as Parameters<typeof isSlashCommandPayload>[0]) ||
+    (typeof input.text === 'string' && /^\s*\//.test(input.text))
+  const outcome = loginController.message({
+    chatId: input.chatId,
+    messageId: input.messageId,
+    payload: input.payload,
+    text: input.text,
+    isSlash,
+    fromHuman: input.fromHuman,
+  })
+  if (mustDropMessage(outcome)) {
+    log(`/login: a ${outcome} code arrived via ${input.via} (chat ${input.chatId}); not forwarded`)
+  }
+  return mustDropMessage(outcome)
 }
 
 async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
@@ -8969,6 +9184,22 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
+      // The daemon's own sign-in card (lib/auth-login.ts), off the RAW value
+      // and above the unescape, like the permission half above: a `login:`
+      // value can only have come off this daemon's card, since every agent
+      // authored chip goes out as `u:` + its value.
+      if (
+        loginController.button({
+          chatId,
+          messageId: mm.id,
+          callbackData: String(callbackData),
+          clickerUserId: senderUserIdCandidate(payload),
+        }) === 'consumed'
+      ) {
+        log(`/login: tap on message ${mm.id} in chat ${chatId} handled via poll`)
+        continue
+      }
+
       // A PLAN ANSWER, if it is one, and it is decided HERE, above the
       // unescape, off the raw value, for the reason written on applyPlanAnswer.
       // Three things separate a plan answer from an ordinary click:
@@ -9098,6 +9329,18 @@ async function pollChat(chatId: string): Promise<void> {
         agentOrigin: pollAgentOrigin,
       })
 
+      // The owner's sign-in code, when one is awaited (lib/auth-login.ts).
+      // Here, before the permission parse, the meeting card and every log
+      // line, so a code reaches the sign-in child and nowhere else.
+      if (consumedAsLoginCode({
+        chatId,
+        messageId: msg.message.id,
+        payload: msg.message,
+        text,
+        fromHuman: !isPollAgent && pollSenderType !== 'system',
+        via: 'poll',
+      })) continue
+
       // Skip permission verdict messages/clicks, don't forward them to Claude
       let isPermissionVerdict = false
       if (!isPollAgent) {
@@ -9222,6 +9465,22 @@ async function pollChat(chatId: string): Promise<void> {
           log(`status requested via poll (chat ${chatId})`)
           void trackMessageOperation(() => handleStatusCommand(chatId, msg.message)).catch((err) => {
             log(`Status reply failed: ${err}`)
+          })
+        }
+        continue
+      }
+
+      // /login is the daemon's too: when the CLI is logged out the model
+      // cannot run, so a forwarded /login would be answered by nobody. A
+      // backlog copy is answered, like /status: the reply is built from the
+      // sign-in state at send time, and the owner definitely asked.
+      if (slashRoute.kind === 'login') {
+        if (!alreadyHandledLogin(String(msg.message.id))) {
+          log(`login requested via poll (chat ${chatId})`)
+          void trackMessageOperation(() =>
+            handleLoginCommand(chatId, msg.message, slashRoute.commandArgs),
+          ).catch((err) => {
+            log(`Login command failed: ${err}`)
           })
         }
         continue
@@ -11008,6 +11267,19 @@ async function forwardStreamInbound(
   rememberForwarded(view.messageId)
   rememberSessionHandle(chatId, view.sessionHandle)
 
+  // The owner's sign-in code (see the poll site). This rail claimed the id
+  // above, so the other two will never offer this message: without this call
+  // here a code arriving on the stream would be forwarded to the model.
+  if (consumedAsLoginCode({
+    chatId,
+    messageId: view.messageId,
+    payload: view.raw,
+    text: view.text,
+    fromHuman:
+      !isSystem && !view.agentOrigin && view.senderKind !== 'agent' && view.senderKind !== 'assistant',
+    via: 'stream',
+  })) return
+
   // Permission verdict texts are consumed by the permission flow, never
   // forwarded (poll-path parity).
   const isStreamAgent = isAgentInbound({
@@ -11082,6 +11354,19 @@ async function forwardStreamInbound(
       log(`status requested via stream (chat ${chatId})`)
       void trackMessageOperation(() => handleStatusCommand(chatId, view.raw)).catch((err) => {
         log(`Status reply failed: ${err}`)
+      })
+    }
+    return
+  }
+  if (slashRoute.kind === 'login') {
+    // ANSWERED here, for /status's reason directly above: this rail claimed
+    // the id first, so it can be the only rail that ever offers the message.
+    if (!alreadyHandledLogin(String(view.messageId))) {
+      log(`login requested via stream (chat ${chatId})`)
+      void trackMessageOperation(() =>
+        handleLoginCommand(chatId, view.raw, slashRoute.commandArgs),
+      ).catch((err) => {
+        log(`Login command failed: ${err}`)
       })
     }
     return
@@ -11258,6 +11543,21 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       return
     }
     log(`Permission inline-button click via stream: ${outcome.choice} [${outcome.requestId}]`)
+    return
+  }
+
+  // The daemon's own sign-in card, as the poll intake decides it (see there).
+  if (
+    loginController.button({
+      chatId,
+      messageId: view.messageId,
+      callbackData: answer.callbackData,
+      clickerUserId: answer.clickerUserId,
+    }) === 'consumed'
+  ) {
+    // No authority stamp here: the RECEIVED line above already carried it for
+    // this tap, and the observability pin ties one stamp to each outcome.
+    log(`/login: tap on message ${view.messageId} in chat ${chatId} handled via stream`)
     return
   }
 
@@ -12019,6 +12319,16 @@ function connectWebsocket(): void {
       const wsTurnState = wsTurnStateRaw == null
         ? undefined
         : String(wsTurnStateRaw)
+      // The owner's sign-in code (see the poll site), before the sender is
+      // noted, the turn is recorded or anything is logged or forwarded.
+      if (consumedAsLoginCode({
+        chatId,
+        messageId,
+        payload,
+        text,
+        fromHuman: !wsAgentOrigin && wsSenderType !== 'agent' && wsSenderType !== 'system',
+        via: 'ws',
+      })) return
       const wsSenderUserId = senderUserIdOf(payload)
       if (chatId) lastInboundUserByChat.set(chatId, wsSenderUserId)
       actingUser.noteInbound({
@@ -12124,6 +12434,17 @@ function connectWebsocket(): void {
           log(`status requested via ws (chat ${chatId})`)
           void trackMessageOperation(() => handleStatusCommand(chatId, payload ?? {})).catch((err) => {
             log(`Status reply failed: ${err}`)
+          })
+        }
+        return
+      }
+      if (slashRoute.kind === 'login') {
+        if (chatId && !alreadyHandledLogin(String(messageId))) {
+          log(`login requested via ws (chat ${chatId})`)
+          void trackMessageOperation(() =>
+            handleLoginCommand(chatId, payload ?? {}, slashRoute.commandArgs),
+          ).catch((err) => {
+            log(`Login command failed: ${err}`)
           })
         }
         return
@@ -12407,8 +12728,18 @@ function connectWebsocket(): void {
       // Skip our own outbound replies, we'd already see them via the
       // POST response. Self-loops would confuse the model.
       if (senderId != null && senderId === Number(ASSISTANT_ID)) return
-      const senderName = String(payload?.senderName ?? 'Unknown')
       const text = String(payload?.text ?? '')
+      // A sign-in code is never forwarded from a meeting either (see the poll
+      // site). No sign-in starts in a meeting, so this can only withhold.
+      if (consumedAsLoginCode({
+        chatId,
+        messageId,
+        payload,
+        text,
+        fromHuman: senderId == null && payload?.senderType !== 'agent',
+        via: 'meeting',
+      })) return
+      const senderName = String(payload?.senderName ?? 'Unknown')
       // Meta schema MUST carry the canonical envelope fields (chat_id,
       // message_id, user, user_id, assistant_id, ts): without them Claude
       // Code's notifications/claude/channel renderer silently drops the card
@@ -12876,6 +13207,7 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
   // lib/slash-catalog.ts).
   const builtinCatalog = catalogForCapabilities({
     remoteCompact: compactTarget !== null,
+    daemonLogin: CLAUDE_EXECUTABLE !== null,
   })
 
   // Priority from lower to higher is builtin, marketplace, cache, user, then
@@ -13219,6 +13551,8 @@ async function main(): Promise<void> {
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    // Never leave a sign-in child behind (lib/auth-login.ts).
+    loginController.dispose()
     browserHost?.stop()
     process.exit(code)
   }
@@ -13230,6 +13564,7 @@ async function main(): Promise<void> {
     stopHookIntake()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
+    loginController.dispose()
     browserHost?.stop()
   })
 

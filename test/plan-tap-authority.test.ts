@@ -34,6 +34,7 @@ import * as planCard from '../lib/plan-card.ts'
 import * as permissionRelay from '../lib/permission-relay.ts'
 import * as streamApply from '../lib/stream-apply.ts'
 import * as messageText from '../lib/message-text.ts'
+import { LoginController } from '../lib/auth-login.ts'
 import type { StreamUpdate } from '../lib/update-stream.ts'
 
 // Normalized to LF: the working tree is CRLF on a Windows checkout.
@@ -319,6 +320,22 @@ function streamHarness(record: { requesterUserId?: string } = { requesterUserId:
         notes.push(n)
       },
     },
+    // The sign-in card intercept sits in front of the plan half on this rail.
+    // A REAL controller with no sign-in in flight, so these plan taps prove
+    // that intercept lets a plan tap through rather than a stub saying so.
+    loginController: new LoginController({
+      ownerUserId: OWNER,
+      executable: () => null,
+      spawn: () => {
+        throw new Error('no sign-in may start from a plan tap')
+      },
+      readAuthStatus: async () => null,
+      send: async () => null,
+      now: () => Date.now(),
+      setTimer: () => null,
+      clearTimer: () => {},
+      log: (line: string) => logs.push(line),
+    }),
   }
   const names = Object.keys(scope).filter((k) => /^[A-Za-z_$][\w$]*$/.test(k))
   const factory = new Function(...names, `${js}\nreturn applyStreamButtonsAnswered`)

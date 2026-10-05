@@ -44,7 +44,9 @@ import {
 
 const OWNER = 'user_2owner000000000000000000000'
 const RECIPIENT = 'user_2recip000000000000000000000'
-const COMMANDS: DaemonCommand[] = ['compact', 'status']
+const COMMANDS: DaemonCommand[] = ['compact', 'status', 'login']
+/** The commands that MUTATE the owner's session or machine: a stranger is refused. */
+const MUTATING: DaemonCommand[] = ['compact', 'login']
 
 // WS inbound_message, as SendMessageService emits it for a human turn.
 const WS_OWNER = {
@@ -165,6 +167,26 @@ test('a room member who is not the owner is treated like a recipient', () => {
     const s = judge('status', payload)
     assert.equal(s.kind, 'allow')
     if (s.kind === 'allow') assert.equal(s.audience, 'non_owner')
+  }
+})
+
+test('a share recipient is refused /login on both transports, with a reply that names it', () => {
+  for (const [transport, payload] of [['ws', WS_RECIPIENT], ['poll', POLL_RECIPIENT]] as const) {
+    const v = judge('login', { ...payload, commandName: 'login', command_name: 'login' })
+    assert.equal(v.kind, 'refuse', `${transport}: a recipient must not sign the owner's agent in`)
+    if (v.kind !== 'refuse') continue
+    assert.equal(v.reason, 'not_owner')
+    assert.match(v.reply, /^\/login was not run: only this agent's owner can sign it in\./)
+    assert.doesNotMatch(v.reply, /[\u2013\u2014]/)
+  }
+})
+
+test('every mutating command refuses a missing or malformed sender', () => {
+  const noSender = stripKeys(WS_OWNER, ['sender', 'isSharedRecipient', 'shareOwnerUserId'])
+  const malformed = { ...WS_OWNER, sender: { userId: 42 } }
+  for (const command of MUTATING) {
+    assert.equal(judge(command, noSender).kind, 'refuse', `${command}: no sender`)
+    assert.equal(judge(command, malformed).kind, 'refuse', `${command}: malformed sender`)
   }
 })
 
@@ -493,6 +515,11 @@ test('no rail calls a daemon-handled command without the sender-bearing payload 
   // WebSocket: the inbound_message payload with its nested sender block.
   assert.match(src, /remote compact requested via ws[\s\S]{0,160}?handleRemoteCompact\(chatId, payload \?\? \{\}\)/, SHAPE)
   assert.match(src, /status requested via ws[\s\S]{0,160}?handleStatusCommand\(chatId, payload \?\? \{\}\)/, SHAPE)
+  // /login: the same payloads, plus the arguments the route resolved.
+  assert.match(src, /login requested via poll[\s\S]{0,200}?handleLoginCommand\(chatId, msg\.message, slashRoute\.commandArgs\)/, SHAPE)
+  assert.match(src, /login requested via ws[\s\S]{0,200}?handleLoginCommand\(chatId, payload \?\? \{\}, slashRoute\.commandArgs\)/, SHAPE)
+  assert.match(src, /login requested via stream[\s\S]{0,200}?handleLoginCommand\(chatId, view\.raw, slashRoute\.commandArgs\)/, SHAPE)
+  assert.equal(count(/handleLoginCommand\(/), 4, 'its declaration and the three rails, nothing else')
 })
 
 test('the stream rail hands /status the raw replayed row, inside its status branch (shape pin)', () => {
@@ -505,7 +532,13 @@ test('the stream rail hands /status the raw replayed row, inside its status bran
 })
 
 test('each handler is one runDaemonCommand call whose act is the real work, invoked nowhere else (shape pin)', () => {
-  assert.equal(count(/runDaemonCommand\(\{/), 2, `one seam call per handler; ${SHAPE}`)
+  assert.equal(count(/runDaemonCommand\(\{/), 3, `one seam call per handler; ${SHAPE}`)
+  assert.equal(
+    count(/act: \(verdict\) =>\n\s+loginController\.command\(chatId, commandArgs, \{\n\s+inRoom: isRoomContext\(\{\n\s+relationship: verdict\.sender\.relationship,\n\s+payload,\n\s+isMeetingChat: meetingIdByChatId\.has\(chatId\),/),
+    1,
+    SHAPE,
+  )
+  assert.equal(count(/loginController\.command\(/), 1, 'the sign-in starts only from the act lambda')
   assert.equal(count(/act: \(\) => compactAsOwner\(chatId\)/), 1, SHAPE)
   assert.equal(count(/act: \(verdict\) => answerStatus\(chatId, verdict\.audience\)/), 1, SHAPE)
   assert.equal(count(/compactAsOwner\(/), 2, 'its declaration and the act lambda, nothing else')
@@ -516,7 +549,7 @@ test('each handler is one runDaemonCommand call whose act is the real work, invo
     /async function compactAsOwner\(chatId: string\): Promise<void> \{\n  if \(!compactTarget\) \{/,
     'the work starts with the capability check, which the seam therefore sits in front of',
   )
-  for (const name of ['handleRemoteCompact', 'handleStatusCommand']) {
+  for (const name of ['handleRemoteCompact', 'handleStatusCommand', 'handleLoginCommand']) {
     const body = functionBody(name)
     assert.equal((body.match(/\bawait\b/g) ?? []).length, 1, `${name}: exactly one await, the seam call`)
     assert.doesNotMatch(body, /sendDaemonText\(chatId,/, `${name}: sends nothing on its own`)
