@@ -1,0 +1,23 @@
+# Windows 11, branch fix/windows-suite 2ebfbf3, a FRESH clone with Git for Windows' default core.autocrlf=true, no setting
+$ npm test   (E:\bgos-worktrees\win-b3\crlf-final)
+[run-suite] repo E:\bgos-worktrees\win-b3\crlf-final sandbox E:\bgos-worktrees\win-b3\sandboxes\F-crlf-final at Sun 10/04/2026  2:58:07.36 
+2ebfbf34af7edb8807e6ae7cf98bfacc54ae8fa8
+true
+v24.16.0
+1.3.9
+> claude-channel-bgos@0.60.2 test
+[run-tests] 149 node:test files via tsx, 11 bun:test files via bun
+ℹ tests 3377
+ℹ suites 60
+ℹ pass 3361
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 15
+ℹ todo 0
+ 330 pass
+ 0 fail
+Ran 330 tests across 11 files. [749.00ms]
+[run-tests] FAILED (node family exit 1, bun family exit 0)
+[run-suite] npm test exit 1 
+# failing tests, read name by name from the log's own failing block (node) and (fail) lines (bun):
+  node  service-supervision.test.ts  ::  the daemon and the watcher resolve the same authority and the same handle

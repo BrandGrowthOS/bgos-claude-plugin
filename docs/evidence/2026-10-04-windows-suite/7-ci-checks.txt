@@ -1,0 +1,41 @@
+# GitHub Actions, PR #172 at 7c04821, run 37161495257 (a fresh checkout with each runner's own git config)
+$ gh pr checks 172
+test (windows)                   fail  2m49s
+test                             pass  2m46s
+version advances against base    pass  12s
+version-parity                   pass  6s
+# test (windows), windows-latest: per step
+  Run actions/checkout@v4                                        success
+  The checkout is LF, with the runner's default core.autocrlf    success
+  Run oven-sh/setup-bun@v2                                       success
+  Run actions/setup-node@v4                                      success
+  Install dependencies                                           success
+  Run tests                                                      failure
+  Type check                                                     success
+core.autocrlf=true
+files checked out CRLF: bin/hoai.cmd
+[run-tests] 149 node:test files via tsx, 11 bun:test files via bun
+ℹ tests 3377
+ℹ pass 3364
+ℹ fail 1
+ℹ skipped 12
+ 330 pass
+ 0 fail
+# the one Windows failure, read from the log's failing block (owned by brief 1, reported):
+  node  service-supervision.test.ts  ::  the daemon and the watcher resolve the same authority and the same handle
+# real browser and daemon end to ends that ran on windows-latest:
+✔ END TO END: a bun daemon that stays up stops its host through stdin ALONE, and the host stays up until then
+✔ END TO END: a daemon that stops its host and exits AT ONCE, as server.ts shutdown() does, still gets a clean close
+✔ END TO END: a host whose daemon is killed outright stops itself
+✔ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped
+✔ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (the Windows stop, stdin alone, on t
+✔ END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart
+✔ END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none
+# test (ubuntu-latest):
+ℹ tests 3377
+ℹ pass 3372
+ℹ fail 0
+ℹ skipped 5
+ 330 pass
+ 0 fail
+[run-tests] both families green

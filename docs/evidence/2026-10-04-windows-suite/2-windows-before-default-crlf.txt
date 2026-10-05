@@ -1,0 +1,66 @@
+# Windows 11, untouched main a2712b4, clone with Git for Windows' default core.autocrlf=true (what a user's install is)
+$ npm test   (E:\bgos-worktrees\win-b3\crlf-main)
+[run-suite] repo E:\bgos-worktrees\win-b3\crlf-main sandbox E:\bgos-worktrees\win-b3\sandboxes\B-crlf-base at Sun 10/04/2026  0:24:37.34 
+a2712b41dc905e6d3b1c101211d0103a30727e3c
+true
+v24.16.0
+1.3.9
+> claude-channel-bgos@0.60.1 test
+[run-tests] 146 node:test files via tsx, 11 bun:test files via bun
+ℹ tests 3346
+ℹ suites 60
+ℹ pass 3298
+ℹ fail 41
+ℹ cancelled 0
+ℹ skipped 7
+ℹ todo 0
+ 327 pass
+ 3 fail
+Ran 330 tests across 11 files. [807.00ms]
+[run-tests] FAILED (node family exit 1, bun family exit 1)
+[run-suite] npm test exit 1 
+# failing tests, read name by name from the log's own failing block (node) and (fail) lines (bun):
+  node  agent-credentials.test.ts  ::  a folder pin makes the same host safe, and silent
+  node  agent-credentials.test.ts  ::  per-assistant credentials file is preferred when it exists for the configured id
+  node  agent-credentials.test.ts  ::  read order in lib and the bgos-pair mirror never drift apart
+  node  agent-credentials.test.ts  ::  selection: fresh single-agent host (one per-assistant + legacy) does NOT regress: ok/legacy, never refuse
+  node  bgos-agent.gate.test.ts  ::  behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it
+  node  bgos-agent.gate.test.ts  ::  generated run.expect: spawn line, then the shared block VERBATIM, then the supervisor tail
+  node  bgos-agent.gate.test.ts  ::  generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible
+  node  bgos-agent.static.test.ts  ::  bash parses the script cleanly (bash -n)
+  node  bgos-claim.test.ts  ::  MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk
+  node  bgos-claim.test.ts  ::  resolveAgentDir keeps the scaffold strictly inside the agents root
+  node  bgos-pair.test.ts  ::  main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it
+  node  bgos-pair.test.ts  ::  main: a pairing whose agent is not bound YET still puts hoai on PATH
+  node  bgos-pair.test.ts  ::  main: pairing runs install-cli itself, with the injected home, and says where it landed
+  node  bootstrap-sh.static.test.ts  ::  bash parses the script cleanly (bash -n)
+  node  browser-host-supervisor.test.ts  ::  END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none
+  node  browser-host-supervisor.test.ts  ::  server.ts starts the supervisor in main, unconditionally, and stops it on every exit path
+  node  cursor-store.test.ts  ::  flushIfDirty failure keeps the store dirty so a later flush retries
+  node  cursor-store.test.ts  ::  simulated crash: a failed save leaves the previous file intact
+  node  daemon-command-sender.test.ts  ::  each handler is one runDaemonCommand call whose act is the real work, invoked nowhere else (shape pin)
+  node  daemon-command-sender.test.ts  ::  the stream rail hands /status the raw replayed row, inside its status branch (shape pin)
+  node  daemon-wrapper.test.ts  ::  daemon spawn uses fixed bun argv without a shell
+  node  daemon-wrapper.test.ts  ::  stable wrapper installation is atomic and executable outside checkout
+  node  export-pack.test.ts  ::  real fs: an on-disk symlink escaping the workspace blocks the export
+  node  export-pack.test.ts  ::  real fs: the walk + allowlist package a temp workspace end to end
+  node  hoai-browser-host.test.ts  ::  resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded
+  node  hoai-browser-host.test.ts  ::  the host process stays up with no live socket: no credentials yet, or refused by the gateway
+  node  hoai-supervise.test.ts  ::  win32 gate helper source: only ever presses Enter after the gate marker is on screen, never blindly
+  node  meeting-card.test.ts  ::  a late twin for an older message cannot overwrite newer meeting state
+  node  meeting-card.test.ts  ::  deliverWsInbound routes a meeting twin to the meeting card before the plain card
+  node  plugin-cli.test.ts  ::  fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged
+  node  process-lifecycle.test.ts  ::  server.ts writes to stderr defensively, so logging can never throw into a handler
+  node  restart-deny-routing.test.ts  ::  1. a workspace with the activity rail gets BOTH the deny and the hooks
+  node  restart-deny-routing.test.ts  ::  2. THE CASE THIS CHANGE EXISTS FOR: settings with no hoai-hook gets the deny and NOT the hooks
+  node  restart-deny-routing.test.ts  ::  3. a .claude directory with no settings file at all still gets the deny
+  node  restart-deny-routing.test.ts  ::  4. a workdir with no .claude directory is left completely alone
+  node  service-supervision.test.ts  ::  the daemon and the watcher resolve the same authority and the same handle
+  node  stream-cursor-store.test.ts  ::  the file is written 0600 (owner only), like the chat cursor store
+  node  stream-wiring.test.ts  ::  the stream boots after the boot sweep and before the WS connects
+  node  update-planner.test.ts  ::  is well formed: LF endings, no em or en dashes, unique names
+  node  update-planner.test.ts  ::  source uses LF endings and no em or en dashes
+  node  voice-rpc.test.ts  ::  loadVoiceMemory concatenates the agent home memory files, capped
+  bun   ::  durable state and shared lock > state lives next to daemon state and round trips atomically at mode 600
+  bun   ::  schedule and drain decisions > live message entry points close admission and track admitted async work
+  bun   ::  server.ts never arms the git self-updater on a marketplace install (its root is Claude Code's cache clone)

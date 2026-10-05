@@ -1,0 +1,2710 @@
+================ MUTATION eol-star (01:14:06)
+--- diff (mutated vs original):
+--- a/.gitattributes	2026-10-04 01:13:42.000000000 +0400
++++ b/.gitattributes	2026-10-04 01:14:06.033172500 +0400
+@@ -5,7 +5,6 @@
+ # files are the one exception: cmd.exe misreads labels in an LF-only batch file,
+ # so they are CRLF on every OS. test/line-endings.test.ts pins both rules. The
+ # explicit pins below predate this line and stay, because tests name them.
+-* text=auto eol=lf
+ *.cmd text eol=crlf
+ *.bat text eol=crlf
+ bin/bgos-agent text eol=lf
+--- run on Windows: tsx test/line-endings.test.ts
+ℹ tests 3
+ℹ pass 1
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ a checkout made with Windows' default core.autocrlf=true writes LF everywhere except the batch files (1272.29ms)
+✖ every tracked text file is LF in the working tree, Windows batch files CRLF, none left to core.autocrlf (159.7096ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: a file left to core.autocrlf checks out CRLF in a Windows user's clone, so its bytes are not what CI tested
+  + actual - expected
+  + [
+  +   '.claude-plugin/plugin.json: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.gitattributes: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.github/workflows/release-tag.yml: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.github/workflows/tests.yml: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.github/workflows/version-check.yml: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.gitignore: text=unspecified eol=unspecified, want text and eol=lf',
+  +   '.mcp.json.example: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'CHANGELOG.md: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'README.md: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'REALCOMPACT-REPORT.md: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-claim.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-daemon-wrapper.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-doctor.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-install-method.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-launch.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/bgos-pair.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/hoai-add-to-path.ps1: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/hoai-bootstrap.ps1: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/hoai-browser-creds.ts: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/hoai-browser-host.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+  +   'bin/hoai-browser-launch.mjs: text=unspecified eol=unspecified, want text and eol=lf',
+--- restored byte identical
+================ MUTATION eol-cmd (01:14:09)
+--- diff (mutated vs original):
+--- a/.gitattributes	2026-10-04 01:13:42.000000000 +0400
++++ b/.gitattributes	2026-10-04 01:14:09.308421600 +0400
+@@ -6,7 +6,6 @@
+ # so they are CRLF on every OS. test/line-endings.test.ts pins both rules. The
+ # explicit pins below predate this line and stay, because tests name them.
+ * text=auto eol=lf
+-*.cmd text eol=crlf
+ *.bat text eol=crlf
+ bin/bgos-agent text eol=lf
+ bin/hoai text eol=lf
+--- run on Windows: tsx test/line-endings.test.ts
+ℹ tests 3
+ℹ pass 1
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ a checkout made with Windows' default core.autocrlf=true writes LF everywhere except the batch files (1280.7224ms)
+✖ every tracked text file is LF in the working tree, Windows batch files CRLF, none left to core.autocrlf (176.9602ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: a file left to core.autocrlf checks out CRLF in a Windows user's clone, so its bytes are not what CI tested
+  + actual - expected
+  + [
+  +   'bin/hoai.cmd: text=auto eol=lf, want text and eol=crlf'
+  + ]
+  - []
+    expected: [],
+  AssertionError [ERR_ASSERTION]: only the batch files may carry CR in a Windows default checkout
+  + actual - expected
+  + []
+  - [
+  -   'bin/hoai.cmd'
+  - ]
+    expected: [ 'bin/hoai.cmd' ],
+--- restored byte identical
+================ MUTATION cred-perassistant (01:14:59)
+--- diff (mutated vs original):
+--- a/lib/agent-credentials.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/agent-credentials.ts	2026-10-04 01:14:59.571647300 +0400
+@@ -189,7 +189,7 @@
+   const assistantId = configuredAssistantId(env)
+   if (assistantId) {
+     const perAssistant = join(agentDir, `credentials-${assistantId}.json`)
+-    if (exists(perAssistant)) return { kind: 'ok', path: perAssistant, via: 'env-assistant' }
++    if (false) return { kind: 'ok', path: perAssistant, via: 'env-assistant' }
+     // Configured id but no matching file: keep the legacy fallback unchanged.
+     // An explicit env pin, even a stale one, never triggers the refusal.
+     return { kind: 'ok', path: opts.defaultPath, via: 'legacy' }
+--- run on Windows: tsx test/agent-credentials.test.ts
+ℹ tests 50
+ℹ pass 46
+ℹ fail 4
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ per-assistant credentials file is preferred when it exists for the configured id (1.875ms)
+✖ read order in lib and the bgos-pair mirror never drift apart (0.3058ms)
+✖ selection: configured BGOS_ASSISTANT_ID with a matching file is ok/env-assistant (0.3304ms)
+✖ when both the per-assistant and legacy files exist, exactly one (per-assistant) is used (118.3639ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + '\\home\\kc\\.bgos-agent\\credentials.json'
+  - '\\home\\kc\\.bgos-agent\\credentials-871.json'
+    expected: '\\home\\kc\\.bgos-agent\\credentials-871.json',
+  AssertionError [ERR_ASSERTION]: mirror drift for env {"BGOS_ASSISTANT_ID":"871"}
+  + actual - expected
+  + '\\home\\kc\\.bgos-agent\\credentials.json'
+  - '\\home\\kc\\.bgos-agent\\credentials-871.json'
+    expected: '\\home\\kc\\.bgos-agent\\credentials-871.json',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials.json'
+  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json'
+    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-creds-both-YgO5f7\\.bgos-agent\\credentials-871.json',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + '\\home\\kc\\.bgos-agent\\credentials.json'
+  - '\\home\\kc\\.bgos-agent\\credentials-1017.json'
+    expected: '\\home\\kc\\.bgos-agent\\credentials-1017.json',
+--- restored byte identical
+================ MUTATION cred-mirror (01:15:01)
+--- diff (mutated vs original):
+--- a/bin/bgos-pair.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-pair.mjs	2026-10-04 01:15:01.319057500 +0400
+@@ -384,7 +384,6 @@
+   const id = String(env?.BGOS_ASSISTANT_ID ?? '').trim()
+   if (id && id !== ASSISTANT_ID_PLACEHOLDER) {
+     const perAssistant = perAssistantCredentialsPath(home, id)
+-    if (exists(perAssistant)) return perAssistant
+   }
+   return credentialsPath(home)
+ }
+--- run on Windows: tsx test/agent-credentials.test.ts
+ℹ tests 50
+ℹ pass 49
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ read order in lib and the bgos-pair mirror never drift apart (2.6575ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: mirror drift for env {"BGOS_ASSISTANT_ID":"871"}
+  + actual - expected
+  + '\\home\\kc\\.bgos-agent\\credentials-871.json'
+  - '\\home\\kc\\.bgos-agent\\credentials.json'
+    expected: '\\home\\kc\\.bgos-agent\\credentials.json',
+--- restored byte identical
+================ MUTATION cred-legacy (01:15:03)
+--- diff (mutated vs original):
+--- a/lib/agent-credentials.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/agent-credentials.ts	2026-10-04 01:15:03.298080900 +0400
+@@ -204,7 +204,7 @@
+   }
+ 
+   const ids = listPerAssistantIds(agentDir, listDir)
+-  const hasLegacy = exists(opts.defaultPath)
++  const hasLegacy = false
+   if (ids.length === 1 && !hasLegacy) {
+     return { kind: 'ok', path: join(agentDir, `credentials-${ids[0]}.json`), via: 'sole-per-assistant' }
+   }
+--- run on Windows: tsx test/agent-credentials.test.ts
+ℹ tests 50
+ℹ pass 49
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ selection: fresh single-agent host (one per-assistant + legacy) does NOT regress: ok/legacy, never refuse (2.7661ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  +   path: '\\home\\kc\\.bgos-agent\\credentials-963.json',
+  +   via: 'sole-per-assistant'
+  -   path: '\\home\\kc\\.bgos-agent\\credentials.json',
+  -   via: 'legacy'
+    expected: { kind: 'ok', path: '\\home\\kc\\.bgos-agent\\credentials.json', via: 'legacy' },
+--- restored byte identical
+================ MUTATION cred-folderpin (01:15:05)
+--- diff (mutated vs original):
+--- a/lib/agent-credentials.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/agent-credentials.ts	2026-10-04 01:15:05.004613900 +0400
+@@ -199,7 +199,7 @@
+   const folderId = readFolderPinId(cwd, readText)
+   if (folderId) {
+     const pinned = join(agentDir, `credentials-${folderId}.json`)
+-    if (exists(pinned)) return { kind: 'ok', path: pinned, via: 'folder-pin' }
++    if (false) return { kind: 'ok', path: pinned, via: 'folder-pin' }
+     // A pin pointing at a missing file is stale: fall through, never obey it.
+   }
+ 
+--- run on Windows: tsx test/agent-credentials.test.ts
+ℹ tests 50
+ℹ pass 47
+ℹ fail 3
+ℹ skipped 0
+[run-one] exit 1 
+✖ a folder pin makes the same host safe, and silent (0.2488ms)
+✖ failing tests:
+✖ selection: NO env, a folder pin resolves that agents own file (folder-pin) (2.349ms)
+✖ selection: NO env, a folder pin still wins over the many-file refusal (0.2825ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  +   agentDir: '\\home\\kc\\.bgos-agent',
+  +   candidateIds: [
+  +     '1013',
+  +     '1015',
+  +     '1017',
+  +     '1019'
+  +   ],
+  +   kind: 'refuse'
+  -   kind: 'ok',
+  -   path: '\\home\\kc\\.bgos-agent\\credentials-1017.json',
+  -   via: 'folder-pin'
+    expected: { kind: 'ok', path: '\\home\\kc\\.bgos-agent\\credentials-1017.json', via: 'folder-pin' },
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: 'ok',
+  AssertionError [ERR_ASSERTION]: the pin is exactly the remedy, so it must silence the warning
+  + actual - expected
+  + 'identity here rests ENTIRELY on the environment: 2 credential files in \\agent and no .bgos-agent-id folder pin. Removing the env pin would not degrade this agent, it would refuse to boot. Write a .bgos-agent-id containing the assistant id to make it survive that.'
+  - null
+    expected: null,
+--- restored byte identical
+================ MUTATION pair-pathline (01:15:50)
+--- diff (mutated vs original):
+--- a/bin/bgos-pair.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-pair.mjs	2026-10-04 01:15:50.324390900 +0400
+@@ -1694,7 +1694,7 @@
+       cliInstall = null
+     }
+     if (cliInstall?.ok && cliInstall.binDir) {
+-      console.log(`[bgos-pair] the hoai command is on your PATH now (${cliInstall.binDir}).`)
++      console.log(`[bgos-pair] the hoai command is on your PATH now (~/.local/bin).`)
+     } else {
+       console.log('[bgos-pair] the hoai command could NOT be installed automatically.')
+       if (withFallback) {
+--- run on Windows: tsx test/bgos-pair.test.ts
+ℹ tests 85
+ℹ pass 82
+ℹ fail 2
+ℹ skipped 1
+[run-one] exit 1 
+✖ failing tests:
+✖ main: a pairing whose agent is not bound YET still puts hoai on PATH (52.6699ms)
+✖ main: pairing runs install-cli itself, with the injected home, and says where it landed (57.9355ms)
+﹣ isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS) (5.1699ms) # win32 refused symlink creation (needs elevation or Developer Mode)
+--- why (assertion lines):
+✔ pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning (0.0738ms)
+  AssertionError [ERR_ASSERTION]: the PATH line names the bin dir it installed into; got:
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the PATH line names the bin dir it installed into; got:
+    expected: true,
+--- restored byte identical
+================ MUTATION pair-mkdirp (01:15:54)
+--- diff (mutated vs original):
+--- a/bin/bgos-pair.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-pair.mjs	2026-10-04 01:15:54.592939900 +0400
+@@ -978,7 +978,7 @@
+   // PowerShell's mkdir is New-Item, which creates intermediate directories and
+   // rejects -p outright; posix mkdir needs the -p. One wrong flag here is a red
+   // error on the first line a Windows owner pastes.
+-  const makeDir = win32 ? `mkdir ${quoted}` : `mkdir -p ${quoted}`
++  const makeDir = `mkdir ${quoted}`
+   const lines =
+     verdict === 'root'
+       ? [
+--- run on Windows: tsx test/bgos-pair.test.ts
+ℹ tests 85
+ℹ pass 82
+ℹ fail 2
+ℹ skipped 1
+[run-one] exit 1 
+✖ failing tests:
+✖ main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it (2.8924ms)
+✖ pairCwdRefusalLines: the mkdir line is PowerShell-shaped on win32, posix-shaped elsewhere (3.0821ms)
+﹣ isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS) (5.1474ms) # win32 refused symlink creation (needs elevation or Developer Mode)
+--- why (assertion lines):
+✔ pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning (0.0793ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m. Input:
+    expected: /^ {2}mkdir -p \/home\/kc\/hoai-agents\/my-agent$/m,
+  AssertionError [ERR_ASSERTION]: the refusal names the exact mkdir line; got:
+    expected: true,
+--- restored byte identical
+================ MUTATION pair-cd (01:16:06)
+--- diff (mutated vs original):
+--- a/bin/bgos-pair.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-pair.mjs	2026-10-04 01:16:06.557526500 +0400
+@@ -998,7 +998,7 @@
+     'nothing was written and your pair code was NOT spent: it is still good for 10 minutes.',
+     'give the agent a folder of its own and pair in there:',
+     `  ${makeDir}`,
+-    `  cd ${quoted}`,
++    `  cd ~`,
+   )
+   if (String(command ?? '').trim()) lines.push(`  ${String(command).trim()}`)
+   lines.push(
+--- run on Windows: tsx test/bgos-pair.test.ts
+ℹ tests 85
+ℹ pass 82
+ℹ fail 2
+ℹ skipped 1
+[run-one] exit 1 
+✖ failing tests:
+✖ main refuses a home-directory pairing BEFORE the code is spent, with the lines that fix it (2.5929ms)
+✖ pairCwdRefusalLines: the mkdir line is PowerShell-shaped on win32, posix-shaped elsewhere (2.9656ms)
+﹣ isRunAsMain matches through a symlinked bin (npx/npm shim, /tmp on macOS) (5.5071ms) # win32 refused symlink creation (needs elevation or Developer Mode)
+--- why (assertion lines):
+✔ pair exit codes distinguish safe completion, unexpected errors, refusal, and pinning (0.0791ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m. Input:
+    expected: /^ {2}cd C:\\Users\\kc\\hoai-agents\\my-agent$/m,
+  AssertionError [ERR_ASSERTION]: the refusal names the exact cd line; got:
+    expected: true,
+--- restored byte identical
+================ MUTATION claim-contain (01:16:51)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:16:51.727564500 +0400
+@@ -127,8 +127,7 @@
+   const dir = join(rootResolved, slug)
+   const dirResolved = resolve(dir)
+   if (
+-    dirResolved === rootResolved ||
+-    !dirResolved.startsWith(rootResolved + sep)
++    false
+   ) {
+     throw new Error(
+       `refusing to scaffold outside the agents root: ` +
+--- run on Windows: tsx test/bgos-claim.test.ts
+ℹ tests 30
+ℹ pass 28
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk (10.9297ms)
+✖ failing tests:
+✖ resolveAgentDir keeps the scaffold strictly inside the agents root (0.2834ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: 384,
+  AssertionError [ERR_ASSERTION]: Missing expected exception: ..
+    expected: /outside the agents root/,
+--- restored byte identical
+================ MUTATION claim-return (01:16:53)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:16:53.199116700 +0400
+@@ -135,7 +135,7 @@
+         `${dirResolved} is not inside ${rootResolved}`,
+     )
+   }
+-  return dir
++  return rootResolved
+ }
+ 
+ /** Accept a raw claim token or a pasted claim URL (…/h/<token>). */
+--- run on Windows: tsx test/bgos-claim.test.ts
+ℹ tests 30
+ℹ pass 27
+ℹ fail 3
+ℹ skipped 0
+[run-one] exit 1 
+✖ MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk (11.5959ms)
+✖ a hostile network slug never escapes the root; a good slug scaffolds inside it (1.2787ms)
+✖ failing tests:
+✖ resolveAgentDir keeps the scaffold strictly inside the agents root (0.4838ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: 384,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'E:\\home\\kc\\bgos-agents'
+  - 'E:\\home\\kc\\bgos-agents\\atlas'
+    expected: 'E:\\home\\kc\\bgos-agents\\atlas',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii'
+  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas'
+    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-root-rbK0ii\\atlas',
+--- restored byte identical
+================ MUTATION voice-join (01:16:54)
+--- diff (mutated vs original):
+--- a/lib/voice-rpc.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/voice-rpc.ts	2026-10-04 01:16:54.676168600 +0400
+@@ -264,7 +264,7 @@
+   const candidates = explicit ? [explicit] : VOICE_MEMORY_CANDIDATES
+   const chunks: string[] = []
+   for (const rel of candidates) {
+-    const path = isAbsolute(rel) ? rel : join(cwd, rel)
++    const path = rel
+     const body = read(path)
+     if (body && body.trim()) chunks.push(body.trim())
+     if (chunks.join('\n\n').length >= VOICE_MEMORY_MAX) break
+--- run on Windows: tsx test/voice-rpc.test.ts
+ℹ tests 87
+ℹ pass 86
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ loadVoiceMemory concatenates the agent home memory files, capped (4.2888ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+    expected: true,
+--- restored byte identical
+================ MUTATION voice-sep (01:16:56)
+--- diff (mutated vs original):
+--- a/lib/voice-rpc.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/voice-rpc.ts	2026-10-04 01:16:56.596179700 +0400
+@@ -264,7 +264,7 @@
+   const candidates = explicit ? [explicit] : VOICE_MEMORY_CANDIDATES
+   const chunks: string[] = []
+   for (const rel of candidates) {
+-    const path = isAbsolute(rel) ? rel : join(cwd, rel)
++    const path = isAbsolute(rel) ? rel : `${cwd}/${rel}`
+     const body = read(path)
+     if (body && body.trim()) chunks.push(body.trim())
+     if (chunks.join('\n\n').length >= VOICE_MEMORY_MAX) break
+--- run on Windows: tsx test/voice-rpc.test.ts
+ℹ tests 87
+ℹ pass 86
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ loadVoiceMemory concatenates the agent home memory files, capped (4.3494ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+    expected: true,
+--- restored byte identical
+================ MUTATION wrap-argv (01:17:57)
+--- diff (mutated vs original):
+--- a/bin/bgos-daemon-wrapper.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-daemon-wrapper.mjs	2026-10-04 01:17:57.013713900 +0400
+@@ -600,7 +600,7 @@
+ }
+ 
+ export function daemonSpawnSpec(pluginDir) {
+-  return { file: 'bun', args: [join(pluginDir, 'server.ts')] }
++  return { file: 'bun', args: [join(pluginDir, 'server.ts').split(' ')].flat() }
+ }
+ 
+ export function spawnDaemon(pluginDir, env = process.env) {
+--- run on Windows: tsx test/daemon-wrapper.test.ts
+ℹ tests 24
+ℹ pass 23
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ daemon spawn uses fixed bun argv without a shell (2.4088ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  +     '\\opt\\bgos',
+  +     'plugin\\server.ts'
+  -     '\\opt\\bgos plugin\\server.ts'
+    expected: { file: 'bun', args: [ '\\opt\\bgos plugin\\server.ts' ] },
+--- restored byte identical
+================ MUTATION wrap-chmod (01:17:58)
+--- diff (mutated vs original):
+--- a/bin/bgos-daemon-wrapper.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-daemon-wrapper.mjs	2026-10-04 01:17:58.889090800 +0400
+@@ -327,7 +327,6 @@
+   mkdirSync(dirname(target), { recursive: true })
+   try {
+     copyFileSync(source, temporary)
+-    chmodSync(temporary, 0o755)
+     renameSync(temporary, target)
+   } catch (error) {
+     try {
+--- run on Windows: tsx test/daemon-wrapper.test.ts
+ℹ tests 24
+ℹ pass 23
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ stable wrapper installation is atomic and executable outside checkout (7.6483ms)
+--- why (assertion lines):
+  Error: EPERM: operation not permitted, rename 'C:\Users\karim\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs.50648.29f4cd9c-f0dc-42af-8c63-c0d1d16007fb.tmp' -> 'C:\Users\karim\AppData\Local\Temp\bgos-wrapper-install-4EQYev\home\.bgos-agent\runtime\bgos-daemon-wrapper.mjs'
+--- restored byte identical
+================ MUTATION wrap-inplace (01:18:00)
+--- diff (mutated vs original):
+--- a/bin/bgos-daemon-wrapper.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-daemon-wrapper.mjs	2026-10-04 01:18:00.691095400 +0400
+@@ -328,7 +328,7 @@
+   try {
+     copyFileSync(source, temporary)
+     chmodSync(temporary, 0o755)
+-    renameSync(temporary, target)
++    copyFileSync(temporary, target)
+   } catch (error) {
+     try {
+       unlinkSync(temporary)
+--- run on Windows: tsx test/daemon-wrapper.test.ts
+ℹ tests 24
+ℹ pass 23
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ stable wrapper installation is atomic and executable outside checkout (12.0918ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: replaced by rename, not rewritten in place
+    expected: 26740122788527895n,
+--- restored byte identical
+================ MUTATION chrome-hostflavor (01:20:10)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:19:21.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:20:10.955493700 +0400
+@@ -644,7 +644,7 @@
+  *  rules rather than the host's, so a Windows run of the tests sees real mac and linux paths and
+  *  a Linux run sees real Windows ones; on a real host the two are the same. */
+ export function chromeCandidates({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+-  const { join, delimiter } = platform === 'win32' ? win32Path : posixPath
++  const { join, delimiter } = process.platform === 'win32' ? win32Path : posixPath
+   if (platform === 'darwin') {
+     const apps = [
+       'Google Chrome.app/Contents/MacOS/Google Chrome',
+--- run on Windows: tsx test/hoai-browser-host.test.ts
+ℹ tests 30
+ℹ pass 27
+ℹ fail 2
+ℹ skipped 1
+[run-one] exit 1 
+✖ failing tests:
+✖ resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded (2.5175ms)
+✖ the host process stays up with no live socket: no credentials yet, or refused by the gateway (3971.8832ms)
+﹣ END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart (0.1495ms) # no Chrome or Chromium is installed on this machine
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + '\\Applications\\Google Chrome.app\\Contents\\MacOS\\Google Chrome'
+  - '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+    expected: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  AssertionError [ERR_ASSERTION]: and still stops cleanly on SIGTERM
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION chrome-hostflavor (01:20:28)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:19:21.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:20:28.894246275 +0400
+@@ -644,7 +644,7 @@
+  *  rules rather than the host's, so a Windows run of the tests sees real mac and linux paths and
+  *  a Linux run sees real Windows ones; on a real host the two are the same. */
+ export function chromeCandidates({ platform = process.platform, env = process.env, home = homedir() } = {}) {
+-  const { join, delimiter } = platform === 'win32' ? win32Path : posixPath
++  const { join, delimiter } = process.platform === 'win32' ? win32Path : posixPath
+   if (platform === 'darwin') {
+     const apps = [
+       'Google Chrome.app/Contents/MacOS/Google Chrome',
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 30
+ℹ pass 28
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ failing tests:
+✖ resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded (3.324857ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  +   'C:\\Program Files/Google/Chrome/Application/chrome.exe',
+  +   'C:\\Program Files/Google/Chrome Beta/Application/chrome.exe',
+  +   'C:\\Program Files/Chromium/Application/chrome.exe',
+  +   'C:\\Users\\kc\\AppData\\Local/Google/Chrome/Application/chrome.exe',
+  +   'C:\\Users\\kc\\AppData\\Local/Google/Chrome Beta/Application/chrome.exe',
+  +   'C:\\Users\\kc\\AppData\\Local/Chromium/Application/chrome.exe'
+  -   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  -   'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe',
+  -   'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+  -   'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe',
+  -   'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe',
+  -   'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe'
+    expected: [ 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Program Files\\Chromium\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Google\\Chrome Beta\\Application\\chrome.exe', 'C:\\Users\\kc\\AppData\\Local\\Chromium\\Application\\chrome.exe' ],
+--- restored byte identical
+================ MUTATION scs-ro (01:21:52)
+--- diff (mutated vs original):
+--- a/lib/stream-cursor-store.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/stream-cursor-store.ts	2026-10-04 01:21:52.572585400 +0400
+@@ -108,7 +108,7 @@
+       epoch: cursor.epoch,
+       tokenFingerprint,
+     })
+-    writeFileSync(tmp, body, { mode: 0o600 })
++    writeFileSync(tmp, body, { mode: 0o400 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+--- run on Windows: tsx test/stream-cursor-store.test.ts
+ℹ tests 10
+ℹ pass 9
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ the file is written 0600 (owner only) like the chat cursor store, and replaced whole (5.3247ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION scs-644 (01:21:56)
+--- diff (mutated vs original):
+--- a/lib/stream-cursor-store.ts	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/stream-cursor-store.ts	2026-10-04 01:21:56.866514439 +0400
+@@ -108,7 +108,7 @@
+       epoch: cursor.epoch,
+       tokenFingerprint,
+     })
+-    writeFileSync(tmp, body, { mode: 0o600 })
++    writeFileSync(tmp, body, { mode: 0o644 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+--- run on Linux: tsx test/stream-cursor-store.test.ts
+ℹ tests 10
+ℹ pass 9
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ the file is written 0600 (owner only) like the chat cursor store, and replaced whole (1.889558ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: 384,
+--- restored byte identical
+================ MUTATION scs-inplace (01:21:57)
+--- diff (mutated vs original):
+--- a/lib/stream-cursor-store.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/stream-cursor-store.ts	2026-10-04 01:21:57.380979000 +0400
+@@ -108,8 +108,7 @@
+       epoch: cursor.epoch,
+       tokenFingerprint,
+     })
+-    writeFileSync(tmp, body, { mode: 0o600 })
+-    renameSync(tmp, filePath)
++    writeFileSync(filePath, body, { mode: 0o600 })
+     return true
+   } catch {
+     try {
+--- run on Windows: tsx test/stream-cursor-store.test.ts
+ℹ tests 10
+ℹ pass 9
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ the file is written 0600 (owner only) like the chat cursor store, and replaced whole (4.7849ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: replaced by rename, not rewritten in place
+    expected: 7881299349022332n,
+--- restored byte identical
+================ LINUX MUTATION scs-inplace (01:22:01)
+--- diff (mutated vs original):
+--- a/lib/stream-cursor-store.ts	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/stream-cursor-store.ts	2026-10-04 01:22:01.900003123 +0400
+@@ -108,8 +108,7 @@
+       epoch: cursor.epoch,
+       tokenFingerprint,
+     })
+-    writeFileSync(tmp, body, { mode: 0o600 })
+-    renameSync(tmp, filePath)
++    writeFileSync(filePath, body, { mode: 0o600 })
+     return true
+   } catch {
+     try {
+--- run on Linux: tsx test/stream-cursor-store.test.ts
+ℹ tests 10
+ℹ pass 9
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ the file is written 0600 (owner only) like the chat cursor store, and replaced whole (1.774566ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: replaced by rename, not rewritten in place
+    expected: 175462n,
+--- restored byte identical
+================ MUTATION su-ro (01:22:27)
+--- diff (mutated vs original):
+--- a/lib/self-update.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/self-update.ts	2026-10-04 01:22:27.518793700 +0400
+@@ -424,7 +424,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
++    writeFileSync(tmp, JSON.stringify(state), { mode: 0o400 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+@@ -472,7 +472,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
++    writeFileSync(tmp, JSON.stringify(state), { mode: 0o400 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+--- run on Windows: bun test/self-update.test.ts
+ 51 pass
+ 26 fail
+Ran 77 tests across 1 file. [336.00ms]
+[run-one] exit 1 
+(fail) bounded drain for triggered updates (UPDATE_DRAIN_TIMEOUT_MS) > updateNow: a drain that settles before the deadline installs exactly as before
+(fail) default-on flag (KC 2026-07-18) > rollback disable survives on restarts until explicit off then on [16.00ms]
+(fail) durable state and shared lock > shared rollback latch blocks every daemon until off then on
+(fail) durable state and shared lock > state lives next to daemon state and round trips atomically at mode 600
+(fail) real git check in dry-run mode > double dependency recovery failure disables checks and keeps intake drained
+(fail) real git check in dry-run mode > failed previous recovery restores exact target and exits for validation [16.00ms]
+(fail) real git check in dry-run mode > live apply releases its lock before exit after a drained ff-only merge [16.00ms]
+(fail) real git check in dry-run mode > lock loser exits after the holder finishes ONLY when BGOS_EXIT_AFTER_UPDATE opts in [16.00ms]
+(fail) real git check in dry-run mode > lock loser waits for the holder, records the install, un-drains, and KEEPS SERVING without opt-in
+(fail) real git check in dry-run mode > post-merge dependency failure restores previous checkout and dependencies [15.00ms]
+(fail) real git check in dry-run mode > rollback dependency failure restores the target and stays pending [16.00ms]
+(fail) real git check in dry-run mode > rollback lock loser waits, acquires the lock, and finishes safely [15.00ms]
+(fail) real git check in dry-run mode > rollback recovery failure latches shared auto-update safety
+(fail) real git check in dry-run mode > rollback uses detached checkout, latches shared safety, and exits zero
+(fail) the kc-server outage, end to end > supervised: opting in restores the exit, so real supervisors still cycle
+(fail) the kc-server outage, end to end > unsupervised: update installs, daemon KEEPS SERVING and never exits [16.00ms]
+(fail) the lock loser takes the same restart decision as the winner > a TRIGGERED loser keeps its early return: no exit and no ladder here, even with the opt in and a ladder wired [15.00ms]
+(fail) the lock loser takes the same restart decision as the winner > loser plus a ladder that stages: stays up, un-drains, and logs that the update is staged
+(fail) the lock loser takes the same restart decision as the winner > loser plus a ladder that throws: the failure never becomes the outage, it stages and un-drains [16.00ms]
+(fail) the lock loser takes the same restart decision as the winner > loser plus ladder: asks the ladder for the inspected version, never exits, and keeps the drain ON when the ladder took it [15.00ms]
+(fail) the lock loser takes the same restart decision as the winner > loser plus opt in: exits (lock released first) even with a ladder wired, and never asks the ladder [16.00ms]
+(fail) the lock loser takes the same restart decision as the winner > loser with neither: keeps serving, un-drained, install recorded, no ladder asked
+(fail) updateNow (one-click update_rpc trigger) > BGOS_EXIT_AFTER_UPDATE is ignored on the triggered path (the ladder owns restarts) [15.00ms]
+(fail) updateNow (one-click update_rpc trigger) > a second updateNow short-circuits to the already-installed version [16.00ms]
+(fail) updateNow (one-click update_rpc trigger) > an untracked-only checkout is not dirty and the one-click update installs [16.00ms]
+(fail) updateNow (one-click update_rpc trigger) > happy path: drains, installs, keeps the drain ON, and NEVER exits
+--- why (assertion lines):
+195 |     expect(commands).toBe(0)
+196 |     expect(loadAutoUpdateState(stateFilePath).disabled).toBe(true)
+198 |     expect(await initializeSelfUpdater({ ...common, env: { BGOS_AUTO_UPDATE: 'off' } })).toBeNull()
+199 |     expect(commands).toBe(0)
+200 |     expect(loadAutoUpdateState(stateFilePath).resetArmed).toBe(true)
+error: expect(received).toBe(expected)
+Expected: true
+Received: false
+514 |     expect(saveAutoUpdateState(path, state)).toBe(true)
+518 |     expect(saveAutoUpdateState(path, state)).toBe(true)
+error: expect(received).toBe(expected)
+Expected: true
+Received: false
+623 |     expect(await initializeSelfUpdater({ ...base, env: { BGOS_AUTO_UPDATE: 'on' } })).toBeNull()
+624 |     expect(commands).toBe(0)
+625 |     expect(await initializeSelfUpdater({ ...base, env: { BGOS_AUTO_UPDATE: 'off' } })).toBeNull()
+626 |     expect(commands).toBe(0)
+627 |     expect(loadSharedUpdateSafety(safetyPath).resetArmed).toBe(true)
+error: expect(received).toBe(expected)
+Expected: true
+Received: false
+858 |     expect(updater).not.toBeNull()
+860 |     expect(drainModes).toEqual([true])
+error: expect(received).toEqual(expected)
+--- restored byte identical
+================ LINUX MUTATION su-644 (01:22:31)
+--- diff (mutated vs original):
+--- a/lib/self-update.ts	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/self-update.ts	2026-10-04 01:22:31.054992095 +0400
+@@ -424,7 +424,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
++    writeFileSync(tmp, JSON.stringify(state), { mode: 0o644 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+@@ -472,7 +472,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
++    writeFileSync(tmp, JSON.stringify(state), { mode: 0o644 })
+     renameSync(tmp, filePath)
+     return true
+   } catch {
+--- run on Linux: bun test/self-update.test.ts
+ 76 pass
+ 1 fail
+[lone] exit 1
+(fail) durable state and shared lock > state lives next to daemon state and round trips atomically at mode 600 [1.45ms]
+--- why (assertion lines):
+error: expect(received).toBe(expected)
+Expected: 384
+Received: 420
+--- restored byte identical
+================ MUTATION su-inplace (01:22:31)
+--- diff (mutated vs original):
+--- a/lib/self-update.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/self-update.ts	2026-10-04 01:22:31.241637800 +0400
+@@ -424,8 +424,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
+-    renameSync(tmp, filePath)
++    writeFileSync(filePath, JSON.stringify(state), { mode: 0o600 })
+     return true
+   } catch {
+     try {
+@@ -472,8 +471,7 @@
+   const tmp = `${filePath}.${process.pid}.tmp`
+   try {
+     mkdirSync(dirname(filePath), { recursive: true })
+-    writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
+-    renameSync(tmp, filePath)
++    writeFileSync(filePath, JSON.stringify(state), { mode: 0o600 })
+     return true
+   } catch {
+     try {
+--- run on Windows: bun test/self-update.test.ts
+ 76 pass
+ 1 fail
+Ran 77 tests across 1 file. [300.00ms]
+[run-one] exit 1 
+(fail) durable state and shared lock > state lives next to daemon state and round trips atomically at mode 600
+--- why (assertion lines):
+518 |     expect(saveAutoUpdateState(path, state)).toBe(true)
+519 |     expect(loadAutoUpdateState(path)).toEqual(state)
+520 |     expect(statSync(path, { bigint: true }).ino).not.toBe(first.ino)
+error: expect(received).not.toBe(expected)
+Expected: not 2814749769155400n
+--- restored byte identical
+================ MUTATION cs-nonatomic (01:23:13)
+--- diff (mutated vs original):
+--- a/lib/cursor-store.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/cursor-store.ts	2026-10-04 01:23:13.936922300 +0400
+@@ -131,8 +131,7 @@
+       v: FILE_VERSION,
+       cursors: Object.fromEntries(cursors),
+     })
+-    writeFileSync(tmp, body, { mode: 0o600 })
+-    renameSync(tmp, filePath)
++    writeFileSync(filePath, body, { mode: 0o600 })
+     return true
+   } catch {
+     try {
+--- run on Windows: tsx test/cursor-store.test.ts
+ℹ tests 19
+ℹ pass 18
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ simulated crash: a failed save leaves the previous file intact (5.2077ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: save must report failure, not throw
+    expected: false,
+--- restored byte identical
+================ MUTATION cs-nocatch (01:23:15)
+--- diff (mutated vs original):
+--- a/lib/cursor-store.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/cursor-store.ts	2026-10-04 01:23:15.631795000 +0400
+@@ -134,13 +134,7 @@
+     writeFileSync(tmp, body, { mode: 0o600 })
+     renameSync(tmp, filePath)
+     return true
+-  } catch {
+-    try {
+-      unlinkSync(tmp)
+-    } catch {
+-      /* tempfile never existed or is already gone */
+-    }
+-    return false
++  } finally {
+   }
+ }
+ 
+--- run on Windows: tsx test/cursor-store.test.ts
+ℹ tests 19
+ℹ pass 17
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ flushIfDirty failure keeps the store dirty so a later flush retries (0.9898ms)
+✖ simulated crash: a failed save leaves the previous file intact (3.1095ms)
+--- why (assertion lines):
+  Error: EISDIR: illegal operation on a directory, open 'C:\Users\karim\AppData\Local\Temp\cursor-crash-GH2FtR\chat-cursors.json.87880.tmp'
+  Error: EEXIST: file already exists, mkdir 'C:\Users\karim\AppData\Local\Temp\cursor-retry-enxBmS\state'
+--- restored byte identical
+================ MUTATION cs-dirty (01:23:17)
+--- diff (mutated vs original):
+--- a/lib/cursor-store.ts	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/cursor-store.ts	2026-10-04 01:23:17.487354100 +0400
+@@ -221,7 +221,7 @@
+   flushIfDirty(): boolean {
+     if (!this.dirty) return false
+     const ok = saveCursorFile(this.filePath, this.live)
+-    if (ok) this.dirty = false
++    this.dirty = false
+     return ok
+   }
+ }
+--- run on Windows: tsx test/cursor-store.test.ts
+ℹ tests 19
+ℹ pass 18
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ flushIfDirty failure keeps the store dirty so a later flush retries (2.5047ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: failed flush must not clear the dirty flag
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION cs-dirty (01:23:21)
+--- diff (mutated vs original):
+--- a/lib/cursor-store.ts	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/cursor-store.ts	2026-10-04 01:23:21.867651778 +0400
+@@ -221,7 +221,7 @@
+   flushIfDirty(): boolean {
+     if (!this.dirty) return false
+     const ok = saveCursorFile(this.filePath, this.live)
+-    if (ok) this.dirty = false
++    this.dirty = false
+     return ok
+   }
+ }
+--- run on Linux: tsx test/cursor-store.test.ts
+ℹ tests 19
+ℹ pass 18
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ flushIfDirty failure keeps the store dirty so a later flush retries (2.081058ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: failed flush must not clear the dirty flag
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION ep-slash (01:25:04)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:04.473585528 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return real === rootReal || real.startsWith(`${rootReal}/`)
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 41
+ℹ fail 3
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows host: a workspace at a drive root (E:\) still packages (0.254534ms)
+✖ a Windows host: backslash realpaths inside the workspace package, upload once, and list (2.420965ms)
+✖ a posix workspace at / still packages (0.246551ms)
+✖ failing tests:
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.119069ms)
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+--- restored byte identical
+================ MUTATION ep-slash (01:25:05)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:05.055397600 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return real === rootReal || real.startsWith(`${rootReal}/`)
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Windows: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 39
+ℹ fail 5
+ℹ skipped 0
+[run-one] exit 1 
+✖ a Windows host: a workspace at a drive root (E:\) still packages (0.2707ms)
+✖ a Windows host: backslash realpaths inside the workspace package, upload once, and list (2.2976ms)
+✖ a posix workspace at / still packages (0.1833ms)
+✖ failing tests:
+✖ real fs: an on-disk symlink escaping the workspace blocks the export (6.5437ms)
+✖ real fs: the walk + allowlist package a temp workspace end to end (34.4409ms)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.092ms)
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  Error: EPERM: operation not permitted, symlink 'C:\Users\karim\AppData\Local\Temp\bgos-outside-TwOzdE\loot.md' -> 'C:\Users\karim\AppData\Local\Temp\bgos-export-pack-rIqo9f\.claude\rules\evil.md'
+--- restored byte identical
+================ LINUX MUTATION ep-nosep (01:25:09)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:09.511133311 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return real.startsWith(rootReal)
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 42
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows host: a sibling folder that only starts with the root name, or another drive, is outside (2.680058ms)
+✖ failing tests:
+✖ on posix a backslash is a file name byte, not a separator: /ws\evil is outside /ws (0.537482ms)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.115967ms)
+  AssertionError [ERR_ASSERTION]: C:\Users\k\agents\atlas-evil\style.md
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+--- restored byte identical
+================ LINUX MUTATION ep-normalise (01:25:12)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:12.964174509 +0400
+@@ -618,7 +618,7 @@
+  */
+ export function isInsideRealRoot(rootReal: string, real: string, platform: string): boolean {
+   const p = platform === 'win32' ? win32Path : posixPath
+-  const rel = p.relative(rootReal, real)
++  const rel = win32Path.relative(rootReal, real).split("\\").join(p.sep)
+   if (rel === '') return true
+   if (p.isAbsolute(rel)) return false
+   return rel.split(p.sep)[0] !== '..'
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 43
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ on posix a backslash is a file name byte, not a separator: /ws\evil is outside /ws (3.049362ms)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.103403ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+--- restored byte identical
+================ LINUX MUTATION ep-strip (01:25:16)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:16.325185037 +0400
+@@ -711,7 +711,8 @@
+   }
+ 
+   private async rootRealpath(): Promise<string> {
+-    return this.deps.realpath('')
++    const root = await this.deps.realpath('')
++    return root.endsWith('/') ? root.slice(0, -1) : root
+   }
+ 
+   private async resolvesInsideRoot(
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 43
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ a posix workspace at / still packages (2.273543ms)
+✖ failing tests:
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.193338ms)
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION ep-concat (01:25:19)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:25:19.687455347 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return real === rootReal || real.startsWith(rootReal + ((this.deps.platform ?? process.platform) === "win32" ? "\\" : "/"))
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 44
+ℹ pass 42
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows host: a workspace at a drive root (E:\) still packages (2.539133ms)
+✖ a posix workspace at / still packages (0.286023ms)
+✖ failing tests:
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.107986ms)
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+--- restored byte identical
+================ MUTATION ep-alwaysin (01:26:20)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:26:20.961179600 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return true
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Windows: tsx test/export-pack.test.ts
+ℹ tests 45
+ℹ pass 39
+ℹ fail 5
+ℹ skipped 1
+[run-one] exit 1 
+✖ a Windows host: a sibling folder that only starts with the root name, or another drive, is outside (0.3798ms)
+✖ a symlink escaping the workspace root blocks the export (realpath gate) (2.9201ms)
+✖ failing tests:
+✖ on posix a backslash is a file name byte, not a separator: /ws\evil is outside /ws (0.3044ms)
+✖ real fs: a junction escaping the workspace blocks the export, and one that stays inside packages (9.1948ms)
+✖ the dry run silently drops symlink escapees from the listing (0.27ms)
+﹣ real fs: an on-disk symlink escaping the workspace blocks the export (6.3837ms) # win32 refused symlink creation (needs Developer Mode or an elevated shell)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.1121ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+  AssertionError [ERR_ASSERTION]: C:\Users\k\agents\atlas-evil\style.md
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+  AssertionError [ERR_ASSERTION]: {"ok":true,"payload":{"manifest":{"schema_version":1,"pack":{"name":"Atlas","slug":"atlas","packaged_at":"2026-07-10T10:00:00.000Z"},"agent_class":"claude-code","tier":"fresh","persona":null,"starter_prompts":null,"model_prefs":{"tone":null},"required_env":[],"files":[{"path":"agent/CLAUDE.md","sha256":"25dd68c892e6392d65f8b4f564aa30dfb65779a0a8aeea225b4a869d74b0867a","bytes":8},{"path":"agent/rules/loot.md","sha256":"f99eed76f90cc7779c839452670e08dea1cd8647c766622143250d9f769e0aa7","bytes":36}],"secret_scan":{"status":"pass","rules_version":1,"files_scanned":2,"scanned_at":"2026-07-10T10:00:00.000Z"},"lineage":{"source_assistant_id":"901","source_generation":0,"platform":"home-of-agents"}},"packSha256":"85af9571474ffd62b0bf05d8c4cdb7e87a53a40d0ff3be91b89ff53669313932","packBytes":1248}}
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+--- restored byte identical
+================ LINUX MUTATION ep-alwaysin (01:26:26)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:26:26.533987870 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return true
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Linux: tsx test/export-pack.test.ts
+ℹ tests 45
+ℹ pass 39
+ℹ fail 6
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows host: a sibling folder that only starts with the root name, or another drive, is outside (0.532178ms)
+✖ a symlink escaping the workspace root blocks the export (realpath gate) (2.506088ms)
+✖ failing tests:
+✖ on posix a backslash is a file name byte, not a separator: /ws\evil is outside /ws (0.418542ms)
+✖ real fs: a junction escaping the workspace blocks the export, and one that stays inside packages (9.806257ms)
+✖ real fs: an on-disk symlink escaping the workspace blocks the export (7.143414ms)
+✖ the dry run silently drops symlink escapees from the listing (0.301258ms)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.119925ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+  AssertionError [ERR_ASSERTION]: C:\Users\k\agents\atlas-evil\style.md
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+  AssertionError [ERR_ASSERTION]: {"ok":true,"payload":{"manifest":{"schema_version":1,"pack":{"name":"Atlas","slug":"atlas","packaged_at":"2026-07-10T10:00:00.000Z"},"agent_class":"claude-code","tier":"fresh","persona":null,"starter_prompts":null,"model_prefs":{"tone":null},"required_env":[],"files":[{"path":"agent/CLAUDE.md","sha256":"25dd68c892e6392d65f8b4f564aa30dfb65779a0a8aeea225b4a869d74b0867a","bytes":8},{"path":"agent/rules/loot.md","sha256":"f99eed76f90cc7779c839452670e08dea1cd8647c766622143250d9f769e0aa7","bytes":36}],"secret_scan":{"status":"pass","rules_version":1,"files_scanned":2,"scanned_at":"2026-07-10T10:00:00.000Z"},"lineage":{"source_assistant_id":"901","source_generation":0,"platform":"home-of-agents"}},"packSha256":"85af9571474ffd62b0bf05d8c4cdb7e87a53a40d0ff3be91b89ff53669313932","packBytes":1248}}
+  + actual - expected
+  + undefined
+  - 'PATH_ESCAPE'
+    expected: 'PATH_ESCAPE',
+--- restored byte identical
+================ MUTATION ep-junction-posctl (01:26:27)
+--- diff (mutated vs original):
+--- a/lib/export-pack.ts	2026-10-04 01:24:45.000000000 +0400
++++ b/lib/export-pack.ts	2026-10-04 01:26:27.161133200 +0400
+@@ -720,7 +720,7 @@
+   ): Promise<boolean> {
+     try {
+       const real = await this.deps.realpath(relPath)
+-      return isInsideRealRoot(rootReal, real, this.deps.platform ?? process.platform)
++      return real === rootReal || real.startsWith(`${rootReal}/`)
+     } catch {
+       // Unresolvable (vanished, broken symlink): never inside.
+       return false
+--- run on Windows: tsx test/export-pack.test.ts
+ℹ tests 45
+ℹ pass 39
+ℹ fail 5
+ℹ skipped 1
+[run-one] exit 1 
+✖ a Windows host: a workspace at a drive root (E:\) still packages (0.2103ms)
+✖ a Windows host: backslash realpaths inside the workspace package, upload once, and list (2.6074ms)
+✖ a posix workspace at / still packages (0.1666ms)
+✖ failing tests:
+✖ real fs: a junction escaping the workspace blocks the export, and one that stays inside packages (11.3029ms)
+✖ real fs: the walk + allowlist package a temp workspace end to end (23.4717ms)
+﹣ real fs: an on-disk symlink escaping the workspace blocks the export (6.8277ms) # win32 refused symlink creation (needs Developer Mode or an elevated shell)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.0924ms)
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/rules/style.md"}}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: {"ok":false,"error":{"code":"PATH_ESCAPE","message":"candidate file resolves outside the workspace root: .claude/skills/research/SKILL.md"}}
+    expected: true,
+--- restored byte identical
+================ MUTATION ep-noskip (01:26:28)
+--- diff (mutated vs original):
+--- a/test/export-pack.test.ts	2026-10-04 01:26:07.000000000 +0400
++++ b/test/export-pack.test.ts	2026-10-04 01:26:28.673323200 +0400
+@@ -920,7 +920,7 @@
+       await symlink(join(outside, 'loot.md'), join(root, '.claude/rules/evil.md'))
+     } catch (err) {
+       const code = (err as NodeJS.ErrnoException | null)?.code
+-      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
++      if (false) {
+         // A FILE symlink needs Developer Mode or an elevated shell on Windows. Honest skip, not
+         // a red: the junction case below covers the same gate on Windows with no privilege.
+         t.skip('win32 refused symlink creation (needs Developer Mode or an elevated shell)')
+--- run on Windows: tsx test/export-pack.test.ts
+ℹ tests 45
+ℹ pass 44
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ real fs: an on-disk symlink escaping the workspace blocks the export (6.2221ms)
+--- why (assertion lines):
+✔ an unexpected dep failure still posts a PLUGIN_ERROR result (0.0953ms)
+  Error: EPERM: operation not permitted, symlink 'C:\Users\karim\AppData\Local\Temp\bgos-outside-Lm2VW9\loot.md' -> 'C:\Users\karim\AppData\Local\Temp\bgos-export-pack-Isq5bJ\.claude\rules\evil.md'
+--- restored byte identical
+================ MUTATION acl-nolock (01:29:08)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 01:28:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:29:08.182892200 +0400
+@@ -454,8 +454,7 @@
+     mode: MCP_JSON_MODE,
+   })
+   await chmod(path, MCP_JSON_MODE)
+-  if (platform !== 'win32') return { platform, aclApplied: null }
+-  return lockFileToWindowsUser(path, opts)
++  return { platform, aclApplied: null }
+ }
+ 
+ /** The line main() prints once .mcp.json is written: the protection it really got, so a
+--- run on Windows: tsx test/bgos-claim.test.ts
+ℹ tests 33
+ℹ pass 30
+ℹ fail 3
+ℹ skipped 0
+[run-one] exit 1 
+✖ MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk (12.1931ms)
+✖ a Windows lock that fails says UNPROTECTED, never chmod 600 (2.7984ms)
+✖ failing tests:
+✖ on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does (3.7219ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: {"platform":"win32","aclApplied":null}
+    expected: true,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  + []
+  - [
+  -   {
+  -     args: [
+  -       'C:\\Users\\karim\\AppData\\Local\\Temp\\bgos-claim-acl-B1SCEb\\.mcp.json',
+  -       '/inheritance:r',
+  -       '/grant:r',
+  -       'karim:F'
+  -     ],
+  -     file: 'icacls'
+  -   }
+  - ]
+    expected: [ { file: 'icacls', args: [Array] } ],
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+--- restored byte identical
+================ LINUX MUTATION acl-nolock (01:29:13)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 01:28:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:29:13.374294487 +0400
+@@ -454,8 +454,7 @@
+     mode: MCP_JSON_MODE,
+   })
+   await chmod(path, MCP_JSON_MODE)
+-  if (platform !== 'win32') return { platform, aclApplied: null }
+-  return lockFileToWindowsUser(path, opts)
++  return { platform, aclApplied: null }
+ }
+ 
+ /** The line main() prints once .mcp.json is written: the protection it really got, so a
+--- run on Linux: tsx test/bgos-claim.test.ts
+ℹ tests 33
+ℹ pass 31
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows lock that fails says UNPROTECTED, never chmod 600 (2.099434ms)
+✖ failing tests:
+✖ on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does (4.913801ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  + []
+  - [
+  -   {
+  -     args: [
+  -       '/tmp/bgos-claim-acl-t7baJA/.mcp.json',
+  -       '/inheritance:r',
+  -       '/grant:r',
+  -       'karim:F'
+  -     ],
+  -     file: 'icacls'
+  -   }
+  - ]
+    expected: [ { file: 'icacls', args: [Array] } ],
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+--- restored byte identical
+================ MUTATION acl-noinherit (01:29:13)
+--- diff (mutated vs original):
+--- a/bin/bgos-pair.mjs	2026-10-04 01:28:34.000000000 +0400
++++ b/bin/bgos-pair.mjs	2026-10-04 01:29:13.920809300 +0400
+@@ -1230,7 +1230,7 @@
+   if (!user || !file) return null
+   return {
+     file,
+-    args: [String(path), '/inheritance:r', '/grant:r', `${user}:F`],
++    args: [String(path), '/grant:r', `${user}:F`],
+   }
+ }
+ 
+--- run on Windows: tsx test/bgos-claim.test.ts
+ℹ tests 33
+ℹ pass 31
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk (128.548ms)
+✖ failing tests:
+✖ on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does (5.5518ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: no inherited access may survive on the file holding the API key:
+    expected: true,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  -       '/inheritance:r',
+    expected: [ { file: 'icacls', args: [Array] } ],
+--- restored byte identical
+================ LINUX MUTATION acl-line (01:29:18)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 01:28:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:29:18.428412806 +0400
+@@ -461,7 +461,7 @@
+ /** The line main() prints once .mcp.json is written: the protection it really got, so a
+  *  Windows lock that failed says UNPROTECTED instead of promising a chmod that did nothing. */
+ export function mcpJsonWrittenLine(protection) {
+-  return `[bgos-claim] wrote .mcp.json (${describeFileProtection(protection)})`
++  return '[bgos-claim] wrote .mcp.json (chmod 600)'
+ }
+ 
+ /** Hidden terminal prompt (no echo). Falls back to visible input when not
+--- run on Linux: tsx test/bgos-claim.test.ts
+ℹ tests 33
+ℹ pass 31
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ a Windows lock that fails says UNPROTECTED, never chmod 600 (1.968896ms)
+✖ failing tests:
+✖ on Windows writeMcpJsonFile locks .mcp.json to the user with icacls, as bgos-pair does (3.460796ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + '[bgos-claim] wrote .mcp.json (chmod 600)'
+  - '[bgos-claim] wrote .mcp.json (locked to your Windows user)'
+    expected: '[bgos-claim] wrote .mcp.json (locked to your Windows user)',
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /UNPROTECTED.*Access is denied/. Input:
+    expected: /UNPROTECTED.*Access is denied/,
+--- restored byte identical
+================ LINUX MUTATION acl-nochmod (01:29:21)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 01:28:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 01:29:21.779200076 +0400
+@@ -453,7 +453,6 @@
+   await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
+     mode: MCP_JSON_MODE,
+   })
+-  await chmod(path, MCP_JSON_MODE)
+   if (platform !== 'win32') return { platform, aclApplied: null }
+   return lockFileToWindowsUser(path, opts)
+ }
+--- run on Linux: tsx test/bgos-claim.test.ts
+ℹ tests 33
+ℹ pass 32
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ MCP_JSON_MODE is 600 and writeMcpJsonFile pins it on disk (15.579802ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: 384,
+--- restored byte identical
+================ MUTATION sh-agent (01:31:29)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:31:29.164872300 +0400
+@@ -728,7 +728,6 @@
+   # configuration for a folder that has none.
+   if [ -d "$workdir/.claude" ]; then
+     install_denied_tools "$workdir" "$PLUGIN_DIR"
+-  fi
+   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
+     install_hook_entries "$workdir" "$PLUGIN_DIR"
+   fi
+--- run on Windows: tsx test/bgos-agent.static.test.ts
+ℹ tests 12
+ℹ pass 11
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ bash parses the script cleanly (bash -n) (770.1407ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: bash -n errors:  E:/bgos-worktrees/plugin-win-suite/bin/bgos-agent: line 734: syntax error near unexpected token `}'
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION sh-agent (01:31:34)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-04 01:12:21.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:31:34.582161058 +0400
+@@ -728,7 +728,6 @@
+   # configuration for a folder that has none.
+   if [ -d "$workdir/.claude" ]; then
+     install_denied_tools "$workdir" "$PLUGIN_DIR"
+-  fi
+   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
+     install_hook_entries "$workdir" "$PLUGIN_DIR"
+   fi
+--- run on Linux: tsx test/bgos-agent.static.test.ts
+ℹ tests 12
+ℹ pass 11
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ bash parses the script cleanly (bash -n) (14.625092ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: bash -n errors:  /tmp/claude-1000/-mnt-e-bgos-worktrees-win-b3/45c71207-4ead-4d33-b0a8-7e0fa0395734/scratchpad/linux-clone/bin/bgos-agent: line 734: syntax error near unexpected token `}'
+    expected: 0,
+--- restored byte identical
+================ MUTATION sh-boot (01:31:35)
+--- diff (mutated vs original):
+--- a/bin/hoai-bootstrap.sh	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/hoai-bootstrap.sh	2026-10-04 01:31:35.127451100 +0400
+@@ -66,7 +66,6 @@
+     printf '::hoa-fail::%s\n' "$1"
+     DONE=1
+     exit "$(exit_code_for "$1")"
+-}
+ 
+ # Any exit that did not pass through fail() or the happy path still ends in a
+ # sentinel, never a silent abort (this is what catches a set -u trip).
+--- run on Windows: tsx test/bootstrap-sh.static.test.ts
+ℹ tests 10
+ℹ pass 9
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ bash parses the script cleanly (bash -n) (172.1307ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: bash -n errors:  E:/bgos-worktrees/plugin-win-suite/bin/hoai-bootstrap.sh: line 688: syntax error: unexpected end of file from `{' command on line 65
+    expected: 0,
+--- restored byte identical
+================ MUTATION sh-wsl (01:31:36)
+--- diff (mutated vs original):
+--- a/test/helpers/posix-bash.ts	2026-10-04 01:30:35.000000000 +0400
++++ b/test/helpers/posix-bash.ts	2026-10-04 01:31:36.818096000 +0400
+@@ -65,7 +65,7 @@
+   const env = opts.env ?? process.env
+   const exists = opts.exists ?? existsSync
+   const gitExecPath = opts.gitExecPath !== undefined ? opts.gitExecPath : defaultGitExecPath()
+-  return windowsBashCandidates(env, gitExecPath).find((p) => !isWslLauncher(p) && exists(p)) ?? null
++  return 'bash'
+ }
+ 
+ /** A path as bash on this OS takes it: C:/x/y on Windows, unchanged elsewhere. */
+--- run on Windows: tsx test/bgos-agent.static.test.ts test/posix-bash.test.ts
+ℹ tests 18
+ℹ pass 13
+ℹ fail 5
+ℹ skipped 0
+[run-one] exit 1 
+✖ Windows never hands a script to the WSL launcher, even when it is named explicitly (0.1872ms)
+✖ Windows resolves Git for Windows' bash, found from git itself, ahead of the install folders (1.6486ms)
+✖ an explicit HOAI_TEST_BASH that exists wins on Windows (0.1403ms)
+✖ bash parses the script cleanly (bash -n) (255.5105ms)
+✖ failing tests:
+✖ on this machine the resolved bash is a real POSIX bash that can open this checkout (254.9772ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: this bash cannot parse a file at this path form, so a parse result would mean nothing: 127 /bin/bash: C:/Users/karim/AppData/Local/Temp/hoai-bash-ctl-ByCpEc/broken.sh: No such file or directory
+    expected: 2,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'bash'
+  - 'C:\\Program Files\\Git\\bin\\bash.exe'
+    expected: 'C:\\Program Files\\Git\\bin\\bash.exe',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'bash'
+  - 'C:\\Program Files\\Git\\bin\\bash.exe'
+    expected: 'C:\\Program Files\\Git\\bin\\bash.exe',
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'bash'
+  - 'E:\\tools\\msys64\\usr\\bin\\bash.exe'
+    expected: 'E:\\tools\\msys64\\usr\\bin\\bash.exe',
+  AssertionError [ERR_ASSERTION]: not Git for Windows' bash: Linux
+    expected: /^(MINGW|MSYS|CYGWIN)/,
+--- restored byte identical
+================ MUTATION rdr-hooks (01:32:12)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:32:12.567560200 +0400
+@@ -729,9 +729,6 @@
+   if [ -d "$workdir/.claude" ]; then
+     install_denied_tools "$workdir" "$PLUGIN_DIR"
+   fi
+-  if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
+-    install_hook_entries "$workdir" "$PLUGIN_DIR"
+-  fi
+ }
+ 
+ # Restart an installed supervisor after an update. Updating the checkout has
+--- run on Windows: tsx test/restart-deny-routing.test.ts
+ℹ tests 4
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ 1. a workspace with the activity rail gets BOTH the deny and the hooks (454.9989ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /RAN:hooks/. Input:
+    expected: /RAN:hooks/,
+--- restored byte identical
+================ MUTATION rdr-gate (01:32:14)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:32:14.904323600 +0400
+@@ -726,10 +726,8 @@
+   # stack a duplicate and every agent folder wants it. Only a workdir that
+   # already has a .claude directory is touched, so a restart never invents
+   # configuration for a folder that has none.
+-  if [ -d "$workdir/.claude" ]; then
+-    install_denied_tools "$workdir" "$PLUGIN_DIR"
+-  fi
+   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
++    install_denied_tools "$workdir" "$PLUGIN_DIR"
+     install_hook_entries "$workdir" "$PLUGIN_DIR"
+   fi
+ }
+--- run on Windows: tsx test/restart-deny-routing.test.ts
+ℹ tests 4
+ℹ pass 2
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ 2. THE CASE THIS CHANGE EXISTS FOR: settings with no hoai-hook gets the deny and NOT the hooks (165.3121ms)
+✖ 3. a .claude directory with no settings file at all still gets the deny (147.843ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: the deny must not inherit the hooks gate
+    expected: /RAN:deny/,
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /RAN:deny/. Input:
+    expected: /RAN:deny/,
+--- restored byte identical
+================ MUTATION rdr-always (01:32:18)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:32:18.389921700 +0400
+@@ -726,7 +726,7 @@
+   # stack a duplicate and every agent folder wants it. Only a workdir that
+   # already has a .claude directory is touched, so a restart never invents
+   # configuration for a folder that has none.
+-  if [ -d "$workdir/.claude" ]; then
++  if true; then
+     install_denied_tools "$workdir" "$PLUGIN_DIR"
+   fi
+   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
+--- run on Windows: tsx test/restart-deny-routing.test.ts
+ℹ tests 4
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ 4. a workdir with no .claude directory is left completely alone (148.3616ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input was expected to not match the regular expression /RAN:deny/. Input:
+    expected: /RAN:deny/,
+--- restored byte identical
+================ MUTATION gate-cat (01:33:30)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:33:30.964384800 +0400
+@@ -379,7 +379,6 @@
+   }
+ }
+ EXP_PRE
+-  cat "$gate_block" >> "$1"
+   cat >> "$1" <<'EXP_TAIL'
+ 
+ set hoai_line "outcome=$hoai_outcome answered=\[$hoai_answered\]"
+--- run on Windows: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 2
+ℹ fail 2
+ℹ skipped 4
+[run-one] exit 1 
+✖ bin/bgos-agent: the script carries no key press of its own, it copies the shared gate block (2.3263ms)
+✖ failing tests:
+✖ generated run.expect: spawn line, then the shared block VERBATIM, then the supervisor tail (179.8411ms)
+﹣ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it) (0.1331ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy (0.086ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk (0.0911ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here) (0.2014ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /cat "\$gate_block" >> "\$1"/. Input:
+    expected: /cat "\$gate_block" >> "\$1"/,
+  AssertionError [ERR_ASSERTION]: the block must be copied byte for byte, not re-typed
+    expected: true,
+--- restored byte identical
+================ MUTATION gate-rc (01:33:37)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:33:37.698639800 +0400
+@@ -442,7 +442,7 @@
+ # reported with the reason the PREVIOUS launch left behind.
+ echo "\$(ts) outcome=starting" > "\$sd/launch-status"
+ rc=0
+-"\$expect_bin" "\$expectfile" || rc=\$?
++"\$expect_bin" "\$expectfile"; rc=\$?
+ dur=\$(( \$(date +%s) - start ))
+ if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
+ echo "\$fails" > "\$sd/failcount"
+--- run on Windows: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 4
+[run-one] exit 1 
+✖ failing tests:
+✖ generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible (531.9363ms)
+﹣ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it) (0.1016ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy (0.0957ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk (0.0973ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here) (0.2003ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/. Input:
+    expected: /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/,
+--- restored byte identical
+================ LINUX MUTATION gate-rc (01:33:46)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-04 01:12:21.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:33:46.429050149 +0400
+@@ -442,7 +442,7 @@
+ # reported with the reason the PREVIOUS launch left behind.
+ echo "\$(ts) outcome=starting" > "\$sd/launch-status"
+ rc=0
+-"\$expect_bin" "\$expectfile" || rc=\$?
++"\$expect_bin" "\$expectfile"; rc=\$?
+ dur=\$(( \$(date +%s) - start ))
+ if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
+ echo "\$fails" > "\$sd/failcount"
+--- run on Linux: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 4
+[lone] exit 1
+✖ failing tests:
+✖ generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible (11.192965ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/. Input:
+    expected: /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/,
+--- restored byte identical
+================ MUTATION gate-norc (01:33:56)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:33:56.523580300 +0400
+@@ -442,7 +442,7 @@
+ # reported with the reason the PREVIOUS launch left behind.
+ echo "\$(ts) outcome=starting" > "\$sd/launch-status"
+ rc=0
+-"\$expect_bin" "\$expectfile" || rc=\$?
++"\$expect_bin" "\$expectfile" || true
+ dur=\$(( \$(date +%s) - start ))
+ if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
+ echo "\$fails" > "\$sd/failcount"
+--- run on Windows: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 2
+ℹ fail 2
+ℹ skipped 4
+[run-one] exit 1 
+✖ behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it (2827.4073ms)
+✖ failing tests:
+✖ generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible (231.5755ms)
+﹣ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it) (0.1348ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy (0.1312ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk (0.2753ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here) (0.2201ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/. Input:
+    expected: /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/,
+  AssertionError [ERR_ASSERTION]: the exit code survives `|| rc=$?`
+    expected: /WEDGED: agent exited after \d+s \(expect exit 3\), 3 times in a row\./,
+--- restored byte identical
+================ MUTATION gate-fails (01:34:01)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-03 23:52:39.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:34:01.558953400 +0400
+@@ -444,7 +444,7 @@
+ rc=0
+ "\$expect_bin" "\$expectfile" || rc=\$?
+ dur=\$(( \$(date +%s) - start ))
+-if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
++if [ "\$dur" -lt 20 ]; then fails=1; else fails=0; fi
+ echo "\$fails" > "\$sd/failcount"
+ if [ "\$fails" -ge 3 ]; then
+   echo "[\$(ts)] WEDGED: agent exited after \${dur}s (expect exit \$rc), \$fails times in a row."
+--- run on Windows: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 4
+[run-one] exit 1 
+✖ behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it (2453.011ms)
+✖ failing tests:
+﹣ behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it) (0.1125ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy (0.0972ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk (0.1011ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+﹣ behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here) (0.1774ms) # expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: '2',
+--- restored byte identical
+================ LINUX MUTATION gate-fails (01:34:09)
+--- diff (mutated vs original):
+--- a/bin/bgos-agent	2026-10-04 01:12:21.000000000 +0400
++++ b/bin/bgos-agent	2026-10-04 01:34:09.950249610 +0400
+@@ -444,7 +444,7 @@
+ rc=0
+ "\$expect_bin" "\$expectfile" || rc=\$?
+ dur=\$(( \$(date +%s) - start ))
+-if [ "\$dur" -lt 20 ]; then fails=\$(( fails + 1 )); else fails=0; fi
++if [ "\$dur" -lt 20 ]; then fails=1; else fails=0; fi
+ echo "\$fails" > "\$sd/failcount"
+ if [ "\$fails" -ge 3 ]; then
+   echo "[\$(ts)] WEDGED: agent exited after \${dur}s (expect exit \$rc), \$fails times in a row."
+--- run on Linux: tsx test/bgos-agent.gate.test.ts
+ℹ tests 8
+ℹ pass 3
+ℹ fail 1
+ℹ skipped 4
+[lone] exit 1
+✖ behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it (77.399822ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: '2',
+--- restored byte identical
+================ MUTATION host-nostdin (01:45:00)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:39:42.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:45:00.061111400 +0400
+@@ -2116,7 +2116,7 @@
+     }
+     onSignal('SIGINT', () => stop('SIGINT'))
+     onSignal('SIGTERM', () => stop('SIGTERM'))
+-    if (String(env[STOP_ON_STDIN_EOF_ENV] ?? '').trim() === '1') {
++    if (false) {
+       const letGo = () => stop('the daemon let go of this host')
+       stdin.once('end', letGo)
+       stdin.once('close', letGo)
+--- run on Windows: tsx test/hoai-browser-host.test.ts test/browser-host-supervisor.test.ts
+ℹ tests 49
+ℹ pass 45
+ℹ fail 3
+ℹ skipped 1
+[run-one] exit 1 
+✖ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (20306.9816ms)
+✖ END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none (22243.4233ms)
+✖ failing tests:
+✖ the host process stays up with no live socket: no credentials yet, or refused by the gateway (13903.7959ms)
+﹣ END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart (0.1024ms) # no Chrome or Chromium is installed on this machine
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: the stopped daemon took its host with it
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the host must close its browsers and sockets, not be cut off:
+  + actual - expected
+  + 'still running'
+  - 0
+    expected: 0,
+  AssertionError [ERR_ASSERTION]: and stops cleanly when the daemon lets go:
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION host-nostdin (01:45:55)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:39:42.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:45:55.057195540 +0400
+@@ -2116,7 +2116,7 @@
+     }
+     onSignal('SIGINT', () => stop('SIGINT'))
+     onSignal('SIGTERM', () => stop('SIGTERM'))
+-    if (String(env[STOP_ON_STDIN_EOF_ENV] ?? '').trim() === '1') {
++    if (false) {
+       const letGo = () => stop('the daemon let go of this host')
+       stdin.once('end', letGo)
+       stdin.once('close', letGo)
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 32
+ℹ pass 30
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ failing tests:
+✖ the host process stays up with no live socket: no credentials yet, or refused by the gateway (13704.715737ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: and stops cleanly when the daemon lets go:
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION host-nodeadline (01:46:34)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:39:42.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:46:34.188904706 +0400
+@@ -2028,8 +2028,6 @@
+  */
+ export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code) } = {}) {
+   const deadline = setTimeout(() => {
+-    log(`the stop did not finish within ${Math.round(ms / 1000)} s; exiting anyway`)
+-    exit(1)
+   }, ms)
+   deadline.unref?.()
+   return Promise.resolve()
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 32
+ℹ pass 30
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ a stop that never finishes still ends the host, at its deadline (303.760335ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: a wedged Chrome or socket cannot keep a host (and on Windows its Chrome) running with no daemon
+  + actual - expected
+  + []
+  - [
+  -   1
+  - ]
+    expected: [ 1 ],
+--- restored byte identical
+================ MUTATION host-nosaid (01:46:48)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 01:39:42.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 01:46:48.315258800 +0400
+@@ -2035,7 +2035,7 @@
+   return Promise.resolve()
+     .then(stopFn)
+     .then(
+-      () => log('stopped cleanly'),
++      () => {},
+       (err) => log(`stopped, with an error on the way: ${err?.message ?? err}`),
+     )
+     .finally(() => clearTimeout(deadline))
+--- run on Windows: tsx test/hoai-browser-host.test.ts
+ℹ tests 32
+ℹ pass 29
+ℹ fail 2
+ℹ skipped 1
+[run-one] exit 1 
+✖ a stop that finishes says so, and its deadline never fires afterwards (2.6767ms)
+✖ failing tests:
+✖ the host process stays up with no live socket: no credentials yet, or refused by the gateway (4014.4663ms)
+﹣ END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart (0.1905ms) # no Chrome or Chromium is installed on this machine
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the whole stop ran, not just its first line
+    expected: /stopped cleanly/,
+--- restored byte identical
+================ MUTATION sup-nostdinend (01:47:03)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 01:47:03.609698800 +0400
+@@ -378,9 +378,6 @@
+     if (!c || c.exitCode !== null || c.signalCode !== null) return
+     // The stop every platform can handle: the host reads the end of its stdin, closes Chrome
+     // cleanly and exits.
+-    try {
+-      c.stdin?.end()
+-    } catch {}
+     if (platform !== 'win32') {
+       try {
+         c.kill('SIGTERM')
+--- run on Windows: tsx test/browser-host-supervisor.test.ts
+ℹ tests 17
+ℹ pass 13
+ℹ fail 4
+ℹ skipped 0
+[run-one] exit 1 
+✖ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (20314.9527ms)
+✖ END TO END: two daemons of one pairing start exactly one real host, a crash of it hands the pairing to the other, and the kill switch starts none (22266.9655ms)
+✖ failing tests:
+✖ on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess (3.3388ms)
+✖ the daemon spawns the host once, detached from its stdio, scoped to its pairing, and stops it on exit (220.7082ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: stopped with the daemon: its stdin closed
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the stop is the closed stdin
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the stopped daemon took its host with it
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the host must close its browsers and sockets, not be cut off:
+  + actual - expected
+  + 'still running'
+  - 0
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION sup-nostdinend (01:47:57)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 01:47:57.014228569 +0400
+@@ -378,9 +378,6 @@
+     if (!c || c.exitCode !== null || c.signalCode !== null) return
+     // The stop every platform can handle: the host reads the end of its stdin, closes Chrome
+     // cleanly and exits.
+-    try {
+-      c.stdin?.end()
+-    } catch {}
+     if (platform !== 'win32') {
+       try {
+         c.kill('SIGTERM')
+--- run on Linux: tsx test/browser-host-supervisor.test.ts
+ℹ tests 17
+ℹ pass 15
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess (1.566352ms)
+✖ the daemon spawns the host once, detached from its stdio, scoped to its pairing, and stops it on exit (205.593595ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: stopped with the daemon: its stdin closed
+    expected: true,
+  AssertionError [ERR_ASSERTION]: the stop is the closed stdin
+    expected: true,
+--- restored byte identical
+================ MUTATION sup-nodetach (01:48:31)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 01:48:31.983766100 +0400
+@@ -309,7 +309,7 @@
+         // the moment this process exits, and shutdown() exits on the line after stop(): the host
+         // would be killed mid close. Detached, it outlives the daemon long enough to close Chrome,
+         // and its own stop deadline bounds that. Off Windows it stays in the process group.
+-        detached: platform === 'win32',
++        detached: false,
+         windowsHide: true,
+       })
+     } catch (err) {
+--- run on Windows: tsx test/browser-host-supervisor.test.ts
+ℹ tests 17
+ℹ pass 15
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ END TO END: a daemon that stops its host and exits AT ONCE, as server.ts shutdown() does, still gets a clean close (20479.813ms)
+✖ failing tests:
+✖ on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess (4.2902ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: out of the daemon job, so it can close Chrome after the daemon has gone
+    expected: true,
+  Error: timed out waiting for the host to finish its stop after its daemon exited:
+--- restored byte identical
+================ LINUX MUTATION sup-killwin (01:49:06)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 01:49:06.272694328 +0400
+@@ -381,12 +381,10 @@
+     try {
+       c.stdin?.end()
+     } catch {}
+-    if (platform !== 'win32') {
+-      try {
+-        c.kill('SIGTERM')
+-      } catch {}
+-      return
+-    }
++    try {
++      c.kill('SIGTERM')
++    } catch {}
++    if (platform !== 'win32') return
+     // Never kill() first on Windows, where it is TerminateProcess. Only a host still running
+     // long after its own stop deadline is killed, and only while this daemon is alive to do it.
+     const backstop = setTimeout(() => {
+--- run on Linux: tsx test/browser-host-supervisor.test.ts
+ℹ tests 17
+ℹ pass 16
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess (3.627788ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: and no TerminateProcess
+  + actual - expected
+  + [
+  +   'SIGTERM'
+  + ]
+  - []
+    expected: [],
+--- restored byte identical
+================ LINUX MUTATION sup-nobackstop (01:49:37)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 01:49:37.840666164 +0400
+@@ -391,9 +391,6 @@
+     // long after its own stop deadline is killed, and only while this daemon is alive to do it.
+     const backstop = setTimeout(() => {
+       if (c.exitCode === null && c.signalCode === null) {
+-        try {
+-          c.kill()
+-        } catch {}
+       }
+     }, opts.stopBackstopMs ?? BROWSER_HOST_STOP_BACKSTOP_MS)
+     backstop.unref?.()
+--- run on Linux: tsx test/browser-host-supervisor.test.ts
+ℹ tests 17
+ℹ pass 16
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ on Windows the host is started detached and stopped through its stdin, never cut off with TerminateProcess (254.852577ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: a wedged host is killed late
+    expected: 1,
+--- restored byte identical
+================ MUTATION procs-blind (01:51:33)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:50:33.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 01:51:33.395725100 +0400
+@@ -26,7 +26,7 @@
+       windowsHide: true,
+     })
+     if (ps.error || ps.status !== 0) throw new Error(`could not list processes: ${ps.error?.message ?? ps.stderr}`)
+-    return pids(ps.stdout)
++    return []
+   }
+   const pg = spawnSync('pgrep', ['-f', '--', escapeRegExp(needle)], { encoding: 'utf8' })
+   if (pg.error) throw new Error(`could not list processes: ${pg.error.message}`)
+--- run on Windows: tsx test/processes.test.ts
+ℹ tests 2
+ℹ pass 1
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ a live process is found by a string on its command line, and is gone once it ends (15403.0578ms)
+✖ failing tests:
+--- why (assertion lines):
+  Error: timed out waiting for the marked process to be found
+--- restored byte identical
+================ LINUX MUTATION procs-blind (01:51:56)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:50:33.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 01:51:56.166062126 +0400
+@@ -31,6 +31,7 @@
+   const pg = spawnSync('pgrep', ['-f', '--', escapeRegExp(needle)], { encoding: 'utf8' })
+   if (pg.error) throw new Error(`could not list processes: ${pg.error.message}`)
+   if (pg.status === 1) return []
++  return []
+   if (pg.status !== 0) throw new Error(`could not list processes: pgrep exited ${pg.status} ${pg.stderr}`)
+   return pids(pg.stdout)
+ }
+--- run on Linux: tsx test/processes.test.ts
+ℹ tests 2
+ℹ pass 1
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ a live process is found by a string on its command line, and is gone once it ends (15091.663232ms)
+✖ failing tests:
+--- why (assertion lines):
+  Error: timed out waiting for the marked process to be found
+--- restored byte identical
+================ MUTATION procs-swallow (01:52:11)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:50:33.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 01:52:11.833967200 +0400
+@@ -25,7 +25,6 @@
+       env: { ...process.env, HOAI_PROCESS_NEEDLE: needle },
+       windowsHide: true,
+     })
+-    if (ps.error || ps.status !== 0) throw new Error(`could not list processes: ${ps.error?.message ?? ps.stderr}`)
+     return pids(ps.stdout)
+   }
+   const pg = spawnSync('pgrep', ['-f', '--', escapeRegExp(needle)], { encoding: 'utf8' })
+--- run on Windows: tsx test/processes.test.ts
+ℹ tests 2
+ℹ pass 2
+ℹ fail 0
+ℹ skipped 0
+[run-one] exit 0 
+--- why (assertion lines):
+--- restored byte identical
+================ MUTATION procs-swallow (01:52:51)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:52:40.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 01:52:51.250701100 +0400
+@@ -26,7 +26,6 @@
+       env: { ...env, HOAI_PROCESS_NEEDLE: needle },
+       windowsHide: true,
+     })
+-    if (ps.error || ps.status !== 0) throw new Error(`could not list processes: ${ps.error?.message ?? ps.stderr}`)
+     return pids(ps.stdout)
+   }
+   const pg = spawnSync('pgrep', ['-f', '--', escapeRegExp(needle)], { encoding: 'utf8', env })
+--- run on Windows: tsx test/processes.test.ts
+ℹ tests 3
+ℹ pass 2
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ a lookup that cannot run throws: it never reads "could not look" as "nothing is running" (2.2599ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /could not list processes/. Input:
+  "TypeError: Cannot read properties of undefined (reading 'split')"
+    actual: TypeError: Cannot read properties of undefined (reading 'split')
+    expected: /could not list processes/,
+--- restored byte identical
+================ LINUX MUTATION procs-swallow (01:53:00)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:52:40.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 01:53:00.754860169 +0400
+@@ -30,7 +30,7 @@
+     return pids(ps.stdout)
+   }
+   const pg = spawnSync('pgrep', ['-f', '--', escapeRegExp(needle)], { encoding: 'utf8', env })
+-  if (pg.error) throw new Error(`could not list processes: ${pg.error.message}`)
++  if (pg.error) return []
+   if (pg.status === 1) return []
+   if (pg.status !== 0) throw new Error(`could not list processes: pgrep exited ${pg.status} ${pg.stderr}`)
+   return pids(pg.stdout)
+--- run on Linux: tsx test/processes.test.ts
+ℹ tests 3
+ℹ pass 2
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ a lookup that cannot run throws: it never reads "could not look" as "nothing is running" (2.769952ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Missing expected exception.
+    expected: /could not list processes/,
+--- restored byte identical
+================ MUTATION pcli-notimedout (01:55:52)
+--- diff (mutated vs original):
+--- a/lib/plugin-cli.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/plugin-cli.mjs	2026-10-04 01:55:52.306081100 +0400
+@@ -349,7 +349,6 @@
+ 
+     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+       later(() => {
+-        timedOut = true
+         try {
+           child.kill('SIGTERM')
+         } catch {
+--- run on Windows: tsx test/plugin-cli.test.ts
+ℹ tests 41
+ℹ pass 39
+ℹ fail 2
+ℹ skipped 0
+[run-one] exit 1 
+✖ default runner: a hanging child is killed at the budget and reports timedOut with code null (55.8797ms)
+✖ failing tests:
+✖ fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged (3042.6252ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: true,
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: true,
+--- restored byte identical
+================ MUTATION pcli-nosigterm (01:56:02)
+--- diff (mutated vs original):
+--- a/lib/plugin-cli.mjs	2026-10-03 23:52:39.000000000 +0400
++++ b/lib/plugin-cli.mjs	2026-10-04 01:56:02.048913700 +0400
+@@ -350,11 +350,6 @@
+     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+       later(() => {
+         timedOut = true
+-        try {
+-          child.kill('SIGTERM')
+-        } catch {
+-          /* already gone */
+-        }
+         later(() => {
+           try {
+             child.kill('SIGKILL')
+--- run on Windows: tsx test/plugin-cli.test.ts
+ℹ tests 41
+ℹ pass 40
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged (8053.2939ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: killed promptly at the budget, took 8047 ms
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION pcli-nosigterm (01:56:23)
+--- diff (mutated vs original):
+--- a/lib/plugin-cli.mjs	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/plugin-cli.mjs	2026-10-04 01:56:23.930947278 +0400
+@@ -350,11 +350,6 @@
+     if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+       later(() => {
+         timedOut = true
+-        try {
+-          child.kill('SIGTERM')
+-        } catch {
+-          /* already gone */
+-        }
+         later(() => {
+           try {
+             child.kill('SIGKILL')
+--- run on Linux: tsx test/plugin-cli.test.ts
+ℹ tests 41
+ℹ pass 40
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged (8016.406182ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: killed promptly at the budget, took 8011 ms
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION pcli-early (01:56:41)
+--- diff (mutated vs original):
+--- a/lib/plugin-cli.mjs	2026-10-04 01:12:21.000000000 +0400
++++ b/lib/plugin-cli.mjs	2026-10-04 01:56:41.855630806 +0400
+@@ -362,7 +362,7 @@
+             /* already gone */
+           }
+         }, killGraceMs)
+-      }, timeoutMs)
++      }, timeoutMs / 2)
+     }
+   })
+ }
+--- run on Linux: tsx test/plugin-cli.test.ts
+ℹ tests 41
+ℹ pass 40
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ fake claude: hang outcome is killed at the budget, timedOut true, code null, still logged (1509.922997ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: killed AT the budget, not before it: 1506 ms
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION host-noclear (02:08:56)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 02:07:28.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 02:08:56.407506455 +0400
+@@ -2041,7 +2041,6 @@
+       () => log('stopped cleanly'),
+       (err) => log(`stopped, with an error on the way: ${err?.message ?? err}`),
+     )
+-    .finally(() => clearTimeout(deadline))
+ }
+ 
+ // ── Entry point ──────────────────────────────────────────────────────────────
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 32
+ℹ pass 30
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ a stop that finishes says so, and its deadline never fires afterwards (203.573788ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: no deadline exit after a stop that finished: 1
+    expected: 0,
+--- restored byte identical
+================ LINUX MUTATION hc-never (02:45:54)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 02:45:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 02:45:54.543054219 +0400
+@@ -545,7 +545,7 @@
+ export async function hasCommand(cmd) {
+   try {
+     await execFileAsync(cmd, ['--version'], { windowsHide: true, timeout: 30_000 })
+-    return true
++    return false
+   } catch {
+     return false
+   }
+--- run on Linux: tsx test/bgos-claim.test.ts
+ℹ tests 34
+ℹ pass 33
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ failing tests:
+✖ hasCommand finds a command on PATH on every OS, so a Windows claim gets past its git check (6.01168ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: git runs this suite, so it is on PATH
+    expected: true,
+--- restored byte identical
+================ MUTATION hc-always (02:45:55)
+--- diff (mutated vs original):
+--- a/bin/bgos-claim.mjs	2026-10-04 02:45:46.000000000 +0400
++++ b/bin/bgos-claim.mjs	2026-10-04 02:45:55.125132000 +0400
+@@ -547,7 +547,7 @@
+     await execFileAsync(cmd, ['--version'], { windowsHide: true, timeout: 30_000 })
+     return true
+   } catch {
+-    return false
++    return true
+   }
+ }
+ 
+--- run on Windows: tsx test/bgos-claim.test.ts
+ℹ tests 34
+ℹ pass 33
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ failing tests:
+✖ hasCommand finds a command on PATH on every OS, so a Windows claim gets past its git check (62.6659ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+    expected: false,
+--- restored byte identical
+================ LINUX MUTATION kc-notrack (02:48:25)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 02:47:49.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 02:48:25.556189957 +0400
+@@ -832,7 +832,6 @@
+       reject(new HostError('browser_start_failed', `Could not start ${executable}: ${err?.message ?? err}`))
+       return
+     }
+-    startedChromes.add(child)
+     const forget = () => startedChromes.delete(child)
+     child.once('exit', forget)
+     child.once('error', forget)
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 34
+ℹ pass 32
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ failing tests:
+✖ launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits (2.89316ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: tracked from the moment it is spawned, before it is ready
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION kc-nodefault (02:49:36)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 02:47:49.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 02:49:36.118043728 +0400
+@@ -2051,7 +2051,7 @@
+  * @param {{ ms?: number, log?: (line: string) => void, exit?: (code: number) => void, onDeadline?: () => void }} [opts]
+  * @returns {Promise<void>}
+  */
+-export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code), onDeadline = () => killStartedChromes() } = {}) {
++export function stopWithin(stopFn, { ms = STOP_DEADLINE_MS, log = () => {}, exit = (code) => process.exit(code), onDeadline = () => {} } = {}) {
+   const deadline = setTimeout(() => {
+     log(`the stop did not finish within ${Math.round(ms / 1000)} s; killing its browsers and exiting anyway`)
+     try {
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 34
+ℹ pass 32
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ a stop that runs out of time kills the browsers this host started BEFORE it exits, so none is left behind (304.054973ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  -   'kill SIGKILL',
+    expected: [ 'kill SIGKILL', 'exit 1' ],
+--- restored byte identical
+================ LINUX MUTATION kc-noforget (02:49:53)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 02:47:49.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 02:49:53.543246204 +0400
+@@ -834,7 +834,6 @@
+     }
+     startedChromes.add(child)
+     const forget = () => startedChromes.delete(child)
+-    child.once('exit', forget)
+     child.once('error', forget)
+     let tail = ''
+     let settled = false
+--- run on Linux: tsx test/hoai-browser-host.test.ts
+ℹ tests 34
+ℹ pass 32
+ℹ fail 1
+ℹ skipped 1
+[lone] exit 1
+✖ failing tests:
+✖ launchChromium tracks the Chrome it starts, launching or running, until that Chrome exits (3.836708ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: and forgotten once it has exited
+    expected: false,
+--- restored byte identical
+================ LINUX MUTATION stay-nostdin (02:52:00)
+--- diff (mutated vs original):
+--- a/bin/hoai-browser-host.mjs	2026-10-04 02:47:49.000000000 +0400
++++ b/bin/hoai-browser-host.mjs	2026-10-04 02:52:00.189006490 +0400
+@@ -2144,7 +2144,7 @@
+     }
+     onSignal('SIGINT', () => stop('SIGINT'))
+     onSignal('SIGTERM', () => stop('SIGTERM'))
+-    if (String(env[STOP_ON_STDIN_EOF_ENV] ?? '').trim() === '1') {
++    if (false) {
+       const letGo = () => stop('the daemon let go of this host')
+       stdin.once('end', letGo)
+       stdin.once('close', letGo)
+--- run on Linux: tsx test/browser-host-supervisor.test.ts
+ℹ tests 19
+ℹ pass 17
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ END TO END: a bun daemon that stays up stops its host through stdin ALONE, and the host stays up until then (15220.673136ms)
+✖ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (the Windows stop, stdin alone, on this host) (12182.303909ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: the host must close its browsers and sockets, not be cut off:
+  + actual - expected
+  + 'still running'
+  - 0
+    expected: 0,
+  Error: timed out waiting for the host to stop cleanly while its daemon is still up:
+--- restored byte identical
+================ LINUX MUTATION env-drift (02:52:40)
+--- diff (mutated vs original):
+--- a/lib/browser-host-supervisor.ts	2026-10-04 01:43:41.000000000 +0400
++++ b/lib/browser-host-supervisor.ts	2026-10-04 02:52:40.558821477 +0400
+@@ -92,7 +92,7 @@
+   assistantId: 'HOAI_BROWSER_HOST_ASSISTANT_ID',
+   parentPid: 'HOAI_BROWSER_HOST_PARENT_PID',
+   /** 1: closing the host's stdin is the stop (bin/hoai-browser-host.mjs STOP_ON_STDIN_EOF_ENV). */
+-  stopOnStdinEof: 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF',
++  stopOnStdinEof: 'HOAI_BROWSER_HOST_STOP_ON_EOF',
+ } as const
+ 
+ /**
+--- run on Linux: tsx test/browser-host-supervisor.test.ts
+ℹ tests 19
+ℹ pass 16
+ℹ fail 3
+ℹ skipped 0
+[lone] exit 1
+✖ END TO END: a bun daemon that stays up stops its host through stdin ALONE, and the host stays up until then (15220.655998ms)
+✖ END TO END: stopping the daemon closes its host cleanly, on Windows too: exit 0, and the host says it stopped (the Windows stop, stdin alone, on this host) (12169.305175ms)
+✖ failing tests:
+✖ the daemon spawns the host once, detached from its stdio, scoped to its pairing, and stops it on exit (5.055184ms)
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: under the very name the host reads
+  + actual - expected
+  + 'HOAI_BROWSER_HOST_STOP_ON_EOF'
+  - 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF'
+    expected: 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF',
+  AssertionError [ERR_ASSERTION]: the host must close its browsers and sockets, not be cut off:
+  + actual - expected
+  + 'still running'
+  - 0
+    expected: 0,
+  Error: timed out waiting for the host to stop cleanly while its daemon is still up:
+--- restored byte identical
+================ MUTATION procs-self (02:53:50)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:52:40.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 02:53:50.551183200 +0400
+@@ -41,5 +41,5 @@
+     .split(/\s+/)
+     .filter(Boolean)
+     .map(Number)
+-    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
++    .filter((pid) => Number.isInteger(pid) && pid > 0)
+ }
+--- run on Windows: tsx test/processes.test.ts
+ℹ tests 3
+ℹ pass 2
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ a live process is found by a string on its command line, and is gone once it ends (2122.5493ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: the test process itself is never reported
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION procs-self (02:53:58)
+--- diff (mutated vs original):
+--- a/test/helpers/processes.ts	2026-10-04 01:52:40.000000000 +0400
++++ b/test/helpers/processes.ts	2026-10-04 02:53:58.571563335 +0400
+@@ -41,5 +41,5 @@
+     .split(/\s+/)
+     .filter(Boolean)
+     .map(Number)
+-    .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
++    .filter((pid) => Number.isInteger(pid) && pid > 0)
+ }
+--- run on Linux: tsx test/processes.test.ts
+ℹ tests 3
+ℹ pass 2
+ℹ fail 1
+ℹ skipped 0
+[lone] exit 1
+✖ a live process is found by a string on its command line, and is gone once it ends (27.811166ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: the test process itself is never reported
+    expected: true,
+--- restored byte identical
+================ LINUX MUTATION bash-fwd (02:54:02)
+--- diff (mutated vs original):
+--- a/test/helpers/posix-bash.ts	2026-10-04 02:53:33.000000000 +0400
++++ b/test/helpers/posix-bash.ts	2026-10-04 02:54:02.148008604 +0400
+@@ -48,7 +48,7 @@
+     if (v && v.trim()) out.push(v.trim())
+   }
+   // <Git>\mingw64\libexec\git-core -> <Git>\bin\bash.exe, the wrapper that puts /usr/bin on PATH.
+-  if (gitExecPath) out.push(win32Path.join(gitExecPath, '..', '..', '..', 'bin', 'bash.exe'))
++  if (gitExecPath) out.push(`${gitExecPath}\\..\\..\\..\\bin\\bash.exe`)
+   for (const root of [env.ProgramFiles, env.ProgramW6432, env.LOCALAPPDATA && win32Path.join(env.LOCALAPPDATA, 'Programs')]) {
+     if (root) out.push(win32Path.join(root, 'Git', 'bin', 'bash.exe'))
+   }
+--- run on Linux: tsx test/posix-bash.test.ts
+ℹ tests 6
+ℹ pass 4
+ℹ fail 2
+ℹ skipped 0
+[lone] exit 1
+✖ Windows resolves Git for Windows' bash, found from git itself, ahead of the install folders (1.808599ms)
+✖ an explicit HOAI_TEST_BASH that exists wins on Windows (0.345133ms)
+✖ failing tests:
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  +   'C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\..\\..\\..\\bin\\bash.exe',
+  -   'C:\\Program Files\\Git\\bin\\bash.exe',
+    expected: [ 'C:\\Program Files\\Git\\bin\\bash.exe', 'D:\\Apps\\Git\\bin\\bash.exe' ],
+  AssertionError [ERR_ASSERTION]: a configured path that does not exist falls through to the next candidate
+  + actual - expected
+  + 'C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\..\\..\\..\\bin\\bash.exe'
+  - 'C:\\Program Files\\Git\\bin\\bash.exe'
+    expected: 'C:\\Program Files\\Git\\bin\\bash.exe',
+--- restored byte identical
+================ MUTATION git-noworktree (03:14:08)
+--- diff (mutated vs original):
+--- a/test/git-changes.test.ts	2026-10-04 03:13:35.000000000 +0400
++++ b/test/git-changes.test.ts	2026-10-04 03:14:08.945142200 +0400
+@@ -1764,7 +1764,6 @@
+       assert.equal(control.payload.untracked, '')
+     }
+ 
+-    s.git('config', 'core.worktree', other.replace(/\\/g, '/'))
+     // So the case can fail: Git now names the other folder as the top folder. Compared through the
+     // OS's own realpath: node's JS realpathSync keeps an 8.3 short name (C:\Users\RUNNER~1\..., the
+     // temp folder on GitHub's Windows runners) while Git prints the long one.
+--- run on Windows: tsx test/git-changes.test.ts
+ℹ tests 45
+ℹ pass 43
+ℹ fail 1
+ℹ skipped 1
+[run-one] exit 1 
+✖ failing tests:
+✖ real Git: a repository whose core.worktree names a folder outside the agent's is refused, and nothing there is read (845.5243ms)
+﹣ the node read refuses a symlink, where the host has O_NOFOLLOW (0.0771ms) # SKIP
+--- why (assertion lines):
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  + 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\repo'
+  - 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other'
+    expected: 'C:\\Users\\karim\\AppData\\Local\\Temp\\hoai-changes-5GVwXq\\other',
+--- restored byte identical
+================ MUTATION e2e-profile (03:17:43) [real Chrome visible: run-one-chrome.cmd]
+--- diff (mutated vs original):
+--- a/test/hoai-browser-host.test.ts	2026-10-04 03:16:15.000000000 +0400
++++ b/test/hoai-browser-host.test.ts	2026-10-04 03:17:43.870061600 +0400
+@@ -795,7 +795,7 @@
+     }
+     // Started as the daemon starts it: stdin is the stop (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF),
+     // the one stop a host can handle on Windows too.
+-    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, ...profileEnv, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
++    const child = spawn('node', [HOST_BIN], { env: { ...process.env, HOME: home, USERPROFILE: home, HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' }, stdio: ['pipe', 'ignore', 'pipe'] })
+     child.stderr.on('data', (c: Buffer) => logs.push(c.toString()))
+     // The stop is asserted only after a body that passed, so a stop that fails after an earlier
+     // failure can never replace that first, more useful error.
+--- run on Windows: tsx test/hoai-browser-host.test.ts
+ℹ tests 34
+ℹ pass 34
+ℹ fail 0
+ℹ skipped 0
+[run-one] exit 0 
+--- why (assertion lines):
+--- restored byte identical
+================ MUTATION e2e-profile-dirs (03:19:10) [real Chrome visible: run-one-chrome.cmd; the first e2e-profile try removed only the env redirect and stayed green, because the folder alone is what Chrome needs]
+--- diff (mutated vs original):
+--- a/test/hoai-browser-host.test.ts	2026-10-04 03:16:15.000000000 +0400
++++ b/test/hoai-browser-host.test.ts	2026-10-04 03:19:10.161101700 +0400
+@@ -789,8 +789,7 @@
+     const profileEnv: Record<string, string> = {}
+     if (process.platform === 'win32') {
+       for (const [name, rel] of [['LOCALAPPDATA', join('AppData', 'Local')], ['APPDATA', join('AppData', 'Roaming')]] as const) {
+-        mkdirSync(join(home, rel), { recursive: true })
+-        profileEnv[name] = join(home, rel)
++        void name, rel
+       }
+     }
+     // Started as the daemon starts it: stdin is the stop (HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF),
+--- run on Windows: tsx test/hoai-browser-host.test.ts
+ℹ tests 34
+ℹ pass 33
+ℹ fail 1
+ℹ skipped 0
+[run-one] exit 1 
+✖ END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart (30645.4926ms)
+✖ failing tests:
+--- why (assertion lines):
+browser_start_failed: Chrome did not report its DevTools endpoint within 30000 ms
+--- restored byte identical
