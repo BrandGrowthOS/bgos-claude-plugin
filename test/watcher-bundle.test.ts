@@ -45,6 +45,11 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/plugin-cli.mjs',
     'lib/update-planner.mjs',
     'lib/update-executor.mjs',
+    // Added 2026-10-05 with the file itself: update-executor imports it, the
+    // list never named it, and the 0.61.1 watcher crashed on start on every
+    // machine that installed it. This pinned copy is the reason a one-line
+    // bundle change cannot land quietly.
+    'lib/known-good-store.mjs',
     'lib/update-diagnostics.mjs',
     'lib/machine-id.mjs',
     'lib/watcher-core.mjs',
@@ -225,4 +230,73 @@ test('nodeFs: the real adapter round trips a bundle install in a temp dir (mode,
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+/**
+ * THE BUNDLE LIST MUST COVER EVERY FILE THE WATCHER ACTUALLY IMPORTS.
+ *
+ * On 2026-10-05 it did not. `lib/update-executor.mjs` imports
+ * `./known-good-store.mjs` and the list never named it, so every machine that
+ * installed the 0.61.1 watcher staged an incomplete bundle and
+ * `hoai-watcher run` died on start with "Cannot find module ...
+ * known-good-store.mjs".
+ *
+ * THE PART THAT MADE IT EXPENSIVE WAS NOT THE MISSING LINE, IT WAS THE
+ * SILENCE. The Scheduled Task read Ready with LastTaskResult 0, the app logged
+ * "watcher starting" twice and then sat on "Setting up the watcher" for ever,
+ * and nothing anywhere said a module was missing. A crash nobody is told about
+ * is indistinguishable from slow setup.
+ *
+ * So this walks the real import graph from the watcher's entry point and
+ * asserts the closure is a SUBSET of the list. A hand-maintained list beside a
+ * growing import graph drifts the first time somebody adds an import, and the
+ * place that drift shows up is a customer's machine, not a review.
+ */
+test('the bundle list covers the entire import closure of the watcher entry point', () => {
+  const root = join(import.meta.dirname, '..')
+  const seen = new Set<string>()
+  const queue = ['bin/hoai-watcher.mjs']
+
+  while (queue.length > 0) {
+    const rel = queue.shift() as string
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    const source = readFileSync(join(root, rel), 'utf8')
+    // BOTH static and DYNAMIC specifiers, and the dynamic half is the half
+    // that matters here. `watcher-core.mjs` loads the lifecycle modules with
+    // `await import('./update-executor.mjs')` so tests can inject fakes, and
+    // its own comment says a partial bundle "fails by name at run time",
+    // which is precisely what happened. A walk that followed only `from`
+    // reaches 10 files, never reaches update-executor, and therefore reports
+    // a clean list whether or not known-good-store is in it. I wrote that
+    // version first and the control below is what caught it.
+    //
+    // Relative specifiers only: node: builtins and bare package names are not
+    // files this bundle has to carry.
+    for (const m of source.matchAll(/(?:from\s+|import\()\s*'(\.[^']+)'/g)) {
+      const spec = m[1] as string
+      const resolved = join(rel, '..', spec).split('\\').join('/')
+      queue.push(resolved)
+    }
+  }
+
+  const missing = [...seen].filter((f) => !WATCHER_BUNDLE_FILES.includes(f))
+  assert.deepEqual(
+    missing,
+    [],
+    `these files are imported by the watcher and are NOT in WATCHER_BUNDLE_FILES: ${missing.join(', ')}`,
+  )
+
+  // POSITIVE CONTROL. A walk that resolved nothing would also report no
+  // missing files, which is the same green as a correct list. The closure has
+  // to be a real graph, and it has to include the file this test was written
+  // for.
+  assert.ok(
+    seen.size >= 10,
+    `the import walk only reached ${seen.size} files, so it is not reading the graph`,
+  )
+  assert.ok(
+    seen.has('lib/known-good-store.mjs'),
+    'the walk did not reach known-good-store.mjs, the very file whose absence caused this test to exist',
+  )
 })
