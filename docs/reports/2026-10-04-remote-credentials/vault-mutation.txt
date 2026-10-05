@@ -1,0 +1,63 @@
+226:    if (!this.key || !this.context || this.restoring || this.locking) return
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ snapshot between unlock and restore cannot replace saved auth state with an empty browser (984.074ms)
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ tests 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ suites 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ pass 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ fail 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ cancelled 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ skipped 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ todo 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ duration_ms 1175.4666
+
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ failing tests:
+
+test at test\agent-browser-vault.test.ts:1:6217
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ snapshot between unlock and restore cannot replace saved auth state with an empty browser (984.074ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+    {
+  +   cookies: [],
+  +   origins: []
+  -   cookies: [
+  -     {
+  -       domain: 'example.test',
+  -       expires: -1,
+  -       httpOnly: true,
+  -       name: 'session',
+  -       path: '/',
+  -       sameSite: 'Lax',
+  -       secure: true,
+  -       value: 'COOKIE_CANARY_817'
+  -     }
+  -   ],
+  -   origins: [
+  -     {
+  -       indexedDB: [
+  -         {
+  -           name: 'auth',
+  -           stores: [],
+  -           version: 1
+  -         }
+  -       ],
+  -       localStorage: [
+  -         {
+  -           name: 'auth',
+  -           value: 'LOCAL_CANARY_836'
+  -         }
+  -       ],
+  -       origin: 'https://example.test'
+  -     }
+  -   ]
+    }
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\agent-browser-vault.test.ts:118:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { cookies: [], origins: [] },
+    expected: { cookies: [ [Object] ], origins: [ [Object] ] },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

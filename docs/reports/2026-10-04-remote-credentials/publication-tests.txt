@@ -1,0 +1,32 @@
+✔ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (7153.7583ms)
+✔ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection (2231.5287ms)
+✔ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (810.7586ms)
+✔ restart restores session cookies and storage only after correct owner unlock; deletion is persisted (1476.3698ms)
+✔ ciphertext tampering and copying ciphertext across a profile fail authentication (1773.7756ms)
+✔ explicit legacy consent clears only fixed Chrome artifacts and preserves policy (757.6243ms)
+✔ unknown legacy files, live legacy browser and symbolic profile refuse clearing (902.1481ms)
+✔ saved login metadata is origin scoped and locked vault never returns entries (794.3029ms)
+✔ snapshot between unlock and restore cannot replace saved auth state with an empty browser (868.4975ms)
+✔ locking while scrypt is in flight forbids late key installation and disk writes (685.8169ms)
+✔ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (2.3888ms)
+✔ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (874.481ms)
+✔ confirmed closed storage failure is reported but permits a fresh locked browser on retry (0.6431ms)
+✔ a new host process can reopen the already protected profile without elevated ACL privileges (1476.455ms)
+✔ restoring registers open SPA origins without replacing saved state or navigating pages (695.8685ms)
+✔ an IndexedDB reset failure refuses restore and still detaches its CDP session (703.1225ms)
+✔ origin tracking retains closed-page and worker history until context close and refuses overflow (759.9984ms)
+✔ installed browser wins without loading a downloader or touching cache (0.576ms)
+✔ first use provisions pinned bundled Chromium once using a secretless installer environment (12.7673ms)
+✔ failed installation cleans its lock and a later request can retry (6.7441ms)
+✔ an explicit invalid browser override cannot silently choose a different browser (0.2583ms)
+✔ a status response includes passwords registered while its page read waits, even after engine close (1.6115ms)
+✔ registered secrets and normal JSON, URL and native input serializations redact with bounded capacity (35.8252ms)
+✔ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (3825.5344ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 13321.6274

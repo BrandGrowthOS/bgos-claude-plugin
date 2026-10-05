@@ -1,0 +1,13 @@
+✔ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (5929.4348ms)
+✔ installed browser wins without loading a downloader or touching cache (0.5298ms)
+✔ first use provisions pinned bundled Chromium once using a secretless installer environment (9.3167ms)
+✔ failed installation cleans its lock and a later request can retry (6.3384ms)
+✔ an explicit invalid browser override cannot silently choose a different browser (0.2177ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6466.2475

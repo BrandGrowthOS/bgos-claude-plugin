@@ -1,0 +1,27 @@
+✔ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (5840.4199ms)
+✔ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (702.2729ms)
+✔ restart restores session cookies and storage only after correct owner unlock; deletion is persisted (1045.4339ms)
+✔ ciphertext tampering and copying ciphertext across a profile fail authentication (1626.9755ms)
+✔ explicit legacy consent clears only fixed Chrome artifacts and preserves policy (795.0832ms)
+✔ unknown legacy files, live legacy browser and symbolic profile refuse clearing (759.9919ms)
+✔ saved login metadata is origin scoped and locked vault never returns entries (904.5324ms)
+✔ snapshot between unlock and restore cannot replace saved auth state with an empty browser (852.431ms)
+✔ locking while scrypt is in flight forbids late key installation and disk writes (657.6243ms)
+✔ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (2.6785ms)
+✔ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (740.3872ms)
+✔ confirmed closed storage failure is reported but permits a fresh locked browser on retry (0.441ms)
+✔ a new host process can reopen the already protected profile without elevated ACL privileges (1419.0983ms)
+✔ restoring registers open SPA origins without replacing saved state or navigating pages (755.2811ms)
+✔ an IndexedDB reset failure refuses restore and still detaches its CDP session (694.3591ms)
+✔ installed browser wins without loading a downloader or touching cache (0.5237ms)
+✔ first use provisions pinned bundled Chromium once using a secretless installer environment (9.5545ms)
+✔ failed installation cleans its lock and a later request can retry (5.4694ms)
+✔ an explicit invalid browser override cannot silently choose a different browser (0.1751ms)
+ℹ tests 19
+ℹ suites 0
+ℹ pass 19
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11481.2395

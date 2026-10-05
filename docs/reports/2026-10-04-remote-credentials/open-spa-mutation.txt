@@ -1,0 +1,30 @@
+âœ- actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (2996.1677ms)
+â„¹ tests 1
+â„¹ suites 0
+â„¹ pass 0
+â„¹ fail 1
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 3493.4021
+
+âœ- failing tests:
+
+test at test\agent-browser-vault.chromium.test.ts:1:459
+âœ- actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (2996.1677ms)
+  AssertionError [ERR_ASSERTION]: An already open SPA origin must remain eligible for snapshots after first unlock
+  + actual - expected
+
+  + undefined
+  - 'http://127.0.0.1:50709'
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\agent-browser-vault.chromium.test.ts:68:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: 'http://127.0.0.1:50709',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

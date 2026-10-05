@@ -1,0 +1,22 @@
+âœ” actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (5588.27ms)
+âœ” locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (688.9879ms)
+âœ” restart restores session cookies and storage only after correct owner unlock; deletion is persisted (1008.5858ms)
+âœ” ciphertext tampering and copying ciphertext across a profile fail authentication (1547.4697ms)
+âœ” explicit legacy consent clears only fixed Chrome artifacts and preserves policy (812.6206ms)
+âœ” unknown legacy files, live legacy browser and symbolic profile refuse clearing (849.2735ms)
+âœ” saved login metadata is origin scoped and locked vault never returns entries (749.264ms)
+âœ” snapshot between unlock and restore cannot replace saved auth state with an empty browser (815.9654ms)
+âœ” locking while scrypt is in flight forbids late key installation and disk writes (655.4836ms)
+âœ” reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (2.4454ms)
+âœ” failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (723.1098ms)
+âœ” confirmed closed storage failure is reported but permits a fresh locked browser on retry (0.554ms)
+âœ” a new host process can reopen the already protected profile without elevated ACL privileges (1423.2198ms)
+âœ” restoring registers open SPA origins without replacing saved state or navigating pages (649.92ms)
+â„¹ tests 14
+â„¹ suites 0
+â„¹ pass 14
+â„¹ fail 0
+â„¹ cancelled 0
+â„¹ skipped 0
+â„¹ todo 0
+â„¹ duration_ms 10499.8002

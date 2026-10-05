@@ -1,0 +1,1 @@
+PASS: packaged 0.60.5, first-use download 22396ms, locked storage, cookie discard and host process restart verified.

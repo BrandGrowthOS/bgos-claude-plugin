@@ -1,0 +1,29 @@
+browser host: started (pid 81528) for this pairing; its log is C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1\home\.bgos-agent\browser-host-c8bdd9dd8de351fa.log
+browser host: started (pid 56188) for this pairing; its log is C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1\home\.bgos-agent\browser-host-c8bdd9dd8de351fa.log
+2026-10-04T17:24:41.406Z [hoai-browser-host] browser: bundled Chromium will be provisioned automatically on first use if its user cache is empty.
+2026-10-04T17:24:41.409Z [hoai-browser-host] started by the daemon with pid 83272 for its pairing only
+2026-10-04T17:24:41.409Z [hoai-browser-host] pairing (no id) on http://127.0.0.1:52472: agents [991]
+2026-10-04T17:24:41.411Z [hoai-browser-host] pairing (no id) on http://127.0.0.1:52472: serving agents [991]
+2026-10-04T17:24:41.429Z [hoai-browser-host] pairing (no id) [991]: connected as browser_host (socket FVKwnmze3eP9YJdVAAAA); the backend now checks the agents against this pairing
+2026-10-04T17:24:41.647Z [hoai-browser-host] Installing the Chromium revision bundled with this plugin into the user cache.
+2026-10-04T17:25:01.509Z [hoai-browser-host] The bundled Chromium is installed; the browser keeps its normal sandbox.
+2026-10-04T17:25:03.403Z [hoai-browser-host] started Chrome (pid 35096) on C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1\home\.bgos-agent\991\browser\user-packaged-smoke
+2026-10-04T17:25:03.425Z [hoai-browser-host] pairing (no id) [991]: tools/call hoai_browser_open_session rpc a20d4383-20f1-4830-899a-379ae19ce9f8 for agent 991 answered ok in 21995 ms; result accepted
+2026-10-04T17:25:05.619Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_navigate rpc 8a71f4c1-3b6e-459d-b0e6-31b9b0179788 for agent 991 answered ok in 2099 ms; result accepted
+2026-10-04T17:25:05.663Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_navigate rpc cfd7d3a5-f9c8-4531-a74d-f824c2c2b924 for agent 991 answered ok in 43 ms; result accepted
+2026-10-04T17:25:05.670Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_snapshot rpc d8c6adfd-0386-4f24-8263-96203f907990 for agent 991 answered ok in 7 ms; result accepted
+2026-10-04T17:25:05.996Z [hoai-browser-host] pairing (no id) [991]: tools/call hoai_browser_close_session rpc 0120a3c9-c2b7-47f1-ae74-82b5aac1ce50 for agent 991 answered ok in 326 ms; result accepted
+2026-10-04T17:25:06.667Z [hoai-browser-host] started Chrome (pid 37748) on C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1\home\.bgos-agent\991\browser\user-packaged-smoke
+2026-10-04T17:25:06.669Z [hoai-browser-host] pairing (no id) [991]: tools/call hoai_browser_open_session rpc 2497e72d-d8ff-449a-b825-39be0feab491 for agent 991 answered ok in 672 ms; result accepted
+2026-10-04T17:25:06.736Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_navigate rpc 71b0b3e5-3370-4b6a-9d6a-26f30c6f1a9b for agent 991 answered ok in 67 ms; result accepted
+2026-10-04T17:25:06.742Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_snapshot rpc 2ac93f15-d5ab-40e6-ad06-985c993bd29d for agent 991 answered ok in 6 ms; result accepted
+2026-10-04T17:25:07.018Z [hoai-browser-host] pairing (no id) [991]: tools/call hoai_browser_close_session rpc bab59065-6f93-4805-97ae-34bf007599e4 for agent 991 answered ok in 276 ms; result accepted
+2026-10-04T17:25:07.425Z [hoai-browser-host] browser: bundled Chromium will be provisioned automatically on first use if its user cache is empty.
+2026-10-04T17:25:07.427Z [hoai-browser-host] started by the daemon with pid 83272 for its pairing only
+2026-10-04T17:25:07.427Z [hoai-browser-host] pairing (no id) on http://127.0.0.1:52472: agents [991]
+2026-10-04T17:25:07.428Z [hoai-browser-host] pairing (no id) on http://127.0.0.1:52472: serving agents [991]
+2026-10-04T17:25:07.442Z [hoai-browser-host] pairing (no id) [991]: connected as browser_host (socket avqCCAXbU4Up_y6wAAAB); the backend now checks the agents against this pairing
+2026-10-04T17:25:09.188Z [hoai-browser-host] started Chrome (pid 21320) on C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1\home\.bgos-agent\991\browser\user-packaged-smoke
+2026-10-04T17:25:09.205Z [hoai-browser-host] pairing (no id) [991]: tools/call hoai_browser_open_session rpc 1140786b-7ab6-4c77-92b1-e88dc987b108 for agent 991 answered ok in 1763 ms; result accepted
+2026-10-04T17:25:11.288Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_navigate rpc e8843c44-d052-46b6-8fa7-d755f75bb252 for agent 991 answered ok in 2083 ms; result accepted
+2026-10-04T17:25:11.293Z [hoai-browser-host] pairing (no id) [991]: tools/call browser_snapshot rpc a93f4e75-24f1-4ef4-a8bf-fc471cb5df20 for agent 991 answered ok in 5 ms; result accepted

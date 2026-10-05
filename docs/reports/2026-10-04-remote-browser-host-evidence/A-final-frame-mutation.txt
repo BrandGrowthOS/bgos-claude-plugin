@@ -1,0 +1,59 @@
+
+lib\remote-view.mjs:94:      view.latestFrame = null
+lib\remote-view.mjs:118:        view.latestFrame = null
+lib\remote-view.mjs:144:        if (frame.method === 'Page.stopScreencast') { view.pendingFrame = null;
+view.latestFrame = null }
+
+
+✖ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (3.9692ms)
+✖ remote view A preserves the last static page change while owner paint is pending (2.8754ms)
+✔ remote view A refuses other principals, raw input, stale identities, and oversized frames (1.6281ms)
+✔ remote view A serializes commands while a paint acknowledgement bypasses a blocked command (4.6919ms)
+✔ remote view A retains target identity across viewers and revokes on page close or socket loss (1.2985ms)
+✔ remote view A revokes an attachment that finishes after socket disconnect (0.3686ms)
+✔ remote view A can restart after a stopped stream has an unacknowledged frame (0.4335ms)
+✔ PairingConnection binds remote views to the admitting socket and this pairing agents only (0.6992ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 6
+ℹ fail 2
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 499.5337
+
+✖ failing tests:
+
+test at test\remote-view.test.ts:1:2079
+✖ remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements (3.9692ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 2
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-view.test.ts:58:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at test\remote-view.test.ts:1:3634
+✖ remote view A preserves the last static page change while owner paint is pending (2.8754ms)
+  AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+
+    assert.ok(f.calls.some(call => call.method === 'Page.screencastFrameAck' && call.params.sessionId === 2))
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-view.test.ts:75:10)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: false,
+    expected: true,
+    operator: '==',
+    diff: 'simple'
+  }

@@ -1,0 +1,25 @@
+Ã¢Å“â€“ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2495.0868ms)
+Ã¢â€žÂ¹ tests 1
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 0
+Ã¢â€žÂ¹ fail 1
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 0
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 7687.6073
+
+Ã¢Å“â€“ failing tests:
+
+test at test\remote-credentials.chromium.test.ts:1:753
+Ã¢Å“â€“ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2495.0868ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-credentials.chromium.test.ts:61:3)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: { code: 'credential_field' },
+    operator: 'rejects',
+    diff: 'simple'
+  }

@@ -1,0 +1,10 @@
+✔ actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock (5637.5563ms)
+✔ unlock clears a historical origin whose service worker still holds a locked IndexedDB connection (2172.3895ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8384.445

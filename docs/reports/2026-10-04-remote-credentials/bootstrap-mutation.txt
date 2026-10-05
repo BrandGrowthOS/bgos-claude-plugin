@@ -1,0 +1,25 @@
+Ã¢Å“â€“ installed browser wins without loading a downloader or touching cache (0.7391ms)
+Ã¢Å“â€ first use provisions pinned bundled Chromium once using a secretless installer environment (11.9887ms)
+Ã¢Å“â€ failed installation cleans its lock and a later request can retry (6.2555ms)
+Ã¢Å“â€ an explicit invalid browser override cannot silently choose a different browser (0.2227ms)
+Ã¢â€žÂ¹ tests 4
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 3
+Ã¢â€žÂ¹ fail 1
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 0
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 193.1135
+
+Ã¢Å“â€“ failing tests:
+
+test at test\browser-bootstrap.test.ts:1:669
+Ã¢Å“â€“ installed browser wins without loading a downloader or touching cache (0.7391ms)
+  Error: not needed
+      at bundle (E:\bgos-worktrees\remote-browser-plugin-host\test\browser-bootstrap.test.ts:17:114)
+      at ensureBrowser (file:///E:/bgos-worktrees/remote-browser-plugin-host/lib/browser-bootstrap.mjs:33:20)
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\browser-bootstrap.test.ts:17:22)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1306:25)
+      at Test.start (node:internal/test_runner/test:1177:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17)

@@ -1,0 +1,27 @@
+75:  const submitControlsSafe = () => true || [...document.querySelectorAll('button, input')].filter(control => control.form === form &&
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2364.0898ms)
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ tests 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ suites 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ pass 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ fail 1
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ cancelled 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ skipped 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ todo 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ duration_ms 7561.2
+
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ failing tests:
+
+test at test\remote-credentials.chromium.test.ts:1:699
+ÃƒÂ¢Ã…â€œÃ¢â‚¬â€œ actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now (2364.0898ms)
+  AssertionError [ERR_ASSERTION]: Missing expected rejection.
+      at async TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\remote-credentials.chromium.test.ts:56:5)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: { code: 'credential_changed' },
+    operator: 'rejects',
+    diff: 'simple'
+  }
+75:  const submitControlsSafe = () => [...document.querySelectorAll('button, input')].filter(control => control.form === form &&

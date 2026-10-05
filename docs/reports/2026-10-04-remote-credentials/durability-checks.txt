@@ -1,0 +1,18 @@
+Ã¢Å“â€ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (718.521ms)
+Ã¢Å“â€ restart restores session cookies and storage only after correct owner unlock; deletion is persisted (843.6945ms)
+Ã¢Å“â€ ciphertext tampering and copying ciphertext across a profile fail authentication (1400.3768ms)
+Ã¢Å“â€ explicit legacy consent clears only fixed Chrome artifacts and preserves policy (762.7635ms)
+Ã¢Å“â€ unknown legacy files, live legacy browser and symbolic profile refuse clearing (783.4052ms)
+Ã¢Å“â€ saved login metadata is origin scoped and locked vault never returns entries (725.8797ms)
+Ã¢Å“â€ snapshot between unlock and restore cannot replace saved auth state with an empty browser (818.0293ms)
+Ã¢Å“â€ locking while scrypt is in flight forbids late key installation and disk writes (696.7749ms)
+Ã¢Å“â€ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (2.7631ms)
+Ã¢Å“â€ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (850.7054ms)
+Ã¢â€žÂ¹ tests 10
+Ã¢â€žÂ¹ suites 0
+Ã¢â€žÂ¹ pass 10
+Ã¢â€žÂ¹ fail 0
+Ã¢â€žÂ¹ cancelled 0
+Ã¢â€žÂ¹ skipped 0
+Ã¢â€žÂ¹ todo 0
+Ã¢â€žÂ¹ duration_ms 8167.8407

@@ -1,0 +1,5 @@
+2026-10-04T17:24:20.483Z Packing the current plugin into a local npm artifact.
+2026-10-04T17:24:26.514Z Installing fresh packaged dependencies with an empty npm user cache.
+2026-10-04T17:24:38.769Z Starting the packaged supervisor, local relay and first browser task with an empty browser cache.
+2026-10-04T17:25:13.130Z PASS: packaged 0.60.5, first-use download 22396ms, locked storage, cookie discard and host process restart verified.
+2026-10-04T17:25:14.097Z PASS. Disposable install retained for inspection at C:\Users\karim\AppData\Local\Temp\hoai-packaged-browser-UbeQg1

@@ -1,0 +1,260 @@
+TAP version 13
+# Subtest: PROFILE ISOLATION: two different principal values never resolve to one profile directory
+ok 1 - PROFILE ISOLATION: two different principal values never resolve to one profile directory
+  ---
+  duration_ms: 2.158775
+  ...
+# Subtest: PROFILE ISOLATION: the frame path launches one browser per principal, and the same principal reuses its own
+ok 2 - PROFILE ISOLATION: the frame path launches one browser per principal, and the same principal reuses its own
+  ---
+  duration_ms: 13.996493
+  ...
+# Subtest: the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent
+ok 3 - the profile directory: ~/.bgos-agent/<assistantId>/browser/<principal>, owner when absent
+  ---
+  duration_ms: 0.223733
+  ...
+# Subtest: a principal can never name a directory outside the agent browser folder
+ok 4 - a principal can never name a directory outside the agent browser folder
+  ---
+  duration_ms: 0.479787
+  ...
+# Subtest: readFramePrincipal: absent is the owner, a present value is used exactly, an unreadable one is refused
+ok 5 - readFramePrincipal: absent is the owner, a present value is used exactly, an unreadable one is refused
+  ---
+  duration_ms: 0.767818
+  ...
+# Subtest: a frame whose principal cannot be read is refused and launches nothing
+ok 6 - a frame whose principal cannot be read is refused and launches nothing
+  ---
+  duration_ms: 0.156982
+  ...
+# Subtest: relay: initialize, ping, tools/list and a notification, as the desktop answers them
+ok 7 - relay: initialize, ping, tools/list and a notification, as the desktop answers them
+  ---
+  duration_ms: 2.689309
+  ...
+# Subtest: relay: a clientId stays bound to its assistant, and malformed frames are refused
+ok 8 - relay: a clientId stays bound to its assistant, and malformed frames are refused
+  ---
+  duration_ms: 0.850044
+  ...
+# Subtest: relay: session tools answer for this host, unknown and never-exposed tools are refused, wait_seconds never reaches the engine
+ok 9 - relay: session tools answer for this host, unknown and never-exposed tools are refused, wait_seconds never reaches the engine
+  ---
+  duration_ms: 3.179318
+  ...
+# Subtest: relay: no installed browser is a clear tool error, not a crash
+ok 10 - relay: no installed browser is a clear tool error, not a crash
+  ---
+  duration_ms: 0.983338
+  ...
+# Subtest: handshake: the token rides in the query, role, agents and label in the auth
+ok 11 - handshake: the token rides in the query, role, agents and label in the auth
+  ---
+  duration_ms: 0.1588
+  ...
+# Subtest: readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason
+ok 12 - readPairings: one entry per pairing, listing only that pairing agents, never a token in a reason
+  ---
+  duration_ms: 0.868932
+  ...
+# Subtest: the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on
+ok 13 - the host opens one socket per pairing, each listing only its own agents, and answers on the socket the frame came in on
+  ---
+  duration_ms: 3585.216656
+  ...
+# Subtest: a socket the backend refuses is retried on a backoff, not dropped for good
+ok 14 - a socket the backend refuses is retried on a backoff, not dropped for good
+  ---
+  duration_ms: 203.002747
+  ...
+# Subtest: resultBody and resultUrl match the backend route and DTO limits
+ok 15 - resultBody and resultUrl match the backend route and DTO limits
+  ---
+  duration_ms: 0.872026
+  ...
+# Subtest: relay: ids 1 and "1" in flight together each get their own answer
+ok 16 - relay: ids 1 and "1" in flight together each get their own answer
+  ---
+  duration_ms: 53.089672
+  ...
+# Subtest: the pool: stopping during a launch waits for it and stops the browser it started
+ok 17 - the pool: stopping during a launch waits for it and stops the browser it started
+  ---
+  duration_ms: 100.635506
+  ...
+# Subtest: postResult: a 5xx or a network failure is retried, a 4xx is final
+ok 18 - postResult: a 5xx or a network failure is retried, a 4xx is final
+  ---
+  duration_ms: 2002.744277
+  ...
+# Subtest: the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer
+ok 19 - the answer names the socket the frame ARRIVED on, even when the socket reconnects before the answer
+  ---
+  duration_ms: 21.254728
+  ...
+# Subtest: Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)
+ok 20 - Chrome is launched with the allow-listed environment only (the list itself: test/browser-env.test.ts)
+  ---
+  duration_ms: 2.28727
+  ...
+# Subtest: scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine
+ok 21 - scoping: a daemon-started host serves its own pairing and agent, never another pairing on the machine
+  ---
+  duration_ms: 0.741257
+  ...
+# Subtest: the browser_ roster is loaded on first use, once, and a failed load is retried
+ok 22 - the browser_ roster is loaded on first use, once, and a failed load is retried
+  ---
+  duration_ms: 0.824253
+  ...
+# Subtest: the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise
+ok 23 - the roster is the desktop one: four session tools, Playwright tools minus the never set, wait_seconds where a gate could rise
+  ---
+  duration_ms: 200.27935
+  ...
+# Subtest: resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded
+ok 24 - resolveChromeExecutable: an installed browser is found, none is said plainly, and nothing is downloaded
+  ---
+  duration_ms: 0.493131
+  ...
+# Subtest: a Snap Chromium is skipped on linux, and the message says why
+ok 25 - a Snap Chromium is skipped on linux, and the message says why
+  ---
+  duration_ms: 0.259941
+  ...
+# Subtest: chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked
+ok 26 - chromeArgs: remote debugging on a free port, the profile as the user data dir, headless unless asked
+  ---
+  duration_ms: 0.070132
+  ...
+# Subtest: readDevToolsActivePort: only a well formed endpoint is reattached to
+ok 27 - readDevToolsActivePort: only a well formed endpoint is reattached to
+  ---
+  duration_ms: 0.25827
+  ...
+# Subtest: the host process stays up with no live socket: no credentials yet, or refused by the gateway
+ok 28 - the host process stays up with no live socket: no credentials yet, or refused by the gateway
+  ---
+  duration_ms: 3775.533652
+  ...
+# Subtest: a daemon-started host connects only its daemon pairing, even with another pairing on disk
+ok 29 - a daemon-started host connects only its daemon pairing, even with another pairing on disk
+  ---
+  duration_ms: 2202.342113
+  ...
+# Subtest: END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart
+ok 30 - END TO END: the host process, a real Chromium and the fake relay; one principal never sees another cookie, and keeps its own across a restart
+  ---
+  duration_ms: 23215.735082
+  ...
+# Subtest: B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation
+ok 31 - B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation
+  ---
+  duration_ms: 542.992528
+  ...
+# Subtest: B reserves owner control before awaiting physical agent work and gates late held actions
+ok 32 - B reserves owner control before awaiting physical agent work and gates late held actions
+  ---
+  duration_ms: 4.061349
+  ...
+# Subtest: B dispatches a safe key once and refuses token replay, stale focus, and credential changes
+ok 33 - B dispatches a safe key once and refuses token replay, stale focus, and credential changes
+  ---
+  duration_ms: 1.615109
+  ...
+# Subtest: B pointer input uses remote coordinates and invalidates the preceding focus token
+ok 34 - B pointer input uses remote coordinates and invalidates the preceding focus token
+  ---
+  duration_ms: 0.924176
+  ...
+# Subtest: B expired focus and lease fail closed and emit revocation
+ok 35 - B expired focus and lease fail closed and emit revocation
+  ---
+  duration_ms: 0.408339
+  ...
+# Subtest: B released owner input retains the agent block until its physical command and keyup settle
+ok 36 - B released owner input retains the agent block until its physical command and keyup settle
+  ---
+  duration_ms: 3.179462
+  ...
+# Subtest: B hide during a pending pointer down releases the remote button before the agent resumes
+ok 37 - B hide during a pending pointer down releases the remote button before the agent resumes
+  ---
+  duration_ms: 0.667367
+  ...
+# Subtest: B host status exposes owner control and refuses agent tools or close before permission work
+ok 38 - B host status exposes owner control and refuses agent tools or close before permission work
+  ---
+  duration_ms: 0.723642
+  ...
+# Subtest: B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure
+ok 39 - B retains the physical CDP session for keyup after close begins and fails closed on cleanup failure
+  ---
+  duration_ms: 0.88682
+  ...
+# Subtest: B pointer move preserves pressed-button masks for drag handlers
+ok 40 - B pointer move preserves pressed-button masks for drag handlers
+  ---
+  duration_ms: 0.388162
+  ...
+# Subtest: B cleanup failure blocks its affected engine but not a browser started after successful shutdown
+ok 41 - B cleanup failure blocks its affected engine but not a browser started after successful shutdown
+  ---
+  duration_ms: 1.008794
+  ...
+# Subtest: remote view A streams changing pixels from a real agent Chromium through the pool seam
+ok 42 - remote view A streams changing pixels from a real agent Chromium through the pool seam
+  ---
+  duration_ms: 508.029463
+  ...
+# Subtest: remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements
+ok 43 - remote view A attaches the existing principal browser and streams changing frames after paint acknowledgements
+  ---
+  duration_ms: 2.698219
+  ...
+# Subtest: remote view A preserves the last static page change while owner paint is pending
+ok 44 - remote view A preserves the last static page change while owner paint is pending
+  ---
+  duration_ms: 0.441727
+  ...
+# Subtest: remote view A refuses other principals, raw input, stale identities, and oversized frames
+ok 45 - remote view A refuses other principals, raw input, stale identities, and oversized frames
+  ---
+  duration_ms: 2.412194
+  ...
+# Subtest: remote view A serializes commands while a paint acknowledgement bypasses a blocked command
+ok 46 - remote view A serializes commands while a paint acknowledgement bypasses a blocked command
+  ---
+  duration_ms: 2.978088
+  ...
+# Subtest: remote view A retains target identity across viewers and revokes on page close or socket loss
+ok 47 - remote view A retains target identity across viewers and revokes on page close or socket loss
+  ---
+  duration_ms: 2.018623
+  ...
+# Subtest: remote view A revokes an attachment that finishes after socket disconnect
+ok 48 - remote view A revokes an attachment that finishes after socket disconnect
+  ---
+  duration_ms: 0.339993
+  ...
+# Subtest: remote view A can restart after a stopped stream has an unacknowledged frame
+ok 49 - remote view A can restart after a stopped stream has an unacknowledged frame
+  ---
+  duration_ms: 0.441122
+  ...
+# Subtest: PairingConnection binds remote views to the admitting socket and this pairing agents only
+ok 50 - PairingConnection binds remote views to the admitting socket and this pairing agents only
+  ---
+  duration_ms: 0.528451
+  ...
+1..50
+# tests 50
+# suites 0
+# pass 50
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 35858.029307

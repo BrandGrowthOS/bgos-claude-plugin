@@ -1,0 +1,17 @@
+226:    if (!this.key || !this.context || this.restoring || !this.restored || this.locking) return
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (870.7914ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â restart restores session cookies and storage only after correct owner unlock; deletion is persisted (1023.4277ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â ciphertext tampering and copying ciphertext across a profile fail authentication (1632.6539ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â explicit legacy consent clears only fixed Chrome artifacts and preserves policy (833.7539ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â unknown legacy files, live legacy browser and symbolic profile refuse clearing (830.0466ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â saved login metadata is origin scoped and locked vault never returns entries (978.1679ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â snapshot between unlock and restore cannot replace saved auth state with an empty browser (1000.0717ms)
+ÃƒÂ¢Ã…â€œÃ¢â‚¬Â locking while scrypt is in flight forbids late key installation and disk writes (752.6503ms)
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ tests 8
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ suites 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ pass 8
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ fail 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ cancelled 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ skipped 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ todo 0
+ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¹ duration_ms 8112.1698

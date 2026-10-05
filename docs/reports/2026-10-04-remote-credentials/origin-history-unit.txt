@@ -1,0 +1,23 @@
+✔ locked browser never writes state; owner unlock encrypts state and passwords with no plaintext canaries (764.4536ms)
+✔ restart restores session cookies and storage only after correct owner unlock; deletion is persisted (854.0414ms)
+✔ ciphertext tampering and copying ciphertext across a profile fail authentication (1445.4246ms)
+✔ explicit legacy consent clears only fixed Chrome artifacts and preserves policy (704.3364ms)
+✔ unknown legacy files, live legacy browser and symbolic profile refuse clearing (787.7792ms)
+✔ saved login metadata is origin scoped and locked vault never returns entries (704.7792ms)
+✔ snapshot between unlock and restore cannot replace saved auth state with an empty browser (911.8826ms)
+✔ locking while scrypt is in flight forbids late key installation and disk writes (665.4143ms)
+✔ reacquire waits for the old encrypted snapshot and shutdown before launching a replacement (3.0108ms)
+✔ failed final snapshot preserves the prior ciphertext, cleans up, and reports storage failure instead of saved success (752.8772ms)
+✔ confirmed closed storage failure is reported but permits a fresh locked browser on retry (0.5669ms)
+✔ a new host process can reopen the already protected profile without elevated ACL privileges (1478.354ms)
+✔ restoring registers open SPA origins without replacing saved state or navigating pages (784.1239ms)
+✔ an IndexedDB reset failure refuses restore and still detaches its CDP session (665.7322ms)
+✔ origin tracking retains closed-page and worker history until context close and refuses overflow (739.4613ms)
+ℹ tests 15
+ℹ suites 0
+ℹ pass 15
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11870.5391

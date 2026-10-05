@@ -1,0 +1,31 @@
+✔ installed browser wins without loading a downloader or touching cache (0.5024ms)
+✖ first use provisions pinned bundled Chromium once using a secretless installer environment (9.2021ms)
+✔ failed installation cleans its lock and a later request can retry (5.9152ms)
+✔ an explicit invalid browser override cannot silently choose a different browser (0.1856ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 3
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 168.4379
+
+✖ failing tests:
+
+test at test\browser-bootstrap.test.ts:1:946
+✖ first use provisions pinned bundled Chromium once using a secretless installer environment (9.2021ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  true !== false
+
+      at TestContext.<anonymous> (E:\bgos-worktrees\remote-browser-plugin-host\test\browser-bootstrap.test.ts:33:68)
+      at async Test.run (node:internal/test_runner/test:1313:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:897:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: true,
+    expected: false,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
