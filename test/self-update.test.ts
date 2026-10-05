@@ -2116,3 +2116,140 @@ test('server.ts never arms the git self-updater on a marketplace install (its ro
   expect(init).toBeGreaterThan(gate)
   expect(src.slice(gate, init)).toMatch(/\} else \{/)
 })
+
+describe('a staged daemon keeps observing what the latest version is', () => {
+  /**
+   * THE DEFECT, MEASURED IN PRODUCTION rather than imagined. On 2026-10-05,
+   * forty minutes after 0.61.0 was published, of 59 live claude-code daemons
+   * TWENTY were staged on a version that had itself been superseded, and each
+   * reported that stale target AS the latest version it knew: seven pending
+   * 0.46.0 while running 0.44.0 and reporting latest 0.46.0. Nothing in the
+   * fleet view or the app's update prompt could tell them from a daemon that
+   * was genuinely current.
+   *
+   * The cause: both writers of `lastInspectedVersion` sat AFTER the
+   * `validationPending` early return, so staging made a daemon permanently
+   * blind. Declining to INSTALL while an update is on disk is correct;
+   * declining to LOOK is what hid the stuck state.
+   *
+   * The fix observes on `checkNow` only. `updateNow` is deliberately left
+   * alone: a neighbouring test pins that a second one performs NO new fetch,
+   * and that is a decision record about a one-click a user can tap
+   * repeatedly, not an accident. The periodic timer is enough.
+   *
+   * These tests reach the staged state the honest way, by running a real
+   * update first, exactly as the updateNow suite above does. Seeding it by
+   * hand does not work and the reason is worth knowing: the boot path WIPES
+   * the whole staged state when `targetCommit !== currentCommit`, so a
+   * hand-seeded state either never survives initialization or has to pretend
+   * HEAD is already the target. My first attempt did the former, and its key
+   * assertion PASSED anyway, because the test was then exercising an ordinary
+   * update that really did find 0.61.0. A second assertion in the same test
+   * is what caught it.
+   */
+  test('checkNow defers the install and still records the real latest version', async () => {
+    const rootDir = tempDir('self-update-staged-observe-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-staged-observe-state-'), 'auto-update.json')
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const logs: string[] = []
+    const exits: number[] = []
+    const drainModes: boolean[] = []
+    // The version origin/main reports changes between the two checks, which is
+    // the whole point: the first run stages 0.27.0, then a later release lands.
+    let latest = '0.27.0'
+    const runner: CommandRunner = async (file, args, opts) =>
+      gitRunner({ calls, latestVersion: latest })(file, args, opts)
+    const build = () =>
+      initializeSelfUpdater({
+        rootDir,
+        stateFilePath,
+        env: { BGOS_AUTO_UPDATE: 'on' },
+        runningVersion: '0.26.0',
+        log: (message) => logs.push(message),
+        drainSnapshot: () => ({
+          activeOperations: 0,
+          pendingMessages: 0,
+          pendingPermissions: 0,
+        }),
+        setDrainMode: (enabled) => drainModes.push(enabled),
+        exit: (code) => exits.push(code),
+        runner,
+        schedule: () => setTimeout(() => {}, 60_000),
+      })
+
+    // First check installs 0.27.0 and leaves it STAGED awaiting a restart.
+    const first = (await build())!
+    expect(first).not.toBeNull()
+    await first.checkNow()
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+    expect(first.pendingRestartVersion()).toBe('0.27.0')
+
+    // Now a newer release lands while this daemon is still waiting.
+    latest = '0.61.0'
+    const callsBefore = calls.length
+    await first.checkNow()
+
+    // THE POINT: it reports what is really out there, not its own stale target.
+    expect(first.latestKnownVersion).toBe('0.61.0')
+    // And it did NOT install it: the staged target is untouched, no new exit,
+    // no new drain toggle.
+    expect(first.pendingRestartVersion()).toBe('0.27.0')
+    expect(loadAutoUpdateState(stateFilePath).targetVersion).toBe('0.27.0')
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+    expect(exits).toEqual([])
+    // It looked, so it made git calls, but it never checked anything out.
+    expect(calls.length).toBeGreaterThan(callsBefore)
+    expect(
+      calls.slice(callsBefore).some((call) => call.args[0] === 'checkout'),
+    ).toBe(false)
+    // The deferral still says so, and now it names what it saw.
+    expect(logs.some((line) => line.includes('deferred while the new code is validating'))).toBe(
+      true,
+    )
+    expect(logs.some((line) => line.includes('latest on origin is 0.61.0'))).toBe(true)
+  })
+
+  test('an observation that fails leaves the previous reading rather than reporting null', async () => {
+    const rootDir = tempDir('self-update-staged-obsfail-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-staged-obsfail-state-'), 'auto-update.json')
+    const logs: string[] = []
+    let failGit = false
+    const base = gitRunner({ latestVersion: '0.27.0' })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (failGit && file === 'git') throw new Error('fetch failed')
+      return base(file, args, opts)
+    }
+    const updater = (await initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (message) => logs.push(message),
+      drainSnapshot: () => ({
+        activeOperations: 0,
+        pendingMessages: 0,
+        pendingPermissions: 0,
+      }),
+      setDrainMode: () => {},
+      exit: () => {},
+      runner,
+      schedule: () => setTimeout(() => {}, 60_000),
+    }))!
+    await updater.checkNow()
+    expect(updater.latestKnownVersion).toBe('0.27.0')
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+
+    // Now every git call throws: the network is gone, or the checkout is wedged.
+    failGit = true
+    await expect(updater.checkNow()).resolves.toBeUndefined()
+
+    // A failed observation keeps the previous reading. Reporting null would
+    // read as "never checked", which is a different and wronger claim, and it
+    // must not change the caller's outcome either.
+    expect(updater.latestKnownVersion).toBe('0.27.0')
+    expect(updater.pendingRestartVersion()).toBe('0.27.0')
+    expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+  })
+})
