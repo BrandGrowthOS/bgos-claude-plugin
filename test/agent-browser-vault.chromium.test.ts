@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { ChromiumEngine, browserPathsFor, resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
@@ -22,7 +22,17 @@ const holdDatabase = (page: any, name: string, value: string) => page.evaluate(a
 test('actual Chromium keeps locked browsing ephemeral and restores encrypted session cookie, localStorage and IndexedDB after unlock', { timeout: 90000 }, async t => {
   const executable = process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path
   assert.ok(executable, 'An installed browser is required for this focused proof')
-  const root = mkdtempSync(join(tmpdir(), 'vault-chromium-'))
+  // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
+  // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
+  // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
+  // unsafe_profile), which is the anti-aliasing property the vault exists to
+  // have. So every temp root under tmpdir() must be canonicalised here, or the
+  // vault specs can never pass on a Mac. CI runs ubuntu-latest and
+  // windows-latest only, where /tmp is real, so this was green in CI and red on
+  // every developer and agent machine in the fleet. Canonicalising the TEST root
+  // keeps the production check exactly as strict: ~/.bgos-agent, the real
+  // profile root, has no symlink in its chain.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-chromium-')))
   const network: string[] = []
   const server = createServer((req, res) => {
     if (req.url !== '/favicon.ico') network.push(req.url || '/')
@@ -38,7 +48,13 @@ test('actual Chromium keeps locked browsing ephemeral and restores encrypted ses
   t.after(async () => {
     await engine?.pages()[0]?.evaluate(() => (globalThis as any).auditDb?.close()).catch(() => {})
     await engine?.stop(); await new Promise<void>(resolve => server.close(() => resolve()))
-    assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep + 'vault-chromium-'))
+    // Both sides CANONICAL. `root` is now the realpath of the temp dir (see
+    // the note above), so comparing it against the raw tmpdir() would fail
+    // on macOS where tmpdir() is an alias, and this guard is what stops the
+    // rmSync below from ever being pointed outside the temp prefix. Keeping
+    // it exactly as strict means realpathing the prefix too, not relaxing
+    // the comparison.
+    assert.ok(resolve(root).startsWith(realpathSync(tmpdir()) + sep + 'vault-chromium-'))
     rmSync(root, { recursive: true, force: true })
   })
   let page = await start(), context = page.context()
@@ -126,7 +142,7 @@ test('actual Chromium keeps locked browsing ephemeral and restores encrypted ses
 })
 
 test('unlock clears a historical origin whose service worker still holds a locked IndexedDB connection', { timeout: 45000 }, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'vault-history-'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-history-')))
   const historical = createServer((req, res) => {
     if (req.url === '/worker.js') {
       res.setHeader('Content-Type', 'application/javascript')

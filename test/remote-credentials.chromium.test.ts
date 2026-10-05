@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ChromiumEngine, BrowserHostCore, browserPathsFor, resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
@@ -12,7 +12,17 @@ import crypto from '../lib/remote-credentials-crypto.cjs'
 const files = (dir: string): string[] => readdirSync(dir).flatMap(name => { const p = join(dir, name); return statSync(p).isDirectory() ? files(p) : [p] })
 
 test('actual owner fill remains redacted from MCP snapshots, evaluate, console and text artifacts after Not now', { timeout: 45000 }, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'credential-browser-'))
+  // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
+  // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
+  // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
+  // unsafe_profile), which is the anti-aliasing property the vault exists to
+  // have. So every temp root under tmpdir() must be canonicalised here, or these
+  // specs can never pass on a Mac. CI runs ubuntu-latest and windows-latest
+  // only, where /tmp is real, so this was green in CI and red on every developer
+  // and agent machine in the fleet. Canonicalising the TEST root keeps the
+  // production check exactly as strict: ~/.bgos-agent, the real profile root,
+  // has no symlink in its chain.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'credential-browser-')))
   const server = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><form id="signin"><input name="username" autocomplete="username"><input name="password" type="password" autocomplete="current-password"><button><span>Sign in</span></button></form><script>window.submitted=0;document.querySelector("form").addEventListener("submit",e=>{e.preventDefault();window.submitted++});document.querySelectorAll("input").forEach(x=>x.addEventListener("input",()=>console.log(x.value)))</script>') })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const origin = `http://127.0.0.1:${(server.address() as any).port}`

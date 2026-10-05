@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -13,7 +13,17 @@ const STATE = { cookies: [{ name: 'session', value: 'COOKIE_CANARY_817', domain:
   httpOnly: true, secure: true, sameSite: 'Lax' }], origins: [{ origin: 'https://example.test',
   localStorage: [{ name: 'auth', value: 'LOCAL_CANARY_836' }], indexedDB: [{ name: 'auth', version: 1, stores: [] }] }] }
 function fixture(t: any, suffix = 'a') {
-  const root = mkdtempSync(join(tmpdir(), 'vault-test-'))
+  // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
+  // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
+  // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
+  // unsafe_profile), which is the anti-aliasing property the vault exists to
+  // have. So every temp root under tmpdir() must be canonicalised here, or the
+  // vault specs can never pass on a Mac. CI runs ubuntu-latest and
+  // windows-latest only, where /tmp is real, so this was green in CI and red on
+  // every developer and agent machine in the fleet. Canonicalising the TEST root
+  // keeps the production check exactly as strict: ~/.bgos-agent, the real
+  // profile root, has no symlink in its chain.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-test-')))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const dir = join(root, suffix), scope = browserVaultScope({ assistantId: 901, principal: 'user-fixture' })
   const vault = new AgentBrowserVault({ profileDir: dir, scope, snapshotMs: 100000 })

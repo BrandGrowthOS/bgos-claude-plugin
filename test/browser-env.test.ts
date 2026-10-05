@@ -26,7 +26,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -159,7 +159,17 @@ test(
   { timeout: 120_000, skip: e2eSkip },
   async () => {
     if (e2eSkip) return // bun ignores the skip option; this is the same skip
-    const dir = mkdtempSync(join(tmpdir(), 'bh-env-e2e-'))
+    // macOS: os.tmpdir() is /var/folders/..., and /var is a symlink to /private/var,
+    // so a path built from it is an ALIAS. agent-browser-vault's secureProfileDir
+    // deliberately refuses an alias (`realpathSync(absolute) !== absolute` throws
+    // unsafe_profile), which is the anti-aliasing property the vault exists to
+    // have. So every temp root under tmpdir() must be canonicalised here, or the
+    // vault specs can never pass on a Mac. CI runs ubuntu-latest and
+    // windows-latest only, where /tmp is real, so this was green in CI and red on
+    // every developer and agent machine in the fleet. Canonicalising the TEST root
+    // keeps the production check exactly as strict: ~/.bgos-agent, the real
+    // profile root, has no symlink in its chain.
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bh-env-e2e-')))
     const home = join(dir, 'home')
     const dump = join(dir, 'chrome-env-names.txt')
     // Stands in front of the real Chrome: records the NAMES it was started
