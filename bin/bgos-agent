@@ -282,6 +282,15 @@ cmd_install() {
     plugin:*) topology="marketplace"; plugin_key="${channel#plugin:}" ;;
     *)        topology="clone" ;;
   esac
+  # A clone supervisor starts hoai from THIS checkout at every launch. Run from an npx
+  # cache, that is a directory npm may delete; then the agent stops with a named
+  # plugin-root-missing. Generation 1 copied what it needed into run.expect and never
+  # noticed; hoai has to come from somewhere real, so say so now.
+  if [ "$topology" = "clone" ]; then
+    case "$PLUGIN_DIR" in
+      */_npx/*) warn "this supervisor starts hoai from $PLUGIN_DIR, a package-runner cache that npm may delete; if it does, the agent stops with plugin-root-missing (hoai-agent status shows it). A git clone or the marketplace plugin is a durable home." ;;
+    esac
+  fi
   # Generation 1 launched through run.expect. It is not the launch path any more (hoai
   # embeds the shared gate block itself), so a reinstall over generation 1 removes it.
   rm -f "$statedir/run.expect"

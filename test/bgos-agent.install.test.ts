@@ -171,6 +171,7 @@ test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the chann
   // launch, and hoai (started from it) resolves the same marketplace spec the prover proved.
   assert.equal(`plugin:${runShVar(m, '936', 'plugin_key')}`, MARKETPLACE_CHANNEL_SPEC)
   assert.equal(runShVar(m, '936', 'topology'), 'marketplace')
+  assert.doesNotMatch(result.out, /package-runner cache/, 'a marketplace agent starts hoai from its install record, never from where the installer ran')
   assert.equal(runShVar(m, '936', 'node_bin'), join(m.home, 'shims', 'node'), 'the node resolved at install is baked')
   assert.equal(existsSync(join(m.home, '.bgos-agent', '936', 'run.expect')), false, 'run.expect is not the launch path any more')
   assert.equal(readFileSync(join(m.home, '.bgos-agent', '936', 'supervisor-generation'), 'utf8').trim(), '2')
@@ -206,6 +207,8 @@ test('a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the 
   assert.equal(runShVar(m, '901', 'topology'), 'clone')
   assert.equal(runShVar(m, '901', 'clone_root'), realpathSync(m.pluginRoot), 'the checkout, physically resolved at install')
   assert.equal(runShVar(m, '901', 'plugin_key'), '')
+  // This run comes from an npx-shaped cache, which npm may delete: said at install, not discovered later.
+  assert.match(result.out, /starts hoai from .*_npx.*, a package-runner cache that npm may delete/)
   assert.equal(CLONE_CHANNEL_SPEC, 'server:bgos')
   assert.equal(readFileSync(join(workspace, '.mcp.json'), 'utf8'), mcp, 'byte for byte')
   assert.doesNotMatch(callsOf(m), /prove-paired-topology/, 'the prover must not run at all for a folder that publishes its own server')
