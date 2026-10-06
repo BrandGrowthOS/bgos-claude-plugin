@@ -577,3 +577,58 @@ test('activity paths mirror their writers: the transcript (bin/hoai-core.mjs) an
   assert.equal(hookSpoolPathFor({ env: {}, home: HOME, sessionId: sid }), hook.spoolPath(sid, {}, HOME))
   assert.equal(hookSpoolPathFor({ env: { BGOS_PLUGIN_STATE_DIR: '/s' }, home: HOME, sessionId: sid }), hook.spoolPath(sid, { BGOS_PLUGIN_STATE_DIR: '/s' }, HOME))
 })
+
+/** ps's lstart for an instant, in this machine's local time (what ps prints). */
+function lstartFor(isoString: string) {
+  return new Date(Date.parse(isoString))
+    .toString()
+    .replace(/^(\w{3}) (\w{3}) (\d{2}) (\d{4}) (\d{2}:\d{2}:\d{2}).*$/, (_m, wd, mon, d, y, t) => `${wd} ${mon} ${String(Number(d)).padStart(2, ' ')} ${t} ${y}`)
+}
+
+test('an agent with its own CLAUDE_CONFIG_DIR is judged against ITS installed plugin, and restarted onto that root', async () => {
+  const ALT = `${HOME}/.claude-alt`
+  const ALT_ROOT = `${ALT}/plugins/cache/hoai/hoai/0.70.0`
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1' } }])
+  fs.writeFile(
+    `${HOME}/.bgos-agent/912/launch.json`,
+    JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: ALT_ROOT, node: '/usr/local/bin/node', claudeConfigDir: ALT, startedAt: 'x', pid: null } as any)),
+  )
+  fs.writeFile(`${ALT}/plugins/installed_plugins.json`, JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.70.0', installPath: ALT_ROOT, lastUpdated: '2026-10-06T18:40:00.000Z' }] } }))
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['912'].target, '0.70.0', "its own install, not the watcher's 0.62.1")
+})
+
+test("a stale state's claudePid that now belongs to some other process is not the agent's claude (pid reuse)", async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { updatedAt: new Date(T0 - 10 * MIN).toISOString() } }])
+  // 5912 was the agent's claude and is now a python worker started before the
+  // install landed; the agent's real claude is 7000, started after it.
+  const ps = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(5912, 1, 'python worker.py', lstartFor('2026-10-06T17:00:00.000Z')),
+    psLine(7000, 1, 'claude --x', lstartFor('2026-10-06T18:45:00.000Z')),
+  ].join('\n')
+  const rec = recorder({ ps, lsof: `p7000\nfcwd\nn${AVA}\n` })
+  const { ctx } = ctxFor(fs, rec, fakeClock())
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
+test('an upgrade with no known folder is reported, and spends neither an attempt nor the sweep restart', async () => {
+  const fs = machine([
+    { id: '7', cwd: null, service: 'canonical', generation: null, state: { pid: 47, claudePid: 57 } },
+    { id: '912', cwd: AVA, service: 'canonical', state: {} },
+  ])
+  const rec = recorder({ ps: [IDLE_PS, psLine(57, 1, 'claude --y')].join('\n') })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'upgrade_pending', 'no_known_folder'], ['912', 'restarted', 'service']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['7'].attempts, undefined)
+})
