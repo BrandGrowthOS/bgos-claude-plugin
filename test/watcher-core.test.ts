@@ -1151,6 +1151,9 @@ test('runWatcher: the first heartbeat after a restart carries the keep-alive sta
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
 })
 
+/** listAgents' sync probes answer nothing: the heartbeat's inventory never runs a real systemctl or ps. */
+const noOsExec = () => ({ code: 1, stdout: '' })
+
 test('runWatcher (F8): a long keep-alive sweep keeps the watcher online: it heartbeats when due, and an owner job sent meanwhile is acked inside the backend 60 s window and run right after the sweep', async () => {
   const fs = machineFs()
   manifestFor(fs)
@@ -1167,7 +1170,7 @@ test('runWatcher (F8): a long keep-alive sweep keeps the watcher online: it hear
     during.push([...backend.calls])
     return { enabled: true, agents: [] }
   }
-  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules(), keepAliveSweep })
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules(), execSync: noOsExec, keepAliveSweep })
   await runWatcher(deps as any)
   const inSweep = during[1]!
   assert.equal(inSweep.filter((c) => c.path.endsWith('/integrations/heartbeat')).length, 3, 'the start heartbeat, then one per due interval inside the sweep')
@@ -1186,7 +1189,7 @@ test('runWatcher: a keep-alive state file with a null agent record (valid JSON, 
   const since = new Date(T0 - 60_000).toISOString()
   fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': null, '7': { state: 'supervised', reason: 'canonical', since } } }))
   const backend = fakeBackend()
-  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: noOsExec, keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
   await runWatcher(deps as any)
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '7', state: 'supervised', reason: 'canonical', since }] })
 })
@@ -1221,7 +1224,7 @@ test('runWatcher (F8): a frame whose ack failed during the sweep comes back on t
     await c.keepOnline()
     return { enabled: true, agents: [] }
   }
-  const { deps } = baseDeps(fs, fakeBackend(), clock, { fetch, modules: stubModules(), keepAliveSweep })
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { fetch, modules: stubModules(), execSync: noOsExec, keepAliveSweep })
   await runWatcher(deps as any)
   assert.equal(acks, 2, 'the lost ack is sent again when the frame comes back')
   const progress = calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/progress')).map((c) => [c.body.state, c.body.message])
