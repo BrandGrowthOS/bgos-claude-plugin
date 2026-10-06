@@ -39,6 +39,7 @@ import {
   decideInstallGate,
   decideKeepAliveConsent,
   decidePendingRestart,
+  decideRestartBudget,
   decideRestartGate,
   decideSafeMoment,
   decideSupervise,
@@ -333,6 +334,21 @@ test('decideRestartGate: 3 attempts per target then failed, 1 restart per sweep,
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decideRestartGate({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+test("decideRestartBudget: the agent's OWN limits (3 attempts per target, 1 per 30 min), judged whatever the agent is doing", () => {
+  const base = { now: NOW, lastRestartAtMs: null, attempts: 0, pendingKind: 'update_pending' }
+  const rows: Array<[string, Record<string, unknown>, unknown]> = [
+    ['first attempt', {}, { allowed: true, state: 'update_pending', reason: null }],
+    ['third attempt still allowed', { attempts: 2, lastRestartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'update_pending', reason: null }],
+    ['three attempts spent', { attempts: 3, lastRestartAtMs: NOW - 31 * MIN }, { allowed: false, state: 'failed', reason: 'attempts_exhausted' }],
+    ['spent outranks the interval', { attempts: 3, lastRestartAtMs: NOW - 1 * MIN }, { allowed: false, state: 'failed', reason: 'attempts_exhausted' }],
+    ['restarted 29 min ago', { attempts: 1, lastRestartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'update_pending', reason: 'restart_rate_limited' }],
+    ['an upgrade keeps its own state name', { pendingKind: 'upgrade_pending', attempts: 1, lastRestartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'upgrade_pending', reason: 'restart_rate_limited' }],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.deepEqual(decideRestartBudget({ ...base, ...patch } as any), expected, name)
   }
 })
 

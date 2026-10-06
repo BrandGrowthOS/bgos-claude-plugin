@@ -505,6 +505,34 @@ test('gates: at most one restart per agent per 30 min, 3 attempts per target ver
   assert.deepEqual(exhausted.agents.map((a: any) => [a.state, a.reason]), [['failed', 'attempts_exhausted']])
 })
 
+test('gates: once 3 attempts at a target are spent the row is failed attempts_exhausted, busy or idle, and its since holds still', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const spentAt = new Date(T0 - 5 * 60 * MIN).toISOString()
+  fs.writeFile(
+    keepAliveStatePath(HOME),
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      consentSource: 'live',
+      agents: { '912': { state: 'failed', reason: 'attempts_exhausted', since: spentAt, target: '0.62.1', attempts: 3, lastRestartAt: new Date(T0 - 6 * 60 * MIN).toISOString() } },
+    }),
+  )
+  const clock = fakeClock()
+  const busy = recorder({ ps: JOB_PS })
+  const first = await runKeepAliveSweep(ctxFor(fs, busy, clock).ctx as any)
+  assert.deepEqual(first.agents, [{ id: '912', state: 'failed', reason: 'attempts_exhausted', since: spentAt }], 'a background job does not turn it back into waiting_idle')
+  clock.advance(1 * MIN)
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { turnInFlight: true }))
+  const turn = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: IDLE_PS }), clock).ctx as any)
+  assert.deepEqual(turn.agents, [{ id: '912', state: 'failed', reason: 'attempts_exhausted', since: spentAt }], 'nor does a turn in flight')
+  clock.advance(1 * MIN)
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
+  const idle = recorder({ ps: IDLE_PS })
+  const quiet = await runKeepAliveSweep(ctxFor(fs, idle, clock).ctx as any)
+  assert.deepEqual(quiet.agents, [{ id: '912', state: 'failed', reason: 'attempts_exhausted', since: spentAt }])
+  assert.equal([...busy.calls, ...idle.calls].some((c) => c.file === 'launchctl'), false, 'never a fourth attempt')
+})
+
 // -- Windows ----------------------------------------------------------------------------------------
 
 const WHOME = 'C:\\Users\\kc'
