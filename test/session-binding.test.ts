@@ -554,7 +554,7 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.match(server, /new AgentSessionLibrary\(\{\s*projectDir: sessionBinder\.projectDirectory,/)
   // The third reader is agent-state.json's transcript activity (code review
   // F1), which reads the same dir for an agent whose hook rail is silent.
-  assert.match(server, /readSessionTranscript\(\{ resolved: sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\)/)
+  assert.match(server, /readSessionTranscript\(\{ resolve: \(\) => sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\)/)
   assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 3)
 })
 
@@ -614,6 +614,9 @@ test('server.ts resolves the config dir once against the agent folder, and the i
     server,
     /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,(\s*\/\/[^\n]*)*\s*baseDir: LAUNCH_CWD,/,
   )
+  // The watcher bundle gets the same resolved dir, and still none when unset
+  // (an explicit ~/.claude is not the same thing to the CLI as an unset one).
+  assert.match(server, /claudeConfigDir: process\.env\.CLAUDE_CONFIG_DIR\?\.trim\(\) \? CLAUDE_CONFIG_DIR : null,/)
   // What the binder then builds is absolute and normalised whatever the spelling.
   const agent = '/Users/a/agent'
   for (const raw of ['.claude-work', './.claude-work/', '/Users/a/agent/../agent/.claude-work']) {

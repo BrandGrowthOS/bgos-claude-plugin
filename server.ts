@@ -10876,7 +10876,7 @@ const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.no
 // project dir, so it is read at most every 10 s, not on every 1 s tick.
 const AGENT_TRANSCRIPT_READ_MS = 10_000
 const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
-  readSessionTranscript({ resolved: sessionBinder.resolve(), projectDir: sessionBinder.projectDirectory }),
+  readSessionTranscript({ resolve: () => sessionBinder.resolve(), projectDir: sessionBinder.projectDirectory }),
 )
 const agentStatePublisher = new AgentStatePublisher({
   path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),

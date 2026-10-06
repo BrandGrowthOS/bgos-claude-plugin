@@ -362,7 +362,7 @@ export interface SessionTranscriptReading {
 
 /**
  * Read the activity and the session off the transcripts, for an agent whose
- * hook rail may be silent (F1). `resolved` is the session binder's answer
+ * hook rail may be silent (F1). `resolve` is the session binder's answer
  * (lib/session-binding.ts resolve()) with ANY binding source, because a wrong
  * guess here only makes the agent look busier, which is the safe direction for
  * a restart. The session id is published only from a POSITIVE binding: it
@@ -378,7 +378,9 @@ export interface SessionTranscriptReading {
  * Never throws; a missing file or dir is simply no reading.
  */
 export function readSessionTranscript(input: {
-  resolved: { path: string; binding: { source: BindingSource } } | null
+  /** The binder's answer, asked inside this function so a throw from it
+   *  costs the reading, never the publish. */
+  resolve: () => { path: string; binding: { source: BindingSource } } | null
   projectDir: string
   fs?: TranscriptActivityFs
 }): SessionTranscriptReading {
@@ -389,7 +391,7 @@ export function readSessionTranscript(input: {
       if (typeof ms === 'number' && Number.isFinite(ms)) times.push(ms)
     }
     const jsonl = (dir: string) => fs.listDir(dir).filter((name) => name.endsWith('.jsonl'))
-    const resolved = input.resolved
+    const resolved = input.resolve()
     let sessionId: string | null = null
     if (resolved && resolved.path) {
       note(fs.mtimeMs(resolved.path))

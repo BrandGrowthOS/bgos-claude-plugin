@@ -438,7 +438,7 @@ test('readSessionTranscript: the bound transcript and its subagents are the acti
     const ours = f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 9 * 60_000)
     f.write(join(f.projectDir, `${SUB}.jsonl`), T0 - 60_000) // a neighbour in the same folder
     const proven = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'env' as const } }
-    assert.deepEqual(readSessionTranscript({ resolved: proven, projectDir: f.projectDir }), {
+    assert.deepEqual(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }), {
       activityMs: T0 - 9 * 60_000,
       sessionId: SESSION,
     })
@@ -446,23 +446,28 @@ test('readSessionTranscript: the bound transcript and its subagents are the acti
     // long subagent run moves no byte of the main file.
     f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.jsonl'), T0 - 5 * 60_000)
     f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'agent-b2.jsonl'), T0 - 2 * 60_000)
-    assert.equal(readSessionTranscript({ resolved: proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
+    assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
     // A guess (newest-mtime) still counts as activity, never as the session.
     const guessed = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'newest-mtime' as const } }
-    assert.deepEqual(readSessionTranscript({ resolved: guessed, projectDir: f.projectDir }), {
+    assert.deepEqual(readSessionTranscript({ resolve: () => guessed, projectDir: f.projectDir }), {
       activityMs: T0 - 2 * 60_000,
       sessionId: null,
     })
     // Unbound (the binder refuses to guess between two live transcripts): any
     // transcript in the folder being written is activity, the safe direction.
-    assert.deepEqual(readSessionTranscript({ resolved: null, projectDir: f.projectDir }), {
+    assert.deepEqual(readSessionTranscript({ resolve: () => null, projectDir: f.projectDir }), {
       activityMs: T0 - 60_000,
       sessionId: null,
     })
-    assert.deepEqual(readSessionTranscript({ resolved: null, projectDir: join(f.root, 'missing') }), {
+    assert.deepEqual(readSessionTranscript({ resolve: () => null, projectDir: join(f.root, 'missing') }), {
       activityMs: null,
       sessionId: null,
     })
+    // A binder that throws costs the reading, never the publish.
+    const boom = () => {
+      throw new Error('binder')
+    }
+    assert.deepEqual(readSessionTranscript({ resolve: boom, projectDir: f.projectDir }), { activityMs: null, sessionId: null })
   } finally {
     rmSync(f.root, { recursive: true, force: true })
   }
@@ -474,7 +479,7 @@ test('a hookless agent writing its transcript a minute ago publishes that minute
     // hoai launched it with --session-id, so the CLI hands the daemon that id.
     f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 60_000)
     const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root, envSessionId: SESSION })
-    const reading = () => readSessionTranscript({ resolved: binder.resolve(T0), projectDir: binder.projectDirectory })
+    const reading = () => readSessionTranscript({ resolve: () => binder.resolve(T0), projectDir: binder.projectDirectory })
     const lastHookEventAtMs: number | null = null
     const liveSessionId: string | null = null
     const writes: Array<ReturnType<typeof buildAgentState>> = []
@@ -520,7 +525,7 @@ test('server.ts publishes turnSignal, the transcript activity and the proven ses
   // One binder read per window, not per 1 s tick: it lists the project dir.
   assert.match(
     server,
-    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolved: sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
+    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolve: \(\) => sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
   )
 })
 
