@@ -355,6 +355,24 @@ test('safe moment: a turn in flight waits; after 24 h of waiting the entry carri
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
 })
 
+test('safe moment: a turn flag that has been quiet for 3 h with no job under claude is stale: the NORMAL restart path, never a kill', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { turnInFlight: true, lastActivityAt: new Date(T0 - 180 * MIN).toISOString() } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // The same flag with a job still running under claude is a live turn.
+  const busy = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { turnInFlight: true, lastActivityAt: new Date(T0 - 180 * MIN).toISOString() } }])
+  const busyRec = recorder({ ps: JOB_PS })
+  const held = await runKeepAliveSweep(ctxFor(busy, busyRec, fakeClock()).ctx as any)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'turn_in_flight']])
+  assert.equal(busyRec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
 // -- restart -------------------------------------------------------------------------------------
 
 test('restart: idle + update_pending => restart through the canonical service, then verify the channel is live', async () => {

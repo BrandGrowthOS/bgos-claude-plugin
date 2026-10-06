@@ -30,6 +30,7 @@ import {
   MAX_TASK_STARTS_PER_EPISODE,
   QUIET_WINDOW_MS,
   RESTART_MIN_INTERVAL_MS,
+  STALE_TURN_MS,
   TASK_START_MIN_INTERVAL_MS,
   WAITING_ASK_AFTER_MS,
   advanceAgentRecord,
@@ -187,6 +188,30 @@ test('decideSafeMoment: the design 6 table, exact reasons', () => {
   for (const [name, patch, safe, reason] of rows) {
     const out = decideSafeMoment({ ...base, ...patch } as any)
     assert.deepEqual(out, { safe, reason }, name)
+  }
+})
+
+test('decideSafeMoment: a turn flag with NO activity for 2 h and no background job is stale (an interrupted turn never gets its Stop); anything less is still a turn', () => {
+  assert.equal(STALE_TURN_MS, 2 * 60 * MIN)
+  const turn = parseAgentState(stateBody({ turnInFlight: true }), '123')!
+  const base = { running: true, stateFresh: true, state: turn, descendants: [] as string[] | null, activityMs: [NOW - 121 * MIN], now: NOW }
+  const job = '/bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && tail -f x'
+  const rows: Array<[string, Record<string, unknown>, boolean, string]> = [
+    ['quiet 121 min, no job: stale, the normal restart path', {}, true, 'stale_turn'],
+    ['quiet exactly 2 h: stale', { activityMs: [NOW - 120 * MIN] }, true, 'stale_turn'],
+    ['every source quiet 3 h: stale', { activityMs: [NOW - 180 * MIN, null, NOW - 200 * MIN] }, true, 'stale_turn'],
+    ['activity 119 min ago: a live turn', { activityMs: [NOW - 119 * MIN] }, false, 'turn_in_flight'],
+    ['one newer source vetoes it', { activityMs: [NOW - 180 * MIN, NOW - 30 * MIN] }, false, 'turn_in_flight'],
+    ['a background job under claude: still the turn', { descendants: ['node /x/server.ts', job] }, false, 'turn_in_flight'],
+    ['a process tree that could not be read cannot prove no job', { descendants: null }, false, 'turn_in_flight'],
+    ['no activity evidence at all cannot prove quiet', { activityMs: [] }, false, 'turn_in_flight'],
+    ['a stamp in the future (clock skew) is not quiet', { activityMs: [NOW + 5 * MIN] }, false, 'turn_in_flight'],
+    ['a stale turn hides no owed reply', { state: { ...turn, pendingMessages: 1 } }, false, 'pending_messages'],
+    ['a stale turn hides no pending permission', { state: { ...turn, pendingPermissions: 1 } }, false, 'pending_permission'],
+    ['a stale turn hides no running delivery', { state: { ...turn, activeOperations: 1 } }, false, 'pending_messages'],
+  ]
+  for (const [name, patch, safe, reason] of rows) {
+    assert.deepEqual(decideSafeMoment({ ...base, ...patch } as any), { safe, reason }, name)
   }
 })
 
