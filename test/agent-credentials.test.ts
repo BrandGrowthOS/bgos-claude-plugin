@@ -908,11 +908,13 @@ test('every identity call site uses the SAME directory', () => {
     `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver and the home-folder binding to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
-  // process.cwd() and should: the cursor-file path, the service record and the
-  // health report are describing where this PROCESS actually runs, and the
-  // supervision matcher compares that against a launchd job's working
-  // directory. Rewriting those would be a different change with a real risk of
-  // breaking agent-to-service matching.
+  // process.cwd() and should: the cursor-file path and the health report are
+  // describing where this PROCESS actually runs. The supervision probe and the
+  // service record used to be on this list, and were wrong there: they compare
+  // against a launchd job's WorkingDirectory, which names the folder claude
+  // runs in, so they use LAUNCH_CWD under a name of their own
+  // (SUPERVISION_WORKDIR, test/always-on-reconcile.test.ts), as the session
+  // pin and the always-on reconcile do.
   for (const site of [
     /resolveCredentialsSelection\(\{[\s\S]{0,200}?\}\)/,
     /resolveCredentialsPath\(\{[\s\S]{0,200}?\}\)/,

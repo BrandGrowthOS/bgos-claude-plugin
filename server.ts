@@ -10699,12 +10699,20 @@ function listDirOrEmpty(path: string): string[] {
 // bespoke supervisor findable at all: an agent takes its identity from the
 // .mcp.json of the folder it runs in, so a loaded job whose WorkingDirectory
 // is THIS folder is a job that brings back THIS agent (lib/service-supervision.mjs).
+// That folder is the one claude runs in, LAUNCH_CWD, and never this process's
+// cwd: a marketplace install runs this process in the plugin cache
+// (bin/bgos-launch.mjs relocates it), where no job's WorkingDirectory points,
+// so a bespoke job was never found at boot (no declared supervisor.json), the
+// update ladder could only stage, and service.json named a folder the watcher
+// could never verify. On a clone install the two are the same folder. Its own
+// name keeps the counted identity literal at six (test/agent-credentials.test.ts).
+const SUPERVISION_WORKDIR = LAUNCH_CWD
 function supervisionProbe() {
   return {
     platform: process.platform,
     home: homedir(),
     assistantId: ASSISTANT_ID,
-    cwd: process.cwd(),
+    cwd: SUPERVISION_WORKDIR,
     // The anchor of the keepalive tier's ancestry walk. Without it that tier
     // cannot prove a marker describes THIS session, so it never fires.
     ownPid: process.pid,
@@ -10736,7 +10744,9 @@ function publishServiceRecord(service: ResolvedService | null): void {
       ? buildServiceRecord({
           assistantId: ASSISTANT_ID,
           service,
-          cwd: process.cwd(),
+          // The anchor the watcher re-verifies with: the folder the probe
+          // above matched the job by.
+          cwd: SUPERVISION_WORKDIR,
           resolvedAt: new Date().toISOString(),
         })
       : null

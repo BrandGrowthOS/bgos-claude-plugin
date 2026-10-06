@@ -26,6 +26,7 @@ import {
   otherLiveSupervisor,
 } from '../lib/always-on-reconcile.ts'
 import { resolveSupervision, type Supervision } from '../lib/update-readiness.ts'
+import { buildServiceRecord, verifyServiceRecord } from '../lib/service-supervision.mjs'
 
 const ID = '910'
 
@@ -194,4 +195,66 @@ test('G11 on a marketplace install: a bespoke unit found by working directory de
     action: 'defer',
     other: { kind: 'systemd', handle: 'vexa-agent.service', via: 'working-directory' },
   })
+})
+
+// Verifier item c (mission 104 fix round). supervisionProbe() fed every
+// restart-authority read (the boot supervisor.json, the update ladder, the
+// readiness heartbeat) the relocated process.cwd(), and publishServiceRecord
+// wrote that cwd into service.json, the anchor the watcher re-verifies with.
+// On a marketplace install that is the plugin cache, where no job's
+// WorkingDirectory points: a bespoke job anchored by the agent folder was never
+// found at boot (so no declared supervisor.json, and G11 rested on the
+// reconcile's own probe alone), the update ladder only staged, and the record
+// could never verify. The agent folder is what a job's WorkingDirectory names.
+test('server.ts anchors the supervision probe and the published service record on the agent folder', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const decl = server.indexOf('\nconst SUPERVISION_WORKDIR = LAUNCH_CWD\n')
+  assert.ok(decl > 0, 'a name of its own keeps the counted identity literal at six')
+  const probeAt = server.indexOf('function supervisionProbe() {')
+  assert.ok(decl < probeAt, 'declared before the probe reads it')
+  const probe = server.slice(probeAt, server.indexOf('\n}\n', probeAt))
+  assert.match(probe, /\n\s*cwd: SUPERVISION_WORKDIR,\n/)
+  assert.doesNotMatch(probe, /process\.cwd\(\)/)
+  const recordAt = server.indexOf('function publishServiceRecord(')
+  const record = server.slice(recordAt, server.indexOf('\n}\n', recordAt))
+  assert.match(record, /buildServiceRecord\(\{[\s\S]*?\n\s*cwd: SUPERVISION_WORKDIR,\n/)
+  assert.doesNotMatch(record, /process\.cwd\(\)/)
+})
+
+test('a service record published from the agent folder re-verifies for the watcher; one from the plugin cache never does', () => {
+  const HOME = '/home/kc'
+  const AGENT = '/home/kc/agents/vexa'
+  const CACHE = '/home/kc/.claude/plugins/cache/hoai-marketplace/hoai/0.62.0'
+  const UNIT = `${HOME}/.config/systemd/user/vexa-agent.service`
+  const files: Record<string, string> = {
+    [UNIT]: ['[Service]', 'ExecStart=/usr/bin/hoai', `WorkingDirectory=${AGENT}`, 'Restart=always'].join('\n'),
+    [`${AGENT}/.bgos-agent-id`]: ID,
+  }
+  const io = {
+    platform: 'linux',
+    home: HOME,
+    assistantId: ID,
+    exists: (p: string) => p in files,
+    readFile: (p: string) => files[p] ?? null,
+    listDir: (dir: string) =>
+      Object.keys(files)
+        .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+        .map((p) => p.slice(dir.length + 1)),
+    execSync: (file: string) =>
+      file === 'systemctl'
+        ? { code: 0, stdout: 'vexa-agent.service loaded active running Vexa' }
+        : { code: 127, stdout: '' },
+    pidAlive: () => false,
+  }
+  const published = (cwd: string) => {
+    const service = resolveSupervision({ ...io, cwd }).service
+    return service ? buildServiceRecord({ assistantId: ID, service, cwd }) : null
+  }
+  assert.equal(published(CACHE), null, 'from the plugin cache the daemon resolves nothing to publish')
+  const record = published(AGENT)
+  assert.ok(record)
+  assert.equal(record.cwd, AGENT)
+  const verified = verifyServiceRecord({ record, ...io })
+  assert.equal(verified?.handle, 'vexa-agent.service')
 })
