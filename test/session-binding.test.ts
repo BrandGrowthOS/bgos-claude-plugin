@@ -25,7 +25,7 @@ import {
   POSITIVE_BINDING_SOURCES,
   SessionTranscriptBinder,
 } from '../lib/session-binding.ts'
-import { mungeCwd } from '../lib/usage-report.ts'
+import { mungeCwd, UsageTracker } from '../lib/usage-report.ts'
 import { decideSessionAdmission } from '../lib/hook-intake.ts'
 import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
 
@@ -551,4 +551,42 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.match(server, /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,/)
   assert.match(server, /new AgentSessionLibrary\(\{\s*projectDir: sessionBinder\.projectDirectory,/)
   assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 2)
+})
+
+// The two other transcript readers (mission 104 fix round, verifier item a).
+// The usage self-report and the resting watcher read the same transcripts the
+// binder does, from the same <config dir>/projects/<munged agent folder>. Built
+// from process.cwd() under a fixed ~/.claude, a marketplace install (cwd is the
+// plugin cache) or a custom CLAUDE_CONFIG_DIR pointed both at a project dir no
+// transcript of this agent lives in: no token counts on any reply, and a usage
+// cap the agent hit was never reported as resting.
+test('server.ts builds the usage tracker and the resting watcher from the agent folder and the CLI config dir', () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
+  const usage = /\nconst usageTracker = new UsageTracker\(([^\n]*)\)\n/.exec(server)
+  assert.ok(usage, 'the usage tracker is built at module scope')
+  assert.equal(usage[1], 'LAUNCH_CWD, CLAUDE_CONFIG_DIR')
+  const resting = /\nconst restingWatcher = new RestingWatcher\(([^\n]*)\)\n/.exec(server)
+  assert.ok(resting, 'the resting watcher is built at module scope')
+  assert.equal(resting[1], 'LAUNCH_CWD, CLAUDE_CONFIG_DIR')
+  // Both read the config dir at module load, so it must be declared first.
+  const decl = server.indexOf('\nconst CLAUDE_CONFIG_DIR = ')
+  assert.ok(decl > 0 && decl < usage.index && decl < resting.index, 'declared before both readers')
+})
+
+test('the usage tracker finds the agent transcript under a custom config dir, and not from the plugin cache', () => {
+  const root = mkdtempSync(join(tmpdir(), 'readers-config-dir-'))
+  const configDir = join(root, 'claude-config')
+  const agentFolder = '/home/kc/agents/vexa'
+  const projectDir = join(configDir, 'projects', mungeCwd(agentFolder))
+  mkdirSync(projectDir, { recursive: true })
+  const transcript = join(projectDir, '8c1f2d3e-4a5b-4c6d-8e7f-901234567890.jsonl')
+  writeFileSync(transcript, '')
+  const tracker = new UsageTracker(agentFolder, configDir)
+  writeFileSync(transcript, `${assistantLine(50_000)}\n`)
+  const report = tracker.collect({})
+  assert.ok(report, 'the tracker reads the agent transcript')
+  assert.equal(report.inputTokens, 50_000)
+  // The plugin cache under ~/.claude names a dir with nothing in it.
+  const before = new UsageTracker('/home/kc/.claude/plugins/cache/hoai/0.62.0', join(root, 'home', '.claude'))
+  assert.equal(before.collect({}), null)
 })

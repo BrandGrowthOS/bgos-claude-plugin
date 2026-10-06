@@ -1062,7 +1062,12 @@ async function bgosGetCachedOn304(path: string): Promise<unknown> {
 // next report). Env: BGOS_USAGE_REPORT=off disables,
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
 // subscription, the Claude Max plan: tokens only, never dollars).
-const usageTracker = new UsageTracker(process.cwd())
+// The transcripts are the binder's (sessionBinder below explains): the folder
+// claude runs in, LAUNCH_CWD, under the CLI config dir. Built from
+// process.cwd() under a fixed ~/.claude, a marketplace install (cwd is the
+// plugin cache) or a custom CLAUDE_CONFIG_DIR read an empty project dir and
+// no reply ever carried a token count.
+const usageTracker = new UsageTracker(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 
 // ── Capability bootstrap (served canon) ──────────────────────────────────────
 // Fetched once at connect and cached; exposed to the agent via the
@@ -1340,7 +1345,10 @@ function reportContextPct(): void {
 // covers credits-out, which carries no reset time and gets a conservative
 // now+30min horizon). `emittedResting` advances only on a successful PATCH,
 // so a failed send retries on the next sweep.
-const restingWatcher = new RestingWatcher(process.cwd())
+// Same transcripts, same folder and config dir as the binder above: from the
+// relocated cwd a usage cap the agent hit was never seen, so it was never
+// reported as resting.
+const restingWatcher = new RestingWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 let observedResting: RestingEpisode | null = null
 let emittedResting: RestingEpisode | null = null
 // Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
