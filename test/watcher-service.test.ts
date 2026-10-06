@@ -28,7 +28,9 @@ import {
 } from '../lib/watcher-service.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
-const POSIX = { home: '/home/kc', nodePath: '/usr/local/bin/node', bundleDir: '/home/kc/.bgos-agent/watcher', uid: 501, username: 'kc' }
+// An explicit EMPTY env: watcherServiceSpec reads process.env when none is passed, and
+// every expectation below is the un-namespaced service (HOAI_SERVICE_NAMESPACE unset).
+const POSIX = { home: '/home/kc', nodePath: '/usr/local/bin/node', bundleDir: '/home/kc/.bgos-agent/watcher', uid: 501, username: 'kc', env: {} }
 const WIN = {
   home: 'C:\\Users\\kc',
   nodePath: 'C:\\Program Files\\nodejs\\node.exe',
@@ -36,6 +38,7 @@ const WIN = {
   uid: null,
   username: 'kc',
   localAppData: 'C:\\Users\\kc\\AppData\\Local',
+  env: {},
 }
 
 /** A recording exec: every call is logged; outcomes come from a script keyed
@@ -61,6 +64,23 @@ test('constants', () => {
 test('watcherCredentialsPath: <watcherHome>/credentials.json', () => {
   assert.equal(watcherCredentialsPath('/home/kc'), '/home/kc/.bgos-agent/watcher/credentials.json')
   assert.equal(watcherCredentialsPath('C:\\Users\\kc'), 'C:\\Users\\kc\\.bgos-agent\\watcher\\credentials.json')
+})
+
+test('the fixtures carry an explicit empty env, so a HOAI_SERVICE_NAMESPACE exported in the shell cannot move the names these tests pin', () => {
+  // watcherServiceSpec reads process.env when no env is passed (the side by side
+  // install, design section 4). Every expectation in this file is the
+  // un-namespaced service, byte for byte, so a developer or a staging proof that
+  // ran `export HOAI_SERVICE_NAMESPACE=...` must not turn the suite red.
+  const before = process.env.HOAI_SERVICE_NAMESPACE
+  try {
+    process.env.HOAI_SERVICE_NAMESPACE = 'stage1'
+    assert.equal(watcherServiceSpec({ platform: 'darwin', ...POSIX }).label, 'ai.bgos.watcher')
+    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, 'bgos-watcher')
+    assert.equal(watcherServiceSpec({ platform: 'win32', ...WIN }).label, 'HOAI Watcher')
+  } finally {
+    if (before === undefined) delete process.env.HOAI_SERVICE_NAMESPACE
+    else process.env.HOAI_SERVICE_NAMESPACE = before
+  }
 })
 
 // -- darwin ---------------------------------------------------------------------------
