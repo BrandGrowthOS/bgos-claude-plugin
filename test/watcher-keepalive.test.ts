@@ -560,6 +560,72 @@ test('win32: a canonical task whose launcher is dead and agent stopped is starte
   assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
 })
 
+test('win32: a dead launcher gets the restart limits (1 task start per 30 min, 3 per death episode, then failed task_start_failed); 10 min alive ends the episode', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' old launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+  })
+  const rec = recorder()
+  const clock = fakeClock()
+  let launcherAlive = false
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => launcherAlive && pid === 777 })
+  const starts = () => rec.calls.filter((c) => c.file === 'schtasks.exe').length
+  const sweep = async () => (await runKeepAliveSweep(ctx as any)).agents.map((a: any) => [a.state, a.reason])
+  assert.deepEqual(await sweep(), [['supervised', 'task_started']])
+  assert.equal(starts(), 1)
+  clock.advance(1 * MIN)
+  assert.deepEqual(await sweep(), [['supervised', 'task_start_rate_limited']])
+  assert.equal(starts(), 1, 'not a schtasks /Run every sweep')
+  clock.advance(30 * MIN)
+  await sweep()
+  assert.equal(starts(), 2)
+  clock.advance(31 * MIN)
+  await sweep()
+  assert.equal(starts(), 3)
+  clock.advance(31 * MIN)
+  assert.deepEqual(await sweep(), [['failed', 'task_start_failed']])
+  clock.advance(60 * MIN)
+  assert.deepEqual(await sweep(), [['failed', 'task_start_failed']])
+  assert.equal(starts(), 3, 'never a fourth start in one launcher death episode')
+  const failedSince = JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].since
+  assert.equal(failedSince, new Date(clock.now() - 60 * MIN).toISOString(), 'the failed row holds still')
+  // The launcher comes back (a logon, the task's own RestartCount) and stays up 10 minutes: the episode is over.
+  launcherAlive = true
+  assert.deepEqual(await sweep(), [['supervised', 'canonical']])
+  clock.advance(10 * MIN)
+  await sweep()
+  launcherAlive = false
+  clock.advance(1 * MIN)
+  assert.deepEqual(await sweep(), [['supervised', 'task_started']])
+  assert.equal(starts(), 4)
+})
+
+test('win32: a launcher that dies again within 10 minutes of coming back is the SAME death episode', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' old launcher\r\n",
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+  })
+  const rec = recorder()
+  const clock = fakeClock()
+  let launcherAlive = false
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => launcherAlive && pid === 777 })
+  const starts = () => rec.calls.filter((c) => c.file === 'schtasks.exe').length
+  for (let i = 0; i < 3; i++) {
+    launcherAlive = false
+    await runKeepAliveSweep(ctx as any)
+    clock.advance(1 * MIN)
+    launcherAlive = true
+    await runKeepAliveSweep(ctx as any)
+    clock.advance(30 * MIN)
+  }
+  assert.equal(starts(), 3)
+  launcherAlive = false
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['failed', 'task_start_failed']])
+  assert.equal(starts(), 3)
+})
+
 test('win32: a CURRENT root whose hoai-core has no --keep-alive gets no task registered (supervisor_v2_unavailable)', async () => {
   const old = { [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_OLD }
   // No supervisor yet: no files, no Register-ScheduledTask.

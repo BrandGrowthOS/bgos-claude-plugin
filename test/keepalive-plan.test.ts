@@ -24,12 +24,16 @@ import {
   AGENT_STATE_FRESH_MS,
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
+  LAUNCHER_STABLE_MS,
   LEGACY_QUIET_WINDOW_MS,
   MAX_ATTEMPTS_PER_TARGET,
+  MAX_TASK_STARTS_PER_EPISODE,
   QUIET_WINDOW_MS,
   RESTART_MIN_INTERVAL_MS,
+  TASK_START_MIN_INTERVAL_MS,
   WAITING_ASK_AFTER_MS,
   advanceAgentRecord,
+  advanceLauncherEpisode,
   buildKeepAliveCache,
   decideInstallGate,
   decideKeepAliveConsent,
@@ -38,6 +42,7 @@ import {
   decideSafeMoment,
   decideSupervise,
   decideTaskStart,
+  decideTaskStartGate,
   isAgentStateFresh,
   isBackgroundJobCommand,
   parseAgentState,
@@ -252,6 +257,40 @@ test('decideTaskStart: a Windows agent task is started only when its launcher is
   assert.equal(decideTaskStart({ ...base, running: true }), false, 'running by hand: never a second session')
   assert.equal(decideTaskStart({ ...base, running: null }), false, 'unknown is not "not running"')
   assert.equal(decideTaskStart({ ...base, recentActivity: true }), false, 'recent activity may be a session we cannot see')
+})
+
+test('decideTaskStartGate: the restart limits for a dead launcher (1 start per 30 min, 3 per death episode, then failed task_start_failed)', () => {
+  assert.equal(TASK_START_MIN_INTERVAL_MS, 30 * MIN)
+  assert.equal(MAX_TASK_STARTS_PER_EPISODE, 3)
+  const base = { now: NOW, lastTaskStartAtMs: null, taskStarts: 0 }
+  const rows: Array<[string, Record<string, unknown>, unknown]> = [
+    ['first start of an episode', {}, { allowed: true, state: 'supervised', reason: null }],
+    ['third start still allowed', { taskStarts: 2, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
+    ['three starts spent: visible, never a fourth', { taskStarts: 3, lastTaskStartAtMs: NOW - 120 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
+    ['spent outranks the interval', { taskStarts: 3, lastTaskStartAtMs: NOW - 1 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
+    ['started 29 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+    ['started 31 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
+    ['the interval holds across an episode reset', { taskStarts: 0, lastTaskStartAtMs: NOW - 11 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.deepEqual(decideTaskStartGate({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+test('advanceLauncherEpisode: a death episode ends only once the launcher has stayed alive 10 minutes', () => {
+  assert.equal(LAUNCHER_STABLE_MS, 10 * MIN)
+  const at = (ms: number) => new Date(ms).toISOString()
+  const rows: Array<[string, Record<string, unknown> | null, boolean, unknown]> = [
+    ['no history, launcher dead', null, false, { taskStarts: 0, launcherAliveSince: null }],
+    ['dead: the count holds, the alive clock stops', { taskStarts: 2, launcherAliveSince: at(NOW - 30 * MIN) }, false, { taskStarts: 2, launcherAliveSince: null }],
+    ['first seen alive: the clock starts, the count holds', { taskStarts: 2, launcherAliveSince: null }, true, { taskStarts: 2, launcherAliveSince: at(NOW) }],
+    ['alive 9 min: still the same episode', { taskStarts: 3, launcherAliveSince: at(NOW - 9 * MIN) }, true, { taskStarts: 3, launcherAliveSince: at(NOW - 9 * MIN) }],
+    ['alive 10 min: the episode is over', { taskStarts: 3, launcherAliveSince: at(NOW - 10 * MIN) }, true, { taskStarts: 0, launcherAliveSince: at(NOW - 10 * MIN) }],
+    ['junk bookkeeping reads as none', { taskStarts: -1, launcherAliveSince: 'soon' }, true, { taskStarts: 0, launcherAliveSince: at(NOW) }],
+  ]
+  for (const [name, prev, launcherLive, expected] of rows) {
+    assert.deepEqual(advanceLauncherEpisode(prev, { launcherLive, now: NOW }), expected, name)
+  }
 })
 
 // -- rate limits ---------------------------------------------------------------------------------------
