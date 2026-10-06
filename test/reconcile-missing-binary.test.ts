@@ -65,6 +65,25 @@ describe('always-on reconcile with a missing supervisor binary', () => {
     expect(winLine).not.toContain('until Windows support ships')
   })
 
+  it('on win32 the once-only line itself, not the comment above it, names the watcher and the switch', () => {
+    // The branch's WHY comment says "Keep agents running is on for this
+    // computer" too, so a scan of the whole branch stayed green with the words
+    // gone from the line an operator actually reads. This reads only the
+    // string literals of the log( call.
+    const winAt = reconcileBody.indexOf("process.platform === 'win32'")
+    const logAt = reconcileBody.indexOf('log(', winAt)
+    const logEnd = reconcileBody.indexOf('\n    )\n', logAt)
+    expect(logAt).toBeGreaterThan(winAt)
+    expect(logEnd).toBeGreaterThan(logAt)
+    expect(logAt).toBeLessThan(reconcileBody.indexOf('existsSync(BGOS_AGENT_BIN)'))
+    const said = [...reconcileBody.slice(logAt, logEnd).matchAll(/`([^`]*)`/g)].map((m) => m[1]).join('')
+    expect(said).toContain('always-on reconcile DISABLED on this Windows host')
+    expect(said).toContain('The per-machine watcher installs the Windows supervisor (a logon Scheduled Task)')
+    expect(said).toContain('when Keep agents running is on for this computer in HOAI (Settings, Computers)')
+    expect(said).toContain('Logged once.')
+    expect(said).not.toContain('until Windows support ships')
+  })
+
   it('tells the operator how to repair, in the one log line it emits', () => {
     expect(reconcileBody).toContain('re-run the installer or restore bin/bgos-agent')
     expect(reconcileBody).toContain('logged once')
