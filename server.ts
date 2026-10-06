@@ -474,8 +474,6 @@ import {
   decideSupervisorWrite,
   detectSupervision,
   probeServiceOwnership,
-  readProcessAncestry,
-  readProcessComm,
   resolveSupervision,
   supervisorFilePath,
   wireSupervisedKind,
@@ -489,9 +487,9 @@ import {
   AGENT_STATE_FILE_NAME,
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
+  findClaudeAncestor,
   memoizeFor,
   memoizeUntilFound,
-  nearestClaudeAncestor,
   readSessionTranscript,
 } from './lib/agent-state.js'
 import {
@@ -10854,13 +10852,13 @@ function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateSta
 // every change (a 1 s tick plus a poke per hook event) and at least every
 // 30 s; removed by both exit paths below. Never throws.
 const AGENT_STATE_TICK_MS = 1_000
-// The ancestor walk is synchronous ps spawns; a found claude never changes,
-// a miss is retried every 10 minutes.
+// The ancestor walk is synchronous ps spawns (one PowerShell call on Windows,
+// code review F2: before it, a Windows daemon published claudePid null forever
+// and the watcher could never read its process tree); a found claude never
+// changes, a miss is retried every 10 minutes.
 const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
 const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
-  nearestClaudeAncestor(readProcessAncestry(process.pid, defaultExecSync), (pid) =>
-    readProcessComm(pid, defaultExecSync),
-  ),
+  findClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
 )
 // installed_plugins.json is a file read; the 1 s tick must not repeat it.
 const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>

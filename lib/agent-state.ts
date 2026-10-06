@@ -56,7 +56,13 @@ import { basename, dirname, join } from 'node:path'
 
 import { isSessionIdLike } from '../bin/hoai-core.mjs'
 import { type BindingSource, POSITIVE_BINDING_SOURCES } from './session-binding.js'
-import { isKeepaliveSessionProcess, validAssistantId } from './update-readiness.js'
+import {
+  isKeepaliveSessionProcess,
+  readProcessAncestry,
+  readProcessComm,
+  type SyncExecResult,
+  validAssistantId,
+} from './update-readiness.js'
 
 export const AGENT_STATE_FILE_NAME = 'agent-state.json'
 export const AGENT_STATE_SCHEMA_VERSION = 1
@@ -184,6 +190,143 @@ export function nearestClaudeAncestor(
     return null
   }
   return null
+}
+
+// ── The claude pid on Windows (code review F2) ──────────────────────────────
+//
+// readProcessAncestry and readProcessComm spawn `ps`, which Windows does not
+// have, and the posix name rule wants exactly 'claude' after the last '/'. So
+// a Windows daemon published claudePid null forever; with no keepalive marker
+// and no cwd lookup on win32 the watcher then had no way to read the agent's
+// process tree, and every staged update waited in process_tree_unreadable.
+
+/**
+ * One PowerShell call that follows ParentProcessId up from `ownPid`, one
+ * filtered Get-CimInstance per link (a whole-table listing is far more output
+ * than a chain of a few processes). Bounded at 64 links and stopped at a
+ * process that is its own parent. No double quote anywhere in the script:
+ * Node escapes one as \" on the Windows command line, and a -Command must not
+ * depend on how that is read back. CreationDate is converted to epoch ms
+ * inside PowerShell, as lib/process-tree.mjs does, so the JSON never carries
+ * a locale formatted date. Null for a pid that is not a positive integer (it
+ * is the one value interpolated).
+ */
+export function win32AncestryCommand(ownPid: number): { file: string; args: string[] } | null {
+  if (!Number.isInteger(ownPid) || ownPid <= 0) return null
+  const script = [
+    `$p = ${ownPid};`,
+    '$out = @();',
+    'for ($i = 0; $i -lt 64 -and $p -gt 0; $i++) {',
+    "$x = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p);",
+    'if (-not $x) { break };',
+    '$out += [pscustomobject]@{',
+    'ProcessId = $x.ProcessId;',
+    'ParentProcessId = $x.ParentProcessId;',
+    'Name = $x.Name;',
+    'CreationDate = $(if ($x.CreationDate) { ([DateTimeOffset]$x.CreationDate).ToUnixTimeMilliseconds() } else { $null });',
+    'CommandLine = $x.CommandLine',
+    '};',
+    'if ($x.ParentProcessId -eq $p) { break };',
+    '$p = $x.ParentProcessId',
+    '};',
+    'ConvertTo-Json -Compress -InputObject $out',
+  ].join(' ')
+  return { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', script] }
+}
+
+interface Win32ProcessLink {
+  pid: number
+  ppid: number
+  name: string
+  command: string | null
+  createdAtMs: number | null
+}
+
+function parseWin32Ancestry(stdout: string): Win32ProcessLink[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(String(stdout ?? ''))
+  } catch {
+    return null
+  }
+  const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' ? [parsed] : []
+  const out: Win32ProcessLink[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') return null
+    const row = item as Record<string, unknown>
+    if (!Number.isInteger(row.ProcessId) || !Number.isInteger(row.ParentProcessId)) return null
+    out.push({
+      pid: row.ProcessId as number,
+      ppid: row.ParentProcessId as number,
+      name: typeof row.Name === 'string' ? row.Name : '',
+      command: typeof row.CommandLine === 'string' ? row.CommandLine : null,
+      createdAtMs: typeof row.CreationDate === 'number' && Number.isFinite(row.CreationDate) ? row.CreationDate : null,
+    })
+  }
+  return out
+}
+
+/** Claude Code's npm entry point on a command line, quoted or not. */
+const CLAUDE_CODE_CLI_RE = /[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.m?js(?=["'\s]|$)/i
+
+/**
+ * Is this Windows process a claude session? The native binary by its image
+ * name (claude.exe, or claude), or a node running Claude Code's cli.js, which
+ * is what the npm install's claude.cmd shim starts (the path is quoted there,
+ * so the match allows a closing quote). Anything that merely mentions claude
+ * is not one.
+ */
+export function isWin32ClaudeProcess(proc: { name: string | null | undefined; command: string | null | undefined }): boolean {
+  const name = String(proc.name ?? '').trim().toLowerCase()
+  if (name === 'claude.exe' || name === 'claude') return true
+  if (name !== 'node.exe' && name !== 'node') return false
+  return CLAUDE_CODE_CLI_RE.test(String(proc.command ?? ''))
+}
+
+/**
+ * The claude this daemon serves on Windows: the NEAREST ancestor that
+ * isWin32ClaudeProcess accepts, self excluded, or null. Windows reuses pids,
+ * so a "parent" created after its child is a stranger that inherited a dead
+ * parent's pid, and the walk stops there rather than adopt it. Never throws.
+ */
+export function nearestClaudeAncestorWin32(
+  ownPid: number,
+  execSync: (file: string, args: string[]) => SyncExecResult,
+): number | null {
+  try {
+    const cmd = win32AncestryCommand(ownPid)
+    if (!cmd) return null
+    const result = execSync(cmd.file, cmd.args)
+    if (result.code !== 0) return null
+    const links = parseWin32Ancestry(result.stdout)
+    if (!links) return null
+    const byPid = new Map(links.map((link) => [link.pid, link]))
+    const seen = new Set<number>()
+    let child = byPid.get(ownPid)
+    while (child && !seen.has(child.pid)) {
+      seen.add(child.pid)
+      const parent = byPid.get(child.ppid)
+      if (!parent || parent.pid <= 0 || parent.pid === child.pid) return null
+      if (parent.createdAtMs !== null && child.createdAtMs !== null && parent.createdAtMs > child.createdAtMs) return null
+      if (isWin32ClaudeProcess(parent)) return parent.pid
+      child = parent
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** The claude ancestor on this platform: PowerShell on win32, ps elsewhere. */
+export function findClaudeAncestor(input: {
+  platform: string
+  ownPid: number
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): number | null {
+  if (input.platform === 'win32') return nearestClaudeAncestorWin32(input.ownPid, input.execSync)
+  return nearestClaudeAncestor(readProcessAncestry(input.ownPid, input.execSync), (pid) =>
+    readProcessComm(pid, input.execSync),
+  )
 }
 
 /** The two reads readSessionTranscript makes, injectable. */
@@ -349,9 +492,9 @@ export function memoizeFor<T>(ttlMs: number, now: () => number, compute: () => T
  * A reading kept FOREVER once it answers, and retried at most once per
  * `retryMs` while it does not. For the claude ancestor: it cannot change under
  * a live daemon (when that claude dies our stdin closes and we exit), the
- * ancestry walk is a chain of synchronous `ps` spawns, and a host where it
- * cannot answer (no ps on Windows, a claude under another process name) must
- * not pay for it every second.
+ * ancestry walk is a chain of synchronous `ps` spawns (one PowerShell call
+ * on Windows), and a host where it cannot answer (a claude under another
+ * process name) must not pay for it every second.
  */
 export function memoizeUntilFound<T>(
   retryMs: number,

@@ -22,13 +22,17 @@ import {
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
   buildAgentState,
+  findClaudeAncestor,
+  isWin32ClaudeProcess,
   memoizeFor,
   memoizeUntilFound,
   nearestClaudeAncestor,
+  nearestClaudeAncestorWin32,
   readSessionTranscript,
   removeAgentStateIfOurs,
   writeAgentStateAtomic,
   type AgentStateSnapshot,
+  win32AncestryCommand,
 } from '../lib/agent-state.ts'
 import { SessionTranscriptBinder } from '../lib/session-binding.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
@@ -517,5 +521,118 @@ test('server.ts publishes turnSignal, the transcript activity and the proven ses
   assert.match(
     server,
     /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolved: sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
+  )
+})
+
+// ── Finding F2 (mission 104 code review): claudePid on Windows ──────────────
+//
+// The ancestor walk only spawned `ps`, which Windows does not have, and the
+// name rule wanted exactly 'claude' after the last '/'. So a Windows daemon
+// always published claudePid null; with no keepalive marker and no cwd lookup
+// on win32 the watcher could never read the agent's process tree, and every
+// staged update sat in waiting_idle process_tree_unreadable forever. The walk
+// on win32 is one PowerShell call that follows ParentProcessId up from this
+// process (Get-CimInstance Win32_Process), and a claude is claude.exe /
+// claude, or a node running Claude Code's cli.js (the npm install).
+
+type WinRow = { ProcessId: number; ParentProcessId: number; Name: string; CreationDate: number | null; CommandLine: string | null }
+const winRow = (pid: number, ppid: number, name: string, command: string, createdMs: number | null = T0 - (10_000 - pid)): WinRow => ({
+  ProcessId: pid,
+  ParentProcessId: ppid,
+  Name: name,
+  CreationDate: createdMs,
+  CommandLine: command,
+})
+const winExec = (rows: WinRow[] | string, code = 0) => {
+  const calls: Array<[string, string[]]> = []
+  const exec = (file: string, args: string[]) => {
+    calls.push([file, args])
+    return { code, stdout: typeof rows === 'string' ? rows : JSON.stringify(rows) }
+  }
+  return { exec, calls }
+}
+const DAEMON = winRow(4912, 4800, 'bun.exe', 'C:\\Users\\kc\\.bun\\bin\\bun.exe C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\server.ts')
+const LAUNCH = winRow(4800, 4700, 'node.exe', '"C:\\Program Files\\nodejs\\node.exe" C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\bin\\bgos-launch.mjs C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\server.ts')
+const NATIVE = winRow(4700, 1000, 'claude.exe', '"C:\\Users\\kc\\.local\\bin\\claude.exe" --dangerously-load-development-channels server:bgos')
+const EXPLORER = winRow(1000, 900, 'explorer.exe', 'C:\\WINDOWS\\Explorer.EXE')
+
+test('win32: the ancestry is one PowerShell call that follows ParentProcessId up from this process', () => {
+  const cmd = win32AncestryCommand(4912)!
+  assert.equal(cmd.file, 'powershell.exe')
+  assert.deepEqual(cmd.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command'])
+  const script = cmd.args[3]!
+  assert.match(script, /^\$p = 4912;/, 'starts at this process')
+  assert.match(script, /Get-CimInstance Win32_Process -Filter \('ProcessId=' \+ \$p\)/)
+  assert.match(script, /\$p = \$x\.ParentProcessId/)
+  // No double quote anywhere: Node escapes one as \" on the Windows command
+  // line, which is the kind of quoting a PowerShell -Command must not depend on.
+  assert.ok(!script.includes('"'))
+  assert.equal(win32AncestryCommand(0), null)
+  assert.equal(win32AncestryCommand(Number.NaN), null)
+})
+
+test('win32: the nearest claude.exe ancestor is the claude pid', () => {
+  const { exec, calls } = winExec([DAEMON, LAUNCH, NATIVE, EXPLORER])
+  assert.equal(nearestClaudeAncestorWin32(4912, exec), 4700)
+  assert.equal(calls.length, 1, 'one call, not one per ancestor')
+  // The order of the rows is not trusted: the walk follows the ids.
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([EXPLORER, NATIVE, DAEMON, LAUNCH]).exec), 4700)
+})
+
+test('win32: a node running Claude Code cli.js (the npm install) is a claude, quoted or not', () => {
+  const npm = winRow(4600, 4500, 'node.exe', '"C:\\Program Files\\nodejs\\node.exe"  "C:\\Users\\kc\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js" --resume x')
+  const shim = winRow(4500, 1000, 'cmd.exe', 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c "claude --resume x"')
+  const { exec } = winExec([DAEMON, { ...LAUNCH, ParentProcessId: 4600 }, npm, shim, EXPLORER])
+  assert.equal(nearestClaudeAncestorWin32(4912, exec), 4600)
+  assert.ok(isWin32ClaudeProcess({ name: 'node.exe', command: 'node C:/npm/node_modules/@anthropic-ai/claude-code/cli.js' }))
+  assert.ok(isWin32ClaudeProcess({ name: 'CLAUDE.EXE', command: null }))
+  assert.ok(isWin32ClaudeProcess({ name: 'claude', command: '' }))
+  assert.ok(!isWin32ClaudeProcess({ name: 'node.exe', command: 'node C:/tools/claude-log-tail.js' }))
+  assert.ok(!isWin32ClaudeProcess({ name: 'cmd.exe', command: 'cmd /c C:/npm/node_modules/@anthropic-ai/claude-code/cli.js' }), 'a node runs it')
+  assert.ok(!isWin32ClaudeProcess({ name: 'notepad.exe', command: 'notepad C:/claude.exe.txt' }))
+})
+
+test('win32: no claude, a failed or unreadable call, and a reused parent pid all answer null', () => {
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, EXPLORER]).exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, NATIVE], 1).exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec('not json').exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([]).exec), null)
+  // Self is never the answer, even when named claude.
+  assert.equal(nearestClaudeAncestorWin32(4700, winExec([NATIVE, EXPLORER]).exec), null)
+  // Windows reuses pids: a "parent" created after its child is a stranger
+  // that inherited the dead parent's pid, so the walk stops there.
+  const late = { ...NATIVE, CreationDate: T0 + 60_000 }
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, late, EXPLORER]).exec), null)
+  assert.equal(
+    nearestClaudeAncestorWin32(4912, () => {
+      throw new Error('spawn')
+    }),
+    null,
+  )
+})
+
+test('findClaudeAncestor walks with PowerShell on win32 and with ps elsewhere', () => {
+  const { exec, calls } = winExec([DAEMON, LAUNCH, NATIVE, EXPLORER])
+  assert.equal(findClaudeAncestor({ platform: 'win32', ownPid: 4912, execSync: exec }), 4700)
+  assert.equal(calls[0]![0], 'powershell.exe')
+  const ppid: Record<number, number> = { 500: 400, 400: 300, 300: 1 }
+  const comm: Record<number, string> = { 400: 'bun', 300: '/Users/x/.local/bin/claude' }
+  const psCalls: string[][] = []
+  const ps = (file: string, args: string[]) => {
+    psCalls.push([file, ...args])
+    const pid = Number(args[args.length - 1])
+    if (args[1] === 'ppid=') return { code: 0, stdout: `${ppid[pid] ?? 0}\n` }
+    return { code: 0, stdout: `${comm[pid] ?? 'launchd'}\n` }
+  }
+  assert.equal(findClaudeAncestor({ platform: 'darwin', ownPid: 500, execSync: ps }), 300)
+  assert.ok(psCalls.every((c) => c[0] === 'ps'))
+})
+
+test('server.ts finds the claude ancestor through the platform aware walk', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  assert.match(
+    server,
+    /const agentClaudePid = memoizeUntilFound\(CLAUDE_ANCESTOR_RETRY_MS, Date\.now, \(\) =>\s*findClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
   )
 })
