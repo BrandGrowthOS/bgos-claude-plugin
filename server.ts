@@ -474,6 +474,8 @@ import {
   decideSupervisorWrite,
   detectSupervision,
   probeServiceOwnership,
+  readProcessAncestry,
+  readProcessComm,
   resolveSupervision,
   supervisorFilePath,
   wireSupervisedKind,
@@ -483,6 +485,14 @@ import {
 } from './lib/update-readiness.js'
 import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
 import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
+import {
+  AGENT_STATE_FILE_NAME,
+  AGENT_STATE_MAX_INTERVAL_MS,
+  AgentStatePublisher,
+  memoizeFor,
+  memoizeUntilFound,
+  nearestClaudeAncestor,
+} from './lib/agent-state.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -8020,6 +8030,19 @@ const turnChat = createTurnChatTracker()
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
 /**
+ * The live Claude session this daemon serves, as its OWN hook events name it
+ * (agent-state.json `sessionId`, and the session pin, finding 7). Only the
+ * pairing lock holder drains hooks, and the intake admits only the session it
+ * has positively bound (lib/hook-intake.ts), so this is never a neighbour's
+ * session. `liveSessionSeenAtMs` is when THIS id was first seen: the pin waits
+ * for it to have stayed up a while (lib/session-pin.ts).
+ */
+let liveSessionId: string | null = null
+let liveSessionSeenAtMs = 0
+/** The last hook event of any kind: the agent doing something (agent-state
+ *  `lastActivityAt`). */
+let lastHookEventAtMs: number | null = null
+/**
  * How many cards this daemon can still address at once.
  *
  * One for the live turn, plus the card of a turn whose child agent outlived
@@ -8559,6 +8582,12 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   } catch {
     /* binding is telemetry; it may never break the rail */
   }
+  lastHookEventAtMs = Date.now()
+  const hookSessionId = String(event.sessionId ?? '').trim()
+  if (hookSessionId && hookSessionId !== liveSessionId) {
+    liveSessionId = hookSessionId
+    liveSessionSeenAtMs = Date.now()
+  }
   if (event.name === 'UserPromptSubmit') {
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
@@ -8571,6 +8600,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   runHookEffects(effects)
+  // A turn starting or ending is exactly what the watcher's safe moment reads,
+  // so it is published now rather than on the next tick.
+  agentStatePublisher.tick()
 }
 
 /**
@@ -10766,6 +10798,49 @@ function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateSta
     readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
   })
 }
+
+// ── Published agent state (design section 7, finding 9) ─────────────────────
+// ~/.bgos-plugin-state/<id>/agent-state.json: what the per-machine watcher
+// reads before it restarts this agent onto an update (lib/agent-state.ts has
+// the contract and the reasons). Published by the pairing LOCK HOLDER only, on
+// every change (a 1 s tick plus a poke per hook event) and at least every
+// 30 s; removed by both exit paths below. Never throws.
+const AGENT_STATE_TICK_MS = 1_000
+// The ancestor walk is synchronous ps spawns; a found claude never changes,
+// a miss is retried every 10 minutes.
+const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
+const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
+  nearestClaudeAncestor(readProcessAncestry(process.pid, defaultExecSync), (pid) =>
+    readProcessComm(pid, defaultExecSync),
+  ),
+)
+// installed_plugins.json is a file read; the 1 s tick must not repeat it.
+const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
+  daemonPendingRestartVersion(),
+)
+const agentStatePublisher = new AgentStatePublisher({
+  path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
+  pid: process.pid,
+  now: Date.now,
+  shouldPublish: () => lockHeld,
+  snapshot: () => ({
+    assistantId: ASSISTANT_ID,
+    claudePid: agentClaudePid(),
+    runningVersion: RUNNING_VERSION,
+    pendingRestartVersion: agentStatePendingRestart(),
+    // A child agent still working after its parent's Stop keeps the turn
+    // "in flight" (the intake's own isTurnLive rule): restarting then would
+    // kill that child mid job, which finding 9 forbids.
+    turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    pendingMessages: pendingInbounds.size,
+    pendingPermissions: pendingPermissions.size,
+    activeOperations: messageActivity.activeOperations,
+    // Boot counts as activity: a session that just started may have a person
+    // at its keyboard, and the watcher's quiet window should run from there.
+    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs],
+    sessionId: liveSessionId,
+  }),
+})
 
 // Install method + plugin root, detected once. For a marketplace install the
 // root is the VERSIONED cache dir this process was loaded from (design 7.3),
@@ -13619,6 +13694,9 @@ async function main(): Promise<void> {
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
     stopHookIntake()
+    // A clean stop takes the published state away (only when it is ours), so
+    // the watcher never reads a dead daemon's "idle" as a live one's.
+    agentStatePublisher.shutdown()
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
@@ -13633,6 +13711,7 @@ async function main(): Promise<void> {
   // shutdown() already ran is harmless.
   process.on('exit', () => {
     stopHookIntake()
+    agentStatePublisher.shutdown()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
@@ -13642,6 +13721,10 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
+
+  // agent-state.json (design section 7): ticks from here on; it writes only
+  // while this daemon holds the pairing lock, so a passive daemon never does.
+  setInterval(() => agentStatePublisher.tick(), AGENT_STATE_TICK_MS).unref()
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:
