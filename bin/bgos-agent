@@ -281,12 +281,26 @@ cmd_install() {
   # per tool call, paid on every tool call, for nothing. Same skip the two
   # bootstraps make. A server:<name> channel is a clone and needs the entries,
   # because Claude Code reads a hooks file only for an INSTALLED plugin.
+  #
+  # Run from a marketplace plugin's VERSIONED cache dir (where the watcher's
+  # sweep runs this script), the entries are left as they are. They would be
+  # absolute paths into a dir the next plugin update replaces and prunes, and
+  # nothing writes them again (a launch from that cache detects as marketplace
+  # and registers no hooks), so every hook would point at a missing file. A clone
+  # folder keeps the entries that point at its durable checkout; a marketplace
+  # folder that merely carries another .mcp.json gets its rail from the plugin's
+  # hooks.json, where entries here would run the forwarder twice per event.
+  local plugin_cache; plugin_cache="$(plugin_cache_key "$PLUGIN_DIR")"
   case "$channel" in
     plugin:*)
       info "marketplace channel ($channel): its own hooks file already carries the activity rail"
       ;;
     *)
-      install_hook_entries "$workdir" "$PLUGIN_DIR"
+      if [ -n "$plugin_cache" ]; then
+        info "this installer runs from a versioned plugin cache dir ($PLUGIN_DIR) that the next plugin update removes, so the activity hook entries in $workdir/.claude/settings.local.json are left as they are"
+      else
+        install_hook_entries "$workdir" "$PLUGIN_DIR"
+      fi
       install_denied_tools "$workdir" "$PLUGIN_DIR"
       ;;
   esac
@@ -328,13 +342,10 @@ cmd_install() {
   # pruned after it, so it is no checkout to bake. Its root is looked up in the install
   # record at every launch instead, exactly like a marketplace agent's. Only the ROOT
   # changes: hoai still reads the channel from this folder's own .mcp.json.
-  if [ "$topology" = "clone" ]; then
-    local cache_key; cache_key="$(plugin_cache_key "$PLUGIN_DIR")"
-    if [ -n "$cache_key" ]; then
-      topology="marketplace"
-      plugin_key="$cache_key"
-      info "this installer runs from a versioned plugin cache dir ($PLUGIN_DIR), so the supervisor looks the plugin root up in the install record ($plugin_key) at every launch"
-    fi
+  if [ "$topology" = "clone" ] && [ -n "$plugin_cache" ]; then
+    topology="marketplace"
+    plugin_key="$plugin_cache"
+    info "this installer runs from a versioned plugin cache dir ($PLUGIN_DIR), so the supervisor looks the plugin root up in the install record ($plugin_key) at every launch"
   fi
   # A clone supervisor starts hoai from THIS checkout at every launch. Run from an npx
   # cache, that is a directory npm may delete; then the agent stops with a named
