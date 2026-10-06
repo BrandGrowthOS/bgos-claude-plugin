@@ -124,6 +124,41 @@ tmux_name_for() { printf 'hoai-%s' "$1"; }
 SUPERVISOR_GENERATION=2
 default_workdir_for() { printf '%s/%s-workspace' "$STATE_ROOT" "$1"; }
 
+# --- one install per agent at a time -------------------------------------------
+# The agent's own daemon (reconcileAlwaysOn) and the watcher's keep-alive sweep
+# can both decide, within the same minute, that this agent needs an install. Two
+# installs at once write one run.sh and one service file twice and reload the
+# service twice, and nobody can read afterwards which one won. So an install
+# takes a per-agent lock first: mkdir is atomic, the second one finds the
+# directory there and stands down (exit 0, nothing written; the first install
+# is already doing what it asked for). The lock sits BESIDE the state dir, not
+# in it, so uninstall's state wipe never touches another install's lock and no
+# reader of ~/.bgos-agent mistakes it for an agent (it is not all digits). A
+# lock older than INSTALL_LOCK_STALE_MIN minutes belongs to an install that
+# died without its trap (SIGKILL, a power cut); no install takes that long.
+INSTALL_LOCK_STALE_MIN=10
+INSTALL_LOCK=""
+install_lock_for() { printf '%s.install.lock' "$(statedir_for "$1")"; }
+release_install_lock() {
+  if [ -n "$INSTALL_LOCK" ]; then rm -rf "$INSTALL_LOCK"; fi
+  INSTALL_LOCK=""
+}
+acquire_install_lock() { # $1 assistant id -> 0 when this process now holds the lock, 1 when another install does
+  local lock; lock="$(install_lock_for "$1")"
+  mkdir -p "$STATE_ROOT"
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +"$INSTALL_LOCK_STALE_MIN" 2>/dev/null)" ] || return 1
+    warn "removing a stale install lock for agent $1 (older than $INSTALL_LOCK_STALE_MIN minutes, its install never finished): $lock"
+    rm -rf "$lock"
+    mkdir "$lock" 2>/dev/null || return 1
+  fi
+  INSTALL_LOCK="$lock"
+  # EXIT runs on a normal end, on every die, and when bash is ended by a signal.
+  trap release_install_lock EXIT
+  printf '%s\n' "$$" > "$lock/pid" 2>/dev/null || true
+  return 0
+}
+
 # --- validators (everything user-supplied that lands in a generated file) ----
 valid_id()      { [[ "$1" =~ ^[0-9]+$ ]]; }
 valid_channel() { [[ "$1" =~ ^[A-Za-z0-9:_.-]+$ ]]; }
@@ -153,6 +188,11 @@ ensure_user_bus() {
 # =============================================================================
 cmd_install() {
   require_id
+  # Before anything is written (see acquire_install_lock).
+  if ! acquire_install_lock "$ASSISTANT_ID"; then
+    info "install already in progress for agent $ASSISTANT_ID (another hoai-agent install holds $(install_lock_for "$ASSISTANT_ID")); nothing was changed"
+    return 0
+  fi
   local backend="${BACKEND:-$DEFAULT_BACKEND}"
   local channel="${CHANNEL:-$DEFAULT_CHANNEL}"
   local auto="${AUTO_APPROVE:-true}"

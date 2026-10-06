@@ -33,8 +33,8 @@
  *
  * Run: npm test, or npx tsx --test test/bgos-agent.install.test.ts
  */
-import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -78,10 +78,11 @@ interface Machine {
   pluginRoot: string
   calls: string
   run: (args: string[], extraEnv?: Record<string, string>) => { status: number | null; out: string }
+  start: (args: string[], extraEnv?: Record<string, string>) => { child: ChildProcess; done: Promise<{ status: number | null; out: string }> }
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux' } = {}): Machine {
+function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os, holdInstall = false }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone case.
   const pluginRoot = fromClone
@@ -122,19 +123,34 @@ function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = tr
   // No network in a test: skip `bun install`. Otherwise hand over to the REAL bun when this
   // machine has one, because production runs the prover on bun and nothing else in CI loads the
   // doctor under it (found by review); only fall back to the runtime running this test.
-  shim('bun', `[ "$1" = "install" ] && exit 0\nexec "${realBun || process.execPath}" "$@"`)
+  // holdInstall parks an install inside `bun install` (it says so with <home>/holding) until
+  // <home>/release exists, so a second install can be started while the first is mid-way.
+  const onInstall = holdInstall
+    ? `{ : > "${home}/holding"; while [ ! -f "${home}/release" ]; do /bin/sleep 0.05; done; exit 0; }`
+    : 'exit 0'
+  shim('bun', `[ "$1" = "install" ] && ${onInstall}\nexec "${realBun || process.execPath}" "$@"`)
   // The marketplace plugin runs on node, and the installer refuses a paired folder without one.
   if (withNode) shim('node', 'exit 0')
 
   const agentBin = join(pluginRoot, 'bin', 'bgos-agent')
+  const envFor = (extraEnv: Record<string, string>) => ({ HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv })
   const run = (args: string[], extraEnv: Record<string, string> = {}) => {
     const result = spawnSync(BASH!, [agentBin, 'install', ...args], {
       cwd: home,
       encoding: 'utf8',
       timeout: 100_000,
-      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv },
+      env: envFor(extraEnv),
     })
     return { status: result.status, out: `${result.stdout}\n${result.stderr}` }
+  }
+  /** The same install, in the background: resolves with its exit code and output when it ends. */
+  const start = (args: string[], extraEnv: Record<string, string> = {}) => {
+    const child = spawn(BASH!, [agentBin, 'install', ...args], { cwd: home, env: envFor(extraEnv) })
+    let out = ''
+    child.stdout.on('data', (d) => (out += String(d)))
+    child.stderr.on('data', (d) => (out += String(d)))
+    const done = new Promise<{ status: number | null; out: string }>((resolve) => child.on('close', (status) => resolve({ status, out })))
+    return { child, done }
   }
   const serviceFiles = () => {
     const found: string[] = []
@@ -143,7 +159,7 @@ function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = tr
     }
     return found
   }
-  return { home, agentBin, pluginRoot, calls, run, serviceFiles }
+  return { home, agentBin, pluginRoot, calls, run, start, serviceFiles }
 }
 
 /** What pairing leaves behind: a pinned workspace and that agent's credentials file. */
@@ -398,4 +414,73 @@ test('Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an
   const calls2 = callsOf(fresh).split('\n').filter((l) => l.startsWith('systemctl '))
   assert.ok(calls2.includes('systemctl --user enable --now bgos-agent-905'), calls2.join('\n'))
   assert.equal(calls2.filter((l) => / restart /.test(` ${l} `)).length, 0, calls2.join('\n'))
+})
+
+function untilExists(path: string, what: string, ms = 60_000): Promise<void> {
+  const deadline = Date.now() + ms
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (existsSync(path)) return resolve()
+      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${what}`))
+      setTimeout(tick, 25)
+    }
+    tick()
+  })
+}
+
+test('two installs of the same agent at once: the second says "install already in progress", exits 0 and writes nothing; the lock goes with the first', SLOW, async (t) => {
+  if (!ready(t)) return
+  // The daemon's reconcileAlwaysOn and the watcher's sweep can both decide, within the same
+  // minute, that agent 906 needs `bgos-agent install`. Two installs writing one run.sh and one
+  // service file (and reloading it twice) is a race nobody can read afterwards.
+  const m = machine({ holdInstall: true })
+  const ws = pair(m, '906')
+  writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '906' } } } }))
+  const args = ['--assistant', '906', '--dir', ws, '--always-on']
+  const first = m.start(args)
+  // Whatever happens below, nothing stays parked in the fake `bun install` after the test.
+  t.after(() => writeFileSync(join(m.home, 'release'), ''))
+  await untilExists(join(m.home, 'holding'), 'the first install to be mid-way')
+
+  const second = m.run(args)
+  assert.equal(second.status, 0, second.out)
+  assert.match(second.out, /install already in progress for agent 906/)
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '906', 'run.sh')), false, 'the second install wrote no supervisor')
+  assert.deepEqual(m.serviceFiles(), [], 'and no service file')
+  assert.equal(callsOf(m).split('\n').filter((l) => l === 'bun install --no-summary').length, 1, 'only the first one got as far as bun install')
+
+  writeFileSync(join(m.home, 'release'), '')
+  const done = await first.done
+  assert.equal(done.status, 0, done.out)
+  assert.doesNotMatch(done.out, /already in progress/)
+  assert.ok(existsSync(join(m.home, '.bgos-agent', '906', 'run.sh')), 'the first install finished')
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '906.install.lock')), false, 'and released its lock on the way out')
+})
+
+test('an install lock older than ten minutes is stale (its install died without its trap) and is taken over, by name', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  const ws = pair(m, '907')
+  writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '907' } } } }))
+  const lock = join(m.home, '.bgos-agent', '907.install.lock')
+  mkdirSync(lock, { recursive: true })
+  const old = new Date(Date.now() - 11 * 60_000)
+  utimesSync(lock, old, old)
+  const r = m.run(['--assistant', '907', '--dir', ws, '--always-on'])
+  assert.equal(r.status, 0, r.out)
+  assert.doesNotMatch(r.out, /already in progress/)
+  assert.match(r.out, /stale install lock for agent 907/)
+  assert.ok(existsSync(join(m.home, '.bgos-agent', '907', 'run.sh')))
+  assert.equal(existsSync(lock), false)
+
+  // A fresh lock is NOT stale: that install is still running, so this one stands down.
+  const fresh = machine()
+  const ws2 = pair(fresh, '908')
+  writeFileSync(join(ws2, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '908' } } } }))
+  mkdirSync(join(fresh.home, '.bgos-agent', '908.install.lock'), { recursive: true })
+  const r2 = fresh.run(['--assistant', '908', '--dir', ws2, '--always-on'])
+  assert.equal(r2.status, 0, r2.out)
+  assert.match(r2.out, /install already in progress for agent 908/)
+  assert.equal(existsSync(join(fresh.home, '.bgos-agent', '908', 'run.sh')), false)
+  assert.ok(existsSync(join(fresh.home, '.bgos-agent', '908.install.lock')), 'and leaves the other install\'s lock alone')
 })
