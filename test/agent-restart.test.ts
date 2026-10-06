@@ -392,3 +392,90 @@ test('restartAgent: a service row whose handle is not command-line safe runs NO 
   assert.equal(result.how, 'recipe-tmux')
   assert.equal(spawns.length, 1)
 })
+
+// -- the keepalive tier and the Windows agent task (design 5, G7, G11) ----------------------------
+
+const KEEPALIVE = { pid: 33108, claudePid: 33200, tmuxSession: 'agent-912' }
+const BESPOKE = { kind: 'launchd', handle: 'ai.bgos.session.912', via: 'working-directory', file: '/home/kc/Library/LaunchAgents/ai.bgos.session.912.plist' }
+
+function recordingKill(error: NodeJS.ErrnoException | null = null) {
+  const kills: Array<[number, string]> = []
+  const kill = (pid: number, signal: string) => {
+    kills.push([pid, signal])
+    if (error) throw error
+    return true
+  }
+  return { kills, kill }
+}
+
+test('restartAgent: a verified keepalive.json is restarted by SIGTERM to its claudePid ONLY (never a kickstart of the bespoke job, which kills the script and not the session)', async () => {
+  const { kills, kill } = recordingKill()
+  const { calls, exec } = recordingExec()
+  const { spawns, spawnDetached } = recordingSpawn()
+  const fs = memoryFs()
+  const result = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'darwin', fs, exec, spawnDetached, kill })
+  assert.deepEqual(kills, [[33200, 'SIGTERM']])
+  assert.deepEqual(calls, [], 'no launchctl')
+  assert.deepEqual(spawns, [], 'no relaunch of our own')
+  assert.equal(fs.files.size, 0, 'no marker')
+  assert.equal(result.ok, true)
+  assert.equal(result.how, 'keepalive')
+  assert.deepEqual(result.detail, { pid: 33200, keepalivePid: 33108 })
+  // Even with no visible service at all, the keepalive is the authority.
+  const bare = recordingKill()
+  const alone = await restartAgent(agentRow({ supervisor: 'none', keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec, spawnDetached, kill: bare.kill })
+  assert.equal(alone.how, 'keepalive')
+  assert.deepEqual(bare.kills, [[33200, 'SIGTERM']])
+})
+
+test('restartAgent: the ladder order is marker, keepalive, service, recipe', async () => {
+  const { kills, kill } = recordingKill()
+  const fs = memoryFs()
+  const live = await restartAgent(agentRow({ supervisor: 'launcher-live', keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'linux', fs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(live.how, 'marker')
+  assert.deepEqual(kills, [])
+  const svc = recordingExec()
+  const noKeepalive = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: null }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: svc.exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(noKeepalive.how, 'service')
+  assert.deepEqual(svc.calls, [{ file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.session.912'] }])
+})
+
+test('restartAgent: a SIGTERM that fails (the session already gone) is a named keepalive failure, never a fall through to another tier', async () => {
+  const gone = Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+  const { kill } = recordingKill(gone)
+  const { calls, exec } = recordingExec()
+  const result = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(result.ok, false)
+  assert.equal(result.how, 'keepalive')
+  assert.match(result.message, /ESRCH/)
+  assert.deepEqual(calls, [])
+})
+
+const TASK = { kind: 'schtasks', handle: 'HOAI Agent 912', via: 'canonical-file', file: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+const WIN_ROW = { stateDir: 'C:\\Users\\kc\\.bgos-agent\\912', cwd: 'C:\\Users\\kc\\hoai-agents\\ava' }
+
+test('restartAgent win32: the agent task with a LIVE launcher restarts through the marker; a dead launcher is started with schtasks /Run /TN "HOAI Agent <id>"', async () => {
+  const fs = memoryFs()
+  const live = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: true }), { ...BASE_DEPS, platform: 'win32', fs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached })
+  assert.equal(live.how, 'marker')
+  assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json'), '{}')
+  const { calls, exec } = recordingExec()
+  const { spawns, spawnDetached } = recordingSpawn()
+  const dead = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached })
+  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+  assert.deepEqual(spawns, [], 'never a cmd /k console beside the task')
+  assert.equal(dead.ok, true)
+  assert.equal(dead.how, 'task')
+  const failing = recordingExec(1, 'ERROR: The system cannot find the file specified.')
+  const bad = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: failing.exec, spawnDetached })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.how, 'task')
+  assert.match(bad.message, /rc 1/)
+})
+
+test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <digits>" runs nothing', async () => {
+  const { calls, exec } = recordingExec()
+  const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })
+  assert.deepEqual(calls, [])
+  assert.equal(result.ok, false)
+})
