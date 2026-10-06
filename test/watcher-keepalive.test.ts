@@ -874,6 +874,41 @@ test("a stale state's claudePid that now belongs to some other process is not th
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
 })
 
+// -- a null claudePid (claude run as `node cli.js`, or Windows): the cwd fallback -----------------------
+
+/** claude hosted by node: comm is `node`, so the daemon's ancestor walk publishes claudePid null. */
+const NODE_CLAUDE = 'node /Users/kc/.npm-global/lib/node_modules/@anthropic-ai/claude-code/cli.js --dangerously-skip-permissions'
+const SNAPSHOT_JOB = `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'python monitor.py'`
+
+test('null claudePid, fresh state: the background job scan walks the claude found by its working directory (a live shell-snapshot child is background_job)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { claudePid: null } }])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE), psLine(4912, 7000, `node ${OLD_ROOT}/server.ts`), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
+  const rec = recorder({ ps, lsof: `p7000\nfcwd\nn${AVA}\n` })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'lsof').map((c) => c.args), [['-a', '-d', 'cwd', '-p', '7000', '-Fn']])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+  assert.deepEqual(rec.kills, [])
+})
+
+test('null claudePid, stale state: the not-running decision also uses the cwd claude (running, with a job: background_job, never not_running)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { claudePid: null, updatedAt: new Date(T0 - 10 * MIN).toISOString() } }])
+  // Started before the install landed (the legacy pending rule), a job running under it.
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE, lstartFor('2026-10-06T17:00:00.000Z')), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
+  const rec = recorder({ ps, lsof: `p7000\nfcwd\nn${AVA}\n` })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
+test('null claudePid, fresh state, no claude found by cwd (Windows has no cwd lookup): unreadable, never "not running"', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { claudePid: null } }])
+  const rec = recorder({ ps: [psLine(1, 0, '/sbin/launchd'), psLine(4912, 1, `node ${OLD_ROOT}/server.ts`)].join('\n') })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
 test('an upgrade with no known folder is reported, and spends neither an attempt nor the sweep restart', async () => {
   const fs = machine([
     { id: '7', cwd: null, service: 'canonical', generation: null, state: { pid: 47, claudePid: 57 } },
