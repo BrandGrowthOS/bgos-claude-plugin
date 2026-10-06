@@ -124,6 +124,55 @@ test('install-agent-task.ps1: exact text, unelevated Register-ScheduledTask with
   )
 })
 
+/** Evaluate a VBScript string expression of "literal" and ChrW(n) parts joined by &. */
+function evalVbs(expr: string) {
+  let out = ''
+  for (const part of expr.split(' & ')) {
+    const chr = /^ChrW\((\d+)\)$/.exec(part)
+    if (chr) out += String.fromCharCode(Number(chr[1]))
+    else if (/^"(?:[^"]|"")*"$/.test(part)) out += part.slice(1, -1).replace(/""/g, '"')
+    else throw new Error(`not a vbs string part: ${part}`)
+  }
+  return out
+}
+
+/** Evaluate a PowerShell expression of 'literal' and [char]0xNNNN parts joined by +, optionally parenthesized. */
+function evalPs(expr: string) {
+  const body = expr.startsWith('(') && expr.endsWith(')') ? expr.slice(1, -1) : expr
+  let out = ''
+  for (const part of body.split(' + ')) {
+    const chr = /^\[char\]0x([0-9A-F]{4})$/.exec(part)
+    if (chr) out += String.fromCharCode(parseInt(chr[1]!, 16))
+    else if (/^'(?:[^']|'')*'$/.test(part)) out += part.slice(1, -1).replace(/''/g, "'")
+    else throw new Error(`not a ps string part: ${part}`)
+  }
+  return out
+}
+
+test('agentTaskSpec: a non-ASCII profile, agent folder, plugin root or node path is written as pure ASCII (WSH reads a .vbs as ANSI, PowerShell 5.1 a BOM-less .ps1 too), and decodes back to the exact path', () => {
+  // Arabic ships in the app; an accented profile name is common. Read as ANSI,
+  // UTF-8 bytes of these became mojibake: the task registered and then never ran.
+  const home = 'C:\\Users\\Jos\u00e9'
+  const cwd = 'C:\\Users\\Jos\u00e9\\OneDrive - Soci\u00e9t\u00e9\\\u0648\u0643\u064a\u0644 \ud83d\ude80'
+  const root = 'C:\\Users\\Jos\u00e9\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.0'
+  const node = 'C:\\Users\\Jos\u00e9\\nvm\\node.exe'
+  const s = agentTaskSpec({ assistantId: '912', home, nodePath: node, pluginRoot: root, cwd })
+  for (const file of s.files) {
+    const wide = [...file.content].filter((ch) => ch.charCodeAt(0) > 0x7e && ch !== '\r' && ch !== '\n')
+    assert.deepEqual(wide, [], `${file.path} is pure ASCII`)
+  }
+  const vbsLines = s.files[0]!.content.split('\r\n')
+  const cd = vbsLines.find((l) => l.startsWith('shell.CurrentDirectory = '))!
+  assert.equal(evalVbs(cd.slice('shell.CurrentDirectory = '.length)), cwd)
+  const run = vbsLines.find((l) => l.startsWith('WScript.Quit shell.Run('))!
+  const runExpr = /^WScript\.Quit shell\.Run\((.*), 7, True\)$/.exec(run)![1]!
+  assert.equal(evalVbs(runExpr), `"${node}" "${root}\\bin\\hoai-core.mjs" --keep-alive`)
+  const vbsDecl = s.files[1]!.content.split('\r\n').find((l) => l.startsWith('$vbs = '))!
+  assert.equal(evalPs(vbsDecl.slice('$vbs = '.length)), `${home}\\.bgos-agent\\912\\run-agent.vbs`)
+  // An ASCII path is byte for byte what it always was (the exact-text tests above).
+  assert.equal(evalVbs('"C:\\x\\""y"'), 'C:\\x\\"y')
+})
+
 test('agentTaskSpec: commands (PowerShell -File for install/uninstall/status, schtasks /Run /TN for a start)', () => {
   const s = spec()
   const ps = (action: string) => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', s.scriptPath, '-Action', action] })
