@@ -392,6 +392,76 @@ test('restart: idle + update_pending => restart through the canonical service, t
   assert.deepEqual(rec.kills, [])
 })
 
+/** run.sh's singleton wait, as it rewrites launch-status every 5 s (bin/bgos-agent). */
+function waitingBehind(fs: MemoryFs, id: string, at: number, outcome = 'waiting-for-incumbent pids=5912 ') {
+  const path = `${HOME}/.bgos-agent/${id}/launch-status`
+  fs.writeFile(path, `2026-10-06 19:00:00 outcome=${outcome}\n`)
+  fs.touch(path, at)
+}
+
+test('restart (D4): a live hoai launcher with the canonical supervisor waiting behind it is restarted through the MARKER, never a kickstart of the waiting run.sh', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  // The person's own `hoai` (pid 4100, claude's parent) holds the folder; run.sh waits.
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 4100, capabilities: ['relaunch'], startedAt: 'x' }))
+  waitingBehind(fs, '912', T0 - 5_000)
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/restart-requested.json`), '{}')
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+})
+
+test('restart (D4): a plain hand-run claude the canonical supervisor waits behind is waiting_idle manual_session: no restart, no kill, no attempt spent', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  waitingBehind(fs, '912', T0 - 5_000)
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  const { ctx } = ctxFor(fs, rec, clock)
+  for (let sweep = 0; sweep < 4; sweep++) {
+    waitingBehind(fs, '912', clock.now() - 5_000)
+    fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
+    const report = await runKeepAliveSweep(ctx as any)
+    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'manual_session', since: new Date(T0).toISOString() }], `sweep ${sweep}`)
+    clock.advance(31 * MIN)
+  }
+  assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps' && c.file !== 'lsof'), [], 'no launchctl, no bash')
+  assert.deepEqual(rec.kills, [])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false)
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['912'].attempts, 0)
+})
+
+test('restart (D4): a generation 1 supervisor waiting behind a hand-run claude is still UPGRADED (the reinstall never touches that session, and the takeover then resumes the pin)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }])
+  waitingBehind(fs, '912', T0 - 5_000)
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[1]), ['install'])
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+})
+
+test('restart (D4): a launch-status that is not a FRESH wait does not hold the restart (run.sh has moved on, or died waiting)', async () => {
+  for (const [name, outcome, age] of [
+    ['an old wait', 'waiting-for-incumbent pids=5912 ', 10 * MIN],
+    ['a fresh status that is not a wait', 'starting compact=on', 5_000],
+  ] as Array<[string, string, number]>) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+    waitingBehind(fs, '912', T0 - age, outcome)
+    const rec = recorder({ ps: IDLE_PS })
+    const clock = fakeClock()
+    answerProbes(fs, clock, ['912'])
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+    assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']], name)
+    assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']], name)
+  }
+})
+
 test('restart: a verified keepalive is restarted by SIGTERM to its claudePid ONLY', async () => {
   const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 }, state: { claudePid: 57, pid: 47 } }])
   const ps = [psLine(1, 0, '/sbin/launchd'), psLine(57, 1, 'claude --x'), psLine(47, 1, '/bin/bash keepalive.sh')].join('\n')

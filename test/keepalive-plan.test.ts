@@ -25,6 +25,7 @@ import {
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
   LAUNCHER_STABLE_MS,
+  LAUNCH_STATUS_FRESH_MS,
   LEGACY_QUIET_WINDOW_MS,
   MAX_ATTEMPTS_PER_TARGET,
   MAX_TASK_STARTS_PER_EPISODE,
@@ -38,6 +39,7 @@ import {
   buildKeepAliveCache,
   decideInstallGate,
   decideKeepAliveConsent,
+  decideManualSession,
   decidePendingRestart,
   decideRestartBudget,
   decideRestartGate,
@@ -51,6 +53,7 @@ import {
   parseInstalledPluginRecord,
   parseKeepAliveCache,
   parseKeepAliveResponse,
+  parseLaunchStatusOutcome,
   reportEntry,
 } from '../lib/keepalive-plan.mjs'
 
@@ -253,6 +256,43 @@ test('decidePendingRestart: upgrade, update, the legacy time rule, and nothing',
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decidePendingRestart({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+// -- a hand-run session the canonical supervisor waits behind (decision D4) -------------------------------
+
+test('parseLaunchStatusOutcome: the outcome word of the one-line launch-status (run.sh and hoai-core spell it alike)', () => {
+  const rows: Array<[string, unknown, string | null]> = [
+    ['run.sh singleton wait', '2026-10-06 19:00:00 outcome=waiting-for-incumbent pids=5912 6001 \n', 'waiting-for-incumbent'],
+    ['hoai-core with fields', '2026-10-06 19:00:00 outcome=starting compact=on', 'starting'],
+    ['a quoted field', '2026-10-06 19:00:00 outcome=plugin-root-missing topology=marketplace root="none"', 'plugin-root-missing'],
+    ['only the first line counts', 'junk\n2026-10-06 19:00:00 outcome=waiting-for-incumbent', null],
+    ['no outcome', '2026-10-06 19:00:00 starting', null],
+    ['an outcome inside another key is not one', '2026-10-06 19:00:00 lastoutcome=waiting-for-incumbent', null],
+    ['empty', '', null],
+    ['absent', null, null],
+  ]
+  for (const [name, raw, expected] of rows) {
+    assert.equal(parseLaunchStatusOutcome(raw as any), expected, name)
+  }
+})
+
+test('decideManualSession: a canonical supervisor FRESHLY waiting behind a claude no launcher of ours relaunches', () => {
+  assert.equal(LAUNCH_STATUS_FRESH_MS, 120_000)
+  const base = { canonical: true, launcherLive: false, keepaliveVerified: false, statusOutcome: 'waiting-for-incumbent', statusAgeMs: 5_000 }
+  const rows: Array<[string, Record<string, unknown>, boolean]> = [
+    ['run.sh waits behind a plain hand-run claude', {}, true],
+    ['written 120 s ago is still the wait', { statusAgeMs: 120_000 }, true],
+    ['121 s old: run.sh is not waiting any more', { statusAgeMs: 121_000 }, false],
+    ['a status from the future by more than the window is not fresh', { statusAgeMs: -121_000 }, false],
+    ['no status file', { statusOutcome: null, statusAgeMs: null }, false],
+    ['run.sh is running the agent itself', { statusOutcome: 'starting' }, false],
+    ['a live hoai launcher: its marker restarts claude in place', { launcherLive: true }, false],
+    ['a verified keepalive: its loop relaunches claude', { keepaliveVerified: true }, false],
+    ['not the canonical supervisor (only run.sh writes this wait)', { canonical: false }, false],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.equal(decideManualSession({ ...base, ...patch } as any), expected, name)
   }
 })
 
