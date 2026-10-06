@@ -145,3 +145,25 @@ test('status says whether the tmux session is up (remote compact ON or OFF) and 
   writeFileSync(join(m.state, 'run.sh'), 'x')
   assert.match(m.run(['status', '--assistant', '42']).out, /supervisor generation 1/)
 })
+
+test('logs tails the logs that exist: generation 2 writes no expect.log, and that is not "no logs yet"', (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  t.after(m.cleanup)
+  mkdirSync(m.state, { recursive: true })
+  writeFileSync(join(m.state, 'agent.log'), '[2026-10-06 10:00:00] starting agent (consecutive fast-fails: 0)\n')
+  const gen2 = m.run(['logs', '--assistant', '42'])
+  assert.equal(gen2.status, 0, gen2.out)
+  assert.match(gen2.out, /starting agent \(consecutive fast-fails: 0\)/)
+  assert.doesNotMatch(gen2.out, /no logs yet/, 'agent.log was shown, so there are logs')
+  // A generation 1 supervisor not yet upgraded still has its expect.log, and both are shown.
+  writeFileSync(join(m.state, 'expect.log'), 'spawn claude\n')
+  const gen1 = m.run(['logs', '--assistant', '42'])
+  assert.match(gen1.out, /starting agent/)
+  assert.match(gen1.out, /spawn claude/)
+  assert.doesNotMatch(gen1.out, /no logs yet/)
+  // Nothing written yet is still said plainly.
+  rmSync(join(m.state, 'agent.log'))
+  rmSync(join(m.state, 'expect.log'))
+  assert.match(m.run(['logs', '--assistant', '42']).out, /\(no logs yet\)/)
+})

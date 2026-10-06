@@ -1014,7 +1014,16 @@ cmd_logs() {
   require_id
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
   [ -d "$statedir" ] || die "no state for agent $ASSISTANT_ID"
-  tail -n 60 "$statedir/agent.log" "$statedir/expect.log" 2>/dev/null || echo "(no logs yet)"
+  # Only the logs that exist: generation 2 writes no expect.log (hoai runs in
+  # tmux, see hoai-agent attach), and a missing file made tail fail, which then
+  # printed "no logs yet" right under the log it had just shown. A generation 1
+  # supervisor not yet upgraded still has its expect.log.
+  local logs=() f
+  for f in "$statedir/agent.log" "$statedir/expect.log"; do
+    if [ -f "$f" ]; then logs+=("$f"); fi
+  done
+  if [ "${#logs[@]}" -eq 0 ]; then echo "(no logs yet)"; return 0; fi
+  tail -n 60 "${logs[@]}"
 }
 
 # Look at the agent's own terminal: its tmux session on its own socket. Typing
