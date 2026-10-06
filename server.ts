@@ -478,10 +478,15 @@ import {
   supervisorFilePath,
   wireSupervisedKind,
   type ResolvedService,
-  type Supervision,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
-import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
+import {
+  type AlwaysOnSupervision,
+  decideAlwaysOnReconcile,
+  describeOtherSupervisor,
+  readAlwaysOnSupervision,
+  userBusExecSync,
+} from './lib/always-on-reconcile.js'
 import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import {
   AGENT_STATE_FILE_NAME,
@@ -13518,6 +13523,15 @@ let reconcileDisabledReason: string | null = null
 // once per process. The reconcile re-runs every 15 minutes and on every
 // config event, and the answer does not change while the bespoke job lives.
 let alwaysOnDeferLogged = false
+// F4: so is the "could not read the job list, asking again next cycle" line.
+let alwaysOnWaitLogged = false
+// The G11 reading's exec: systemctl --user with the user bus default
+// bin/bgos-agent uses (lib/always-on-reconcile.ts userBusExecSync).
+const alwaysOnExecSync = userBusExecSync(defaultExecSync, {
+  platform: process.platform,
+  env: process.env,
+  uid: typeof process.getuid === 'function' ? process.getuid() : null,
+})
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -13582,26 +13596,22 @@ async function reconcileAlwaysOn(): Promise<void> {
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
     // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
-    // file, so before installing, ask the same detection the update ladder
-    // trusts whether a bespoke job or a verified keepalive already keeps this
-    // agent alive. Read only on the install row: the platform query is not
-    // free and no other row needs it. Unreadable is null, which installs, the
-    // pre-G11 behaviour. Anchored on the agent folder (ALWAYS_ON_WORKDIR), the
-    // same folder the install below names, so a bespoke job whose
-    // WorkingDirectory is that folder is found on a marketplace install too.
-    let supervision: Supervision | null = null
+    // file, so before installing, ask whether a bespoke job or a live
+    // keepalive already keeps this agent alive. Read only on the install row:
+    // the platform query is not free and no other row needs it. Unreadable is
+    // NOT none (code review F4): it waits for the next cycle, because one
+    // failed listing used to add a second supervisor for good. Anchored on the
+    // agent folder (ALWAYS_ON_WORKDIR), the same folder the install below
+    // names, so a bespoke job whose WorkingDirectory is that folder is found
+    // on a marketplace install too.
+    let supervision: AlwaysOnSupervision | null = null
     if (desired && !installed) {
-      try {
-        supervision = resolveSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR })
-      } catch {
-        supervision = null
-      }
+      supervision = readAlwaysOnSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR, execSync: alwaysOnExecSync })
     }
     const decision = decideAlwaysOnReconcile({
       desired,
       canonicalInstalled: installed,
       supervision,
-      assistantId: ASSISTANT_ID,
     })
     if (decision.action === 'defer') {
       if (!alwaysOnDeferLogged) {
@@ -13610,6 +13620,17 @@ async function reconcileAlwaysOn(): Promise<void> {
           `always-on: enabled in BGOS, and this agent is already kept alive by ` +
             `${describeOtherSupervisor(decision.other)}; not installing a second ` +
             `supervisor (two would race to relaunch it). Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'wait') {
+      if (!alwaysOnWaitLogged) {
+        alwaysOnWaitLogged = true
+        log(
+          `always-on: enabled in BGOS, but this host could not say whether another ` +
+            `supervisor already keeps this agent alive (${decision.reason}); not ` +
+            `installing one now, asking again next cycle. Logged once.`,
         )
       }
       return
