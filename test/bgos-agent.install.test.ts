@@ -307,14 +307,15 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
       },
     },
     {
-      name: 'installed only under a CLAUDE_CONFIG_DIR the background service will not inherit',
-      reason: /paired-topology:plugin-not-installed .*does not inherit/,
+      // The service carries CLAUDE_CONFIG_DIR, so the background session would look in the
+      // custom dir and find no plugin there: refused at install, not discovered at launch.
+      name: 'installed only under ~/.claude while CLAUDE_CONFIG_DIR (which the service carries) points elsewhere',
+      reason: /paired-topology:plugin-not-installed .*where the background agent will look \(.*custom-claude\); that is this shell's CLAUDE_CONFIG_DIR/,
       setup: () => {
-        const m = machine({ pluginInstalled: false })
+        const m = machine()
         const ws = pair(m, '14')
         const custom = join(m.home, 'custom-claude')
         mkdirSync(join(custom, 'plugins'), { recursive: true })
-        writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: '/x', version: '0.42.3' }] } }))
         return { m, args: ['--assistant', '14', '--dir', ws, '--always-on'], env: { CLAUDE_CONFIG_DIR: custom } }
       },
     },
@@ -512,4 +513,24 @@ test('run from a marketplace plugin\'s VERSIONED cache dir, a clone-style folder
   assert.equal(r2.status, 0, r2.out)
   assert.equal(runShVar(clone, '910', 'topology'), 'clone')
   assert.equal(runShVar(clone, '910', 'plugin_key'), '')
+})
+
+test('a paired folder whose plugin is installed ONLY under the custom CLAUDE_CONFIG_DIR is proven, and the service carries that config dir', SLOW, (t) => {
+  if (!ready(t)) return
+  // The proof is asked under the environment the service will really have. Generation 2 writes
+  // CLAUDE_CONFIG_DIR into the service, so this install is exactly where the background session
+  // looks; the proof used to strip the variable and refuse it.
+  const m = machine({ pluginInstalled: false })
+  const ws = pair(m, '911')
+  const custom = join(m.home, 'custom-claude')
+  const installPath = join(custom, 'plugins', 'cache', 'hoai', 'hoai', '0.42.3')
+  mkdirSync(installPath, { recursive: true })
+  writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath, version: '0.42.3' }] } }))
+  writeFileSync(join(custom, 'settings.json'), JSON.stringify({ enabledPlugins: { 'hoai@hoai': true } }))
+  const r = m.run(['--assistant', '911', '--dir', ws, '--always-on'], { CLAUDE_CONFIG_DIR: custom })
+  assert.equal(r.status, 0, r.out)
+  assert.match(r.out, /paired folder proven for agent 911/)
+  assert.equal(`plugin:${runShVar(m, '911', 'plugin_key')}`, MARKETPLACE_CHANNEL_SPEC)
+  const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
+  assert.ok(service.includes(custom), 'the service looks in the config dir the proof looked in')
 })

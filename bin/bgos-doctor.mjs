@@ -1004,10 +1004,14 @@ export function probeChannelRoute({
 //                                              marketplace install.
 //
 // Both are asked about the environment the SUPERVISED claude will have, not the
-// installer's: the launchd plist and the systemd unit carry no CLAUDE_CONFIG_DIR,
-// so a plugin installed only under the installing shell's custom config dir is
-// a plugin the supervised session will never load. That is a refusal, by name.
-// A deaf agent is worse than a refused install.
+// installer's. Supervisor generation 2 writes CLAUDE_CONFIG_DIR into the launchd
+// plist and the systemd unit when the installing shell has it (design section
+// 4), so the background session looks in THAT config dir and the proof does
+// too: a plugin installed only there is proven, and a plugin installed only
+// under ~/.claude while the shell points elsewhere is refused HERE, at install,
+// by name, not discovered at launch. (Generation 1 dropped the variable, and
+// this proof stripped it to match.) The session-scoped variables are still not
+// carried. A deaf agent is worse than a refused install.
 
 /** Refusal reasons, stable strings: bin/bgos-agent prints them and tests pin them. */
 export const PAIRED_TOPOLOGY_REASONS = Object.freeze({
@@ -1024,13 +1028,16 @@ export const PAIRED_TOPOLOGY_REASONS = Object.freeze({
   PLUGIN_FILES_MISSING: 'paired-topology:plugin-files-missing',
 })
 
-/** Variables the generated launchd plist and systemd unit do NOT carry. */
-const NOT_IN_SUPERVISED_ENV = ['CLAUDE_CONFIG_DIR', 'CLAUDE_PLUGIN_ROOT', 'BGOS_ASSISTANT_ID', 'BGOS_CREDENTIALS_PATH']
+/** Variables the generated launchd plist and systemd unit do NOT carry. CLAUDE_CONFIG_DIR
+ *  is not one of them: bin/bgos-agent writes it into the service when it is set (non-empty). */
+const NOT_IN_SUPERVISED_ENV = ['CLAUDE_PLUGIN_ROOT', 'BGOS_ASSISTANT_ID', 'BGOS_CREDENTIALS_PATH']
 
 /** The installer's env minus everything the supervised session will not have. */
 export function supervisedEnv(env = process.env) {
   const out = { ...env }
   for (const name of NOT_IN_SUPERVISED_ENV) delete out[name]
+  // An empty value is not written into the service (bin/bgos-agent: `-n "$config_dir"`).
+  if (!String(out.CLAUDE_CONFIG_DIR ?? '').trim()) delete out.CLAUDE_CONFIG_DIR
   return out
 }
 
@@ -1098,17 +1105,16 @@ export async function provePairedTopology({
   }
   const spec = String(resolved?.spec ?? '').trim()
   if (resolved?.method === 'clone') {
-    // Found by review: an installer running FROM a marketplace install that lives
-    // under a custom CLAUDE_CONFIG_DIR also reads as "clone" here, because the
-    // supervised environment has no such variable and the script is then outside
-    // the default plugins dir. Calling that a clone would be false. If the
-    // installing shell's own environment says marketplace, the true reason is
+    // Found by review: an installer that is a marketplace install only through a
+    // variable the service does not carry (CLAUDE_PLUGIN_ROOT, set inside a Claude
+    // Code session) reads as "clone" here. Calling that a clone would be false. If
+    // the installing shell's own environment says marketplace, the true reason is
     // that the background service will not see that install.
     const shellView = route({ cwd: dir, env, home, scriptDir })
     if (shellView?.method === 'marketplace') {
       return refused(
         R.PLUGIN_NOT_INSTALLED,
-        `the HOAI marketplace plugin is installed for this shell (${claudeConfigDir({ env, home })}) but not where the background agent will look (${claudeConfigDir({ env: runtimeEnv, home })}); the background service does not inherit CLAUDE_CONFIG_DIR`,
+        `the HOAI marketplace plugin is visible to this shell but not to the environment the background service runs with (config dir ${claudeConfigDir({ env: runtimeEnv, home })}); install the plugin there (claude plugin install hoai@hoai), then run this again`,
       )
     }
     // Its own reason, because "the plugin is not installed" would be a false
@@ -1122,12 +1128,11 @@ export async function provePairedTopology({
   }
   if (resolved?.method !== 'marketplace' || !spec.startsWith('plugin:')) {
     const configDir = claudeConfigDir({ env: runtimeEnv, home })
-    const custom = String(env?.CLAUDE_CONFIG_DIR ?? '').trim()
     const why = String(resolved?.reason ?? '').trim()
     return refused(
       R.PLUGIN_NOT_INSTALLED,
       `the HOAI marketplace plugin is not installed where the background agent will look (${configDir})` +
-        (custom ? `; this shell has CLAUDE_CONFIG_DIR=${custom}, which the background service does not inherit` : '') +
+        (runtimeEnv.CLAUDE_CONFIG_DIR ? "; that is this shell's CLAUDE_CONFIG_DIR, which the background service carries" : '') +
         `. Install method read as ${resolved?.method ?? 'unknown'}${why ? `: ${why}` : ''}`,
     )
   }
