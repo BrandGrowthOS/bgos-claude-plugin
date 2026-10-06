@@ -139,6 +139,57 @@ export const EXIT_INCUMBENT_TIMEOUT = 5
  *  waits for an answer nobody will give. */
 export const EXIT_UNATTENDED_NEEDS_PERSON = 6
 
+/** A supervised launch whose folder declares one agent while the service that
+ *  started it was installed for another. Launching would bring up the folder's
+ *  agent (a second session of it, somewhere else) under a supervisor that
+ *  believes it is running a different one. */
+export const EXIT_SUPERVISED_IDENTITY_MISMATCH = 7
+
+/** A supervised posix launch with no `expect`: claude would sit on its first
+ *  startup screen (the dev-channels warning shows on every launch) with
+ *  nobody to answer it, looking alive and hearing nothing. */
+export const EXIT_SUPERVISED_NO_EXPECT = 8
+
+/** The supervised expect tail's three named failures (the gate block's
+ *  outcomes, lib/gate-block.tcl): a startup screen hoai will not answer for
+ *  anyone, claude exiting before its session was up, and a claude that came up
+ *  signed out. Generation 1 spelled them 3, 4 and 5 in run.expect; those
+ *  numbers already mean other things for hoai (above), so they moved here. */
+export const EXIT_SUPERVISED_GATE = 9
+export const EXIT_SUPERVISED_STARTUP_EXIT = 10
+export const EXIT_SUPERVISED_SIGNED_OUT = 11
+
+/** Exits that are not a rejected resume, so the one-shot fresh fallback must
+ *  not spend itself on them: a fresh session meets the same screen, the same
+ *  signed-out account. */
+const SUPERVISED_NO_FRESH_RETRY = new Set([EXIT_SUPERVISED_GATE, EXIT_SUPERVISED_SIGNED_OUT])
+
+/** HOAI_SUPERVISED=1: set by bin/bgos-agent's run.sh (supervisor generation 2)
+ *  for a launch NOBODY is sitting in front of. Every path that would wait for a
+ *  person exits with a named code and writes launch-status instead.
+ *  HOAI_SUPERVISED_ASSISTANT_ID is the agent the service was installed for. */
+export const SUPERVISED_ENV = 'HOAI_SUPERVISED'
+export const SUPERVISED_ASSISTANT_ID_ENV = 'HOAI_SUPERVISED_ASSISTANT_ID'
+
+/** @param {Record<string, string | undefined> | undefined} env */
+export function isSupervisedLaunch(env) {
+  return String(env?.[SUPERVISED_ENV] ?? '') === '1'
+}
+
+/** The service's assistant id (digits only), or ''. @param {Record<string, string | undefined> | undefined} env */
+export function supervisedServiceId(env) {
+  const value = String(env?.[SUPERVISED_ASSISTANT_ID_ENV] ?? '').trim()
+  return /^\d+$/.test(value) ? value : ''
+}
+
+/** The remote compact state a supervised launch reports in launch-status: ON
+ *  exactly when the session sits in tmux under the name the daemon will type
+ *  /compact into (BGOS_TMUX_SESSION, lib/compact-inject.ts), else OFF with the
+ *  reason run.sh had for running without tmux. */
+export function compactStatus(env) {
+  return String(env?.BGOS_TMUX_SESSION ?? '').trim() ? 'compact=on' : 'compact=off reason=no-tmux'
+}
+
 /** The message printed instead of relaunching on an unresolved channel. */
 export function unresolvedChannelMessage(resolution) {
   const reason = String(resolution?.reason ?? '').trim() || 'no evidence of an install was found'
@@ -541,7 +592,11 @@ export function hookRegistrationFor({ cwd, scriptDir, method }) {
  *             env: Record<string, string>,
  *             hooks: { settingsPath: string, forwarderPath: string } | null,
  *             detection: { method: string, channelSpec: string, pluginRoot: string } }
- *         | { ok: false, reason: string }}
+ *         | { ok: false, reason: string,
+ *             code: 'channel-unresolved' | 'identity-conflict' | 'identity-ambiguous' }}
+ *
+ * `code` names the refusal for an unattended launch (HOAI_SUPERVISED), which
+ * writes it to launch-status instead of waiting for someone to read `reason`.
  */
 export function buildRunPlan({
   cwd = process.cwd(),
@@ -575,6 +630,7 @@ export function buildRunPlan({
   if (!isResolvedChannel(resolution)) {
     return {
       ok: false,
+      code: 'channel-unresolved',
       reason:
         `${String(resolution.reason ?? '').trim() || 'the install method could not be determined'} ` +
         'hoai will not launch on a guessed channel: a wrong one starts an agent that looks ' +
@@ -603,6 +659,7 @@ export function buildRunPlan({
     // send the user to fix the wrong thing.
     return {
       ok: false,
+      code: 'identity-conflict',
       reason:
         `this folder declares TWO different assistant ids (${FOLDER_PIN_FILE} and ` +
         `${MCP_CONFIG_FILE_NAME} disagree, or two ${MCP_CONFIG_FILE_NAME} servers name different ` +
@@ -647,6 +704,7 @@ export function buildRunPlan({
     // daemon itself refuses to boot unpinned on a multi-agent host.
     return {
       ok: false,
+      code: 'identity-ambiguous',
       reason:
         `this host has ${ids.length} paired agents (ids: ${ids.join(', ')}) and this folder ` +
         `declares no assistant (no ${FOLDER_PIN_FILE} pin and no BGOS_ASSISTANT_ID in ` +
@@ -1119,12 +1177,59 @@ export function readGateBlock(read = (p) => readFileSync(p, 'utf8')) {
  * Each arg is brace-quoted (Tcl literal, no substitution) so a future arg with
  * a space or a Tcl-special char cannot break or inject into the script; today's
  * args are fixed flags plus a regex-validated UUID, so this is defense in depth.
- * @param {{ claudePath: string, args: readonly string[], gateBlock?: string }} params
+ *
+ * SUPERVISED (HOAI_SUPERVISED=1, bin/bgos-agent's run.sh, nobody at the
+ * terminal): `supervised` swaps the person-facing tail for the one generation
+ * 1's run.expect carried, now in ONE place. The fail count run.sh keeps feeds
+ * the extra settle (a launch that lost the startup race waits longer next
+ * time, measured 2026-09-22); the measured outcome, plus the remote compact
+ * state, is written to <stateDir>/launch-status; and a screen nobody can
+ * answer, an exit during startup and a signed-out claude each stop with a
+ * NAMED exit (EXIT_SUPERVISED_*) instead of waiting for a person. A live
+ * session is then relayed with `interact` when there is a terminal (tmux,
+ * where /compact is typed in, finding 8) and HELD with `expect eof` when there
+ * is none (no tmux, stdin is /dev/null): interact would read EOF there at once
+ * and end the agent the moment it came up.
+ * @param {{ claudePath: string, args: readonly string[], gateBlock?: string,
+ *   supervised?: { stateDir: string, interactive: boolean, compact: string } | null }} params
  * @returns {string}
  */
-export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGateBlock() }) {
+export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGateBlock(), supervised = null }) {
   const quoted = (args ?? []).map((a) => `{${a}}`).join(' ')
   const spawnLine = quoted ? `spawn ${claudePath} ${quoted}` : `spawn ${claudePath}`
+  if (supervised) {
+    return [
+      `set hoai_statedir ${tclQuote(supervised.stateDir)}`,
+      'set hoai_extra_settle 0',
+      'catch {',
+      '  set hoai_fh [open "$hoai_statedir/failcount"]',
+      '  set hoai_fails [string trim [read $hoai_fh]]',
+      '  close $hoai_fh',
+      '  if {[string is integer -strict $hoai_fails] && $hoai_fails > 0} {',
+      '    set hoai_extra_settle [expr {$hoai_fails >= 5 ? 10 : 2 * $hoai_fails}]',
+      '  }',
+      '}',
+      spawnLine,
+      // Kill the spawned claude on SIGTERM so a supervisor kill never orphans it.
+      'trap {catch {exec kill [exp_pid]}; exit 143} SIGTERM',
+      gateBlock,
+      'set hoai_line "outcome=$hoai_outcome answered=\\[$hoai_answered\\]"',
+      'if {$hoai_screen ne ""} { append hoai_line " screen=\\"$hoai_screen\\"" }',
+      // Static text from this launcher, brace-quoted: compact=on | compact=off reason=no-tmux.
+      `append hoai_line { ${String(supervised.compact ?? '').replace(/[{}\\]/g, '')}}`,
+      'catch {',
+      '  set hoai_f [open "$hoai_statedir/launch-status" w]',
+      '  puts $hoai_f "[clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] $hoai_line"',
+      '  close $hoai_f',
+      '}',
+      'puts "\\n\\[hoai\\] launch: $hoai_line"',
+      `if {[string match "gate-*" $hoai_outcome]} { catch {close}; exit ${EXIT_SUPERVISED_GATE} }`,
+      `if {$hoai_outcome eq "exited-during-startup"} { exit ${EXIT_SUPERVISED_STARTUP_EXIT} }`,
+      `if {$hoai_outcome eq "live-but-not-signed-in"} { catch {close}; exit ${EXIT_SUPERVISED_SIGNED_OUT} }`,
+      'set timeout -1',
+      supervised.interactive ? 'interact' : 'expect eof',
+    ].join('\n')
+  }
   return [
     spawnLine,
     // Kill the spawned claude on SIGTERM so a supervisor kill never orphans it.
@@ -1141,6 +1246,12 @@ export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGa
     'set timeout -1',
     'interact',
   ].join('\n')
+}
+
+/** A Tcl double-quoted word whose every special character is escaped, so a
+ *  path (spaces, brackets, $, quotes, backslashes) is data, never code. */
+export function tclQuote(value) {
+  return `"${String(value ?? '').replace(/[\\$\[\]"{}]/g, (c) => `\\${c}`)}"`
 }
 
 /**
@@ -1632,6 +1743,14 @@ export async function superviseClaude(args, opts = {}) {
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
   const keepAlive = opts.keepAlive === true
   const stopSignal = opts.signal ?? null
+  // Nobody at the terminal (bin/bgos-agent run.sh v2): see SUPERVISED_ENV.
+  const supervised = isSupervisedLaunch(env)
+  // In tmux the launcher has a terminal and relays it; under launchd with no
+  // tmux stdin is /dev/null (see buildGateAutoAcceptExpect).
+  const stdinIsTTY = opts.stdinIsTTY ?? Boolean(process.stdin?.isTTY)
+  // Set once the agent's state dir is known; the supervised expect tail writes
+  // launch-status there and reads run.sh's fail count from it.
+  let supervisedStateDir = ''
   // The keep-alive backoff wait ends early on a stop request: a launcher told to
   // stop must not sit out a 60 s timer first (and a ref'd timer would hold the
   // process open for that long). An injected sleep (tests) is used as given.
@@ -1658,7 +1777,11 @@ export async function superviseClaude(args, opts = {}) {
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const spawnSupervised = (spawnArgs, onSpawn) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
-    if (relaunchNeedsGateAutoAccept(method)) {
+    // Supervised, the gate is handled whatever detection says: every launch
+    // carries the dev-channels flag, so the warning shows on every launch, and
+    // an 'unknown' method (a workspace .mcp.json beside an npx root) would
+    // otherwise hand claude a screen nobody will ever answer.
+    if (supervised || relaunchNeedsGateAutoAccept(method)) {
       if (platform === 'win32') {
         // No expect on Windows: claude gets the console, and a hidden helper
         // attached to that same console accepts the gate once it is on screen.
@@ -1672,7 +1795,14 @@ export async function superviseClaude(args, opts = {}) {
         return exited
       }
       if (hasExpect) {
-        const script = buildGateAutoAcceptExpect({ claudePath: 'claude', args: spawnArgs })
+        const script = buildGateAutoAcceptExpect({
+          claudePath: 'claude',
+          args: spawnArgs,
+          supervised:
+            supervised && supervisedStateDir
+              ? { stateDir: supervisedStateDir, interactive: stdinIsTTY, compact: compactStatus(env) }
+              : null,
+        })
         return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
       }
       if (!warnedGate) {
@@ -1687,14 +1817,31 @@ export async function superviseClaude(args, opts = {}) {
     return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
   }
 
-  const id = superviseAssistantId({ cwd, env, home, readFile, listDir })
+  const resolvedId = superviseAssistantId({ cwd, env, home, readFile, listDir })
+  // The agent the SERVICE was installed for. It fills in for a folder that
+  // declares nothing (finding 7: the pin must still be this agent's), and it
+  // must agree with a folder that does declare one.
+  const serviceId = supervised ? supervisedServiceId(env) : ''
+  if (resolvedId && serviceId && resolvedId !== serviceId) {
+    writeFile(
+      joinDir(joinDir(agentDir(home), serviceId), LAUNCH_STATUS_FILE_NAME),
+      `${launchStatusLine({ outcome: 'identity-mismatch', fields: { folder: resolvedId, service: serviceId }, at: new Date(now()) })}\n`,
+    )
+    print(
+      `[hoai] STOPPING (identity-mismatch): this service was installed for agent ${serviceId}, but ${cwd} ` +
+        `is agent ${resolvedId}. Launching would start agent ${resolvedId} under a supervisor that believes ` +
+        `it runs ${serviceId}. Reinstall the service with the folder that belongs to agent ${serviceId}.`,
+    )
+    return EXIT_SUPERVISED_IDENTITY_MISMATCH
+  }
+  const id = resolvedId || serviceId
   if (!id) {
     // No identity, so no pin, so every relaunch of a keep-alive loop would be a
     // brand NEW conversation (finding 7, the exact defect that made Ava add
     // --resume by hand). Unattended, the honest answer is to stop and say so.
-    if (keepAlive) {
+    if (keepAlive || supervised) {
       print(
-        '[hoai] STOPPING (identity-unknown): --keep-alive needs to know which agent this folder is, ' +
+        '[hoai] STOPPING (identity-unknown): an unattended launch needs to know which agent this folder is, ' +
           'so that every relaunch resumes that agent\'s own conversation. This folder has no ' +
           `${FOLDER_PIN_FILE} pin and no BGOS_ASSISTANT_ID, and this host has no single paired agent. ` +
           'Pair this folder first (hoai pair <CODE>), then start it again.',
@@ -1710,11 +1857,32 @@ export async function superviseClaude(args, opts = {}) {
   // WEDGED line and the watcher. Only an unattended launch writes it: a person
   // at a terminal reads the same words on screen.
   const noteStatus = (outcome, fields = {}) => {
-    if (!keepAlive) return
+    if (!keepAlive && !supervised) return
     writeFile(
       joinDir(stateDir, LAUNCH_STATUS_FILE_NAME),
       `${launchStatusLine({ outcome, fields, at: new Date(now()) })}\n`,
     )
+  }
+  if (supervised) supervisedStateDir = stateDir
+  // Supervised on posix, the startup gates are answered under expect or not at
+  // all. Without it claude would sit on the dev-channels warning (shown on
+  // every launch) with nobody there: alive to the service, deaf to the owner.
+  if (supervised && platform !== 'win32' && !hasExpect) {
+    noteStatus('expect-missing')
+    print(
+      '[hoai] STOPPING (expect-missing): this agent runs unattended and Claude Code shows a startup ' +
+        'screen on every launch; hoai answers it under expect, and no expect was found. Install it ' +
+        '(macOS ships it; on Linux: apt install expect), and the agent starts on its next lap.',
+    )
+    return EXIT_SUPERVISED_NO_EXPECT
+  }
+  // A relaunch whose channel no longer resolves stops loudly (see
+  // unresolvedChannelMessage); unattended, the reason also goes to launch-status.
+  const stopUnresolved = () => {
+    const resolution = resolveChannelSpec({ cwd, env, home, readFile, scriptDir })
+    noteStatus('channel-unresolved', { detail: String(resolution.reason ?? '').trim() || 'undetermined' })
+    print(unresolvedChannelMessage(resolution))
+    return EXIT_CHANNEL_UNRESOLVED
   }
   // Incumbent wait: never start a second session beside a claude that already
   // owns this folder, supervised or not (a hand-started one is invisible to the
@@ -1753,6 +1921,7 @@ export async function superviseClaude(args, opts = {}) {
     // Giving up is an outcome, not a hang: say which pid, how to look at it and
     // how to launch anyway, then hand back a code a wrapper can act on.
     if (incumbent.timedOut) {
+      noteStatus('incumbent-timeout', { pid: incumbent.lastPid ?? 'unknown' })
       print(incumbentTimeoutMessage({ pid: incumbent.lastPid, cwd, waitedMs: incumbentTimeoutMs }))
       return EXIT_INCUMBENT_TIMEOUT
     }
@@ -1767,6 +1936,7 @@ export async function superviseClaude(args, opts = {}) {
     pidAlive,
   })
   if (!arming.arm) {
+    noteStatus('already-supervised', { owner: arming.ownerPid })
     print(
       `[hoai] assistant ${id} is already supervised by a live launcher (pid ${arming.ownerPid}). ` +
         'Not starting a second session. If that launcher is actually stale, remove ' +
@@ -1945,10 +2115,7 @@ export async function superviseClaude(args, opts = {}) {
           readFile,
           sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
         })
-        if (!relaunchArgs) {
-          print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
-          return EXIT_CHANNEL_UNRESOLVED
-        }
+        if (!relaunchArgs) return stopUnresolved()
         currentArgs = relaunchArgs
         freshTried = false
         lastLaunchWasRelaunch = true
@@ -1961,13 +2128,19 @@ export async function superviseClaude(args, opts = {}) {
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
       const elapsedMs = now() - startedAt
-      const recovery = decideRelaunchRecovery({
-        isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
-        exitCode: code,
-        elapsedMs,
-        freshTried,
-        healthyMs,
-      })
+      // A screen nobody may answer, or a signed-out account, is not a rejected
+      // resume: a fresh session meets the same wall, and the retry would spend
+      // the one-shot fallback (and overwrite launch-status) for nothing.
+      const recovery =
+        supervised && SUPERVISED_NO_FRESH_RETRY.has(code)
+          ? { action: 'return' }
+          : decideRelaunchRecovery({
+              isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
+              exitCode: code,
+              elapsedMs,
+              freshTried,
+              healthyMs,
+            })
       if (recovery.action === 'retry-fresh') {
         freshTried = true
         lastLaunchWasRelaunch = false
@@ -1984,10 +2157,7 @@ export async function superviseClaude(args, opts = {}) {
           freshSessionArgs = []
         }
         const freshArgs = relaunchClaudeArgs({ scriptDir, env, home, cwd, readFile, sessionArgs: freshSessionArgs })
-        if (!freshArgs) {
-          print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
-          return EXIT_CHANNEL_UNRESOLVED
-        }
+        if (!freshArgs) return stopUnresolved()
         currentArgs = freshArgs
         recordRecipe(currentArgs)
         print(
@@ -2041,10 +2211,7 @@ export async function superviseClaude(args, opts = {}) {
         readFile,
         sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
       })
-      if (!keepArgs) {
-        print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
-        return EXIT_CHANNEL_UNRESOLVED
-      }
+      if (!keepArgs) return stopUnresolved()
       currentArgs = keepArgs
       // Counted as a relaunch, so a fast death of it gets the fresh fallback the
       // same way a marker relaunch does.
@@ -2665,6 +2832,20 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const plan = buildRunPlan({ cwd, env, home, readFile, listDir, scriptDir })
   if (!plan.ok) {
     console.error(`[hoai] ${plan.reason}`)
+    // Unattended, a refusal is an OUTCOME a supervisor must be able to count
+    // and an owner to read later: no channel (named code 4), or a folder that
+    // needs a person to say which agent it is (6). The line goes to the
+    // service agent's launch-status, the one `hoai-agent status` shows.
+    if (isSupervisedLaunch(env) || keepAlive) {
+      const statusId = supervisedServiceId(env) || superviseAssistantId({ cwd, env, home, readFile, listDir })
+      if (statusId) {
+        ;(opts.writeFile ?? defaultWriteFile)(
+          joinDir(joinDir(agentDir(home), statusId), LAUNCH_STATUS_FILE_NAME),
+          `${launchStatusLine({ outcome: plan.code, fields: { detail: plan.reason } })}\n`,
+        )
+      }
+      return plan.code === 'channel-unresolved' ? EXIT_CHANNEL_UNRESOLVED : EXIT_UNATTENDED_NEEDS_PERSON
+    }
     return 1
   }
   console.log(plan.note)
@@ -2739,6 +2920,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     force,
     keepAlive,
     signal,
+    stdinIsTTY: opts.stdinIsTTY,
     print: opts.print,
     pollMs: opts.pollMs,
     listProcesses: opts.listProcesses,
