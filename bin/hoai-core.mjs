@@ -1500,7 +1500,8 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  * says how long to wait, a crash loop is written to launch-status, and
  * supervisor.json is re-written before every relaunch. `signal` is the stop
  * request: once it aborts, the live claude is stopped and nothing is
- * relaunched (main wires SIGTERM and SIGHUP to it for --keep-alive).
+ * relaunched (main wires SIGTERM and SIGHUP to it for --keep-alive and for a
+ * supervised launch). A stop before anything is armed returns at once.
  */
 /** Basename of a comm/path, lowercased, without a trailing .exe. */
 function commBase(comm) {
@@ -1673,12 +1674,14 @@ export function incumbentTimeoutMessage({ pid, cwd, waitedMs = INCUMBENT_WAIT_TI
  * `ignorePids` is forwarded to findIncumbentClaude unchanged, so a launcher
  * started from inside a claude session can hand over its own ancestry and not
  * spend ninety seconds waiting for the session that is running it (2026-09-21).
+ * `stopped` ends the wait the moment the launch is asked to stop (the service
+ * stopping an unattended launch), so a stop is never held for the full wait.
  * @param {{ cwd: string, uid?: number | null, ownPid: number,
  *   listProcesses: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
  *   sleep: (ms: number) => Promise<void>, print: (line: string) => void,
  *   pollMs?: number, now?: () => number, timeoutMs?: number,
- *   ignorePids?: Iterable<number> | null }} input
- * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean }>}
+ *   ignorePids?: Iterable<number> | null, stopped?: () => boolean }} input
+ * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean, stopped?: true }>}
  */
 export async function waitForIncumbent({
   cwd,
@@ -1691,6 +1694,7 @@ export async function waitForIncumbent({
   now = Date.now,
   timeoutMs = INCUMBENT_WAIT_TIMEOUT_MS,
   ignorePids = [],
+  stopped = () => false,
 }) {
   let polls = 0
   let lastPid = null
@@ -1700,6 +1704,9 @@ export async function waitForIncumbent({
   const limit = Math.max(0, Number(timeoutMs))
   const printEvery = Math.max(1, Math.round(30_000 / Math.max(1, pollMs)))
   while (true) {
+    // Asked to stop (the service is stopping this launch): the caller arms
+    // nothing, so there is nothing left to wait for.
+    if (stopped()) return { waited: polls > 1, polls, lastPid, timedOut: false, stopped: true }
     polls += 1
     const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid, ignorePids })
     if (hit && !incumbentBlocks(hit) && !warnedUnreadable) {
@@ -1829,7 +1836,6 @@ export async function superviseClaude(args, opts = {}) {
   const setTimer = opts.setTimer ?? setTimeout
   const clearTimer = opts.clearTimer ?? clearTimeout
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimer(resolve, ms)))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
   const keepAlive = opts.keepAlive === true
@@ -1842,10 +1848,11 @@ export async function superviseClaude(args, opts = {}) {
   // Set once the agent's state dir is known; the supervised expect tail writes
   // launch-status there and reads run.sh's fail count from it.
   let supervisedStateDir = ''
-  // The keep-alive backoff wait ends early on a stop request: a launcher told to
-  // stop must not sit out a 60 s timer first (and a ref'd timer would hold the
-  // process open for that long). An injected sleep (tests) is used as given.
-  const keepAliveSleep =
+  // Every wait here (the incumbent wait, the keep-alive backoff) ends early on a
+  // stop request: a launcher told to stop must not sit out a 60 s timer first
+  // (and a ref'd timer would hold the process open for that long). An injected
+  // sleep (tests) is used as given.
+  const sleep =
     opts.sleep ??
     ((ms) =>
       new Promise((resolve) => {
@@ -2008,6 +2015,7 @@ export async function superviseClaude(args, opts = {}) {
       now,
       timeoutMs: incumbentTimeoutMs,
       ignorePids,
+      stopped: () => stopSignal?.aborted === true,
     })
     // Giving up is an outcome, not a hang: say which pid, how to look at it and
     // how to launch anyway, then hand back a code a wrapper can act on.
@@ -2020,6 +2028,9 @@ export async function superviseClaude(args, opts = {}) {
       print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
     }
   }
+  // A stop that came before anything was armed (main wires SIGTERM and SIGHUP
+  // to it for an unattended launch): nothing to clean up, nothing to start.
+  if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
   // Singleton guard: never start a second session behind a live supervisor.
   const arming = decideSupervisorArming({
     existingRaw: readFile(supervisorPath),
@@ -2291,7 +2302,7 @@ export async function superviseClaude(args, opts = {}) {
             "resuming this agent's own session",
         )
       }
-      await keepAliveSleep(backoff.delayMs)
+      await sleep(backoff.delayMs)
       if (stopSignal?.aborted) return code
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
@@ -2852,6 +2863,9 @@ function defaultScriptDir() {
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null,
+ *   signals?: { once: (name: string, fn: () => void) => unknown, removeListener: (name: string, fn: () => void) => unknown },
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -2991,40 +3005,60 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // closing) by a signal. Turned into the loop's stop request, so the live
   // claude is ended and NOT relaunched; without it the loop would read the
   // signal-killed claude as one more exit to recover from.
+  //
+  // A supervised launch (run.sh) is stopped by a signal on EVERY stop too:
+  // run.sh's on_stop kills the agent's tmux server, which hangs hoai up
+  // (SIGHUP); without tmux it TERMs hoai's process group; systemd and launchd
+  // TERM it at shutdown. Dying on the default action skipped superviseClaude's
+  // finally, so supervisor.json outlived every stop, and after a reboot its
+  // pid could be any live process: the agent refused to start behind it.
+  // Handled here, the loop ends the session and the finally removes the file.
+  // The handlers go with the launch (an injected emitter stands in for
+  // `process` in tests).
   let signal = opts.signal ?? null
-  if (keepAlive && !signal) {
+  let unwireStop = () => {}
+  if ((keepAlive || isSupervisedLaunch(env)) && !signal) {
+    const signals = opts.signals ?? process
     const controller = new AbortController()
     const stop = () => controller.abort()
-    process.once('SIGTERM', stop)
-    process.once('SIGHUP', stop)
+    signals.once('SIGTERM', stop)
+    signals.once('SIGHUP', stop)
+    unwireStop = () => {
+      signals.removeListener('SIGTERM', stop)
+      signals.removeListener('SIGHUP', stop)
+    }
     signal = controller.signal
   }
-  return superviseClaude(plan.args, {
-    platform,
-    env,
-    home,
-    cwd,
-    scriptDir,
-    readFile,
-    listDir,
-    spawnImpl,
-    freshSession: fresh,
-    force,
-    keepAlive,
-    signal,
-    stdinIsTTY: opts.stdinIsTTY,
-    print: opts.print,
-    pollMs: opts.pollMs,
-    pidAlive: opts.pidAlive,
-    pidCommandLine: opts.pidCommandLine,
-    listProcesses: opts.listProcesses,
-    sleep: opts.sleep,
-    incumbentTimeoutMs: opts.incumbentTimeoutMs,
-    now: opts.now,
-    healthyMs: opts.healthyMs,
-    setTimer: opts.setTimer,
-    clearTimer: opts.clearTimer,
-  })
+  try {
+    return await superviseClaude(plan.args, {
+      platform,
+      env,
+      home,
+      cwd,
+      scriptDir,
+      readFile,
+      listDir,
+      spawnImpl,
+      freshSession: fresh,
+      force,
+      keepAlive,
+      signal,
+      stdinIsTTY: opts.stdinIsTTY,
+      print: opts.print,
+      pollMs: opts.pollMs,
+      pidAlive: opts.pidAlive,
+      pidCommandLine: opts.pidCommandLine,
+      listProcesses: opts.listProcesses,
+      sleep: opts.sleep,
+      incumbentTimeoutMs: opts.incumbentTimeoutMs,
+      now: opts.now,
+      healthyMs: opts.healthyMs,
+      setTimer: opts.setTimer,
+      clearTimer: opts.clearTimer,
+    })
+  } finally {
+    unwireStop()
+  }
 }
 
 /**
