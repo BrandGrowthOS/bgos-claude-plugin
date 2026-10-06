@@ -66,6 +66,11 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     // The crash-safe entry (design 8): bin/hoai-watcher.mjs imports it
     // statically and everything else dynamically, inside the guard.
     'lib/watcher-health.mjs',
+    // The keep-alive sweep (design 5) and its imports.
+    'lib/watcher-keepalive.mjs',
+    'lib/keepalive-plan.mjs',
+    'lib/process-tree.mjs',
+    'lib/agent-task-win32.mjs',
   ])
   assert.equal(Object.isFrozen(WATCHER_BUNDLE_FILES), true)
 })
