@@ -4,11 +4,11 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## 0.61.4 (2026-10-06)
 
-The remote pane can navigate, use history and reload, and create, select or close tabs in the agent's actual browser. Owner actions retain exclusive control until the physical operation settles, tab changes replace the streamed target, and cached history navigation does not wait for a new DOM-ready event.
+The remote pane can navigate, use history and reload, and create, select or close tabs in the agent's actual browser. Owner actions retain exclusive control until the physical operation settles. Navigation acknowledges dispatch promptly so Stop remains available during delayed headers or documents. Physical links and same-document history publish loading completion. Tab actions verify the displayed target identity, roster changes refresh even when the selected page stays unchanged, and pending capture survives a target replacement. The browser keeps at most 16 tabs whether the agent or owner creates them.
 
 Login detection no longer rejects a visible top-page sign-in because it contains an unrelated iframe, an alternative OTP link or signup footer text. Password-only steps and JavaScript login pages are supported with exact document, field and origin checks. Native encrypted entry for the clicked username, password or OTP field works with storage locked. The owner can explicitly save a new login for the current origin without requiring a recognized HTML form. Credential values remain sealed over HOAI and saved entries remain encrypted on the agent machine. Raw protected-field keystrokes, hidden or changed targets, foreign form destinations, payment fields and opaque iframe fields remain refused.
 
-Real Chromium regressions, printed executable mutation proofs and the touched host suites cover these changes. Version metadata advances together for review; no release tag, marketplace pin, publish or deployment is performed here. The HOAI counterpart must be deployed before this plugin's new browser capability and credential operations are enabled.
+Real Chromium regressions, printed executable mutation proofs and the touched host suites cover these changes. New viewers explicitly negotiate browser controls; older viewers keep their existing single-target stream and empty input-revocation events. Negotiated revocations distinguish navigation and target changes from expiry and release. Version metadata advances together for review; no release tag, marketplace pin, publish or deployment is performed here.
 
 ## 0.61.1 (2026-10-05)
 

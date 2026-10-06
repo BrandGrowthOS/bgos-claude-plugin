@@ -14,11 +14,17 @@ async function fixture(t: any) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-normal-browser-')))
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', 'text/html')
+    if (req.url === '/slow-headers' || req.url === '/slow-document') {
+      if (req.url === '/slow-document') res.write('<!doctype html><title>Slow document</title><p>Still loading')
+      const timer = setTimeout(() => res.end('<!doctype html><title>Delayed response</title>Complete'), 12000)
+      res.on('close', () => clearTimeout(timer))
+      return
+    }
     const inputs = '<input id="user" name="username" autocomplete="username"><input id="password" name="password" type="password" autocomplete="current-password">'
     const button = '<button id="submit">Sign in</button>'
     const body = req.url === '/js' ? `<div id="js-login">${inputs}${button}</div>` :
       req.url === '/password-only' ? `<form><input id="password" type="password" autocomplete="current-password">${button}</form>` :
-      req.url === '/plain' ? '<input id="ordinary"><a id="popup" href="/second" target="_blank">Open another tab</a>' :
+      req.url === '/plain' ? '<input id="ordinary"><a id="popup" href="/second" target="_blank">Open another tab</a><a id="slow-link" href="/slow-headers">Slow link</a><a id="fragment-link" href="#anchor">Same document link</a>' :
       `<form id="signin">${inputs}${button}<a href="/otp">Email OTP</a><footer>Create your account</footer></form><iframe srcdoc="<p>unrelated captcha</p>"></iframe>`
     res.end(`<!doctype html><title>${req.url}</title>${body}<script>window.submitted=0;document.querySelector('form')?.addEventListener('submit',e=>{e.preventDefault();window.submitted++});document.querySelector('#js-login button')?.addEventListener('click',()=>window.submitted++)</script>`)
   })
@@ -40,8 +46,14 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   const views = new RemoteBrowserViews({ pool })
   t.after(() => views.stop())
   await f.page.goto(f.origin + '/plain')
-  await views.open({ viewId: 'normal-view', ...f.context }, { connectionId: 'fixture-host',
-    sendFrame: (packet: any) => { frames.push(packet.frame); return true }, sendClose: (packet: any) => closes.push(packet) })
+  await views.open({ viewId: 'normal-view', ...f.context, remoteBrowser: true }, { connectionId: 'fixture-host',
+    sendFrame: (packet: any) => {
+      frames.push(packet.frame)
+      if (packet.frame.method === 'Page.screencastFrame') setImmediate(() => void views.command({ viewId: 'normal-view', frame: {
+        method: 'Page.screencastFrameAck', params: { sessionId: packet.frame.params.sessionId }, sessionId: packet.frame.sessionId, tabId: packet.frame.tabId,
+      } }, 'fixture-host'))
+      return true
+    }, sendClose: (packet: any) => closes.push(packet) })
   const ready = frames.find(frame => frame.method === 'hoai.ready').params
   assert.equal(ready.remoteBrowser, true)
   let id = 0
@@ -52,6 +64,9 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
     return frame.params
   }
   const command = async (method: string, params: any = {}, target = state()) => {
+    if (method === 'hoai.browser.tab' && params.action !== 'new' && params.targetTabId === undefined) {
+      params = { ...params, targetTabId: target.tabs[params.index]?.tabId }
+    }
     const requestId = ++id
     await views.command({ viewId: 'normal-view', frame: { id: requestId, method, params, sessionId: target.sessionId, tabId: target.tabId } }, 'fixture-host')
     return frames.find(frame => frame.id === requestId)
@@ -60,6 +75,10 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   const action = async (method: string, params: any) => {
     const reply = await command(method, params)
     assert.deepEqual(reply.result, {}, `${method} ${params.action || ''} ${JSON.stringify(reply.error)}`)
+    if (method === 'hoai.browser.navigate' || method === 'hoai.browser.navigation' && params.action !== 'stop') {
+      await views.views.get('normal-view').navigationPending
+      await views._state(views.views.get('normal-view'))
+    }
   }
   assert.equal((await command('hoai.browser.tab', { action: 'new', leaseId: 'missing' })).error.code, 'owner_lease_expired')
   const initial = state()
@@ -130,6 +149,142 @@ test('owner normal browser creates, switches and closes real agent tabs and navi
   assert.equal(state().tabs.length, 16)
   assert.equal((await command('hoai.browser.tab', { leaseId: await owner(), action: 'new' })).error.code, 'browser_tabs_full')
   assert.equal(f.engine.pages().length, 16)
+  await command('hoai.input.release')
+  await f.engine.callTool('browser_tabs', { action: 'close', index: 0 })
+  const backgroundCloseDeadline = Date.now() + 3000
+  while (state().tabs.length !== 15) {
+    if (Date.now() > backgroundCloseDeadline) throw new Error('A background tab close did not refresh the roster')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(state().activeIndex, 0)
+  const displayedTarget = state().tabs[1].tabId
+  const actualTarget = f.engine.pages()[1]
+  await actualTarget.close()
+  const actualNext = f.engine.pages()[1]
+  const leaseId = await owner()
+  const activeBefore = f.engine.selectedPage()
+  assert.equal((await command('hoai.browser.tab', { leaseId, action: 'select', index: 1, targetTabId: displayedTarget })).error.code, 'stale_target')
+  assert.equal(f.engine.selectedPage(), activeBefore)
+  assert.equal((await command('hoai.browser.tab', { leaseId, action: 'close', index: 1, targetTabId: displayedTarget })).error.code, 'stale_target')
+  assert.equal(actualNext.isClosed(), false)
+})
+
+test('slow headers, slow documents and owner-clicked links accept Stop without blocking the remote stream', { timeout: 45000 }, async t => {
+  const f = await fixture(t)
+  await f.page.goto(f.origin + '/plain')
+  const frames: any[] = [], closes: any[] = []
+  const views = new RemoteBrowserViews({ pool: { peek: () => f.slot, slotKey: () => 'fixture' } as any })
+  t.after(() => views.stop())
+  await views.open({ viewId: 'slow-view', ...f.context, remoteBrowser: true }, { connectionId: 'slow-host',
+    sendFrame: (packet: any) => {
+      frames.push(packet.frame)
+      if (packet.frame.method === 'Page.screencastFrame') setImmediate(() => void views.command({ viewId: 'slow-view', frame: {
+        method: 'Page.screencastFrameAck', params: { sessionId: packet.frame.params.sessionId }, sessionId: packet.frame.sessionId, tabId: packet.frame.tabId,
+      } }, 'slow-host'))
+      return true
+    }, sendClose: (packet: any) => closes.push(packet) })
+  const target = frames.find(frame => frame.method === 'hoai.ready').params
+  let id = 0
+  const command = async (method: string, params: any = {}) => {
+    const requestId = ++id
+    await views.command({ viewId: 'slow-view', frame: { id: requestId, method, params, sessionId: target.sessionId, tabId: target.tabId } }, 'slow-host')
+    return frames.find(frame => frame.id === requestId)
+  }
+  await command('Page.startScreencast')
+  const waitLoading = async () => {
+    const deadline = Date.now() + 3000
+    while (!frames.some(frame => frame.method === 'hoai.browser.state' && frame.params.tabs[frame.params.activeIndex].loading)) {
+      if (Date.now() > deadline) throw new Error('The owner link did not publish loading state')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  for (const path of ['/slow-headers', '/slow-document']) {
+    const leaseId = (await command('hoai.input.acquire')).result.leaseId
+    const started = Date.now()
+    assert.deepEqual((await command('hoai.browser.navigate', { leaseId, url: f.origin + path })).result, {})
+    assert.ok(Date.now() - started < 2000, 'Dispatch must acknowledge before the ten-second relay deadline')
+    await waitLoading()
+    // Header delay retains the current lease. A committed document may revoke
+    // it; wait for its physical commit and then take control of that document.
+    let stopLease = views.views.get('slow-view').ownerLease?.id
+    if (path === '/slow-document') {
+      await views.views.get('slow-view').navigationPending
+      stopLease = (await command('hoai.input.acquire')).result.leaseId
+    }
+    assert.deepEqual((await command('hoai.browser.navigation', { leaseId: stopLease, action: 'stop' })).result, {})
+    await views.views.get('slow-view').navigationPending.catch(() => {})
+    assert.equal(closes.length, 0)
+    assert.equal(views.views.size, 1)
+    await f.page.goto(f.origin + '/plain')
+  }
+  frames.length = 0
+  const leaseId = (await command('hoai.input.acquire')).result.leaseId
+  const box = await f.page.locator('#slow-link').boundingBox()
+  const pointer = { leaseId, x: box!.x + 5, y: box!.y + 5, button: 'left' }
+  await command('hoai.input.pointer', { ...pointer, type: 'down' })
+  await command('hoai.input.pointer', { ...pointer, type: 'up' })
+  await waitLoading()
+  assert.deepEqual((await command('hoai.browser.navigation', { leaseId, action: 'stop' })).result, {})
+  assert.equal(closes.length, 0)
+  assert.equal(views.views.size, 1)
+  assert.equal(f.page.isClosed(), false)
+  await f.page.goto(f.origin + '/plain')
+  for (const action of ['navigate', 'back', 'forward']) {
+    const leaseId = (await command('hoai.input.acquire')).result.leaseId
+    await command(action === 'navigate' ? 'hoai.browser.navigate' : 'hoai.browser.navigation', action === 'navigate'
+      ? { leaseId, url: f.origin + '/plain#section' } : { leaseId, action })
+    await views.views.get('slow-view').navigationPending
+    const deadline = Date.now() + 3000
+    while (views.views.get('slow-view').loading) {
+      if (Date.now() > deadline) throw new Error('Same-document/history navigation kept the loading indicator active')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  const fragmentLease = (await command('hoai.input.acquire')).result.leaseId
+  const fragmentBox = await f.page.locator('#fragment-link').boundingBox()
+  const fragmentPointer = { leaseId: fragmentLease, x: fragmentBox!.x + 5, y: fragmentBox!.y + 5, button: 'left' }
+  await command('hoai.input.pointer', { ...fragmentPointer, type: 'down' })
+  await command('hoai.input.pointer', { ...fragmentPointer, type: 'up' })
+  await f.page.waitForURL(f.origin + '/plain#anchor')
+  const fragmentDeadline = Date.now() + 3000
+  while (views.views.get('slow-view').loading) {
+    if (Date.now() > fragmentDeadline) throw new Error('The physical same-document link kept the loading indicator active')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  const beforeFrames = frames.filter(frame => frame.method === 'Page.screencastFrame').length
+  await f.page.evaluate(() => { document.body.style.background = 'blue'; document.body.textContent = 'Stream still changing after Stop' })
+  const paintDeadline = Date.now() + 3000
+  while (frames.filter(frame => frame.method === 'Page.screencastFrame').length === beforeFrames) {
+    if (Date.now() > paintDeadline) throw new Error('Stream stopped after owner Stop')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+})
+
+test('ownerless agent tabs respect the same cap before a viewer attaches and legacy views keep their old wire', { timeout: 45000 }, async t => {
+  const f = await fixture(t)
+  await f.engine.callTool('browser_snapshot', {})
+  for (let index = 1; index < 16; index++) await f.page.context().newPage()
+  await assert.rejects(f.engine.callTool('browser_tabs', { action: 'new' }), { code: 'browser_tabs_full' })
+  assert.equal(f.engine.pages().length, 16)
+  const frames: any[] = []
+  const views = new RemoteBrowserViews({ pool: { peek: () => f.slot, slotKey: () => 'fixture' } as any })
+  t.after(() => views.stop())
+  await views.open({ viewId: 'legacy-view', ...f.context }, { connectionId: 'host', sendFrame: (packet: any) => { frames.push(packet.frame); return true }, sendClose: () => {} })
+  const legacyReady = frames.find(frame => frame.method === 'hoai.ready').params
+  assert.equal(Object.hasOwn(legacyReady, 'remoteBrowser'), false)
+  assert.equal(frames.some(frame => frame.method === 'hoai.browser.state'), false)
+  const legacyPage = views.views.get('legacy-view').page
+  await f.engine.callTool('browser_tabs', { action: 'select', index: 0 })
+  assert.equal(views.views.get('legacy-view').page, legacyPage)
+  await views.command({ viewId: 'legacy-view', frame: { id: 1, method: 'hoai.browser.tab', params: { action: 'new' }, sessionId: legacyReady.sessionId, tabId: legacyReady.tabId } }, 'host')
+  assert.equal(frames.find(frame => frame.id === 1).error.code, 'view_read_only')
+  await views.close('legacy-view', 'host')
+  frames.length = 0
+  await views.open({ viewId: 'new-view', ...f.context, remoteBrowser: true }, { connectionId: 'host', sendFrame: (packet: any) => { frames.push(packet.frame); return true }, sendClose: () => {} })
+  assert.equal(frames.find(frame => frame.method === 'hoai.ready').params.remoteBrowser, true)
+  const state = frames.find(frame => frame.method === 'hoai.browser.state').params
+  assert.equal(state.tabs.length, 16)
+  assert.ok(state.activeIndex >= 0 && state.activeIndex < 16)
 })
 
 test('first native storage setup keeps the current completed sign-in and restores it encrypted after restart', { timeout: 45000 }, async t => {

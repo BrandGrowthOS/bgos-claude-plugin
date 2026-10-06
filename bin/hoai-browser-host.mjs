@@ -75,7 +75,7 @@ import { io as socketIoClient } from 'socket.io-client'
 
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
-import { RemoteBrowserViews } from '../lib/remote-view.mjs'
+import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { runAgentBrowserWork } from '../lib/remote-input.mjs'
 
 /**
@@ -959,6 +959,7 @@ export class PlaywrightEngine {
     this._browser = await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true })
     this._browser.on('disconnected', () => this.onDisconnected?.())
     const context = await this._browser.newContext({ viewport: { width: 1280, height: 800 } })
+    context.on('page', page => { if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
     await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config)
@@ -988,10 +989,14 @@ export class PlaywrightEngine {
     if (!context || index < 0) throw new Error('Browser tab is unavailable')
     await context.selectTab(index)
   }
-  async newPage() { return (await this._backend._context.newTab()).page }
+  async newPage() {
+    if (this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
+    return (await this._backend._context.newTab()).page
+  }
 
   async callTool(name, args, signal) {
     if (!this._backend) throw new Error('Engine not started')
+    if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
     try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
     catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
     finally { this.onSelectedPage?.(this.selectedPage()) }
