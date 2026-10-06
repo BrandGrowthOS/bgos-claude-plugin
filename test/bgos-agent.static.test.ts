@@ -121,7 +121,7 @@ test('the clone spec literal appears nowhere in the code, only via the variable'
 
 test('every consumer of the channel takes the resolved value, never the constant', () => {
   // cmd_install resolves once, honouring --channel, and both consumers (the
-  // human hint and the generated run.expect) take that resolved value.
+  // human hint and the supervisor) take that resolved value.
   assert.ok(
     /local channel="\$\{CHANNEL:-\$DEFAULT_CHANNEL\}"/.test(code),
     '--channel must still be able to override the default',
@@ -130,17 +130,39 @@ test('every consumer of the channel takes the resolved value, never the constant
     /say_launch_hint "\$workdir" "\$channel"/.test(code),
     'the foreground hint must print the RESOLVED channel',
   )
-  assert.ok(
-    /write_run_expect "\$statedir\/run\.expect" "\$statedir" "\$claude_bin" "\$channel"/.test(code),
-    'the supervisor must spawn with the RESOLVED channel',
+  // Supervisor generation 2 types no channel at all: it runs hoai, which
+  // resolves the folder's channel itself at every launch (workspace .mcp.json
+  // first, then the install it is started from). What the RESOLVED channel
+  // still decides is which plugin root run.sh starts hoai from: a marketplace
+  // channel names its own install record, anything else is this checkout.
+  assert.match(
+    code,
+    /case "\$channel" in\n\s+plugin:\*\) topology="marketplace"; plugin_key="\$\{channel#plugin:\}" ;;\n\s+\*\)\s+topology="clone" ;;\n\s+esac/,
   )
-  // The spawn line itself interpolates the argument, never a literal.
-  assert.ok(
-    /spawn "\$3" \$\{cont\}--dangerously-skip-permissions --dangerously-load-development-channels "\$4"/.test(
-      code,
-    ),
-    'run.expect must spawn with the passed channel argument',
+  assert.match(
+    code,
+    /write_run_sh "\$statedir\/run\.sh" "\$statedir" "\$ASSISTANT_ID" "\$node_bin" "\$topology" "\$plugin_key" "\$PLUGIN_DIR"/,
   )
+  // And no supervisor line spells a channel flag of its own any more.
+  assert.doesNotMatch(code, /spawn .*--dangerously-load-development-channels/)
+  assert.doesNotMatch(code, /^write_run_expect\(\)/m, 'run.expect is no longer generated')
+})
+
+test('generation 2 is stamped on every always-on install, with the grace stamp (fact 3), and run.sh runs hoai under HOAI_SUPERVISED', () => {
+  // `code` has its comment lines stripped, so the section is anchored on its first statement.
+  const section = code.slice(code.indexOf('info "Installing always-on supervisor'), code.indexOf('cmd_link >/dev/null 2>&1 || true'))
+  assert.ok(section.length > 0)
+  // Unconditional: at the function's own indentation, not inside an if.
+  assert.match(section, /^  date \+%s > "\$statedir\/installed-at"$/m)
+  assert.match(section, /^  printf '%s\\n' "\$SUPERVISOR_GENERATION" > "\$statedir\/supervisor-generation"$/m)
+  assert.match(code, /^SUPERVISOR_GENERATION=2$/m)
+  // node is required for an always-on install, before anything is written; tmux only warned about.
+  assert.match(code, /if \[ "\$\{ALWAYS_ON:-\}" = "1" \]; then\n(?:\s*#.*\n)*\s*command -v node >\/dev\/null 2>&1 \\\n\s*\|\| die "supervisor:node-not-found/)
+  assert.match(code, /command -v tmux >\/dev\/null 2>&1 \\\n\s*\|\| warn "tmux not found: the agent will run without it and remote compact will be OFF/)
+  const runSh = code.slice(code.indexOf('write_run_sh() {'), code.indexOf("\nSH\n", code.indexOf('write_run_sh() {')))
+  assert.match(runSh, /HOAI_SUPERVISED=1/)
+  assert.match(runSh, /"\$node_bin" "\$root\/bin\/hoai-core\.mjs"/)
+  assert.match(runSh, /trap on_stop TERM INT HUP/)
 })
 
 test('the approved-sounding --channels flag is never used', () => {

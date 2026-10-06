@@ -11,12 +11,16 @@
  *
  * What these tests pin, by running the script and reading what it left on disk:
  *   1. a proven paired folder gets a supervisor on the channel the shared
- *      resolver proved, and no .mcp.json is invented for it;
- *   2. a clone-style folder that DOES carry a .mcp.json behaves exactly as it
- *      always did: `server:bgos`, the file untouched, and the prover is never
- *      even started;
- *   3. every refusal is named, exits nonzero, and leaves NOTHING behind: no
- *      run.expect, no service file, no launchctl or systemctl call. A refused
+ *      resolver proved (generation 2: run.sh starts hoai from that marketplace
+ *      install's record), and no .mcp.json is invented for it;
+ *   2. a clone-style folder that DOES carry a .mcp.json keeps its file
+ *      untouched, the prover is never even started, and run.sh starts hoai
+ *      from this checkout (hoai then reads `server:bgos` from that .mcp.json);
+ *   3. every always-on install is stamped (installed-at, fact 3) and carries
+ *      supervisor generation 2, and the service carries CLAUDE_CONFIG_DIR and
+ *      HOAI_SERVICE_NAMESPACE when the installing shell had them;
+ *   4. every refusal is named, exits nonzero, and leaves NOTHING behind: no
+ *      run.sh, no service file, no launchctl or systemctl call. A refused
  *      install must not be a half install.
  *
  * The machine is stood in for, never the script: HOME is a temp dir, and PATH
@@ -30,7 +34,7 @@
  * Run: npm test, or npx tsx --test test/bgos-agent.install.test.ts
  */
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -149,8 +153,12 @@ function pair(m: Machine, id: string, { pin = id, creds = true }: { pin?: string
 }
 
 const callsOf = (m: Machine) => (existsSync(m.calls) ? readFileSync(m.calls, 'utf8') : '')
-const spawnLine = (m: Machine, id: string) =>
-  readFileSync(join(m.home, '.bgos-agent', id, 'run.expect'), 'utf8').split('\n').find((l) => l.startsWith('spawn ')) ?? ''
+/** A value baked into run.sh's header (a %q-quoted assignment), read back by bash itself. */
+const runShVar = (m: Machine, id: string, name: string) => {
+  const runSh = join(m.home, '.bgos-agent', id, 'run.sh')
+  const header = readFileSync(runSh, 'utf8').split('\n').filter((l) => /^(sd|id|node_bin|topology|plugin_key|clone_root)=/.test(l)).join('\n')
+  return String(spawnSync(BASH!, ['-c', `${header}\nprintf '%s' "$${name}"`], { encoding: 'utf8' }).stdout)
+}
 
 test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the channel the resolver proved, and no .mcp.json is invented', SLOW, (t) => {
   if (!ready(t)) return
@@ -159,7 +167,14 @@ test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the chann
   const result = m.run(['--assistant', '936', '--dir', workspace, '--always-on'])
   assert.equal(result.status, 0, result.out)
   assert.match(result.out, /paired folder proven for agent 936 \(folder pin, agent credentials, plugin install record\)/)
-  assert.ok(spawnLine(m, '936').endsWith(`--dangerously-load-development-channels "${MARKETPLACE_CHANNEL_SPEC}"`), spawnLine(m, '936'))
+  // Generation 2: run.sh resolves the plugin root from THIS channel's install record at every
+  // launch, and hoai (started from it) resolves the same marketplace spec the prover proved.
+  assert.equal(`plugin:${runShVar(m, '936', 'plugin_key')}`, MARKETPLACE_CHANNEL_SPEC)
+  assert.equal(runShVar(m, '936', 'topology'), 'marketplace')
+  assert.doesNotMatch(result.out, /package-runner cache/, 'a marketplace agent starts hoai from its install record, never from where the installer ran')
+  assert.equal(runShVar(m, '936', 'node_bin'), join(m.home, 'shims', 'node'), 'the node resolved at install is baked')
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '936', 'run.expect')), false, 'run.expect is not the launch path any more')
+  assert.equal(readFileSync(join(m.home, '.bgos-agent', '936', 'supervisor-generation'), 'utf8').trim(), '2')
   assert.equal(existsSync(join(workspace, '.mcp.json')), false, 'a marketplace folder has no .mcp.json, and the installer must not fabricate one')
   assert.equal(m.serviceFiles().length, 1, 'exactly one service file')
   assert.match(callsOf(m), /--prove-paired-topology --workdir .*936-workspace --assistant-id 936/)
@@ -173,7 +188,7 @@ test('a PROVEN paired folder with no .mcp.json gets its supervisor, on the chann
   assert.equal(code.includes(MARKETPLACE_CHANNEL_SPEC), false)
 })
 
-test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always did, and the prover is never even started', SLOW, (t) => {
+test('a CLONE-STYLE folder that carries a .mcp.json keeps it byte for byte, the prover is never even started, and hoai starts from this checkout', SLOW, (t) => {
   if (!ready(t)) return
   // On the very machine where the paired topology WOULD be provable: pinned
   // folder, credentials, marketplace plugin installed. The .mcp.json still wins,
@@ -187,10 +202,47 @@ test('a CLONE-STYLE folder that carries a .mcp.json behaves exactly as it always
   assert.equal(result.status, 0, result.out)
   assert.match(result.out, /using existing .*\.mcp\.json \(pass --key\/--user to regenerate\)/)
   assert.doesNotMatch(result.out, /paired folder proven|paired-topology/)
-  assert.ok(spawnLine(m, '901').endsWith(`--dangerously-load-development-channels "${CLONE_CHANNEL_SPEC}"`), spawnLine(m, '901'))
+  // The clone topology: run.sh starts hoai from this checkout, and hoai reads the channel from
+  // the folder's own .mcp.json (server:bgos, bin/hoai-core.mjs resolveChannelSpec).
+  assert.equal(runShVar(m, '901', 'topology'), 'clone')
+  assert.equal(runShVar(m, '901', 'clone_root'), realpathSync(m.pluginRoot), 'the checkout, physically resolved at install')
+  assert.equal(runShVar(m, '901', 'plugin_key'), '')
+  // This run comes from an npx-shaped cache, which npm may delete: said at install, not discovered later.
+  assert.match(result.out, /starts hoai from .*_npx.*, a package-runner cache that npm may delete/)
+  assert.equal(CLONE_CHANNEL_SPEC, 'server:bgos')
   assert.equal(readFileSync(join(workspace, '.mcp.json'), 'utf8'), mcp, 'byte for byte')
   assert.doesNotMatch(callsOf(m), /prove-paired-topology/, 'the prover must not run at all for a folder that publishes its own server')
-  assert.equal(existsSync(join(m.home, '.bgos-agent', '901', 'installed-at')), false, 'no stamp either: a clone-style install leaves exactly what it always left')
+  // Fact 3: EVERY always-on install gets the grace stamp now. Before, only a paired folder did,
+  // so a clone-style agent's own daemon could remove the supervisor it ran under within seconds.
+  assert.match(readFileSync(join(m.home, '.bgos-agent', '901', 'installed-at'), 'utf8').trim(), /^\d{9,11}$/)
+  assert.equal(readFileSync(join(m.home, '.bgos-agent', '901', 'supervisor-generation'), 'utf8').trim(), '2')
+})
+
+test('the service carries CLAUDE_CONFIG_DIR and a valid HOAI_SERVICE_NAMESPACE from the installing shell; an invalid namespace is refused by name and left out', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  const workspace = pair(m, '902')
+  writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '902' } } } }))
+  const custom = join(m.home, 'custom claude')
+  const ok = m.run(['--assistant', '902', '--dir', workspace, '--always-on'], { CLAUDE_CONFIG_DIR: custom, HOAI_SERVICE_NAMESPACE: 'stage1' })
+  assert.equal(ok.status, 0, ok.out)
+  const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
+  if (service.includes('<plist')) {
+    assert.ok(service.includes(`<key>CLAUDE_CONFIG_DIR</key><string>${custom}</string>`), service)
+    assert.ok(service.includes('<key>HOAI_SERVICE_NAMESPACE</key><string>stage1</string>'), service)
+  } else {
+    assert.ok(service.includes(`Environment="CLAUDE_CONFIG_DIR=${custom}"`), service)
+    assert.ok(service.includes('Environment=HOAI_SERVICE_NAMESPACE=stage1'), service)
+  }
+  // Without them, the service is exactly what it was.
+  const plain = machine()
+  const ws2 = pair(plain, '903')
+  writeFileSync(join(ws2, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '903' } } } }))
+  const bad = plain.run(['--assistant', '903', '--dir', ws2, '--always-on'], { HOAI_SERVICE_NAMESPACE: 'Not-Valid' })
+  assert.equal(bad.status, 0, bad.out)
+  assert.match(bad.out, /HOAI_SERVICE_NAMESPACE must be 1 to 16 lowercase letters or digits; it is ignored/)
+  const plainService = readFileSync(plain.serviceFiles()[0]!, 'utf8')
+  assert.doesNotMatch(plainService, /CLAUDE_CONFIG_DIR|HOAI_SERVICE_NAMESPACE/)
 })
 
 test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapper, no service file, no service call', SLOW, (t) => {
@@ -264,12 +316,23 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
       },
     },
     {
-      name: 'no node on PATH, which the marketplace plugin runs on',
-      reason: /paired-topology:node-not-found/,
+      // Checked in the preflight now: the supervisor runs hoai on node whatever the topology.
+      name: 'no node on PATH, which the always-on supervisor runs hoai on',
+      reason: /supervisor:node-not-found/,
       setup: () => {
         const m = machine({ withNode: false })
         const ws = pair(m, '19')
         return { m, args: ['--assistant', '19', '--dir', ws, '--always-on'] }
+      },
+    },
+    {
+      // Without --always-on the paired arm's own check still names the plugin's need for node.
+      name: 'no node on PATH, which the marketplace plugin runs on (no supervisor asked for)',
+      reason: /paired-topology:node-not-found/,
+      setup: () => {
+        const m = machine({ withNode: false })
+        const ws = pair(m, '20')
+        return { m, args: ['--assistant', '20', '--dir', ws] }
       },
     },
     {
@@ -297,6 +360,7 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
     const result = m.run(args, env)
     assert.equal(result.status, 1, `${c.name}: ${result.out}`)
     assert.match(result.out, c.reason, c.name)
+    assert.equal(existsSync(join(m.home, '.bgos-agent', id, 'run.sh')), false, `${c.name}: no supervisor may be written`)
     assert.equal(existsSync(join(m.home, '.bgos-agent', id, 'run.expect')), false, `${c.name}: no wrapper may be written`)
     assert.deepEqual(m.serviceFiles(), [], `${c.name}: no service file may be written`)
     assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m, `${c.name}: the service manager must never be called`)
