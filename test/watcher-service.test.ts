@@ -128,7 +128,7 @@ test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs
   )
   assert.deepEqual(spec.installCommands, [
     { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
-    { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false },
+    { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false, retry: { attempts: 6, delayMs: 500 } },
   ])
   assert.deepEqual(spec.startCommands, [
     { file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.watcher'], ignoreFailure: false },
@@ -295,6 +295,47 @@ test('installWatcherService (darwin): mkdirs logs, writes the plist, runs bootou
       ['kickstart', 0, false],
     ],
   )
+})
+
+test('installWatcherService (darwin): a bootstrap that loses the race with the async bootout (rc 5, Input/output error) is retried, then succeeds', async () => {
+  // Measured in the M6 end to end run: "Set up the watcher" on a computer whose watcher was
+  // running failed at the service step with `Bootstrap failed: 5: Input/output error`, because
+  // launchctl bootout returns before the old job has unloaded. bin/bgos-agent's launchd_reload
+  // already retries for exactly this; the watcher's own installer did not.
+  const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const fs = memoryFs()
+  const calls: string[] = []
+  let bootstraps = 0
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'bootstrap') {
+      bootstraps += 1
+      if (bootstraps <= 2) return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
+    }
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const slept: number[] = []
+  const result = await installWatcherService(spec, { exec, fs, sleep: async (ms: number) => { slept.push(ms) } })
+  assert.equal(result.ok, true, result.message)
+  assert.deepEqual(calls, ['launchctl bootout', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl kickstart'])
+  assert.deepEqual(slept, [500, 500])
+  assert.deepEqual(result.ran.filter((r) => r.args[0] === 'bootstrap').map((r) => r.code), [5, 5, 0])
+})
+
+test('installWatcherService (darwin): a bootstrap that keeps failing is reported by name after its last attempt, and nothing is started', async () => {
+  const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const fs = memoryFs()
+  const calls: string[] = []
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'bootstrap') return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const result = await installWatcherService(spec, { exec, fs, sleep: async () => {} })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /bootstrap/)
+  assert.equal(calls.filter((c) => c === 'launchctl bootstrap').length, 6)
+  assert.equal(calls.includes('launchctl kickstart'), false)
 })
 
 test('installWatcherService (linux): a failing START command is reported by name with the stderr line; files stay written', async () => {
