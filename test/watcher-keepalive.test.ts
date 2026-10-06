@@ -248,7 +248,7 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   const down = consent(null, false, 0)
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive })
   assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [] })
-  assert.deepEqual(rec.calls, [])
+  assert.equal(rec.calls.length, 0)
   // A 404 (backend not deployed yet) is the same: off, unless a fresh cache exists.
   fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'] }, T0 - 23 * 60 * MIN))
   const notFound = consent({ message: 'Not Found' }, false, 404)
