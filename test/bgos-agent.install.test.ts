@@ -81,7 +81,7 @@ interface Machine {
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean } = {}): Machine {
+function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux' } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone case.
   const pluginRoot = fromClone
@@ -114,8 +114,11 @@ function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = tr
   shim('claude', 'exit 0')
   // "print" answers "not loaded", so the reload loop does not wait for a job that was never there
   shim('launchctl', '[ "$1" = "print" ] && exit 1\nexit 0')
-  shim('systemctl', 'exit 0')
+  // `is-active` answers from a file, so a test can stand in for a unit that is already running.
+  shim('systemctl', `[ "$2" = "is-active" ] && { [ -f "${home}/unit-active" ] && exit 0; exit 3; }\nexit 0`)
   shim('loginctl', 'exit 0')
+  // The systemd --user path, on any host: the script reads the OS from `uname -s` once, at the top.
+  if (os) shim('uname', `echo ${os}`)
   // No network in a test: skip `bun install`. Otherwise hand over to the REAL bun when this
   // machine has one, because production runs the prover on bun and nothing else in CI loads the
   // doctor under it (found by review); only fall back to the runtime running this test.
@@ -365,4 +368,34 @@ test('every refusal is NAMED, exits nonzero, and leaves nothing behind: no wrapp
     assert.deepEqual(m.serviceFiles(), [], `${c.name}: no service file may be written`)
     assert.doesNotMatch(callsOf(m), /^(launchctl|systemctl) /m, `${c.name}: the service manager must never be called`)
   }
+})
+
+test('Linux: a reinstall over a RUNNING unit restarts it (enable --now leaves an active unit on its old run.sh), and a stopped unit is just started', SLOW, (t) => {
+  if (!ready(t)) return
+  // The upgrade case (design section 5): a generation 1 agent is running, the sweep reinstalls,
+  // and `systemctl --user enable --now` does nothing to a unit that is already active. Without a
+  // restart the agent kept running run.expect with no tmux after its "upgrade".
+  const upgrade = machine({ os: 'Linux' })
+  const ws = pair(upgrade, '904')
+  writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '904' } } } }))
+  writeFileSync(join(upgrade.home, 'unit-active'), '')
+  const r = upgrade.run(['--assistant', '904', '--dir', ws, '--always-on'])
+  assert.equal(r.status, 0, r.out)
+  assert.ok(existsSync(join(upgrade.home, '.config', 'systemd', 'user', 'bgos-agent-904.service')), 'the systemd path ran')
+  const calls = callsOf(upgrade).split('\n').filter((l) => l.startsWith('systemctl '))
+  const enabled = calls.indexOf('systemctl --user enable --now bgos-agent-904')
+  const restarted = calls.indexOf('systemctl --user restart bgos-agent-904')
+  assert.ok(enabled >= 0, calls.join('\n'))
+  assert.ok(restarted > enabled, `the running unit is restarted onto the new run.sh, after it is enabled:\n${calls.join('\n')}`)
+  assert.ok(calls.indexOf('systemctl --user daemon-reload') < enabled, 'the new unit file is loaded first')
+
+  // A unit that is not running: enable --now starts it, and nothing restarts it a second time.
+  const fresh = machine({ os: 'Linux' })
+  const ws2 = pair(fresh, '905')
+  writeFileSync(join(ws2, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '905' } } } }))
+  const r2 = fresh.run(['--assistant', '905', '--dir', ws2, '--always-on'])
+  assert.equal(r2.status, 0, r2.out)
+  const calls2 = callsOf(fresh).split('\n').filter((l) => l.startsWith('systemctl '))
+  assert.ok(calls2.includes('systemctl --user enable --now bgos-agent-905'), calls2.join('\n'))
+  assert.equal(calls2.filter((l) => / restart /.test(` ${l} `)).length, 0, calls2.join('\n'))
 })
