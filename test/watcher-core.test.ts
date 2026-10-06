@@ -1144,3 +1144,17 @@ test('runWatcher: the first heartbeat after a restart carries the keep-alive sta
   await runWatcher(deps as any)
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
 })
+
+test('runWatcher: a keep-alive state file with a null agent record (valid JSON, hand edited) never stops the start; the record is dropped', async () => {
+  // Before: reportEntry read `null.state` at startup, outside any try, so every
+  // start was a fatal and the watcher sat in crash_loop backoff for good (only a
+  // sweep rewrites the file, and no sweep was ever reached).
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': null, '7': { state: 'supervised', reason: 'canonical', since } } }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '7', state: 'supervised', reason: 'canonical', since }] })
+})
