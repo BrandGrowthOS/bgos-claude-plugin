@@ -78,12 +78,14 @@ hoai-agent install --assistant <id> --key <api-key> --user <user-id> --always-on
 
 That single command:
 
-1. checks prerequisites (bun, claude, git, expect),
+1. checks prerequisites (bun, claude, git, expect; with `--always-on` also node,
+   and tmux, which is optional but is what makes remote compact work),
 2. ensures the plugin is cloned + `bun install`ed,
 3. writes the agent's `.mcp.json` (+ a `CLAUDE.md` stub),
-4. installs a **per-agent service** that launches Claude Code, **auto-accepts the
-   two `--dangerously-*` prompts**, and restarts it on crash / quit / logout /
-   reboot.
+4. installs a **per-agent service** that runs the agent through `hoai` in its own
+   tmux session, resuming the agent's own conversation, answering Claude Code's
+   startup screens, and restarting it on crash / quit / logout / reboot (see
+   [What the always-on service runs](#what-the-always-on-service-runs-supervisor-generation-2)).
 
 > **Even simpler — let the app do it:** flip the **Always-on** toggle on a Claude
 > Code agent in the BGOS app and the plugin runs this `install --always-on` for
@@ -97,6 +99,7 @@ service). Manage a running agent with:
 ```bash
 hoai-agent status    --assistant <id>     # running? + recent log  (no id = list all)
 hoai-agent logs      --assistant <id>
+hoai-agent attach    --assistant <id>     # watch (and type into) the agent's tmux session
 hoai-agent restart   --assistant <id>
 hoai-agent uninstall --assistant <id>     # removes the service; keeps your workspace
 ```
@@ -112,6 +115,109 @@ options: `hoai-agent help`.
 
 > Prefer to wire it up by hand? The manual **Quick Start** below does exactly the
 > same thing, step by step.
+
+### What the always-on service runs (supervisor generation 2)
+
+```
+launchd / systemd --user
+  -> ~/.bgos-agent/<id>/run.sh          singleton wait, fast fail accounting, stop trap
+     -> tmux -L hoai-<id> new-session -d -s hoai-<id> -c <workspace>   (when tmux is installed)
+        -> node <current plugin root>/bin/hoai-core.mjs                (HOAI_SUPERVISED=1)
+           -> expect + the startup gate block -> claude --resume <pinned session id>
+```
+
+- **hoai runs the agent, in tmux, on the agent's own socket.** The service starts
+  `run.sh`, which starts hoai (`bin/hoai-core.mjs`) with `HOAI_SUPERVISED=1` in a
+  detached tmux session named `hoai-<id>` on a tmux server of its own
+  (`tmux -L hoai-<id>`), never inside someone else's tmux, in a fixed 200x50
+  window. hoai answers Claude Code's startup screens itself, under expect, with
+  the shared rules in `lib/gate-block.tcl`. Nothing is copied into the supervisor
+  at install any more: the generation 1 `run.expect` is gone, and a reinstall
+  removes an old one.
+- **The agent resumes its own conversation.** hoai keeps the agent's session id
+  in `~/.bgos-agent/<id>/session-id`. Every launch resumes it
+  (`claude --resume <id>`), or creates the session with that same id when its
+  transcript does not exist yet, never `--continue`. A resume that is rejected
+  gets one fresh session, kept only once it stays up. `hoai-agent uninstall`
+  keeps the pin, so the conversation survives a reinstall.
+- **Remote compact is ON.** The session carries `BGOS_TMUX_SESSION=hoai-<id>` and
+  `BGOS_TMUX_SOCKET=hoai-<id>`, which is what lets the daemon type `/compact`
+  into it when the owner asks from the app. With no tmux on the host, hoai runs
+  without it (expect still gives claude its terminal) and the launch status says
+  `compact=off reason=no-tmux`: install tmux, then
+  `hoai-agent restart --assistant <id>`.
+- **Watch it with `hoai-agent attach --assistant <id>`**, which attaches to that
+  session. Detach with Ctrl-b then d. Typing `/exit` there ends the agent, and
+  the service starts it again.
+- **The installed plugin, at every launch.** `run.sh` resolves the plugin root
+  each time it starts hoai: a marketplace agent reads its install record
+  (`<config dir>/plugins/installed_plugins.json`, honouring `CLAUDE_CONFIG_DIR`),
+  a clone uses the checkout recorded at install. A checkout that has since been
+  pruned falls back to the installed HOAI plugin's record, and an install run
+  from a versioned plugin cache dir looks its root up the same way. The node
+  recorded at install is checked as well: when it is gone, the node on the
+  service PATH is used. A restart therefore always lands on the installed
+  version.
+- **Stop means stop.** `run.sh` traps TERM, INT and HUP, so `hoai-agent stop`,
+  `restart` and `uninstall`, `launchctl kickstart -k`, `bootout` and
+  `systemctl --user restart` end the agent's tmux server (without tmux: hoai's
+  whole process group, node, expect and claude) instead of leaving it running in
+  the folder. A reinstall over a running Linux unit restarts it onto the new
+  supervisor, as a reinstall on macOS always did.
+- **One install at a time.** `install` first takes
+  `~/.bgos-agent/<id>.install.lock`. A second install of the same agent while
+  one is running (the agent's own daemon and the watcher can both decide it is
+  needed) prints `install already in progress`, exits 0 and changes nothing. A
+  lock older than ten minutes is treated as left behind and taken over.
+- **The service environment** carries `CLAUDE_CONFIG_DIR` when the installing
+  shell had it, so the agent starts the same Claude Code install it was set up
+  with (the paired folder proof checks that same config dir), and
+  `HOAI_SERVICE_NAMESPACE` (below).
+- **Generation stamp.** `~/.bgos-agent/<id>/supervisor-generation` holds `2`, and
+  `hoai-agent status` names it. A generation 1 supervisor (run.expect, a fresh
+  conversation at every restart, no tmux) is upgraded by the watcher's
+  keep-alive sweep at a safe moment, or right away by running
+  `hoai-agent install --assistant <id> --always-on` again.
+
+**Why a launch did not stay up.** Every unattended launch writes one line to
+`~/.bgos-agent/<id>/launch-status`; `hoai-agent status` shows it, and after
+three fast exits in a row `agent.log` repeats it on its WEDGED line. A
+supervised hoai never waits for a person: anything only a person can fix stops
+the launch with a named exit code, and the service tries again later, so the
+agent comes back by itself once the cause is fixed.
+
+| Exit | launch-status outcome | Meaning, and what to do |
+|------|-----------------------|-------------------------|
+| 6 | `identity-conflict` (and, with no service id to fall back on, `identity-ambiguous` or no identity at all) | The folder does not say which ONE agent it is: its `.bgos-agent-id` pin and `.mcp.json` name different agents, or nothing names one on a host with several. Make them agree, or pair the folder (`hoai pair <CODE>` from inside it). |
+| 7 | `identity-mismatch` | The folder belongs to another agent than the one the service was installed for. Reinstall the service from this agent's own folder. |
+| 8 | `expect-missing` | No `expect` on the service PATH, so claude would sit on its first screen. Install expect (`apt install expect`; macOS ships it). |
+| 9 | `gate-unrecognised`, `gate-unreadable:<gate>`, `gate-repeated:<gate>`, `gate-selection-stuck:<gate>` | A Claude Code startup screen hoai will not answer for anyone; its words are in the status line. Answer it once by hand (`hoai-agent attach`, or `hoai` in the folder), then restart. |
+| 10 | `exited-during-startup` | claude exited before its session was up (the screens it answered first are listed). A resume gets one fresh retry. Run `hoai doctor` in the folder. |
+| 11 | `live-but-not-signed-in` | claude came up signed out. Run `claude` in a terminal, sign in with the subscription account, then restart. |
+
+`run.sh` writes its own outcomes before hoai runs: `plugin-root-missing` and
+`node-missing` (exit 2: reinstall the plugin, or install Node.js),
+`tmux-failed`, and `waiting-for-incumbent` while a claude already running in the
+folder is given the time to finish.
+
+**`hoai --keep-alive`.** On Windows the always-on agent is a logon Scheduled
+Task, `HOAI Agent <id>`, that runs `node <plugin root>\bin\hoai-core.mjs
+--keep-alive` in the agent folder. `--keep-alive` makes hoai itself the
+keep-alive loop: whenever claude exits it starts it again, resuming the agent's
+own session, after 5 s, 10 s, 20 s, 40 s and then 60 s for every further quick
+exit (back to 5 s once a session has stayed up), and records
+`keep-alive-relaunch`, or `crash-loop` for three exits inside five minutes, in
+launch-status. Ending the task (TERM or HUP) stops it without a relaunch. It
+works the same on macOS and Linux, for an agent you keep running by hand.
+
+**Side by side installs: `HOAI_SERVICE_NAMESPACE`.** A second, isolated install
+on the same user account (a staging install) must never stop the live watcher.
+With `HOAI_SERVICE_NAMESPACE` set to 1 to 16 lowercase letters or digits, the
+watcher's service names become `ai.bgos.watcher.<ns>`, `bgos-watcher-<ns>` and
+`HOAI Watcher (<ns>)`, and `hoai-agent install` writes the variable into every
+agent service it installs, so the agent's daemon, and the watcher it installs,
+stay in the namespace. Unset, every name is exactly what it always was; an
+invalid value is ignored, with a warning.
 
 ## Quick Start
 
@@ -979,8 +1085,9 @@ What the machine needs:
   the other: `git rm -r -q --cached .` and then `git reset -q --hard`.
 
 Skipped on Windows by design, each with its reason in the output: the
-`run.expect` behaviour tests (there is no `expect` on Windows, and run.expect
-only ever runs under launchd or systemd, so the Linux leg runs them), and the
+always-on supervisor tests that run `bin/bgos-agent` and its generated `run.sh`
+(the supervisor only ever runs under launchd or systemd, and there is no
+`expect` on Windows, so the Linux leg runs them), and the
 two cases that create a FILE symlink, unless Developer Mode is on (Settings >
 System > For developers) or the shell is elevated; a directory junction case
 covers the same export gate without either. The browser end to end tests
