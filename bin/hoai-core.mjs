@@ -83,7 +83,12 @@ import {
   claudeConfigDir,
   detectInstallMethod,
 } from './bgos-install-method.mjs'
-import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
+import {
+  buildLaunchRecipe,
+  readLauncherCommandLines,
+  runsHoaiLauncher,
+  writeLaunchRecipe,
+} from '../lib/agent-inventory.mjs'
 import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
   observeMarketplaceInstall,
@@ -213,6 +218,36 @@ export function defaultPidAlive(pid) {
   } catch (err) {
     return err?.code === 'EPERM'
   }
+}
+
+/** How long reading one pid's command line may take. PowerShell's cold start
+ *  is the slow one; ps answers at once. */
+export const PID_COMMAND_LINE_TIMEOUT_MS = 10_000
+
+/**
+ * The command line of `pid` on THIS host, or null when it cannot be read at
+ * all (the pid is gone, the query failed or timed out, Windows hides another
+ * session's process, `pid` is not a pid). The query is lib/agent-inventory.mjs
+ * readLauncherCommandLines, the one the watcher's launcherLive uses, so hoai and
+ * the watcher judge a supervisor.json pid the same way.
+ * @param {number} pid
+ * @param {string} [platform]
+ * @param {{ spawn?: typeof spawnSync }} [opts]
+ * @returns {string | null}
+ */
+export function defaultPidCommandLine(pid, platform = process.platform, opts = {}) {
+  const run = opts.spawn ?? spawnSync
+  const execSync = (file, args) => {
+    const res = run(file, args, {
+      encoding: 'utf8',
+      timeout: PID_COMMAND_LINE_TIMEOUT_MS,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    // A timed-out spawnSync reports status null: unreadable.
+    return { code: typeof res?.status === 'number' ? res.status : 1, stdout: String(res?.stdout ?? '') }
+  }
+  return readLauncherCommandLines({ platform, pids: [pid], execSync }).get(pid) ?? null
 }
 
 /** Best-effort text read; null when absent or unreadable. */
@@ -978,16 +1013,25 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
  *
  * Fails toward NOT double-launching a LIVE owner, but never wedges on junk:
  *   - absent/empty body                         -> arm (nothing owns it)
- *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE and
- *     is not our own                            -> refuse, name the owner
- *   - our own pid, a dead pid, malformed json, or a body without the relaunch
+ *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE, is
+ *     not our own, and still runs hoai-core.mjs -> refuse, name the owner
+ *   - our own pid, a dead pid, a live pid running something else, malformed
+ *     json, or a body without the relaunch
  *     capability                                -> arm and reclaim (a crashed
  *                                                  prior run left a stale file)
+ *
+ * The command line is the pid identity. A launcher that dies without its
+ * finally block (a power cut, a panic, a SIGKILL) leaves the file behind, and
+ * after a reboot its pid can belong to any process: refusing behind ANY live
+ * pid kept the agent down, lap after lap of exit 3, for as long as that
+ * unrelated process ran. A command line that cannot be read (pidCommandLine
+ * answers null, and the default does) keeps the liveness answer.
  * @param {{ existingRaw: string | null | undefined, ownPid: number,
- *   pidAlive?: (pid: number) => boolean }} params
+ *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null }} params
  * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number }}
  */
-export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive }) {
+export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive, pidCommandLine = () => null }) {
   if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
   let parsed
   try {
@@ -1007,7 +1051,7 @@ export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = default
     capabilities.includes('relaunch')
   if (!isAuthority) return { arm: true, reclaimedStale: true }
   if (pid === ownPid) return { arm: true, reclaimedStale: true }
-  if (pidAlive(pid)) return { arm: false, ownerPid: pid }
+  if (pidAlive(pid) && runsHoaiLauncher(pidCommandLine(pid))) return { arm: false, ownerPid: pid }
   return { arm: true, reclaimedStale: true }
 }
 
@@ -1437,6 +1481,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   removeFile?: (path: string) => boolean,
  *   pollMs?: number, now?: () => number, print?: (line: string) => void,
  *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null,
  *   generateId?: () => string, hasExpect?: boolean,
  *   freshSession?: boolean,
  *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
@@ -1776,6 +1821,7 @@ export async function superviseClaude(args, opts = {}) {
   const now = opts.now ?? Date.now
   const print = opts.print ?? ((line) => console.log(line))
   const pidAlive = opts.pidAlive ?? defaultPidAlive
+  const pidCommandLine = opts.pidCommandLine ?? ((pid) => defaultPidCommandLine(pid, platform))
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
@@ -1979,6 +2025,7 @@ export async function superviseClaude(args, opts = {}) {
     existingRaw: readFile(supervisorPath),
     ownPid: process.pid,
     pidAlive,
+    pidCommandLine,
   })
   if (!arming.arm) {
     noteStatus('already-supervised', { owner: arming.ownerPid })
@@ -2968,6 +3015,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     stdinIsTTY: opts.stdinIsTTY,
     print: opts.print,
     pollMs: opts.pollMs,
+    pidAlive: opts.pidAlive,
+    pidCommandLine: opts.pidCommandLine,
     listProcesses: opts.listProcesses,
     sleep: opts.sleep,
     incumbentTimeoutMs: opts.incumbentTimeoutMs,
