@@ -24,26 +24,36 @@ import {
   AGENT_STATE_FRESH_MS,
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
+  LAUNCHER_STABLE_MS,
+  LAUNCH_STATUS_FRESH_MS,
   LEGACY_QUIET_WINDOW_MS,
   MAX_ATTEMPTS_PER_TARGET,
+  MAX_TASK_STARTS_PER_EPISODE,
   QUIET_WINDOW_MS,
   RESTART_MIN_INTERVAL_MS,
+  STALE_TURN_MS,
+  TASK_START_MIN_INTERVAL_MS,
   WAITING_ASK_AFTER_MS,
   advanceAgentRecord,
+  advanceLauncherEpisode,
   buildKeepAliveCache,
   decideInstallGate,
   decideKeepAliveConsent,
+  decideManualSession,
   decidePendingRestart,
+  decideRestartBudget,
   decideRestartGate,
   decideSafeMoment,
   decideSupervise,
   decideTaskStart,
+  decideTaskStartGate,
   isAgentStateFresh,
   isBackgroundJobCommand,
   parseAgentState,
   parseInstalledPluginRecord,
   parseKeepAliveCache,
   parseKeepAliveResponse,
+  parseLaunchStatusOutcome,
   reportEntry,
 } from '../lib/keepalive-plan.mjs'
 
@@ -185,6 +195,30 @@ test('decideSafeMoment: the design 6 table, exact reasons', () => {
   }
 })
 
+test('decideSafeMoment: a turn flag with NO activity for 2 h and no background job is stale (an interrupted turn never gets its Stop); anything less is still a turn', () => {
+  assert.equal(STALE_TURN_MS, 2 * 60 * MIN)
+  const turn = parseAgentState(stateBody({ turnInFlight: true }), '123')!
+  const base = { running: true, stateFresh: true, state: turn, descendants: [] as string[] | null, activityMs: [NOW - 121 * MIN], now: NOW }
+  const job = '/bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && tail -f x'
+  const rows: Array<[string, Record<string, unknown>, boolean, string]> = [
+    ['quiet 121 min, no job: stale, the normal restart path', {}, true, 'stale_turn'],
+    ['quiet exactly 2 h: stale', { activityMs: [NOW - 120 * MIN] }, true, 'stale_turn'],
+    ['every source quiet 3 h: stale', { activityMs: [NOW - 180 * MIN, null, NOW - 200 * MIN] }, true, 'stale_turn'],
+    ['activity 119 min ago: a live turn', { activityMs: [NOW - 119 * MIN] }, false, 'turn_in_flight'],
+    ['one newer source vetoes it', { activityMs: [NOW - 180 * MIN, NOW - 30 * MIN] }, false, 'turn_in_flight'],
+    ['a background job under claude: still the turn', { descendants: ['node /x/server.ts', job] }, false, 'turn_in_flight'],
+    ['a process tree that could not be read cannot prove no job', { descendants: null }, false, 'turn_in_flight'],
+    ['no activity evidence at all cannot prove quiet', { activityMs: [] }, false, 'turn_in_flight'],
+    ['a stamp in the future (clock skew) is not quiet', { activityMs: [NOW + 5 * MIN] }, false, 'turn_in_flight'],
+    ['a stale turn hides no owed reply', { state: { ...turn, pendingMessages: 1 } }, false, 'pending_messages'],
+    ['a stale turn hides no pending permission', { state: { ...turn, pendingPermissions: 1 } }, false, 'pending_permission'],
+    ['a stale turn hides no running delivery', { state: { ...turn, activeOperations: 1 } }, false, 'pending_messages'],
+  ]
+  for (const [name, patch, safe, reason] of rows) {
+    assert.deepEqual(decideSafeMoment({ ...base, ...patch } as any), { safe, reason }, name)
+  }
+})
+
 test('decideSafeMoment: the turn flags outrank the process tree (the more specific reason is reported)', () => {
   const fresh = parseAgentState(stateBody({ turnInFlight: true }), '123')!
   const out = decideSafeMoment({ running: true, stateFresh: true, state: fresh, descendants: null, activityMs: [], now: NOW } as any)
@@ -225,6 +259,43 @@ test('decidePendingRestart: upgrade, update, the legacy time rule, and nothing',
   }
 })
 
+// -- a hand-run session the canonical supervisor waits behind (decision D4) -------------------------------
+
+test('parseLaunchStatusOutcome: the outcome word of the one-line launch-status (run.sh and hoai-core spell it alike)', () => {
+  const rows: Array<[string, unknown, string | null]> = [
+    ['run.sh singleton wait', '2026-10-06 19:00:00 outcome=waiting-for-incumbent pids=5912 6001 \n', 'waiting-for-incumbent'],
+    ['hoai-core with fields', '2026-10-06 19:00:00 outcome=starting compact=on', 'starting'],
+    ['a quoted field', '2026-10-06 19:00:00 outcome=plugin-root-missing topology=marketplace root="none"', 'plugin-root-missing'],
+    ['only the first line counts', 'junk\n2026-10-06 19:00:00 outcome=waiting-for-incumbent', null],
+    ['no outcome', '2026-10-06 19:00:00 starting', null],
+    ['an outcome inside another key is not one', '2026-10-06 19:00:00 lastoutcome=waiting-for-incumbent', null],
+    ['empty', '', null],
+    ['absent', null, null],
+  ]
+  for (const [name, raw, expected] of rows) {
+    assert.equal(parseLaunchStatusOutcome(raw as any), expected, name)
+  }
+})
+
+test('decideManualSession: a canonical supervisor FRESHLY waiting behind a claude no launcher of ours relaunches', () => {
+  assert.equal(LAUNCH_STATUS_FRESH_MS, 120_000)
+  const base = { canonical: true, launcherLive: false, keepaliveVerified: false, statusOutcome: 'waiting-for-incumbent', statusAgeMs: 5_000 }
+  const rows: Array<[string, Record<string, unknown>, boolean]> = [
+    ['run.sh waits behind a plain hand-run claude', {}, true],
+    ['written 120 s ago is still the wait', { statusAgeMs: 120_000 }, true],
+    ['121 s old: run.sh is not waiting any more', { statusAgeMs: 121_000 }, false],
+    ['a status from the future by more than the window is not fresh', { statusAgeMs: -121_000 }, false],
+    ['no status file', { statusOutcome: null, statusAgeMs: null }, false],
+    ['run.sh is running the agent itself', { statusOutcome: 'starting' }, false],
+    ['a live hoai launcher: its marker restarts claude in place', { launcherLive: true }, false],
+    ['a verified keepalive: its loop relaunches claude', { keepaliveVerified: true }, false],
+    ['not the canonical supervisor (only run.sh writes this wait)', { canonical: false }, false],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.equal(decideManualSession({ ...base, ...patch } as any), expected, name)
+  }
+})
+
 // -- supervise ---------------------------------------------------------------------------------------
 
 test('decideSupervise: none + known cwd + cleared installs; no cwd needs a first launch; never over a bespoke service or a keepalive', () => {
@@ -236,6 +307,7 @@ test('decideSupervise: none + known cwd + cleared installs; no cwd needs a first
     ['canonical service', { supervisor: 'service', serviceVia: 'canonical-file' }, { action: 'none', state: 'supervised', reason: 'canonical' }],
     ['bespoke discovered service (G11)', { supervisor: 'service', serviceVia: 'working-directory' }, { action: 'none', state: 'supervised', reason: 'bespoke' }],
     ['a verified keepalive.json with no visible job', { keepaliveVerified: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
+    ['a keepalive.json whose script is alive, its claude between two relaunches (G11)', { keepaliveDeclared: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
     ['a live hoai launcher', { supervisor: 'launcher-live' }, { action: 'none', state: 'supervised', reason: 'launcher' }],
   ]
   for (const [name, patch, expected] of rows) {
@@ -254,6 +326,40 @@ test('decideTaskStart: a Windows agent task is started only when its launcher is
   assert.equal(decideTaskStart({ ...base, recentActivity: true }), false, 'recent activity may be a session we cannot see')
 })
 
+test('decideTaskStartGate: the restart limits for a dead launcher (1 start per 30 min, 3 per death episode, then failed task_start_failed)', () => {
+  assert.equal(TASK_START_MIN_INTERVAL_MS, 30 * MIN)
+  assert.equal(MAX_TASK_STARTS_PER_EPISODE, 3)
+  const base = { now: NOW, lastTaskStartAtMs: null, taskStarts: 0 }
+  const rows: Array<[string, Record<string, unknown>, unknown]> = [
+    ['first start of an episode', {}, { allowed: true, state: 'supervised', reason: null }],
+    ['third start still allowed', { taskStarts: 2, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
+    ['three starts spent: visible, never a fourth', { taskStarts: 3, lastTaskStartAtMs: NOW - 120 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
+    ['spent outranks the interval', { taskStarts: 3, lastTaskStartAtMs: NOW - 1 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
+    ['started 29 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+    ['started 31 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
+    ['the interval holds across an episode reset', { taskStarts: 0, lastTaskStartAtMs: NOW - 11 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.deepEqual(decideTaskStartGate({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+test('advanceLauncherEpisode: a death episode ends only once the launcher has stayed alive 10 minutes', () => {
+  assert.equal(LAUNCHER_STABLE_MS, 10 * MIN)
+  const at = (ms: number) => new Date(ms).toISOString()
+  const rows: Array<[string, Record<string, unknown> | null, boolean, unknown]> = [
+    ['no history, launcher dead', null, false, { taskStarts: 0, launcherAliveSince: null }],
+    ['dead: the count holds, the alive clock stops', { taskStarts: 2, launcherAliveSince: at(NOW - 30 * MIN) }, false, { taskStarts: 2, launcherAliveSince: null }],
+    ['first seen alive: the clock starts, the count holds', { taskStarts: 2, launcherAliveSince: null }, true, { taskStarts: 2, launcherAliveSince: at(NOW) }],
+    ['alive 9 min: still the same episode', { taskStarts: 3, launcherAliveSince: at(NOW - 9 * MIN) }, true, { taskStarts: 3, launcherAliveSince: at(NOW - 9 * MIN) }],
+    ['alive 10 min: the episode is over', { taskStarts: 3, launcherAliveSince: at(NOW - 10 * MIN) }, true, { taskStarts: 0, launcherAliveSince: at(NOW - 10 * MIN) }],
+    ['junk bookkeeping reads as none', { taskStarts: -1, launcherAliveSince: 'soon' }, true, { taskStarts: 0, launcherAliveSince: at(NOW) }],
+  ]
+  for (const [name, prev, launcherLive, expected] of rows) {
+    assert.deepEqual(advanceLauncherEpisode(prev, { launcherLive, now: NOW }), expected, name)
+  }
+})
+
 // -- rate limits ---------------------------------------------------------------------------------------
 
 test('decideRestartGate: 3 attempts per target then failed, 1 restart per sweep, 1 per agent per 30 min', () => {
@@ -269,6 +375,21 @@ test('decideRestartGate: 3 attempts per target then failed, 1 restart per sweep,
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decideRestartGate({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+test("decideRestartBudget: the agent's OWN limits (3 attempts per target, 1 per 30 min), judged whatever the agent is doing", () => {
+  const base = { now: NOW, lastRestartAtMs: null, attempts: 0, pendingKind: 'update_pending' }
+  const rows: Array<[string, Record<string, unknown>, unknown]> = [
+    ['first attempt', {}, { allowed: true, state: 'update_pending', reason: null }],
+    ['third attempt still allowed', { attempts: 2, lastRestartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'update_pending', reason: null }],
+    ['three attempts spent', { attempts: 3, lastRestartAtMs: NOW - 31 * MIN }, { allowed: false, state: 'failed', reason: 'attempts_exhausted' }],
+    ['spent outranks the interval', { attempts: 3, lastRestartAtMs: NOW - 1 * MIN }, { allowed: false, state: 'failed', reason: 'attempts_exhausted' }],
+    ['restarted 29 min ago', { attempts: 1, lastRestartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'update_pending', reason: 'restart_rate_limited' }],
+    ['an upgrade keeps its own state name', { pendingKind: 'upgrade_pending', attempts: 1, lastRestartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'upgrade_pending', reason: 'restart_rate_limited' }],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.deepEqual(decideRestartBudget({ ...base, ...patch } as any), expected, name)
   }
 })
 

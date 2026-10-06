@@ -24,6 +24,7 @@ import {
   isKeepaliveSessionProcess,
   parseKeepaliveMarker,
   parseSupervisorGeneration,
+  readDeclaredKeepalive,
   verifyKeepaliveMarker,
   LAUNCH_RECIPE_FILE_NAME,
   LAUNCH_RECIPE_SCHEMA_VERSION,
@@ -856,6 +857,43 @@ test('verifyKeepaliveMarker: the script pid alive, claudePid alive AND named cla
     const probe = { platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync, ...patch }
     assert.equal(verifyKeepaliveMarker(probe as any), null, name)
   }
+})
+
+test('readDeclaredKeepalive: a marker that PARSES and whose script is ALIVE is a declared keepalive, even while its claude is gone between two relaunches (G11); the restart still needs the full verification', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const readFile = (p: string) => (p === path ? KEEPALIVE_BODY : null)
+  const scriptOnly = (pid: number) => pid === 33108
+  const probe = { platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: scriptOnly }
+  assert.deepEqual(readDeclaredKeepalive(probe), { pid: 33108, claudePid: 33200, tmuxSession: 'agent-912' })
+  assert.equal(readDeclaredKeepalive({ ...probe, platform: 'linux' })?.pid, 33108)
+  // The same marker does NOT verify, so it can never be the target of a SIGTERM.
+  assert.equal(verifyKeepaliveMarker({ ...probe, execSync: commExec({ 33200: 'claude' }).execSync }), null)
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['the keepalive script has exited', { pidAlive: (pid: number) => pid === 33200 }],
+    ['no marker on disk', { readFile: () => null }],
+    ['a malformed marker', { readFile: () => '{"kind":"keepalive"}' }],
+    ['no relaunch promise', { readFile: () => JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, capabilities: [] }) }],
+    ['win32 has no keepalive scripts: a live pid there is a reused one', { platform: 'win32' }],
+    ['a junk id builds no path', { assistantId: '9x' }],
+  ]
+  for (const [name, patch] of rows) {
+    assert.equal(readDeclaredKeepalive({ ...probe, ...patch } as any), null, name)
+  }
+})
+
+test('listAgents: a keepalive whose claude is between relaunches is DECLARED on the row (no second supervisor) but not verified (no SIGTERM)', () => {
+  const fs = memFs({
+    '/home/kc/.bgos-agent/credentials-912.json': '{}',
+    '/home/kc/.bgos-agent/912/keepalive.json': KEEPALIVE_BODY,
+  })
+  const between = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => pid === 33108, execSync: commExec({}).execSync })
+  assert.equal(between[0]!.keepalive, null)
+  assert.equal(between[0]!.keepaliveDeclared, true)
+  const both = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200].includes(pid), execSync: commExec({ 33200: 'claude' }).execSync })
+  assert.equal(both[0]!.keepaliveDeclared, true)
+  assert.notEqual(both[0]!.keepalive, null)
+  const gone = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => false, execSync: commExec({}).execSync })
+  assert.equal(gone[0]!.keepaliveDeclared, false)
 })
 
 test('parseSupervisorGeneration: absent is generation 1 (run.expect, fresh session, no tmux); a v2 stamp is 2; junk is 1', () => {

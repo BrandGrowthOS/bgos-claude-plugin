@@ -473,6 +473,29 @@ test('restartAgent win32: the agent task with a LIVE launcher restarts through t
   assert.match(bad.message, /rc 1/)
 })
 
+test('restartAgent posix: a LIVE hoai launcher restarts through the marker even when a canonical service exists (a run.sh waiting behind it would restart nothing)', async () => {
+  const CANONICAL: Record<string, Record<string, string>> = {
+    darwin: { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' },
+    linux: { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' },
+  }
+  for (const platform of ['darwin', 'linux']) {
+    const fs = memoryFs()
+    const { calls, exec } = recordingExec()
+    const { spawns, spawnDetached } = recordingSpawn()
+    const live = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: true, running: true }), { ...BASE_DEPS, platform, fs, exec, spawnDetached })
+    assert.equal(live.ok, true, platform)
+    assert.equal(live.how, 'marker', platform)
+    assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', platform)
+    assert.deepEqual(calls, [], `${platform}: no kickstart -k / systemctl restart`)
+    assert.deepEqual(spawns, [], platform)
+    // A dead launcher leaves the service as the authority, exactly as before.
+    const svc = recordingExec()
+    const dead = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: false }), { ...BASE_DEPS, platform, fs: memoryFs(), exec: svc.exec, spawnDetached })
+    assert.equal(dead.how, 'service', platform)
+    assert.equal(svc.calls.length, 1, platform)
+  }
+})
+
 test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <digits>" runs nothing', async () => {
   const { calls, exec } = recordingExec()
   const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })
