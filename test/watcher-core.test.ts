@@ -1190,3 +1190,40 @@ test('runWatcher: a keep-alive state file with a null agent record (valid JSON, 
   await runWatcher(deps as any)
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '7', state: 'supervised', reason: 'canonical', since }] })
 })
+
+test('runWatcher (F8): a frame whose ack failed during the sweep comes back on the next touch; it is acked again, and runs ONCE after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const calls: Call[] = []
+  let ackLanded = false
+  let acks = 0
+  const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
+  // Like the real backend (machine-rpc.service.ts pending): a frame is returned
+  // on EVERY poll until an ack lands, and the first ack here is lost (a 503).
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) return respond(200, { frames: ackLanded ? [] : [{ rpcId: 'job-s', op: 'bogus' }] })
+    if (u.pathname.endsWith('/machine-rpc/job-s/ack')) {
+      acks += 1
+      if (acks === 1) return respond(503, { error: 'unavailable' })
+      ackLanded = true
+      return respond(200, {})
+    }
+    if (u.pathname.endsWith('/machine-rpc/job-s') && init?.method === 'GET') return respond(200, { op: 'bogus' })
+    return respond(200, {})
+  }
+  const clock = fakeClock()
+  const keepAliveSweep = async (c: any) => {
+    clock.advance(70_000)
+    await c.keepOnline()
+    clock.advance(70_000)
+    await c.keepOnline()
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { fetch, modules: stubModules(), keepAliveSweep })
+  await runWatcher(deps as any)
+  assert.equal(acks, 2, 'the lost ack is sent again when the frame comes back')
+  const progress = calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/progress')).map((c) => [c.body.state, c.body.message])
+  assert.deepEqual(progress, [['failed', 'unknown_op:bogus']], 'the job runs once, never once per delivery')
+})
