@@ -590,6 +590,37 @@ test('restart: a legacy daemon with recent activity and no claude visible is NOT
   assert.equal(rec.calls.some((c) => c.file === 'bash'), false, 'no reinstall over a session we could not see')
 })
 
+test('safe moment (F3): the process table is read again after an install: a job started while the install ran is seen, never judged on the old table', async () => {
+  const FIVE = `${HOME}/hoai-agents/five`
+  // 5: canonical, a daemon too old to publish state (its observe takes the first listing);
+  // 7: no supervisor (the install runs here, up to 10 min); 912: fresh state, update pending.
+  const fs = machine([
+    { id: '5', cwd: FIVE, service: 'canonical', state: null },
+    { id: '7', cwd: GURU, service: 'none' },
+    { id: '912', cwd: AVA, service: 'canonical', state: {} },
+  ])
+  const rec = recorder({ ps: IDLE_PS })
+  let listings = 0
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'ps') {
+      listings += 1
+      // While 7's install ran, 912 started a background monitor.
+      const bashRan = rec.calls.some((c) => c.file === 'bash')
+      rec.calls.push({ file, args: [...args], opts: o })
+      return { code: 0, stdout: bashRan ? JOB_PS : IDLE_PS, stderr: '', error: null, timedOut: false }
+    }
+    return rec.exec(file, args, o)
+  }
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock, { exec, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [5, 7, 912] }).fetchKeepAlive })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[3]), ['7'])
+  assert.ok(listings >= 2, 'a fresh listing after the install')
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false, 'no kickstart -k over the live job')
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]).filter((r: any) => r[0] === '912'), [['912', 'waiting_idle', 'background_job']])
+})
+
 // -- gates -------------------------------------------------------------------------------------------
 
 test('gates: one restart per sweep; the second pending agent waits its turn', async () => {
