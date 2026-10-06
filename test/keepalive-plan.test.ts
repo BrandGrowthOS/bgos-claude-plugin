@@ -298,7 +298,7 @@ test('decideManualSession: a canonical supervisor FRESHLY waiting behind a claud
 
 // -- supervise ---------------------------------------------------------------------------------------
 
-test('decideSupervise: none + known cwd + cleared installs; no cwd needs a first launch; never over a bespoke service or a keepalive', () => {
+test('decideSupervise: none or a hand-run launcher + known cwd + cleared installs; no cwd needs a first launch; never over a service or a keepalive', () => {
   const base = { cleared: true, supervisor: 'none', serviceVia: null, keepaliveVerified: false, cwd: '/h/hoai-agents/ava' }
   const rows: Array<[string, Record<string, unknown>, unknown]> = [
     ['none + cwd + cleared', {}, { action: 'install', state: 'installing', reason: null }],
@@ -308,7 +308,11 @@ test('decideSupervise: none + known cwd + cleared installs; no cwd needs a first
     ['bespoke discovered service (G11)', { supervisor: 'service', serviceVia: 'working-directory' }, { action: 'none', state: 'supervised', reason: 'bespoke' }],
     ['a verified keepalive.json with no visible job', { keepaliveVerified: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
     ['a keepalive.json whose script is alive, its claude between two relaunches (G11)', { keepaliveDeclared: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
-    ['a live hoai launcher', { supervisor: 'launcher-live' }, { action: 'none', state: 'supervised', reason: 'launcher' }],
+    // A hoai started by hand relaunches claude on request, but nothing brings it back after a
+    // reboot or a closed terminal: it is not a supervisor in the sense of design 5 step 1. Measured
+    // in the M6 end to end run: the sweep said 'supervised (launcher)' and installed nothing.
+    ['a live hoai launcher started by hand still gets a service (it does not survive a reboot)', { supervisor: 'launcher-live' }, { action: 'install', state: 'installing', reason: null }],
+    ['a live hoai launcher with no known folder needs a first launch it has had: the folder is the anchor', { supervisor: 'launcher-live', cwd: null }, { action: 'none', state: 'needs_first_launch', reason: 'no_known_folder' }],
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decideSupervise({ ...base, ...patch } as any), expected, name)
