@@ -47,6 +47,20 @@ test('locked browser never writes state; owner unlock encrypts state and passwor
   assert.notEqual(JSON.parse(readFileSync(file, 'utf8')).iv, first.iv)
 })
 
+test('first setup may retain current sign-in but an existing vault cannot adopt replacement browsing state', async t => {
+  const { vault, file } = fixture(t)
+  let replaced = false
+  const context = { storageState: async () => STATE, setStorageState: async () => { replaced = true } }
+  await vault.unlock(PASSPHRASE)
+  await vault.retainCurrent(context)
+  assert.equal(replaced, false)
+  const ciphertext = readFileSync(file)
+  assert.equal(ciphertext.includes(Buffer.from('COOKIE_CANARY_817')), false)
+  await vault.lock(); await vault.unlock(PASSPHRASE)
+  await assert.rejects(vault.retainCurrent(context), { code: 'vault_locked' })
+  assert.deepEqual(readFileSync(file), ciphertext)
+})
+
 test('restart restores session cookies and storage only after correct owner unlock; deletion is persisted', async t => {
   const { vault, file, dir, scope } = fixture(t)
   let state = structuredClone(STATE)

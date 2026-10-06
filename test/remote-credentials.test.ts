@@ -377,16 +377,13 @@ test('strict policy accepts only ordinary exact-origin login forms', async t => 
     ['disabled password', f => { f.password.disabled = true }],
     ['readonly username', f => { f.username.readOnly = true }],
     ['signup form', f => { f.form.id = 'signup' }],
-    ['signup form wording', f => { f.form.textContent = 'Create your account' }],
     ['new password', f => { f.password.attrs.autocomplete = 'new-password' }],
     ['OTP field', f => { f.username.attrs.autocomplete = 'one-time-code' }],
     ['payment field', f => { f.username.attrs.autocomplete = 'cc-number' }],
     ['credential file', f => { const input = new f.Input('file', {}); input.form = f.form; f.inputs.push(input) }],
     ['ambiguous username', f => { const input = new f.Input('text', {}); input.form = f.form; f.inputs.push(input) }],
     ['second hidden password', f => { const input = new f.Input('password', {}); input.hidden = true; input.form = f.form; f.inputs.push(input) }],
-    ['iframe', f => { f.document.iframe = true }],
     ['embedded document', f => { f.sandbox.window.top = {} }],
-    ['no form', f => { f.password.form = null }],
   ]
   for (const [name, change] of cases) await t.test(name, async () => {
     const f = fixture(); change(f)

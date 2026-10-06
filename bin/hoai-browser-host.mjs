@@ -950,6 +950,7 @@ export class PlaywrightEngine {
     this._context = null
     this._toolNames = new Set()
     this.onDisconnected = null
+    this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
   }
 
@@ -980,10 +981,20 @@ export class PlaywrightEngine {
     return this._context ? this._context.pages() : []
   }
 
+  selectedPage() { return this._backend?._context?.currentTab()?.page || this.pages().at(-1) }
+  async selectPage(page) {
+    const context = this._backend?._context
+    const index = context?.tabs().findIndex(tab => tab.page === page)
+    if (!context || index < 0) throw new Error('Browser tab is unavailable')
+    await context.selectTab(index)
+  }
+  async newPage() { return (await this._backend._context.newTab()).page }
+
   async callTool(name, args, signal) {
     if (!this._backend) throw new Error('Engine not started')
     try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
     catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
+    finally { this.onSelectedPage?.(this.selectedPage()) }
   }
 
   registerSecret(secret) { this._secrets.register(secret) }
@@ -1070,6 +1081,7 @@ export class ChromiumEngine {
       this._log(`started Chrome (pid ${child.pid}) on ${this.profileDir}`)
     }
     this._engine.onDisconnected = () => this._gone()
+    this._engine.onSelectedPage = page => this.onSelectedPage?.(page)
     this.vault.bind(this._engine._context)
     this.alive = true
     return this
@@ -1089,6 +1101,10 @@ export class ChromiumEngine {
   pages() {
     return this._engine ? this._engine.pages() : []
   }
+
+  selectedPage() { return this._engine?.selectedPage() }
+  selectPage(page) { return this._engine.selectPage(page) }
+  newPage() { return this._engine.newPage() }
 
   callTool(name, args, signal) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser closed; call again to reopen it.')
