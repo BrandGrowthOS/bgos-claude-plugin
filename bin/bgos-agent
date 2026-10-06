@@ -496,10 +496,18 @@ child=""
 # daemonizes out of launchd's process group, so without this it (and claude in
 # it) would outlive the job and the next run.sh would find it in the folder.
 # Every wait below is `sleep & wait`, so the trap runs at once, not after a nap.
+#
+# Without tmux, hoai runs as a job of its OWN process group (set -m below), so
+# the stop reaches the whole group: node, the expect it spawned and the claude
+# under expect. TERM to node alone ended node and left expect and claude
+# running in the folder. -- -<pgid> names the group; the plain pid is the
+# fallback for a group that is already gone.
 on_stop() {
   echo "[$(ts)] stop requested: ending agent $id"
   if [ "$have_tmux" = 1 ]; then tmux -L "$sock" kill-server >/dev/null 2>&1; fi
-  if [ -n "$child" ]; then kill -TERM "$child" >/dev/null 2>&1; fi
+  if [ -n "$child" ]; then
+    kill -TERM -- "-$child" >/dev/null 2>&1 || kill -TERM "$child" >/dev/null 2>&1
+  fi
   exit 0
 }
 trap on_stop TERM INT HUP
@@ -545,33 +553,85 @@ echo "[$(ts)] starting agent (consecutive fast-fails: $fails)"
 # reported with the reason the PREVIOUS launch left behind.
 note_status "outcome=starting"
 
+# The node this launch runs on. Baked at install, but a node upgrade (a new
+# Homebrew keg, an nvm or asdf switch) can remove that exact file, and then
+# every launch failed, and was reported as a missing plugin root because the
+# root lookup below runs on it. The service PATH leads with the directory node
+# was found in at install and carries the usual ones after it, so the node it
+# has now is that install's successor. None at all is its own named outcome.
+node_missing=0
+if [ ! -f "$node_bin" ] || [ ! -x "$node_bin" ]; then
+  found_node="$(command -v node 2>/dev/null || true)"
+  if [ -n "$found_node" ]; then
+    echo "[$(ts)] the node baked at install ($node_bin) is gone; using $found_node from the service PATH"
+    node_bin="$found_node"
+  else
+    node_missing=1
+  fi
+fi
+
+# The installPath a Claude Code install record gives the HOAI plugin, read from
+# this config dir's installed_plugins.json: the record named $1
+# (<plugin>@<marketplace>), or with no name THE one HOAI plugin installed
+# (hoai@<any marketplace>; the name is HOAI_PLUGIN_NAME in
+# bin/bgos-install-method.mjs), never one of several. Prints nothing and fails
+# when there is no such record.
+installed_root() { # $1 record key, or '' for the sole HOAI plugin
+  local cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  "$node_bin" -e '
+    const fs = require("fs");
+    const [file, key] = process.argv.slice(1);
+    let doc = null;
+    try { doc = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(1); }
+    const plugins = doc && doc.plugins && typeof doc.plugins === "object" ? doc.plugins : {};
+    let name = key;
+    if (!name) {
+      const hoai = Object.keys(plugins).filter((k) => k.lastIndexOf("@") > 0 && k.slice(0, k.lastIndexOf("@")) === "hoai");
+      if (hoai.length !== 1) process.exit(1);
+      name = hoai[0];
+    }
+    const raw = plugins[name];
+    const all = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
+    const records = all.filter((r) => r && typeof r === "object");
+    const entry = records.find((r) => r.scope === "user") || records[0];
+    const found = entry && typeof entry.installPath === "string" ? entry.installPath.trim() : "";
+    if (!found) process.exit(1);
+    process.stdout.write(found);
+  ' "$cfg/plugins/installed_plugins.json" "$1" 2>/dev/null
+}
+
 # The CURRENT plugin root, resolved now, at every launch.
 root=""
-case "$topology" in
-  marketplace)
-    cfg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    root="$("$node_bin" -e '
-      const fs = require("fs");
-      const [file, key] = process.argv.slice(1);
-      let doc = null;
-      try { doc = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(1); }
-      const raw = doc && doc.plugins && typeof doc.plugins === "object" ? doc.plugins[key] : null;
-      const all = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? [raw] : [];
-      const records = all.filter((r) => r && typeof r === "object");
-      const entry = records.find((r) => r.scope === "user") || records[0];
-      const found = entry && typeof entry.installPath === "string" ? entry.installPath.trim() : "";
-      if (!found) process.exit(1);
-      process.stdout.write(found);
-    ' "$cfg/plugins/installed_plugins.json" "$plugin_key" 2>/dev/null)" || root=""
-    ;;
-  clone)
-    root="$clone_root"
-    ;;
-esac
+if [ "$node_missing" = 0 ]; then
+  case "$topology" in
+    marketplace)
+      root="$(installed_root "$plugin_key")" || root=""
+      ;;
+    clone)
+      root="$clone_root"
+      # The checkout recorded at install can be pruned (an npx cache npm cleaned,
+      # a versioned plugin cache dir an update replaced). Before that is a
+      # failure, the installed plugin's own record is asked: hoai is the same
+      # launcher from either root, and the channel still comes from the folder.
+      if [ ! -f "$root/bin/hoai-core.mjs" ]; then
+        found_root="$(installed_root "")" || found_root=""
+        if [ -n "$found_root" ] && [ -f "$found_root/bin/hoai-core.mjs" ]; then
+          echo "[$(ts)] the checkout recorded at install ($clone_root) has no bin/hoai-core.mjs any more; starting hoai from the installed plugin at $found_root"
+          root="$found_root"
+        fi
+      fi
+      ;;
+  esac
+fi
 
 rc=0
 how="hoai exit $rc"
-if [ -z "$root" ] || [ ! -f "$root/bin/hoai-core.mjs" ]; then
+if [ "$node_missing" = 1 ]; then
+  rc=2
+  how="node missing"
+  note_status "outcome=node-missing baked=\"$node_bin\""
+  echo "[$(ts)] cannot launch agent $id: no node at $node_bin (baked at install) and none on the service PATH. Install Node.js 18 or newer, then: hoai-agent install --assistant $id --always-on"
+elif [ -z "$root" ] || [ ! -f "$root/bin/hoai-core.mjs" ]; then
   rc=2
   how="plugin root missing"
   note_status "outcome=plugin-root-missing topology=$topology key=${plugin_key:-none} root=\"${root:-none}\""
@@ -602,8 +662,16 @@ else
   # terminal), and remote compact is OFF, which the status line says out loud.
   note_status "outcome=starting compact=off reason=no-tmux"
   echo "[$(ts)] tmux is not installed: running agent $id without it, so remote compact is OFF"
+  # Its own process group (job control on for this one job), so on_stop can
+  # end hoai together with the expect and claude it starts. Off again at once:
+  # nothing else here wants job control. (A run.sh killed with SIGKILL cannot
+  # end the group; launchd's process group cleanup no longer reaches it either,
+  # so its claude is then the incumbent the next run.sh waits for, as with a
+  # session started by hand.)
+  set -m
   HOAI_SUPERVISED=1 HOAI_SUPERVISED_ASSISTANT_ID="$id" "$node_bin" "$root/bin/hoai-core.mjs" &
   child=$!
+  set +m
   wait "$child" || rc=$?
   child=""
   how="hoai exit $rc"

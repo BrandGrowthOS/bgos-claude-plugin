@@ -90,7 +90,7 @@ interface Box {
   log: string
   cloneRoot: string
   mktRoot: string
-  generate: (topology: 'marketplace' | 'clone', opts?: { pluginKey?: string; cloneRoot?: string }) => string
+  generate: (topology: 'marketplace' | 'clone', opts?: { pluginKey?: string; cloneRoot?: string; nodeBin?: string }) => string
   env: (extra?: Record<string, string>) => Record<string, string>
   calls: () => string[][]
   agentLog: () => string
@@ -147,9 +147,17 @@ esac`,
   exec "${process.execPath}" "$@"
 fi
 { printf 'node'; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\tHOAI_SUPERVISED=%s\\tHOAI_SUPERVISED_ASSISTANT_ID=%s\\tBGOS_TMUX_SESSION=%s\\n' "\${HOAI_SUPERVISED-unset}" "\${HOAI_SUPERVISED_ASSISTANT_ID-unset}" "\${BGOS_TMUX_SESSION-unset}"; } >> "$LOG"
+# The trap first: whatever a test waits for before it stops hoai, the trap is already set.
+if [ -f "$FAKE/node-block" ]; then trap 'echo node-got-TERM >> "$LOG"; exit 143' TERM; fi
+if [ -f "$FAKE/node-spawns-child" ]; then
+  # hoai's own children (expect, and claude under it): one more process in hoai's group.
+  # Bounded, so a stop that never reaches it cannot leave it behind for long.
+  # It says it started only once its trap is set, so a stop can never land before the trap.
+  /bin/sh -c 'trap "echo grandchild-got-TERM >> \\"$LOG\\"; exit 143" TERM; echo "grandchild-started $$" >> "$LOG"; i=0; while [ $i -lt 300 ]; do /bin/sleep 0.05; i=$((i + 1)); done' &
+fi
 if [ -f "$FAKE/node-block" ]; then
-  trap 'echo node-got-TERM >> "$LOG"; exit 143' TERM
-  while :; do /bin/sleep 0.05; done
+  i=0
+  while [ $i -lt 300 ]; do /bin/sleep 0.05; i=$((i + 1)); done
 fi
 exit "$(cat "$FAKE/node-rc" 2>/dev/null || echo 0)"`,
   )
@@ -174,9 +182,9 @@ exit 0`,
 
   const genFile = join(root, 'gen.sh')
   writeFileSync(genFile, ['set -euo pipefail', 'SUPERVISOR_GENERATION=2', writeRunShSource(), 'write_run_sh "$@"', ''].join('\n'))
-  const generate = (topology: 'marketplace' | 'clone', opts: { pluginKey?: string; cloneRoot?: string } = {}) => {
+  const generate = (topology: 'marketplace' | 'clone', opts: { pluginKey?: string; cloneRoot?: string; nodeBin?: string } = {}) => {
     const out = join(state, 'run.sh')
-    const r = spawnSync(BASH!, [genFile, out, state, '42', fakeNode, topology, topology === 'marketplace' ? (opts.pluginKey ?? 'hoai@hoai') : '', opts.cloneRoot ?? cloneRoot], { encoding: 'utf8' })
+    const r = spawnSync(BASH!, [genFile, out, state, '42', opts.nodeBin ?? fakeNode, topology, topology === 'marketplace' ? (opts.pluginKey ?? 'hoai@hoai') : '', opts.cloneRoot ?? cloneRoot], { encoding: 'utf8' })
     assert.equal(r.status, 0, r.stderr)
     return out
   }
@@ -316,6 +324,15 @@ test('no plugin root is a NAMED failure: plugin-root-missing in launch-status, a
       topology: /topology=marketplace key=hoai@hoai/,
     },
     { name: 'a clone checkout that is gone', setup: (box) => box.generate('clone', { cloneRoot: join(box.root, 'deleted checkout') }), topology: /topology=clone key=none root=".*deleted checkout"/ },
+    {
+      // The fallback takes THE installed HOAI plugin, never one of several.
+      name: 'a clone checkout that is gone, with two HOAI install records to choose between',
+      setup: (box) => {
+        installRecord(join(box.home, '.claude'), { 'hoai@hoai': [{ scope: 'user', installPath: box.mktRoot }], 'hoai@other': [{ scope: 'user', installPath: box.mktRoot }] })
+        return box.generate('clone', { cloneRoot: join(box.root, 'deleted checkout') })
+      },
+      topology: /topology=clone key=none root=".*deleted checkout"/,
+    },
   ]
   for (const c of cases) {
     const box = sandbox()
@@ -344,6 +361,63 @@ test('no tmux on the host: hoai runs in the foreground with HOAI_SUPERVISED and 
   assert.deepEqual(node, ['node', join(box.cloneRoot, 'bin', 'hoai-core.mjs'), 'HOAI_SUPERVISED=1', 'HOAI_SUPERVISED_ASSISTANT_ID=42', 'BGOS_TMUX_SESSION=unset'])
   assert.match(box.status(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=starting compact=off reason=no-tmux$/)
   assert.match(box.agentLog(), /tmux is not installed: running agent 42 without it, so remote compact is OFF/)
+})
+
+test('a clone checkout that is gone (pruned) falls back to the installed plugin\'s record before it fails, and says so', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  installRecord(join(box.home, '.claude'), { 'hoai@hoai': [{ scope: 'user', installPath: box.mktRoot }] })
+  const r = runSync(box, box.generate('clone', { cloneRoot: join(box.root, 'pruned 0.61.0') }))
+  assert.equal(r.status, 0, box.agentLog())
+  const calls = box.calls()
+  assert.deepEqual(calls.find((c) => c[0] === 'node-resolve')?.slice(1), [join(box.home, '.claude', 'plugins', 'installed_plugins.json'), ''])
+  assert.equal(calls.find(isTmux('new-session'))?.at(-1), join(box.mktRoot, 'bin', 'hoai-core.mjs'))
+  assert.doesNotMatch(box.status(), /plugin-root-missing/)
+  assert.match(box.agentLog(), /pruned 0\.61\.0.*has no bin\/hoai-core\.mjs any more; starting hoai from the installed plugin at .*0\.62\.0/)
+})
+
+test('a clone checkout that is still there is used as is: the install record is not even read', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  installRecord(join(box.home, '.claude'), { 'hoai@hoai': [{ scope: 'user', installPath: box.mktRoot }] })
+  runSync(box, box.generate('clone'))
+  assert.equal(box.calls().filter((c) => c[0] === 'node-resolve').length, 0)
+  assert.equal(box.calls().find(isTmux('new-session'))?.at(-1), join(box.cloneRoot, 'bin', 'hoai-core.mjs'))
+})
+
+test('the node baked at install is gone: this launch runs on the node the service PATH has, and says so', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  installRecord(join(box.home, '.claude'), { 'hoai@hoai': [{ scope: 'user', installPath: box.mktRoot }] })
+  const gone = join(box.root, 'old node', 'bin', 'node')
+  const r = runSync(box, box.generate('marketplace', { nodeBin: gone }))
+  assert.equal(r.status, 0, box.agentLog())
+  const calls = box.calls()
+  assert.ok(calls.some((c) => c[0] === 'node-resolve'), 'the root lookup ran on the PATH node')
+  const launched = calls.find(isTmux('new-session'))!
+  assert.equal(launched.at(-2), box.fakeNode, 'hoai starts on the node found on PATH')
+  assert.equal(launched.at(-1), join(box.mktRoot, 'bin', 'hoai-core.mjs'))
+  assert.match(box.agentLog(), /the node baked at install \(.*old node\/bin\/node\) is gone; using .*\/node from the service PATH/)
+})
+
+test('no node at all: launch-status says node-missing (not plugin-root-missing), the exit is nonzero, and nothing is launched', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  installRecord(join(box.home, '.claude'), { 'hoai@hoai': [{ scope: 'user', installPath: box.mktRoot }] })
+  const gone = join(box.root, 'old node', 'bin', 'node')
+  const runSh = box.generate('marketplace', { nodeBin: gone })
+  rmSync(box.fakeNode)
+  const r = runSync(box, runSh)
+  assert.notEqual(r.status, 0)
+  assert.match(box.status(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=node-missing /)
+  assert.match(box.status(), /baked=".*old node\/bin\/node"/)
+  assert.doesNotMatch(box.status(), /plugin-root-missing/)
+  assert.equal(box.calls().filter(isTmux('new-session')).length, 0)
+  assert.match(box.agentLog(), /cannot launch agent 42: no node/)
 })
 
 function untilFile(path: string, pattern: RegExp, what: string): Promise<void> {
@@ -404,6 +478,25 @@ test('TERM with no tmux stops the foreground hoai too, and run.sh exits 0', asyn
   const { code } = await run.exited
   assert.equal(code, 0)
   await untilFile(box.log, /node-got-TERM/, 'hoai to be told to stop')
+})
+
+test('TERM with no tmux stops hoai\'s whole process GROUP: the expect and claude it started stop too, not only node', async (t) => {
+  if (!ready(t)) return
+  const box = sandbox({ tmux: false })
+  t.after(box.cleanup)
+  writeFileSync(join(box.fake, 'node-block'), '')
+  writeFileSync(join(box.fake, 'node-spawns-child'), '')
+  const run = runAsync(box, box.generate('clone'))
+  t.after(() => run.child.kill('SIGKILL'))
+  await untilFile(box.log, /^grandchild-started /m, 'hoai to start its child')
+  run.term()
+  const { code } = await run.exited
+  assert.equal(code, 0)
+  await untilFile(box.log, /node-got-TERM/, 'hoai to be told to stop')
+  await untilFile(box.log, /grandchild-got-TERM/, 'hoai\'s child (expect, claude) to be told to stop as well')
+  // Job control is switched on for that one job only, and quietly: no terminal warnings in the log.
+  assert.doesNotMatch(box.agentLog(), /job control|terminal process group|syntax error|command not found/)
+  assert.match(box.agentLog(), /stop requested: ending agent 42/)
 })
 
 test('the singleton wait still holds the launch while a claude sits in this workdir, and says so', (t) => {

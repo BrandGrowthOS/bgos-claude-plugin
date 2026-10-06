@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
+import { CLONE_CHANNEL_SPEC, HOAI_PLUGIN_NAME, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 import { assertBashParses, bashOrSkip } from './helpers/posix-bash.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -163,6 +163,13 @@ test('generation 2 is stamped on every always-on install, with the grace stamp (
   assert.match(runSh, /HOAI_SUPERVISED=1/)
   assert.match(runSh, /"\$node_bin" "\$root\/bin\/hoai-core\.mjs"/)
   assert.match(runSh, /trap on_stop TERM INT HUP/)
+})
+
+test('run.sh\'s pruned-checkout fallback looks for the plugin by the name the install-method reader uses, and never types a marketplace spec', () => {
+  const runSh = code.slice(code.indexOf('write_run_sh() {'), code.indexOf("\nSH\n", code.indexOf('write_run_sh() {')))
+  const names = [...runSh.matchAll(/k\.slice\(0, k\.lastIndexOf\("@"\)\) === "([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(names, [HOAI_PLUGIN_NAME])
+  assert.ok(!runSh.includes(MARKETPLACE_CHANNEL_SPEC))
 })
 
 test('the approved-sounding --channels flag is never used', () => {
