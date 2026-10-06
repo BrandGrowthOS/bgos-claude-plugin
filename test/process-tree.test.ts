@@ -147,8 +147,8 @@ test('descendantsOf: every process below the root (children of children), never 
   )
   assert.deepEqual(descendantsOf(rows, 4301), [])
   const loop = [
-    { pid: 10, ppid: 11, startedAtMs: null, command: 'a' },
-    { pid: 11, ppid: 10, startedAtMs: null, command: 'b' },
+    { pid: 10, ppid: 11, uid: null, startedAtMs: null, command: 'a' },
+    { pid: 11, ppid: 10, uid: null, startedAtMs: null, command: 'b' },
   ]
   assert.deepEqual(descendantsOf(loop, 10).map((p) => p.pid), [11])
 })
