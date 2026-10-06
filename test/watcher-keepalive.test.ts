@@ -132,10 +132,11 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
 
 const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026') => ` ${pid} ${ppid} ${start} ${cmd}`
 
-function recorder(opts: { ps?: string | null; lsof?: string; bashCode?: number; launchctlCode?: number } = {}) {
+function recorder(opts: { ps?: string | null; lsof?: string; bashCode?: number; launchctlCode?: number; win32Ps?: string } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], o: any = {}) => {
     calls.push({ file, args: [...args], opts: o })
+    if (file === 'powershell.exe' && args.includes('-Command') && opts.win32Ps != null) return { code: 0, stdout: opts.win32Ps, stderr: '', error: null, timedOut: false }
     if (file === 'ps') return opts.ps == null ? { code: 1, stdout: '', stderr: 'ps: denied', error: null, timedOut: false } : { code: 0, stdout: opts.ps, stderr: '', error: null, timedOut: false }
     if (file === 'lsof') return { code: 0, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: false }
     if (file === 'bash') return { code: opts.bashCode ?? 0, stdout: '', stderr: opts.bashCode ? `x  no .mcp.json in ${GURU} and no creds given` : '', error: null, timedOut: false }
@@ -493,9 +494,14 @@ const WCWD = 'C:\\Users\\kc\\hoai-agents\\ava'
 const WROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.1'
 const WSTATE = 'C:\\Users\\kc\\.bgos-agent\\912'
 
+/** The hoai-core.mjs text a --keep-alive launcher carries (bin/hoai-core.mjs RUN_KEEP_ALIVE_FLAGS); an older one never mentions it. */
+const HOAI_CORE_KEEP_ALIVE = "export const RUN_KEEP_ALIVE_FLAGS = Object.freeze(['--keep-alive'])\n"
+const HOAI_CORE_OLD = "export const RUN_FRESH_FLAGS = Object.freeze(['--new'])\n"
+
 function windowsMachine(extra: Record<string, string> = {}) {
   return memoryFs(
     {
+      [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_KEEP_ALIVE,
       [`${WHOME}\\.bgos-agent\\credentials-912.json`]: '{}',
       [`${WSTATE}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: WCWD, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: 'x', pid: null })),
       [`${WCWD}\\.bgos-agent-id`]: '912\n',
@@ -552,6 +558,49 @@ test('win32: a canonical task whose launcher is dead and agent stopped is starte
   const quiet = recorder()
   await runKeepAliveSweep(windowsCtx(live, quiet, { pidAlive: (pid: number) => pid === 777 }) as any)
   assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
+})
+
+test('win32: a CURRENT root whose hoai-core has no --keep-alive gets no task registered (supervisor_v2_unavailable)', async () => {
+  const old = { [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_OLD }
+  // No supervisor yet: no files, no Register-ScheduledTask.
+  const fresh = windowsMachine(old)
+  const rec = recorder()
+  const report = await runKeepAliveSweep(windowsCtx(fresh, rec) as any)
+  assert.deepEqual(rec.calls.filter(notListing), [])
+  assert.equal(fresh.files.has(`${WSTATE}\\run-agent.vbs`), false)
+  assert.equal(fresh.files.has(`${WSTATE}\\install-agent-task.ps1`), false)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['failed', 'supervisor_v2_unavailable']])
+})
+
+test('win32: a task whose launcher is dead is never started onto a hoai-core with no --keep-alive, nor repointed at it', async () => {
+  const old = { [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_OLD }
+  // The agent stopped: not started, its vbs left alone.
+  const stale = "' old launcher pointing at 0.62.0\r\n"
+  const dead = windowsMachine({ ...old, [`${WSTATE}\\run-agent.vbs`]: stale, [`${WSTATE}\\supervisor-generation`]: '2\n' })
+  const deadRec = recorder()
+  const deadReport = await runKeepAliveSweep(windowsCtx(dead, deadRec) as any)
+  assert.deepEqual(deadRec.calls.filter(notListing), [])
+  assert.equal(dead.files.get(`${WSTATE}\\run-agent.vbs`), stale)
+  assert.deepEqual(deadReport.agents.map((a: any) => [a.state, a.reason]), [['failed', 'supervisor_v2_unavailable']])
+})
+
+test('win32: an update at an idle moment with the launcher dead (a schtasks /Run too) is not made onto a hoai-core with no --keep-alive', async () => {
+  const old = { [`${WROOT}\\bin\\hoai-core.mjs`]: HOAI_CORE_OLD }
+  const stale = "' old launcher pointing at 0.62.0\r\n"
+  const pending = windowsMachine({
+    ...old,
+    [`${WSTATE}\\run-agent.vbs`]: stale,
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+  })
+  const listing = JSON.stringify([
+    { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'cmd.exe' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --x' },
+    { ProcessId: 4912, ParentProcessId: 5912, CreationDate: T0 - 120 * MIN, CommandLine: 'node server.ts' },
+  ])
+  const pendingRec = recorder({ win32Ps: listing })
+  const pendingReport = await runKeepAliveSweep(windowsCtx(pending, pendingRec) as any)
+  assert.deepEqual(pendingRec.calls.filter(notListing), [])
+  assert.deepEqual(pendingReport.agents.map((a: any) => [a.state, a.reason]), [['failed', 'supervisor_v2_unavailable']])
 })
 
 // -- the report --------------------------------------------------------------------------------------
