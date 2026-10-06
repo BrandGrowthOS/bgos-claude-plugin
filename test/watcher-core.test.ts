@@ -1145,6 +1145,32 @@ test('runWatcher: the first heartbeat after a restart carries the keep-alive sta
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
 })
 
+test('runWatcher (F8): a long keep-alive sweep keeps the watcher online: it heartbeats when due, and an owner job sent meanwhile is acked inside the backend 60 s window and run right after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'job-s', op: 'bogus' }], jobs: { 'job-s': { op: 'bogus' } } })
+  const clock = fakeClock()
+  const during: Call[][] = []
+  const keepAliveSweep = async (c: any) => {
+    // 70 s of install, a touch, 70 s of verify, a touch: past the backend online window without them.
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules(), keepAliveSweep })
+  await runWatcher(deps as any)
+  const inSweep = during[1]!
+  assert.equal(inSweep.filter((c) => c.path.endsWith('/integrations/heartbeat')).length, 3, 'the start heartbeat, then one per due interval inside the sweep')
+  assert.ok(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/ack')), 'the job is acked while the sweep still runs')
+  assert.equal(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/progress')), false, 'it runs only after the sweep (single flight)')
+  assert.equal(backend.calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/ack')).length, 1, 'acked once')
+  assert.deepEqual(backend.progress('job-s').map((b: any) => [b.state, b.message]), [['failed', 'unknown_op:bogus']], 'run after the sweep')
+})
+
 test('runWatcher: a keep-alive state file with a null agent record (valid JSON, hand edited) never stops the start; the record is dropped', async () => {
   // Before: reportEntry read `null.state` at startup, outside any try, so every
   // start was a fatal and the watcher sat in crash_loop backoff for good (only a

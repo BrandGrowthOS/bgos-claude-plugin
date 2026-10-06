@@ -621,6 +621,91 @@ test('safe moment (F3): the process table is read again after an install: a job 
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]).filter((r: any) => r[0] === '912'), [['912', 'waiting_idle', 'background_job']])
 })
 
+test('state (F8): an act is persisted BEFORE its verify, so a watcher killed mid verify keeps the attempt and the 30 min limit', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  let release: () => void = () => {}
+  const parked = new Promise<void>((resolve) => (release = resolve))
+  // verify sleeps between probes: park it there, the moment a kill would land.
+  const { ctx } = ctxFor(fs, rec, clock, {
+    sleep: async (ms: number) => {
+      await parked
+      clock.advance(ms)
+    },
+  })
+  const running = runKeepAliveSweep(ctx as any)
+  try {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+    assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1, 'the restart happened')
+    const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME)) ?? '{}')
+    assert.equal(saved.agents?.['912']?.attempts, 1, 'the attempt is on disk while verify runs')
+    assert.equal(saved.agents?.['912']?.lastRestartAt, new Date(T0).toISOString())
+    assert.equal(saved.agents?.['912']?.target, '0.62.1')
+  } finally {
+    release()
+    await running
+  }
+})
+
+test('state (F8): a throw during verify still counts the attempt (counted before the act, never rebuilt from the old record)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), {
+    sleep: async () => {
+      throw new Error('boom')
+    },
+  })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.match(report.agents[0].reason, /^internal_error:boom/)
+  const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME))!)
+  assert.equal(saved.agents['912'].attempts, 1)
+  assert.equal(saved.agents['912'].lastRestartAt, new Date(T0).toISOString())
+})
+
+test('online (F8): a long sweep keeps the watcher online: keepOnline between agents, through a long install, and through verify', { timeout: 10_000 }, async () => {
+  const fs = machine([
+    { id: '7', cwd: GURU, service: 'none' },
+    { id: '912', cwd: AVA, service: 'canonical', state: {} },
+  ])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  // The install takes 5 minutes of (fake) wall time.
+  let installDone: () => void = () => {}
+  const installAt = { start: 0 }
+  clock.onSleep((_ms, at) => {
+    if (installAt.start && at - installAt.start >= 5 * MIN) installDone()
+  })
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'bash') {
+      rec.calls.push({ file, args: [...args], opts: o })
+      installAt.start = clock.now()
+      await new Promise<void>((resolve) => (installDone = resolve))
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    }
+    return rec.exec(file, args, o)
+  }
+  const touches: Array<[string, number]> = []
+  let phase = 'start'
+  const keepOnline = async () => {
+    touches.push([phase, clock.now()])
+  }
+  answerProbes(fs, clock, [])
+  const { ctx } = ctxFor(fs, rec, clock, { exec, keepOnline, verifyTimeoutMs: 120_000, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912] }).fetchKeepAlive })
+  clock.onSleep(() => {
+    phase = rec.calls.some((c) => c.file === 'launchctl') ? 'verify' : rec.calls.some((c) => c.file === 'bash') ? 'install' : 'start'
+  })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
+  assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1)
+  const during = (name: string) => touches.filter(([p]) => p === name).length
+  assert.ok(during('install') >= 5, `touched through the 5 min install (${during('install')})`)
+  assert.ok(during('verify') >= 1, `touched through the 2 min verify (${during('verify')})`)
+  // No gap between two touches (or the sweep start) long enough to leave the backend's 3 min online window.
+  const stamps = [T0, ...touches.map(([, at]) => at)]
+  for (let i = 1; i < stamps.length; i++) assert.ok(stamps[i]! - stamps[i - 1]! < 3 * MIN, `gap ${i}`)
+})
+
 // -- gates -------------------------------------------------------------------------------------------
 
 test('gates: one restart per sweep; the second pending agent waits its turn', async () => {
