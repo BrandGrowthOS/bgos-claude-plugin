@@ -82,12 +82,15 @@ interface Machine {
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os, holdInstall = false }: { fromClone?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
+function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
-  // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone case.
+  // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone
+  // case; a marketplace plugin's versioned cache dir (where the watcher's sweep runs it from).
   const pluginRoot = fromClone
     ? join(home, 'bgos-claude-plugin')
-    : join(home, '.npm', '_npx', 'abc123', 'node_modules', 'claude-channel-bgos')
+    : fromCache
+      ? join(home, '.claude', 'plugins', 'cache', 'hoai', 'hoai', '0.62.0')
+      : join(home, '.npm', '_npx', 'abc123', 'node_modules', 'claude-channel-bgos')
   mkdirSync(pluginRoot, { recursive: true })
   cpSync(join(repoRoot, 'bin'), join(pluginRoot, 'bin'), { recursive: true })
   cpSync(join(repoRoot, 'lib'), join(pluginRoot, 'lib'), { recursive: true })
@@ -483,4 +486,30 @@ test('an install lock older than ten minutes is stale (its install died without 
   assert.match(r2.out, /install already in progress for agent 908/)
   assert.equal(existsSync(join(fresh.home, '.bgos-agent', '908', 'run.sh')), false)
   assert.ok(existsSync(join(fresh.home, '.bgos-agent', '908.install.lock')), 'and leaves the other install\'s lock alone')
+})
+
+test('run from a marketplace plugin\'s VERSIONED cache dir, a clone-style folder\'s supervisor looks its root up in the install record at every launch instead of baking that dir', SLOW, (t) => {
+  if (!ready(t)) return
+  // <config>/plugins/cache/hoai/hoai/0.62.0 is replaced by the next plugin update and pruned
+  // after it. Baked as the clone checkout, the agent would stop with plugin-root-missing then.
+  const m = machine({ fromCache: true })
+  const ws = pair(m, '909')
+  writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '909' } } } }))
+  const r = m.run(['--assistant', '909', '--dir', ws, '--always-on'])
+  assert.equal(r.status, 0, r.out)
+  assert.equal(runShVar(m, '909', 'topology'), 'marketplace', 'the root is an install record lookup')
+  assert.equal(runShVar(m, '909', 'plugin_key'), 'hoai@hoai', 'named by the cache path: <plugin>@<marketplace>')
+  assert.match(r.out, /versioned plugin cache dir.*looks the plugin root up in the install record \(hoai@hoai\)/)
+  assert.doesNotMatch(r.out, /package-runner cache/)
+  // and the folder's own channel is untouched: it still publishes server:bgos from its .mcp.json
+  assert.doesNotMatch(callsOf(m), /prove-paired-topology/)
+
+  // A plain checkout is still a fixed checkout.
+  const clone = machine({ fromClone: true })
+  const ws2 = pair(clone, '910')
+  writeFileSync(join(ws2, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '910' } } } }))
+  const r2 = clone.run(['--assistant', '910', '--dir', ws2, '--always-on'])
+  assert.equal(r2.status, 0, r2.out)
+  assert.equal(runShVar(clone, '910', 'topology'), 'clone')
+  assert.equal(runShVar(clone, '910', 'plugin_key'), '')
 })
