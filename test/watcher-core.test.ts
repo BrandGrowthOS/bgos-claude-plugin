@@ -398,13 +398,23 @@ test('runWatcher: an idle cycle posts the heartbeat (exact shape) then long-poll
   const clock = fakeClock()
   const { deps } = baseDeps(fs, backend, clock, { modules: stubModules() })
   assert.equal(await runWatcher(deps as any), 0)
+  // design 5: the keep-alive sweep runs right after the heartbeat and asks the
+  // backend first, with the watcher's own pairing auth. The fake backend has no
+  // such route ({} is not an answer), so the sweep is off and acts on nothing.
   assert.deepEqual(
     backend.calls.map((c) => `${c.method} ${c.path}`),
-    ['POST /api/v1/integrations/heartbeat', 'GET /api/v1/integrations/machine-rpc/pending?wait=25'],
+    ['POST /api/v1/integrations/heartbeat', 'GET /api/v1/integrations/watchers/keep-alive', 'GET /api/v1/integrations/machine-rpc/pending?wait=25'],
   )
+  assert.equal(backend.calls[1]!.headers['X-BGOS-Pairing'], TOKEN)
   assert.deepEqual(backend.calls[0]!.body, {
     daemonVersion: '0.38.3',
-    env: { platform: 'linux', machineId: MACHINE_ID, role: 'watcher', agents: ['7', '912'] },
+    env: {
+      platform: 'linux',
+      machineId: MACHINE_ID,
+      role: 'watcher',
+      agents: ['7', '912'],
+      watcherHealth: { status: 'ok', bootsLastHour: 0, keepAlive: { enabled: false, agents: [] } },
+    },
   })
   const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
   assert.equal(state.lastHeartbeatOk, true)
@@ -443,9 +453,10 @@ test('runWatcher reconcile: ack, job, planning, per-step progress, marker + reci
   assert.equal(await runWatcher(deps as any), 0)
 
   assert.deepEqual(
-    backend.calls.map((c) => `${c.method} ${c.path}`).slice(0, 4),
+    backend.calls.map((c) => `${c.method} ${c.path}`).slice(0, 5),
     [
       'POST /api/v1/integrations/heartbeat',
+      'GET /api/v1/integrations/watchers/keep-alive',
       'GET /api/v1/integrations/machine-rpc/pending?wait=25',
       'POST /api/v1/integrations/machine-rpc/job-1/ack',
       'GET /api/v1/integrations/machine-rpc/job-1',
@@ -991,4 +1002,145 @@ test('a job that succeeded keeps its own outcome even when the watcher cannot re
     'watcher_bundle_source_unknown',
     'a watcher-internal reason must never become the headline of a job with its own outcome',
   )
+})
+
+// -- keep-alive and health (design 5 and 8) -----------------------------------------------------
+
+const STOP = new Error('stop the loop')
+
+/** A backend whose long-poll takes 61 s of fake time (so every iteration is due a
+ *  heartbeat) and whose second poll fails, so the loop backs off into a sleep
+ *  that ends the test. */
+function twoBeatBackend(clock: ReturnType<typeof fakeClock>) {
+  const calls: Call[] = []
+  let polls = 0
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) {
+      polls += 1
+      clock.advance(61_000)
+      if (polls > 1) throw new Error('ECONNRESET')
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  return { calls, fetch }
+}
+
+test('runWatcher: the keep-alive sweep runs after every heartbeat (not inside jobs) and its result rides the NEXT heartbeat', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const sweeps: any[] = []
+  const report = { enabled: true, source: 'live', agents: [{ id: '912', state: 'waiting_idle', reason: 'background_job', since: 'x' }] }
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async (ctx: any) => {
+      sweeps.push(ctx)
+      const res = await ctx.fetchKeepAlive()
+      assert.equal(res.status, 200)
+      return report
+    },
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  assert.equal(sweeps.length, 2, 'one sweep per heartbeat')
+  assert.deepEqual(beats[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [] })
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: report.agents })
+  assert.equal(backend.calls.filter((c) => c.path.endsWith('/watchers/keep-alive')).length, 2)
+  // The sweep is handed the watcher's own effects and identity, scrubbed logging included.
+  const ctx = sweeps[0]
+  assert.equal(ctx.home, HOME)
+  assert.equal(ctx.uid, 501)
+  assert.equal(ctx.nodePath, '/usr/local/bin/node')
+  assert.equal(typeof ctx.kill, 'function')
+  assert.equal(ctx.scrub(`${HOME}/x ${TOKEN}`), '~/x <redacted>')
+})
+
+test('runWatcher: a sweep that throws is logged and the loop goes on polling', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend()
+  const clock = fakeClock()
+  const { deps, logs } = baseDeps(fs, backend, clock, {
+    modules: stubModules(),
+    keepAliveSweep: async () => {
+      throw new Error('boom')
+    },
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.ok(logs.some((l) => l.includes('keep-alive sweep failed: boom')))
+  assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
+})
+
+test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.equal(state.lastPollOkAt, new Date(T0).toISOString())
+  clock.advance(60_000)
+  const failing = baseDeps(fs, fakeBackend({ failPending: true }), clock, { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(failing.deps as any)
+  const after = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.equal(after.lastPollOkAt, new Date(T0).toISOString(), 'carried over from the previous process, not erased by the failed poll')
+})
+
+test('runWatcher: the heartbeat carries the recorded boots and the last fatal (design 8)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/boots.json`, JSON.stringify([{ startedAt: new Date(T0 - 5 * 60_000).toISOString(), pid: 1, version: '0.38.3' }]))
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/crash.json`, JSON.stringify({ at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth, {
+    status: 'degraded',
+    bootsLastHour: 1,
+    lastFatal: { at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' },
+    keepAlive: { enabled: false, agents: [] },
+  })
+})
+
+test('runWatcher: a reconcile job restart hands the injected kill to the restart ladder (the keepalive tier)', async () => {
+  const fs = machineFs({
+    [`${HOME}/.bgos-agent/7/keepalive.json`]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+  })
+  manifestFor(fs)
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-k', op: 'restart_only' }],
+    jobs: { 'job-k': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const clock = fakeClock()
+  const kills: Array<[number, string]> = []
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  const { deps } = baseDeps(fs, backend, clock, {
+    modules: stubModules({ plan }),
+    pidAlive: (pid: number) => pid === 4242 || pid === 5151,
+    execSync: (file: string, args: string[]) => (file === 'ps' && args[1] === 'comm=' ? { code: 0, stdout: 'claude\n' } : { code: 1, stdout: '' }),
+    kill: (pid: number, signal: string) => void kills.push([pid, signal]),
+    keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+  })
+  await runWatcher(deps as any)
+  assert.deepEqual(kills, [[5151, 'SIGTERM']])
+})
+
+test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': { state: 'supervised', reason: 'canonical', since } } }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
 })

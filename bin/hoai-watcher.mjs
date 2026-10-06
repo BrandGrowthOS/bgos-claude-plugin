@@ -30,61 +30,54 @@
  * input; 75 restart requested after a bundle self-refresh (posix service
  * managers restart on it); 78 no credentials / no bundle (EX_CONFIG).
  *
+ * CRASH-SAFE ENTRY (design 8, fact 5). This file's only static imports are
+ * node builtins and lib/watcher-health.mjs (itself builtins only). Everything
+ * else is a DYNAMIC import: inside the guard for `run` (a missing module is
+ * then crash.json, a minimal heartbeat and a slowed crash loop, never a silent
+ * death every 5 s, which is what a 0.61.1 bundle missing known-good-store.mjs
+ * did), and behind a named failure for every other command. `help` loads the
+ * WHOLE closure, lifecycle modules included, because it is the staged-bundle
+ * probe (lib/watcher-core.mjs refreshWatcherIfStale): a probe that loaded less
+ * than `run` would pass the very bundle that then crash loops.
+ *
  * Plain JavaScript, node >= 18 builtins only, import-safe (main() only
  * runs when executed directly, mirror of bin/hoai-core.mjs).
  */
 
 import { existsSync, realpathSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
-import { dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { pluginRootFromScriptPath } from './bgos-install-method.mjs'
-import { defaultPidAlive, listAgents } from '../lib/agent-inventory.mjs'
-import {
-  installWatcherBundle,
-  joinDir,
-  nodeExec,
-  nodeFs,
-  nodeSpawnDetached,
-  readBundleManifest,
-  watcherHome,
-  watcherLogPath,
-  watcherStatePath,
-} from '../lib/watcher-bundle.mjs'
-import {
-  EXIT_NO_CREDENTIALS,
-  EXIT_SELF_REFRESH,
-  INTENTS,
-  JOB_DEADLINE_MS,
-  STAGGER_MS,
-  StepLedger,
-  VERIFY_TIMEOUT_MS,
-  createLogger,
-  loadLifecycleModules,
-  observeMachine,
-  runReconcileJob,
-  runWatcher,
-  scrubLine,
-} from '../lib/watcher-core.mjs'
-import {
-  applyWin32CredentialsAcl,
-  installWatcherService,
-  readWatcherCredentials,
-  uninstallWatcherService,
-  watcherCredentialsPath,
-  watcherServiceSpec,
-  watcherServiceStatus,
-  writeWatcherCredentials,
-} from '../lib/watcher-service.mjs'
+import { buildWatcherHealth, readBoots, readCrash, runGuarded } from '../lib/watcher-health.mjs'
 
+/** Mirrors of lib/watcher-core.mjs EXIT_SELF_REFRESH / EXIT_NO_CREDENTIALS / INTENTS,
+ *  restated so parsing argv never needs a module that might not load (pinned by
+ *  test/watcher-health.test.ts). */
 export const EXIT = Object.freeze({
   OK: 0,
   FAILED: 1,
   USAGE: 2,
-  SELF_REFRESH: EXIT_SELF_REFRESH,
-  NO_CONFIG: EXIT_NO_CREDENTIALS,
+  SELF_REFRESH: 75,
+  NO_CONFIG: 78,
 })
+export const WATCHER_INTENTS = Object.freeze(['update', 'reconcile', 'restart_only', 'repair'])
+
+/**
+ * Every module the CLI uses, loaded dynamically (see the header). The import
+ * specifiers stay literal so test/watcher-bundle.test.ts's import-closure walk
+ * still reaches every file the bundle must carry.
+ */
+export async function loadWatcherModules() {
+  const [installMethod, inventory, bundle, core, service] = await Promise.all([
+    import('./bgos-install-method.mjs'),
+    import('../lib/agent-inventory.mjs'),
+    import('../lib/watcher-bundle.mjs'),
+    import('../lib/watcher-core.mjs'),
+    import('../lib/watcher-service.mjs'),
+  ])
+  const lifecycle = await core.loadLifecycleModules()
+  return { installMethod, inventory, bundle, core, service, lifecycle }
+}
 
 export const USAGE = `hoai-watcher: the per-machine watcher for HOAI agents
 
@@ -142,7 +135,7 @@ export function parseWatcherArgs(argv) {
     else errors.push(`unexpected extra argument: ${arg}`)
   }
   if (!command) command = flags.help ? 'help' : 'help'
-  if (flags.intent && !INTENTS.includes(flags.intent)) errors.push(`--intent must be one of ${INTENTS.join(', ')}`)
+  if (flags.intent && !WATCHER_INTENTS.includes(flags.intent)) errors.push(`--intent must be one of ${WATCHER_INTENTS.join(', ')}`)
   return { command, flags, errors }
 }
 
@@ -151,10 +144,10 @@ export function parseWatcherArgs(argv) {
  * script lives in (when it has a package.json, i.e. we are running from the
  * plugin and not from the installed bundle), else the manifest's root.
  */
-export function resolvePluginRoot({ flag = '', scriptPath = '', manifest = null, exists = existsSync } = {}) {
+export function resolvePluginRoot({ flag = '', scriptPath = '', manifest = null, exists = existsSync, pluginRootFromScriptPath, joinDir } = {}) {
   const explicit = String(flag ?? '').trim()
   if (explicit) return explicit
-  if (scriptPath) {
+  if (scriptPath && typeof pluginRootFromScriptPath === 'function') {
     const root = pluginRootFromScriptPath(scriptPath)
     if (root && exists(joinDir(root, 'package.json'))) return root
   }
@@ -180,9 +173,18 @@ function defaultUsername(env) {
 
 // -- Commands --------------------------------------------------------------------------
 
-async function commandInstall({ flags, home, env, platform, fs, exec, scriptPath, out, err }) {
+async function commandInstall({ m, flags, home, env, platform, fs, exec, scriptPath, out, err }) {
+  const { installWatcherBundle, readBundleManifest, joinDir } = m.bundle
+  const { installWatcherService, readWatcherCredentials, watcherServiceSpec } = m.service
   const manifest = readBundleManifest(home, fs)
-  const pluginRoot = resolvePluginRoot({ flag: flags.pluginRoot, scriptPath, manifest, exists: fs.exists })
+  const pluginRoot = resolvePluginRoot({
+    flag: flags.pluginRoot,
+    scriptPath,
+    manifest,
+    exists: fs.exists,
+    pluginRootFromScriptPath: m.installMethod.pluginRootFromScriptPath,
+    joinDir,
+  })
   if (!pluginRoot) {
     err('[hoai-watcher] no plugin root: pass --plugin-root <dir> (the checkout or the marketplace cache dir).')
     return EXIT.USAGE
@@ -223,7 +225,9 @@ async function commandInstall({ flags, home, env, platform, fs, exec, scriptPath
   return EXIT.OK
 }
 
-async function commandUninstall({ flags, home, env, platform, fs, exec, out, err }) {
+async function commandUninstall({ m, flags, home, env, platform, fs, exec, out, err }) {
+  const { watcherHome } = m.bundle
+  const { uninstallWatcherService, watcherServiceSpec } = m.service
   let spec
   try {
     spec = watcherServiceSpec({
@@ -253,7 +257,10 @@ async function commandUninstall({ flags, home, env, platform, fs, exec, out, err
   return EXIT.OK
 }
 
-async function commandStatus({ flags, home, env, platform, fs, exec, out }) {
+async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
+  const { readBundleManifest, watcherHome, watcherLogPath, watcherStatePath } = m.bundle
+  const { readWatcherCredentials, watcherCredentialsPath, watcherServiceSpec, watcherServiceStatus } = m.service
+  const { defaultPidAlive, listAgents } = m.inventory
   const manifest = readBundleManifest(home, fs)
   const credentials = readWatcherCredentials(home, fs)
   let stateJson = null
@@ -289,6 +296,7 @@ async function commandStatus({ flags, home, env, platform, fs, exec, out }) {
     lastHeartbeatAt: stateJson?.lastHeartbeatAt ?? null,
     lastHeartbeatOk: stateJson?.lastHeartbeatOk ?? null,
     lastJob: stateJson?.lastJob ?? null,
+    health: buildWatcherHealth({ boots: readBoots(home, fs), crash: readCrash(home, fs), now: Date.now() }),
     agents: agents.map((a) => ({ assistantId: a.assistantId, supervisor: a.supervisor, recipe: Boolean(a.recipe), cwd: a.cwd })),
     logPath: watcherLogPath(home),
   }
@@ -301,12 +309,14 @@ async function commandStatus({ flags, home, env, platform, fs, exec, out }) {
   out(`[hoai-watcher] credentials: ${credentials ? `present (pairing ${credentials.pairingId}, machine ${credentials.machineId}, ${credentials.backendUrl})` : `absent (${watcherCredentialsPath(home)})`}`)
   out(`[hoai-watcher] heartbeat  : ${status.lastHeartbeatAt ?? 'never'}${status.lastHeartbeatOk === false ? ' (last one FAILED)' : ''}`)
   out(`[hoai-watcher] last job   : ${status.lastJob ? `${status.lastJob.op} ${status.lastJob.state} at ${status.lastJob.at}` : 'none'}`)
+  out(`[hoai-watcher] health     : ${status.health.status}, ${status.health.bootsLastHour} start(s) in the last hour${status.health.lastFatal ? `, last fatal ${status.health.lastFatal.at}: ${status.health.lastFatal.message}` : ''}`)
   out(`[hoai-watcher] agents     : ${agents.length ? agents.map((a) => `${a.assistantId}:${a.supervisor}${a.recipe ? '+recipe' : ''}`).join(', ') : 'none'}`)
   out(`[hoai-watcher] log        : ${status.logPath}`)
   return manifest && credentials ? EXIT.OK : EXIT.NO_CONFIG
 }
 
-async function commandEnroll({ flags, home, env, platform, fs, exec, out, err }) {
+async function commandEnroll({ m, flags, home, env, platform, fs, exec, out, err }) {
+  const { applyWin32CredentialsAcl, writeWatcherCredentials } = m.service
   if (!flags.file) {
     err('[hoai-watcher] enroll needs --file <json> ({pairingId, token, backendUrl, machineId}).')
     return EXIT.USAGE
@@ -339,14 +349,18 @@ async function commandEnroll({ flags, home, env, platform, fs, exec, out, err })
   return EXIT.OK
 }
 
-async function commandReconcile({ flags, home, env, platform, fs, exec, spawnDetached, out, err }) {
+async function commandReconcile({ m, flags, home, env, platform, fs, exec, spawnDetached, out, err }) {
+  const { readBundleManifest, watcherLogPath } = m.bundle
+  const { JOB_DEADLINE_MS, STAGGER_MS, StepLedger, VERIFY_TIMEOUT_MS, createLogger, observeMachine, runReconcileJob, scrubLine } = m.core
+  const { readWatcherCredentials } = m.service
+  const { defaultPidAlive } = m.inventory
   const manifest = readBundleManifest(home, fs)
   const pluginRootOverride = String(flags.pluginRoot ?? '').trim() || null
   if (!manifest && !pluginRootOverride) {
     err('[hoai-watcher] no installed bundle and no --plugin-root; run install first.')
     return EXIT.NO_CONFIG
   }
-  const modules = await loadLifecycleModules()
+  const modules = m.lifecycle
   const intent = flags.intent || 'reconcile'
   const username = defaultUsername(env)
   // The real pairing token is in the scrubber's denylist BEFORE the first
@@ -415,36 +429,72 @@ async function commandReconcile({ flags, home, env, platform, fs, exec, spawnDet
  * @param {string[]} [argv]
  * @param {{ home?: string, env?: Record<string, string | undefined>, platform?: string,
  *   fs?: object, exec?: Function, spawnDetached?: Function, scriptPath?: string,
- *   out?: (line: string) => void, err?: (line: string) => void, runWatcherImpl?: typeof runWatcher }} [opts]
+ *   out?: (line: string) => void, err?: (line: string) => void, runWatcherImpl?: Function,
+ *   loadModules?: () => Promise<any>, fetch?: typeof fetch, now?: () => number,
+ *   sleep?: (ms: number) => Promise<unknown> }} [opts]
  * @returns {Promise<number>}
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const home = opts.home ?? homedir()
   const env = opts.env ?? process.env
   const platform = opts.platform ?? process.platform
-  const fs = opts.fs ?? nodeFs()
-  const exec = opts.exec ?? nodeExec()
-  const spawnDetached = opts.spawnDetached ?? nodeSpawnDetached()
   const scriptPath = opts.scriptPath ?? defaultScriptPath()
   const out = opts.out ?? ((line) => process.stdout.write(`${line}\n`))
   const err = opts.err ?? ((line) => process.stderr.write(`${line}\n`))
+  const loadModules = opts.loadModules ?? loadWatcherModules
   const { command, flags, errors } = parseWatcherArgs(argv)
+  const usage = () => out(USAGE.replace(/\n$/, ''))
+  if (command === 'run' && !flags.help && errors.length === 0) {
+    // The service entry: nothing outside node's builtins is loaded before the
+    // guard holds the failure path.
+    return runGuarded({
+      home,
+      env,
+      platform,
+      username: defaultUsername(env),
+      err,
+      ...(opts.fetch ? { fetch: opts.fetch } : {}),
+      ...(opts.now ? { now: opts.now } : {}),
+      ...(opts.sleep ? { sleep: opts.sleep } : {}),
+      load: loadModules,
+      run: (m) => {
+        const runImpl = opts.runWatcherImpl ?? m.core.runWatcher
+        return runImpl({
+          home,
+          env,
+          platform,
+          fs: opts.fs ?? m.bundle.nodeFs(),
+          exec: opts.exec ?? m.bundle.nodeExec(),
+          spawnDetached: opts.spawnDetached ?? m.bundle.nodeSpawnDetached(),
+          nodePath: process.execPath,
+          echo: flags.verbose ? (line) => err(line) : undefined,
+          modules: m.lifecycle,
+        })
+      },
+    })
+  }
+  let m
+  try {
+    m = await loadModules()
+  } catch (error) {
+    err(`[hoai-watcher] the watcher bundle does not load: ${error?.message ?? error}`)
+    return EXIT.FAILED
+  }
   if (flags.help || command === 'help') {
     if (errors.length) for (const e of errors) err(`[hoai-watcher] ${e}`)
-    process.stdout.write(USAGE)
+    usage()
     return errors.length ? EXIT.USAGE : EXIT.OK
   }
   if (errors.length) {
     for (const e of errors) err(`[hoai-watcher] ${e}`)
-    process.stdout.write(USAGE)
+    usage()
     return EXIT.USAGE
   }
-  const common = { flags, home, env, platform, fs, exec, spawnDetached, scriptPath, out, err }
+  const fs = opts.fs ?? m.bundle.nodeFs()
+  const exec = opts.exec ?? m.bundle.nodeExec()
+  const spawnDetached = opts.spawnDetached ?? m.bundle.nodeSpawnDetached()
+  const common = { m, flags, home, env, platform, fs, exec, spawnDetached, scriptPath, out, err }
   switch (command) {
-    case 'run': {
-      const run = opts.runWatcherImpl ?? runWatcher
-      return run({ home, env, platform, fs, exec, spawnDetached, nodePath: process.execPath, echo: flags.verbose ? (line) => err(line) : undefined })
-    }
     case 'install':
       return commandInstall(common)
     case 'uninstall':
@@ -457,7 +507,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       return commandReconcile(common)
     default:
       err(`[hoai-watcher] unknown command: ${command}`)
-      process.stdout.write(USAGE)
+      usage()
       return EXIT.USAGE
   }
 }
