@@ -1,0 +1,97 @@
+{
+    "sourceCommit":  "fd03a09aa50d6d24cd7a366aa607c5f3dce5b0bb",
+    "firstUseMs":  57632,
+    "lockedCookieAbsentAfterReopen":  true,
+    "version":  "0.61.4",
+    "lockedCookiePresentBeforeClose":  true,
+    "initialStorage":  {
+                           "configured":  false,
+                           "unlocked":  false,
+                           "legacy":  false
+                       },
+    "node":  "v24.16.0",
+    "localRelayOnly":  true,
+    "unsafeSandboxFlags":  false,
+    "archiveSha256":  "05f180c7a4e6d1a532a124383b9779adbd75171d92256e2dc057861bcc7fbed6",
+    "hostProcessRestartReopenedProfile":  true,
+    "manifestVersion":  "0.61.4",
+    "remoteCredentialsAdvertised":  true,
+    "packagedSourceChecks":  [
+                                 {
+                                     "path":  "skills/hoai-browser/SKILL.md",
+                                     "sha256":  "891cfba594350ac93b50d0821f7cc9f131407f2d5ae64dc2ba30a7f02d66c1bd",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/browser-bootstrap.mjs",
+                                     "sha256":  "afd690386d5edaa82fdfbc1b35203e50a74abd038249405452c706b885515f92",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/agent-browser-vault.mjs",
+                                     "sha256":  "8490520932afbd6337bad28c50f2c43941d8f28e2471f6f86a94d78db5431fd9",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/remote-credentials.mjs",
+                                     "sha256":  "fba5c50e254658ce81d12f929df7aaed555eb4cc4f0478ef6ac949d771f6c032",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/remote-credentials-crypto.cjs",
+                                     "sha256":  "f4e2bdec3c3981b8119d831aab2474943ce3867818a661effef2209181a8a22f",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/browser-secret-redactor.mjs",
+                                     "sha256":  "d19227c106183c6ccf9408db1ec8e832a0805d38d79ae338ecfdd97262f6a8a4",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/browser-host-supervisor.ts",
+                                     "sha256":  "b0005267d6a8e0b0a9770a52e3399ccd91c0988b4269418b9ff8dbe5fadf72de",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "bin/hoai-browser-host.mjs",
+                                     "sha256":  "9c1a1fd1dc376a163f963130ffba4b49aa751e3aece3b31bdd6e0dbf712b2c03",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/remote-view.mjs",
+                                     "sha256":  "34413e675210419507c0e7576b2f67800310788639a7e4ba58c860375297f0a4",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "lib/remote-input.mjs",
+                                     "sha256":  "0019ff165280d15c753ef992337ee51c32a6505d74e81bfb1c7c29d3bc495719",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "README.md",
+                                     "sha256":  "59fac841559d9c1cc79200b9510fe394a9b671f167aaed112e9679cbdb0c9141",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "CHANGELOG.md",
+                                     "sha256":  "1a208cf8a9e47ac28fea07b233e56b10a30bc628c5e66bcf0e205a816aa8af2f",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  "package.json",
+                                     "sha256":  "1160c0898041c958bd3a71db26a40188cb0c4e23281d4faea0cdbb2aaf5ffe10",
+                                     "sourceMatch":  true
+                                 },
+                                 {
+                                     "path":  ".claude-plugin/plugin.json",
+                                     "sha256":  "5e450edda40781a66eb7edc92467d3cea907b1c026b38f12d7e701392334e728",
+                                     "sourceMatch":  true
+                                 }
+                             ],
+    "passed":  true,
+    "platform":  "win32",
+    "installedBrowserFoundInitially":  false,
+    "chromiumProcessesAfterCleanup":  0,
+    "browserCacheInitiallyAbsent":  true,
+    "completedAt":  "2026-10-06T08:24:17.601Z"
+}
