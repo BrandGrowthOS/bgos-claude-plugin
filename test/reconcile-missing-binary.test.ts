@@ -52,8 +52,17 @@ describe('always-on reconcile with a missing supervisor binary', () => {
     const existsAt = reconcileBody.indexOf('existsSync(BGOS_AGENT_BIN)')
     expect(winAt).toBeGreaterThan(-1)
     expect(winAt).toBeLessThan(existsAt)
-    expect(reconcileBody).toContain('restart-survival is NOT active')
-    expect(reconcileBody).toContain('unfulfilled')
+    // Mission 104 (design G7): the truth is now WHO keeps a Windows agent
+    // alive. The once-only line names the per-machine watcher and the switch
+    // that turns it on, and no longer promises a future Windows port.
+    const winLine = reconcileBody.slice(winAt, existsAt)
+    expect(winLine).toContain('DISABLED')
+    expect(winLine).toContain('per-machine watcher installs')
+    expect(winLine).toContain('Windows supervisor')
+    expect(winLine).toContain('Keep agents')
+    expect(winLine).toContain('running is on for this computer')
+    expect(winLine).toContain('Logged once')
+    expect(winLine).not.toContain('until Windows support ships')
   })
 
   it('tells the operator how to repair, in the one log line it emits', () => {

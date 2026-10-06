@@ -479,8 +479,10 @@ import {
   supervisorFilePath,
   wireSupervisedKind,
   type ResolvedService,
+  type Supervision,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
+import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -13302,6 +13304,10 @@ let reconcileBusy = false
 // forever and buries the one actionable log line in thousands of copies.
 // Log once, loudly, and stand down until the process restarts.
 let reconcileDisabledReason: string | null = null
+// G11: the "another supervisor already keeps this agent alive" line is said
+// once per process. The reconcile re-runs every 15 minutes and on every
+// config event, and the answer does not change while the bespoke job lives.
+let alwaysOnDeferLogged = false
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -13323,15 +13329,18 @@ async function reconcileAlwaysOn(): Promise<void> {
     // on a Windows host with always-on configured retried a spawn that can
     // never succeed (9,852 failures on one daemon in 2.5 days, found by
     // Mark 2026-08-09, who also caught that a quiet latch here would hide
-    // the real state). So: stand down ONCE, and say the true thing, which
-    // is that the flag KC configured is NOT being honored on this host.
-    reconcileDisabledReason = 'always-on is not implemented on Windows'
+    // the real state). So: stand down ONCE, and say the true thing. Since
+    // mission 104 (design G7) the true thing is WHO does it instead: the
+    // per-machine watcher's keep-alive sweep registers this agent's logon
+    // Scheduled Task when Keep agents running is on for this computer, so
+    // the line points there rather than at a Windows port of this script.
+    reconcileDisabledReason = 'the daemon does not install the Windows supervisor'
     log(
-      `always-on reconcile DISABLED: this assistant has always-on configured ` +
-        `in BGOS, but the supervisor only supports macOS (launchd) and Linux ` +
-        `(systemd), so restart-survival is NOT active on this Windows host. ` +
-        `The flag remains visible in BGOS as configured; treat it as ` +
-        `unfulfilled here until Windows support ships. Logged once.`,
+      `always-on reconcile DISABLED on this Windows host: this daemon does not ` +
+        `install a per-agent supervisor here. The per-machine watcher installs ` +
+        `the Windows supervisor (a logon Scheduled Task) when Keep agents ` +
+        `running is on for this computer in HOAI (Settings, Computers). ` +
+        `Logged once.`,
     )
     return
   }
@@ -13362,7 +13371,38 @@ async function reconcileAlwaysOn(): Promise<void> {
     if (typeof a?.alwaysOn !== 'boolean') return
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
+    // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
+    // file, so before installing, ask the same detection the update ladder
+    // trusts whether a bespoke job or a verified keepalive already keeps this
+    // agent alive. Read only on the install row: the platform query is not
+    // free and no other row needs it. Unreadable is null, which installs, the
+    // pre-G11 behaviour.
+    let supervision: Supervision | null = null
     if (desired && !installed) {
+      try {
+        supervision = resolveSupervision(supervisionProbe())
+      } catch {
+        supervision = null
+      }
+    }
+    const decision = decideAlwaysOnReconcile({
+      desired,
+      canonicalInstalled: installed,
+      supervision,
+      assistantId: ASSISTANT_ID,
+    })
+    if (decision.action === 'defer') {
+      if (!alwaysOnDeferLogged) {
+        alwaysOnDeferLogged = true
+        log(
+          `always-on: enabled in BGOS, and this agent is already kept alive by ` +
+            `${describeOtherSupervisor(decision.other)}; not installing a second ` +
+            `supervisor (two would race to relaunch it). Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'install') {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
@@ -13370,7 +13410,7 @@ async function reconcileAlwaysOn(): Promise<void> {
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')
-    } else if (!desired && installed) {
+    } else if (decision.action === 'remove') {
       // A supervisor installed moments ago is NOT "switched off": the app records
       // alwaysOn only after it has seen this agent connect. See lib/always-on-grace.ts.
       let stamp: string | null = null
