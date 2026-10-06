@@ -561,6 +561,10 @@ const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials
 // through as BGOS_LAUNCH_CWD. Without that, the folder pin was looked up inside
 // the plugin cache and could never be found on a marketplace install.
 const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
+// The CLI's config dir: CLAUDE_CONFIG_DIR (trimmed) when set, else ~/.claude.
+// Declared up here, beside the launch folder, because the session binder below
+// reads it at module load and a const read before its declaration throws.
+const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -1290,7 +1294,17 @@ async function bgosDelete(path: string): Promise<unknown> {
 // (positive proof, recorded in the reply handler) > CLAUDE_CODE_SESSION_ID
 // (fresh launches only; --continue discards it) > sticky previous binding >
 // newest-mtime at boot (logged last resort).
-const sessionBinder = new SessionTranscriptBinder(process.cwd(), {
+//
+// The transcripts live where the CLI writes them: <config dir>/projects/
+// <munged folder claude runs in>. That folder is LAUNCH_CWD, never this
+// process's cwd (a marketplace install runs it in the plugin cache), and the
+// config dir moves with CLAUDE_CONFIG_DIR. Built from the cwd under a fixed
+// ~/.claude, the binder named a project dir no transcript of this agent lives
+// in, so the hook intake refused the agent's OWN events as foreign-project:
+// hookTurnLive never set, agent-state.json reported no turn in flight (design
+// section 6) and the session pin was never written (section 4).
+const sessionBinder = new SessionTranscriptBinder(LAUNCH_CWD, {
+  claudeHome: CLAUDE_CONFIG_DIR,
   envSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
   log,
 })
@@ -10911,7 +10925,6 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
   INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
-const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 /**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
