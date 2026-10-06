@@ -1345,14 +1345,30 @@ function defaultSpawnGateHelper({ scriptDir, consolePid, spawnImpl = spawn, writ
   return child
 }
 
-/** Is `expect` available to auto-accept the dev-channels startup gate? Never on
- *  win32 (no expect; win32 uses the console-input helper instead). */
-function defaultHasExpect(platform) {
+/**
+ * Is `expect` available to auto-accept the dev-channels startup gate? Never on
+ * win32 (no expect; win32 uses the console-input helper instead).
+ *
+ * The well-known paths, AND every PATH directory: spawnExpectScript starts
+ * `expect` by name through PATH, and bin/bgos-agent requires only `command -v
+ * expect` at install and puts that directory on the service PATH. Checking the
+ * fixed list alone would call a Nix or Linuxbrew expect missing, and under
+ * HOAI_SUPERVISED that is a refusal (expect-missing): an agent kept down on a
+ * host where the installer had just found expect.
+ * @param {{ platform: string, env?: Record<string, string | undefined>,
+ *   exists?: (path: string) => boolean }} input
+ * @returns {boolean}
+ */
+export function hostHasExpect({ platform, env = process.env, exists = existsSync }) {
   if (platform === 'win32') return false
-  return ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect', '/bin/expect'].some(
+  const onPath = String(env?.PATH ?? '')
+    .split(':')
+    .filter((dir) => dir.startsWith('/'))
+    .map((dir) => `${dir.replace(/\/+$/, '')}/expect`)
+  return ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect', '/bin/expect', ...onPath].some(
     (p) => {
       try {
-        return existsSync(p)
+        return exists(p)
       } catch {
         return false
       }
@@ -1732,7 +1748,7 @@ export async function superviseClaude(args, opts = {}) {
   const print = opts.print ?? ((line) => console.log(line))
   const pidAlive = opts.pidAlive ?? defaultPidAlive
   const generateId = opts.generateId ?? randomUUID
-  const hasExpect = opts.hasExpect ?? defaultHasExpect(platform)
+  const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
   const healthyMs = opts.healthyMs ?? RELAUNCH_HEALTHY_MS
   const setTimer = opts.setTimer ?? setTimeout

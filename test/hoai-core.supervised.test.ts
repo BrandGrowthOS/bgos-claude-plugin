@@ -42,6 +42,7 @@ import {
   SESSION_ID_FILE_NAME,
   SUPERVISOR_FILE_NAME,
   buildGateAutoAcceptExpect,
+  hostHasExpect,
   isSupervisedLaunch,
   main,
   readGateBlock,
@@ -335,6 +336,52 @@ test('supervised: with no expect on a posix host the launch is refused (exit 8),
     assert.match(sb.statusOf('900'), /outcome=expect-missing/)
   } finally {
     sb.cleanup()
+  }
+})
+
+test('hostHasExpect: the well-known paths AND every PATH directory, because the installer only required `command -v expect` and baked its directory into the service PATH', () => {
+  const only = (paths: string[]) => (p: string) => paths.includes(p)
+  assert.equal(hostHasExpect({ platform: 'darwin', env: { PATH: '' }, exists: only(['/usr/bin/expect']) }), true)
+  // A Nix or Linuxbrew expect, found only through PATH: refusing it as "expect-missing" would
+  // keep an agent down on a host where the installer had just found it.
+  assert.equal(
+    hostHasExpect({ platform: 'linux', env: { PATH: '/home/kc/.nix-profile/bin:/usr/bin' }, exists: only(['/home/kc/.nix-profile/bin/expect']) }),
+    true,
+  )
+  assert.equal(hostHasExpect({ platform: 'linux', env: { PATH: '/a:/b' }, exists: only([]) }), false)
+  assert.equal(hostHasExpect({ platform: 'win32', env: { PATH: 'C:\\x' }, exists: () => true }), false, 'never on Windows')
+})
+
+test('supervised: the launch finds expect through ITS OWN PATH (the service PATH), and refuses only when that PATH has none either', async () => {
+  for (const [path, spawnedVia, code] of [
+    ['/opt/nix/bin:/usr/bin', 'expect', 0],
+    ['/usr/bin', null, EXIT_SUPERVISED_NO_EXPECT],
+  ] as const) {
+    const sb = sandbox()
+    try {
+      writeFileSync(join(sb.cwd, FOLDER_PIN_FILE), '900\n')
+      const spawns: string[] = []
+      const got = await superviseClaude(['--dangerously-skip-permissions'], {
+        platform: 'linux',
+        env: { ...SUPERVISED, PATH: path },
+        home: sb.home,
+        cwd: sb.cwd,
+        scriptDir: CLONE_SCRIPT_DIR,
+        listProcesses: () => [],
+        print: () => {},
+        writeErr: () => {},
+        // Only the Nix expect exists on this pretend host.
+        expectExists: (p: string) => p === '/opt/nix/bin/expect',
+        spawnImpl: ((file: string) => {
+          spawns.push(file)
+          return childExiting(0)
+        }) as never,
+      } as never)
+      assert.equal(got, code, path)
+      assert.deepEqual(spawns, spawnedVia ? [spawnedVia] : [], path)
+    } finally {
+      sb.cleanup()
+    }
   }
 })
 
