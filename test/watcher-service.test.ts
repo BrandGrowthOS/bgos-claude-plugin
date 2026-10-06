@@ -267,6 +267,28 @@ test('unsupported platform is refused by name', () => {
   assert.throws(() => watcherServiceSpec({ platform: 'freebsd', ...POSIX }), /freebsd/)
 })
 
+// -- the service PATH carries the tools this install actually found ----------------------------
+
+test('service PATH: the dirs where node, bun, claude, tmux, expect and git were FOUND at install come first; a host with none of them off the defaults is unchanged', () => {
+  // Measured in the M6 end to end run: the watcher's sweep ran `bgos-agent install` and it died
+  // with "bun not found", because the service PATH was a fixed list and bun lived elsewhere.
+  // bin/bgos-agent bakes the dirs of the tools it found into its own service; so does this now.
+  const found = new Set(['/opt/tools/bun/bin/bun', '/opt/tools/claude/bin/claude', '/usr/bin/expect'])
+  const env = { PATH: '/opt/tools/bun/bin:/opt/tools/claude/bin:/usr/bin:/bin' }
+  const exists = (p: string) => found.has(p)
+  const mac = watcherServiceSpec({ ...POSIX, platform: 'darwin', nodePath: '/opt/node-22/bin/node', env, exists })
+  const plist = mac.files[0]!.content
+  const pathLine = plist.split('\n').find((l) => l.includes('<key>PATH</key>'))!
+  assert.match(pathLine, /<string>\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  const linux = watcherServiceSpec({ ...POSIX, platform: 'linux', nodePath: '/opt/node-22/bin/node', env, exists })
+  assert.match(linux.files[0]!.content, /Environment=PATH=\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  // /usr/bin (expect) is already a default: listed once, in its default place.
+  assert.equal(pathLine.split('/usr/bin:').length - 1, 1)
+  // Nothing found off the defaults (the fixture's node is /usr/local/bin/node): byte for byte as before.
+  const plain = watcherServiceSpec({ ...POSIX, platform: 'darwin', env: {}, exists: () => false })
+  assert.equal(plain.files[0]!.content, watcherServiceSpec({ ...POSIX, platform: 'darwin' }).files[0]!.content)
+})
+
 // -- installWatcherService --------------------------------------------------------------------
 
 test('installWatcherService (darwin): mkdirs logs, writes the plist, runs bootout (rc ignored) then bootstrap then kickstart, in order', async () => {
