@@ -493,6 +493,12 @@ import {
   memoizeUntilFound,
   nearestClaudeAncestor,
 } from './lib/agent-state.js'
+import {
+  SESSION_PIN_CHECK_MS,
+  SessionPinKeeper,
+  isPrintModeCommand,
+  readProcessCommand,
+} from './lib/session-pin.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -10842,6 +10848,41 @@ const agentStatePublisher = new AgentStatePublisher({
   }),
 })
 
+// ── Session pin (finding 7, design section 4) ───────────────────────────────
+// The live session this daemon's own hooks named goes into
+// ~/.bgos-agent/<id>/session-id, the pin hoai resumes on every supervised
+// (re)launch, so an agent first started with plain `claude` keeps its
+// conversation when the supervisor takes over. lib/session-pin.ts has the
+// guards: the channel holder only, never a print-mode claude, a session that
+// stayed up past hoai's own health window, a transcript hoai can resume, and
+// once per live session. Checked every 30 s; never throws.
+const claudePrintMode = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () => {
+  const pid = agentClaudePid()
+  if (pid === null) return null
+  const command = readProcessCommand(pid, defaultExecSync)
+  return command === null ? null : isPrintModeCommand(command)
+})
+const sessionPinKeeper = new SessionPinKeeper({
+  home: homedir(),
+  cwd: process.cwd(),
+  configDir: process.env.CLAUDE_CONFIG_DIR ?? '',
+  assistantId: ASSISTANT_ID,
+  exists: existsSync,
+  readFile: readTextOrNull,
+  log,
+})
+function checkSessionPin(): void {
+  sessionPinKeeper.check(
+    {
+      holdsChannel: channelArmed && lockHeld,
+      sessionId: liveSessionId,
+      seenAtMs: liveSessionSeenAtMs,
+      printMode: claudePrintMode(),
+    },
+    Date.now(),
+  )
+}
+
 // Install method + plugin root, detected once. For a marketplace install the
 // root is the VERSIONED cache dir this process was loaded from (design 7.3),
 // which is also where the watcher bundle is copied FROM.
@@ -13725,6 +13766,9 @@ async function main(): Promise<void> {
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
   setInterval(() => agentStatePublisher.tick(), AGENT_STATE_TICK_MS).unref()
+  // The session pin (finding 7): asks only while this daemon holds the channel
+  // and its live session is not pinned yet (lib/session-pin.ts).
+  setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:

@@ -183,17 +183,15 @@ const nodeAgentStateFs: AgentStateFs = {
   unlink: (path) => unlinkSync(path),
 }
 
-/** Write through `<path>.<pid>.tmp` and a rename, creating the directory.
- *  False on any failure (the temp file is cleaned up); never throws. */
-export function writeAgentStateAtomic(
-  path: string,
-  state: AgentState,
-  fs: AgentStateFs = nodeAgentStateFs,
-): boolean {
+/** Write `body` through `<path>.<pid>.tmp` and a rename, creating the
+ *  directory, so a reader sees the old file or the new one and never half of
+ *  either. False on any failure (the temp file is cleaned up); never throws.
+ *  Shared with the session pin (lib/session-pin.ts). */
+export function writeTextAtomic(path: string, body: string, fs: AgentStateFs = nodeAgentStateFs): boolean {
   const tmp = `${path}.${process.pid}.tmp`
   try {
     fs.mkdir(dirname(path))
-    fs.writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`)
+    fs.writeFile(tmp, body)
     fs.rename(tmp, path)
     return true
   } catch {
@@ -204,6 +202,15 @@ export function writeAgentStateAtomic(
     }
     return false
   }
+}
+
+/** The agent-state.json body, written atomically (writeTextAtomic). */
+export function writeAgentStateAtomic(
+  path: string,
+  state: AgentState,
+  fs: AgentStateFs = nodeAgentStateFs,
+): boolean {
+  return writeTextAtomic(path, `${JSON.stringify(state, null, 2)}\n`, fs)
 }
 
 /** Remove the file when it names `pid`; a file another daemon wrote is left
