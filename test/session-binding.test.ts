@@ -552,7 +552,10 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   // the hook intake gate and the Sessions sheet follow the fix.
   assert.match(server, /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,/)
   assert.match(server, /new AgentSessionLibrary\(\{\s*projectDir: sessionBinder\.projectDirectory,/)
-  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 2)
+  // The third reader is agent-state.json's transcript activity (code review
+  // F1), which reads the same dir for an agent whose hook rail is silent.
+  assert.match(server, /readSessionTranscript\(\{ resolved: sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\)/)
+  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 3)
 })
 
 // The two other transcript readers (mission 104 fix round, verifier item a).

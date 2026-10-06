@@ -10,7 +10,7 @@
  *
  * Run: npx tsx --test test/agent-state.test.ts
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,10 +25,13 @@ import {
   memoizeFor,
   memoizeUntilFound,
   nearestClaudeAncestor,
+  readSessionTranscript,
   removeAgentStateIfOurs,
   writeAgentStateAtomic,
   type AgentStateSnapshot,
 } from '../lib/agent-state.ts'
+import { SessionTranscriptBinder } from '../lib/session-binding.ts'
+import { mungeCwd } from '../lib/usage-report.ts'
 
 const SESSION = '8c1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b'
 const T0 = Date.parse('2026-10-06T19:00:00.000Z')
@@ -39,6 +42,7 @@ const baseSnapshot = (over: Partial<AgentStateSnapshot> = {}): AgentStateSnapsho
   runningVersion: '0.62.0',
   pendingRestartVersion: '0.62.1',
   turnInFlight: false,
+  turnSignal: 'hooks',
   pendingMessages: 0,
   pendingPermissions: 0,
   activeOperations: 0,
@@ -61,6 +65,7 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
     runningVersion: '0.62.0',
     pendingRestartVersion: '0.62.1',
     turnInFlight: false,
+    turnSignal: 'hooks',
     pendingMessages: 0,
     pendingPermissions: 0,
     activeOperations: 0,
@@ -70,7 +75,7 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
   })
   assert.deepEqual(Object.keys(state!), [
     'schemaVersion', 'assistantId', 'pid', 'claudePid', 'runningVersion', 'pendingRestartVersion',
-    'turnInFlight', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
+    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
     'sessionId', 'updatedAt',
   ])
 })
@@ -94,6 +99,11 @@ test('buildAgentState fails closed on what it cannot vouch for', () => {
   assert.equal(build({ runningVersion: '' })!.runningVersion, null)
   assert.equal(build({ pendingRestartVersion: undefined })!.pendingRestartVersion, null)
   assert.equal(build({})!.lastActivityAt, null)
+  // turnSignal is 'hooks' only when the daemon says so: anything else is
+  // 'none', the reading under which turnInFlight proves nothing.
+  assert.equal(build({ turnSignal: 'none' })!.turnSignal, 'none')
+  assert.equal(build({ turnSignal: 'HOOKS' as 'hooks' })!.turnSignal, 'none')
+  assert.equal(build({ turnSignal: undefined as unknown as 'none' })!.turnSignal, 'none')
 })
 
 test('nearestClaudeAncestor walks up from the parent and stops at the first claude', () => {
@@ -364,7 +374,7 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.match(wiring, /shouldPublish: \(\) => lockHeld/)
   assert.match(wiring, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0,/)
   assert.match(wiring, /sessionId: liveSessionId/)
-  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs\]/)
+  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, /)
   assert.match(wiring, /claudePid: agentClaudePid\(\)/)
   assert.match(wiring, /pendingMessages: pendingInbounds\.size/)
   assert.match(wiring, /pendingPermissions: pendingPermissions\.size/)
@@ -388,4 +398,124 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.ok(shutdownBody.includes('agentStatePublisher.shutdown()'))
   const exitAt = server.indexOf("process.on('exit', () => {", shutdownAt)
   assert.ok(server.slice(exitAt, exitAt + 400).includes('agentStatePublisher.shutdown()'))
+})
+
+// ── Finding F1 (mission 104 code review): an agent without the hook rail ────
+//
+// Every turn signal the daemon published came from consumed hook events. A
+// clone agent whose folder registers no BGOS hooks (KC's whole fleet on the M6
+// today) therefore published a FRESH file with turnInFlight false, sessionId
+// null and a lastActivityAt frozen at boot or its last inbound, and the
+// watcher's 10 minute window passed in the middle of a long Read/Edit/Task
+// job. Now: `turnSignal` says whether turnInFlight means anything (the watcher
+// decides what 'none' costs), lastActivityAt counts the transcript the agent
+// is writing, and sessionId falls back to the transcript the binding chain
+// PROVED, so the watcher can stat the transcript and the spool itself.
+
+const SUB = '1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6'
+
+function transcriptFixture() {
+  const root = tempDir()
+  const agent = '/Users/kc/agents/vexa'
+  const projectDir = join(root, 'projects', mungeCwd(agent))
+  mkdirSync(projectDir, { recursive: true })
+  const write = (path: string, atMs: number) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '{}\n')
+    utimesSync(path, atMs / 1000, atMs / 1000)
+    return path
+  }
+  return { root, agent, projectDir, write }
+}
+
+test('readSessionTranscript: the bound transcript and its subagents are the activity, a proven one is the session', () => {
+  const f = transcriptFixture()
+  try {
+    const ours = f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 9 * 60_000)
+    f.write(join(f.projectDir, `${SUB}.jsonl`), T0 - 60_000) // a neighbour in the same folder
+    const proven = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'env' as const } }
+    assert.deepEqual(readSessionTranscript({ resolved: proven, projectDir: f.projectDir }), {
+      activityMs: T0 - 9 * 60_000,
+      sessionId: SESSION,
+    })
+    // Claude Code 2.1 writes a Task subagent's rows beside the transcript, so a
+    // long subagent run moves no byte of the main file.
+    f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.jsonl'), T0 - 5 * 60_000)
+    f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'agent-b2.jsonl'), T0 - 2 * 60_000)
+    assert.equal(readSessionTranscript({ resolved: proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
+    // A guess (newest-mtime) still counts as activity, never as the session.
+    const guessed = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'newest-mtime' as const } }
+    assert.deepEqual(readSessionTranscript({ resolved: guessed, projectDir: f.projectDir }), {
+      activityMs: T0 - 2 * 60_000,
+      sessionId: null,
+    })
+    // Unbound (the binder refuses to guess between two live transcripts): any
+    // transcript in the folder being written is activity, the safe direction.
+    assert.deepEqual(readSessionTranscript({ resolved: null, projectDir: f.projectDir }), {
+      activityMs: T0 - 60_000,
+      sessionId: null,
+    })
+    assert.deepEqual(readSessionTranscript({ resolved: null, projectDir: join(f.root, 'missing') }), {
+      activityMs: null,
+      sessionId: null,
+    })
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+test('a hookless agent writing its transcript a minute ago publishes that minute, its session and turnSignal none', () => {
+  const f = transcriptFixture()
+  try {
+    // hoai launched it with --session-id, so the CLI hands the daemon that id.
+    f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 60_000)
+    const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root, envSessionId: SESSION })
+    const reading = () => readSessionTranscript({ resolved: binder.resolve(T0), projectDir: binder.projectDirectory })
+    const lastHookEventAtMs: number | null = null
+    const liveSessionId: string | null = null
+    const writes: Array<ReturnType<typeof buildAgentState>> = []
+    const publisher = new AgentStatePublisher({
+      path: join(f.root, AGENT_STATE_FILE_NAME),
+      pid: 4242,
+      now: () => T0,
+      shouldPublish: () => true,
+      write: (_path, state) => {
+        writes.push(state)
+        return true
+      },
+      // What server.ts publishes, with no hook event ever consumed.
+      snapshot: () => ({
+        ...baseSnapshot(),
+        turnInFlight: false,
+        turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
+        activityAtMs: [T0 - 30 * 60_000, null, lastHookEventAtMs, reading().activityMs],
+        sessionId: liveSessionId ?? reading().sessionId,
+      }),
+    })
+    assert.equal(publisher.tick(), 'written')
+    const state = writes[0]!
+    assert.equal(state.turnSignal, 'none')
+    assert.equal(state.turnInFlight, false)
+    assert.equal(state.lastActivityAt, new Date(T0 - 60_000).toISOString(), 'the transcript write, not the boot')
+    assert.equal(state.sessionId, SESSION)
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+test('server.ts publishes turnSignal, the transcript activity and the proven session', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
+  const wiring = server.slice(at, server.indexOf('\n})\n', at))
+  // 'hooks' once this daemon consumed an event of its own session (the intake
+  // admits nothing else, and onHookPayload is its only consumer).
+  assert.match(wiring, /turnSignal: lastHookEventAtMs === null \? 'none' : 'hooks',/)
+  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
+  assert.match(wiring, /sessionId: liveSessionId \?\? agentTranscript\(\)\.sessionId,/)
+  // One binder read per window, not per 1 s tick: it lists the project dir.
+  assert.match(
+    server,
+    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolved: sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
+  )
 })

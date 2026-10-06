@@ -492,6 +492,7 @@ import {
   memoizeFor,
   memoizeUntilFound,
   nearestClaudeAncestor,
+  readSessionTranscript,
 } from './lib/agent-state.js'
 import {
   SESSION_PIN_CHECK_MS,
@@ -10865,6 +10866,15 @@ const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () 
 const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
   daemonPendingRestartVersion(),
 )
+// What the transcripts say (code review F1): the hook rail is the only source
+// of turnInFlight and of liveSessionId, and a clone agent whose folder
+// registers no BGOS hooks never feeds it, so without this its file said idle,
+// with no session, through a whole Read/Edit/Task job. The binder lists the
+// project dir, so it is read at most every 10 s, not on every 1 s tick.
+const AGENT_TRANSCRIPT_READ_MS = 10_000
+const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
+  readSessionTranscript({ resolved: sessionBinder.resolve(), projectDir: sessionBinder.projectDirectory }),
+)
 const agentStatePublisher = new AgentStatePublisher({
   path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
   pid: process.pid,
@@ -10879,13 +10889,21 @@ const agentStatePublisher = new AgentStatePublisher({
     // "in flight" (the intake's own isTurnLive rule): restarting then would
     // kill that child mid job, which finding 9 forbids.
     turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    // Whether turnInFlight means anything: 'hooks' once this daemon consumed
+    // an event of its own session (the intake admits nothing else, and
+    // onHookPayload is its only consumer). 'none' tells the watcher that a
+    // false turnInFlight is no evidence of idle.
+    turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
     pendingMessages: pendingInbounds.size,
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
     // Boot counts as activity: a session that just started may have a person
     // at its keyboard, and the watcher's quiet window should run from there.
-    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs],
-    sessionId: liveSessionId,
+    // The transcript the agent is writing counts too, hooks or not.
+    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+    // The hooks name the live session; without them, the transcript the
+    // binding chain proved (a reply marker, the CLI assigned id) does.
+    sessionId: liveSessionId ?? agentTranscript().sessionId,
   }),
 })
 
