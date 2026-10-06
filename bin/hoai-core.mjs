@@ -129,6 +129,16 @@ export const EXIT_CHANNEL_UNRESOLVED = 4
  *  wait had no end, so there was nothing to report. */
 export const EXIT_INCUMBENT_TIMEOUT = 5
 
+/** An UNATTENDED launch (HOAI_SUPERVISED=1 under bin/bgos-agent's run.sh, or
+ *  --keep-alive under the Windows logon task) that only a person can unblock:
+ *  no identity at all (pair this folder first), two agents and nothing saying
+ *  which (choose one), or a folder that names two different agents. A launch
+ *  in front of a person prints the same reason and waits for them; with nobody
+ *  there, the honest outcome is to stop with a code a supervisor can count and
+ *  a reason in launch-status, never a session that looks healthy while it
+ *  waits for an answer nobody will give. */
+export const EXIT_UNATTENDED_NEEDS_PERSON = 6
+
 /** The message printed instead of relaunching on an unresolved channel. */
 export function unresolvedChannelMessage(resolution) {
   const reason = String(resolution?.reason ?? '').trim() || 'no evidence of an install was found'
@@ -248,11 +258,21 @@ export const RUN_FRESH_FLAGS = Object.freeze(['--new'])
 export const RUN_FORCE_FLAGS = Object.freeze(['--force'])
 
 /**
+ * The flag that makes hoai itself the keep-alive loop (design section 4): the
+ * Windows per agent logon task runs `hoai-core.mjs --keep-alive`, because
+ * Windows has no launchd or systemd to bring claude back. With it, an exit of
+ * claude on its own is followed by a relaunch of the SAME pinned session after
+ * a backoff, instead of hoai returning (see decideKeepAliveBackoff).
+ */
+export const RUN_KEEP_ALIVE_FLAGS = Object.freeze(['--keep-alive'])
+
+/**
  * Classify one token as a run flag: 'resume' (a synonym of bare `hoai`),
- * 'new' (force a fresh session), 'force' (skip the incumbent wait), or null
- * (not a run flag).
+ * 'new' (force a fresh session), 'force' (skip the incumbent wait),
+ * 'keep-alive' (relaunch claude after every exit of its own), or null (not a
+ * run flag).
  * @param {unknown} token
- * @returns {'resume' | 'new' | 'force' | null}
+ * @returns {'resume' | 'new' | 'force' | 'keep-alive' | null}
  */
 export function classifyRunFlag(token) {
   const value = String(token ?? '')
@@ -262,6 +282,7 @@ export function classifyRunFlag(token) {
   if (RUN_RESUME_FLAGS.includes(value)) return 'resume'
   if (RUN_FRESH_FLAGS.includes(value)) return 'new'
   if (RUN_FORCE_FLAGS.includes(value)) return 'force'
+  if (RUN_KEEP_ALIVE_FLAGS.includes(value)) return 'keep-alive'
   return null
 }
 
@@ -273,20 +294,22 @@ export function classifyRunFlag(token) {
  * Consuming a run of them (rather than exactly one) is also what keeps
  * `hoai --force --new` off the unknown-flag path, which prints the help.
  * @param {readonly string[]} tokens
- * @returns {{ rest: string[], fresh: boolean, force: boolean }}
+ * @returns {{ rest: string[], fresh: boolean, force: boolean, keepAlive: boolean }}
  */
 function collectRunFlags(tokens) {
   let fresh = false
   let force = false
+  let keepAlive = false
   let index = 0
   while (index < tokens.length) {
     const kind = classifyRunFlag(tokens[index])
     if (!kind) break
     if (kind === 'new') fresh = true
     if (kind === 'force') force = true
+    if (kind === 'keep-alive') keepAlive = true
     index += 1
   }
-  return { rest: tokens.slice(index), fresh, force }
+  return { rest: tokens.slice(index), fresh, force, keepAlive }
 }
 
 /**
@@ -294,26 +317,29 @@ function collectRunFlags(tokens) {
  *   (nothing) / run  -> run     doctor -> doctor     pair -> pair
  *   setup -> setup              logs -> logs         help / -h / --help -> help
  *   install-cli -> install-cli (put the hoai command on PATH)
- * A run flag (-c / --continue / --resume, --new and --force) routes to run,
- * either as the first token or right after `run`; `fresh` and `force` say
- * which ones were given, and they combine.
+ * A run flag (-c / --continue / --resume, --new, --force and --keep-alive)
+ * routes to run, either as the first token or right after `run`; `fresh`,
+ * `force` and `keepAlive` say which ones were given, and they combine.
+ * `keepAlive` is present only when given, so every route that does not ask for
+ * it keeps exactly the shape it always had.
  * An unknown first token that LOOKS like a pair code (BGOS-... / OC-...)
  * routes to pair with itself prepended, so `hoai BGOS-7F3A-2K` just works.
  * Anything else routes to help (with the tokens kept, so main can name them).
  * @param {readonly string[]} argv
  * @returns {{ action: 'run' | 'doctor' | 'pair' | 'setup' | 'logs' | 'install-cli' | 'help',
- *             rest: string[], fresh: boolean, force: boolean }}
+ *             rest: string[], fresh: boolean, force: boolean, keepAlive?: true }}
  */
 export function resolveHoaiAction(argv) {
   const args = Array.isArray(argv) ? argv.map((value) => String(value ?? '')) : []
-  const route = (action, rest, fresh = false, force = false) => ({ action, rest, fresh, force })
+  const route = (action, rest, fresh = false, force = false, keepAlive = false) =>
+    keepAlive ? { action, rest, fresh, force, keepAlive: true } : { action, rest, fresh, force }
   if (args.length === 0) return route('run', [])
   const first = args[0]
   const lowered = first.toLowerCase()
   const rest = args.slice(1)
   if (lowered === 'run') {
     const run = collectRunFlags(rest)
-    return route('run', run.rest, run.fresh, run.force)
+    return route('run', run.rest, run.fresh, run.force, run.keepAlive)
   }
   if (lowered === 'doctor') return route('doctor', rest)
   if (lowered === 'pair') return route('pair', rest)
@@ -325,7 +351,7 @@ export function resolveHoaiAction(argv) {
   }
   if (classifyRunFlag(first)) {
     const run = collectRunFlags(args)
-    return route('run', run.rest, run.fresh, run.force)
+    return route('run', run.rest, run.fresh, run.force, run.keepAlive)
   }
   if (/^(BGOS|OC)-/i.test(first)) return route('pair', [first, ...rest])
   return route('help', args)
@@ -675,6 +701,84 @@ export const MARKER_POLL_MS = 3000
  *  the agent dead after its own kill. Mirrors the tmux/expect keepalive.sh
  *  "resumed session died in <25s, retrying fresh" window. */
 export const RELAUNCH_HEALTHY_MS = 25_000
+
+/** <statedir>/launch-status: ONE line saying how the most recent launch went,
+ *  shared by every writer (bin/bgos-agent run.sh, the supervised expect tail
+ *  below, and this loop), and read by `hoai-agent status` and the WEDGED line. */
+export const LAUNCH_STATUS_FILE_NAME = 'launch-status'
+
+/** The local `YYYY-MM-DD HH:MM:SS` stamp every launch-status writer uses (the
+ *  Tcl side spells it `clock format ... {%Y-%m-%d %H:%M:%S}`, run.sh `date`). */
+export function launchStatusStamp(at = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return (
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ` +
+    `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`
+  )
+}
+
+/**
+ * One launch-status line: `<stamp> outcome=<outcome> key=value ...`. A value
+ * with a space is double quoted; quotes and line breaks inside it are dropped,
+ * because the file is ONE line by contract and a reader splits on spaces.
+ * @param {{ outcome: string, fields?: Record<string, string | number>, at?: Date }} input
+ * @returns {string}
+ */
+export function launchStatusLine({ outcome, fields = {}, at = new Date() }) {
+  const parts = [`outcome=${outcome}`]
+  for (const [key, raw] of Object.entries(fields)) {
+    const value = String(raw ?? '').replace(/["\r\n]+/g, ' ').trim()
+    parts.push(/\s/.test(value) ? `${key}="${value}"` : `${key}=${value}`)
+  }
+  return `${launchStatusStamp(at)} ${parts.join(' ')}`
+}
+
+/** --keep-alive backoff (design section 4): 5 s, 10 s, 20 s, 40 s, then 60 s
+ *  for every further quick exit, back to 5 s once a session has stayed up for
+ *  KEEP_ALIVE_HEALTHY_RESET_MS. Fast enough that a one-off crash costs seconds,
+ *  slow enough that an agent that cannot start does not burn the machine (or
+ *  the account) relaunching claude in a tight loop. */
+export const KEEP_ALIVE_BACKOFF_BASE_MS = 5_000
+export const KEEP_ALIVE_BACKOFF_CAP_MS = 60_000
+export const KEEP_ALIVE_HEALTHY_RESET_MS = 10 * 60 * 1000
+
+/** A crash loop: CRASH_LOOP_EXITS or more exits inside CRASH_LOOP_WINDOW_MS.
+ *  Recorded in launch-status so it is visible, not silent (fact 5 is this
+ *  exact failure in the watcher: a loop every 5 s that nobody heard about). */
+export const CRASH_LOOP_EXITS = 3
+export const CRASH_LOOP_WINDOW_MS = 5 * 60 * 1000
+
+/**
+ * The keep-alive backoff. `streak` is how many relaunches the current run of
+ * unhealthy exits has already cost; `ranMs` how long the session that just
+ * exited stayed up. A session that stayed up KEEP_ALIVE_HEALTHY_RESET_MS ends
+ * the streak, so the next wait is the first step again. Junk in, first step
+ * out: never NaN, never less than 5 s, never more than 60 s.
+ * @param {{ streak: number, ranMs: number, healthyResetMs?: number }} input
+ * @returns {{ delayMs: number, streak: number }}
+ */
+export function decideKeepAliveBackoff({ streak, ranMs, healthyResetMs = KEEP_ALIVE_HEALTHY_RESET_MS }) {
+  const prior = Number.isFinite(streak) && streak > 0 ? Math.floor(streak) : 0
+  const healthy = Number.isFinite(ranMs) && ranMs >= healthyResetMs
+  const step = healthy ? 0 : prior
+  // The exponent is clamped so a streak of a million never computes 2 ** 1e6.
+  const delayMs = Math.min(KEEP_ALIVE_BACKOFF_BASE_MS * 2 ** Math.min(step, 16), KEEP_ALIVE_BACKOFF_CAP_MS)
+  return { delayMs, streak: step + 1 }
+}
+
+/**
+ * Is the agent in a crash loop? `exitsAt` are the exit times the caller keeps
+ * (the current one included); `recent` is the pruned window to keep for next
+ * time. An exit exactly CRASH_LOOP_WINDOW_MS ago has left the window.
+ * @param {{ exitsAt: readonly number[], now: number, windowMs?: number, threshold?: number }} input
+ * @returns {{ crashLoop: boolean, recent: number[] }}
+ */
+export function decideCrashLoop({ exitsAt, now, windowMs = CRASH_LOOP_WINDOW_MS, threshold = CRASH_LOOP_EXITS }) {
+  const recent = (Array.isArray(exitsAt) ? exitsAt : []).filter(
+    (at) => Number.isFinite(at) && at <= now && now - at < windowMs,
+  )
+  return { crashLoop: recent.length >= threshold, recent }
+}
 
 /**
  * The assistant id this launch supervises: folder pin, else env pin, else
@@ -1185,8 +1289,17 @@ function defaultHasExpect(platform) {
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   keepAlive?: boolean, signal?: AbortSignal | null,
  * }} [opts]
  * @returns {Promise<number>}
+ *
+ * keepAlive (`hoai --keep-alive`, design section 4): an exit of claude on its
+ * own is no longer the end. After the fresh fallback has had its one chance,
+ * claude is relaunched RESUMING the pinned session after decideKeepAliveBackoff
+ * says how long to wait, a crash loop is written to launch-status, and
+ * supervisor.json is re-written before every relaunch. `signal` is the stop
+ * request: once it aborts, the live claude is stopped and nothing is
+ * relaunched (main wires SIGTERM and SIGHUP to it for --keep-alive).
  */
 /** Basename of a comm/path, lowercased, without a trailing .exe. */
 function commBase(comm) {
@@ -1517,6 +1630,25 @@ export async function superviseClaude(args, opts = {}) {
   const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimer(resolve, ms)))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
+  const keepAlive = opts.keepAlive === true
+  const stopSignal = opts.signal ?? null
+  // The keep-alive backoff wait ends early on a stop request: a launcher told to
+  // stop must not sit out a 60 s timer first (and a ref'd timer would hold the
+  // process open for that long). An injected sleep (tests) is used as given.
+  const keepAliveSleep =
+    opts.sleep ??
+    ((ms) =>
+      new Promise((resolve) => {
+        if (stopSignal?.aborted) return resolve()
+        let handle = null
+        const done = () => {
+          if (handle !== null) clearTimer(handle)
+          stopSignal?.removeEventListener?.('abort', done)
+          resolve()
+        }
+        stopSignal?.addEventListener?.('abort', done, { once: true })
+        handle = setTimer(done, ms)
+      }))
 
   // GAP 2: a clone (dev) launch shows the dev-channels confirm prompt at
   // (re)start; an unattended supervised launch strands on it. When expect is
@@ -1556,10 +1688,34 @@ export async function superviseClaude(args, opts = {}) {
   }
 
   const id = superviseAssistantId({ cwd, env, home, readFile, listDir })
-  if (!id) return spawnSupervised(args)
+  if (!id) {
+    // No identity, so no pin, so every relaunch of a keep-alive loop would be a
+    // brand NEW conversation (finding 7, the exact defect that made Ava add
+    // --resume by hand). Unattended, the honest answer is to stop and say so.
+    if (keepAlive) {
+      print(
+        '[hoai] STOPPING (identity-unknown): --keep-alive needs to know which agent this folder is, ' +
+          'so that every relaunch resumes that agent\'s own conversation. This folder has no ' +
+          `${FOLDER_PIN_FILE} pin and no BGOS_ASSISTANT_ID, and this host has no single paired agent. ` +
+          'Pair this folder first (hoai pair <CODE>), then start it again.',
+      )
+      return EXIT_UNATTENDED_NEEDS_PERSON
+    }
+    return spawnSupervised(args)
+  }
   const stateDir = joinDir(agentDir(home), id)
   const supervisorPath = joinDir(stateDir, SUPERVISOR_FILE_NAME)
   const markerPath = joinDir(stateDir, RESTART_MARKER_FILE_NAME)
+  // How this agent's most recent launch went, for `hoai-agent status`, the
+  // WEDGED line and the watcher. Only an unattended launch writes it: a person
+  // at a terminal reads the same words on screen.
+  const noteStatus = (outcome, fields = {}) => {
+    if (!keepAlive) return
+    writeFile(
+      joinDir(stateDir, LAUNCH_STATUS_FILE_NAME),
+      `${launchStatusLine({ outcome, fields, at: new Date(now()) })}\n`,
+    )
+  }
   // Incumbent wait: never start a second session beside a claude that already
   // owns this folder, supervised or not (a hand-started one is invisible to the
   // supervisor.json guard below). See findIncumbentClaude for the rules.
@@ -1698,6 +1854,10 @@ export async function superviseClaude(args, opts = {}) {
   // A fresh-retry id waiting to be pinned: committed to the session-id file
   // only once that session has outlived the health window (see retry-fresh).
   let pendingPin = null
+  // --keep-alive: the current run of quick exits, and the recent exit times the
+  // crash loop is judged on.
+  let keepAliveStreak = 0
+  let exitTimes = []
   try {
     while (true) {
       /** @type {import('node:child_process').ChildProcess | null} */
@@ -1707,6 +1867,18 @@ export async function superviseClaude(args, opts = {}) {
       const exited = spawnSupervised(currentArgs, (child) => {
         childRef = child
       })
+      // A stop request ends the live claude; the exit below then returns
+      // instead of relaunching. Checked once more after registering, because an
+      // abort that already happened fires no event.
+      const onStop = () => {
+        try {
+          childRef?.kill()
+        } catch {
+          // Already gone; its exit resolves the loop.
+        }
+      }
+      stopSignal?.addEventListener?.('abort', onStop, { once: true })
+      if (stopSignal?.aborted) onStop()
       // Deferred pin commit. A fresh session that dies inside the health
       // window (like the resume before it) is an environment fault, not a
       // rejected resume; the pin must still name the previous session so the
@@ -1754,10 +1926,13 @@ export async function superviseClaude(args, opts = {}) {
       }, pollMs)
       const code = await exited
       clearInterval(poller)
+      stopSignal?.removeEventListener?.('abort', onStop)
       if (pinTimer) {
         clearTimer(pinTimer)
         pinTimer = null
       }
+      // Asked to stop: whatever the exit, nothing is relaunched.
+      if (stopSignal?.aborted) return code
       if (restartRequested) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
@@ -1785,10 +1960,11 @@ export async function superviseClaude(args, opts = {}) {
       // window we already killed the old session (or the external keepalive
       // would loop on the same rejection), so never leave the agent dead: retry
       // once as a brand-new OWN session (a fresh pinned id).
+      const elapsedMs = now() - startedAt
       const recovery = decideRelaunchRecovery({
         isResumeAttempt: currentArgs.includes('--resume') || lastLaunchWasRelaunch,
         exitCode: code,
-        elapsedMs: now() - startedAt,
+        elapsedMs,
         freshTried,
         healthyMs,
       })
@@ -1820,7 +1996,65 @@ export async function superviseClaude(args, opts = {}) {
         )
         continue
       }
-      return code
+      if (!keepAlive) return code
+
+      // --keep-alive: claude exited on its own and the fresh fallback has had
+      // its chance. Wait, then bring the SAME agent back on its pinned session.
+      exitTimes.push(now())
+      const loop = decideCrashLoop({ exitsAt: exitTimes, now: now() })
+      exitTimes = loop.recent
+      const backoff = decideKeepAliveBackoff({ streak: keepAliveStreak, ranMs: elapsedMs })
+      keepAliveStreak = backoff.streak
+      // A session that outlived the health window has earned the fresh fallback
+      // again: a resume rejected days later deserves its one retry too.
+      if (elapsedMs >= healthyMs) freshTried = false
+      const ranS = Math.round(elapsedMs / 1000)
+      const delayS = Math.round(backoff.delayMs / 1000)
+      if (loop.crashLoop) {
+        noteStatus('crash-loop', {
+          exits: loop.recent.length,
+          window: `${Math.round(CRASH_LOOP_WINDOW_MS / 1000)}s`,
+          exit: code,
+          delay: `${delayS}s`,
+        })
+        print(
+          `[hoai] CRASH LOOP: claude exited ${loop.recent.length} times in the last ` +
+            `${Math.round(CRASH_LOOP_WINDOW_MS / 60_000)} minutes (last exit ${code}). Relaunching in ${delayS}s; ` +
+            'run hoai doctor in this folder to see why it does not stay up.',
+        )
+      } else {
+        noteStatus('keep-alive-relaunch', { exit: code, ran: `${ranS}s`, delay: `${delayS}s` })
+        print(
+          `[hoai] claude exited (code ${code}) after ${ranS}s; --keep-alive relaunches it in ${delayS}s, ` +
+            "resuming this agent's own session",
+        )
+      }
+      await keepAliveSleep(backoff.delayMs)
+      if (stopSignal?.aborted) return code
+      // The channel is re-resolved, and the session args are the identity-safe
+      // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
+      const keepArgs = relaunchClaudeArgs({
+        scriptDir,
+        env,
+        home,
+        cwd,
+        readFile,
+        sessionArgs: sessionArgsFor(pinnedId, sessionExistsNow()),
+      })
+      if (!keepArgs) {
+        print(unresolvedChannelMessage(resolveChannelSpec({ cwd, env, home, readFile, scriptDir })))
+        return EXIT_CHANNEL_UNRESOLVED
+      }
+      currentArgs = keepArgs
+      // Counted as a relaunch, so a fast death of it gets the fresh fallback the
+      // same way a marker relaunch does.
+      lastLaunchWasRelaunch = true
+      // The daemon trusts a restart authority only while supervisor.json names
+      // a live launcher with the relaunch capability. Re-written, not assumed:
+      // something may have removed it while claude ran.
+      writeFile(supervisorPath, supervisorFileBody(process.pid, new Date(now()).toISOString()))
+      recordRecipe(currentArgs)
+      continue
     }
   } finally {
     removeFile(supervisorPath)
@@ -2300,6 +2534,10 @@ Usage:
                        that looks like it is already running in this folder.
                        Use it when you know that other process is not this
                        agent. Can be combined: hoai --new --force.
+  hoai --keep-alive    keep this agent running: when claude exits, start it
+                       again on the same conversation, waiting 5 s at first
+                       and up to 60 s when it keeps exiting (the Windows
+                       logon task runs this).
   hoai doctor [...]    diagnose this host's HOAI agent setup
   hoai setup <CODE>    first run: add the marketplace, install HOAI, put the
                        hoai command on your PATH, then pair (this is the line
@@ -2368,7 +2606,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const listDir = opts.listDir ?? defaultListDir
   const spawnImpl = opts.spawnImpl ?? spawn
 
-  const { action, rest, fresh, force } = resolveHoaiAction(argv)
+  const { action, rest, fresh, force, keepAlive = false } = resolveHoaiAction(argv)
 
   if (action === 'help') {
     if (rest.length > 0 && !/^(help|-h|--help)$/i.test(rest[0] ?? '')) {
@@ -2476,6 +2714,18 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
         'one stays on disk; it is simply not the one being resumed from now on.',
     )
   }
+  // --keep-alive is stopped from outside (the logon task ending, the console
+  // closing) by a signal. Turned into the loop's stop request, so the live
+  // claude is ended and NOT relaunched; without it the loop would read the
+  // signal-killed claude as one more exit to recover from.
+  let signal = opts.signal ?? null
+  if (keepAlive && !signal) {
+    const controller = new AbortController()
+    const stop = () => controller.abort()
+    process.once('SIGTERM', stop)
+    process.once('SIGHUP', stop)
+    signal = controller.signal
+  }
   return superviseClaude(plan.args, {
     platform,
     env,
@@ -2487,7 +2737,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     spawnImpl,
     freshSession: fresh,
     force,
-      print: opts.print,
+    keepAlive,
+    signal,
+    print: opts.print,
     pollMs: opts.pollMs,
     listProcesses: opts.listProcesses,
     sleep: opts.sleep,
