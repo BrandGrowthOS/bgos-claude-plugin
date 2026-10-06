@@ -76,6 +76,7 @@ function stateBody(overrides: Record<string, unknown> = {}) {
     lastActivityAt: '2026-10-06T18:00:00.000Z',
     sessionId: '8c1f0000-0000-4000-8000-000000000001',
     updatedAt: '2026-10-06T18:59:30.000Z',
+    turnSignal: 'hooks',
     ...overrides,
   })
 }
@@ -194,6 +195,29 @@ test('decideSafeMoment: the design 6 table, exact reasons', () => {
     const out = decideSafeMoment({ ...base, ...patch } as any)
     assert.deepEqual(out, { safe, reason }, name)
   }
+})
+
+test('decideSafeMoment: turnInFlight counts only when the daemon has the hook turn signal; without it the turn is UNKNOWN and the legacy 30 min rule applies (plugin-daemon F1 contract)', () => {
+  assert.equal(parseAgentState(stateBody(), '123')!.turnSignal, 'hooks')
+  assert.equal(parseAgentState(stateBody({ turnSignal: 'none' }), '123')!.turnSignal, 'none')
+  assert.equal(parseAgentState(stateBody({ turnSignal: undefined }), '123')!.turnSignal, 'none', 'a daemon from before the field')
+  assert.equal(parseAgentState(stateBody({ turnSignal: 'HOOKS' }), '123')!.turnSignal, 'none', 'only the exact word')
+  const rows: Array<[string, Record<string, unknown>, number, boolean, string]> = [
+    ['hooks: 11 min quiet is idle', {}, 11, true, 'idle'],
+    ['no hook signal: 11 min is NOT quiet enough', { turnSignal: 'none' }, 11, false, 'recent_activity'],
+    ['no hook signal: 29 min still not', { turnSignal: 'none' }, 29, false, 'recent_activity'],
+    ['no hook signal: 31 min quiet is safe', { turnSignal: 'none' }, 31, true, 'idle'],
+    ['a daemon from before the field: the legacy window', { turnSignal: undefined }, 11, false, 'recent_activity'],
+  ]
+  for (const [name, patch, quietMin, safe, reason] of rows) {
+    const state = parseAgentState(stateBody(patch), '123')!
+    const out = decideSafeMoment({ running: true, stateFresh: true, state, descendants: [], activityMs: [NOW - quietMin * MIN], now: NOW } as any)
+    assert.deepEqual(out, { safe, reason }, name)
+  }
+  // The job scan still runs without the signal.
+  const none = parseAgentState(stateBody({ turnSignal: 'none' }), '123')!
+  const job = '/bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && tail -f x'
+  assert.deepEqual(decideSafeMoment({ running: true, stateFresh: true, state: none, descendants: [job], activityMs: [NOW - 60 * MIN], now: NOW } as any), { safe: false, reason: 'background_job' })
 })
 
 test('decideSafeMoment: a turn flag with NO activity for 2 h and no background job is stale (an interrupted turn never gets its Stop); anything less is still a turn', () => {

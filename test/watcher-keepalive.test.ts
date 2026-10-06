@@ -91,6 +91,7 @@ function stateBody(id: string, at: number, overrides: Record<string, unknown> = 
     lastActivityAt: new Date(at - 60 * MIN).toISOString(),
     sessionId: null,
     updatedAt: new Date(at - 10_000).toISOString(),
+    turnSignal: 'hooks',
     ...overrides,
   })
 }
@@ -415,6 +416,22 @@ test('safe moment: a turn flag that has been quiet for 3 h with no job under cla
   const held = await runKeepAliveSweep(ctxFor(busy, busyRec, fakeClock()).ctx as any)
   assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'turn_in_flight']])
   assert.equal(busyRec.calls.some((c) => c.file === 'launchctl'), false)
+})
+
+test('safe moment: a fresh state WITHOUT the hook turn signal is judged by the legacy 30 min window (its turnInFlight=false is unknown, not idle)', async () => {
+  const quiet15 = { lastActivityAt: new Date(T0 - 15 * MIN).toISOString() }
+  const unsignalled = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { ...quiet15, turnSignal: 'none' } }])
+  const held = recorder({ ps: IDLE_PS })
+  const report = await runKeepAliveSweep(ctxFor(unsignalled, held, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'recent_activity']])
+  assert.equal(held.calls.some((c) => c.file === 'launchctl'), false)
+  // The same quiet with the signal is idle: the 10 min window.
+  const signalled = machine([{ id: '912', cwd: AVA, service: 'canonical', state: quiet15 }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(signalled, clock, ['912'])
+  const ok = await runKeepAliveSweep(ctxFor(signalled, rec, clock).ctx as any)
+  assert.deepEqual(ok.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
 // -- restart -------------------------------------------------------------------------------------
