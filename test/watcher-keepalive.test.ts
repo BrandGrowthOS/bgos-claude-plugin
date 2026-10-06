@@ -95,8 +95,13 @@ function stateBody(id: string, at: number, overrides: Record<string, unknown> = 
   })
 }
 
-function machine(agents: AgentSpec[], opts: { platform?: string; installedVersion?: string; lastUpdated?: string } = {}): MemoryFs {
+/** The v2 bin/bgos-agent stamps <statedir>/supervisor-generation; v1 never mentions it. */
+const BGOS_AGENT_V2 = '#!/usr/bin/env bash\nprintf "%s\\n" "$SUPERVISOR_GENERATION" > "$statedir/supervisor-generation"\n'
+const BGOS_AGENT_V1 = '#!/usr/bin/env bash\nwrite_run_expect "$statedir/run.expect"\n'
+
+function machine(agents: AgentSpec[], opts: { platform?: string; installedVersion?: string; lastUpdated?: string; bgosAgent?: string } = {}): MemoryFs {
   const files: Record<string, string> = {
+    [`${ROOT}/bin/bgos-agent`]: opts.bgosAgent ?? BGOS_AGENT_V2,
     [`${HOME}/.bgos-agent/watcher/manifest.json`]: JSON.stringify({ version: '0.62.1', fingerprint: 'f', installedAt: 'x', pluginRoot: OLD_ROOT, files: [] }),
     [`${CONFIG}/plugins/installed_plugins.json`]: JSON.stringify({
       version: 2,
@@ -391,6 +396,18 @@ test('restart: a canonical generation 1 supervisor is upgraded by a reinstall at
   assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args), [[`${ROOT}/bin/bgos-agent`, 'install', '--assistant', '912', '--dir', AVA, '--always-on', '--no-clone']])
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+})
+
+test('a v1 bin/bgos-agent at the current root is never used: no install, no upgrade (it would restart onto a FRESH session, finding 7)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }, { id: '7', cwd: GURU, service: 'none' }], { bgosAgent: BGOS_AGENT_V1 })
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock())
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(rec.calls.some((c) => c.file === 'bash'), false)
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [
+    ['7', 'failed', 'supervisor_v2_unavailable'],
+    ['912', 'upgrade_pending', 'supervisor_v2_unavailable'],
+  ])
 })
 
 test('restart: a daemon too old to publish its state is judged by time (claude found by cwd, started before the install landed, 30 min quiet)', async () => {
