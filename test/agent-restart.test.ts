@@ -601,6 +601,42 @@ test('restartAgent posix (design): a live hoai that is the canonical v2 service\
   assert.deepEqual(self.calls.map((c: any) => c[0]), ['ps', 'launchctl'])
 })
 
+test('restartAgent posix (design): the service\'s own hoai still restarts through the MARKER while its tmux server holds anything else (run.sh\'s trap kills that whole server), or when no process table can be read', async () => {
+  const LAUNCHD = { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' }
+  const SYSTEMD = { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' }
+  const SUP = '/home/kc/.bgos-agent/912/supervisor.json'
+  const row = (service: any) => agentRow({ supervisor: 'service', service, launcherLive: true, running: true, supervisorGeneration: 2 })
+  const proc = (pid: number, ppid: number, command: string) => ({ pid, ppid, uid: 501, startedAtMs: null, command })
+  const server = proc(2900, 1, 'tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c /home/kc/hoai-agents/ava /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs')
+  const hoai = [proc(3000, 2900, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')]
+  const supervisorFile = { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }) }
+  const cases: Array<[string, any, Record<string, string>, any[], string]> = [
+    // The agent's Bash tool ran `tmux new-session -d -s dev 'npm run dev'`: its $TMUX names hoai-912, so the job lands on that server.
+    ['darwin: a job in another session of the agent\'s tmux server', LAUNCHD, supervisorFile, [proc(1, 0, '/sbin/launchd'), server, ...hoai, proc(6100, 2900, 'npm run dev')], 'marker'],
+    ['linux: the same, the server as Linux titles it', SYSTEMD, supervisorFile, [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/hoai-912)'), ...hoai, proc(6100, 2900, 'python monitor.py')], 'marker'],
+    ['supervisor.json says supervised, but the server holds a person\'s shell too', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [proc(1, 0, '/sbin/launchd'), server, ...hoai, proc(6200, 2900, '-zsh')], 'marker'],
+    // The pane's own shell (`sh -c` before it execs hoai) is the pane, not another job.
+    ['the pane shell above hoai is the pane itself', LAUNCHD, supervisorFile, [proc(1, 0, '/sbin/launchd'), server, proc(2950, 2900, 'sh -c /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2950, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')], 'service'],
+  ]
+  for (const [name, service, files, processes, how] of cases) {
+    const fs = memoryFs(files)
+    const { calls, exec } = recordingExec()
+    const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
+    assert.equal(out.how, how, name)
+    if (how === 'marker') {
+      assert.deepEqual(calls, [], `${name}: no service restart`)
+      assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', name)
+    }
+  }
+  // supervisor.json says supervised, but ps cannot answer: what else the server holds is unknown, so the marker.
+  const blind = memoryFs({ [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) })
+  const { calls, exec } = recordingExec(1, 'ps: denied')
+  const out = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: blind, exec, spawnDetached: recordingSpawn().spawnDetached } as any)
+  assert.equal(out.how, 'marker')
+  assert.deepEqual(calls.map((c) => c.file), ['ps'])
+})
+
 test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <digits>" runs nothing', async () => {
   const { calls, exec } = recordingExec()
   const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })

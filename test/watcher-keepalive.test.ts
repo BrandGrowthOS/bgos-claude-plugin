@@ -526,6 +526,28 @@ test('restart (design): the canonical v2 service\'s OWN live hoai is restarted t
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
+test('restart (design): a job the agent started on its OWN tmux server (`tmux new-session -d`, outside claude\'s tree) keeps the marker: the service restart would kill that server, and the job with it', async () => {
+  for (const platform of ['darwin', 'linux']) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform })
+    fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+    const ps = [
+      psLine(1, 0, platform === 'linux' ? '/sbin/init' : '/sbin/launchd', undefined, 0),
+      psLine(2900, 1, platform === 'linux' ? 'tmux: server (/tmp/tmux-501/hoai-912)' : `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+      psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+      psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+      psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+      psLine(6100, 2900, 'npm run dev'),
+    ].join('\n')
+    const rec = recorder({ ps, systemctlShow: `MainPID=1000\nControlGroup=/user.slice/bgos-agent-912.service\n` })
+    const clock = fakeClock()
+    answerProbes(fs, clock, ['912'])
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { platform, pidAlive: (pid: number) => [3000, 4912, 5912, 6100].includes(pid) }).ctx as any)
+    assert.equal(rec.calls.some((c) => c.file === 'launchctl' || (c.file === 'systemctl' && c.args.includes('restart'))), false, `${platform}: no service restart over the job`)
+    assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/restart-requested.json`), '{}', `${platform}: claude alone restarts`)
+    assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']], platform)
+  }
+})
+
 test('restart (D4): a plain hand-run claude the canonical supervisor waits behind is waiting_idle manual_session: no restart, no kill, no attempt spent', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
   waitingBehind(fs, '912', T0 - 5_000)
