@@ -445,7 +445,11 @@ test('readSessionTranscript: the bound transcript and its subagents are the acti
     // Claude Code 2.1 writes a Task subagent's rows beside the transcript, so a
     // long subagent run moves no byte of the main file.
     f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.jsonl'), T0 - 5 * 60_000)
-    f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'agent-b2.jsonl'), T0 - 2 * 60_000)
+    f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.meta.json'), T0 - 5 * 60_000)
+    assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 5 * 60_000)
+    // A workflow's agents sit two dirs further down, one dir per run (the
+    // layout 2.1.292 writes on disk): a long workflow is activity too.
+    f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'wf_458dea5c-4d9', 'agent-b2.jsonl'), T0 - 2 * 60_000)
     assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
     // A guess (newest-mtime) still counts as activity, never as the session.
     const guessed = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'newest-mtime' as const } }

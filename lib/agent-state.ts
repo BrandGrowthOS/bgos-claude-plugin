@@ -352,6 +352,10 @@ const nodeTranscriptActivityFs: TranscriptActivityFs = {
   },
 }
 
+/** How many dirs below <session id>/subagents/ readSessionTranscript looks
+ *  for agent files: workflows/<run id>/ is two, one more is slack. */
+export const SUBAGENT_DIR_DEPTH = 3
+
 /** What the transcripts say about this agent (code review F1). */
 export interface SessionTranscriptReading {
   /** The newest write to this session's transcript files, or null. */
@@ -369,9 +373,13 @@ export interface SessionTranscriptReading {
  * names a transcript and a spool the watcher stats, and the pin rules key on
  * it. The activity is the newest of:
  *   - the transcript itself;
- *   - its subagents' files, which Claude Code 2.1 writes beside it at
- *     <project dir>/<session id>/subagents/[<subdir>/]agent-<id>.jsonl, so a
- *     long Task subagent moves no byte of the main transcript;
+ *   - its subagents' files, which Claude Code 2.1 writes beside it, so a long
+ *     Task subagent or workflow moves no byte of the main transcript: a Task
+ *     subagent at <project dir>/<session id>/subagents/agent-<id>.jsonl, a
+ *     workflow's agents two levels further down, at
+ *     subagents/workflows/<run id>/agent-<id>.jsonl (both seen on disk under
+ *     2.1.292). Every .jsonl up to SUBAGENT_DIR_DEPTH dirs below subagents/
+ *     counts;
  *   - while the binder cannot tell which transcript is ours (two live ones and
  *     no proof yet), every transcript in the project dir: someone in this
  *     agent's folder is writing, and it may be the agent.
@@ -396,14 +404,14 @@ export function readSessionTranscript(input: {
     if (resolved && resolved.path) {
       note(fs.mtimeMs(resolved.path))
       const id = basename(resolved.path).replace(/\.jsonl$/, '')
-      const subagents = join(dirname(resolved.path), id, 'subagents')
-      for (const name of fs.listDir(subagents)) {
-        if (name.endsWith('.jsonl')) {
-          note(fs.mtimeMs(join(subagents, name)))
-          continue
+      // The .meta.json beside each agent file is a file: never walked into.
+      const walk = (dir: string, depth: number): void => {
+        for (const name of fs.listDir(dir)) {
+          if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
+          else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
         }
-        for (const nested of jsonl(join(subagents, name))) note(fs.mtimeMs(join(subagents, name, nested)))
       }
+      walk(join(dirname(resolved.path), id, 'subagents'), SUBAGENT_DIR_DEPTH)
       if (POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && isSessionIdLike(id)) sessionId = id
     } else if (input.projectDir) {
       for (const name of jsonl(input.projectDir)) note(fs.mtimeMs(join(input.projectDir, name)))
