@@ -23,6 +23,9 @@ import {
   descendantsOf,
   findClaudePidsByCwd,
   nearestClaudeAncestor,
+  parseCgroupProcs,
+  parseSystemctlShow,
+  strayCgroupMembers,
   isClaudeCommand,
   listProcesses,
   parseLsofCwd,
@@ -258,4 +261,17 @@ test('nearestClaudeAncestor: the claude above a pid (the agent daemon is claude\
     { pid: 11, ppid: 10, uid: 1, startedAtMs: null, command: 'b' },
   ]
   assert.equal(nearestClaudeAncestor(loop, 10), null)
+})
+
+test('the unit cgroup (F5): systemctl show and cgroup.procs parse strictly; a member outside the supervisor and claude trees is a stray', () => {
+  assert.deepEqual(parseSystemctlShow('MainPID=1000\nControlGroup=/user.slice/a.service\n'), { mainPid: 1000, controlGroup: '/user.slice/a.service' })
+  assert.deepEqual(parseSystemctlShow('MainPID=0\nControlGroup=\n'), { mainPid: null, controlGroup: null }, 'an inactive unit')
+  assert.deepEqual(parseSystemctlShow('ControlGroup=/a/../../etc\n').controlGroup, null, 'a path that climbs is never read')
+  assert.deepEqual(parseCgroupProcs('1000\n1100\n\n'), [1000, 1100])
+  assert.equal(parseCgroupProcs('1000\nx\n'), null)
+  assert.equal(parseCgroupProcs(null as any), null)
+  const proc = (pid: number, ppid: number) => ({ pid, ppid, uid: 501, startedAtMs: null, command: 'x' })
+  const processes = [proc(900, 1), proc(1000, 900), proc(1100, 1000), proc(2900, 900), proc(3000, 2900), proc(7000, 900)]
+  assert.deepEqual(strayCgroupMembers({ members: [1000, 1100, 2900, 3000, 7000, 8000], processes, roots: [1000, 2900] }), [7000], '8000 has exited (not listed)')
+  assert.deepEqual(strayCgroupMembers({ members: [1000, 7000], processes, roots: [1000, 7000] }), [])
 })

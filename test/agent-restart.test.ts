@@ -544,10 +544,15 @@ test('restartAgent posix (design): a live hoai that is the canonical v2 service\
   const underTmux = [proc(1, 0, '/sbin/launchd'), proc(2900, 1, 'tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c /home/kc/hoai-agents/ava /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')]
   const underRunSh = [proc(1, 0, '/sbin/launchd'), proc(2800, 1, '/bin/bash /home/kc/.bgos-agent/912/run.sh'), proc(3000, 2800, 'node /x/bin/hoai-core.mjs')]
   const byHand = [proc(1, 0, '/sbin/launchd'), proc(2700, 1, '-zsh'), proc(3000, 2700, 'node /x/bin/hoai-core.mjs')]
+  // Linux shows a tmux server by the title tmux gives it, which names its socket path.
+  const titled = [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/hoai-912)'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs')]
+  const otherSocket = [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/default)'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs')]
   const supervisorFile = { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }) }
   const cases: Array<[string, any, Record<string, string>, any[] | undefined, string]> = [
     ['darwin: its parent is the agent\'s own tmux server (socket hoai-912)', LAUNCHD, supervisorFile, underTmux, 'service'],
     ['linux: the same, systemd', SYSTEMD, supervisorFile, underTmux, 'service'],
+    ['linux: its tmux server as Linux titles it (socket hoai-912)', SYSTEMD, supervisorFile, titled, 'service'],
+    ['linux: a person\'s own tmux (the default socket) is not the service', SYSTEMD, supervisorFile, otherSocket, 'marker'],
     ['no tmux: it runs under the agent\'s run.sh', LAUNCHD, supervisorFile, underRunSh, 'service'],
     ['supervisor.json says it is supervised', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [], 'service'],
     ['a person\'s own hoai in a terminal: the marker (a service restart restarts only the waiting run.sh)', LAUNCHD, supervisorFile, byHand, 'marker'],

@@ -120,7 +120,8 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
       dirs.push(a.cwd)
     }
     if (a.service === 'canonical') {
-      files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}.plist`] = '<plist/>'
+      if (opts.platform === 'linux') files[`${HOME}/.config/systemd/user/bgos-agent-${a.id}.service`] = '[Service]\n'
+      else files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}.plist`] = '<plist/>'
       if (a.generation !== null) files[`${HOME}/.bgos-agent/${a.id}/supervisor-generation`] = `${a.generation ?? '2'}\n`
     }
     if (a.state) files[`${HOME}/.bgos-plugin-state/${a.id}/agent-state.json`] = stateBody(a.id, T0, a.state)
@@ -133,7 +134,7 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
 
 const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026', uid = 501) => ` ${pid} ${ppid} ${uid} ${start} ${cmd}`
 
-function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string } = {}) {
+function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], o: any = {}) => {
     calls.push({ file, args: [...args], opts: o })
@@ -142,6 +143,9 @@ function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number |
     if (file === 'lsof') return { code: opts.lsofCode === undefined ? 0 : opts.lsofCode, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: opts.lsofCode === null }
     if (file === 'bash') return { code: opts.bashCode ?? 0, stdout: '', stderr: opts.bashCode ? `x  no .mcp.json in ${GURU} and no creds given` : '', error: null, timedOut: false }
     if (file === 'launchctl') return { code: opts.launchctlCode ?? 0, stdout: '', stderr: '', error: null, timedOut: false }
+    if (file === 'systemctl' && args.includes('show')) {
+      return opts.systemctlShow == null ? { code: 1, stdout: '', stderr: 'Failed to connect to bus', error: null, timedOut: false } : { code: 0, stdout: opts.systemctlShow, stderr: '', error: null, timedOut: false }
+    }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
   const kills: Array<[number, string]> = []
@@ -809,6 +813,80 @@ test('F1: a daemon too old to publish its state still holds the pairing lock: it
   const staleReport = await runKeepAliveSweep(ctxFor(fs, stale, fakeClock()).ctx as any)
   assert.deepEqual(staleReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
   assert.equal(stale.calls.some((c) => c.file === 'lsof'), true, 'back to the cwd lookup')
+})
+
+// -- F5: a systemd restart kills the unit's whole cgroup, so a job orphaned out of claude's tree counts --------
+
+const CGROUP = '/user.slice/user-501.slice/user@501.service/app.slice/bgos-agent-912.service'
+const UNIT_SHOW = `MainPID=1000\nControlGroup=${CGROUP}\n`
+
+/** A v2 unit: run.sh 1000 (main) waiting on tmux; tmux server 2900 > hoai-core 3000 > claude 5912 > daemon 4912. */
+function unitTable(orphan: boolean, tmuxTitle = 'tmux: server (/tmp/tmux-501/hoai-912)') {
+  const rows = [
+    psLine(1, 0, '/sbin/init', undefined, 0),
+    psLine(900, 1, '/lib/systemd/systemd --user'),
+    psLine(1000, 900, `/bin/bash ${HOME}/.bgos-agent/912/run.sh`),
+    psLine(1100, 1000, 'sleep 5'),
+    psLine(2900, 900, tmuxTitle),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume x'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ]
+  // `nohup python monitor.py &` from a Bash tool call: its shell exited, systemd --user reaped it.
+  if (orphan) rows.push(psLine(7000, 900, 'python monitor.py'))
+  const members = [1000, 1100, 2900, 3000, 5912, 4912, ...(orphan ? [7000] : [])]
+  return { ps: rows.join('\n'), procs: `${members.join('\n')}\n` }
+}
+
+test('F5 (linux): a background job orphaned out of claude\'s tree but still in the unit\'s cgroup holds a service restart (systemd would kill it): background_job', async () => {
+  const busy = unitTable(true)
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, busy.procs)
+  const rec = recorder({ ps: busy.ps, systemctlShow: UNIT_SHOW })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.equal(rec.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false, 'no systemctl --user restart over the job')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  // The same unit with nothing outside the supervisor and claude restarts.
+  const idle = unitTable(false)
+  const quiet = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  quiet.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, idle.procs)
+  const ok = recorder({ ps: idle.ps, systemctlShow: UNIT_SHOW })
+  const clock = fakeClock()
+  answerProbes(quiet, clock, ['912'])
+  const done = await runKeepAliveSweep(ctxFor(quiet, ok, clock, { platform: 'linux' }).ctx as any)
+  assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl' && c.args.includes('restart')).map((c) => c.args), [['--user', 'restart', 'bgos-agent-912']])
+  assert.deepEqual(done.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // A tmux whose title says nothing about its socket is still claude's ancestor in the group: accounted, not a job.
+  const plain = unitTable(false, 'tmux')
+  const plainFs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  plainFs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, plain.procs)
+  const plainRec = recorder({ ps: plain.ps, systemctlShow: UNIT_SHOW })
+  const plainClock = fakeClock()
+  answerProbes(plainFs, plainClock, ['912'])
+  const plainReport = await runKeepAliveSweep(ctxFor(plainFs, plainRec, plainClock, { platform: 'linux' }).ctx as any)
+  assert.deepEqual(plainReport.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
+test('F5 (linux): a generation 1 unit is not reinstalled (its active unit restarted) over an orphaned job; a cgroup that cannot be read is unreadable, never "no job"', async () => {
+  const gen1 = [
+    psLine(1, 0, '/sbin/init', undefined, 0),
+    psLine(900, 1, '/lib/systemd/systemd --user'),
+    psLine(1000, 900, `/bin/bash ${HOME}/.bgos-agent/912/run.sh`),
+    psLine(1050, 1000, `expect ${HOME}/.bgos-agent/912/run.expect`),
+    psLine(5912, 1050, 'claude --x'),
+    psLine(7000, 900, 'python monitor.py'),
+  ].join('\n')
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }], { platform: 'linux' })
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, '1000\n1050\n5912\n7000\n')
+  const rec = recorder({ ps: gen1, systemctlShow: UNIT_SHOW })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  const blind = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  const noBus = recorder({ ps: unitTable(false).ps, systemctlShow: null })
+  const unread = await runKeepAliveSweep(ctxFor(blind, noBus, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.equal(noBus.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false)
+  assert.deepEqual(unread.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
 })
 
 // -- gates -------------------------------------------------------------------------------------------
