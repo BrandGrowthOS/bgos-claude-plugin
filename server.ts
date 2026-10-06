@@ -564,7 +564,13 @@ const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
 // The CLI's config dir: CLAUDE_CONFIG_DIR (trimmed) when set, else ~/.claude.
 // Declared up here, beside the launch folder, because the session binder below
 // reads it at module load and a const read before its declaration throws.
-const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
+// Resolved ONCE, against the launch folder: the CLI resolves a relative value
+// from its own cwd, which is that folder, while this process runs in the
+// plugin cache on a marketplace install. Raw, a relative or non-normalised
+// value (./.claude-work, ~/./.claude-work/) named another directory or another
+// spelling, and the hook intake refused the agent's OWN events as
+// foreign-project (lib/hook-intake.ts isUnderDir).
+const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process.env, home: homedir() }))
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -682,7 +688,7 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { join as pathJoin, dirname as pathDirname } from 'node:path'
+import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
 // (lib/hook-events.ts), the intake is a spool file per session
@@ -8652,6 +8658,9 @@ function startHookIntakeIfHolder(): void {
     hookIntake = startHookIntake({
       stateRoot: root,
       projectDir: sessionBinder.projectDirectory,
+      // The folder the CLI runs in: a transcript_path it spelled relative
+      // resolves against it, as the config dir above does.
+      baseDir: LAUNCH_CWD,
       onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
       // A child agent still working after its parent stopped keeps this true:
@@ -10894,7 +10903,10 @@ const SESSION_PIN_WORKDIR = LAUNCH_CWD
 const sessionPinKeeper = new SessionPinKeeper({
   home: homedir(),
   cwd: SESSION_PIN_WORKDIR,
-  configDir: process.env.CLAUDE_CONFIG_DIR ?? '',
+  // hoai's own rule (CLAUDE_CONFIG_DIR, else ~/.claude), already resolved
+  // against the agent folder hoai runs in: the raw value, relative, named a
+  // dir under the plugin cache this process runs in, where no transcript is.
+  configDir: CLAUDE_CONFIG_DIR,
   assistantId: ASSISTANT_ID,
   exists: existsSync,
   readFile: readTextOrNull,
@@ -11116,7 +11128,9 @@ const watcherInstallRpc = new WatcherInstallRpcHandler({
       home,
       pluginVersion,
       // The watcher must reconcile the SAME Claude install this daemon runs under.
-      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+      // Resolved (the watcher runs elsewhere, so a relative value would name
+      // another dir), and still null when unset so the default stays implicit.
+      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR?.trim() ? CLAUDE_CONFIG_DIR : null,
     }),
   writeWatcherCredentials: async (creds) => {
     const path = writeWatcherCredentials(homedir(), creds)

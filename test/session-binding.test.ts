@@ -14,7 +14,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -542,7 +542,9 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.doesNotMatch(call, /process\.cwd\(\)/)
   // A const read before its declaration throws at module load (the temporal
   // dead zone), which would take the whole daemon down at boot.
-  const decl = server.indexOf('\nconst CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })\n')
+  const decl = server.indexOf(
+    '\nconst CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process.env, home: homedir() }))\n',
+  )
   assert.ok(decl > 0, 'one config dir rule, the installer helper')
   assert.ok(decl < at, 'declared before the binder reads it')
   assert.equal(server.split('\nconst CLAUDE_CONFIG_DIR = ').length, 2, 'declared once')
@@ -589,4 +591,30 @@ test('the usage tracker finds the agent transcript under a custom config dir, an
   // The plugin cache under ~/.claude names a dir with nothing in it.
   const before = new UsageTracker('/home/kc/.claude/plugins/cache/hoai/0.62.0', join(root, 'home', '.claude'))
   assert.equal(before.collect({}), null)
+})
+
+// Verifier item b: the config dir is resolved ONCE, against the folder claude
+// runs in. The CLI resolves a relative CLAUDE_CONFIG_DIR from its own cwd, the
+// agent folder; this process runs in the plugin cache on a marketplace install,
+// so the raw value named a different directory, and a non-normalised one
+// (~/./.claude-work/) never string-matched the transcript_path the CLI hands
+// its hooks: the agent's own events were refused as foreign-project.
+test('server.ts resolves the config dir once against the agent folder, and the intake resolves against it too', () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
+  assert.match(
+    server,
+    /\nconst CLAUDE_CONFIG_DIR = pathResolve\(LAUNCH_CWD, claudeConfigDir\(\{ env: process\.env, home: homedir\(\) \}\)\)\n/,
+  )
+  assert.equal(server.indexOf('\nconst LAUNCH_CWD = ') < server.indexOf('\nconst CLAUDE_CONFIG_DIR = '), true, 'the base is declared first')
+  // A transcript_path the CLI spelled relative resolves against the same folder.
+  assert.match(
+    server,
+    /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,(\s*\/\/[^\n]*)*\s*baseDir: LAUNCH_CWD,/,
+  )
+  // What the binder then builds is absolute and normalised whatever the spelling.
+  const agent = '/Users/a/agent'
+  for (const raw of ['.claude-work', './.claude-work/', '/Users/a/agent/../agent/.claude-work']) {
+    const home = resolvePath(agent, claudeConfigDir({ env: { CLAUDE_CONFIG_DIR: raw }, home: '/Users/a' }))
+    assert.equal(new SessionTranscriptBinder(agent, { claudeHome: home }).projectDirectory, `${agent}/.claude-work/projects/-Users-a-agent`)
+  }
 })

@@ -241,7 +241,11 @@ test('server.ts pins from the channel holder, with the session its own hooks nam
   const at = server.indexOf('const sessionPinKeeper = new SessionPinKeeper(')
   assert.ok(at > 0, 'the keeper is wired')
   const wiring = server.slice(at, server.indexOf('\n}\n', server.indexOf('function checkSessionPin(', at)))
-  assert.match(wiring, /configDir: process\.env\.CLAUDE_CONFIG_DIR \?\? ''/, 'the same config dir hoai resolves')
+  // The config dir hoai resolves, as ONE absolute path (verifier item b): hoai
+  // runs in the agent folder, so a relative CLAUDE_CONFIG_DIR means a folder
+  // under it, and this process runs in the plugin cache on a marketplace
+  // install, where the raw value named a dir no transcript lives in.
+  assert.match(wiring, /\n\s*configDir: CLAUDE_CONFIG_DIR,\n/, 'the same config dir hoai resolves')
   // claude's folder, which hoai keys the transcript by: LAUNCH_CWD. On a
   // marketplace install process.cwd() is the plugin cache (bin/bgos-launch.mjs
   // relocates it), where no transcript of this agent ever lives.
