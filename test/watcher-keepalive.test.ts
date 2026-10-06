@@ -315,6 +315,31 @@ test('supervise: a cleared agent with no supervisor gets exactly ONE bgos-agent 
   assert.deepEqual(rec.kills, [])
 })
 
+test('supervise (supervisor F3): the install runs with the agent\'s own node dir (its launch recipe) and the watcher\'s node dir FIRST on PATH, so it bakes the node the agent really uses', async () => {
+  const NVM = `${HOME}/.nvm/versions/node/v22.1.0/bin`
+  const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  fs.writeFile(
+    `${HOME}/.bgos-agent/912/launch.json`,
+    JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: OLD_ROOT, node: `${NVM}/node`, startedAt: 'x', pid: null })),
+  )
+  fs.writeFile(`${NVM}/node`, '')
+  const rec = recorder({ ps: IDLE_PS })
+  // An upgraded watcher keeps the fixed service PATH it was installed with: no nvm on it.
+  await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { nodePath: '/opt/watcher-node/bin/node', env: { PATH: '/usr/local/bin:/usr/bin:/bin' } }).ctx as any)
+  const bash = rec.calls.filter((c) => c.file === 'bash')
+  assert.equal(bash.length, 1)
+  assert.equal(bash[0]!.opts.env.PATH, `${NVM}:/opt/watcher-node/bin:/usr/local/bin:/usr/bin:/bin`)
+  // A recipe node that is gone is not put on PATH; a dir already there is not repeated.
+  const gone = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  gone.writeFile(
+    `${HOME}/.bgos-agent/912/launch.json`,
+    JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: OLD_ROOT, node: `${NVM}/node`, startedAt: 'x', pid: null })),
+  )
+  const rec2 = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(gone, rec2, fakeClock(), { nodePath: '/usr/local/bin/node', env: { PATH: '/usr/local/bin:/usr/bin' } }).ctx as any)
+  assert.equal(rec2.calls.find((c) => c.file === 'bash')!.opts.env.PATH, '/usr/local/bin:/usr/bin')
+})
+
 test('supervise: no known folder is needs_first_launch; a verified bespoke keepalive is supervised (never a second supervisor, G11)', async () => {
   const fs = machine([{ id: '912', cwd: null, service: 'none' }, { id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 } }])
   const rec = recorder({ ps: IDLE_PS })
