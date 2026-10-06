@@ -147,7 +147,10 @@ function sandbox() {
   return { home, cwd, statusOf, cleanup }
 }
 
-async function runMain(sb: ReturnType<typeof sandbox>, { env = SUPERVISED, codes = [0], scriptDir = CLONE_SCRIPT_DIR } = {}) {
+async function runMain(
+  sb: ReturnType<typeof sandbox>,
+  { env = SUPERVISED as Record<string, string>, codes = [0], scriptDir = CLONE_SCRIPT_DIR }: { env?: Record<string, string>, codes?: number[], scriptDir?: string } = {},
+) {
   const spawns: Spawn[] = []
   const prints: string[] = []
   let n = 0
