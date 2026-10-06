@@ -181,6 +181,30 @@ export function isSupervisedLaunch(env) {
   return String(env?.[SUPERVISED_ENV] ?? '') === '1'
 }
 
+/**
+ * The environment claude (and expect, which starts it) is spawned with: hoai's
+ * own, without SUPERVISED_ENV and SUPERVISED_ASSISTANT_ID_ENV. hoai is their
+ * only reader, and inherited they made every `hoai` an agent's Bash tool ran
+ * act as THIS agent's service: in another agent's folder it stopped with
+ * identity-mismatch (7), in a pinless one with already-supervised (3), and
+ * both overwrote this agent's launch-status. hoai's own env keeps them (a
+ * relaunch resolves the service identity from them). Names are case
+ * insensitive on win32, as Windows treats them. Never mutates `env`.
+ * @param {Record<string, string | undefined> | undefined} env
+ * @param {string} [platform]
+ * @returns {Record<string, string>}
+ */
+export function childEnvWithoutSupervision(env, platform = process.platform) {
+  const drop = new Set([SUPERVISED_ENV, SUPERVISED_ASSISTANT_ID_ENV])
+  const out = {}
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (value === undefined) continue
+    if (drop.has(platform === 'win32' ? key.toUpperCase() : key)) continue
+    out[key] = value
+  }
+  return out
+}
+
 /** The service's assistant id (digits only), or ''. @param {Record<string, string | undefined> | undefined} env */
 export function supervisedServiceId(env) {
   const value = String(env?.[SUPERVISED_ASSISTANT_ID_ENV] ?? '').trim()
@@ -1875,6 +1899,8 @@ export async function superviseClaude(args, opts = {}) {
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const spawnSupervised = (spawnArgs, onSpawn) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
+    // Built at every spawn: main() adds the plan's env before the first one.
+    const childEnv = childEnvWithoutSupervision(env, platform)
     // Supervised, the gate is handled whatever detection says: every launch
     // carries the dev-channels flag, so the warning shows on every launch, and
     // an 'unknown' method (a workspace .mcp.json beside an npx root) would
@@ -1883,7 +1909,7 @@ export async function superviseClaude(args, opts = {}) {
       if (platform === 'win32') {
         // No expect on Windows: claude gets the console, and a hidden helper
         // attached to that same console accepts the gate once it is on screen.
-        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
         try {
           const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
           print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
@@ -1901,7 +1927,7 @@ export async function superviseClaude(args, opts = {}) {
               ? { stateDir: supervisedStateDir, interactive: stdinIsTTY, compact: compactStatus(env) }
               : null,
         })
-        return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
+        return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn, childEnv })
       }
       if (!warnedGate) {
         warnedGate = true
@@ -1912,7 +1938,7 @@ export async function superviseClaude(args, opts = {}) {
         )
       }
     }
-    return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+    return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
   }
 
   const resolvedId = superviseAssistantId({ cwd, env, home, readFile, listDir })
@@ -2411,8 +2437,11 @@ function spawnErrorMeansNotFound(err) {
  * child, so the supervise loop can SIGTERM the live one; a fallback attempt
  * calls it again with the replacement child.
  */
-export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {}) {
+export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn, childEnv } = {}) {
   const candidates = claudeSpawnCandidates(args, platform, env)
+  // `childEnv` (the supervise loop's childEnvWithoutSupervision) is the env the
+  // child gets; without it the child inherits this process's, as before.
+  const spawnOpts = childEnv ? { stdio: 'inherit', shell: false, env: childEnv } : { stdio: 'inherit', shell: false }
   return new Promise((resolve) => {
     const tryNext = (index) => {
       if (index >= candidates.length) {
@@ -2426,7 +2455,7 @@ export function spawnClaude(args, { platform = process.platform, env = process.e
       const candidate = candidates[index]
       let child
       try {
-        child = spawnImpl(candidate.file, candidate.args, { stdio: 'inherit', shell: false })
+        child = spawnImpl(candidate.file, candidate.args, spawnOpts)
       } catch (err) {
         if (spawnErrorMeansNotFound(err)) return tryNext(index + 1)
         writeErr(`[hoai] could not start ${candidate.file}: ${err?.message ?? err}\n`)
@@ -2752,12 +2781,13 @@ function runWinPathHelper(binDir, { scriptDir = '', spawnSyncImpl = spawnSync } 
  */
 export function spawnExpectScript(
   script,
-  { spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {},
+  { spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn, childEnv } = {},
 ) {
   return new Promise((resolve) => {
     let child
     try {
-      child = spawnImpl('expect', ['-c', script], { stdio: 'inherit', shell: false })
+      // claude inherits expect's env, so `childEnv` is claude's too (see spawnClaude).
+      child = spawnImpl('expect', ['-c', script], childEnv ? { stdio: 'inherit', shell: false, env: childEnv } : { stdio: 'inherit', shell: false })
     } catch (err) {
       writeErr(`[hoai] could not start expect: ${err?.message ?? err}\n`)
       resolve(1)
