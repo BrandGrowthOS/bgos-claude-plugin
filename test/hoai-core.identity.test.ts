@@ -80,7 +80,8 @@ function fakeSpawnSync(answer: { status: number | null; stdout?: string } | 'thr
     if (answer === 'throw') throw new Error('spawn failed')
     return { status: answer.status, stdout: answer.stdout ?? '' }
   }
-  return { calls, spawn }
+  // Typed as the spawnSync it stands in for (its many overloads accept no plain fake).
+  return { calls, spawn: spawn as never }
 }
 
 test('defaultPidCommandLine: posix asks ps for that pid at unlimited width, bounded by a timeout, and answers the command line', () => {
