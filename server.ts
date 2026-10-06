@@ -561,6 +561,10 @@ const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials
 // through as BGOS_LAUNCH_CWD. Without that, the folder pin was looked up inside
 // the plugin cache and could never be found on a marketplace install.
 const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
+// The CLI's config dir: CLAUDE_CONFIG_DIR (trimmed) when set, else ~/.claude.
+// Declared up here, beside the launch folder, because the session binder below
+// reads it at module load and a const read before its declaration throws.
+const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -1290,7 +1294,17 @@ async function bgosDelete(path: string): Promise<unknown> {
 // (positive proof, recorded in the reply handler) > CLAUDE_CODE_SESSION_ID
 // (fresh launches only; --continue discards it) > sticky previous binding >
 // newest-mtime at boot (logged last resort).
-const sessionBinder = new SessionTranscriptBinder(process.cwd(), {
+//
+// The transcripts live where the CLI writes them: <config dir>/projects/
+// <munged folder claude runs in>. That folder is LAUNCH_CWD, never this
+// process's cwd (a marketplace install runs it in the plugin cache), and the
+// config dir moves with CLAUDE_CONFIG_DIR. Built from the cwd under a fixed
+// ~/.claude, the binder named a project dir no transcript of this agent lives
+// in, so the hook intake refused the agent's OWN events as foreign-project:
+// hookTurnLive never set, agent-state.json reported no turn in flight (design
+// section 6) and the session pin was never written (section 4).
+const sessionBinder = new SessionTranscriptBinder(LAUNCH_CWD, {
+  claudeHome: CLAUDE_CONFIG_DIR,
   envSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
   log,
 })
@@ -10911,7 +10925,6 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
   INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
-const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 /**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
@@ -13436,6 +13449,15 @@ function syncSlashCommands(prepared?: PreparedSlashCommands): Promise<void> {
 // supervisor waits behind this session and takes over only when it ends.
 const execFileAsync = promisify(execFile)
 const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
+// The folder the supervisor runs the agent in, which is LAUNCH_CWD and never
+// this process's cwd: a marketplace install runs this process in the plugin
+// cache (bin/bgos-launch.mjs relocates it), so `install --dir <cache>` died
+// with "not a proven paired folder" on every cycle and adoption never gave a
+// marketplace agent its supervisor, and a bespoke job's WorkingDirectory (the
+// agent folder) could never match the G11 probe. Its own name keeps the
+// counted identity literal at six (test/agent-credentials.test.ts), as
+// SESSION_PIN_WORKDIR does.
+const ALWAYS_ON_WORKDIR = LAUNCH_CWD
 let reconcileBusy = false
 // A missing supervisor binary is a HOST-LAYOUT fact, not a transient: no
 // number of retries installs it. Without this latch a host whose install
@@ -13516,11 +13538,13 @@ async function reconcileAlwaysOn(): Promise<void> {
     // trusts whether a bespoke job or a verified keepalive already keeps this
     // agent alive. Read only on the install row: the platform query is not
     // free and no other row needs it. Unreadable is null, which installs, the
-    // pre-G11 behaviour.
+    // pre-G11 behaviour. Anchored on the agent folder (ALWAYS_ON_WORKDIR), the
+    // same folder the install below names, so a bespoke job whose
+    // WorkingDirectory is that folder is found on a marketplace install too.
     let supervision: Supervision | null = null
     if (desired && !installed) {
       try {
-        supervision = resolveSupervision(supervisionProbe())
+        supervision = resolveSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR })
       } catch {
         supervision = null
       }
@@ -13546,7 +13570,7 @@ async function reconcileAlwaysOn(): Promise<void> {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
-        ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
+        ['install', '--assistant', ASSISTANT_ID, '--dir', ALWAYS_ON_WORKDIR, '--always-on', '--no-clone'],
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')

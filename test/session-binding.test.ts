@@ -12,9 +12,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   tailContainsMarker,
@@ -25,6 +26,8 @@ import {
   SessionTranscriptBinder,
 } from '../lib/session-binding.ts'
 import { mungeCwd } from '../lib/usage-report.ts'
+import { decideSessionAdmission } from '../lib/hook-intake.ts'
+import { claudeConfigDir } from '../bin/bgos-install-method.mjs'
 
 // Real-shape fixture lines.
 const markerLine = (messageId: number): string =>
@@ -468,4 +471,84 @@ test('provenTranscriptPath answers only for POSITIVE proof, never for a guess', 
 test('POSITIVE_BINDING_SOURCES is the proof set, and excludes the last resort', () => {
   assert.deepEqual([...POSITIVE_BINDING_SOURCES].sort(), ['env', 'hook', 'marker'])
   assert.ok(!POSITIVE_BINDING_SOURCES.includes('newest-mtime'))
+})
+
+// ── where the binder looks (mission 104 fix round, C2) ──────────────────────
+//
+// The hook intake refuses, as foreign-project, every payload whose
+// transcript_path is not under sessionBinder.projectDirectory, and that dir was
+// built from the relocated process cwd under a hard-coded ~/.claude. On a
+// marketplace install (cwd is the plugin cache) or with CLAUDE_CONFIG_DIR set,
+// the agent's OWN hook events were refused, so hookTurnLive never set:
+// agent-state.json turnInFlight stayed false (the watcher's safe moment,
+// finding 9) and the session pin was never written (finding 7).
+
+test('binder: a custom claudeHome (CLAUDE_CONFIG_DIR) and the agent folder find the agent transcript, and its hooks are not foreign', () => {
+  const root = mkdtempSync(join(tmpdir(), 'binder-config-dir-'))
+  const home = join(root, 'home')
+  const configDir = join(root, 'claude-config')
+  const agentFolder = '/home/kc/agents/vexa'
+  const pluginCache = '/home/kc/.claude/plugins/cache/hoai-marketplace/hoai/0.62.0'
+  const projectDir = join(configDir, 'projects', mungeCwd(agentFolder))
+  mkdirSync(projectDir, { recursive: true })
+  const sid = '8c1f2d3e-4a5b-4c6d-8e7f-901234567890'
+  const transcript = join(projectDir, `${sid}.jsonl`)
+  writeFileSync(transcript, `${assistantLine(50_000)}\n`)
+  // hoai launches with --session-id / --resume <pinned id>, so the CLI hands
+  // its MCP child that id: the env proof of the binding chain.
+  const opts = { envSessionId: sid }
+
+  // What server.ts builds: LAUNCH_CWD under claudeConfigDir (trimmed env, else
+  // <home>/.claude), the same rule hoai-core's sessionTranscriptPath uses.
+  const claudeHome = claudeConfigDir({ env: { CLAUDE_CONFIG_DIR: `  ${configDir}  ` }, home })
+  assert.equal(claudeHome, configDir, 'CLAUDE_CONFIG_DIR is trimmed')
+  const binder = new SessionTranscriptBinder(agentFolder, { claudeHome, ...opts })
+  assert.equal(binder.projectDirectory, projectDir)
+  assert.equal(binder.provenTranscriptPath(), transcript)
+  assert.deepEqual(
+    decideSessionAdmission({
+      bound: null,
+      incoming: { sessionId: sid, transcriptPath: transcript, event: 'SessionStart' },
+      projectDir: binder.projectDirectory,
+      provenTranscript: binder.provenTranscriptPath(),
+    }),
+    { admit: true, binds: true, proof: 'session-start' },
+  )
+
+  // What it used to build: the plugin cache under ~/.claude. The agent's own
+  // SessionStart is foreign, and nothing can ever prove it.
+  const before = new SessionTranscriptBinder(pluginCache, { claudeHome: join(home, '.claude'), ...opts })
+  assert.equal(before.provenTranscriptPath(), null)
+  assert.deepEqual(
+    decideSessionAdmission({
+      bound: null,
+      incoming: { sessionId: sid, transcriptPath: transcript, event: 'SessionStart' },
+      projectDir: before.projectDirectory,
+      provenTranscript: before.provenTranscriptPath(),
+    }),
+    { admit: false, reason: 'foreign-project' },
+  )
+  // With no CLAUDE_CONFIG_DIR the default is <home>/.claude.
+  assert.equal(claudeConfigDir({ env: {}, home }), join(home, '.claude'))
+})
+
+test('server.ts builds the binder from the agent folder and the CLI config dir, never the relocated cwd', () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
+  const at = server.indexOf('const sessionBinder = new SessionTranscriptBinder(')
+  assert.ok(at > 0, 'the binder is built at module scope')
+  const call = server.slice(at, server.indexOf('\n})\n', at))
+  assert.match(call, /^const sessionBinder = new SessionTranscriptBinder\(LAUNCH_CWD, \{/)
+  assert.match(call, /\n\s*claudeHome: CLAUDE_CONFIG_DIR,\n/)
+  assert.doesNotMatch(call, /process\.cwd\(\)/)
+  // A const read before its declaration throws at module load (the temporal
+  // dead zone), which would take the whole daemon down at boot.
+  const decl = server.indexOf('\nconst CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })\n')
+  assert.ok(decl > 0, 'one config dir rule, the installer helper')
+  assert.ok(decl < at, 'declared before the binder reads it')
+  assert.equal(server.split('\nconst CLAUDE_CONFIG_DIR = ').length, 2, 'declared once')
+  // Every consumer of the binder's project dir reads the binder itself, so
+  // the hook intake gate and the Sessions sheet follow the fix.
+  assert.match(server, /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,/)
+  assert.match(server, /new AgentSessionLibrary\(\{\s*projectDir: sessionBinder\.projectDirectory,/)
+  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 2)
 })

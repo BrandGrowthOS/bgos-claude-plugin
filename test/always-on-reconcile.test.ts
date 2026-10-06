@@ -25,7 +25,7 @@ import {
   describeOtherSupervisor,
   otherLiveSupervisor,
 } from '../lib/always-on-reconcile.ts'
-import type { Supervision } from '../lib/update-readiness.ts'
+import { resolveSupervision, type Supervision } from '../lib/update-readiness.ts'
 
 const ID = '910'
 
@@ -112,7 +112,7 @@ test('server.ts reconcile asks the shared detection, defers before installing, a
   const body = server.slice(start, server.indexOf('\n// ── Startup', start))
   assert.ok(start > 0 && body.length > 0)
   assert.ok(body.includes('decideAlwaysOnReconcile('), 'the pure decision drives the reconcile')
-  assert.ok(body.includes('resolveSupervision(supervisionProbe())'), 'the SAME detection the update ladder uses')
+  assert.ok(body.includes('resolveSupervision({ ...supervisionProbe(), '), 'the SAME detection the update ladder uses')
   const deferAt = body.indexOf("if (decision.action === 'defer') {")
   const installAt = body.indexOf("['install'")
   assert.ok(deferAt > 0 && deferAt < installAt, 'the defer branch comes before any install spawn')
@@ -123,4 +123,75 @@ test('server.ts reconcile asks the shared detection, defers before installing, a
   // The removal still goes only through the canonical uninstall.
   const removeBranch = body.slice(body.indexOf("} else if (decision.action === 'remove') {"))
   assert.ok(removeBranch.includes("['uninstall', '--assistant', ASSISTANT_ID]"))
+})
+
+// Mission 104 fix round (C1). On a marketplace install bin/bgos-launch.mjs
+// relocates this process into the plugin cache so bun resolves its
+// dependencies, and the agent's own folder travels as BGOS_LAUNCH_CWD
+// (server.ts LAUNCH_CWD). The reconcile used the relocated cwd for both its
+// legs: `bgos-agent install --dir <plugin cache>` died with "not a proven
+// paired folder" on every config event and every 15 minutes, so adoption
+// (design 3.2 step 2) never gave a marketplace agent its supervisor; and the
+// G11 probe matched bespoke jobs against the cache, where no job's
+// WorkingDirectory ever points.
+test('server.ts installs and probes from the agent folder (LAUNCH_CWD), never the relocated cwd', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const start = server.indexOf('async function reconcileAlwaysOn(')
+  const body = server.slice(start, server.indexOf('\n// ── Startup', start))
+  assert.ok(start > 0 && body.length > 0)
+  // A name of its own keeps the counted identity literal (`cwd: LAUNCH_CWD`,
+  // test/agent-credentials.test.ts) at six, as SESSION_PIN_WORKDIR does.
+  assert.match(server, /\nconst ALWAYS_ON_WORKDIR = LAUNCH_CWD\n/, 'the folder claude runs the agent in')
+  assert.ok(
+    body.includes("['install', '--assistant', ASSISTANT_ID, '--dir', ALWAYS_ON_WORKDIR, '--always-on', '--no-clone']"),
+    'the install names the agent folder, the one bgos-agent can prove',
+  )
+  assert.doesNotMatch(body, /'--dir', process\.cwd\(\)/)
+  assert.ok(
+    body.includes('resolveSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR })'),
+    'the G11 probe matches a bespoke job by the agent folder too',
+  )
+  assert.doesNotMatch(body, /resolveSupervision\(supervisionProbe\(\)\)/)
+})
+
+test('G11 on a marketplace install: a bespoke unit found by working directory defers only when probed from the agent folder', () => {
+  const HOME = '/home/kc'
+  const AGENT = '/home/kc/agents/vexa'
+  const CACHE = '/home/kc/.claude/plugins/cache/hoai-marketplace/hoai/0.62.0'
+  const UNIT = `${HOME}/.config/systemd/user/vexa-agent.service`
+  const files: Record<string, string> = {
+    [UNIT]: ['[Service]', 'ExecStart=/usr/bin/hoai', `WorkingDirectory=${AGENT}`, 'Restart=always'].join('\n'),
+    // A paired marketplace folder declares this agent by its folder pin.
+    [`${AGENT}/.bgos-agent-id`]: ID,
+  }
+  const probe = (cwd: string) => ({
+    platform: 'linux',
+    home: HOME,
+    assistantId: ID,
+    cwd,
+    exists: (p: string) => p in files,
+    readFile: (p: string) => files[p] ?? null,
+    listDir: (dir: string) =>
+      Object.keys(files)
+        .filter((p) => p.startsWith(`${dir}/`) && !p.slice(dir.length + 1).includes('/'))
+        .map((p) => p.slice(dir.length + 1)),
+    execSync: (file: string) =>
+      file === 'systemctl'
+        ? { code: 0, stdout: 'vexa-agent.service loaded active running Vexa' }
+        : { code: 127, stdout: '' },
+    pidAlive: () => false,
+  })
+  const decide = (cwd: string) =>
+    decideAlwaysOnReconcile({
+      desired: true,
+      canonicalInstalled: false,
+      supervision: resolveSupervision(probe(cwd)),
+      assistantId: ID,
+    })
+  assert.equal(decide(CACHE).action, 'install', 'from the plugin cache the bespoke unit is invisible: a second supervisor')
+  assert.deepEqual(decide(AGENT), {
+    action: 'defer',
+    other: { kind: 'systemd', handle: 'vexa-agent.service', via: 'working-directory' },
+  })
 })
