@@ -10872,12 +10872,15 @@ const sessionPinKeeper = new SessionPinKeeper({
   log,
 })
 function checkSessionPin(): void {
+  const holdsChannel = channelArmed && lockHeld
   sessionPinKeeper.check(
     {
-      holdsChannel: channelArmed && lockHeld,
+      holdsChannel,
       sessionId: liveSessionId,
       seenAtMs: liveSessionSeenAtMs,
-      printMode: claudePrintMode(),
+      // Read for the holder only: a passive daemon (there can be many on one
+      // host) never pins, so it never pays for the ps walk either.
+      printMode: holdsChannel ? claudePrintMode() : null,
     },
     Date.now(),
   )
