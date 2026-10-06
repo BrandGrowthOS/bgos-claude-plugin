@@ -1054,6 +1054,40 @@ test('F2 (win32): with claudePid null (the daemon has no ps there) the claude ab
   assert.equal(busy.files.has(`${WSTATE}\\restart-requested.json`), false)
 })
 
+// -- F4: Windows never starts a second session beside a live one ------------------------------------------
+
+test('F4 (win32): an update for an agent whose launcher died but whose claude still runs waits (session_without_launcher): no schtasks /Run beside it, no attempt spent', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+  })
+  const rec = recorder({ win32Ps: winListing(false) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.equal(rec.calls.some((c) => c.file === 'schtasks.exe'), false)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0)
+})
+
+test('F4 (win32): a daemon too old to publish state but holding the pairing lock (a person\'s plain claude) is running: the task is registered, never started beside it', async () => {
+  const lock = { ['C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock']: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) }
+  // No task yet: registered for the next logon, not started.
+  const fresh = windowsMachine(lock)
+  const rec = recorder({ win32Ps: winListing(false) })
+  const report = await runKeepAliveSweep(windowsCtx(fresh, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'install']])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  // Task installed, launcher dead: still not started.
+  const installed = windowsMachine({ ...lock, [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n", [`${WSTATE}\\supervisor-generation`]: '2\n' })
+  const quiet = recorder({ win32Ps: winListing(false) })
+  const later = await runKeepAliveSweep(windowsCtx(installed, quiet, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
+  // Not a refused start either (no task start spent): that claude started before the
+  // install landed, so it is an update waiting for the session to end.
+  assert.deepEqual(later.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  assert.equal(JSON.parse(installed.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 0)
+})
+
 // -- the report --------------------------------------------------------------------------------------
 
 test('readKeepAliveReport: the persisted state as the heartbeat block (bounded to 64 agents)', () => {

@@ -473,6 +473,44 @@ test('restartAgent win32: the agent task with a LIVE launcher restarts through t
   assert.match(bad.message, /rc 1/)
 })
 
+test('restartAgent win32 (F4): a dead launcher whose agent session is still live (an orphaned claude, a person\'s) is never started beside it: no schtasks /Run, a named refusal', async () => {
+  const NOW = BASE_DEPS.now()
+  const state = JSON.stringify({
+    schemaVersion: 1,
+    assistantId: '912',
+    pid: 4912,
+    claudePid: null,
+    runningVersion: '0.38.2',
+    pendingRestartVersion: null,
+    turnInFlight: false,
+    pendingMessages: 0,
+    pendingPermissions: 0,
+    activeOperations: 0,
+    lastActivityAt: null,
+    sessionId: null,
+    updatedAt: new Date(NOW - 5_000).toISOString(),
+    turnSignal: 'hooks',
+  })
+  const row = agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false })
+  const cases: Array<[string, Record<string, string>]> = [
+    ['a fresh agent-state.json from a live daemon', { '/home/kc/.bgos-plugin-state/912/agent-state.json': state }],
+    ['a daemon too old to publish state, holding the pairing lock', { '/home/kc/.bgos-agent/credentials-912.json.lock': JSON.stringify({ pid: 4912, heartbeatAt: NOW - 3_000 }) }],
+  ]
+  for (const [name, files] of cases) {
+    const { calls, exec } = recordingExec()
+    const out = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: memoryFs(files), exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: (pid: number) => pid === 4912 } as any)
+    assert.deepEqual(calls, [], `${name}: no second session`)
+    assert.equal(out.ok, false, name)
+    assert.equal(out.how, 'task', name)
+    assert.match(out.message, /^session_without_launcher/, name)
+  }
+  // The daemon is gone (its pid dead, the lock stale): the task starts as before.
+  const { calls, exec } = recordingExec()
+  const gone = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: memoryFs(Object.assign({}, ...cases.map(([, f]) => f))), exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
+  assert.equal(gone.ok, true)
+  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+})
+
 test('restartAgent posix: a LIVE hoai launcher restarts through the marker even when a canonical service exists (a run.sh waiting behind it would restart nothing)', async () => {
   const CANONICAL: Record<string, Record<string, string>> = {
     darwin: { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' },
