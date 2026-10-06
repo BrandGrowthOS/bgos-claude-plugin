@@ -154,9 +154,12 @@ async function runMain(
   const spawns: Spawn[] = []
   const prints: string[] = []
   let n = 0
+  // The env object main() is handed. In production that is process.env, which claude (and so
+  // the daemon claude starts) inherits, so what main() adds to it is what the launch carries.
+  const launchEnv: Record<string, string | undefined> = { ...env }
   const code = await main([], {
     platform: 'linux',
-    env: { ...env },
+    env: launchEnv,
     home: sb.home,
     cwd: sb.cwd,
     scriptDir,
@@ -168,19 +171,42 @@ async function runMain(
       return childExiting(codes[n++] ?? 0)
     }) as never,
   } as never)
-  return { code, spawns, prints }
+  return { code, spawns, prints, launchEnv }
 }
 
-test('supervised: two paired agents and nothing saying which ("choosing an agent") stops with exit 6 and the reason in the SERVICE agent\'s launch-status', async () => {
+test('supervised: a pinless folder on a MULTI-agent host launches as the SERVICE agent, on its own pin, and hands the daemon BGOS_ASSISTANT_ID', async () => {
+  // The service names its agent (HOAI_SUPERVISED_ASSISTANT_ID). buildRunPlan used to refuse
+  // this folder as identity-ambiguous (exit 6) before that id was ever consulted, so run.sh
+  // lapped forever on a folder it was installed for. The daemon inside the session needs the id
+  // too: on a host with two paired agents and no pin it refuses to boot without one.
+  const sb = sandbox()
+  try {
+    mkdirSync(join(sb.home, '.bgos-agent'), { recursive: true })
+    writeFileSync(join(sb.home, '.bgos-agent', 'credentials-7.json'), '{}')
+    writeFileSync(join(sb.home, '.bgos-agent', 'credentials-900.json'), '{}')
+    const r = await runMain(sb)
+    assert.equal(r.code, 0, r.prints.join('\n'))
+    assert.equal(r.spawns.length, 1)
+    assert.equal(r.launchEnv.BGOS_ASSISTANT_ID, '900', 'the daemon is told which agent it is')
+    const pin = readFileSync(join(sb.home, '.bgos-agent', '900', SESSION_ID_FILE_NAME), 'utf8').trim()
+    assert.match(r.spawns[0]!.args[1] ?? '', new RegExp(`\\{--session-id\\} \\{${pin}\\}`), 'the SERVICE agent\'s pin')
+    assert.equal(existsSync(join(sb.home, '.bgos-agent', '7', SESSION_ID_FILE_NAME)), false, 'never the other agent\'s')
+    assert.doesNotMatch(sb.statusOf('900'), /identity-ambiguous/)
+  } finally {
+    sb.cleanup()
+  }
+})
+
+test('unattended with NO service id (two paired agents and nothing saying which) still stops with exit 6 instead of guessing', async () => {
   const sb = sandbox()
   try {
     mkdirSync(join(sb.home, '.bgos-agent'), { recursive: true })
     writeFileSync(join(sb.home, '.bgos-agent', 'credentials-7.json'), '{}')
     writeFileSync(join(sb.home, '.bgos-agent', 'credentials-8.json'), '{}')
-    const r = await runMain(sb)
+    const r = await runMain(sb, { env: { HOAI_SUPERVISED: '1' } })
     assert.equal(r.code, EXIT_UNATTENDED_NEEDS_PERSON)
     assert.equal(r.spawns.length, 0)
-    assert.match(sb.statusOf('900'), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=identity-ambiguous detail="/)
+    assert.equal(r.launchEnv.BGOS_ASSISTANT_ID, undefined)
   } finally {
     sb.cleanup()
   }
@@ -208,6 +234,7 @@ test('supervised: a folder pinned to ANOTHER agent than the service is refused (
     assert.equal(r.code, EXIT_SUPERVISED_IDENTITY_MISMATCH)
     assert.equal(r.spawns.length, 0)
     assert.match(sb.statusOf('900'), /outcome=identity-mismatch folder=871 service=900/)
+    assert.equal(r.launchEnv.BGOS_ASSISTANT_ID, undefined, 'the service id never overrides what the folder declares')
     assert.equal(existsSync(join(sb.home, '.bgos-agent', '871', SUPERVISOR_FILE_NAME)), false)
   } finally {
     sb.cleanup()
