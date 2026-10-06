@@ -134,28 +134,67 @@ default_workdir_for() { printf '%s/%s-workspace' "$STATE_ROOT" "$1"; }
 # is already doing what it asked for). The lock sits BESIDE the state dir, not
 # in it, so uninstall's state wipe never touches another install's lock and no
 # reader of ~/.bgos-agent mistakes it for an agent (it is not all digits). A
-# lock older than INSTALL_LOCK_STALE_MIN minutes belongs to an install that
-# died without its trap (SIGKILL, a power cut); no install takes that long.
+# lock is stale only when it is older than INSTALL_LOCK_STALE_MIN minutes AND
+# the install that took it is gone (install_lock_stale): one that died without
+# its trap (SIGKILL, a power cut). An install still running keeps its lock
+# however long it takes.
 INSTALL_LOCK_STALE_MIN=10
+# How long an uninstall waits for an install of the same agent (cmd_uninstall).
+UNINSTALL_LOCK_WAIT_S=30
 INSTALL_LOCK=""
 install_lock_for() { printf '%s.install.lock' "$(statedir_for "$1")"; }
 release_install_lock() {
   if [ -n "$INSTALL_LOCK" ]; then rm -rf "$INSTALL_LOCK"; fi
   INSTALL_LOCK=""
 }
+# The start time of pid $1 as ps prints it (LC_ALL=C: one spelling in every
+# locale), whitespace squeezed; nothing when ps cannot say (the pid is gone).
+proc_started() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | awk 'NF { $1 = $1; print; exit }'; }
+# 0 when the lock at $1 may be taken over. The holder is named in $1/pid by its
+# pid AND that pid's start time: a pid alone is reused (after a reboot above
+# all) and would hold the lock for an unrelated process forever, and age alone
+# took the lock from an install that was merely slow (a hung git clone is
+# still an install in progress). A pid file without a start time (an install
+# from before it was recorded) or no ps to ask: age alone, as before.
+install_lock_stale() { # $1 lock dir
+  [ -n "$(find "$1" -maxdepth 0 -mmin +"$INSTALL_LOCK_STALE_MIN" 2>/dev/null)" ] || return 1
+  local pid="" started="" now=""
+  { read -r pid; read -r started; } 2>/dev/null < "$1/pid" || true
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -n "$started" ]; then
+    now="$(proc_started "$pid")"
+    [ -n "$now" ] && [ "$now" = "$started" ] && return 1
+  fi
+  return 0
+}
 acquire_install_lock() { # $1 assistant id -> 0 when this process now holds the lock, 1 when another install does
   local lock; lock="$(install_lock_for "$1")"
   mkdir -p "$STATE_ROOT"
   if ! mkdir "$lock" 2>/dev/null; then
-    [ -n "$(find "$lock" -maxdepth 0 -mmin +"$INSTALL_LOCK_STALE_MIN" 2>/dev/null)" ] || return 1
-    warn "removing a stale install lock for agent $1 (older than $INSTALL_LOCK_STALE_MIN minutes, its install never finished): $lock"
-    rm -rf "$lock"
-    mkdir "$lock" 2>/dev/null || return 1
+    install_lock_stale "$lock" || return 1
+    # Taking a stale lock over is check-then-act, so it is serialized: mkdir of
+    # <lock>.takeover is atomic, and UNDER it the lock is judged stale again. A
+    # contender that judged the old lock stale and was then held up would
+    # otherwise remove the FRESH lock another one had just taken, and both
+    # would install at once. A takeover takes milliseconds: a marker older than
+    # a minute was left by a contender killed in the middle of one, and is
+    # cleared (this attempt stands down, the next one proceeds).
+    if ! mkdir "$lock.takeover" 2>/dev/null; then
+      if [ -n "$(find "$lock.takeover" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then rm -rf "$lock.takeover"; fi
+      return 1
+    fi
+    local took=1
+    if install_lock_stale "$lock"; then
+      warn "removing a stale install lock for agent $1 (older than $INSTALL_LOCK_STALE_MIN minutes, and the install that took it is gone): $lock"
+      rm -rf "$lock"
+      if mkdir "$lock" 2>/dev/null; then took=0; fi
+    fi
+    rmdir "$lock.takeover" 2>/dev/null || true
+    [ "$took" = 0 ] || return 1
   fi
   INSTALL_LOCK="$lock"
   # EXIT runs on a normal end, on every die, and when bash is ended by a signal.
   trap release_install_lock EXIT
-  printf '%s\n' "$$" > "$lock/pid" 2>/dev/null || true
+  { printf '%s\n' "$$"; proc_started "$$"; } > "$lock/pid" 2>/dev/null || true
   return 0
 }
 
@@ -1260,6 +1299,22 @@ kill_agent_tmux() { # $1 assistant id
 cmd_uninstall() {
   require_id
   local statedir; statedir="$(statedir_for "$ASSISTANT_ID")"
+  # The install lock, taken here too: an install of this agent still running
+  # would write run.sh and the service file while they are removed below,
+  # leaving a loaded job with no run.sh, and while this uninstall holds the lock
+  # a new install stands down. It waits for such an install, but never refuses:
+  # always-on was switched off, so after UNINSTALL_LOCK_WAIT_S it goes ahead
+  # anyway (the daemon gives an uninstall 60 seconds).
+  local waited=0
+  until acquire_install_lock "$ASSISTANT_ID"; do
+    if [ "$waited" -ge "$UNINSTALL_LOCK_WAIT_S" ]; then
+      warn "an install of agent $ASSISTANT_ID still holds $(install_lock_for "$ASSISTANT_ID") after ${waited}s; uninstalling anyway"
+      break
+    fi
+    [ "$waited" -eq 0 ] && info "waiting for an install of agent $ASSISTANT_ID to finish (up to ${UNINSTALL_LOCK_WAIT_S}s)"
+    sleep 1
+    waited=$((waited + 1))
+  done
   # Remove the manifest + state FIRST, so the agent reads as uninstalled even if
   # the stop/bootout below kills this very process, which happens when the
   # toggle is flipped off from INSIDE the supervised session (the teardown is a
