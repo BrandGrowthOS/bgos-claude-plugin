@@ -13436,6 +13436,15 @@ function syncSlashCommands(prepared?: PreparedSlashCommands): Promise<void> {
 // supervisor waits behind this session and takes over only when it ends.
 const execFileAsync = promisify(execFile)
 const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
+// The folder the supervisor runs the agent in, which is LAUNCH_CWD and never
+// this process's cwd: a marketplace install runs this process in the plugin
+// cache (bin/bgos-launch.mjs relocates it), so `install --dir <cache>` died
+// with "not a proven paired folder" on every cycle and adoption never gave a
+// marketplace agent its supervisor, and a bespoke job's WorkingDirectory (the
+// agent folder) could never match the G11 probe. Its own name keeps the
+// counted identity literal at six (test/agent-credentials.test.ts), as
+// SESSION_PIN_WORKDIR does.
+const ALWAYS_ON_WORKDIR = LAUNCH_CWD
 let reconcileBusy = false
 // A missing supervisor binary is a HOST-LAYOUT fact, not a transient: no
 // number of retries installs it. Without this latch a host whose install
@@ -13516,11 +13525,13 @@ async function reconcileAlwaysOn(): Promise<void> {
     // trusts whether a bespoke job or a verified keepalive already keeps this
     // agent alive. Read only on the install row: the platform query is not
     // free and no other row needs it. Unreadable is null, which installs, the
-    // pre-G11 behaviour.
+    // pre-G11 behaviour. Anchored on the agent folder (ALWAYS_ON_WORKDIR), the
+    // same folder the install below names, so a bespoke job whose
+    // WorkingDirectory is that folder is found on a marketplace install too.
     let supervision: Supervision | null = null
     if (desired && !installed) {
       try {
-        supervision = resolveSupervision(supervisionProbe())
+        supervision = resolveSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR })
       } catch {
         supervision = null
       }
@@ -13546,7 +13557,7 @@ async function reconcileAlwaysOn(): Promise<void> {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
-        ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
+        ['install', '--assistant', ASSISTANT_ID, '--dir', ALWAYS_ON_WORKDIR, '--always-on', '--no-clone'],
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')
