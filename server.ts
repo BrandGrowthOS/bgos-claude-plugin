@@ -448,7 +448,6 @@ import {
   loadAutoUpdateState,
   loadSharedUpdateSafety,
   MessageActivityTracker,
-  pendingRestartVersionFrom,
   resolveAutoUpdateStatePath,
   type SelfUpdater,
 } from './lib/self-update'
@@ -475,12 +474,31 @@ import {
   decideSupervisorWrite,
   detectSupervision,
   probeServiceOwnership,
+  readProcessAncestry,
+  readProcessComm,
   resolveSupervision,
   supervisorFilePath,
   wireSupervisedKind,
   type ResolvedService,
+  type Supervision,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
+import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
+import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
+import {
+  AGENT_STATE_FILE_NAME,
+  AGENT_STATE_MAX_INTERVAL_MS,
+  AgentStatePublisher,
+  memoizeFor,
+  memoizeUntilFound,
+  nearestClaudeAncestor,
+} from './lib/agent-state.js'
+import {
+  SESSION_PIN_CHECK_MS,
+  SessionPinKeeper,
+  isPrintModeCommand,
+  readProcessCommand,
+} from './lib/session-pin.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -8018,6 +8036,19 @@ const turnChat = createTurnChatTracker()
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
 /**
+ * The live Claude session this daemon serves, as its OWN hook events name it
+ * (agent-state.json `sessionId`, and the session pin, finding 7). Only the
+ * pairing lock holder drains hooks, and the intake admits only the session it
+ * has positively bound (lib/hook-intake.ts), so this is never a neighbour's
+ * session. `liveSessionSeenAtMs` is when THIS id was first seen: the pin waits
+ * for it to have stayed up a while (lib/session-pin.ts).
+ */
+let liveSessionId: string | null = null
+let liveSessionSeenAtMs = 0
+/** The last hook event of any kind: the agent doing something (agent-state
+ *  `lastActivityAt`). */
+let lastHookEventAtMs: number | null = null
+/**
  * How many cards this daemon can still address at once.
  *
  * One for the live turn, plus the card of a turn whose child agent outlived
@@ -8557,6 +8588,12 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   } catch {
     /* binding is telemetry; it may never break the rail */
   }
+  lastHookEventAtMs = Date.now()
+  const hookSessionId = String(event.sessionId ?? '').trim()
+  if (hookSessionId && hookSessionId !== liveSessionId) {
+    liveSessionId = hookSessionId
+    liveSessionSeenAtMs = Date.now()
+  }
   if (event.name === 'UserPromptSubmit') {
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
@@ -8569,6 +8606,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   runHookEffects(effects)
+  // A turn starting or ending is exactly what the watcher's safe moment reads,
+  // so it is published now rather than on the next tick.
+  agentStatePublisher.tick()
 }
 
 /**
@@ -10742,13 +10782,115 @@ function updateReadinessSnapshot(): UpdateReadiness {
             loadSharedUpdateSafety(
               pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
             ).disabled)),
-    pendingRestartVersion:
-      selfUpdater?.pendingRestartVersion() ??
-      pendingRestartVersionFrom(
-        RUNNING_VERSION,
-        state.validationPending ? state.targetVersion : null,
-      ),
+    pendingRestartVersion: daemonPendingRestartVersion(state),
   }
+}
+
+// The installed-but-not-running version, shared by the heartbeat readiness
+// above and agent-state.json (lib/pending-restart.ts). Fact 6: a marketplace
+// install has no git updater and no auto-update.json target, so before this
+// it reported null forever; its answer is installed_plugins.json against the
+// version captured at boot. `state` is the auto-update.json read the caller
+// already made, when it made one.
+function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
+  return resolvePendingRestartVersion({
+    installMethod: INSTALL_METHOD,
+    runningVersion: RUNNING_VERSION,
+    updaterPending: () => selfUpdater?.pendingRestartVersion() ?? null,
+    stagedTargetVersion: () => {
+      const s = state ?? loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
+      return s.validationPending ? s.targetVersion : null
+    },
+    readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+  })
+}
+
+// ── Published agent state (design section 7, finding 9) ─────────────────────
+// ~/.bgos-plugin-state/<id>/agent-state.json: what the per-machine watcher
+// reads before it restarts this agent onto an update (lib/agent-state.ts has
+// the contract and the reasons). Published by the pairing LOCK HOLDER only, on
+// every change (a 1 s tick plus a poke per hook event) and at least every
+// 30 s; removed by both exit paths below. Never throws.
+const AGENT_STATE_TICK_MS = 1_000
+// The ancestor walk is synchronous ps spawns; a found claude never changes,
+// a miss is retried every 10 minutes.
+const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
+const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
+  nearestClaudeAncestor(readProcessAncestry(process.pid, defaultExecSync), (pid) =>
+    readProcessComm(pid, defaultExecSync),
+  ),
+)
+// installed_plugins.json is a file read; the 1 s tick must not repeat it.
+const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
+  daemonPendingRestartVersion(),
+)
+const agentStatePublisher = new AgentStatePublisher({
+  path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
+  pid: process.pid,
+  now: Date.now,
+  shouldPublish: () => lockHeld,
+  snapshot: () => ({
+    assistantId: ASSISTANT_ID,
+    claudePid: agentClaudePid(),
+    runningVersion: RUNNING_VERSION,
+    pendingRestartVersion: agentStatePendingRestart(),
+    // A child agent still working after its parent's Stop keeps the turn
+    // "in flight" (the intake's own isTurnLive rule): restarting then would
+    // kill that child mid job, which finding 9 forbids.
+    turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    pendingMessages: pendingInbounds.size,
+    pendingPermissions: pendingPermissions.size,
+    activeOperations: messageActivity.activeOperations,
+    // Boot counts as activity: a session that just started may have a person
+    // at its keyboard, and the watcher's quiet window should run from there.
+    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs],
+    sessionId: liveSessionId,
+  }),
+})
+
+// ── Session pin (finding 7, design section 4) ───────────────────────────────
+// The live session this daemon's own hooks named goes into
+// ~/.bgos-agent/<id>/session-id, the pin hoai resumes on every supervised
+// (re)launch, so an agent first started with plain `claude` keeps its
+// conversation when the supervisor takes over. lib/session-pin.ts has the
+// guards: the channel holder only, never a print-mode claude, a session that
+// stayed up past hoai's own health window, a transcript hoai can resume, and
+// once per live session. Checked every 30 s; never throws.
+const claudePrintMode = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () => {
+  const pid = agentClaudePid()
+  if (pid === null) return null
+  const command = readProcessCommand(pid, defaultExecSync)
+  return command === null ? null : isPrintModeCommand(command)
+})
+// The transcript hoai resumes is keyed by the folder claude runs in, which is
+// LAUNCH_CWD and never process.cwd(): a marketplace install runs this process
+// in the plugin cache (bin/bgos-launch.mjs relocates it), and a transcript
+// looked up from there never exists, so the pin would never be written. Its
+// own name keeps the counted identity literal at six
+// (test/agent-credentials.test.ts), as CHANGES_WORKDIR does.
+const SESSION_PIN_WORKDIR = LAUNCH_CWD
+const sessionPinKeeper = new SessionPinKeeper({
+  home: homedir(),
+  cwd: SESSION_PIN_WORKDIR,
+  configDir: process.env.CLAUDE_CONFIG_DIR ?? '',
+  assistantId: ASSISTANT_ID,
+  exists: existsSync,
+  readFile: readTextOrNull,
+  log,
+})
+function checkSessionPin(): void {
+  const holdsChannel = channelArmed && lockHeld
+  sessionPinKeeper.check(
+    {
+      holdsChannel,
+      sessionId: liveSessionId,
+      seenAtMs: liveSessionSeenAtMs,
+      // Read for the holder only: a passive daemon (there can be many on one
+      // host) never pins, so it never pays for the ps walk either.
+      printMode: holdsChannel ? claudePrintMode() : null,
+    },
+    Date.now(),
+  )
 }
 
 // Install method + plugin root, detected once. For a marketplace install the
@@ -13302,6 +13444,10 @@ let reconcileBusy = false
 // forever and buries the one actionable log line in thousands of copies.
 // Log once, loudly, and stand down until the process restarts.
 let reconcileDisabledReason: string | null = null
+// G11: the "another supervisor already keeps this agent alive" line is said
+// once per process. The reconcile re-runs every 15 minutes and on every
+// config event, and the answer does not change while the bespoke job lives.
+let alwaysOnDeferLogged = false
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -13323,15 +13469,18 @@ async function reconcileAlwaysOn(): Promise<void> {
     // on a Windows host with always-on configured retried a spawn that can
     // never succeed (9,852 failures on one daemon in 2.5 days, found by
     // Mark 2026-08-09, who also caught that a quiet latch here would hide
-    // the real state). So: stand down ONCE, and say the true thing, which
-    // is that the flag KC configured is NOT being honored on this host.
-    reconcileDisabledReason = 'always-on is not implemented on Windows'
+    // the real state). So: stand down ONCE, and say the true thing. Since
+    // mission 104 (design G7) the true thing is WHO does it instead: the
+    // per-machine watcher's keep-alive sweep registers this agent's logon
+    // Scheduled Task when Keep agents running is on for this computer, so
+    // the line points there rather than at a Windows port of this script.
+    reconcileDisabledReason = 'the daemon does not install the Windows supervisor'
     log(
-      `always-on reconcile DISABLED: this assistant has always-on configured ` +
-        `in BGOS, but the supervisor only supports macOS (launchd) and Linux ` +
-        `(systemd), so restart-survival is NOT active on this Windows host. ` +
-        `The flag remains visible in BGOS as configured; treat it as ` +
-        `unfulfilled here until Windows support ships. Logged once.`,
+      `always-on reconcile DISABLED on this Windows host: this daemon does not ` +
+        `install a per-agent supervisor here. The per-machine watcher installs ` +
+        `the Windows supervisor (a logon Scheduled Task) when Keep agents ` +
+        `running is on for this computer in HOAI (Settings, Computers). ` +
+        `Logged once.`,
     )
     return
   }
@@ -13362,7 +13511,38 @@ async function reconcileAlwaysOn(): Promise<void> {
     if (typeof a?.alwaysOn !== 'boolean') return
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
+    // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
+    // file, so before installing, ask the same detection the update ladder
+    // trusts whether a bespoke job or a verified keepalive already keeps this
+    // agent alive. Read only on the install row: the platform query is not
+    // free and no other row needs it. Unreadable is null, which installs, the
+    // pre-G11 behaviour.
+    let supervision: Supervision | null = null
     if (desired && !installed) {
+      try {
+        supervision = resolveSupervision(supervisionProbe())
+      } catch {
+        supervision = null
+      }
+    }
+    const decision = decideAlwaysOnReconcile({
+      desired,
+      canonicalInstalled: installed,
+      supervision,
+      assistantId: ASSISTANT_ID,
+    })
+    if (decision.action === 'defer') {
+      if (!alwaysOnDeferLogged) {
+        alwaysOnDeferLogged = true
+        log(
+          `always-on: enabled in BGOS, and this agent is already kept alive by ` +
+            `${describeOtherSupervisor(decision.other)}; not installing a second ` +
+            `supervisor (two would race to relaunch it). Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'install') {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
@@ -13370,7 +13550,7 @@ async function reconcileAlwaysOn(): Promise<void> {
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')
-    } else if (!desired && installed) {
+    } else if (decision.action === 'remove') {
       // A supervisor installed moments ago is NOT "switched off": the app records
       // alwaysOn only after it has seen this agent connect. See lib/always-on-grace.ts.
       let stamp: string | null = null
@@ -13565,6 +13745,9 @@ async function main(): Promise<void> {
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
     stopHookIntake()
+    // A clean stop takes the published state away (only when it is ours), so
+    // the watcher never reads a dead daemon's "idle" as a live one's.
+    agentStatePublisher.shutdown()
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
@@ -13579,6 +13762,7 @@ async function main(): Promise<void> {
   // shutdown() already ran is harmless.
   process.on('exit', () => {
     stopHookIntake()
+    agentStatePublisher.shutdown()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
@@ -13588,6 +13772,13 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
+
+  // agent-state.json (design section 7): ticks from here on; it writes only
+  // while this daemon holds the pairing lock, so a passive daemon never does.
+  setInterval(() => agentStatePublisher.tick(), AGENT_STATE_TICK_MS).unref()
+  // The session pin (finding 7): asks only while this daemon holds the channel
+  // and its live session is not pinned yet (lib/session-pin.ts).
+  setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:
