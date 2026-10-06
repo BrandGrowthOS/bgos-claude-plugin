@@ -357,6 +357,10 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
   assert.ok(at > 0, 'the publisher is wired')
   const wiring = server.slice(at, server.indexOf('\n})\n', at))
+  // The contract location (design section 7): next to the cursor file, which
+  // is ~/.bgos-plugin-state/<id>/ (BGOS_PLUGIN_STATE_DIR moves it), where the
+  // watcher looks.
+  assert.match(wiring, /path: pathJoin\(pathDirname\(CURSOR_FILE_PATH\), AGENT_STATE_FILE_NAME\),/)
   assert.match(wiring, /shouldPublish: \(\) => lockHeld/)
   assert.match(wiring, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0,/)
   assert.match(wiring, /sessionId: liveSessionId/)
@@ -374,6 +378,8 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   const hookAt = server.indexOf('function onHookPayload(')
   const hookBody = server.slice(hookAt, server.indexOf('\n}\n', hookAt))
   assert.match(hookBody, /liveSessionId = hookSessionId/)
+  // A NEW session restarts the clock the pin's settle window is measured on.
+  assert.match(hookBody, /liveSessionId = hookSessionId\n\s*liveSessionSeenAtMs = Date\.now\(\)/)
   assert.match(hookBody, /lastHookEventAtMs = Date\.now\(\)/)
   assert.match(hookBody, /agentStatePublisher\.tick\(\)\s*$/)
   // Both exit paths take the state away (removeAgentStateIfOurs inside).
