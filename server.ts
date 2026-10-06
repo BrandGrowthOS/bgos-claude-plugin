@@ -10862,9 +10862,16 @@ const claudePrintMode = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, ()
   const command = readProcessCommand(pid, defaultExecSync)
   return command === null ? null : isPrintModeCommand(command)
 })
+// The transcript hoai resumes is keyed by the folder claude runs in, which is
+// LAUNCH_CWD and never process.cwd(): a marketplace install runs this process
+// in the plugin cache (bin/bgos-launch.mjs relocates it), and a transcript
+// looked up from there never exists, so the pin would never be written. Its
+// own name keeps the counted identity literal at six
+// (test/agent-credentials.test.ts), as CHANGES_WORKDIR does.
+const SESSION_PIN_WORKDIR = LAUNCH_CWD
 const sessionPinKeeper = new SessionPinKeeper({
   home: homedir(),
-  cwd: process.cwd(),
+  cwd: SESSION_PIN_WORKDIR,
   configDir: process.env.CLAUDE_CONFIG_DIR ?? '',
   assistantId: ASSISTANT_ID,
   exists: existsSync,

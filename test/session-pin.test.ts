@@ -242,7 +242,12 @@ test('server.ts pins from the channel holder, with the session its own hooks nam
   assert.ok(at > 0, 'the keeper is wired')
   const wiring = server.slice(at, server.indexOf('\n}\n', server.indexOf('function checkSessionPin(', at)))
   assert.match(wiring, /configDir: process\.env\.CLAUDE_CONFIG_DIR \?\? ''/, 'the same config dir hoai resolves')
-  assert.match(wiring, /cwd: process\.cwd\(\)/)
+  // claude's folder, which hoai keys the transcript by: LAUNCH_CWD. On a
+  // marketplace install process.cwd() is the plugin cache (bin/bgos-launch.mjs
+  // relocates it), where no transcript of this agent ever lives.
+  assert.match(server, /\nconst SESSION_PIN_WORKDIR = LAUNCH_CWD\n/, 'the agent folder, not the plugin cache')
+  assert.match(wiring, /cwd: SESSION_PIN_WORKDIR,/)
+  assert.doesNotMatch(wiring, /cwd: process\.cwd\(\)/)
   assert.match(wiring, /const holdsChannel = channelArmed && lockHeld\n/)
   assert.match(wiring, /\n\s*holdsChannel,\n/)
   assert.match(wiring, /sessionId: liveSessionId/)
