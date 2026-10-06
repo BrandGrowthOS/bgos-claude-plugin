@@ -266,6 +266,9 @@ function baseDeps(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: 
       uid: 501,
       username: USER,
       pidAlive: (pid: number) => pid === 4242,
+      // listAgents' sync probes answer nothing: no real systemctl, and no real ps or PowerShell
+      // asking what pid 4242 runs on THIS host (a live non-hoai 4242 flipped launcherLive).
+      execSync: () => ({ code: 1, stdout: '' }),
       hasTmux: true,
       hasScript: true,
       echo: (line: string) => logs.push(line),
