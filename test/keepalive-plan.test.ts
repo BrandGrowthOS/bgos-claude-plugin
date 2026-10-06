@@ -307,6 +307,7 @@ test('decideSupervise: none + known cwd + cleared installs; no cwd needs a first
     ['canonical service', { supervisor: 'service', serviceVia: 'canonical-file' }, { action: 'none', state: 'supervised', reason: 'canonical' }],
     ['bespoke discovered service (G11)', { supervisor: 'service', serviceVia: 'working-directory' }, { action: 'none', state: 'supervised', reason: 'bespoke' }],
     ['a verified keepalive.json with no visible job', { keepaliveVerified: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
+    ['a keepalive.json whose script is alive, its claude between two relaunches (G11)', { keepaliveDeclared: true }, { action: 'none', state: 'supervised', reason: 'keepalive' }],
     ['a live hoai launcher', { supervisor: 'launcher-live' }, { action: 'none', state: 'supervised', reason: 'launcher' }],
   ]
   for (const [name, patch, expected] of rows) {

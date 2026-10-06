@@ -298,6 +298,30 @@ test('supervise: no known folder is needs_first_launch; a verified bespoke keepa
   assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 0)
 })
 
+test('supervise (G11): a keepalive.json whose script is alive but whose claude is between two relaunches is supervised: no install beside it', async () => {
+  // 47 (the script) is alive; 58 (the claude it names) has just exited.
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 58 } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync: execSyncFor({ 57: 'claude' }) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 0, 'no second supervisor racing the bespoke loop')
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'supervised', 'keepalive']])
+})
+
+test('restart (G11): an update for a keepalive that is declared but NOT verified waits: no SIGTERM, no service kick, no relaunch of our own', async () => {
+  // The bespoke loop has relaunched claude as 57; keepalive.json still names the old 58.
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 58 }, state: { pid: 4100, claudePid: 57 } }])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(47, 1, '/bin/bash keepalive.sh'), psLine(57, 47, 'claude --x')].join('\n')
+  const rec = recorder({ ps })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync: execSyncFor({ 57: 'claude' }) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(rec.spawns, [], 'never a second session from the recipe')
+  assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['update_pending', 'keepalive_unverified']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['7'].attempts, 0, 'no attempt spent')
+})
+
 test('supervise: a failed install is reported (scrubbed, bounded) and retried at most once an hour; one install per sweep', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'none' }, { id: '7', cwd: GURU, service: 'none' }])
   const rec = recorder({ ps: IDLE_PS, bashCode: 1 })
