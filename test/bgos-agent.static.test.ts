@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
+import { CLONE_CHANNEL_SPEC, HOAI_PLUGIN_NAME, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 import { assertBashParses, bashOrSkip } from './helpers/posix-bash.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -165,6 +165,13 @@ test('generation 2 is stamped on every always-on install, with the grace stamp (
   assert.match(runSh, /trap on_stop TERM INT HUP/)
 })
 
+test('run.sh\'s pruned-checkout fallback looks for the plugin by the name the install-method reader uses, and never types a marketplace spec', () => {
+  const runSh = code.slice(code.indexOf('write_run_sh() {'), code.indexOf("\nSH\n", code.indexOf('write_run_sh() {')))
+  const names = [...runSh.matchAll(/k\.slice\(0, k\.lastIndexOf\("@"\)\) === "([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(names, [HOAI_PLUGIN_NAME])
+  assert.ok(!runSh.includes(MARKETPLACE_CHANNEL_SPEC))
+})
+
 test('the approved-sounding --channels flag is never used', () => {
   // Verified live on 2.1.239: `--channels` loads a marketplace plugin's tools
   // promptlessly, `claude mcp list` even says Connected, and it wires NO
@@ -269,4 +276,36 @@ test('update re-registers a clone workspace\'s hooks (the floor hook included) b
   // And ensureHookEntries is what writes the floor entry beside the forwarder.
   const writer = sh.slice(sh.indexOf('install_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('install_hook_entries() {')))
   assert.match(writer, /m\.ensureHookEntries\(\{/)
+})
+
+test('the README documents supervisor generation 2, with every supervised exit code hoai really uses, and no longer describes run.expect', async () => {
+  const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8')
+  const start = readme.indexOf('### What the always-on service runs (supervisor generation 2)')
+  assert.ok(start >= 0, 'the section exists')
+  const section = readme.slice(start, readme.indexOf('\n## ', start))
+  for (const needle of ['tmux -L hoai-<id>', 'claude --resume', 'session-id', 'BGOS_TMUX_SESSION=hoai-<id>', 'compact=off reason=no-tmux', 'hoai-agent attach --assistant <id>', '`hoai --keep-alive`', '`HOAI_SERVICE_NAMESPACE`', 'install already in progress', 'supervisor-generation']) {
+    assert.ok(section.includes(needle), `the section says ${needle}`)
+  }
+  // One table row per supervised exit, numbered by hoai's own constants and named by its outcomes.
+  const core = await import('../bin/hoai-core.mjs')
+  const rows: Array<[number, RegExp]> = [
+    [core.EXIT_UNATTENDED_NEEDS_PERSON, /`identity-conflict`/],
+    [core.EXIT_SUPERVISED_IDENTITY_MISMATCH, /`identity-mismatch`/],
+    [core.EXIT_SUPERVISED_NO_EXPECT, /`expect-missing`/],
+    [core.EXIT_SUPERVISED_GATE, /`gate-unrecognised`/],
+    [core.EXIT_SUPERVISED_STARTUP_EXIT, /`exited-during-startup`/],
+    [core.EXIT_SUPERVISED_SIGNED_OUT, /`live-but-not-signed-in`/],
+  ]
+  assert.deepEqual(rows.map(([code]) => code), [6, 7, 8, 9, 10, 11])
+  for (const [code, outcome] of rows) {
+    const row = section.split('\n').find((l) => l.startsWith(`| ${code} |`))
+    assert.ok(row, `a row for exit ${code}`)
+    assert.match(row!, outcome)
+  }
+  // The generation 1 description is gone, from the README and from the gate block's header.
+  assert.doesNotMatch(readme, /auto-accepts the\s+two `--dangerously-\*` prompts/)
+  assert.doesNotMatch(readme, /`run\.expect` behaviour tests/)
+  const gateHeader = readFileSync(join(repoRoot, 'lib', 'gate-block.tcl'), 'utf8').split('\n').filter((l) => l.startsWith('#')).join('\n')
+  assert.doesNotMatch(gateHeader, /copies it into the supervisor's\s*#?\s*run\.expect/)
+  assert.doesNotMatch(gateHeader, /which run\.expect derives/)
 })

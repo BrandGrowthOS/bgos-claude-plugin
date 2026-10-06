@@ -574,11 +574,14 @@ export function hookRegistrationFor({ cwd, scriptDir, method }) {
  *   1. a <cwd>/.bgos-agent-id folder pin: launch is safe, the daemon
  *      self-resolves from the pin, NO env var needed;
  *   2. an explicit BGOS_ASSISTANT_ID env pin: also safe;
- *   3. neither, and MORE THAN ONE credentials-<id>.json under
+ *   3. neither, on a SUPERVISED launch (HOAI_SUPERVISED=1) whose service
+ *      names its agent (HOAI_SUPERVISED_ASSISTANT_ID): that agent, handed to
+ *      the daemon as BGOS_ASSISTANT_ID in the plan's env;
+ *   4. none of those, and MORE THAN ONE credentials-<id>.json under
  *      <home>/.bgos-agent: refuse with both remedies, because the daemon
  *      would refuse to boot for the same reason and a launch that dies at
  *      boot is worse than a clear message here;
- *   4. neither, and zero or one paired agent: launch, the daemon resolves it.
+ *   5. none of those, and zero or one paired agent: launch, the daemon resolves it.
  * @param {{
  *   cwd?: string,
  *   env?: Record<string, string | undefined>,
@@ -695,6 +698,32 @@ export function buildRunPlan({
       hooks,
       detection,
       note: `${methodLine}\n[hoai] launching as assistant ${envId} (BGOS_ASSISTANT_ID env pin).`,
+    }
+  }
+
+  // A SUPERVISED launch knows its agent even when the folder does not: the
+  // service was installed for HOAI_SUPERVISED_ASSISTANT_ID. Asked BEFORE the
+  // multi-agent refusal below, which otherwise stopped a pinless folder on a
+  // host with two paired agents (identity-ambiguous, exit 6) before that id
+  // was ever consulted, so run.sh lapped on a folder it was installed for. The
+  // id also goes into the launch env as BGOS_ASSISTANT_ID, because the daemon
+  // claude starts reads its identity from there and refuses to boot unpinned
+  // on a multi-agent host for the same reason. Only when the folder declares
+  // nothing: a folder that names ANOTHER agent was answered above, and
+  // superviseClaude stops that launch as identity-mismatch (exit 7).
+  const serviceId = isSupervisedLaunch(env) ? supervisedServiceId(env) : ''
+  if (serviceId) {
+    return {
+      ok: true,
+      command: 'claude',
+      args,
+      env: { ...launchEnv, BGOS_ASSISTANT_ID: serviceId },
+      hooks,
+      detection,
+      note:
+        `${methodLine}\n[hoai] launching as assistant ${serviceId}, the agent this supervisor was ` +
+        `installed for (${SUPERVISED_ASSISTANT_ID_ENV}); this folder declares none, so the daemon ` +
+        `is handed BGOS_ASSISTANT_ID=${serviceId}.`,
     }
   }
 

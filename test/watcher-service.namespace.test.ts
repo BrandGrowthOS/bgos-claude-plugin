@@ -41,7 +41,15 @@ test('serviceNamespace: ^[a-z0-9]{1,16}$ or nothing; an invalid value means unse
     assert.equal(serviceNamespace({ HOAI_SERVICE_NAMESPACE: bad }), '', JSON.stringify(bad))
   }
   assert.equal(serviceNamespace({}), '')
-  assert.equal(serviceNamespace(undefined), '')
+  // `undefined` means "read process.env", so the variable is cleared for this one
+  // call: a namespace exported in the shell running the suite must not decide it.
+  const before = process.env.HOAI_SERVICE_NAMESPACE
+  try {
+    delete process.env.HOAI_SERVICE_NAMESPACE
+    assert.equal(serviceNamespace(undefined), '')
+  } finally {
+    if (before !== undefined) process.env.HOAI_SERVICE_NAMESPACE = before
+  }
 })
 
 test('unset or invalid: every platform spec is exactly the un-namespaced one (byte identical)', () => {
