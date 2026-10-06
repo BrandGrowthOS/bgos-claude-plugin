@@ -29,7 +29,7 @@ function fixture() {
   }
   const frames: any[] = [], closes: any[] = []
   const views = new RemoteBrowserViews({ pool })
-  const open = (viewId = 'view-one', connectionId = 'host-socket') => views.open({ viewId, ...context }, {
+  const open = (viewId = 'view-one', connectionId = 'host-socket', remoteBrowser = false) => views.open({ viewId, ...context, ...(remoteBrowser ? { remoteBrowser } : {}) }, {
     connectionId, sendFrame: (message: any) => { frames.push(message); return true }, sendClose: (message: any) => closes.push(message),
   })
   const command = (method: string, params: any = {}, extra: any = {}, connectionId = 'host-socket') => {
@@ -63,6 +63,63 @@ test('remote view A attaches the existing principal browser and streams changing
   assert.notEqual(streamed[0].frame.params.data, streamed[1].frame.params.data)
   assert.equal(streamed[1].frame.sessionId, ready.sessionId)
   await f.views.stop()
+})
+
+test('negotiated capture intent survives active target close while an old start promise is pending', async () => {
+  const f = fixture()
+  const nextCdp: any = new EventEmitter()
+  const nextCalls: string[] = []
+  nextCdp.send = async (method: string) => { nextCalls.push(method); return method === 'Page.getLayoutMetrics' ? { cssVisualViewport: { clientWidth: 1200, clientHeight: 800 } } : {} }
+  nextCdp.detach = async () => {}
+  const nextPage: any = new EventEmitter()
+  nextPage.isClosed = () => false; nextPage.context = () => ({ newCDPSession: async () => nextCdp })
+  nextPage.url = () => 'http://127.0.0.1/next'; nextPage.title = async () => 'Next page'
+  f.engine.pages = () => [f.page, nextPage]
+  ;(f.engine as any).selectedPage = () => f.page
+  await f.open('view-one', 'host-socket', true)
+  const oldTab = f.views.views.get('view-one').tabId
+  const original = f.cdp.send
+  let rejectStart!: (error: Error) => void
+  f.cdp.send = (method: string, params: any) => method === 'Page.startScreencast'
+    ? new Promise((_resolve, reject) => { rejectStart = reject }) : original(method, params)
+  const starting = f.command('Page.startScreencast')
+  await tick()
+  f.views.views.get('view-one').loading = true
+  f.page.isClosed = () => true
+  f.page.emit('close')
+  const deadline = Date.now() + 1000
+  while (f.views.views.get('view-one').tabId === oldTab || !nextCalls.includes('Page.startScreencast')) {
+    if (Date.now() > deadline) throw new Error('Capture did not restart on the replacement target')
+    await tick()
+  }
+  rejectStart(new Error('Old target detached'))
+  assert.equal(await starting, true)
+  assert.equal(f.views.views.size, 1)
+  assert.equal(f.views.views.get('view-one').capturing, true)
+  assert.equal(f.views.views.get('view-one').loading, false)
+  assert.ok(nextCalls.includes('Page.startScreencast'))
+  await f.views.stop()
+})
+
+test('negotiated input revocation names expiry and navigation while legacy viewers receive empty params', async () => {
+  for (const negotiated of [true, false]) {
+    const f = fixture()
+    const main = {}
+    f.page.mainFrame = () => main
+    await f.open('view-one', 'host-socket', negotiated)
+    const view = f.views.views.get('view-one')
+    f.views.input.leaseMs = 15
+    await f.views.input.acquire(view)
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const expiry = f.frames.filter(packet => packet.frame.method === 'hoai.input.revoked').at(-1).frame.params
+    assert.deepEqual(expiry, negotiated ? { reason: 'expired' } : {})
+    f.views.input.leaseMs = 30000
+    await f.views.input.acquire(view)
+    f.page.emit('framenavigated', main)
+    const navigation = f.frames.filter(packet => packet.frame.method === 'hoai.input.revoked').at(-1).frame.params
+    assert.deepEqual(navigation, negotiated ? { reason: 'navigation' } : {})
+    await f.views.stop()
+  }
 })
 
 test('remote view A preserves the last static page change while owner paint is pending', async () => {

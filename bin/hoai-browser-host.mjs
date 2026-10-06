@@ -75,7 +75,7 @@ import { io as socketIoClient } from 'socket.io-client'
 
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
-import { RemoteBrowserViews } from '../lib/remote-view.mjs'
+import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { runAgentBrowserWork } from '../lib/remote-input.mjs'
 
 /**
@@ -950,6 +950,7 @@ export class PlaywrightEngine {
     this._context = null
     this._toolNames = new Set()
     this.onDisconnected = null
+    this.onSelectedPage = null
     this._secrets = new BrowserSecretRedactor()
   }
 
@@ -958,6 +959,7 @@ export class PlaywrightEngine {
     this._browser = await chromium.connectOverCDP(this._endpoint, { isLocal: true, timeout: this._connectTimeoutMs, noDefaults: true })
     this._browser.on('disconnected', () => this.onDisconnected?.())
     const context = await this._browser.newContext({ viewport: { width: 1280, height: 800 } })
+    context.on('page', page => { if (context.pages().length > REMOTE_BROWSER_TAB_MAX) void page.close().catch(() => {}) })
     await context.newPage()
     const config = await resolveConfig({ caps: this._caps, outputDir: this._outputDir })
     const filtered = tools.filteredTools(config)
@@ -980,10 +982,24 @@ export class PlaywrightEngine {
     return this._context ? this._context.pages() : []
   }
 
+  selectedPage() { return this._backend?._context?.currentTab()?.page || this.pages().at(-1) }
+  async selectPage(page) {
+    const context = this._backend?._context
+    const index = context?.tabs().findIndex(tab => tab.page === page)
+    if (!context || index < 0) throw new Error('Browser tab is unavailable')
+    await context.selectTab(index)
+  }
+  async newPage() {
+    if (this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
+    return (await this._backend._context.newTab()).page
+  }
+
   async callTool(name, args, signal) {
     if (!this._backend) throw new Error('Engine not started')
+    if (name === 'browser_tabs' && args?.action === 'new' && this.pages().length >= REMOTE_BROWSER_TAB_MAX) throw new HostError('browser_tabs_full', 'The browser has reached its tab limit.')
     try { return this._secrets.value(await this._backend.callTool(name, args || {}, signal)) }
     catch (error) { throw Object.assign(new Error(this._secrets.text(String(error?.message || 'Browser command failed'))), { code: error?.code }) }
+    finally { this.onSelectedPage?.(this.selectedPage()) }
   }
 
   registerSecret(secret) { this._secrets.register(secret) }
@@ -1070,6 +1086,7 @@ export class ChromiumEngine {
       this._log(`started Chrome (pid ${child.pid}) on ${this.profileDir}`)
     }
     this._engine.onDisconnected = () => this._gone()
+    this._engine.onSelectedPage = page => this.onSelectedPage?.(page)
     this.vault.bind(this._engine._context)
     this.alive = true
     return this
@@ -1089,6 +1106,10 @@ export class ChromiumEngine {
   pages() {
     return this._engine ? this._engine.pages() : []
   }
+
+  selectedPage() { return this._engine?.selectedPage() }
+  selectPage(page) { return this._engine.selectPage(page) }
+  newPage() { return this._engine.newPage() }
 
   callTool(name, args, signal) {
     if (!this._engine || !this.alive) throw new HostError('browser_gone', 'The browser closed; call again to reopen it.')
