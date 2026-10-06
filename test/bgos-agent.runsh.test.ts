@@ -283,6 +283,7 @@ test('tmux + marketplace: the stale server goes first, then the singleton wait, 
   assert.deepEqual(calls[resolved]!.slice(1), [join(box.home, '.claude', 'plugins', 'installed_plugins.json'), 'hoai@hoai'])
   assert.deepEqual(calls[launched], [
     'tmux', '-f', '/dev/null', '-L', 'hoai-42', 'new-session', '-d', '-s', 'hoai-42', '-x', '200', '-y', '50', '-c', box.realWorkdir,
+    '/bin/sh', '-c', 'err=$1; shift; exec "$@" 2>>"$err"', 'hoai-stderr', join(box.state, 'hoai.err'),
     '/usr/bin/env', 'HOAI_SUPERVISED=1', 'HOAI_SUPERVISED_ASSISTANT_ID=42', 'BGOS_TMUX_SESSION=hoai-42', 'BGOS_TMUX_SOCKET=hoai-42',
     box.fakeNode, join(box.mktRoot, 'bin', 'hoai-core.mjs'),
   ])
@@ -325,6 +326,46 @@ test('the agent\'s OWN tmux server starts with no user config (-f /dev/null): re
   // Every other call addresses that running server, which reads no config again.
   const others = box.calls().filter((c) => c[0] === 'tmux' && !isTmux('new-session')(c))
   assert.ok(others.length > 0 && others.every((c) => c[1] === '-L'), JSON.stringify(others))
+})
+
+test('tmux: what hoai prints to stderr before it writes launch-status (a node too old to parse it, a missing module) reaches agent.log, and launch-status NAMES it instead of staying at outcome=starting', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  writeFileSync(join(box.fake, 'run-pane'), '')
+  writeFileSync(join(box.fake, 'node-stderr'), "file:///x/bin/hoai-core.mjs:120\n  const v = a ?? b\n                ^\n\nSyntaxError: Unexpected token '?'\n")
+  writeFileSync(join(box.fake, 'node-stdout'), '[hoai] this line stays on the pane\n')
+  writeFileSync(join(box.fake, 'node-rc'), '1')
+  // The third fast lap: the WEDGED line must carry the reason too.
+  writeFileSync(join(box.state, 'failcount'), '2\n')
+  const r = runSync(box, box.generate('clone'))
+  assert.equal(r.status, 0, box.agentLog())
+  assert.ok(box.calls().some((c) => c[0] === 'node' && c[1] === join(box.cloneRoot, 'bin', 'hoai-core.mjs')), 'hoai ran in the pane')
+  const log = box.agentLog()
+  assert.match(log, /hoai's error output \(stderr\) from this launch:\n(  \| .*\n)*  \| SyntaxError: Unexpected token '\?'\n/)
+  assert.doesNotMatch(log, /this line stays on the pane/, 'stdout is still the pane\'s: attach and remote compact use it')
+  assert.match(readFileSync(join(box.fake, 'pane'), 'utf8'), /this line stays on the pane/)
+  assert.match(box.status(), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=hoai-exited-without-status detail="SyntaxError: Unexpected token '\?'"$/)
+  assert.match(log, /WEDGED: agent exited after \d+s .*3 times in a row\.\n.*Last launch: .*outcome=hoai-exited-without-status detail="SyntaxError/)
+})
+
+test('tmux: a launch-status hoai wrote itself is left as it is, an empty stderr adds nothing to agent.log, and the previous launch\'s stderr is not repeated', (t) => {
+  if (!ready(t)) return
+  const box = sandbox()
+  t.after(box.cleanup)
+  writeFileSync(join(box.fake, 'run-pane'), '')
+  writeFileSync(join(box.state, 'hoai.err'), 'an error from the PREVIOUS launch\n')
+  writeFileSync(join(box.fake, 'node-status'), '2026-10-07 10:00:00 outcome=gate-blocked screen=trust\n')
+  runSync(box, box.generate('clone'))
+  assert.equal(box.status(), '2026-10-07 10:00:00 outcome=gate-blocked screen=trust', 'hoai\'s own measurement wins')
+  assert.doesNotMatch(box.agentLog(), /hoai's error output|PREVIOUS launch/)
+
+  // Nothing on stderr and no status of its own: still named, never left at outcome=starting.
+  const quiet = sandbox()
+  t.after(quiet.cleanup)
+  writeFileSync(join(quiet.fake, 'run-pane'), '')
+  runSync(quiet, quiet.generate('clone'))
+  assert.match(quiet.status(), /outcome=hoai-exited-without-status detail="no error output"$/)
 })
 
 test('marketplace under a custom CLAUDE_CONFIG_DIR: the install record is read from THAT config dir', (t) => {

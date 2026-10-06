@@ -682,7 +682,14 @@ elif [ "$have_tmux" = 1 ]; then
   # destroy-unattached ended the detached session at once (a crash loop); a
   # continuum restore filled the agent's server with the owner's sessions. No
   # other call here starts a server, so only this one needs it.
+  #
+  # hoai's stderr goes to hoai.err, read back below: the pane (its stdout and
+  # stdin, which attach and remote compact use) vanishes with hoai, and with it
+  # the one line that says why a hoai died before it could write launch-status
+  # (a node too old to parse it, a pruned import, a fatal error).
+  : > "$sd/hoai.err"
   if tmux -f /dev/null -L "$sock" new-session -d -s "$sock" -x 200 -y 50 -c "$workdir" \
+      /bin/sh -c 'err=$1; shift; exec "$@" 2>>"$err"' hoai-stderr "$sd/hoai.err" \
       /usr/bin/env HOAI_SUPERVISED=1 "HOAI_SUPERVISED_ASSISTANT_ID=$id" \
       "BGOS_TMUX_SESSION=$sock" "BGOS_TMUX_SOCKET=$sock" \
       "$node_bin" "$root/bin/hoai-core.mjs"; then
@@ -693,6 +700,19 @@ elif [ "$have_tmux" = 1 ]; then
     echo "[$(ts)] agent $id is running in tmux session $sock (remote compact ON; watch it with: hoai-agent attach --assistant $id)"
     while tmux -L "$sock" has-session -t "=$sock" 2>/dev/null; do sleep 5 & wait $!; done
     how="ran in tmux, hoai's own outcome is in launch-status"
+    if [ -s "$sd/hoai.err" ]; then
+      echo "[$(ts)] hoai's error output (stderr) from this launch:"
+      tail -n 40 "$sd/hoai.err" | sed 's/^/  | /'
+    fi
+    # Still the line written before the launch: hoai ended before it measured
+    # anything. Named, with its last stderr line, so status and the WEDGED line
+    # say why instead of "starting".
+    case "$(cat "$sd/launch-status" 2>/dev/null)" in
+      *" outcome=starting")
+        last="$(awk 'NF { l = $0 } END { gsub(/"/, "", l); print substr(l, 1, 200) }' "$sd/hoai.err" 2>/dev/null)"
+        note_status "outcome=hoai-exited-without-status detail=\"${last:-no error output}\""
+        ;;
+    esac
   else
     rc=$?
     how="tmux new-session exit $rc"
@@ -1178,11 +1198,14 @@ cmd_logs() {
   # Only the logs that exist: generation 2 writes no expect.log (hoai runs in
   # tmux, see hoai-agent attach), and a missing file made tail fail, which then
   # printed "no logs yet" right under the log it had just shown. A generation 1
-  # supervisor not yet upgraded still has its expect.log.
+  # supervisor not yet upgraded still has its expect.log. hoai.err is hoai's own
+  # stderr in tmux, copied into agent.log only when the session ends, so a
+  # running launch's is shown when it has anything in it.
   local logs=() f
   for f in "$statedir/agent.log" "$statedir/expect.log"; do
     if [ -f "$f" ]; then logs+=("$f"); fi
   done
+  if [ -s "$statedir/hoai.err" ]; then logs+=("$statedir/hoai.err"); fi
   if [ "${#logs[@]}" -eq 0 ]; then echo "(no logs yet)"; return 0; fi
   tail -n 60 "${logs[@]}"
 }

@@ -167,3 +167,18 @@ test('logs tails the logs that exist: generation 2 writes no expect.log, and tha
   rmSync(join(m.state, 'expect.log'))
   assert.match(m.run(['logs', '--assistant', '42']).out, /\(no logs yet\)/)
 })
+
+test('logs shows hoai\'s own stderr from the running launch (hoai.err): in tmux it reaches agent.log only once the session ends', (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  t.after(m.cleanup)
+  mkdirSync(m.state, { recursive: true })
+  writeFileSync(join(m.state, 'agent.log'), '[2026-10-06 10:00:00] agent 42 is running in tmux session hoai-42\n')
+  writeFileSync(join(m.state, 'hoai.err'), '[hoai] could not register the activity hooks: EACCES\n')
+  const out = m.run(['logs', '--assistant', '42']).out
+  assert.match(out, /running in tmux session hoai-42/)
+  assert.match(out, /could not register the activity hooks: EACCES/)
+  // An empty one (the usual case: hoai said nothing on stderr) is not shown.
+  writeFileSync(join(m.state, 'hoai.err'), '')
+  assert.doesNotMatch(m.run(['logs', '--assistant', '42']).out, /hoai\.err/)
+})
