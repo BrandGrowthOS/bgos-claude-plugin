@@ -675,7 +675,14 @@ elif [ "$have_tmux" = 1 ]; then
   # turn remote compact ON in the daemon (lib/compact-inject.ts). Spelled as
   # `env` arguments rather than `new-session -e`, which older tmux (3.0 and 3.1,
   # still shipped by LTS distributions) does not have.
-  if tmux -L "$sock" new-session -d -s "$sock" -x 200 -y 50 -c "$workdir" \
+  #
+  # -f /dev/null: this call starts the agent's OWN server, and a server reads
+  # the owner's ~/.tmux.conf when it starts. remain-on-exit there kept a dead
+  # hoai's pane, so the wait below never ended and nothing relaunched it;
+  # destroy-unattached ended the detached session at once (a crash loop); a
+  # continuum restore filled the agent's server with the owner's sessions. No
+  # other call here starts a server, so only this one needs it.
+  if tmux -f /dev/null -L "$sock" new-session -d -s "$sock" -x 200 -y 50 -c "$workdir" \
       /usr/bin/env HOAI_SUPERVISED=1 "HOAI_SUPERVISED_ASSISTANT_ID=$id" \
       "BGOS_TMUX_SESSION=$sock" "BGOS_TMUX_SOCKET=$sock" \
       "$node_bin" "$root/bin/hoai-core.mjs"; then
