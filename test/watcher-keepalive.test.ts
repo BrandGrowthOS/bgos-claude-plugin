@@ -260,6 +260,26 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
 })
 
+test('consent: a 401 or 403 (the pairing was revoked) is a definitive OFF, never the cache; the cache is overwritten so a later outage cannot revive it', async () => {
+  for (const status of [401, 403]) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+    fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'] }, T0 - 2 * 60 * MIN))
+    const rec = recorder({ ps: IDLE_PS })
+    const clock = fakeClock()
+    const refused = consent({ message: 'Invalid pairing token' }, false, status)
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: refused.fetchKeepAlive }).ctx as any)
+    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [] }, String(status))
+    assert.deepEqual(rec.calls, [], `${status}: no install, no restart, no task start`)
+    assert.equal(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).enabled, false, `${status}: the ON cache is gone`)
+    // The network then goes down: the cache bridges the outage as OFF.
+    clock.advance(5 * MIN)
+    const down = consent(null, false, 0)
+    const later = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive }).ctx as any)
+    assert.equal(later.enabled, false, `${status}: an outage after a refusal stays off`)
+    assert.deepEqual(rec.calls, [])
+  }
+})
+
 test('consent: a live answer is cached in ~/.bgos-agent/watcher/keepalive.json (design 3.4 shape)', async () => {
   const fs = machine([])
   const { ctx } = ctxFor(fs, recorder(), fakeClock())

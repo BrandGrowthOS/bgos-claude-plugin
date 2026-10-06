@@ -49,6 +49,7 @@ import {
   decideTaskStartGate,
   isAgentStateFresh,
   isBackgroundJobCommand,
+  isConsentRefusal,
   parseAgentState,
   parseInstalledPluginRecord,
   parseKeepAliveCache,
@@ -435,6 +436,14 @@ test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache 
   const future = parseKeepAliveCache(buildKeepAliveCache(live, NOW + 10 * MIN))
   assert.equal(decideKeepAliveConsent({ live: null, cache: future, now: NOW }).enabled, false, 'a cache from the future is not consent')
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache: null, now: NOW }).source, 'none')
+})
+
+test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF even with a fresh cache; an outage, a 5xx or a 404 is not a refusal', () => {
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'] }
+  const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 60 * MIN))
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), { enabled: false, enabledAt: null, assistantIds: [], source: 'refused' })
+  for (const status of [401, 403]) assert.equal(isConsentRefusal(status), true, String(status))
+  for (const status of [0, null, 404, 500, 502, 503, 200]) assert.equal(isConsentRefusal(status as any), false, String(status))
 })
 
 test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips; junk is null', () => {
