@@ -17,6 +17,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  AGENT_TASK_LAUNCHER_FILE_NAME,
+  KEEPALIVE_MARKER_FILE_NAME,
+  SUPERVISOR_GENERATION_FILE_NAME,
+  agentTaskName,
+  isKeepaliveSessionProcess,
+  parseKeepaliveMarker,
+  parseSupervisorGeneration,
+  verifyKeepaliveMarker,
   LAUNCH_RECIPE_FILE_NAME,
   LAUNCH_RECIPE_SCHEMA_VERSION,
   LIVE_MARKER_FILE_NAME,
@@ -343,13 +351,13 @@ test('detectSupervisor: service file beats launcher beats none; stale launcher i
     }),
     'none',
   )
-  // win32 never reports a service, but a live launcher still counts.
+  // win32 with no agent task: a live launcher still counts.
   assert.equal(
     detectSupervisor({
       platform: 'win32',
       home: 'C:\\Users\\kc',
       assistantId: '912',
-      exists: () => true,
+      exists: (p) => !p.endsWith('run-agent.vbs'),
       readFile: (p) => (p === 'C:\\Users\\kc\\.bgos-agent\\912\\supervisor.json' ? supervisorFileBody(5, 'x') : null),
       pidAlive: () => true,
     }),
@@ -777,4 +785,120 @@ test('listAgents: an agent with NO credentials file is inventoried, and is resta
   // The API key that sits beside the id in .mcp.json never reaches a row.
   assert.equal(JSON.stringify(agents).includes('sk-live-do-not-leak-me'), false)
   assert.equal(JSON.stringify(agents).includes('secret'), false)
+})
+
+// -- keep-alive sweep inputs (design 4 and 5, G7, G11) ------------------------------------------
+
+const KEEPALIVE_BODY = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, tmuxSession: 'agent-912', capabilities: ['relaunch'], startedAt: 'x' })
+
+/** A sync exec that answers `ps -o comm= -p <pid>` from a table, and fails everything else. */
+function commExec(names: Record<number, string>) {
+  const calls: string[][] = []
+  const execSync = (file: string, args: string[]) => {
+    calls.push([file, ...args])
+    if (file === 'ps' && args[0] === '-o' && args[1] === 'comm=' && args[2] === '-p') {
+      const name = names[Number(args[3])]
+      return name ? { code: 0, stdout: `${name}\n` } : { code: 1, stdout: '' }
+    }
+    return { code: 1, stdout: '' }
+  }
+  return { calls, execSync }
+}
+
+test('parseKeepaliveMarker: the same table as the daemon side (lib/update-readiness.ts), so both trust one file the same way', async () => {
+  const daemon = await import('../lib/update-readiness.ts')
+  const full = { kind: 'keepalive', pid: 33108, claudePid: 33200, capabilities: ['relaunch'], tmuxSession: '  agent\n910  ' }
+  const bodies = [
+    JSON.stringify(full),
+    JSON.stringify({ ...full, kind: 'launcher' }),
+    JSON.stringify({ ...full, capabilities: [] }),
+    JSON.stringify({ ...full, pid: 1 }),
+    JSON.stringify({ ...full, pid: '33108' }),
+    JSON.stringify({ ...full, claudePid: null }),
+    JSON.stringify({ ...full, tmuxSession: 'x'.repeat(200) }),
+    JSON.stringify({ ...full, tmuxSession: undefined }),
+    'garbage',
+    '[]',
+    '',
+  ]
+  for (const body of bodies) {
+    assert.deepEqual(parseKeepaliveMarker(body), daemon.parseKeepaliveMarker(body), body)
+  }
+  assert.deepEqual(parseKeepaliveMarker(JSON.stringify(full)), { pid: 33108, claudePid: 33200, tmuxSession: 'agent 910' })
+  for (const comm of ['claude', '/Users/kc/.local/bin/claude', 'tmux', 'claude-helper', '', null]) {
+    assert.equal(isKeepaliveSessionProcess(comm as any), daemon.isKeepaliveSessionProcess(comm as any), String(comm))
+  }
+  assert.equal(KEEPALIVE_MARKER_FILE_NAME, daemon.KEEPALIVE_MARKER_FILE)
+})
+
+test('verifyKeepaliveMarker: the script pid alive, claudePid alive AND named claude; anything else is no keepalive', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const readFile = (p: string) => (p === path ? KEEPALIVE_BODY : null)
+  const alive = (pid: number) => pid === 33108 || pid === 33200
+  const ok = commExec({ 33200: '/Users/kc/.local/bin/claude' })
+  assert.deepEqual(verifyKeepaliveMarker({ platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync }), {
+    pid: 33108,
+    claudePid: 33200,
+    tmuxSession: 'agent-912',
+  })
+  assert.deepEqual(ok.calls, [['ps', '-o', 'comm=', '-p', '33200']])
+  const rows: Array<[string, Record<string, unknown>]> = [
+    ['the keepalive script has exited', { pidAlive: (pid: number) => pid === 33200 }],
+    ['the declared session is gone', { pidAlive: (pid: number) => pid === 33108 }],
+    ['the declared pid is not a claude (a shared tmux server)', { execSync: commExec({ 33200: 'tmux' }).execSync }],
+    ['ps cannot answer', { execSync: commExec({}).execSync }],
+    ['no marker on disk', { readFile: () => null }],
+    ['a malformed marker', { readFile: () => '{"kind":"keepalive"}' }],
+    ['win32 has no ps: fail closed', { platform: 'win32' }],
+    ['a junk id builds no path', { assistantId: '9x' }],
+  ]
+  for (const [name, patch] of rows) {
+    const probe = { platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync, ...patch }
+    assert.equal(verifyKeepaliveMarker(probe as any), null, name)
+  }
+})
+
+test('parseSupervisorGeneration: absent is generation 1 (run.expect, fresh session, no tmux); a v2 stamp is 2; junk is 1', () => {
+  assert.equal(SUPERVISOR_GENERATION_FILE_NAME, 'supervisor-generation')
+  assert.equal(parseSupervisorGeneration(null), 1)
+  assert.equal(parseSupervisorGeneration('2\n'), 2)
+  assert.equal(parseSupervisorGeneration(' 3 '), 3)
+  assert.equal(parseSupervisorGeneration('two'), 1)
+  assert.equal(parseSupervisorGeneration('0'), 1)
+})
+
+test('win32: the canonical agent task (HOAI Agent <id>, its run-agent.vbs in the state dir) counts as the agent service', () => {
+  const vbs = 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs'
+  const resolved = resolveAgentSupervisor({ platform: 'win32', home: 'C:\\Users\\kc', assistantId: '912', exists: (p) => p === vbs, readFile: () => null, pidAlive: () => false })
+  assert.deepEqual(resolved, { supervisor: 'service', service: { kind: 'schtasks', handle: 'HOAI Agent 912', via: 'canonical-file', file: vbs } })
+  assert.equal(agentTaskName('912'), 'HOAI Agent 912')
+  assert.equal(agentTaskName('9 12'), null)
+  assert.equal(AGENT_TASK_LAUNCHER_FILE_NAME, 'run-agent.vbs')
+  // posix never reads the vbs.
+  assert.equal(resolveAgentSupervisor({ platform: 'linux', home: HOME, assistantId: '912', exists: (p) => p.endsWith('run-agent.vbs'), readFile: () => null, pidAlive: () => false }).supervisor, 'none')
+})
+
+test('listAgents: rows carry the verified keepalive, the supervisor generation (canonical only) and whether the hoai launcher is live', () => {
+  const fs = memFs(
+    {
+      '/home/kc/.bgos-agent/credentials-912.json': '{}',
+      '/home/kc/.bgos-agent/credentials-7.json': '{}',
+      '/home/kc/.bgos-agent/credentials-5.json': '{}',
+      '/home/kc/.config/systemd/user/bgos-agent-7.service': '[Service]',
+      '/home/kc/.config/systemd/user/bgos-agent-5.service': '[Service]',
+      '/home/kc/.bgos-agent/5/supervisor-generation': '2\n',
+      '/home/kc/.bgos-agent/5/supervisor.json': supervisorFileBody(5555, 'x'),
+      '/home/kc/.bgos-agent/912/keepalive.json': KEEPALIVE_BODY,
+    },
+  )
+  const exec = commExec({ 33200: 'claude' })
+  const agents = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200, 5555].includes(pid), execSync: exec.execSync })
+  const byId = Object.fromEntries(agents.map((a) => [a.assistantId, a]))
+  assert.deepEqual(byId['912']!.keepalive, { pid: 33108, claudePid: 33200, tmuxSession: 'agent-912' })
+  assert.equal(byId['912']!.supervisorGeneration, null, 'not canonical: no generation')
+  assert.equal(byId['912']!.launcherLive, false)
+  assert.equal(byId['7']!.supervisorGeneration, 1, 'canonical with no stamp is generation 1')
+  assert.equal(byId['7']!.keepalive, null)
+  assert.equal(byId['5']!.supervisorGeneration, 2)
+  assert.equal(byId['5']!.launcherLive, true, 'a v2 supervisor runs hoai, whose supervisor.json is live')
 })
