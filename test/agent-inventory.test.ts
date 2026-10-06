@@ -918,6 +918,19 @@ test('verifyKeepaliveMarker (F6): a live claude that is NOT provably this agent\
   assert.equal(verifyKeepaliveMarker({ ...base, readFile: files(), execSync: other.execSync } as any), null, 'owned by uid 502')
 })
 
+test('verifyKeepaliveMarker (F6): the folder proof compares by realpath, since lsof reports the physical path of a folder recorded through a symlink', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const NOW = Date.parse('2026-10-06T19:00:00.000Z')
+  const marker = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, tmuxSession: 'agent-912', capabilities: ['relaunch'], startedAt: new Date(NOW - 5 * 60_000).toISOString() })
+  // claude runs under a tmux server, not the script: only the folder can prove it is this agent's.
+  const procs: Array<[number, number, number, string]> = [[1, 0, 0, '10-00:00:00'], [33108, 1, 501, '01:00:00'], [4000, 1, 501, '02:00:00'], [33200, 4000, 501, '10:00']]
+  const exec = commExec({ 33200: 'claude' }, { procs, cwds: { 33200: '/Volumes/Data/home/kc/agents/guru' } })
+  const base = { platform: 'darwin', home: HOME, assistantId: '912', readFile: (p: string) => (p === path ? marker : null), pidAlive: (pid: number) => pid === 33108 || pid === 33200, execSync: exec.execSync, uid: 501, now: NOW, cwd: '/home/kc/agents/guru' }
+  const realpath = (p: string) => (p === '/home/kc/agents/guru' ? '/Volumes/Data/home/kc/agents/guru' : p)
+  assert.equal(verifyKeepaliveMarker({ ...base, realpath } as any)?.claudePid, 33200, 'the same folder under its physical path')
+  assert.equal(verifyKeepaliveMarker({ ...base, realpath: (p: string) => p } as any), null, 'a folder that really is elsewhere')
+})
+
 test('readDeclaredKeepalive (F6): a script pid now held by a process that started AFTER the marker, or by another user, is a reused pid: not declared (the product supervisor is installed after all)', () => {
   const path = '/home/kc/.bgos-agent/912/keepalive.json'
   const NOW = Date.parse('2026-10-06T19:00:00.000Z')

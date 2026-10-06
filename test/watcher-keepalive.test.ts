@@ -744,6 +744,31 @@ test('state (F8): a throw during verify still counts the attempt (counted before
   assert.equal(saved.agents['912'].lastRestartAt, new Date(T0).toISOString())
 })
 
+test('state (F8): a supervisor install is on disk BEFORE it runs, so a watcher killed mid install waits out the retry hour instead of installing again at once', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  const rec = recorder({ ps: IDLE_PS })
+  let duringInstall: string | null = null
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    // What a kill at this moment (bun install running) would leave on disk.
+    if (file === 'bash') duringInstall = fs.files.get(keepAliveStatePath(HOME)) ?? null
+    return rec.exec(file, args, o)
+  }
+  await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { exec }).ctx as any)
+  assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
+  const saved = JSON.parse(duringInstall ?? '{}')
+  assert.equal(saved.agents?.['912']?.lastInstallAt, new Date(T0).toISOString(), 'the install is recorded before bgos-agent runs')
+  assert.deepEqual([saved.agents?.['912']?.state, saved.agents?.['912']?.reason], ['installing', 'install_in_progress'])
+  // The watcher died there: the next start reads that file, and does not install again within the hour.
+  const killed = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  killed.writeFile(keepAliveStatePath(HOME), duringInstall!)
+  const again = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  clock.advance(5 * MIN)
+  const report = await runKeepAliveSweep(ctxFor(killed, again, clock).ctx as any)
+  assert.deepEqual(again.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'install_retry_wait']])
+})
+
 test('online (F8): a long sweep keeps the watcher online: keepOnline between agents, through a long install, and through verify', { timeout: 10_000 }, async () => {
   const fs = machine([
     { id: '7', cwd: GURU, service: 'none' },
