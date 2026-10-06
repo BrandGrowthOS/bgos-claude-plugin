@@ -448,7 +448,6 @@ import {
   loadAutoUpdateState,
   loadSharedUpdateSafety,
   MessageActivityTracker,
-  pendingRestartVersionFrom,
   resolveAutoUpdateStatePath,
   type SelfUpdater,
 } from './lib/self-update'
@@ -483,6 +482,7 @@ import {
   type UpdateReadiness,
 } from './lib/update-readiness.js'
 import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
+import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -10744,13 +10744,27 @@ function updateReadinessSnapshot(): UpdateReadiness {
             loadSharedUpdateSafety(
               pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
             ).disabled)),
-    pendingRestartVersion:
-      selfUpdater?.pendingRestartVersion() ??
-      pendingRestartVersionFrom(
-        RUNNING_VERSION,
-        state.validationPending ? state.targetVersion : null,
-      ),
+    pendingRestartVersion: daemonPendingRestartVersion(state),
   }
+}
+
+// The installed-but-not-running version, shared by the heartbeat readiness
+// above and agent-state.json (lib/pending-restart.ts). Fact 6: a marketplace
+// install has no git updater and no auto-update.json target, so before this
+// it reported null forever; its answer is installed_plugins.json against the
+// version captured at boot. `state` is the auto-update.json read the caller
+// already made, when it made one.
+function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
+  return resolvePendingRestartVersion({
+    installMethod: INSTALL_METHOD,
+    runningVersion: RUNNING_VERSION,
+    updaterPending: () => selfUpdater?.pendingRestartVersion() ?? null,
+    stagedTargetVersion: () => {
+      const s = state ?? loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
+      return s.validationPending ? s.targetVersion : null
+    },
+    readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+  })
 }
 
 // Install method + plugin root, detected once. For a marketplace install the
