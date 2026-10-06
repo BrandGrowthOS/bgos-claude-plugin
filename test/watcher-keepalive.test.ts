@@ -157,13 +157,14 @@ function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number |
   return { calls, exec, kills, kill, spawns, spawnDetached }
 }
 
-/** listAgents' sync probes: no loaded jobs; `ps -o comm=` answers from a table. */
-function execSyncFor(comm: Record<number, string> = {}) {
+/** listAgents' sync probes: no loaded jobs; `ps -o comm=` answers from a table, `ps -A` (the keepalive check's table) from `procs`. */
+function execSyncFor(comm: Record<number, string> = {}, procs: Array<[number, number, number, string]> | null = null) {
   return (file: string, args: string[]) => {
     if (file === 'ps' && args[1] === 'comm=') {
       const name = comm[Number(args[3])]
       return name ? { code: 0, stdout: `${name}\n` } : { code: 1, stdout: '' }
     }
+    if (file === 'ps' && args[0] === '-A' && procs) return { code: 0, stdout: procs.map((r) => r.join(' ')).join('\n') + '\n' }
     return { code: 1, stdout: '' }
   }
 }
@@ -534,6 +535,37 @@ test('restart: a verified keepalive is restarted by SIGTERM to its claudePid ONL
   assert.deepEqual(rec.kills, [[57, 'SIGTERM']])
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps').map((c) => c.file), [], 'no launchctl, no bash, no lsof')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'keepalive']])
+})
+
+test('restart (F6): a keepalive.json whose claudePid is a live claude that is NOT this agent\'s (a reused pid) is never signalled: keepalive_unverified', async () => {
+  // The agent's own claude is 60 (its daemon says so); the stale marker still names 57, now a person's claude elsewhere.
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 }, state: { claudePid: 60, pid: 4100 } }])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(47, 1, '/bin/bash keepalive.sh'), psLine(60, 47, 'claude --x'), psLine(4000, 1, 'zsh'), psLine(57, 4000, 'claude --y')].join('\n')
+  const rec = recorder({ ps })
+  const procs: Array<[number, number, number, string]> = [[1, 0, 0, '9-00:00:00'], [47, 1, 501, '02:00:00'], [60, 47, 501, '01:00:00'], [4000, 1, 501, '03:00:00'], [57, 4000, 501, '01:30:00']]
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync: execSyncFor({ 57: 'claude', 60: 'claude' }, procs), pidAlive: (pid: number) => [47, 57, 60, 4100, 4000].includes(pid) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.kills, [], 'never a SIGTERM to a claude that is not provably this agent\'s')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['update_pending', 'keepalive_unverified']])
+})
+
+test('restart (F6): the keepalive is verified again right before its SIGTERM; a claude pid that stopped being this agent\'s while the sweep ran is not signalled', async () => {
+  const FIVE = `${HOME}/hoai-agents/five`
+  const fs = machine([
+    { id: '5', cwd: FIVE, service: 'none' },
+    { id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 }, state: { claudePid: 57, pid: 47 } },
+  ])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(57, 1, 'claude --x'), psLine(47, 1, '/bin/bash keepalive.sh')].join('\n')
+  const rec = recorder({ ps })
+  // While agent 5's install ran, claude 57 exited and its pid went to a tmux server.
+  const before = execSyncFor({ 57: 'claude' })
+  const after = execSyncFor({ 57: 'tmux' })
+  const execSync = (file: string, args: string[]) => (rec.calls.some((c) => c.file === 'bash') ? after : before)(file, args)
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [5, 7] }).fetchKeepAlive })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[3]), ['5'])
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['5', 'installing', 'installed'], ['7', 'update_pending', 'keepalive_unverified']])
 })
 
 test('restart: a canonical generation 1 supervisor is upgraded by a reinstall at an idle moment, then verified', async () => {

@@ -1126,7 +1126,13 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   const { deps } = baseDeps(fs, backend, clock, {
     modules: stubModules({ plan }),
     pidAlive: (pid: number) => pid === 4242 || pid === 5151,
-    execSync: (file: string, args: string[]) => (file === 'ps' && args[1] === 'comm=' ? { code: 0, stdout: 'claude\n' } : { code: 1, stdout: '' }),
+    // claude 5151 runs under its keepalive script 4242: provably the script's (F6).
+    execSync: (file: string, args: string[]) =>
+      file === 'ps' && args[1] === 'comm='
+        ? { code: 0, stdout: 'claude\n' }
+        : file === 'ps' && args[0] === '-A'
+          ? { code: 0, stdout: `4242 1 ${process.getuid?.() ?? 0} 01:00:00\n5151 4242 ${process.getuid?.() ?? 0} 10:00\n` }
+          : { code: 1, stdout: '' },
     kill: (pid: number, signal: string) => void kills.push([pid, signal]),
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
   })
