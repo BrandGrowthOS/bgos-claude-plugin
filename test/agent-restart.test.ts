@@ -534,6 +534,68 @@ test('restartAgent posix: a LIVE hoai launcher restarts through the marker even 
   }
 })
 
+test('restartAgent posix (design): a live hoai that is the canonical v2 service\'s OWN child is restarted through the SERVICE (run.sh resolves the current root, so hoai itself moves onto the installed code); a hand-run hoai keeps the marker', async () => {
+  const LAUNCHD = { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' }
+  const SYSTEMD = { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' }
+  const SUP = '/home/kc/.bgos-agent/912/supervisor.json'
+  const STATUS = '/home/kc/.bgos-agent/912/launch-status'
+  const row = (service: any, extra: Record<string, unknown> = {}) => agentRow({ supervisor: 'service', service, launcherLive: true, running: true, supervisorGeneration: 2, ...extra })
+  const proc = (pid: number, ppid: number, command: string) => ({ pid, ppid, uid: 501, startedAtMs: null, command })
+  const underTmux = [proc(1, 0, '/sbin/launchd'), proc(2900, 1, 'tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c /home/kc/hoai-agents/ava /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')]
+  const underRunSh = [proc(1, 0, '/sbin/launchd'), proc(2800, 1, '/bin/bash /home/kc/.bgos-agent/912/run.sh'), proc(3000, 2800, 'node /x/bin/hoai-core.mjs')]
+  const byHand = [proc(1, 0, '/sbin/launchd'), proc(2700, 1, '-zsh'), proc(3000, 2700, 'node /x/bin/hoai-core.mjs')]
+  const supervisorFile = { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }) }
+  const cases: Array<[string, any, Record<string, string>, any[] | undefined, string]> = [
+    ['darwin: its parent is the agent\'s own tmux server (socket hoai-912)', LAUNCHD, supervisorFile, underTmux, 'service'],
+    ['linux: the same, systemd', SYSTEMD, supervisorFile, underTmux, 'service'],
+    ['no tmux: it runs under the agent\'s run.sh', LAUNCHD, supervisorFile, underRunSh, 'service'],
+    ['supervisor.json says it is supervised', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [], 'service'],
+    ['a person\'s own hoai in a terminal: the marker (a service restart restarts only the waiting run.sh)', LAUNCHD, supervisorFile, byHand, 'marker'],
+    ['no process table at all: the marker (never a guess)', LAUNCHD, supervisorFile, [], 'marker'],
+  ]
+  for (const [name, service, files, processes, how] of cases) {
+    const fs = memoryFs(files)
+    const { calls, exec } = recordingExec()
+    const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
+    assert.equal(out.how, how, name)
+    assert.equal(out.ok, true, name)
+    if (how === 'service') {
+      assert.deepEqual(calls.map((c) => c.file), [platform === 'linux' ? 'systemctl' : 'launchctl'], name)
+      assert.equal(fs.files.has('/home/kc/.bgos-agent/912/restart-requested.json'), false, name)
+    } else {
+      assert.deepEqual(calls, [], name)
+      assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', name)
+    }
+  }
+  // launch-status written by the supervised launch AFTER this launcher armed says so too.
+  const statusFs = memoryFs({ ...supervisorFile, [STATUS]: '2026-10-06 19:00:00 outcome=live answered=[]\n' })
+  statusFs.touch(SUP, 1_000)
+  statusFs.touch(STATUS, 2_000)
+  const viaStatus = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: statusFs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
+  assert.equal(viaStatus.how, 'service')
+  // A wait behind a hand-run hoai, or an older status than the launcher, is not.
+  for (const [outcome, statusAt] of [['waiting-for-incumbent pids=3100', 2_000], ['live', 500]] as Array<[string, number]>) {
+    const f = memoryFs({ ...supervisorFile, [STATUS]: `2026-10-06 19:00:00 outcome=${outcome}\n` })
+    f.touch(SUP, 1_000)
+    f.touch(STATUS, statusAt)
+    const out = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: f, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
+    assert.equal(out.how, 'marker', `${outcome} at ${statusAt}`)
+  }
+  // A generation 1 service runs run.expect, never hoai: a live hoai there is a person's.
+  const gen1 = await restartAgent(row(LAUNCHD, { supervisorGeneration: 1 }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(supervisorFile), exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: underTmux } as any)
+  assert.equal(gen1.how, 'marker')
+  // With no table handed in, the ladder reads one itself (the owner's Restart now path).
+  const listing = underTmux.map((p) => ` ${p.pid} ${p.ppid} 501 Tue Oct  6 18:00:00 2026 ${p.command}`).join('\n')
+  const self = { calls: [] as any[], exec: async (file: string, args: readonly string[]) => {
+    self.calls.push([file, ...args])
+    return file === 'ps' ? { code: 0, stdout: listing, stderr: '', error: null, timedOut: false } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  } }
+  const own = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(supervisorFile), exec: self.exec, spawnDetached: recordingSpawn().spawnDetached } as any)
+  assert.equal(own.how, 'service')
+  assert.deepEqual(self.calls.map((c: any) => c[0]), ['ps', 'launchctl'])
+})
+
 test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <digits>" runs nothing', async () => {
   const { calls, exec } = recordingExec()
   const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })

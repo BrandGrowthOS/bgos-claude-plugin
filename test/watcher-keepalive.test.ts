@@ -477,6 +477,26 @@ test('restart (D4): a live hoai launcher with the canonical supervisor waiting b
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
 })
 
+test('restart (design): the canonical v2 service\'s OWN live hoai is restarted through the service (hoai itself moves onto the installed code), never only its claude', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const ps = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(2900, 1, `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ].join('\n')
+  const rec = recorder({ ps })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false)
+  assert.equal(rec.calls.filter((c) => c.file === 'ps').length, 1, 'the sweep hands its own listing to the ladder')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
 test('restart (D4): a plain hand-run claude the canonical supervisor waits behind is waiting_idle manual_session: no restart, no kill, no attempt spent', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
   waitingBehind(fs, '912', T0 - 5_000)
