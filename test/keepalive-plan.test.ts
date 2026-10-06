@@ -27,6 +27,7 @@ import {
   LAUNCHER_STABLE_MS,
   LAUNCH_STATUS_FRESH_MS,
   LEGACY_QUIET_WINDOW_MS,
+  PAIRING_LOCK_FRESH_MS,
   MAX_ATTEMPTS_PER_TARGET,
   MAX_TASK_STARTS_PER_EPISODE,
   QUIET_WINDOW_MS,
@@ -55,6 +56,7 @@ import {
   parseKeepAliveCache,
   parseKeepAliveResponse,
   parseLaunchStatusOutcome,
+  parsePairingLock,
   reportEntry,
 } from '../lib/keepalive-plan.mjs'
 
@@ -144,6 +146,26 @@ test('isAgentStateFresh: written in the last 120 s AND the writing pid alive', (
   assert.equal(isAgentStateFresh(s, { now: NOW, pidAlive: () => false }), false, 'pid dead')
   assert.equal(isAgentStateFresh(s, { now: NOW - 300_000, pidAlive: alive }), false, 'written in the future')
   assert.equal(isAgentStateFresh(null, { now: NOW, pidAlive: alive }), false)
+})
+
+test('parsePairingLock: the daemon pairing lock record (mirror of lib/pairing-lock.ts parseLockRecord), junk is null', async () => {
+  const daemon = await import('../lib/pairing-lock.ts')
+  const bodies = [
+    JSON.stringify({ pid: 4912, heartbeatAt: NOW, bootedAt: NOW - 1000 }),
+    JSON.stringify({ pid: 4912, heartbeatAt: NOW }),
+    JSON.stringify({ pid: 0, heartbeatAt: NOW }),
+    JSON.stringify({ pid: 4912 }),
+    JSON.stringify({ pid: 'x', heartbeatAt: NOW }),
+    JSON.stringify({ pid: 4912, heartbeatAt: -1 }),
+    '[]',
+    'garbage',
+  ]
+  for (const body of bodies) {
+    const theirs = daemon.parseLockRecord(body)
+    assert.deepEqual(parsePairingLock(body), theirs ? { pid: theirs.pid, heartbeatAt: theirs.heartbeatAt } : null, body)
+  }
+  assert.equal(parsePairingLock(null), null)
+  assert.equal(PAIRING_LOCK_FRESH_MS, 60_000)
 })
 
 // -- the background job marker (finding 9) -----------------------------------------------------

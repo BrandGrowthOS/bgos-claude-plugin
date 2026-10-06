@@ -22,6 +22,7 @@ import {
   claudeCandidates,
   descendantsOf,
   findClaudePidsByCwd,
+  nearestClaudeAncestor,
   isClaudeCommand,
   listProcesses,
   parseLsofCwd,
@@ -33,14 +34,14 @@ import {
 } from '../lib/process-tree.mjs'
 
 const PS_FIXTURE = [
-  '    1     0 Mon Oct  5 08:00:00 2026 /sbin/launchd',
-  ' 4100     1 Tue Oct  6 17:59:58 2026 tmux new-session -d -s hoai-912',
-  ' 4200  4100 Tue Oct  6 18:00:00 2026 claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
-  ' 4242  4200 Tue Oct  6 18:00:05 2026 node /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/server.ts',
-  " 4300  4200 Tue Oct  6 18:30:00 2026 /bin/zsh -c source /Users/kc/.claude/shell-snapshots/snapshot-zsh-1759777000-abc.sh && eval 'tail -f /tmp/x.log' < /dev/null",
-  ' 4301  4300 Tue Oct  6 18:30:01 2026 tail -f /tmp/x.log',
-  ' 5000     1 Tue Oct  6 17:00:00 2026 /Users/kc/.local/bin/claude',
-  ' 5001  5000 Tue Oct  6 17:00:01 2026 ',
+  '    1     0     0 Mon Oct  5 08:00:00 2026 /sbin/launchd',
+  ' 4100     1   501 Tue Oct  6 17:59:58 2026 tmux new-session -d -s hoai-912',
+  ' 4200  4100   501 Tue Oct  6 18:00:00 2026 claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
+  ' 4242  4200   501 Tue Oct  6 18:00:05 2026 node /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/server.ts',
+  " 4300  4200   501 Tue Oct  6 18:30:00 2026 /bin/zsh -c source /Users/kc/.claude/shell-snapshots/snapshot-zsh-1759777000-abc.sh && eval 'tail -f /tmp/x.log' < /dev/null",
+  ' 4301  4300   501 Tue Oct  6 18:30:01 2026 tail -f /tmp/x.log',
+  ' 5000     1   502 Tue Oct  6 17:00:00 2026 /Users/kc/.local/bin/claude',
+  ' 5001  5000   502 Tue Oct  6 17:00:01 2026 ',
   '',
 ].join('\n')
 
@@ -56,10 +57,10 @@ function recordingExec(answers: Record<string, { code: number; stdout: string }>
   return { calls, exec }
 }
 
-test('psCommand: one ps listing per platform, start time included, wide so commands are never cut', () => {
-  assert.deepEqual(psCommand('darwin'), { file: 'ps', args: ['-a', '-x', '-ww', '-o', 'pid=,ppid=,lstart=,command='] })
+test('psCommand: one ps listing per platform, owner uid and start time included, wide so commands are never cut', () => {
+  assert.deepEqual(psCommand('darwin'), { file: 'ps', args: ['-a', '-x', '-ww', '-o', 'pid=,ppid=,uid=,lstart=,command='] })
   // On linux -e is "every process"; on darwin -e means "show the environment", hence -a -x there.
-  assert.deepEqual(psCommand('linux'), { file: 'ps', args: ['-e', '-ww', '-o', 'pid=,ppid=,lstart=,args='] })
+  assert.deepEqual(psCommand('linux'), { file: 'ps', args: ['-e', '-ww', '-o', 'pid=,ppid=,uid=,lstart=,args='] })
 })
 
 test('parsePsOutput: pid, ppid, local start time and the full command line', () => {
@@ -68,6 +69,7 @@ test('parsePsOutput: pid, ppid, local start time and the full command line', () 
   assert.deepEqual(rows[2], {
     pid: 4200,
     ppid: 4100,
+    uid: 501,
     startedAtMs: new Date(2026, 9, 6, 18, 0, 0).getTime(),
     command: 'claude --dangerously-skip-permissions --dangerously-load-development-channels plugin:hoai@hoai',
   })
@@ -81,8 +83,10 @@ test('parsePsOutput: any line that does not parse makes the whole listing unread
   assert.equal(parsePsOutput(''), null)
   assert.equal(parsePsOutput('   \n'), null)
   // An unparseable start time is tolerated (the row stays, its time is unknown).
-  const odd = parsePsOutput(' 7 1 Xyz Abc 99 99:99:99 2026 claude')!
-  assert.deepEqual(odd, [{ pid: 7, ppid: 1, startedAtMs: null, command: 'claude' }])
+  const odd = parsePsOutput(' 7 1 501 Xyz Abc 99 99:99:99 2026 claude')!
+  assert.deepEqual(odd, [{ pid: 7, ppid: 1, uid: 501, startedAtMs: null, command: 'claude' }])
+  // The old four-column shape (no uid) is not this listing: unreadable, never misparsed.
+  assert.equal(parsePsOutput(' 7 1 Tue Oct  6 18:00:00 2026 claude'), null)
 })
 
 test('win32: Get-CimInstance Win32_Process as JSON with ProcessId, ParentProcessId, CreationDate, CommandLine', () => {
@@ -102,10 +106,10 @@ test('win32: Get-CimInstance Win32_Process as JSON with ProcessId, ParentProcess
     ]),
   )!
   assert.deepEqual(rows, [
-    { pid: 4, ppid: 0, startedAtMs: null, command: '' },
-    { pid: 900, ppid: 4, startedAtMs: 1759773600000, command: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --x' },
-    { pid: 901, ppid: 900, startedAtMs: 1759773605000, command: 'bash.exe -c source C:\\Users\\kc\\.claude\\shell-snapshots\\snapshot-bash-1.sh' },
-    { pid: 902, ppid: 900, startedAtMs: Date.parse('2026-10-06T18:00:10.000Z'), command: 'node server.ts' },
+    { pid: 4, ppid: 0, uid: null, startedAtMs: null, command: '' },
+    { pid: 900, ppid: 4, uid: null, startedAtMs: 1759773600000, command: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --x' },
+    { pid: 901, ppid: 900, uid: null, startedAtMs: 1759773605000, command: 'bash.exe -c source C:\\Users\\kc\\.claude\\shell-snapshots\\snapshot-bash-1.sh' },
+    { pid: 902, ppid: 900, uid: null, startedAtMs: Date.parse('2026-10-06T18:00:10.000Z'), command: 'node server.ts' },
   ])
   // ConvertTo-Json prints a lone object (not an array) when there is one process.
   assert.equal(parseWin32ProcessJson(JSON.stringify({ ProcessId: 5, ParentProcessId: 1, CreationDate: null, CommandLine: 'x' }))!.length, 1)
@@ -154,6 +158,8 @@ test('isClaudeCommand: the native binary by basename (posix or win32), the node-
     '"C:\\Users\\kc\\.local\\bin\\claude.exe" --x',
     'C:\\Users\\kc\\.local\\bin\\claude.exe',
     'node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js --x',
+    // win32 quotes the script path: the closing quote is not part of the name.
+    '"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\kc\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js" --x',
   ]
   const no = [
     'node /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/server.ts',
@@ -175,20 +181,38 @@ test('parseLsofCwd: -Fn blocks (p<pid>, fcwd, n<path>) into pid -> cwd', () => {
   assert.equal(parseLsofCwd('').size, 0)
 })
 
-test('readProcessCwds: darwin asks lsof once for every pid; linux reads /proc/<pid>/cwd; win32 asks nothing (best effort: none)', async () => {
+test('readProcessCwds: darwin asks lsof once for every pid; linux reads /proc/<pid>/cwd; a lookup that failed says so (never an empty answer that reads as "elsewhere")', async () => {
   const mac = recordingExec({ lsof: { code: 1, stdout: 'p4200\nfcwd\nn/Users/kc/hoai-agents/ava\n' } })
-  const macMap = await readProcessCwds({ platform: 'darwin', exec: mac.exec, pids: [4200, 5000] })
+  const macRes = await readProcessCwds({ platform: 'darwin', exec: mac.exec, pids: [4200, 5000] })
   assert.deepEqual(mac.calls.map((c) => [c.file, ...c.args]), [['lsof', '-a', '-d', 'cwd', '-p', '4200,5000', '-Fn']])
-  assert.equal(macMap.get(4200), '/Users/kc/hoai-agents/ava', 'lsof exits 1 when one pid is gone and still prints the rest')
+  assert.equal(macRes.ok, true)
+  assert.equal(macRes.cwds.get(4200), '/Users/kc/hoai-agents/ava', 'lsof exits 1 when one pid is gone and still prints the rest')
+  // Nothing printed at all, a timeout (code null) or a throw: the lookup FAILED.
+  for (const [name, answer] of [
+    ['lsof exit 1 with no output', { code: 1, stdout: '' }],
+    ['lsof timed out', { code: null as any, stdout: '' }],
+    ['lsof killed on its timeout after printing part of the answer', { code: null as any, stdout: 'p4200\nfcwd\nn/Users/kc/hoai-agents/ava\n' }],
+  ] as const) {
+    const res = await readProcessCwds({ platform: 'darwin', exec: recordingExec({ lsof: answer as any }).exec, pids: [4200] })
+    assert.equal(res.ok, false, name)
+  }
+  const throwing = async () => {
+    throw new Error('spawn lsof ENOENT')
+  }
+  assert.equal((await readProcessCwds({ platform: 'darwin', exec: throwing as any, pids: [4200] })).ok, false)
   const linux = recordingExec({ 'readlink /proc/4200/cwd': { code: 0, stdout: '/home/kc/hoai-agents/ava\n' } })
-  const linuxMap = await readProcessCwds({ platform: 'linux', exec: linux.exec, pids: [4200, 5000] })
+  const linuxRes = await readProcessCwds({ platform: 'linux', exec: linux.exec, pids: [4200, 5000] })
   assert.deepEqual(linux.calls.map((c) => [c.file, ...c.args]), [['readlink', '/proc/4200/cwd'], ['readlink', '/proc/5000/cwd']])
-  assert.equal(linuxMap.get(4200), '/home/kc/hoai-agents/ava')
-  assert.equal(linuxMap.has(5000), false)
+  assert.equal(linuxRes.ok, true)
+  assert.equal(linuxRes.cwds.get(4200), '/home/kc/hoai-agents/ava')
+  assert.equal(linuxRes.cwds.has(5000), false)
+  assert.equal((await readProcessCwds({ platform: 'linux', exec: recordingExec({}).exec, pids: [4200] })).ok, false, 'every readlink failed')
   const win = recordingExec({})
-  assert.equal((await readProcessCwds({ platform: 'win32', exec: win.exec, pids: [900] })).size, 0)
+  const winRes = await readProcessCwds({ platform: 'win32', exec: win.exec, pids: [900] })
+  assert.equal(winRes.ok, false, 'win32 has no cwd lookup: unknown, not "elsewhere"')
   assert.equal(win.calls.length, 0)
-  assert.equal((await readProcessCwds({ platform: 'darwin', exec: win.exec, pids: [] })).size, 0)
+  const none = await readProcessCwds({ platform: 'darwin', exec: win.exec, pids: [] })
+  assert.deepEqual([none.ok, none.cwds.size], [true, 0])
   assert.equal(win.calls.length, 0, 'no pids, no lsof')
 })
 
@@ -202,4 +226,36 @@ test('findClaudePidsByCwd: every claude whose cwd is the agent folder (trailing 
   assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds, cwd: '/Users/kc/hoai-agents/ava/' }), [4200])
   assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds, cwd: '/Users/kc/hoai-agents/nobody' }), [])
   assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds, cwd: '' }), [])
+  // The kernel reports the PHYSICAL path; the folder may be recorded through a
+  // symlink or in another letter case: both sides compare by their realpath.
+  const physical = new Map([[4200, '/Volumes/Data/kc/hoai-agents/ava']])
+  const realpath = (p: string) => (p === '/Users/kc/hoai-agents/ava' ? '/Volumes/Data/kc/hoai-agents/ava' : p)
+  assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds: physical, cwd: '/Users/kc/hoai-agents/ava' }), [], 'without realpath: no match')
+  assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds: physical, cwd: '/Users/kc/hoai-agents/ava', realpath }), [4200])
+  const throwing = () => {
+    throw new Error('ENOENT')
+  }
+  assert.deepEqual(findClaudePidsByCwd({ processes: rows, cwds, cwd: '/Users/kc/hoai-agents/ava', realpath: throwing }), [4200], 'a realpath that fails falls back to the spelling')
+})
+
+test('nearestClaudeAncestor: the claude above a pid (the agent daemon is claude\'s MCP child), on any platform; none is null; cycle safe', () => {
+  const rows = parsePsOutput(PS_FIXTURE)!
+  assert.equal(nearestClaudeAncestor(rows, 4242), 4200)
+  assert.equal(nearestClaudeAncestor(rows, 4301), 4200, 'through the shell')
+  assert.equal(nearestClaudeAncestor(rows, 4100), null)
+  assert.equal(nearestClaudeAncestor(rows, 99999), null, 'not listed')
+  const win = parseWin32ProcessJson(
+    JSON.stringify([
+      { ProcessId: 4100, ParentProcessId: 1, CreationDate: null, CommandLine: 'cmd.exe' },
+      { ProcessId: 5912, ParentProcessId: 4100, CreationDate: null, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume x' },
+      { ProcessId: 6000, ParentProcessId: 5912, CreationDate: null, CommandLine: 'node bgos-launch.mjs server.ts' },
+      { ProcessId: 4912, ParentProcessId: 6000, CreationDate: null, CommandLine: 'bun server.ts' },
+    ]),
+  )!
+  assert.equal(nearestClaudeAncestor(win, 4912), 5912)
+  const loop = [
+    { pid: 10, ppid: 11, uid: 1, startedAtMs: null, command: 'a' },
+    { pid: 11, ppid: 10, uid: 1, startedAtMs: null, command: 'b' },
+  ]
+  assert.equal(nearestClaudeAncestor(loop, 10), null)
 })

@@ -131,15 +131,15 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
   return memoryFs(files, dirs)
 }
 
-const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026') => ` ${pid} ${ppid} ${start} ${cmd}`
+const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026', uid = 501) => ` ${pid} ${ppid} ${uid} ${start} ${cmd}`
 
-function recorder(opts: { ps?: string | null; lsof?: string; bashCode?: number; launchctlCode?: number; win32Ps?: string } = {}) {
+function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], o: any = {}) => {
     calls.push({ file, args: [...args], opts: o })
     if (file === 'powershell.exe' && args.includes('-Command') && opts.win32Ps != null) return { code: 0, stdout: opts.win32Ps, stderr: '', error: null, timedOut: false }
     if (file === 'ps') return opts.ps == null ? { code: 1, stdout: '', stderr: 'ps: denied', error: null, timedOut: false } : { code: 0, stdout: opts.ps, stderr: '', error: null, timedOut: false }
-    if (file === 'lsof') return { code: 0, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: false }
+    if (file === 'lsof') return { code: opts.lsofCode === undefined ? 0 : opts.lsofCode, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: opts.lsofCode === null }
     if (file === 'bash') return { code: opts.bashCode ?? 0, stdout: '', stderr: opts.bashCode ? `x  no .mcp.json in ${GURU} and no creds given` : '', error: null, timedOut: false }
     if (file === 'launchctl') return { code: opts.launchctlCode ?? 0, stdout: '', stderr: '', error: null, timedOut: false }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
@@ -706,6 +706,59 @@ test('online (F8): a long sweep keeps the watcher online: keepOnline between age
   for (let i = 1; i < stamps.length; i++) assert.ok(stamps[i]! - stamps[i - 1]! < 3 * MIN, `gap ${i}`)
 })
 
+// -- F1: a cwd lookup that failed or spelled the folder differently is never "not running" ----------
+
+test('F1: a cwd lookup that FAILED is unknown, never "stopped": a generation 1 supervisor over a live claude with a job is not reinstalled', async () => {
+  for (const [name, lsof] of [
+    ['lsof exit 1 with nothing printed', { lsofCode: 1, lsof: '' }],
+    ['lsof timed out', { lsofCode: null, lsof: '' }],
+    ['lsof answered, but not for our live claude', { lsofCode: 0, lsof: '' }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+    const rec = recorder({ ps: JOB_PS, ...lsof })
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+    assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [], `${name}: no reinstall over the job`)
+    assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']], name)
+  }
+})
+
+test('F1: the folder is compared by its realpath (the kernel reports the physical path): the job under that claude is seen', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  const rec = recorder({ ps: JOB_PS, lsof: `p5912\nfcwd\nn/Volumes/Data${AVA}\n` })
+  const realpath = (path: string) => (path === AVA ? `/Volumes/Data${AVA}` : path)
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { realpath }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+})
+
+test('F1: another user\'s claude (its cwd is not ours to read) never makes this agent unknown; with no claude of ours it is really stopped', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  const ps = [psLine(1, 0, '/sbin/launchd', undefined, 0), psLine(1618, 1, 'claude --x', undefined, 502)].join('\n')
+  const rec = recorder({ ps, lsofCode: 1, lsof: '' })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => pid === 1618 }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[1]), ['install'])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+})
+
+test('F1: a daemon too old to publish its state still holds the pairing lock: its claude (the one above it) is the agent\'s, no cwd needed', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000, bootedAt: T0 - 60 * MIN }))
+  // lsof cannot help at all, yet the job under the lock holder's claude is found.
+  const rec = recorder({ ps: JOB_PS, lsofCode: 1, lsof: '' })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(rec.calls.some((c) => c.file === 'lsof'), false, 'no cwd lookup needed')
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  // A lock nobody has stamped for 10 minutes names no live daemon (its pid may be anyone's now).
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }))
+  const stale = recorder({ ps: JOB_PS, lsofCode: 1, lsof: '' })
+  const staleReport = await runKeepAliveSweep(ctxFor(fs, stale, fakeClock()).ctx as any)
+  assert.deepEqual(staleReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
+  assert.equal(stale.calls.some((c) => c.file === 'lsof'), true, 'back to the cwd lookup')
+})
+
 // -- gates -------------------------------------------------------------------------------------------
 
 test('gates: one restart per sweep; the second pending agent waits its turn', async () => {
@@ -962,6 +1015,45 @@ test('win32: an update at an idle moment with the launcher dead (a schtasks /Run
   assert.deepEqual(pendingReport.agents.map((a: any) => [a.state, a.reason]), [['failed', 'supervisor_v2_unavailable']])
 })
 
+// -- F2: Windows finds the agent's claude above its daemon ----------------------------------------------
+
+/** The CIM listing of a Windows agent: claude.exe 5912 > bgos-launch 6000 > daemon 4912, optionally a job. */
+function winListing(withJob = false) {
+  return JSON.stringify([
+    { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+    { ProcessId: 6000, ParentProcessId: 5912, CreationDate: T0 - 120 * MIN, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
+    { ProcessId: 4912, ParentProcessId: 6000, CreationDate: T0 - 120 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
+    ...(withJob
+      ? [{ ProcessId: 7100, ParentProcessId: 5912, CreationDate: T0 - 5 * MIN, CommandLine: 'C:\\Program Files\\Git\\bin\\bash.exe -c source C:\\Users\\kc\\.claude\\shell-snapshots\\snapshot-bash-1.sh && python monitor.py' }]
+      : []),
+  ])
+}
+
+test('F2 (win32): with claudePid null (the daemon has no ps there) the claude above the daemon is found: an idle agent restarts onto the staged update, a job still waits', async () => {
+  const files = {
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+  }
+  const alive = (pid: number) => [777, 4912, 5912].includes(pid)
+  const idle = windowsMachine(files)
+  const rec = recorder({ win32Ps: winListing(false) })
+  const clock = fakeClock()
+  clock.onSleep((_ms, at) => {
+    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+  })
+  const report = await runKeepAliveSweep(windowsCtx(idle, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
+  assert.equal(idle.files.get(`${WSTATE}\\restart-requested.json`), '{}', 'the live launcher restarts claude in place')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+  const busy = windowsMachine(files)
+  const busyRec = recorder({ win32Ps: winListing(true) })
+  const held = await runKeepAliveSweep(windowsCtx(busy, busyRec, { pidAlive: alive }) as any)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(busy.files.has(`${WSTATE}\\restart-requested.json`), false)
+})
+
 // -- the report --------------------------------------------------------------------------------------
 
 test('readKeepAliveReport: the persisted state as the heartbeat block (bounded to 64 agents)', () => {
@@ -1035,7 +1127,8 @@ const SNAPSHOT_JOB = `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapsho
 
 test('null claudePid, fresh state: the background job scan walks the claude found by its working directory (a live shell-snapshot child is background_job)', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { claudePid: null } }])
-  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE), psLine(4912, 7000, `node ${OLD_ROOT}/server.ts`), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
+  // The daemon is not listed under it (the walk above the daemon finds nothing): the cwd is the evidence.
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE), psLine(4912, 1, `node ${OLD_ROOT}/server.ts`), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
   const rec = recorder({ ps, lsof: `p7000\nfcwd\nn${AVA}\n` })
   const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'lsof').map((c) => c.args), [['-a', '-d', 'cwd', '-p', '7000', '-Fn']])
