@@ -161,7 +161,9 @@ test('both live handlers call the tested route and send its content and metadata
       `${transport} must preserve upgrade aliases`)
     assert.match(source, /slashDelivery\?\.content \?\? originalContent/,
       `${transport} must send the directive rather than bare slash text`)
-    assert.match(source, /\.\.\.\(slashDelivery \? slashDelivery\.meta : \{\}\)/,
+    // Attached through finalInboundMeta, which puts the lane's final meta
+    // together and keeps sender keys to the server's record.
+    assert.match(source, /meta: finalInboundMeta\(\n\s*\w+Channel\.meta,\n\s*slashDelivery \? slashDelivery\.meta : null,\n/,
       `${transport} must attach the all string slash metadata`)
   }
 })
