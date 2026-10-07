@@ -287,3 +287,17 @@ test('server.ts (E5): a clone reads the package.json of the root RUNNING_VERSION
   assert.match(server, /const agentStatePendingRestart = memoizeFor\(AGENT_STATE_MAX_INTERVAL_MS, Date\.now, \(\) =>\s*daemonPendingRestartVersion\(\),?\s*\)/)
   assert.match(server, /updateReadiness: updateReadinessSnapshot,/)
 })
+
+test('server.ts (E5b): the one-click handler restarts onto the same pending answer the heartbeat and agent-state.json carry', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const start = server.indexOf('const updateRpc = new UpdateRpcHandler({')
+  assert.ok(start > 0)
+  const deps = server.slice(start, server.indexOf('\n})\n', start))
+  assert.match(deps, /\n  pendingRestartVersion: \(\) => daemonPendingRestartVersion\(\),\n/)
+  // The handler asks only that: the self updater's own answer is no longer a
+  // second source beside it (lib/update-rpc.ts updateNow).
+  const rpc = readFileSync(join(root, 'lib', 'update-rpc.ts'), 'utf8')
+  assert.match(rpc, /let targetVersion = this\.deps\.pendingRestartVersion\(\)\n/)
+  assert.doesNotMatch(rpc, /updater\.pendingRestartVersion\(\)/)
+})

@@ -583,7 +583,8 @@ test('restart (D4): a plain hand-run claude the canonical supervisor waits behin
     waitingBehind(fs, '912', clock.now() - 5_000)
     fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
     const report = await runKeepAliveSweep(ctx as any)
-    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'manual_session', since: new Date(T0).toISOString(), pending: 'update' }], `sweep ${sweep}`)
+    // No pending (review 3 F3): a plain restart cannot end this wait, so the app offers none.
+    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'manual_session', since: new Date(T0).toISOString() }], `sweep ${sweep}`)
     clock.advance(31 * MIN)
   }
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps' && c.file !== 'lsof'), [], 'no launchctl, no bash')
@@ -1446,6 +1447,31 @@ test('F4 (win32): an update for an agent whose launcher died but whose claude st
   assert.equal(rec.calls.some((c) => c.file === 'schtasks.exe'), false)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0)
+})
+
+// Review 3 F3: the wait above is the Windows twin of D4. The sweep writes it on
+// the record that carries the update's target, so after 24 h its entry carried
+// both waitingSince and pending 'update', and the app offered Restart now. That
+// restart is the task tier, which refuses session_without_launcher for as long
+// as that daemon lives: the job failed every time. A wait a plain restart cannot
+// end says nothing about what it waits for (no pending, so no button).
+test('review 3 F3 (win32): a session_without_launcher wait carries no pending even after 24 h, so the app never offers a Restart now the task tier must refuse', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+  })
+  const clock = fakeClock()
+  const alive = (pid: number) => [4912, 5912].includes(pid)
+  const first = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
+  assert.deepEqual(first.agents, [{ id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since: new Date(T0).toISOString() }])
+  clock.advance(25 * 60 * MIN)
+  fs.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json', stateBody('912', clock.now()))
+  const rec = recorder({ win32Ps: winListing(false) })
+  const later = await runKeepAliveSweep(windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
+  assert.equal(rec.calls.some((c) => c.file === 'schtasks.exe'), false)
+  assert.deepEqual(later.agents, [{ id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since: new Date(T0).toISOString(), waitingSince: new Date(T0).toISOString() }])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].target, '0.62.1', 'the target still rides on the record: the update lands with the task start')
 })
 
 test('F4 (win32): a daemon too old to publish state but holding the pairing lock (a person\'s plain claude) is running: the task is registered, never started beside it', async () => {

@@ -68,7 +68,7 @@ import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './li
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor } from './lib/agent-inventory.mjs'
+import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -10804,6 +10804,8 @@ function writeSupervisorRecordAtBoot(): void {
       existingRaw: readTextOrNull(supPath),
       ownPid: process.pid,
       startedAt: new Date().toISOString(),
+      // Review 3 F1: the boot clock with the wall clock stamp (Linux only).
+      boot: readBootClock({ platform: process.platform }),
       detection: resolveSupervision(supervisionProbe()),
     })
     if (decision.action !== 'write') {
@@ -11097,6 +11099,9 @@ const updateRpc = new UpdateRpcHandler({
   installMethod: () => INSTALL_METHOD,
   autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
   updater: () => selfUpdater,
+  // E5b: a click restarts onto exactly what the heartbeat reports as pending
+  // (a clone moved by git pull included), never the self updater's answer alone.
+  pendingRestartVersion: () => daemonPendingRestartVersion(),
   // Marketplace installs (design 1.4): observe THIS machine, then plan +
   // execute with agents = [self]. The executor's restart/verify hooks are
   // satisfied by the daemon's own ladder, which runs after the outcome.
