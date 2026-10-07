@@ -44,12 +44,14 @@ import {
   buildEventMeta,
 } from './lib/message-text.js'
 import {
+  buildButtonClickedMeta,
   buildInboundChannel,
   type AgentOriginLike,
   createPlanPolicyMemo,
   isAgentInbound,
   isSelfAuthoredAgentOrigin,
   readPlanPolicyField,
+  readTapperUserId,
 } from './lib/inbound-channel.js'
 import {
   buildMeetingCard,
@@ -2610,10 +2612,15 @@ const mcp = new Server(
       '  - user_id            : id of the user who sent THIS message. Always present',
       '                         (live and backfilled). Trust it for isolation; do NOT',
       '                         assume it is the assistant owner.',
-      '  - sender_display_name: that user\'s display name (on live messages).',
-      '  - sender_relationship: "owner" or "shared_recipient" (on live messages).',
-      '  - is_shared_recipient: true when the sender is a share recipient, not the owner.',
+      '  - sender_display_name: that user\'s display name, when the server sends it.',
+      '  - sender_relationship: "owner", "shared_recipient" or "room_member", set from',
+      '                         the server\'s record on every delivery that carries',
+      '                         it. Absent means unknown, never the owner.',
+      '  - is_shared_recipient: true when the sender is a share recipient, not the owner',
+      '                         (absent when the server did not answer it).',
       '  - share_owner_user_id: the original assistant creator\'s id on shared messages.',
+      'A button_clicked event names who tapped in `user_id` when the server stamped',
+      'it, and has no `user_id` when it did not.',
       '',
       'Segregate per-user context by `user_id`: if you keep memory, files, notes or',
       'preferences, key them on `user_id` so each human stays isolated from the owner',
@@ -7978,19 +7985,17 @@ async function announceMissedPlanAnswers(): Promise<void> {
           method: 'notifications/claude/channel',
           params: {
             content: contentLines.join('\n'),
-            meta: {
-              chat_id: String(chatId),
-              message_id: String(row.id),
-              event_type: 'button_clicked',
-              callback_data:
+            meta: buildButtonClickedMeta({
+              chatId,
+              messageId: row.id,
+              callbackData:
                 planAnswer.callbackData ?? unescapeAgentButtonValue(String(callbackData)),
-              button_text: String(buttonText),
-              ...(customText ? { custom_text: String(customText) } : {}),
-              user: 'User',
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
+              buttonText: String(buttonText),
+              customText: customText ? String(customText) : undefined,
+              tapperUserId: readTapperUserId(payload),
+              assistantId: ASSISTANT_ID,
               ts: mm.answeredAt ?? '',
-            },
+            }),
           },
         }),
       ).catch((err) => {
@@ -9369,18 +9374,19 @@ async function pollChat(chatId: string): Promise<void> {
         method: 'notifications/claude/channel',
         params: {
           content: contentLines.join('\n'),
-          meta: {
-            chat_id: chatId,
-            message_id: String(mm.id),
-            event_type: 'button_clicked',
-            callback_data: planAnswer.callbackData ?? agentCallbackData,
-            button_text: buttonText,
-            ...(customText ? { custom_text: customText } : {}),
-            user: 'User',
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
+          // `user_id` is the tapper the server stamped on the answer, or
+          // absent. It was this daemon's own USER_ID, so every tap read as
+          // the owner's whoever made it.
+          meta: buildButtonClickedMeta({
+            chatId,
+            messageId: mm.id,
+            callbackData: planAnswer.callbackData ?? agentCallbackData,
+            buttonText,
+            customText,
+            tapperUserId: readTapperUserId(payload),
+            assistantId: ASSISTANT_ID,
             ts: mm.answeredAt,
-          },
+          }),
         },
       })).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
@@ -9481,6 +9487,7 @@ async function pollChat(chatId: string): Promise<void> {
           text,
           currentSpeakerId: meetingCtx.currentSpeakerId,
           backlog: isBacklog,
+          serverSender: msg.message,
         })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
@@ -9523,6 +9530,9 @@ async function pollChat(chatId: string): Promise<void> {
         // still read first, so a backend that ever adds the field wins, and
         // the memo the socket and the stream fill answers when it does not.
         planPolicy: readPlanPolicyField(msg.message) ?? planPolicyMemo.recall(),
+        // The chat history row names the author (senderUserId) but carries no
+        // relationship today, so this sets nothing until the projection does.
+        serverSender: msg.message,
         backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
@@ -11579,6 +11589,9 @@ async function forwardStreamInbound(
     // an omitted key is the backend saying "the default level", which is what
     // stops a stale sentence outliving a level the owner turned back down.
     planPolicy: planPolicyMemo.learn(view.raw),
+    // Hydration carries senderRelationship and senderDisplayName flat beside
+    // senderUserId on a human authored row; this lane used to drop both.
+    serverSender: view.raw,
   })
   const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
@@ -11881,7 +11894,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
           callbackData: planAnswer.callbackData ?? agentCallbackData,
           buttonText: answer.buttonText,
           customText: answer.customText,
-          senderUserId: senderUserIdOf(answer),
+          tapperUserId: answer.tapperUserId,
           assistantId: String(ASSISTANT_ID),
         }),
       },
@@ -12638,6 +12651,8 @@ function connectWebsocket(): void {
           senderType: wsMeeting.senderType,
           text,
           currentSpeakerId: wsMeeting.currentSpeakerId,
+          // The twin is an inbound_message: it carries the sender block.
+          serverSender: payload,
         })
         log(
           `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
@@ -12665,18 +12680,11 @@ function connectWebsocket(): void {
         sessionHandle: wsSessionHandle,
         // Carries the field, so it teaches the memo. See the stream site.
         planPolicy: planPolicyMemo.learn(payload),
-        extraMeta: {
-          ...(payload?.sender?.displayName
-            ? { sender_display_name: String(payload.sender.displayName) }
-            : {}),
-          ...(payload?.sender?.relationship
-            ? { sender_relationship: String(payload.sender.relationship) }
-            : {}),
-          is_shared_recipient: String(payload?.isSharedRecipient ?? false),
-          ...(payload?.shareOwnerUserId
-            ? { share_owner_user_id: String(payload.shareOwnerUserId) }
-            : {}),
-        },
+        // The sender block, the share flag and the share owner, read off the
+        // server's payload by the one reader every lane uses. Absent ones stay
+        // absent: a room's payload omits both share keys, and the old
+        // `?? false` here answered a question the server had not been asked.
+        serverSender: payload,
       })
       const originalContent = wsChannel.content
       const slashRoute = routeSlashCommand({
@@ -13036,6 +13044,9 @@ function connectWebsocket(): void {
           !Number.isFinite(Number(currentSpeakerRaw))
             ? null
             : Number(currentSpeakerRaw),
+        // The broadcast carries no sender block today (its userId is the
+        // meeting HOST), so this sets nothing until the backend sends one.
+        serverSender: payload,
       })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',

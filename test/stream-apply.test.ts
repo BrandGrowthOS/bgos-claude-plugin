@@ -178,6 +178,7 @@ test('answerPayload is surfaced for buttons_answered rows, both casings', () => 
     buttonText: 'Go',
     customText: undefined,
     clickerUserId: null,
+    tapperUserId: null,
   })
   const snake = viewStreamMessage(
     upd({ answer_payload: { callback_data: 'go2', button_text: 'Go2', custom_text: 'why' } }),
@@ -187,6 +188,7 @@ test('answerPayload is surfaced for buttons_answered rows, both casings', () => 
     buttonText: 'Go2',
     customText: 'why',
     clickerUserId: null,
+    tapperUserId: null,
   })
 })
 
@@ -640,13 +642,14 @@ test('stream click meta is all-string and omits an absent custom_text', () => {
     messageId: 902,
     callbackData: 'pick_a',
     buttonText: 'Pick A',
-    senderUserId: 'user_h',
+    tapperUserId: 'user_h',
     assistantId: '900',
   })
   assertAllStrings(bare)
   assert.equal(bare.event_type, 'button_clicked')
   assert.equal(bare.transport, 'stream')
   assert.equal('custom_text' in bare, false)
+  assert.equal(bare.user_id, 'user_h')
   assert.ok(bare.ts)
 
   const custom = buildStreamClickMeta({
@@ -655,7 +658,7 @@ test('stream click meta is all-string and omits an absent custom_text', () => {
     callbackData: '__custom__',
     buttonText: '',
     customText: 'my own words',
-    senderUserId: 'user_h',
+    tapperUserId: 'user_h',
     assistantId: '900',
     ts: '2026-08-08T11:00:00.000Z',
   })

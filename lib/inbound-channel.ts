@@ -34,6 +34,13 @@ export interface InboundChannelInput {
    */
   planPolicy?: string | null
   extraMeta?: Record<string, unknown> | null
+  /**
+   * The SERVER's record for this delivery, exactly as the lane received it:
+   * the socket's inbound_message payload, the poll's chat history row, the
+   * stream's hydrated payload. The sender attributes are read off it by
+   * readServerSenderMeta and nothing else, never off the text.
+   */
+  serverSender?: unknown
 }
 
 export interface InboundChannelDelivery {
@@ -209,6 +216,151 @@ function hasBackendOuterFramedMarker(text: string, marker: string): boolean {
   return framedBody === marker || framedBody.startsWith(`${marker}\n`)
 }
 
+/**
+ * The sender attributes on the OUTER channel tag, the ones the served canon
+ * (BGOS #2026, `-ownerword1`) keys on: an event is the owner speaking only when
+ * this tag says sender_relationship="owner", and a missing value settles
+ * nothing.
+ */
+export const SERVER_SENDER_META_KEYS = [
+  'sender_relationship',
+  'sender_display_name',
+  'is_shared_recipient',
+  'share_owner_user_id',
+] as const
+
+/**
+ * One value, stated in one or more spellings. Every spelling that is present
+ * must be usable and must agree, or the value is left off: two different
+ * answers from the server settle nothing, and neither does an unusable one.
+ */
+function agreed(values: unknown[], read: (value: unknown) => string | null): string | null {
+  let answer: string | null = null
+  for (const value of values) {
+    if (value === undefined) continue
+    const parsed = read(value)
+    if (parsed === null) return null
+    if (answer !== null && answer !== parsed) return null
+    answer = parsed
+  }
+  return answer
+}
+
+function statedString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
+function statedFlag(value: unknown): string | null {
+  if (value === true || value === 'true') return 'true'
+  if (value === false || value === 'false') return 'false'
+  return null
+}
+
+/**
+ * The sender attributes the SERVER stated for this delivery, in any of the
+ * shapes the lanes receive:
+ *
+ *   socket inbound_message: a nested `sender: { userId, displayName,
+ *     relationship }` block plus `isSharedRecipient` and `shareOwnerUserId`
+ *     (both keys absent in a persistent group);
+ *   stream (hydrated message_new): flat `senderDisplayName` and
+ *     `senderRelationship` beside `senderUserId`;
+ *   snake case twins of each, for the rails that spell them that way.
+ *
+ * A row's own `sender` key is the ROLE string ('user', 'system'), not a sender
+ * block, and is ignored. The poll's chat history row carries no relationship
+ * today, so the poll lane gets none of these until the projection does.
+ *
+ * Nothing is defaulted. An attribute the server did not send, sent in a shape
+ * this reader does not trust, or sent twice with two answers is ABSENT, which
+ * the canon reads as unknown; it is never filled in as the owner or as "false".
+ * Values are the server's strings unchanged, so every lane emits the same bytes
+ * the socket lane always did; the host escapes them as attribute values.
+ */
+export function readServerSenderMeta(record: unknown): Record<string, string> {
+  if (record == null || typeof record !== 'object') return {}
+  const r = record as Record<string, unknown>
+  const block =
+    r.sender != null && typeof r.sender === 'object' && !Array.isArray(r.sender)
+      ? (r.sender as Record<string, unknown>)
+      : {}
+  const out: Record<string, string> = {}
+  const relationship = agreed(
+    [block.relationship, r.senderRelationship, r.sender_relationship],
+    statedString,
+  )
+  if (relationship !== null) out.sender_relationship = relationship
+  const displayName = agreed(
+    [block.displayName, r.senderDisplayName, r.sender_display_name],
+    statedString,
+  )
+  if (displayName !== null) out.sender_display_name = displayName
+  const shared = agreed([r.isSharedRecipient, r.is_shared_recipient], statedFlag)
+  if (shared !== null) out.is_shared_recipient = shared
+  const shareOwner = agreed([r.shareOwnerUserId, r.share_owner_user_id], statedString)
+  if (shareOwner !== null) out.share_owner_user_id = shareOwner
+  return out
+}
+
+/**
+ * WHO TAPPED, as the server stamped it on the answer payload: the backend's
+ * callback writes `answeredByUserId` from the authenticated caller (BGOS
+ * message.controller.ts bindAnswerer, since #1592). Only that key is read.
+ * The keys a message row uses for its AUTHOR (senderUserId, userId) are not
+ * the tapper and are not read here. Null when the payload names nobody, which
+ * leaves the tap's `user_id` off rather than calling it the owner's.
+ */
+export function readTapperUserId(answerPayload: unknown): string | null {
+  if (answerPayload == null || typeof answerPayload !== 'object') return null
+  const a = answerPayload as Record<string, unknown>
+  return agreed([a.answeredByUserId, a.answered_by_user_id], statedString)
+}
+
+/**
+ * The meta of a button_clicked event, for every lane that announces a tap (the
+ * poll's transition detector, the stream's buttons_answered and the plan boot
+ * sweep). `user_id` is the tapper the server named, or absent. No sender
+ * relationship is set: the answer payload does not carry the tapper's, and the
+ * canon reads an absent one as unknown.
+ */
+export function buildButtonClickedMeta(opts: {
+  chatId: string | number
+  messageId: string | number
+  callbackData: string
+  buttonText: string
+  customText?: string
+  tapperUserId: string | null
+  assistantId: string | number
+  ts?: string | null
+  transport?: string
+}): Record<string, string> {
+  return {
+    chat_id: String(opts.chatId),
+    message_id: String(opts.messageId),
+    event_type: 'button_clicked',
+    callback_data: String(opts.callbackData),
+    button_text: String(opts.buttonText),
+    ...(opts.customText ? { custom_text: String(opts.customText) } : {}),
+    user: 'User',
+    ...(opts.tapperUserId ? { user_id: String(opts.tapperUserId) } : {}),
+    assistant_id: String(opts.assistantId),
+    ts: String(opts.ts ?? new Date().toISOString()),
+    ...(opts.transport ? { transport: String(opts.transport) } : {}),
+  }
+}
+
+/**
+ * A lane's extra meta (slash and event fields) with the sender keys taken out:
+ * only the server's record, through readServerSenderMeta, may set those.
+ */
+function extraMetaWithoutSender(
+  meta: Record<string, unknown> | null | undefined,
+): Record<string, string> {
+  const result = stringMeta(meta)
+  for (const key of SERVER_SENDER_META_KEYS) delete result[key]
+  return result
+}
+
 function stringMeta(meta: Record<string, unknown> | null | undefined): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [key, value] of Object.entries(meta ?? {})) {
@@ -261,7 +413,8 @@ export function buildInboundChannel(
     assistant_id: String(input.assistantId),
     ts: String(input.timestamp ?? new Date().toISOString()),
     transport: String(input.transport),
-    ...stringMeta(input.extraMeta),
+    ...extraMetaWithoutSender(input.extraMeta),
+    ...readServerSenderMeta(input.serverSender),
     ...(senderType === 'system'
       ? { system: 'true', sender_type: 'system' }
       : senderType === 'agent'
