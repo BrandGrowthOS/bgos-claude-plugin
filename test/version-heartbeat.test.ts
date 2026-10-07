@@ -18,6 +18,17 @@ function dirWithPackage(version: unknown): string {
 }
 
 describe('readOwnVersion', () => {
+  test('reads a prerelease or build version, the shape the backend and the watcher accept (finding F1)', () => {
+    expect(readOwnVersion(dirWithPackage('0.62.1-local'))).toBe('0.62.1-local')
+    expect(readOwnVersion(dirWithPackage('1.2.3-rc.1'))).toBe('1.2.3-rc.1')
+  })
+
+  test('still refuses junk, a leading v, and an over-long value', () => {
+    expect(readOwnVersion(dirWithPackage('v0.62.1'))).toBeNull()
+    expect(readOwnVersion(dirWithPackage('0.62'))).toBeNull()
+    expect(readOwnVersion(dirWithPackage('0.62.1-' + 'x'.repeat(40)))).toBeNull()
+  })
+
   test('reads a valid semver', () => {
     expect(readOwnVersion(dirWithPackage('0.22.0'))).toBe('0.22.0')
   })
