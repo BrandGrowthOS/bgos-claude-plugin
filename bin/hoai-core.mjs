@@ -1049,7 +1049,10 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
  *
  * The pid identity is the writer's, not just "a hoai": it started no later
  * than the file's startedAt (plus a minute of slack) and runs hoai-core.mjs as
- * its script. A launcher that dies without its finally block (a power cut, a
+ * its script. The record the agent's daemon writes for a declared marker
+ * launcher (BGOS_SUPERVISOR_KIND=launcher) names the daemon's own pid, a
+ * `bun server.ts`: its start alone proves it, and while it lives a bespoke
+ * launcher owns the agent (a second session here is G11). A launcher that dies without its finally block (a power cut, a
  * panic, a SIGKILL, a Windows logoff) leaves the file behind, and after a
  * reboot its pid can belong to any process, another agent's hoai or tmux
  * server included: refusing behind it kept the agent down, lap after lap of

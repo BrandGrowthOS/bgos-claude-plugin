@@ -30,6 +30,7 @@ import {
   superviseClaude,
   supervisorFileBody,
 } from '../bin/hoai-core.mjs'
+import { buildDeclaredSupervisorBody } from '../lib/update-readiness.ts'
 
 const HOAI_CMD = '/opt/homebrew/bin/node /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/bin/hoai-core.mjs'
 const HOME = '/home/kc'
@@ -235,4 +236,23 @@ test('F1: superviseClaude after a reboot: the stale file\'s pid is another agent
   assert.equal(JSON.parse(h.files.get(SUPERVISOR_PATH)!).pid, process.pid)
   h.spawns[0]!.exit(0)
   assert.equal(await h.done, 0)
+})
+
+// -- delta review F3: the daemon's own declared-launcher record -------------------
+//
+// With BGOS_SUPERVISOR_KIND=launcher the agent's daemon writes supervisor.json
+// naming its OWN pid (lib/update-readiness.ts buildDeclaredSupervisorBody), a
+// `bun server.ts` that never runs hoai-core.mjs. While that daemon lives, a
+// bespoke launcher owns the agent, and a hoai that armed over it was the G11
+// double session.
+
+test('F3: decideSupervisorArming: the daemon\'s declared-launcher record refuses while its pid is that daemon, and is reclaimed once the pid is reused', () => {
+  const body = buildDeclaredSupervisorBody({ declared: { kind: 'launcher', handle: null, restartCommand: null }, pid: 4912, startedAt: STAMP })
+  const arm = (proc: { command: string | null; startedAtMs: number | null } | null) =>
+    decideSupervisorArming({ existingRaw: body, ownPid: 100, pidAlive: () => true, pidProcess: () => proc } as never)
+  const daemon = 'bun /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/server.ts'
+  assert.deepEqual(arm({ command: daemon, startedAtMs: STAMP_MS - 2000 }), { arm: false, ownerPid: 4912 })
+  assert.deepEqual(arm({ command: null, startedAtMs: STAMP_MS - 2000 }), { arm: false, ownerPid: 4912 })
+  assert.deepEqual(arm({ command: daemon, startedAtMs: STAMP_MS + 3_600_000 }), { arm: true, reclaimedStale: true })
+  assert.deepEqual(arm(null), { arm: false, ownerPid: 4912 }, 'unreadable: liveness')
 })

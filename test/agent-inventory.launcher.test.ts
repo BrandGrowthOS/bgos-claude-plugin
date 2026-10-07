@@ -35,6 +35,7 @@ import {
   runsHoaiLauncher,
 } from '../lib/agent-inventory.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
+import { buildDeclaredSupervisorBody } from '../lib/update-readiness.ts'
 
 const HOME = '/home/kc'
 const HOAI_CMD = '/opt/homebrew/bin/node /Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/bin/hoai-core.mjs'
@@ -125,6 +126,7 @@ test('parseSupervisorRecord: the file plus its writer\'s stamp; a missing or jun
     pid: 42,
     capabilities: ['relaunch'],
     startedAtMs: Date.parse('2026-10-06T21:00:00.000Z'),
+    declaredLauncher: false,
   })
   assert.equal(parseSupervisorRecord(supervisorFileBody(42, 'x'))!.startedAtMs, null)
   assert.equal(parseSupervisorRecord(JSON.stringify({ pid: 42, capabilities: ['relaunch'], startedAt: 1_700_000_000_000 }))!.startedAtMs, null)
@@ -341,4 +343,63 @@ test('F1: isSupervisorWriter: a start after the stamp plus the slack is a reused
   assert.equal(isSupervisorWriter(record, { command: null, startedAtMs: stamp - 1000 }), true)
   assert.equal(isSupervisorWriter({ startedAtMs: null }, { command: hoai, startedAtMs: stamp + 3_600_000 }), true, 'no stamp: the command line decides')
   assert.equal(isSupervisorWriter({ startedAtMs: null }, { command: TMUX_913, startedAtMs: null }), false)
+})
+
+// -- delta review F3: the daemon's own declared-launcher record -------------------
+//
+// A bespoke launcher that watches restart markers declares itself with
+// BGOS_SUPERVISOR_KIND=launcher, and the agent's DAEMON then writes
+// supervisor.json naming its own pid (lib/update-readiness.ts
+// buildDeclaredSupervisorBody). That pid runs `bun server.ts`, never
+// hoai-core.mjs, so the script test alone read the declared launcher as dead:
+// no 'marker' restart tier, and the canonical service beside it waited on a
+// "manual session" for ever. That exact record is judged by liveness and the
+// start-time proof alone.
+
+const DAEMON = `bun ${ROOT}/server.ts`
+
+test('F3: listAgents: the daemon\'s declared-launcher record is live while its pid is that daemon, and only that exact record shape is', () => {
+  const stamp = NOW - 10 * 60_000
+  const startedAt = new Date(stamp).toISOString()
+  const declared = (pid: number, restartCommand: unknown = null) =>
+    buildDeclaredSupervisorBody({ declared: { kind: 'launcher', handle: null, restartCommand } as never, pid, startedAt })
+  const ids = ['912', '913', '914', '915', '916', '917']
+  const files: Record<string, string> = Object.fromEntries(ids.map((id) => [`${HOME}/.bgos-agent/credentials-${id}.json`, '{}']))
+  Object.assign(files, {
+    // The daemon's own record, plain and with a declared restart command.
+    [`${HOME}/.bgos-agent/912/supervisor.json`]: declared(4912),
+    [`${HOME}/.bgos-agent/913/supervisor.json`]: declared(4913, { file: '/usr/local/bin/my-launcher', args: ['--restart'] }),
+    // The same record after an unclean stop, its pid since reused by a later daemon.
+    [`${HOME}/.bgos-agent/914/supervisor.json`]: declared(4914),
+    // Shapes the daemon never writes: a junk restart command (parseDeclaredSupervisor refuses it), no stamp.
+    [`${HOME}/.bgos-agent/915/supervisor.json`]: JSON.stringify({ pid: 4915, capabilities: ['relaunch'], startedAt, supervisor: { kind: 'launcher', restartCommand: { file: '' } } }),
+    [`${HOME}/.bgos-agent/916/supervisor.json`]: JSON.stringify({ pid: 4916, capabilities: ['relaunch'], supervisor: { kind: 'launcher' } }),
+    // A declared service manager is no marker launcher at all (no relaunch capability).
+    [`${HOME}/.bgos-agent/917/supervisor.json`]: buildDeclaredSupervisorBody({ declared: { kind: 'launchd', handle: 'ai.bgos.session.917', restartCommand: null }, pid: 4917, startedAt }),
+  })
+  const before = { command: DAEMON, startedAtMs: stamp - 2000 }
+  const ps = psAged({ 4912: before, 4913: before, 4914: { command: DAEMON, startedAtMs: stamp + 5 * 60_000 }, 4915: before, 4916: before, 4917: before })
+  const agents = listAgents({ home: HOME, env: {}, platform: 'darwin', fs: fsWith(files), pidAlive: () => true, execSync: ps.execSync, now: NOW })
+  assert.deepEqual(
+    agents.map((a) => [a.assistantId, a.launcherLive]),
+    [['912', true], ['913', true], ['914', false], ['915', false], ['916', false], ['917', false]],
+  )
+  assert.equal(agents[0]!.supervisor, 'launcher-live')
+  // Nothing readable about the pid: liveness alone, as for every record.
+  const blind = listAgents({ home: HOME, env: {}, platform: 'darwin', fs: fsWith(files), pidAlive: () => true, execSync: () => ({ code: 1, stdout: '' }), now: NOW })
+  assert.equal(blind[0]!.launcherLive, true)
+})
+
+test('F3: parseSupervisorRecord marks exactly the declared-launcher record the daemon writes', () => {
+  const startedAt = '2026-10-07T08:50:00.000Z'
+  const of = (body: string) => parseSupervisorRecord(body)!.declaredLauncher
+  assert.equal(of(buildDeclaredSupervisorBody({ declared: { kind: 'launcher', handle: null, restartCommand: null }, pid: 9, startedAt })), true)
+  assert.equal(of(buildDeclaredSupervisorBody({ declared: { kind: 'launcher', handle: null, restartCommand: { file: '/x', args: [] } }, pid: 9, startedAt })), true)
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt, supervisor: { kind: 'launcher', restartCommand: { file: '/x' } } })), true, 'args may be absent')
+  assert.equal(of(supervisorFileBody(9, startedAt)), false, 'hoai\'s own record')
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt, supervisor: { kind: 'launcher', restartCommand: { file: '/x', args: [1] } } })), false)
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt, supervisor: { kind: 'launcher', restartCommand: 'x' } })), false)
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt, supervisor: [] })), false)
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt, supervisor: { kind: 'systemd', handle: 'x' } })), false)
+  assert.equal(of(JSON.stringify({ pid: 9, capabilities: ['relaunch'], startedAt: 'x', supervisor: { kind: 'launcher' } })), false, 'no stamp, no start-time proof')
 })
