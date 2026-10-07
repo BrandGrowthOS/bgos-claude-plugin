@@ -83,7 +83,12 @@ import {
   claudeConfigDir,
   detectInstallMethod,
 } from './bgos-install-method.mjs'
-import { buildLaunchRecipe, writeLaunchRecipe } from '../lib/agent-inventory.mjs'
+import {
+  buildLaunchRecipe,
+  readLauncherCommandLines,
+  runsHoaiLauncher,
+  writeLaunchRecipe,
+} from '../lib/agent-inventory.mjs'
 import {
   HOAI_MARKETPLACE as HOAI_MARKETPLACE_NAME,
   observeMarketplaceInstall,
@@ -176,6 +181,30 @@ export function isSupervisedLaunch(env) {
   return String(env?.[SUPERVISED_ENV] ?? '') === '1'
 }
 
+/**
+ * The environment claude (and expect, which starts it) is spawned with: hoai's
+ * own, without SUPERVISED_ENV and SUPERVISED_ASSISTANT_ID_ENV. hoai is their
+ * only reader, and inherited they made every `hoai` an agent's Bash tool ran
+ * act as THIS agent's service: in another agent's folder it stopped with
+ * identity-mismatch (7), in a pinless one with already-supervised (3), and
+ * both overwrote this agent's launch-status. hoai's own env keeps them (a
+ * relaunch resolves the service identity from them). Names are case
+ * insensitive on win32, as Windows treats them. Never mutates `env`.
+ * @param {Record<string, string | undefined> | undefined} env
+ * @param {string} [platform]
+ * @returns {Record<string, string>}
+ */
+export function childEnvWithoutSupervision(env, platform = process.platform) {
+  const drop = new Set([SUPERVISED_ENV, SUPERVISED_ASSISTANT_ID_ENV])
+  const out = {}
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (value === undefined) continue
+    if (drop.has(platform === 'win32' ? key.toUpperCase() : key)) continue
+    out[key] = value
+  }
+  return out
+}
+
 /** The service's assistant id (digits only), or ''. @param {Record<string, string | undefined> | undefined} env */
 export function supervisedServiceId(env) {
   const value = String(env?.[SUPERVISED_ASSISTANT_ID_ENV] ?? '').trim()
@@ -213,6 +242,36 @@ export function defaultPidAlive(pid) {
   } catch (err) {
     return err?.code === 'EPERM'
   }
+}
+
+/** How long reading one pid's command line may take. PowerShell's cold start
+ *  is the slow one; ps answers at once. */
+export const PID_COMMAND_LINE_TIMEOUT_MS = 10_000
+
+/**
+ * The command line of `pid` on THIS host, or null when it cannot be read at
+ * all (the pid is gone, the query failed or timed out, Windows hides another
+ * session's process, `pid` is not a pid). The query is lib/agent-inventory.mjs
+ * readLauncherCommandLines, the one the watcher's launcherLive uses, so hoai and
+ * the watcher judge a supervisor.json pid the same way.
+ * @param {number} pid
+ * @param {string} [platform]
+ * @param {{ spawn?: typeof spawnSync }} [opts]
+ * @returns {string | null}
+ */
+export function defaultPidCommandLine(pid, platform = process.platform, opts = {}) {
+  const run = opts.spawn ?? spawnSync
+  const execSync = (file, args) => {
+    const res = run(file, args, {
+      encoding: 'utf8',
+      timeout: PID_COMMAND_LINE_TIMEOUT_MS,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    // A timed-out spawnSync reports status null: unreadable.
+    return { code: typeof res?.status === 'number' ? res.status : 1, stdout: String(res?.stdout ?? '') }
+  }
+  return readLauncherCommandLines({ platform, pids: [pid], execSync }).get(pid) ?? null
 }
 
 /** Best-effort text read; null when absent or unreadable. */
@@ -978,16 +1037,25 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
  *
  * Fails toward NOT double-launching a LIVE owner, but never wedges on junk:
  *   - absent/empty body                         -> arm (nothing owns it)
- *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE and
- *     is not our own                            -> refuse, name the owner
- *   - our own pid, a dead pid, malformed json, or a body without the relaunch
+ *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE, is
+ *     not our own, and still runs hoai-core.mjs -> refuse, name the owner
+ *   - our own pid, a dead pid, a live pid running something else, malformed
+ *     json, or a body without the relaunch
  *     capability                                -> arm and reclaim (a crashed
  *                                                  prior run left a stale file)
+ *
+ * The command line is the pid identity. A launcher that dies without its
+ * finally block (a power cut, a panic, a SIGKILL) leaves the file behind, and
+ * after a reboot its pid can belong to any process: refusing behind ANY live
+ * pid kept the agent down, lap after lap of exit 3, for as long as that
+ * unrelated process ran. A command line that cannot be read (pidCommandLine
+ * answers null, and the default does) keeps the liveness answer.
  * @param {{ existingRaw: string | null | undefined, ownPid: number,
- *   pidAlive?: (pid: number) => boolean }} params
+ *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null }} params
  * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number }}
  */
-export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive }) {
+export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive, pidCommandLine = () => null }) {
   if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
   let parsed
   try {
@@ -1007,7 +1075,7 @@ export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = default
     capabilities.includes('relaunch')
   if (!isAuthority) return { arm: true, reclaimedStale: true }
   if (pid === ownPid) return { arm: true, reclaimedStale: true }
-  if (pidAlive(pid)) return { arm: false, ownerPid: pid }
+  if (pidAlive(pid) && runsHoaiLauncher(pidCommandLine(pid))) return { arm: false, ownerPid: pid }
   return { arm: true, reclaimedStale: true }
 }
 
@@ -1437,6 +1505,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   removeFile?: (path: string) => boolean,
  *   pollMs?: number, now?: () => number, print?: (line: string) => void,
  *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null,
  *   generateId?: () => string, hasExpect?: boolean,
  *   freshSession?: boolean,
  *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
@@ -1455,7 +1524,8 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  * says how long to wait, a crash loop is written to launch-status, and
  * supervisor.json is re-written before every relaunch. `signal` is the stop
  * request: once it aborts, the live claude is stopped and nothing is
- * relaunched (main wires SIGTERM and SIGHUP to it for --keep-alive).
+ * relaunched (main wires SIGTERM and SIGHUP to it for --keep-alive and for a
+ * supervised launch). A stop before anything is armed returns at once.
  */
 /** Basename of a comm/path, lowercased, without a trailing .exe. */
 function commBase(comm) {
@@ -1628,12 +1698,14 @@ export function incumbentTimeoutMessage({ pid, cwd, waitedMs = INCUMBENT_WAIT_TI
  * `ignorePids` is forwarded to findIncumbentClaude unchanged, so a launcher
  * started from inside a claude session can hand over its own ancestry and not
  * spend ninety seconds waiting for the session that is running it (2026-09-21).
+ * `stopped` ends the wait the moment the launch is asked to stop (the service
+ * stopping an unattended launch), so a stop is never held for the full wait.
  * @param {{ cwd: string, uid?: number | null, ownPid: number,
  *   listProcesses: () => Array<{ pid: number, ppid?: number | null, uid?: number | null, comm: string, cwd: string | null }>,
  *   sleep: (ms: number) => Promise<void>, print: (line: string) => void,
  *   pollMs?: number, now?: () => number, timeoutMs?: number,
- *   ignorePids?: Iterable<number> | null }} input
- * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean }>}
+ *   ignorePids?: Iterable<number> | null, stopped?: () => boolean }} input
+ * @returns {Promise<{ waited: boolean, polls: number, lastPid: number | null, timedOut: boolean, stopped?: true }>}
  */
 export async function waitForIncumbent({
   cwd,
@@ -1646,6 +1718,7 @@ export async function waitForIncumbent({
   now = Date.now,
   timeoutMs = INCUMBENT_WAIT_TIMEOUT_MS,
   ignorePids = [],
+  stopped = () => false,
 }) {
   let polls = 0
   let lastPid = null
@@ -1655,6 +1728,9 @@ export async function waitForIncumbent({
   const limit = Math.max(0, Number(timeoutMs))
   const printEvery = Math.max(1, Math.round(30_000 / Math.max(1, pollMs)))
   while (true) {
+    // Asked to stop (the service is stopping this launch): the caller arms
+    // nothing, so there is nothing left to wait for.
+    if (stopped()) return { waited: polls > 1, polls, lastPid, timedOut: false, stopped: true }
     polls += 1
     const hit = findIncumbentClaude({ processes: listProcesses(), cwd, uid, ownPid, ignorePids })
     if (hit && !incumbentBlocks(hit) && !warnedUnreadable) {
@@ -1776,6 +1852,7 @@ export async function superviseClaude(args, opts = {}) {
   const now = opts.now ?? Date.now
   const print = opts.print ?? ((line) => console.log(line))
   const pidAlive = opts.pidAlive ?? defaultPidAlive
+  const pidCommandLine = opts.pidCommandLine ?? ((pid) => defaultPidCommandLine(pid, platform))
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
@@ -1783,7 +1860,6 @@ export async function superviseClaude(args, opts = {}) {
   const setTimer = opts.setTimer ?? setTimeout
   const clearTimer = opts.clearTimer ?? clearTimeout
   const listProcesses = opts.listProcesses ?? (() => defaultListProcesses(platform))
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimer(resolve, ms)))
   const force = opts.force === true
   const incumbentTimeoutMs = opts.incumbentTimeoutMs ?? INCUMBENT_WAIT_TIMEOUT_MS
   const keepAlive = opts.keepAlive === true
@@ -1796,10 +1872,11 @@ export async function superviseClaude(args, opts = {}) {
   // Set once the agent's state dir is known; the supervised expect tail writes
   // launch-status there and reads run.sh's fail count from it.
   let supervisedStateDir = ''
-  // The keep-alive backoff wait ends early on a stop request: a launcher told to
-  // stop must not sit out a 60 s timer first (and a ref'd timer would hold the
-  // process open for that long). An injected sleep (tests) is used as given.
-  const keepAliveSleep =
+  // Every wait here (the incumbent wait, the keep-alive backoff) ends early on a
+  // stop request: a launcher told to stop must not sit out a 60 s timer first
+  // (and a ref'd timer would hold the process open for that long). An injected
+  // sleep (tests) is used as given.
+  const sleep =
     opts.sleep ??
     ((ms) =>
       new Promise((resolve) => {
@@ -1822,6 +1899,8 @@ export async function superviseClaude(args, opts = {}) {
   const spawnGateHelper = opts.spawnGateHelper ?? defaultSpawnGateHelper
   const spawnSupervised = (spawnArgs, onSpawn) => {
     const method = relaunchInstallMethod({ scriptDir, env, home })
+    // Built at every spawn: main() adds the plan's env before the first one.
+    const childEnv = childEnvWithoutSupervision(env, platform)
     // Supervised, the gate is handled whatever detection says: every launch
     // carries the dev-channels flag, so the warning shows on every launch, and
     // an 'unknown' method (a workspace .mcp.json beside an npx root) would
@@ -1830,7 +1909,7 @@ export async function superviseClaude(args, opts = {}) {
       if (platform === 'win32') {
         // No expect on Windows: claude gets the console, and a hidden helper
         // attached to that same console accepts the gate once it is on screen.
-        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+        const exited = spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
         try {
           const helper = spawnGateHelper({ scriptDir, consolePid: process.pid, spawnImpl, writeErr, home })
           print(`[hoai] dev-channels gate helper armed (helper pid ${helper?.pid ?? '?'}, console ${process.pid})`)
@@ -1848,7 +1927,7 @@ export async function superviseClaude(args, opts = {}) {
               ? { stateDir: supervisedStateDir, interactive: stdinIsTTY, compact: compactStatus(env) }
               : null,
         })
-        return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn })
+        return spawnExpectScript(script, { spawnImpl, writeErr, onSpawn, childEnv })
       }
       if (!warnedGate) {
         warnedGate = true
@@ -1859,7 +1938,7 @@ export async function superviseClaude(args, opts = {}) {
         )
       }
     }
-    return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn })
+    return spawnClaude(spawnArgs, { platform, env, spawnImpl, writeErr, onSpawn, childEnv })
   }
 
   const resolvedId = superviseAssistantId({ cwd, env, home, readFile, listDir })
@@ -1962,6 +2041,7 @@ export async function superviseClaude(args, opts = {}) {
       now,
       timeoutMs: incumbentTimeoutMs,
       ignorePids,
+      stopped: () => stopSignal?.aborted === true,
     })
     // Giving up is an outcome, not a hang: say which pid, how to look at it and
     // how to launch anyway, then hand back a code a wrapper can act on.
@@ -1970,15 +2050,20 @@ export async function superviseClaude(args, opts = {}) {
       print(incumbentTimeoutMessage({ pid: incumbent.lastPid, cwd, waitedMs: incumbentTimeoutMs }))
       return EXIT_INCUMBENT_TIMEOUT
     }
-    if (incumbent.waited) {
+    // A wait ended by a stop request took nothing over: the incumbent may well still be there.
+    if (incumbent.waited && !incumbent.stopped) {
       print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
     }
   }
+  // A stop that came before anything was armed (main wires SIGTERM and SIGHUP
+  // to it for an unattended launch): nothing to clean up, nothing to start.
+  if (stopSignal?.aborted) return exitCodeForChild(null, 'SIGTERM')
   // Singleton guard: never start a second session behind a live supervisor.
   const arming = decideSupervisorArming({
     existingRaw: readFile(supervisorPath),
     ownPid: process.pid,
     pidAlive,
+    pidCommandLine,
   })
   if (!arming.arm) {
     noteStatus('already-supervised', { owner: arming.ownerPid })
@@ -2244,7 +2329,7 @@ export async function superviseClaude(args, opts = {}) {
             "resuming this agent's own session",
         )
       }
-      await keepAliveSleep(backoff.delayMs)
+      await sleep(backoff.delayMs)
       if (stopSignal?.aborted) return code
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
@@ -2353,8 +2438,11 @@ function spawnErrorMeansNotFound(err) {
  * child, so the supervise loop can SIGTERM the live one; a fallback attempt
  * calls it again with the replacement child.
  */
-export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {}) {
+export function spawnClaude(args, { platform = process.platform, env = process.env, spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn, childEnv } = {}) {
   const candidates = claudeSpawnCandidates(args, platform, env)
+  // `childEnv` (the supervise loop's childEnvWithoutSupervision) is the env the
+  // child gets; without it the child inherits this process's, as before.
+  const spawnOpts = childEnv ? { stdio: 'inherit', shell: false, env: childEnv } : { stdio: 'inherit', shell: false }
   return new Promise((resolve) => {
     const tryNext = (index) => {
       if (index >= candidates.length) {
@@ -2368,7 +2456,7 @@ export function spawnClaude(args, { platform = process.platform, env = process.e
       const candidate = candidates[index]
       let child
       try {
-        child = spawnImpl(candidate.file, candidate.args, { stdio: 'inherit', shell: false })
+        child = spawnImpl(candidate.file, candidate.args, spawnOpts)
       } catch (err) {
         if (spawnErrorMeansNotFound(err)) return tryNext(index + 1)
         writeErr(`[hoai] could not start ${candidate.file}: ${err?.message ?? err}\n`)
@@ -2694,12 +2782,13 @@ function runWinPathHelper(binDir, { scriptDir = '', spawnSyncImpl = spawnSync } 
  */
 export function spawnExpectScript(
   script,
-  { spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn } = {},
+  { spawnImpl = spawn, writeErr = (text) => process.stderr.write(text), onSpawn, childEnv } = {},
 ) {
   return new Promise((resolve) => {
     let child
     try {
-      child = spawnImpl('expect', ['-c', script], { stdio: 'inherit', shell: false })
+      // claude inherits expect's env, so `childEnv` is claude's too (see spawnClaude).
+      child = spawnImpl('expect', ['-c', script], childEnv ? { stdio: 'inherit', shell: false, env: childEnv } : { stdio: 'inherit', shell: false })
     } catch (err) {
       writeErr(`[hoai] could not start expect: ${err?.message ?? err}\n`)
       resolve(1)
@@ -2805,6 +2894,9 @@ function defaultScriptDir() {
  *   healthyMs?: number,
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
+ *   pidAlive?: (pid: number) => boolean,
+ *   pidCommandLine?: (pid: number) => string | null,
+ *   signals?: { once: (name: string, fn: () => void) => unknown, removeListener: (name: string, fn: () => void) => unknown },
  * }} [opts]
  * @returns {Promise<number>}
  */
@@ -2944,38 +3036,60 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // closing) by a signal. Turned into the loop's stop request, so the live
   // claude is ended and NOT relaunched; without it the loop would read the
   // signal-killed claude as one more exit to recover from.
+  //
+  // A supervised launch (run.sh) is stopped by a signal on EVERY stop too:
+  // run.sh's on_stop kills the agent's tmux server, which hangs hoai up
+  // (SIGHUP); without tmux it TERMs hoai's process group; systemd and launchd
+  // TERM it at shutdown. Dying on the default action skipped superviseClaude's
+  // finally, so supervisor.json outlived every stop, and after a reboot its
+  // pid could be any live process: the agent refused to start behind it.
+  // Handled here, the loop ends the session and the finally removes the file.
+  // The handlers go with the launch (an injected emitter stands in for
+  // `process` in tests).
   let signal = opts.signal ?? null
-  if (keepAlive && !signal) {
+  let unwireStop = () => {}
+  if ((keepAlive || isSupervisedLaunch(env)) && !signal) {
+    const signals = opts.signals ?? process
     const controller = new AbortController()
     const stop = () => controller.abort()
-    process.once('SIGTERM', stop)
-    process.once('SIGHUP', stop)
+    signals.once('SIGTERM', stop)
+    signals.once('SIGHUP', stop)
+    unwireStop = () => {
+      signals.removeListener('SIGTERM', stop)
+      signals.removeListener('SIGHUP', stop)
+    }
     signal = controller.signal
   }
-  return superviseClaude(plan.args, {
-    platform,
-    env,
-    home,
-    cwd,
-    scriptDir,
-    readFile,
-    listDir,
-    spawnImpl,
-    freshSession: fresh,
-    force,
-    keepAlive,
-    signal,
-    stdinIsTTY: opts.stdinIsTTY,
-    print: opts.print,
-    pollMs: opts.pollMs,
-    listProcesses: opts.listProcesses,
-    sleep: opts.sleep,
-    incumbentTimeoutMs: opts.incumbentTimeoutMs,
-    now: opts.now,
-    healthyMs: opts.healthyMs,
-    setTimer: opts.setTimer,
-    clearTimer: opts.clearTimer,
-  })
+  try {
+    return await superviseClaude(plan.args, {
+      platform,
+      env,
+      home,
+      cwd,
+      scriptDir,
+      readFile,
+      listDir,
+      spawnImpl,
+      freshSession: fresh,
+      force,
+      keepAlive,
+      signal,
+      stdinIsTTY: opts.stdinIsTTY,
+      print: opts.print,
+      pollMs: opts.pollMs,
+      pidAlive: opts.pidAlive,
+      pidCommandLine: opts.pidCommandLine,
+      listProcesses: opts.listProcesses,
+      sleep: opts.sleep,
+      incumbentTimeoutMs: opts.incumbentTimeoutMs,
+      now: opts.now,
+      healthyMs: opts.healthyMs,
+      setTimer: opts.setTimer,
+      clearTimer: opts.clearTimer,
+    })
+  } finally {
+    unwireStop()
+  }
 }
 
 /**

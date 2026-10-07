@@ -82,7 +82,7 @@ interface Machine {
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
+function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, realNode = false, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; realNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone
   // case; a marketplace plugin's versioned cache dir (where the watcher's sweep runs it from).
@@ -133,7 +133,9 @@ function machine({ fromClone = false, fromCache = false, pluginInstalled = true,
     : 'exit 0'
   shim('bun', `[ "$1" = "install" ] && ${onInstall}\nexec "${realBun || process.execPath}" "$@"`)
   // The marketplace plugin runs on node, and the installer refuses a paired folder without one.
-  if (withNode) shim('node', 'exit 0')
+  // realNode hands over to the runtime running this test, so the installer's own node steps
+  // (the hook entries, the tool deny) really write the workspace settings.
+  if (withNode) shim('node', realNode ? `exec "${process.execPath}" "$@"` : 'exit 0')
 
   const agentBin = join(pluginRoot, 'bin', 'bgos-agent')
   const envFor = (extraEnv: Record<string, string>) => ({ HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin`, ...extraEnv })
@@ -513,6 +515,49 @@ test('run from a marketplace plugin\'s VERSIONED cache dir, a clone-style folder
   assert.equal(r2.status, 0, r2.out)
   assert.equal(runShVar(clone, '910', 'topology'), 'clone')
   assert.equal(runShVar(clone, '910', 'plugin_key'), '')
+})
+
+/** Every hook command path in a workspace settings file (the forwarder and the floor hook). */
+function hookPaths(settingsFile: string): string[] {
+  const doc = JSON.parse(readFileSync(settingsFile, 'utf8'))
+  const out: string[] = []
+  for (const groups of Object.values(doc.hooks ?? {}) as Array<Array<{ hooks?: Array<{ args?: string[] }> }>>) {
+    for (const group of groups) for (const hook of group.hooks ?? []) out.push(...(hook.args ?? []))
+  }
+  return out
+}
+
+test('run from a VERSIONED plugin cache dir, the install leaves a clone folder\'s hook entries on its durable checkout: none is moved into a dir the next update deletes', SLOW, async (t) => {
+  if (!ready(t)) return
+  const { ensureHookEntries } = await import('../lib/claude-preseed.mjs')
+  const m = machine({ fromCache: true, realNode: true })
+  const ws = pair(m, '911')
+  writeFileSync(join(ws, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '911' } } } }))
+  // The entries the folder got when its clone was set up: absolute paths into that checkout.
+  const durable = join(m.home, 'bgos-claude-plugin', 'bin', 'hoai-hook.mjs')
+  const settings = join(ws, '.claude', 'settings.local.json')
+  mkdirSync(dirname(settings), { recursive: true })
+  ensureHookEntries({ settingsPath: settings, forwarderPath: durable })
+  const before = hookPaths(settings)
+  assert.ok(before.length > 0 && before.every((p) => p.startsWith(join(m.home, 'bgos-claude-plugin'))), JSON.stringify(before))
+
+  const r = m.run(['--assistant', '911', '--dir', ws, '--always-on'])
+  assert.equal(r.status, 0, r.out)
+  const after = hookPaths(settings)
+  assert.deepEqual(after, before, 'the folder\'s hook entries still point at its durable checkout')
+  assert.ok(!after.some((p) => p.includes(join('plugins', 'cache'))), 'nothing points into the versioned cache dir')
+  assert.match(r.out, /versioned plugin cache dir .*the activity hook entries in .*settings\.local\.json are left as they are/)
+  // The tool deny is a permission, not a path, and still lands.
+  assert.match(readFileSync(settings, 'utf8'), /AskUserQuestion/)
+
+  // From a durable checkout the entries are (re)written to it, exactly as before.
+  const clone = machine({ fromClone: true, realNode: true })
+  const ws2 = pair(clone, '912')
+  writeFileSync(join(ws2, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: ['w.mjs'], env: { BGOS_ASSISTANT_ID: '912' } } } }))
+  const r2 = clone.run(['--assistant', '912', '--dir', ws2, '--always-on'])
+  assert.equal(r2.status, 0, r2.out)
+  const written = hookPaths(join(ws2, '.claude', 'settings.local.json'))
+  assert.ok(written.length > 0 && written.every((p) => p.startsWith(join(realpathSync(clone.pluginRoot), 'bin'))), JSON.stringify(written))
 })
 
 test('a paired folder whose plugin is installed ONLY under the custom CLAUDE_CONFIG_DIR is proven, and the service carries that config dir', SLOW, (t) => {

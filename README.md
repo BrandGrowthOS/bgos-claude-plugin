@@ -130,7 +130,9 @@ launchd / systemd --user
   `run.sh`, which starts hoai (`bin/hoai-core.mjs`) with `HOAI_SUPERVISED=1` in a
   detached tmux session named `hoai-<id>` on a tmux server of its own
   (`tmux -L hoai-<id>`), never inside someone else's tmux, in a fixed 200x50
-  window. hoai answers Claude Code's startup screens itself, under expect, with
+  window. That server starts with no tmux config (`-f /dev/null`), so settings
+  in your `~/.tmux.conf` (remain-on-exit, destroy-unattached, a session restore)
+  never change how the agent runs. hoai answers Claude Code's startup screens itself, under expect, with
   the shared rules in `lib/gate-block.tcl`. Nothing is copied into the supervisor
   at install any more: the generation 1 `run.expect` is gone, and a reinstall
   removes an old one.
@@ -154,7 +156,9 @@ launchd / systemd --user
   (`<config dir>/plugins/installed_plugins.json`, honouring `CLAUDE_CONFIG_DIR`),
   a clone uses the checkout recorded at install. A checkout that has since been
   pruned falls back to the installed HOAI plugin's record, and an install run
-  from a versioned plugin cache dir looks its root up the same way. The node
+  from a versioned plugin cache dir looks its root up the same way (and leaves
+  the folder's hook entries where they are rather than pointing them into that
+  dir, which the next update removes). The node
   recorded at install is checked as well: when it is gone, the node on the
   service PATH is used. A restart therefore always lands on the installed
   version.
@@ -163,12 +167,18 @@ launchd / systemd --user
   `systemctl --user restart` end the agent's tmux server (without tmux: hoai's
   whole process group, node, expect and claude) instead of leaving it running in
   the folder. A reinstall over a running Linux unit restarts it onto the new
-  supervisor, as a reinstall on macOS always did.
+  supervisor, as a reinstall on macOS always did. hoai handles that stop (TERM
+  or HUP) too: it ends claude and removes its `supervisor.json`, so no stale
+  file outlives the service. One that an unclean stop (a power cut) still leaves
+  behind counts only while its pid is alive AND still runs `hoai-core.mjs`.
 - **One install at a time.** `install` first takes
   `~/.bgos-agent/<id>.install.lock`. A second install of the same agent while
   one is running (the agent's own daemon and the watcher can both decide it is
   needed) prints `install already in progress`, exits 0 and changes nothing. A
-  lock older than ten minutes is treated as left behind and taken over.
+  lock older than ten minutes whose install is gone (the pid and start time it
+  recorded no longer name a running process) is taken over, by one contender at
+  a time. `uninstall` takes the same lock, waiting up to 30 seconds for an
+  install of the same agent to finish.
 - **The service environment** carries `CLAUDE_CONFIG_DIR` when the installing
   shell had it, so the agent starts the same Claude Code install it was set up
   with (the paired folder proof checks that same config dir), and
@@ -198,7 +208,11 @@ agent comes back by itself once the cause is fixed.
 `run.sh` writes its own outcomes before hoai runs: `plugin-root-missing` and
 `node-missing` (exit 2: reinstall the plugin, or install Node.js),
 `tmux-failed`, and `waiting-for-incumbent` while a claude already running in the
-folder is given the time to finish.
+folder is given the time to finish. In tmux, hoai's own error output goes to
+`~/.bgos-agent/<id>/hoai.err` (copied into `agent.log` when the session ends,
+and shown by `hoai-agent logs` meanwhile); a hoai that ended before it wrote any
+outcome (a Node.js too old to run it, a missing file, a fatal error) is
+`hoai-exited-without-status` with its last error line.
 
 **`hoai --keep-alive`.** On Windows the always-on agent is a logon Scheduled
 Task, `HOAI Agent <id>`, that runs `node <plugin root>\bin\hoai-core.mjs

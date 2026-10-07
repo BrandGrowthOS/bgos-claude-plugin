@@ -149,7 +149,7 @@ function sandbox() {
 
 async function runMain(
   sb: ReturnType<typeof sandbox>,
-  { env = SUPERVISED as Record<string, string>, codes = [0], scriptDir = CLONE_SCRIPT_DIR }: { env?: Record<string, string>, codes?: number[], scriptDir?: string } = {},
+  { env = SUPERVISED as Record<string, string>, codes = [0], scriptDir = CLONE_SCRIPT_DIR, extra = {} }: { env?: Record<string, string>, codes?: number[], scriptDir?: string, extra?: Record<string, unknown> } = {},
 ) {
   const spawns: Spawn[] = []
   const prints: string[] = []
@@ -170,6 +170,7 @@ async function runMain(
       spawns.push({ file, args: [...args] })
       return childExiting(codes[n++] ?? 0)
     }) as never,
+    ...extra,
   } as never)
   return { code, spawns, prints, launchEnv }
 }
@@ -420,9 +421,10 @@ test('supervised: a live launcher already owning the agent is a named outcome in
   try {
     writeFileSync(join(sb.cwd, FOLDER_PIN_FILE), '900\n')
     mkdirSync(join(sb.home, '.bgos-agent', '900'), { recursive: true })
-    // The parent of this test process is alive and is not us: a live owner.
+    // The parent of this test process is alive and is not us: a live owner, once its command
+    // line says it runs hoai (the pid identity check; the real parent is the test runner).
     writeFileSync(join(sb.home, '.bgos-agent', '900', SUPERVISOR_FILE_NAME), JSON.stringify({ pid: process.ppid, capabilities: ['relaunch'] }))
-    const r = await runMain(sb)
+    const r = await runMain(sb, { extra: { pidCommandLine: (pid: number) => (pid === process.ppid ? '/usr/local/bin/node /p/bin/hoai-core.mjs' : null) } })
     assert.equal(r.code, EXIT_ALREADY_SUPERVISED)
     assert.equal(r.spawns.length, 0)
     assert.match(sb.statusOf('900'), new RegExp(`outcome=already-supervised owner=${process.ppid}`))

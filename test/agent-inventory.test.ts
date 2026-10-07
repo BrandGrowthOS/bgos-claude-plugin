@@ -387,7 +387,8 @@ test('listAgents: two agents, one launcher-live with a valid recipe, one recipe-
     },
     ['/home/kc/hoai-agents/ava', '/home/kc/hoai-agents/old'],
   )
-  const agents = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => pid === 4242 })
+  // No real process is asked anything: the exec fails, so the launcher's liveness alone decides.
+  const agents = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => pid === 4242, execSync: () => ({ code: 1, stdout: '' }) })
   assert.deepEqual(
     agents.map((a) => a.assistantId),
     ['7', '912'],

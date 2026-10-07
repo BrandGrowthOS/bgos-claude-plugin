@@ -17,7 +17,7 @@
  *
  * Run: npx tsx --test test/bgos-agent.commands.test.ts
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -67,8 +67,19 @@ function machine() {
     })
     return { status: r.status, out: `${r.stdout}\n${r.stderr}` }
   }
+  /** The same command in the background: resolves with its exit code and output when it ends. */
+  const start = (args: string[]) => {
+    const child = spawn(BASH!, [agentBin, ...args], {
+      env: { HOME: home, USER: 'kc', LOGNAME: 'kc', NO_COLOR: '1', PATH: `${shims}:/usr/bin:/bin:/usr/sbin:/sbin` },
+    })
+    let out = ''
+    child.stdout.on('data', (d) => (out += String(d)))
+    child.stderr.on('data', (d) => (out += String(d)))
+    const done = new Promise<{ status: number | null; out: string }>((resolve) => child.on('close', (status) => resolve({ status, out })))
+    return { child, done }
+  }
   const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [])
-  return { home, fake, plist, unit, state: join(home, '.bgos-agent', '42'), run, calls, cleanup: () => rmSync(home, { recursive: true, force: true }) }
+  return { home, fake, plist, unit, state: join(home, '.bgos-agent', '42'), run, start, calls, cleanup: () => rmSync(home, { recursive: true, force: true }) }
 }
 
 test('uninstall keeps the pinned session id and nothing else, removes the service file before it stops the job, and ends the agent\'s own tmux server', (t) => {
@@ -100,6 +111,35 @@ test('uninstall keeps the pinned session id and nothing else, removes the servic
   const killed = calls.findIndex((c) => c.startsWith('tmux -L hoai-42 kill-server'))
   assert.ok(killed > stop, 'the agent\'s own server, after the job was told to stop')
   assert.ok(!calls.some((c) => c.startsWith('tmux') && !c.includes('-L hoai-42')), 'never another tmux server')
+})
+
+test('uninstall takes the install lock: it waits for an install of the same agent that is still writing run.sh and the service file, then removes them (plugin-supervisor F6)', async (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  t.after(m.cleanup)
+  mkdirSync(m.state, { recursive: true })
+  writeFileSync(join(m.state, 'run.sh'), 'x')
+  mkdirSync(dirname(m.plist), { recursive: true })
+  mkdirSync(dirname(m.unit), { recursive: true })
+  writeFileSync(m.plist, '<plist/>')
+  writeFileSync(m.unit, '[Unit]')
+  // An install in flight holds the lock: this test process stands in for it (alive, its real start time).
+  const lock = join(m.home, '.bgos-agent', '42.install.lock')
+  mkdirSync(lock)
+  const started = String(spawnSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).stdout).trim().replace(/\s+/g, ' ')
+  writeFileSync(join(lock, 'pid'), `${process.pid}\n${started}\n`)
+  const u = m.start(['uninstall', '--assistant', '42'])
+  t.after(() => u.child.kill('SIGKILL'))
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  assert.ok(existsSync(join(m.state, 'run.sh')), 'nothing is removed under an install that is still writing')
+  assert.ok(!m.calls().some((c) => c.startsWith('launchctl bootout') || c.startsWith('systemctl --user stop')), 'nor is the job stopped yet')
+  // The install finishes and lets go of its lock.
+  rmSync(lock, { recursive: true, force: true })
+  const r = await u.done
+  assert.equal(r.status, 0, r.out)
+  assert.equal(existsSync(m.state), false, 'then the uninstall runs to the end')
+  assert.equal(existsSync(OS === 'Darwin' ? m.plist : m.unit), false, 'the service file of this OS is gone')
+  assert.equal(existsSync(lock), false, 'and lets go of the lock it took')
 })
 
 test('uninstall of an agent with no pin removes its state dir entirely, exactly as before', (t) => {
@@ -166,4 +206,19 @@ test('logs tails the logs that exist: generation 2 writes no expect.log, and tha
   rmSync(join(m.state, 'agent.log'))
   rmSync(join(m.state, 'expect.log'))
   assert.match(m.run(['logs', '--assistant', '42']).out, /\(no logs yet\)/)
+})
+
+test('logs shows hoai\'s own stderr from the running launch (hoai.err): in tmux it reaches agent.log only once the session ends', (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  t.after(m.cleanup)
+  mkdirSync(m.state, { recursive: true })
+  writeFileSync(join(m.state, 'agent.log'), '[2026-10-06 10:00:00] agent 42 is running in tmux session hoai-42\n')
+  writeFileSync(join(m.state, 'hoai.err'), '[hoai] could not register the activity hooks: EACCES\n')
+  const out = m.run(['logs', '--assistant', '42']).out
+  assert.match(out, /running in tmux session hoai-42/)
+  assert.match(out, /could not register the activity hooks: EACCES/)
+  // An empty one (the usual case: hoai said nothing on stderr) is not shown.
+  writeFileSync(join(m.state, 'hoai.err'), '')
+  assert.doesNotMatch(m.run(['logs', '--assistant', '42']).out, /hoai\.err/)
 })
