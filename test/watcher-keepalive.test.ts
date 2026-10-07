@@ -22,11 +22,12 @@
  * Run: npx tsx --test test/watcher-keepalive.test.ts
  */
 
-import { test } from 'node:test'
+import { test as nodeTest, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
   INSTALL_TIMEOUT_MS,
+  KEEP_ONLINE_TICK_MS,
   hookSpoolPathFor,
   keepAliveCachePath,
   mungeCwd,
@@ -48,6 +49,21 @@ const T0 = Date.parse('2026-10-06T19:00:00.000Z')
 const MIN = 60_000
 const AVA = `${HOME}/hoai-agents/ava`
 const GURU = `${HOME}/hoai-agents/guru`
+
+/**
+ * Every test here is bounded. node:test's default timeout is INFINITE, so a
+ * sweep left awaiting something that never settles would hold `tsx --test`
+ * open for good. A loop that never yields at all is a different hang no timer
+ * can stop (an F8 run sat at 100% CPU for 50 minutes): verify's polls and the
+ * keepOnline ticks are bounded in the code for that.
+ */
+const TEST_TIMEOUT_MS = 20_000
+function test(name: string, fn: (t: TestContext) => void | Promise<void>): Promise<void>
+function test(name: string, options: { timeout?: number }, fn: (t: TestContext) => void | Promise<void>): Promise<void>
+function test(name: string, a: unknown, b?: unknown) {
+  if (typeof a === 'function') return nodeTest(name, { timeout: TEST_TIMEOUT_MS }, a as (t: TestContext) => void | Promise<void>)
+  return nodeTest(name, { timeout: TEST_TIMEOUT_MS, ...(a as { timeout?: number }) }, b as (t: TestContext) => void | Promise<void>)
+}
 
 // -- the fake machine --------------------------------------------------------------------------
 
@@ -835,6 +851,34 @@ test('online (F8): a long sweep keeps the watcher online: keepOnline between age
   // No gap between two touches (or the sweep start) long enough to leave the backend's 3 min online window.
   const stamps = [T0, ...touches.map(([, at]) => at)]
   for (let i = 1; i < stamps.length; i++) assert.ok(stamps[i]! - stamps[i - 1]! < 3 * MIN, `gap ${i}`)
+})
+
+test('online (F8): an install that ends on a later event loop turn (a real child process) still ends the sweep when the sleep resolves at once: the keepOnline ticks are bounded, never a microtask loop that starves it', async () => {
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none' }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  let ticks = 0
+  const sleep = async (ms: number) => {
+    ticks += 1
+    // Only so the defect fails this test instead of hanging the file.
+    if (ticks > 2000) throw new Error('keepOnline never stopped ticking')
+    await clock.sleep(ms)
+  }
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file !== 'bash') return rec.exec(file, args, o)
+    rec.calls.push({ file, args: [...args], opts: o })
+    // Settles on a macrotask, as a real child's exit does: a loop that only
+    // ever awaits resolved promises never lets this run.
+    return new Promise((resolve) => setImmediate(() => resolve({ code: 0, stdout: '', stderr: '', error: null, timedOut: false })))
+  }
+  let touches = 0
+  const keepOnline = async () => {
+    touches += 1
+  }
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { exec, sleep, keepOnline, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [7] }).fetchKeepAlive }).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  assert.equal(ticks, Math.ceil(INSTALL_TIMEOUT_MS / KEEP_ONLINE_TICK_MS) + 1, 'ticks for as long as the install may take, then only waits')
+  assert.ok(touches >= ticks, `kept online through every tick (${touches})`)
 })
 
 // -- F1: a cwd lookup that failed or spelled the folder differently is never "not running" ----------
