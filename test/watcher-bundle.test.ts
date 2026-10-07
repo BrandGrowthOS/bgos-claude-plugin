@@ -135,10 +135,18 @@ test('installWatcherBundle: copies bin/ + lib/ preserving layout, writes the man
   assert.equal(bundleFingerprint('/home/kc/.bgos-agent/watcher', fs), result.fingerprint)
 })
 
-test('installWatcherBundle: an explicit pluginVersion wins; a missing bundle file is a named failure, nothing half-written', async () => {
+test('installWatcherBundle: the ROOT\'s own package.json version wins over the caller\'s; the caller\'s fills in only when the root has none; a missing bundle file is a named failure, nothing half-written', async () => {
+  // Measured in the M6 end to end run (e2e E6, 2026-10-07): a daemon still running 0.61.5 installed the
+  // watcher from a 0.62.0 root and passed its OWN running version, so the watcher started as "bundle
+  // 0.61.5" and heartbeated that, while every file in it was 0.62.0. The label must name the files.
   const fs = memoryFs(pluginRootFiles(ROOT))
   const ok = await installWatcherBundle({ pluginRoot: ROOT, home: HOME, pluginVersion: '9.9.9', fs })
-  assert.equal(ok.version, '9.9.9')
+  assert.equal(ok.version, '0.38.3')
+  assert.equal(readBundleManifest(HOME, fs)?.version, '0.38.3')
+  const noPkg = memoryFs(pluginRootFiles(ROOT))
+  noPkg.files.delete(`${ROOT}/package.json`)
+  const fallback = await installWatcherBundle({ pluginRoot: ROOT, home: HOME, pluginVersion: '9.9.9', fs: noPkg })
+  assert.equal(fallback.version, '9.9.9')
   const broken = memoryFs(pluginRootFiles(ROOT))
   broken.files.delete(`${ROOT}/lib/update-executor.mjs`)
   await assert.rejects(
