@@ -421,7 +421,7 @@ test('safe moment: a background job under claude => waiting_idle background_job 
   const rec = recorder({ ps: JOB_PS })
   const { ctx } = ctxFor(fs, rec, fakeClock())
   const report = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'background_job', since: new Date(T0).toISOString() }])
+  assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'background_job', since: new Date(T0).toISOString(), pending: 'update' }])
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps').map((c) => c.file), [], 'no launchctl, no bash')
   assert.deepEqual(rec.kills, [])
 })
@@ -441,11 +441,16 @@ test('safe moment: a turn in flight waits; after 24 h of waiting the entry carri
   const clock = fakeClock()
   const { ctx } = ctxFor(fs, rec, clock)
   const first = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(first.agents[0], { id: '912', state: 'waiting_idle', reason: 'turn_in_flight', since: new Date(T0).toISOString() })
+  // `pending: update` (design 6 and 13): the app offers Restart now only for an
+  // entry that says the wait is for an update.
+  assert.deepEqual(first.agents[0], { id: '912', state: 'waiting_idle', reason: 'turn_in_flight', since: new Date(T0).toISOString(), pending: 'update' })
   clock.advance(25 * 60 * MIN)
   fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { turnInFlight: true }))
   const later = await runKeepAliveSweep(ctx as any)
   assert.equal(later.agents[0].waitingSince, new Date(T0).toISOString())
+  assert.equal(later.agents[0].pending, 'update')
+  // The heartbeat between sweeps reads the same entry from the saved state.
+  assert.deepEqual(readKeepAliveReport({ home: HOME, fs, now: clock.now() }).agents[0], later.agents[0])
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
 })
 
@@ -577,7 +582,7 @@ test('restart (D4): a plain hand-run claude the canonical supervisor waits behin
     waitingBehind(fs, '912', clock.now() - 5_000)
     fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
     const report = await runKeepAliveSweep(ctx as any)
-    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'manual_session', since: new Date(T0).toISOString() }], `sweep ${sweep}`)
+    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'manual_session', since: new Date(T0).toISOString(), pending: 'update' }], `sweep ${sweep}`)
     clock.advance(31 * MIN)
   }
   assert.deepEqual(rec.calls.filter((c) => c.file !== 'ps' && c.file !== 'lsof'), [], 'no launchctl, no bash')
@@ -904,6 +909,8 @@ test('F1: the folder is compared by its realpath (the kernel reports the physica
   const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { realpath }).ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  // The wait is for the generation 2 upgrade: the app never offers it a plain restart.
+  assert.equal(report.agents[0].pending, 'upgrade')
 })
 
 test('F1: another user\'s claude (its cwd is not ours to read) never makes this agent unknown; with no claude of ours it is really stopped', async () => {
