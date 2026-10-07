@@ -337,6 +337,65 @@ test('keep-alive: a restart marker still relaunches at once (no backoff), exactl
   await done
 })
 
+test('daemon F6: a pin the daemon rewrote while claude ran is what the marker relaunch AND the keep-alive relaunch resume, never the id hoai read at launch', async (t) => {
+  const LIVE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const h = harness()
+  t.after(() => h.stop.abort())
+  const done = h.run()
+  await until(() => h.spawns.length === 1, 'launch 1')
+  assert.deepEqual(h.spawns[0]!.args, [...BASE, '--resume', PINNED])
+  // The daemon found the live session is another resumable one and repinned to it (design 13).
+  h.files.set(SESSION_ID_PATH, `${LIVE}\n`)
+  h.files.set(`${HOME}/.claude/projects/-agents-athena/${LIVE}.jsonl`, '{}')
+  h.files.set(MARKER_PATH, '{}')
+  await until(() => h.spawns.length === 2, 'marker relaunch')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE, '--resume', LIVE], 'the marker relaunch reads the pin again')
+  // Junk on disk is no pin: the last good one stands.
+  h.files.set(SESSION_ID_PATH, 'not-a-session')
+  h.clock.t += 60_000
+  h.spawns[1]!.exit(0)
+  await until(() => h.spawns.length === 3, 'keep-alive relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE, '--resume', LIVE], 'junk keeps the pin it had')
+  // And a later rewrite reaches the keep-alive relaunch too.
+  h.files.set(SESSION_ID_PATH, PINNED)
+  h.clock.t += 60_000
+  h.spawns[2]!.exit(0)
+  await until(() => h.spawns.length === 4, 'second keep-alive relaunch')
+  assert.deepEqual(h.spawns[3]!.args, [...BASE, '--resume', PINNED], 'the keep-alive relaunch reads the pin again')
+  h.stop.abort()
+  await done
+})
+
+test('daemon F6: a `hoai --new` whose repin could not be written never takes the abandoned pin back on a relaunch; a pin the daemon writes later is taken', async (t) => {
+  const LIVE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const h = harness()
+  t.after(() => h.stop.abort())
+  let pinWritable = false
+  const done = h.run({
+    freshSession: true,
+    writeFile: (p: string, c: string) => {
+      if (p === SESSION_ID_PATH && !pinWritable) return false
+      h.files.set(p, c)
+      return true
+    },
+  })
+  await until(() => h.spawns.length === 1, 'launch 1')
+  assert.deepEqual(h.spawns[0]!.args, BASE, 'an unpinned fresh session, exactly as before')
+  h.files.set(MARKER_PATH, '{}')
+  await until(() => h.spawns.length === 2, 'marker relaunch')
+  assert.deepEqual(h.spawns[1]!.args, BASE, 'never the session the user asked to leave')
+  // The daemon pins the live session it found.
+  pinWritable = true
+  h.files.set(SESSION_ID_PATH, LIVE)
+  h.files.set(`${HOME}/.claude/projects/-agents-athena/${LIVE}.jsonl`, '{}')
+  h.clock.t += 60_000
+  h.spawns[1]!.exit(0)
+  await until(() => h.spawns.length === 3, 'keep-alive relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE, '--resume', LIVE])
+  h.stop.abort()
+  await done
+})
+
 test('keep-alive: a launch with no identity at all is REFUSED by name, because every relaunch would be a fresh unpinned session (finding 7)', async () => {
   const prints: string[] = []
   let spawned = 0
