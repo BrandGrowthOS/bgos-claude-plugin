@@ -204,6 +204,9 @@ export interface UpdateRpcDeps {
    *  first, then the staged auto-update.json target, then the checkout's
    *  package.json against the running version (E5). */
   pendingRestartVersion: () => string | null
+  /** Does ANOTHER daemon hold the shared checkout's update lock right now (lib/self-update.ts
+   *  isUpdateLockHeld)? Optional: absent means never held (marketplace installs share no lock). */
+  updateLockHeld?: () => boolean
   /** Marketplace installs: plan + execute (lib/marketplace-update.mjs
    *  runMarketplaceUpdate over observeMarketplaceState, agents = [self]). */
   marketplaceUpdate: (
@@ -367,6 +370,14 @@ export class UpdateRpcHandler {
     // checked out, and answered no_update_available, so the app showed an
     // update waiting for a restart that the one button for it refused.
     let targetVersion = this.deps.pendingRestartVersion()
+    if (targetVersion && this.deps.updateLockHeld?.() === true) {
+      // Found by the third review round's verifier: agents that share one clone also share its update
+      // lock, and another daemon holds it while its own update runs bun install, which rewrites
+      // node_modules for up to 120 s. The checkout's package.json already names the new version, so
+      // this daemon reports it pending; restarting now would boot onto half written dependencies.
+      // The pull path waited on the same lock (outcome 'busy'); this one answers the same way.
+      return this.fail(rpcId, 'update_in_flight')
+    }
     if (targetVersion) {
       // An update is already installed and waiting for a restart; there is
       // nothing to pull, go straight to the restart ladder.

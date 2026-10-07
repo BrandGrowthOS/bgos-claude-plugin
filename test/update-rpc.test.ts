@@ -54,6 +54,8 @@ interface HarnessOverrides {
    *  The default is the updater's own answer, which is what that composition
    *  returns when the updater has one, so every older test keeps its meaning. */
   pendingRestartVersion?: () => string | null
+  /** Does another daemon hold the shared checkout's update lock right now? */
+  updateLockHeld?: () => boolean
   marketplaceUpdate?: UpdateRpcDeps['marketplaceUpdate']
   drainSnapshot?: () => Snapshot
   authority?: RestartAuthority
@@ -182,6 +184,7 @@ function harness(overrides: HarnessOverrides = {}) {
     pendingRestartVersion:
       overrides.pendingRestartVersion ??
       (() => ((overrides.updater ?? (() => fakeUpdater()))() as { pendingRestartVersion?: () => string | null } | null)?.pendingRestartVersion?.() ?? null),
+    updateLockHeld: overrides.updateLockHeld ?? (() => false),
     marketplaceUpdate: overrides.marketplaceUpdate ?? fakeMarketplace().fn,
     drainSnapshot: overrides.drainSnapshot ?? (() => IDLE),
     // Default authority differs by install method on purpose: a CLONE update
@@ -432,6 +435,24 @@ describe('E5b: the one-click pending answer is the heartbeat\'s', () => {
     await refused.handler.handle(FRAME)
     expect(refused.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
     expect(refused.markers).toEqual([])
+  })
+
+  test('a pending version while ANOTHER daemon holds the shared checkout\'s update lock is refused update_in_flight: never a restart onto a node_modules still being rewritten', async () => {
+    // Found by the third review round's verifier: two agents share one clone; A's nightly update holds
+    // the lock while bun install rewrites node_modules (up to 120 s); B's heartbeat already says
+    // restart_pending from the checkout's package.json, and a click on B went straight to the ladder.
+    const updater = fakeUpdater({ pending: null, outcome: PULLED })
+    const held = harness({ updater: () => updater, pendingRestartVersion: () => '0.62.0', updateLockHeld: () => true })
+    await held.handler.handle(FRAME)
+    expect(held.progress).toEqual([{ stage: 'error', message: 'update_in_flight' }])
+    expect(held.markers).toEqual([])
+    expect(held.signals).toEqual([])
+    expect(held.spawned).toEqual([])
+    expect(updater.updateNowCalls).toBe(0)
+    // Once the lock is free the same click restarts onto it.
+    const free = harness({ updater: () => fakeUpdater({ pending: null, outcome: PULLED }), pendingRestartVersion: () => '0.62.0', updateLockHeld: () => false })
+    await free.handler.handle(FRAME)
+    expect(free.progress).toEqual([{ stage: 'restarting', targetVersion: '0.62.0' }])
   })
 
   test('nothing pending anywhere still pulls, exactly as before', async () => {

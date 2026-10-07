@@ -301,3 +301,8 @@ test('server.ts (E5b): the one-click handler restarts onto the same pending answ
   assert.match(rpc, /let targetVersion = this\.deps\.pendingRestartVersion\(\)\n/)
   assert.doesNotMatch(rpc, /updater\.pendingRestartVersion\(\)/)
 })
+
+test('server.ts (E5b lock): a click checks the clone\'s shared update lock, the one SelfUpdater takes, before restarting onto a pending version', () => {
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  assert.match(server, /updateLockHeld: \(\) =>\s+INSTALL_METHOD !== 'marketplace' &&\s+isUpdateLockHeld\(joinPath\(import\.meta\.dir, '\.git', AUTO_UPDATE_LOCK_FILE\)\)/)
+})

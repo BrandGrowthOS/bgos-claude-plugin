@@ -442,9 +442,11 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import {
+  AUTO_UPDATE_LOCK_FILE,
   AUTO_UPDATE_SAFETY_FILE,
   initializeSelfUpdater,
   isAutoUpdateEnabled,
+  isUpdateLockHeld,
   loadAutoUpdateState,
   loadSharedUpdateSafety,
   MessageActivityTracker,
@@ -11102,6 +11104,11 @@ const updateRpc = new UpdateRpcHandler({
   // E5b: a click restarts onto exactly what the heartbeat reports as pending
   // (a clone moved by git pull included), never the self updater's answer alone.
   pendingRestartVersion: () => daemonPendingRestartVersion(),
+  // The clone's shared update lock, the one SelfUpdater takes (<root>/.git/AUTO_UPDATE_LOCK_FILE): a
+  // click never restarts onto a checkout another daemon is still installing.
+  updateLockHeld: () =>
+    INSTALL_METHOD !== 'marketplace' &&
+    isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
   // Marketplace installs (design 1.4): observe THIS machine, then plan +
   // execute with agents = [self]. The executor's restart/verify hooks are
   // satisfied by the daemon's own ladder, which runs after the outcome.
