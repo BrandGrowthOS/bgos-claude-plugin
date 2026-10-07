@@ -60,7 +60,7 @@ const START = Date.UTC(2026, 9, 7, 9, 0, 0)
 
 // ── the mocked backend ──────────────────────────────────────────────────────
 
-type Mode = 'peer403' | 'peer403-long' | 'other403' | 'server500' | 'ok'
+type Mode = 'peer403' | 'peer403-long' | 'other403' | 'server500' | 'ok' | 'a2a400' | 'other400'
 
 interface Backend {
   url: string
@@ -78,6 +78,24 @@ after(async () => {
 /** The body HttpExceptionAdvicer writes, key for key. */
 function deniedBody(status: number, message: string, path: string): string {
   return JSON.stringify({ statusCode: status, message, path, timestamp: '2026-10-07T09:00:00.000Z' })
+}
+
+/**
+ * The 400 a ServiceException becomes: HttpExceptionAdvicer maps it to 400 and
+ * adds the `operation` key, still with no `code`. MessageService's
+ * prepareMessageForWrite throws this one for every POST /messages into an a2a
+ * chat, once the participant check has passed (a CLOSED side-thread), and the
+ * advicer logs only 401, 403 and 429, so the backend kept no trace of the loop.
+ */
+const A2A_REASON = 'A2A messages must use /send-message'
+function serviceBody(message: string, path: string): string {
+  return JSON.stringify({
+    statusCode: 400,
+    message,
+    path,
+    timestamp: '2026-10-07T09:00:00.000Z',
+    operation: 'MESSAGE',
+  })
 }
 
 async function startBackend(mode: Mode): Promise<Backend> {
@@ -107,6 +125,16 @@ async function startBackend(mode: Mode): Promise<Backend> {
           return send(403, deniedBody(403, REASON, `${path}?trace=${'x'.repeat(240)}`))
         case 'other403':
           return send(403, deniedBody(403, 'Caller does not own this conversation.', path))
+        case 'a2a400':
+          return send(400, serviceBody(A2A_REASON, path))
+        case 'other400':
+          return send(
+            400,
+            serviceBody(
+              'Missing or invalid required fields for message creation: chatId (> 0), sender, and content (text, files, or options) are required.',
+              path,
+            ),
+          )
         case 'server500':
           return send(500, deniedBody(500, 'Internal server error', path))
         case 'ok':
@@ -155,6 +183,14 @@ function liftSendToPeerCase(): string {
   return `async function sendToPeerTool(rawArgs) {\n  switch ('send_to_peer') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
 }
 
+/** The ask_user_input case, wrapped the same way. */
+function liftAskCase(): string {
+  const start = SERVER.indexOf("\n    case 'ask_user_input': {")
+  const end = SERVER.indexOf("\n    case 'complete_voice_task': {", start)
+  assert.ok(start > 0 && end > start, 'the ask_user_input case exists')
+  return `async function askTool(rawArgs) {\n  switch ('ask_user_input') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
+}
+
 /** The per chat refusal memories the fix declares, when it declares them. */
 function refusalLedgers(): string[] {
   return [...SERVER.matchAll(/^const \w+ = createRefusedChats\([^\n]*\)$/gm)].map((m) => m[0])
@@ -169,6 +205,8 @@ interface Harness {
   recordInbound(chatId: string, messageId: number): void
   reply(chatId: string, text: string): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
   sendToPeer(sideThreadChatId: string): Promise<unknown>
+  component(chatId: string): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
+  ask(chatId: string): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
   closeConversation(chatId: string): void
   sweep(): void
   nudgesFor(chatId: string): number
@@ -187,6 +225,7 @@ function harness(apiBase: string, turnChat: string): Harness {
     lift('function hookCardBody('),
     lift('function rememberHookCardId('),
     liftIfPresent('function refuseHookRailChat('),
+    liftIfPresent('function refuseA2aToolPost('),
     lift('async function writeHookCard('),
     lift('async function flushHookCard('),
     lift('async function postHookMarker('),
@@ -194,9 +233,11 @@ function harness(apiBase: string, turnChat: string): Harness {
     lift('function recordInbound('),
     lift('function clearInbound('),
     lift('function checkReplyOverdue('),
+    lift('async function handleShowComponent('),
     ...refusalLedgers(),
     liftReplyCase(),
     liftSendToPeerCase(),
+    liftAskCase(),
   ]
     .join('\n')
     // The sweep's deaf branch names the script it runs from; it never runs
@@ -280,6 +321,16 @@ function harness(apiBase: string, turnChat: string): Harness {
     recentButtonPrompts: new Map<string, unknown>(),
     // send_to_peer.
     bgosPeerPost: async () => peerSendResult,
+    // show_component: a summonable kind whose payload validates.
+    bgosGetCachedOn304: async () => ({}),
+    BUNDLED_RENDERABLES_FALLBACK: {},
+    findRenderable: () => ({ kind: 'status_card', description: 'A status card.', payloadSchema: {} }),
+    listRenderableKinds: () => ['status_card'],
+    isHostPostedKind: () => false,
+    validateComponentPayload: () => ({ ok: true }),
+    deriveComponentTitle: () => 'Status card',
+    // ask_user_input.
+    escapeAgentButtonValue: (value: string) => `u:${value}`,
   }
   const scope = new Proxy(known, {
     has: (target, key) => key in target || !(key in globalThis),
@@ -292,7 +343,7 @@ function harness(apiBase: string, turnChat: string): Harness {
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'scope',
-    `with (scope) {\n${js}\nreturn { flushHookCard, postHookMarker, recordInbound, markConversationClosed, checkReplyOverdue, replyTool, sendToPeerTool }\n}`,
+    `with (scope) {\n${js}\nreturn { flushHookCard, postHookMarker, recordInbound, markConversationClosed, checkReplyOverdue, replyTool, sendToPeerTool, handleShowComponent, askTool }\n}`,
   )
   const lifted = factory(scope) as {
     flushHookCard(): Promise<void>
@@ -302,6 +353,8 @@ function harness(apiBase: string, turnChat: string): Harness {
     markConversationClosed(opts: { chatId?: string | null }): void
     replyTool(args: Record<string, unknown>): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
     sendToPeerTool(args: Record<string, unknown>): Promise<unknown>
+    handleShowComponent(opts: Record<string, unknown>): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
+    askTool(args: Record<string, unknown>): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
   }
 
   return {
@@ -328,6 +381,21 @@ function harness(apiBase: string, turnChat: string): Harness {
       peerSendResult = { sideThreadChatId: Number(sideThreadChatId), conversationId: 77, message: { id: 9100 } }
       return lifted.sendToPeerTool({ target_assistant_id: 950, parent_message_id: 501, text: 'Picking this back up.' })
     },
+    component: (chatId) =>
+      lifted.handleShowComponent({
+        kind: 'status_card',
+        payload: { title: 'Bucket', status: 'done' },
+        chatIdArg: chatId,
+        toolName: 'show_component',
+      }),
+    ask: (chatId) =>
+      lifted.askTool({
+        chat_id: chatId,
+        questions: [{ text: 'Ship it?', options: [{ label: 'Yes', value: 'yes' }, { label: 'No', value: 'no' }] }],
+        // No answer wait: the deadline is the start, so a posted question
+        // returns at once (the clock here does not move on its own).
+        timeout_seconds: 0,
+      }),
     closeConversation: (chatId) => lifted.markConversationClosed({ chatId }),
     sweep: () => lifted.checkReplyOverdue(),
     nudgesFor: (chatId) => nudges.filter((n) => n.chatId === chatId).length,
@@ -517,3 +585,132 @@ for (const mode of ['other403', 'server500'] as const) {
     assert.notEqual(h.pendingFor(A2A), undefined, 'the inbound is still owed a reply, as today')
   })
 }
+
+// ── the closed side-thread 400 (the #186 review) ──────────────────────────────
+//
+// In a CLOSED side-thread the participant check passes and the generic route
+// refuses instead: 400 "A2A messages must use /send-message" (a2a chats take
+// writes only through /send-message). Nothing classified it, so the rail posted
+// the same card again on every flush, and the backend logs no 400.
+
+function assertA2aTyped(result: { content: Array<{ text: string }>; isError?: boolean }) {
+  const text = result.content[0]?.text ?? ''
+  assert.equal(result.isError, true, 'nothing was posted, and the result says so')
+  assert.match(text, /^a2a_route_required\b/, `typed: ${text.slice(0, 120)}`)
+  assert.match(text, /peer side-thread/)
+  assert.match(text, /Do not retry/)
+}
+
+test('hook rail: an hour of tool cards into a closed side-thread refused with the a2a 400 is ONE post', async () => {
+  const backend = await startBackend('a2a400')
+  const h = harness(backend.url, A2A)
+  await railHour(h)
+  assert.equal(
+    backend.count('POST /api/v1/messages'),
+    1,
+    'one attempt, then nothing more for that chat: no card re-post on the next flush, no marker',
+  )
+  assert.equal(h.cardIdFor('turn-1'), undefined, 'a refused card has no id to patch')
+  const why = h.logs.filter((l) => l.includes('a2a_route_required'))
+  assert.equal(why.length, 1, 'the reason is recorded once, not once per flush')
+  assert.match(why[0]!, new RegExp(`chat ${A2A} refused the card with 400 a2a_route_required`))
+})
+
+test('hook rail: the a2a 400 is per chat, the owner chat keeps its cards', async () => {
+  const backend = await startBackend('a2a400')
+  const h = harness(backend.url, A2A)
+  h.queueCard(0)
+  await h.flush()
+  backend.mode = 'ok'
+  h.setTurnChat(MAIN)
+  h.queueCard(1)
+  await h.flush()
+  assert.equal(h.cardIdFor('turn-1'), '9001', 'the next turn, in the owner chat, gets its card')
+  assert.equal(backend.count('POST /api/v1/messages'), 2)
+})
+
+test('hook rail: a marker refused with the a2a 400 silences the chat for cards too', async () => {
+  const backend = await startBackend('a2a400')
+  const h = harness(backend.url, A2A)
+  await h.marker()
+  for (let i = 0; i < 50; i++) {
+    h.queueCard(i)
+    await h.flush()
+  }
+  await h.marker()
+  assert.equal(backend.count('POST /api/v1/messages'), 1)
+  assert.equal(h.logs.filter((l) => l.includes('a2a_route_required')).length, 1)
+})
+
+test('show_component and ask_user_input: the a2a 400 is posted once, typed, and answered locally after', async () => {
+  for (const tool of ['component', 'ask'] as const) {
+    const backend = await startBackend('a2a400')
+    const h = harness(backend.url, A2A)
+    const results = []
+    for (let i = 0; i < 12; i++) results.push(await h[tool](A2A))
+    assert.equal(backend.count('POST /api/v1/messages'), 1, `${tool}: one attempt in that chat`)
+    for (const result of results) assertA2aTyped(result)
+    // And the other chat is untouched.
+    backend.mode = 'ok'
+    const elsewhere = await h[tool](MAIN)
+    assert.notEqual(elsewhere.content[0]?.text.startsWith('a2a_route_required'), true, tool)
+    assert.equal(backend.count('POST /api/v1/messages'), 2, tool)
+  }
+})
+
+test('the tools learn it from the rail: after the rail is refused, no tool posts into that chat', async () => {
+  const backend = await startBackend('a2a400')
+  const h = harness(backend.url, A2A)
+  h.queueCard(0)
+  await h.flush()
+  assert.equal(backend.count('POST /api/v1/messages'), 1)
+  assertA2aTyped(await h.component(A2A))
+  assertA2aTyped(await h.ask(A2A))
+  assert.equal(backend.count('POST /api/v1/messages'), 1, 'answered locally, nothing posted')
+})
+
+test('hook rail: a different 400 keeps today\'s behaviour, the card is posted again on every flush', async () => {
+  const backend = await startBackend('other400')
+  const h = harness(backend.url, A2A)
+  for (let i = 0; i < 25; i++) {
+    h.queueCard(i)
+    await h.flush()
+  }
+  assert.equal(backend.count('POST /api/v1/messages'), 25)
+  assert.equal(h.logs.filter((l) => l.startsWith('hook rail: tool card post failed:')).length, 25)
+  assert.equal(h.logs.some((l) => l.includes('a2a_route_required')), false)
+})
+
+test('show_component and ask_user_input: a different 400 or a 5xx keeps today\'s plain failure on every call', async () => {
+  for (const mode of ['other400', 'server500', 'peer403'] as const) {
+    for (const tool of ['component', 'ask'] as const) {
+      const backend = await startBackend(mode)
+      const h = harness(backend.url, A2A)
+      for (let i = 0; i < 3; i++) {
+        const result = await h[tool](A2A)
+        assert.equal(result.isError, true)
+        assert.match(
+          result.content[0]!.text,
+          tool === 'component' ? /^Failed to send the component card: / : /^ask_user_input failed: /,
+          `${mode} ${tool}`,
+        )
+      }
+      assert.equal(backend.count('POST /api/v1/messages'), 3, `${mode} ${tool}`)
+    }
+  }
+})
+
+test('reply: the a2a 400 is not the participant refusal, so a reply keeps today\'s plain failure', async () => {
+  // /send-message never answers this today; if it ever did, the reply must not
+  // be told the conversation is not one it is in.
+  const backend = await startBackend('a2a400')
+  const h = harness(backend.url, A2A)
+  h.recordInbound(A2A, 501)
+  for (let i = 0; i < 3; i++) {
+    const result = await h.reply(A2A, `try ${i}`)
+    assert.equal(result.isError, true)
+    assert.match(result.content[0]!.text, /^Failed to send: POST 400: /)
+  }
+  assert.equal(backend.count('POST /api/v1/send-message'), 3)
+  assert.notEqual(h.pendingFor(A2A), undefined, 'the inbound is still owed a reply, as today')
+})
