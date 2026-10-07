@@ -126,6 +126,7 @@ test('parseSupervisorRecord: the file plus its writer\'s stamp; a missing or jun
     pid: 42,
     capabilities: ['relaunch'],
     startedAtMs: Date.parse('2026-10-06T21:00:00.000Z'),
+    boot: null,
     declaredLauncher: false,
   })
   assert.equal(parseSupervisorRecord(supervisorFileBody(42, 'x'))!.startedAtMs, null)

@@ -87,6 +87,7 @@ import {
   buildLaunchRecipe,
   isSupervisorWriter,
   parseSupervisorRecord,
+  readBootClock,
   readLauncherProcesses,
   writeLaunchRecipe,
 } from '../lib/agent-inventory.mjs'
@@ -256,10 +257,14 @@ export const PID_COMMAND_LINE_TIMEOUT_MS = 10_000
  * not a pid). The query is lib/agent-inventory.mjs readLauncherProcesses, the
  * one the watcher's launcherLive uses, so hoai and the watcher judge a
  * supervisor.json pid the same way.
+ * On Linux the reading also carries its start on the boot clock (read through
+ * `opts.readFile`), which decideSupervisorArming compares with the file's
+ * own boot stamp (review 3 F1).
  * @param {number} pid
  * @param {string} [platform]
- * @param {{ spawn?: typeof spawnSync, now?: number }} [opts]
- * @returns {{ command: string | null, startedAtMs: number | null } | null}
+ * @param {{ spawn?: typeof spawnSync, now?: number, readFile?: (path: string) => string | null }} [opts]
+ * @returns {{ command: string | null, startedAtMs: number | null,
+ *   boot?: { id: string, startedUptimeMs: number } } | null}
  */
 export function defaultPidProcess(pid, platform = process.platform, opts = {}) {
   const run = opts.spawn ?? spawnSync
@@ -273,7 +278,8 @@ export function defaultPidProcess(pid, platform = process.platform, opts = {}) {
     // A timed-out spawnSync reports status null: unreadable.
     return { code: typeof res?.status === 'number' ? res.status : 1, stdout: String(res?.stdout ?? '') }
   }
-  return readLauncherProcesses({ platform, pids: [pid], execSync, now: opts.now ?? Date.now() }).get(pid) ?? null
+  const bootClock = () => readBootClock({ platform, readFile: opts.readFile ?? defaultReadText })
+  return readLauncherProcesses({ platform, pids: [pid], execSync, now: opts.now ?? Date.now(), bootClock }).get(pid) ?? null
 }
 
 /** Best-effort text read; null when absent or unreadable. */
@@ -984,9 +990,17 @@ export function folderIdentity(cwd, readFile = defaultReadText) {
 
 /** supervisor.json body: what the daemon validates before trusting this
  *  launcher as a restart authority (the pid must still be alive and the
- *  relaunch capability must be declared). */
-export function supervisorFileBody(pid, startedAt) {
-  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt })
+ *  relaunch capability must be declared). `boot` is the boot clock read with
+ *  `startedAt` (lib/agent-inventory.mjs readBootClock, Linux only, review 3
+ *  F1): it lets a reader prove this pid is still the writer on the clock ps
+ *  measures etime with, which a wall clock step does not move. Written only
+ *  when there is one.
+ * @param {number} pid
+ * @param {string} startedAt
+ * @param {{ id: string, uptimeMs: number } | null} [boot]
+ * @returns {string} */
+export function supervisorFileBody(pid, startedAt, boot = null) {
+  return JSON.stringify({ pid, capabilities: ['relaunch'], startedAt, ...(boot ? { boot } : {}) })
 }
 
 /**
@@ -999,11 +1013,14 @@ export function supervisorFileBody(pid, startedAt) {
  * in the daemon's ancestry and cannot prove ownership. `claudePid` is the
  * proof AND the restart target, so it is required.
  *
+ * `boot` is the boot clock read with `startedAt` (supervisorFileBody says why),
+ * written only when there is one.
+ *
  * @param {{ pid: number, claudePid: number, tmuxSession?: string | null,
- *   startedAt: string }} opts
+ *   startedAt: string, boot?: { id: string, uptimeMs: number } | null }} opts
  * @returns {string}
  */
-export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt }) {
+export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt, boot = null }) {
   return JSON.stringify({
     kind: 'keepalive',
     pid,
@@ -1011,6 +1028,7 @@ export function keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt }) 
     tmuxSession: tmuxSession ?? null,
     capabilities: ['relaunch'],
     startedAt,
+    ...(boot ? { boot } : {}),
   })
 }
 
@@ -1048,8 +1066,9 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
  *                                                  prior run left a stale file)
  *
  * The pid identity is the writer's, not just "a hoai": it started no later
- * than the file's startedAt (plus a minute of slack) and runs hoai-core.mjs as
- * its script. The record the agent's daemon writes for a declared marker
+ * than the file's startedAt (plus a minute of slack; on Linux on the boot
+ * clock the file also records, so a wall clock step after the stamp changes
+ * nothing, review 3 F1) and runs hoai-core.mjs as its script. The record the agent's daemon writes for a declared marker
  * launcher (BGOS_SUPERVISOR_KIND=launcher) names the daemon's own pid, a
  * `bun server.ts`: its start alone proves it, and while it lives a bespoke
  * launcher owns the agent (a second session here is G11). A launcher that dies without its finally block (a power cut, a
@@ -1863,7 +1882,10 @@ export async function superviseClaude(args, opts = {}) {
   const now = opts.now ?? Date.now
   const print = opts.print ?? ((line) => console.log(line))
   const pidAlive = opts.pidAlive ?? defaultPidAlive
-  const pidProcess = opts.pidProcess ?? ((pid) => defaultPidProcess(pid, platform))
+  const pidProcess = opts.pidProcess ?? ((pid) => defaultPidProcess(pid, platform, { readFile }))
+  // The boot clock every supervisor.json stamp carries (review 3 F1), read
+  // through the same reader as everything else here; null off Linux.
+  const bootClock = opts.bootClock ?? (() => readBootClock({ platform, readFile }))
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
@@ -2086,7 +2108,7 @@ export async function superviseClaude(args, opts = {}) {
     )
     return EXIT_ALREADY_SUPERVISED
   }
-  const body = supervisorFileBody(process.pid, new Date(now()).toISOString())
+  const body = supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock())
   if (!writeFile(supervisorPath, body)) {
     // No state dir to arm in: launch exactly as before, unsupervised.
     return spawnSupervised(args)
@@ -2382,7 +2404,7 @@ export async function superviseClaude(args, opts = {}) {
       // The daemon trusts a restart authority only while supervisor.json names
       // a live launcher with the relaunch capability. Re-written, not assumed:
       // something may have removed it while claude ran.
-      writeFile(supervisorPath, supervisorFileBody(process.pid, new Date(now()).toISOString()))
+      writeFile(supervisorPath, supervisorFileBody(process.pid, new Date(now()).toISOString(), bootClock()))
       recordRecipe(currentArgs)
       continue
     }

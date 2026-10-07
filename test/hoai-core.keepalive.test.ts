@@ -254,6 +254,27 @@ test('keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned se
   assert.equal(h.files.has(SUPERVISOR_PATH), false, 'cleaned up on the way out')
 })
 
+// Review 3 F1: on Linux a reader proves this launcher is still the writer of
+// supervisor.json on the boot clock, the clock ps measures etime with, so the
+// arm and every keep-alive re-stamp carry it beside the wall clock startedAt.
+test('review 3 F1: the arm and every keep-alive relaunch stamp supervisor.json with the boot clock, read through hoai\'s own reader', async (t) => {
+  const BOOT = '4f3c2a10-8b7e-4d21-9a55-0c1e2f3a4b5c'
+  const h = harness()
+  t.after(() => h.stop.abort())
+  h.files.set('/proc/sys/kernel/random/boot_id', `${BOOT}\n`)
+  h.files.set('/proc/uptime', '25.00 40.00\n')
+  const done = h.run()
+  await until(() => h.spawns.length === 1, 'first launch')
+  assert.deepEqual(JSON.parse(h.files.get(SUPERVISOR_PATH)!).boot, { id: BOOT, uptimeMs: 25_000 })
+  h.files.set('/proc/uptime', '3625.50 40.00\n')
+  h.clock.t += 60_000
+  h.spawns[0]!.exit(0)
+  await until(() => h.spawns.length === 2, 'keep-alive relaunch')
+  assert.deepEqual(JSON.parse(h.files.get(SUPERVISOR_PATH)!).boot, { id: BOOT, uptimeMs: 3_625_500 }, 're-stamped on the boot clock too')
+  h.stop.abort()
+  assert.equal(await settled(done, h.stop), 143)
+})
+
 test('keep-alive: quick exits back off 5, 10, 20, 40, 60, 60 s, and a session that stayed up 10 minutes starts again at 5 s', async (t) => {
   const h = harness()
   t.after(() => h.stop.abort())

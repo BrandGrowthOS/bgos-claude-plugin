@@ -68,7 +68,7 @@ import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './li
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor } from './lib/agent-inventory.mjs'
+import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -10804,6 +10804,8 @@ function writeSupervisorRecordAtBoot(): void {
       existingRaw: readTextOrNull(supPath),
       ownPid: process.pid,
       startedAt: new Date().toISOString(),
+      // Review 3 F1: the boot clock with the wall clock stamp (Linux only).
+      boot: readBootClock({ platform: process.platform }),
       detection: resolveSupervision(supervisionProbe()),
     })
     if (decision.action !== 'write') {
