@@ -10,7 +10,7 @@
  *
  * Run: npx tsx --test test/agent-state.test.ts
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,13 +22,20 @@ import {
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
   buildAgentState,
+  findClaudeAncestor,
+  isWin32ClaudeProcess,
   memoizeFor,
   memoizeUntilFound,
   nearestClaudeAncestor,
+  nearestClaudeAncestorWin32,
+  readSessionTranscript,
   removeAgentStateIfOurs,
   writeAgentStateAtomic,
   type AgentStateSnapshot,
+  win32AncestryCommand,
 } from '../lib/agent-state.ts'
+import { SessionTranscriptBinder } from '../lib/session-binding.ts'
+import { mungeCwd } from '../lib/usage-report.ts'
 
 const SESSION = '8c1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b'
 const T0 = Date.parse('2026-10-06T19:00:00.000Z')
@@ -39,6 +46,7 @@ const baseSnapshot = (over: Partial<AgentStateSnapshot> = {}): AgentStateSnapsho
   runningVersion: '0.62.0',
   pendingRestartVersion: '0.62.1',
   turnInFlight: false,
+  turnSignal: 'hooks',
   pendingMessages: 0,
   pendingPermissions: 0,
   activeOperations: 0,
@@ -61,6 +69,7 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
     runningVersion: '0.62.0',
     pendingRestartVersion: '0.62.1',
     turnInFlight: false,
+    turnSignal: 'hooks',
     pendingMessages: 0,
     pendingPermissions: 0,
     activeOperations: 0,
@@ -70,7 +79,7 @@ test('buildAgentState is exactly the section 7 contract, field for field, in ord
   })
   assert.deepEqual(Object.keys(state!), [
     'schemaVersion', 'assistantId', 'pid', 'claudePid', 'runningVersion', 'pendingRestartVersion',
-    'turnInFlight', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
+    'turnInFlight', 'turnSignal', 'pendingMessages', 'pendingPermissions', 'activeOperations', 'lastActivityAt',
     'sessionId', 'updatedAt',
   ])
 })
@@ -94,6 +103,11 @@ test('buildAgentState fails closed on what it cannot vouch for', () => {
   assert.equal(build({ runningVersion: '' })!.runningVersion, null)
   assert.equal(build({ pendingRestartVersion: undefined })!.pendingRestartVersion, null)
   assert.equal(build({})!.lastActivityAt, null)
+  // turnSignal is 'hooks' only when the daemon says so: anything else is
+  // 'none', the reading under which turnInFlight proves nothing.
+  assert.equal(build({ turnSignal: 'none' })!.turnSignal, 'none')
+  assert.equal(build({ turnSignal: 'HOOKS' as 'hooks' })!.turnSignal, 'none')
+  assert.equal(build({ turnSignal: undefined as unknown as 'none' })!.turnSignal, 'none')
 })
 
 test('nearestClaudeAncestor walks up from the parent and stops at the first claude', () => {
@@ -364,7 +378,7 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.match(wiring, /shouldPublish: \(\) => lockHeld/)
   assert.match(wiring, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0,/)
   assert.match(wiring, /sessionId: liveSessionId/)
-  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs\]/)
+  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, /)
   assert.match(wiring, /claudePid: agentClaudePid\(\)/)
   assert.match(wiring, /pendingMessages: pendingInbounds\.size/)
   assert.match(wiring, /pendingPermissions: pendingPermissions\.size/)
@@ -388,4 +402,246 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.ok(shutdownBody.includes('agentStatePublisher.shutdown()'))
   const exitAt = server.indexOf("process.on('exit', () => {", shutdownAt)
   assert.ok(server.slice(exitAt, exitAt + 400).includes('agentStatePublisher.shutdown()'))
+})
+
+// ── Finding F1 (mission 104 code review): an agent without the hook rail ────
+//
+// Every turn signal the daemon published came from consumed hook events. A
+// clone agent whose folder registers no BGOS hooks (KC's whole fleet on the M6
+// today) therefore published a FRESH file with turnInFlight false, sessionId
+// null and a lastActivityAt frozen at boot or its last inbound, and the
+// watcher's 10 minute window passed in the middle of a long Read/Edit/Task
+// job. Now: `turnSignal` says whether turnInFlight means anything (the watcher
+// decides what 'none' costs), lastActivityAt counts the transcript the agent
+// is writing, and sessionId falls back to the transcript the binding chain
+// PROVED, so the watcher can stat the transcript and the spool itself.
+
+const SUB = '1d2e3f4a-5b6c-4d7e-8f90-a1b2c3d4e5f6'
+
+function transcriptFixture() {
+  const root = tempDir()
+  const agent = '/Users/kc/agents/vexa'
+  const projectDir = join(root, 'projects', mungeCwd(agent))
+  mkdirSync(projectDir, { recursive: true })
+  const write = (path: string, atMs: number) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, '{}\n')
+    utimesSync(path, atMs / 1000, atMs / 1000)
+    return path
+  }
+  return { root, agent, projectDir, write }
+}
+
+test('readSessionTranscript: the bound transcript and its subagents are the activity, a proven one is the session', () => {
+  const f = transcriptFixture()
+  try {
+    const ours = f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 9 * 60_000)
+    f.write(join(f.projectDir, `${SUB}.jsonl`), T0 - 60_000) // a neighbour in the same folder
+    const proven = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'env' as const } }
+    assert.deepEqual(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }), {
+      activityMs: T0 - 9 * 60_000,
+      sessionId: SESSION,
+    })
+    // Claude Code 2.1 writes a Task subagent's rows beside the transcript, so a
+    // long subagent run moves no byte of the main file.
+    f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.jsonl'), T0 - 5 * 60_000)
+    f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.meta.json'), T0 - 5 * 60_000)
+    assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 5 * 60_000)
+    // A workflow's agents sit two dirs further down, one dir per run (the
+    // layout 2.1.292 writes on disk): a long workflow is activity too.
+    f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'wf_458dea5c-4d9', 'agent-b2.jsonl'), T0 - 2 * 60_000)
+    assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
+    // A guess (newest-mtime) still counts as activity, never as the session.
+    const guessed = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'newest-mtime' as const } }
+    assert.deepEqual(readSessionTranscript({ resolve: () => guessed, projectDir: f.projectDir }), {
+      activityMs: T0 - 2 * 60_000,
+      sessionId: null,
+    })
+    // Unbound (the binder refuses to guess between two live transcripts): any
+    // transcript in the folder being written is activity, the safe direction.
+    assert.deepEqual(readSessionTranscript({ resolve: () => null, projectDir: f.projectDir }), {
+      activityMs: T0 - 60_000,
+      sessionId: null,
+    })
+    assert.deepEqual(readSessionTranscript({ resolve: () => null, projectDir: join(f.root, 'missing') }), {
+      activityMs: null,
+      sessionId: null,
+    })
+    // A binder that throws costs the reading, never the publish.
+    const boom = () => {
+      throw new Error('binder')
+    }
+    assert.deepEqual(readSessionTranscript({ resolve: boom, projectDir: f.projectDir }), { activityMs: null, sessionId: null })
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+test('a hookless agent writing its transcript a minute ago publishes that minute, its session and turnSignal none', () => {
+  const f = transcriptFixture()
+  try {
+    // hoai launched it with --session-id, so the CLI hands the daemon that id.
+    f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 60_000)
+    const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root, envSessionId: SESSION })
+    const reading = () => readSessionTranscript({ resolve: () => binder.resolve(T0), projectDir: binder.projectDirectory })
+    const lastHookEventAtMs: number | null = null
+    const liveSessionId: string | null = null
+    const writes: Array<ReturnType<typeof buildAgentState>> = []
+    const publisher = new AgentStatePublisher({
+      path: join(f.root, AGENT_STATE_FILE_NAME),
+      pid: 4242,
+      now: () => T0,
+      shouldPublish: () => true,
+      write: (_path, state) => {
+        writes.push(state)
+        return true
+      },
+      // What server.ts publishes, with no hook event ever consumed.
+      snapshot: () => ({
+        ...baseSnapshot(),
+        turnInFlight: false,
+        turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
+        activityAtMs: [T0 - 30 * 60_000, null, lastHookEventAtMs, reading().activityMs],
+        sessionId: liveSessionId ?? reading().sessionId,
+      }),
+    })
+    assert.equal(publisher.tick(), 'written')
+    const state = writes[0]!
+    assert.equal(state.turnSignal, 'none')
+    assert.equal(state.turnInFlight, false)
+    assert.equal(state.lastActivityAt, new Date(T0 - 60_000).toISOString(), 'the transcript write, not the boot')
+    assert.equal(state.sessionId, SESSION)
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+test('server.ts publishes turnSignal, the transcript activity and the proven session', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
+  const wiring = server.slice(at, server.indexOf('\n})\n', at))
+  // 'hooks' once this daemon consumed an event of its own session (the intake
+  // admits nothing else, and onHookPayload is its only consumer).
+  assert.match(wiring, /turnSignal: lastHookEventAtMs === null \? 'none' : 'hooks',/)
+  assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
+  assert.match(wiring, /sessionId: liveSessionId \?\? agentTranscript\(\)\.sessionId,/)
+  // One binder read per window, not per 1 s tick: it lists the project dir.
+  assert.match(
+    server,
+    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolve: \(\) => sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
+  )
+})
+
+// ── Finding F2 (mission 104 code review): claudePid on Windows ──────────────
+//
+// The ancestor walk only spawned `ps`, which Windows does not have, and the
+// name rule wanted exactly 'claude' after the last '/'. So a Windows daemon
+// always published claudePid null; with no keepalive marker and no cwd lookup
+// on win32 the watcher could never read the agent's process tree, and every
+// staged update sat in waiting_idle process_tree_unreadable forever. The walk
+// on win32 is one PowerShell call that follows ParentProcessId up from this
+// process (Get-CimInstance Win32_Process), and a claude is claude.exe /
+// claude, or a node running Claude Code's cli.js (the npm install).
+
+type WinRow = { ProcessId: number; ParentProcessId: number; Name: string; CreationDate: number | null; CommandLine: string | null }
+const winRow = (pid: number, ppid: number, name: string, command: string, createdMs: number | null = T0 - (10_000 - pid)): WinRow => ({
+  ProcessId: pid,
+  ParentProcessId: ppid,
+  Name: name,
+  CreationDate: createdMs,
+  CommandLine: command,
+})
+const winExec = (rows: WinRow[] | string, code = 0) => {
+  const calls: Array<[string, string[]]> = []
+  const exec = (file: string, args: string[]) => {
+    calls.push([file, args])
+    return { code, stdout: typeof rows === 'string' ? rows : JSON.stringify(rows) }
+  }
+  return { exec, calls }
+}
+const DAEMON = winRow(4912, 4800, 'bun.exe', 'C:\\Users\\kc\\.bun\\bin\\bun.exe C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\server.ts')
+const LAUNCH = winRow(4800, 4700, 'node.exe', '"C:\\Program Files\\nodejs\\node.exe" C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\bin\\bgos-launch.mjs C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\0.62.0\\server.ts')
+const NATIVE = winRow(4700, 1000, 'claude.exe', '"C:\\Users\\kc\\.local\\bin\\claude.exe" --dangerously-load-development-channels server:bgos')
+const EXPLORER = winRow(1000, 900, 'explorer.exe', 'C:\\WINDOWS\\Explorer.EXE')
+
+test('win32: the ancestry is one PowerShell call that follows ParentProcessId up from this process', () => {
+  const cmd = win32AncestryCommand(4912)!
+  assert.equal(cmd.file, 'powershell.exe')
+  assert.deepEqual(cmd.args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command'])
+  const script = cmd.args[3]!
+  assert.match(script, /^\$p = 4912;/, 'starts at this process')
+  assert.match(script, /Get-CimInstance Win32_Process -Filter \('ProcessId=' \+ \$p\)/)
+  assert.match(script, /\$p = \$x\.ParentProcessId/)
+  // No double quote anywhere: Node escapes one as \" on the Windows command
+  // line, which is the kind of quoting a PowerShell -Command must not depend on.
+  assert.ok(!script.includes('"'))
+  assert.equal(win32AncestryCommand(0), null)
+  assert.equal(win32AncestryCommand(Number.NaN), null)
+})
+
+test('win32: the nearest claude.exe ancestor is the claude pid', () => {
+  const { exec, calls } = winExec([DAEMON, LAUNCH, NATIVE, EXPLORER])
+  assert.equal(nearestClaudeAncestorWin32(4912, exec), 4700)
+  assert.equal(calls.length, 1, 'one call, not one per ancestor')
+  // The order of the rows is not trusted: the walk follows the ids.
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([EXPLORER, NATIVE, DAEMON, LAUNCH]).exec), 4700)
+})
+
+test('win32: a node running Claude Code cli.js (the npm install) is a claude, quoted or not', () => {
+  const npm = winRow(4600, 4500, 'node.exe', '"C:\\Program Files\\nodejs\\node.exe"  "C:\\Users\\kc\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js" --resume x')
+  const shim = winRow(4500, 1000, 'cmd.exe', 'C:\\WINDOWS\\system32\\cmd.exe /d /s /c "claude --resume x"')
+  const { exec } = winExec([DAEMON, { ...LAUNCH, ParentProcessId: 4600 }, npm, shim, EXPLORER])
+  assert.equal(nearestClaudeAncestorWin32(4912, exec), 4600)
+  assert.ok(isWin32ClaudeProcess({ name: 'node.exe', command: 'node C:/npm/node_modules/@anthropic-ai/claude-code/cli.js' }))
+  assert.ok(isWin32ClaudeProcess({ name: 'CLAUDE.EXE', command: null }))
+  assert.ok(isWin32ClaudeProcess({ name: 'claude', command: '' }))
+  assert.ok(!isWin32ClaudeProcess({ name: 'node.exe', command: 'node C:/tools/claude-log-tail.js' }))
+  assert.ok(!isWin32ClaudeProcess({ name: 'cmd.exe', command: 'cmd /c C:/npm/node_modules/@anthropic-ai/claude-code/cli.js' }), 'a node runs it')
+  assert.ok(!isWin32ClaudeProcess({ name: 'notepad.exe', command: 'notepad C:/claude.exe.txt' }))
+})
+
+test('win32: no claude, a failed or unreadable call, and a reused parent pid all answer null', () => {
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, EXPLORER]).exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, NATIVE], 1).exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec('not json').exec), null)
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([]).exec), null)
+  // Self is never the answer, even when named claude.
+  assert.equal(nearestClaudeAncestorWin32(4700, winExec([NATIVE, EXPLORER]).exec), null)
+  // Windows reuses pids: a "parent" created after its child is a stranger
+  // that inherited the dead parent's pid, so the walk stops there.
+  const late = { ...NATIVE, CreationDate: T0 + 60_000 }
+  assert.equal(nearestClaudeAncestorWin32(4912, winExec([DAEMON, LAUNCH, late, EXPLORER]).exec), null)
+  assert.equal(
+    nearestClaudeAncestorWin32(4912, () => {
+      throw new Error('spawn')
+    }),
+    null,
+  )
+})
+
+test('findClaudeAncestor walks with PowerShell on win32 and with ps elsewhere', () => {
+  const { exec, calls } = winExec([DAEMON, LAUNCH, NATIVE, EXPLORER])
+  assert.equal(findClaudeAncestor({ platform: 'win32', ownPid: 4912, execSync: exec }), 4700)
+  assert.equal(calls[0]![0], 'powershell.exe')
+  const ppid: Record<number, number> = { 500: 400, 400: 300, 300: 1 }
+  const comm: Record<number, string> = { 400: 'bun', 300: '/Users/x/.local/bin/claude' }
+  const psCalls: string[][] = []
+  const ps = (file: string, args: string[]) => {
+    psCalls.push([file, ...args])
+    const pid = Number(args[args.length - 1])
+    if (args[1] === 'ppid=') return { code: 0, stdout: `${ppid[pid] ?? 0}\n` }
+    return { code: 0, stdout: `${comm[pid] ?? 'launchd'}\n` }
+  }
+  assert.equal(findClaudeAncestor({ platform: 'darwin', ownPid: 500, execSync: ps }), 300)
+  assert.ok(psCalls.every((c) => c[0] === 'ps'))
+})
+
+test('server.ts finds the claude ancestor through the platform aware walk', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  assert.match(
+    server,
+    /const agentClaudePid = memoizeUntilFound\(CLAUDE_ANCESTOR_RETRY_MS, Date\.now, \(\) =>\s*findClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,
+  )
 })

@@ -474,24 +474,28 @@ import {
   decideSupervisorWrite,
   detectSupervision,
   probeServiceOwnership,
-  readProcessAncestry,
-  readProcessComm,
   resolveSupervision,
   supervisorFilePath,
   wireSupervisedKind,
   type ResolvedService,
-  type Supervision,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
-import { decideAlwaysOnReconcile, describeOtherSupervisor } from './lib/always-on-reconcile.js'
+import {
+  type AlwaysOnSupervision,
+  decideAlwaysOnReconcile,
+  describeOtherSupervisor,
+  readAlwaysOnSupervision,
+  userBusExecSync,
+} from './lib/always-on-reconcile.js'
 import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
 import {
   AGENT_STATE_FILE_NAME,
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
+  findClaudeAncestor,
   memoizeFor,
   memoizeUntilFound,
-  nearestClaudeAncestor,
+  readSessionTranscript,
 } from './lib/agent-state.js'
 import {
   SESSION_PIN_CHECK_MS,
@@ -564,7 +568,13 @@ const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
 // The CLI's config dir: CLAUDE_CONFIG_DIR (trimmed) when set, else ~/.claude.
 // Declared up here, beside the launch folder, because the session binder below
 // reads it at module load and a const read before its declaration throws.
-const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
+// Resolved ONCE, against the launch folder: the CLI resolves a relative value
+// from its own cwd, which is that folder, while this process runs in the
+// plugin cache on a marketplace install. Raw, a relative or non-normalised
+// value (./.claude-work, ~/./.claude-work/) named another directory or another
+// spelling, and the hook intake refused the agent's OWN events as
+// foreign-project (lib/hook-intake.ts isUnderDir).
+const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process.env, home: homedir() }))
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -682,7 +692,7 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { join as pathJoin, dirname as pathDirname } from 'node:path'
+import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
 // (lib/hook-events.ts), the intake is a spool file per session
@@ -1062,7 +1072,12 @@ async function bgosGetCachedOn304(path: string): Promise<unknown> {
 // next report). Env: BGOS_USAGE_REPORT=off disables,
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
 // subscription, the Claude Max plan: tokens only, never dollars).
-const usageTracker = new UsageTracker(process.cwd())
+// The transcripts are the binder's (sessionBinder below explains): the folder
+// claude runs in, LAUNCH_CWD, under the CLI config dir. Built from
+// process.cwd() under a fixed ~/.claude, a marketplace install (cwd is the
+// plugin cache) or a custom CLAUDE_CONFIG_DIR read an empty project dir and
+// no reply ever carried a token count.
+const usageTracker = new UsageTracker(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 
 // ── Capability bootstrap (served canon) ──────────────────────────────────────
 // Fetched once at connect and cached; exposed to the agent via the
@@ -1340,7 +1355,10 @@ function reportContextPct(): void {
 // covers credits-out, which carries no reset time and gets a conservative
 // now+30min horizon). `emittedResting` advances only on a successful PATCH,
 // so a failed send retries on the next sweep.
-const restingWatcher = new RestingWatcher(process.cwd())
+// Same transcripts, same folder and config dir as the binder above: from the
+// relocated cwd a usage cap the agent hit was never seen, so it was never
+// reported as resting.
+const restingWatcher = new RestingWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 let observedResting: RestingEpisode | null = null
 let emittedResting: RestingEpisode | null = null
 // Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
@@ -8644,6 +8662,9 @@ function startHookIntakeIfHolder(): void {
     hookIntake = startHookIntake({
       stateRoot: root,
       projectDir: sessionBinder.projectDirectory,
+      // The folder the CLI runs in: a transcript_path it spelled relative
+      // resolves against it, as the config dir above does.
+      baseDir: LAUNCH_CWD,
       onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
       // A child agent still working after its parent stopped keeps this true:
@@ -10682,12 +10703,20 @@ function listDirOrEmpty(path: string): string[] {
 // bespoke supervisor findable at all: an agent takes its identity from the
 // .mcp.json of the folder it runs in, so a loaded job whose WorkingDirectory
 // is THIS folder is a job that brings back THIS agent (lib/service-supervision.mjs).
+// That folder is the one claude runs in, LAUNCH_CWD, and never this process's
+// cwd: a marketplace install runs this process in the plugin cache
+// (bin/bgos-launch.mjs relocates it), where no job's WorkingDirectory points,
+// so a bespoke job was never found at boot (no declared supervisor.json), the
+// update ladder could only stage, and service.json named a folder the watcher
+// could never verify. On a clone install the two are the same folder. Its own
+// name keeps the counted identity literal at six (test/agent-credentials.test.ts).
+const SUPERVISION_WORKDIR = LAUNCH_CWD
 function supervisionProbe() {
   return {
     platform: process.platform,
     home: homedir(),
     assistantId: ASSISTANT_ID,
-    cwd: process.cwd(),
+    cwd: SUPERVISION_WORKDIR,
     // The anchor of the keepalive tier's ancestry walk. Without it that tier
     // cannot prove a marker describes THIS session, so it never fires.
     ownPid: process.pid,
@@ -10719,7 +10748,9 @@ function publishServiceRecord(service: ResolvedService | null): void {
       ? buildServiceRecord({
           assistantId: ASSISTANT_ID,
           service,
-          cwd: process.cwd(),
+          // The anchor the watcher re-verifies with: the folder the probe
+          // above matched the job by.
+          cwd: SUPERVISION_WORKDIR,
           resolvedAt: new Date().toISOString(),
         })
       : null
@@ -10826,17 +10857,26 @@ function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateSta
 // every change (a 1 s tick plus a poke per hook event) and at least every
 // 30 s; removed by both exit paths below. Never throws.
 const AGENT_STATE_TICK_MS = 1_000
-// The ancestor walk is synchronous ps spawns; a found claude never changes,
-// a miss is retried every 10 minutes.
+// The ancestor walk is synchronous ps spawns (one PowerShell call on Windows,
+// code review F2: before it, a Windows daemon published claudePid null forever
+// and the watcher could never read its process tree); a found claude never
+// changes, a miss is retried every 10 minutes.
 const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
 const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
-  nearestClaudeAncestor(readProcessAncestry(process.pid, defaultExecSync), (pid) =>
-    readProcessComm(pid, defaultExecSync),
-  ),
+  findClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
 )
 // installed_plugins.json is a file read; the 1 s tick must not repeat it.
 const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
   daemonPendingRestartVersion(),
+)
+// What the transcripts say (code review F1): the hook rail is the only source
+// of turnInFlight and of liveSessionId, and a clone agent whose folder
+// registers no BGOS hooks never feeds it, so without this its file said idle,
+// with no session, through a whole Read/Edit/Task job. The binder lists the
+// project dir, so it is read at most every 10 s, not on every 1 s tick.
+const AGENT_TRANSCRIPT_READ_MS = 10_000
+const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
+  readSessionTranscript({ resolve: () => sessionBinder.resolve(), projectDir: sessionBinder.projectDirectory }),
 )
 const agentStatePublisher = new AgentStatePublisher({
   path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
@@ -10852,13 +10892,21 @@ const agentStatePublisher = new AgentStatePublisher({
     // "in flight" (the intake's own isTurnLive rule): restarting then would
     // kill that child mid job, which finding 9 forbids.
     turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    // Whether turnInFlight means anything: 'hooks' once this daemon consumed
+    // an event of its own session (the intake admits nothing else, and
+    // onHookPayload is its only consumer). 'none' tells the watcher that a
+    // false turnInFlight is no evidence of idle.
+    turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
     pendingMessages: pendingInbounds.size,
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
     // Boot counts as activity: a session that just started may have a person
     // at its keyboard, and the watcher's quiet window should run from there.
-    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs],
-    sessionId: liveSessionId,
+    // The transcript the agent is writing counts too, hooks or not.
+    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+    // The hooks name the live session; without them, the transcript the
+    // binding chain proved (a reply marker, the CLI assigned id) does.
+    sessionId: liveSessionId ?? agentTranscript().sessionId,
   }),
 })
 
@@ -10886,7 +10934,10 @@ const SESSION_PIN_WORKDIR = LAUNCH_CWD
 const sessionPinKeeper = new SessionPinKeeper({
   home: homedir(),
   cwd: SESSION_PIN_WORKDIR,
-  configDir: process.env.CLAUDE_CONFIG_DIR ?? '',
+  // hoai's own rule (CLAUDE_CONFIG_DIR, else ~/.claude), already resolved
+  // against the agent folder hoai runs in: the raw value, relative, named a
+  // dir under the plugin cache this process runs in, where no transcript is.
+  configDir: CLAUDE_CONFIG_DIR,
   assistantId: ASSISTANT_ID,
   exists: existsSync,
   readFile: readTextOrNull,
@@ -11108,7 +11159,9 @@ const watcherInstallRpc = new WatcherInstallRpcHandler({
       home,
       pluginVersion,
       // The watcher must reconcile the SAME Claude install this daemon runs under.
-      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+      // Resolved (the watcher runs elsewhere, so a relative value would name
+      // another dir), and still null when unset so the default stays implicit.
+      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR?.trim() ? CLAUDE_CONFIG_DIR : null,
     }),
   writeWatcherCredentials: async (creds) => {
     const path = writeWatcherCredentials(homedir(), creds)
@@ -13470,6 +13523,15 @@ let reconcileDisabledReason: string | null = null
 // once per process. The reconcile re-runs every 15 minutes and on every
 // config event, and the answer does not change while the bespoke job lives.
 let alwaysOnDeferLogged = false
+// F4: so is the "could not read the job list, asking again next cycle" line.
+let alwaysOnWaitLogged = false
+// The G11 reading's exec: systemctl --user with the user bus default
+// bin/bgos-agent uses (lib/always-on-reconcile.ts userBusExecSync).
+const alwaysOnExecSync = userBusExecSync(defaultExecSync, {
+  platform: process.platform,
+  env: process.env,
+  uid: typeof process.getuid === 'function' ? process.getuid() : null,
+})
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -13534,26 +13596,22 @@ async function reconcileAlwaysOn(): Promise<void> {
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
     // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
-    // file, so before installing, ask the same detection the update ladder
-    // trusts whether a bespoke job or a verified keepalive already keeps this
-    // agent alive. Read only on the install row: the platform query is not
-    // free and no other row needs it. Unreadable is null, which installs, the
-    // pre-G11 behaviour. Anchored on the agent folder (ALWAYS_ON_WORKDIR), the
-    // same folder the install below names, so a bespoke job whose
-    // WorkingDirectory is that folder is found on a marketplace install too.
-    let supervision: Supervision | null = null
+    // file, so before installing, ask whether a bespoke job or a live
+    // keepalive already keeps this agent alive. Read only on the install row:
+    // the platform query is not free and no other row needs it. Unreadable is
+    // NOT none (code review F4): it waits for the next cycle, because one
+    // failed listing used to add a second supervisor for good. Anchored on the
+    // agent folder (ALWAYS_ON_WORKDIR), the same folder the install below
+    // names, so a bespoke job whose WorkingDirectory is that folder is found
+    // on a marketplace install too.
+    let supervision: AlwaysOnSupervision | null = null
     if (desired && !installed) {
-      try {
-        supervision = resolveSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR })
-      } catch {
-        supervision = null
-      }
+      supervision = readAlwaysOnSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR, execSync: alwaysOnExecSync })
     }
     const decision = decideAlwaysOnReconcile({
       desired,
       canonicalInstalled: installed,
       supervision,
-      assistantId: ASSISTANT_ID,
     })
     if (decision.action === 'defer') {
       if (!alwaysOnDeferLogged) {
@@ -13562,6 +13620,17 @@ async function reconcileAlwaysOn(): Promise<void> {
           `always-on: enabled in BGOS, and this agent is already kept alive by ` +
             `${describeOtherSupervisor(decision.other)}; not installing a second ` +
             `supervisor (two would race to relaunch it). Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'wait') {
+      if (!alwaysOnWaitLogged) {
+        alwaysOnWaitLogged = true
+        log(
+          `always-on: enabled in BGOS, but this host could not say whether another ` +
+            `supervisor already keeps this agent alive (${decision.reason}); not ` +
+            `installing one now, asking again next cycle. Logged once.`,
         )
       }
       return

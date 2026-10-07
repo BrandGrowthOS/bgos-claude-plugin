@@ -37,13 +37,32 @@
  * (finding 9). `lastActivityAt` is the newest of the activity times the
  * daemon knows AND the moment it was last seen going busy or going idle, so
  * the watcher's quiet window starts when the work ended, not when it began.
+ *
+ * `turnSignal` (code review F1, 2026-10-07) says whether `turnInFlight` means
+ * anything: 'hooks' once this daemon consumed a hook event of its own session
+ * in this process, else 'none'. A clone agent whose folder registers no BGOS
+ * hooks (the whole fleet on KC's Mac when it was reviewed) never sees one, so
+ * its turnInFlight is false for good, and the watcher must not read that as
+ * idle. The one field added to section 7, at schemaVersion 1: the watcher's
+ * parser ignores a field it does not know, and the meaning of every other
+ * field is unchanged. For the same agents `lastActivityAt` also counts the
+ * transcript it is writing (readSessionTranscript), and `sessionId` falls
+ * back to the transcript the binding chain proved, so the watcher can stat
+ * the transcript and the spool itself.
  */
 
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 
 import { isSessionIdLike } from '../bin/hoai-core.mjs'
-import { isKeepaliveSessionProcess, validAssistantId } from './update-readiness.js'
+import { type BindingSource, POSITIVE_BINDING_SOURCES } from './session-binding.js'
+import {
+  isKeepaliveSessionProcess,
+  readProcessAncestry,
+  readProcessComm,
+  type SyncExecResult,
+  validAssistantId,
+} from './update-readiness.js'
 
 export const AGENT_STATE_FILE_NAME = 'agent-state.json'
 export const AGENT_STATE_SCHEMA_VERSION = 1
@@ -59,6 +78,7 @@ export interface AgentState {
   runningVersion: string | null
   pendingRestartVersion: string | null
   turnInFlight: boolean
+  turnSignal: TurnSignal
   pendingMessages: number
   pendingPermissions: number
   activeOperations: number
@@ -67,6 +87,9 @@ export interface AgentState {
   updatedAt: string
 }
 
+/** Where turnInFlight comes from: the hook rail, or nothing at all. */
+export type TurnSignal = 'hooks' | 'none'
+
 /** What the daemon reads off its live state for one publish. */
 export interface AgentStateSnapshot {
   assistantId: string | number | null | undefined
@@ -74,6 +97,7 @@ export interface AgentStateSnapshot {
   runningVersion: string | null | undefined
   pendingRestartVersion: string | null | undefined
   turnInFlight: boolean
+  turnSignal: TurnSignal
   pendingMessages: number
   pendingPermissions: number
   activeOperations: number
@@ -125,6 +149,9 @@ export function buildAgentState(
     runningVersion: text(input.runningVersion),
     pendingRestartVersion: text(input.pendingRestartVersion),
     turnInFlight: input.turnInFlight === true,
+    // Fail closed toward 'none': a turn signal the daemon cannot vouch for is
+    // the reading under which turnInFlight proves nothing.
+    turnSignal: input.turnSignal === 'hooks' ? 'hooks' : 'none',
     pendingMessages: count(input.pendingMessages),
     pendingPermissions: count(input.pendingPermissions),
     activeOperations: count(input.activeOperations),
@@ -163,6 +190,236 @@ export function nearestClaudeAncestor(
     return null
   }
   return null
+}
+
+// ── The claude pid on Windows (code review F2) ──────────────────────────────
+//
+// readProcessAncestry and readProcessComm spawn `ps`, which Windows does not
+// have, and the posix name rule wants exactly 'claude' after the last '/'. So
+// a Windows daemon published claudePid null forever; with no keepalive marker
+// and no cwd lookup on win32 the watcher then had no way to read the agent's
+// process tree, and every staged update waited in process_tree_unreadable.
+
+/**
+ * One PowerShell call that follows ParentProcessId up from `ownPid`, one
+ * filtered Get-CimInstance per link (a whole-table listing is far more output
+ * than a chain of a few processes). Bounded at 64 links and stopped at a
+ * process that is its own parent. No double quote anywhere in the script:
+ * Node escapes one as \" on the Windows command line, and a -Command must not
+ * depend on how that is read back. CreationDate is converted to epoch ms
+ * inside PowerShell, as lib/process-tree.mjs does, so the JSON never carries
+ * a locale formatted date. Null for a pid that is not a positive integer (it
+ * is the one value interpolated).
+ */
+export function win32AncestryCommand(ownPid: number): { file: string; args: string[] } | null {
+  if (!Number.isInteger(ownPid) || ownPid <= 0) return null
+  const script = [
+    `$p = ${ownPid};`,
+    '$out = @();',
+    'for ($i = 0; $i -lt 64 -and $p -gt 0; $i++) {',
+    "$x = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p);",
+    'if (-not $x) { break };',
+    '$out += [pscustomobject]@{',
+    'ProcessId = $x.ProcessId;',
+    'ParentProcessId = $x.ParentProcessId;',
+    'Name = $x.Name;',
+    'CreationDate = $(if ($x.CreationDate) { ([DateTimeOffset]$x.CreationDate).ToUnixTimeMilliseconds() } else { $null });',
+    'CommandLine = $x.CommandLine',
+    '};',
+    'if ($x.ParentProcessId -eq $p) { break };',
+    '$p = $x.ParentProcessId',
+    '};',
+    'ConvertTo-Json -Compress -InputObject $out',
+  ].join(' ')
+  return { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', script] }
+}
+
+interface Win32ProcessLink {
+  pid: number
+  ppid: number
+  name: string
+  command: string | null
+  createdAtMs: number | null
+}
+
+function parseWin32Ancestry(stdout: string): Win32ProcessLink[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(String(stdout ?? ''))
+  } catch {
+    return null
+  }
+  const list = Array.isArray(parsed) ? parsed : parsed && typeof parsed === 'object' ? [parsed] : []
+  const out: Win32ProcessLink[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') return null
+    const row = item as Record<string, unknown>
+    if (!Number.isInteger(row.ProcessId) || !Number.isInteger(row.ParentProcessId)) return null
+    out.push({
+      pid: row.ProcessId as number,
+      ppid: row.ParentProcessId as number,
+      name: typeof row.Name === 'string' ? row.Name : '',
+      command: typeof row.CommandLine === 'string' ? row.CommandLine : null,
+      createdAtMs: typeof row.CreationDate === 'number' && Number.isFinite(row.CreationDate) ? row.CreationDate : null,
+    })
+  }
+  return out
+}
+
+/** Claude Code's npm entry point on a command line, quoted or not. */
+const CLAUDE_CODE_CLI_RE = /[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.m?js(?=["'\s]|$)/i
+
+/**
+ * Is this Windows process a claude session? The native binary by its image
+ * name (claude.exe, or claude), or a node running Claude Code's cli.js, which
+ * is what the npm install's claude.cmd shim starts (the path is quoted there,
+ * so the match allows a closing quote). Anything that merely mentions claude
+ * is not one.
+ */
+export function isWin32ClaudeProcess(proc: { name: string | null | undefined; command: string | null | undefined }): boolean {
+  const name = String(proc.name ?? '').trim().toLowerCase()
+  if (name === 'claude.exe' || name === 'claude') return true
+  if (name !== 'node.exe' && name !== 'node') return false
+  return CLAUDE_CODE_CLI_RE.test(String(proc.command ?? ''))
+}
+
+/**
+ * The claude this daemon serves on Windows: the NEAREST ancestor that
+ * isWin32ClaudeProcess accepts, self excluded, or null. Windows reuses pids,
+ * so a "parent" created after its child is a stranger that inherited a dead
+ * parent's pid, and the walk stops there rather than adopt it. Never throws.
+ */
+export function nearestClaudeAncestorWin32(
+  ownPid: number,
+  execSync: (file: string, args: string[]) => SyncExecResult,
+): number | null {
+  try {
+    const cmd = win32AncestryCommand(ownPid)
+    if (!cmd) return null
+    const result = execSync(cmd.file, cmd.args)
+    if (result.code !== 0) return null
+    const links = parseWin32Ancestry(result.stdout)
+    if (!links) return null
+    const byPid = new Map(links.map((link) => [link.pid, link]))
+    const seen = new Set<number>()
+    let child = byPid.get(ownPid)
+    while (child && !seen.has(child.pid)) {
+      seen.add(child.pid)
+      const parent = byPid.get(child.ppid)
+      if (!parent || parent.pid <= 0 || parent.pid === child.pid) return null
+      if (parent.createdAtMs !== null && child.createdAtMs !== null && parent.createdAtMs > child.createdAtMs) return null
+      if (isWin32ClaudeProcess(parent)) return parent.pid
+      child = parent
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** The claude ancestor on this platform: PowerShell on win32, ps elsewhere. */
+export function findClaudeAncestor(input: {
+  platform: string
+  ownPid: number
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): number | null {
+  if (input.platform === 'win32') return nearestClaudeAncestorWin32(input.ownPid, input.execSync)
+  return nearestClaudeAncestor(readProcessAncestry(input.ownPid, input.execSync), (pid) =>
+    readProcessComm(pid, input.execSync),
+  )
+}
+
+/** The two reads readSessionTranscript makes, injectable. */
+export interface TranscriptActivityFs {
+  mtimeMs: (path: string) => number | null
+  listDir: (dir: string) => string[]
+}
+
+const nodeTranscriptActivityFs: TranscriptActivityFs = {
+  mtimeMs: (path) => {
+    try {
+      return statSync(path).mtimeMs
+    } catch {
+      return null
+    }
+  },
+  listDir: (dir) => {
+    try {
+      return readdirSync(dir)
+    } catch {
+      return []
+    }
+  },
+}
+
+/** How many dirs below <session id>/subagents/ readSessionTranscript looks
+ *  for agent files: workflows/<run id>/ is two, one more is slack. */
+export const SUBAGENT_DIR_DEPTH = 3
+
+/** What the transcripts say about this agent (code review F1). */
+export interface SessionTranscriptReading {
+  /** The newest write to this session's transcript files, or null. */
+  activityMs: number | null
+  /** The session the binding chain PROVED, or null. */
+  sessionId: string | null
+}
+
+/**
+ * Read the activity and the session off the transcripts, for an agent whose
+ * hook rail may be silent (F1). `resolve` is the session binder's answer
+ * (lib/session-binding.ts resolve()) with ANY binding source, because a wrong
+ * guess here only makes the agent look busier, which is the safe direction for
+ * a restart. The session id is published only from a POSITIVE binding: it
+ * names a transcript and a spool the watcher stats, and the pin rules key on
+ * it. The activity is the newest of:
+ *   - the transcript itself;
+ *   - its subagents' files, which Claude Code 2.1 writes beside it, so a long
+ *     Task subagent or workflow moves no byte of the main transcript: a Task
+ *     subagent at <project dir>/<session id>/subagents/agent-<id>.jsonl, a
+ *     workflow's agents two levels further down, at
+ *     subagents/workflows/<run id>/agent-<id>.jsonl (both seen on disk under
+ *     2.1.292). Every .jsonl up to SUBAGENT_DIR_DEPTH dirs below subagents/
+ *     counts;
+ *   - while the binder cannot tell which transcript is ours (two live ones and
+ *     no proof yet), every transcript in the project dir: someone in this
+ *     agent's folder is writing, and it may be the agent.
+ * Never throws; a missing file or dir is simply no reading.
+ */
+export function readSessionTranscript(input: {
+  /** The binder's answer, asked inside this function so a throw from it
+   *  costs the reading, never the publish. */
+  resolve: () => { path: string; binding: { source: BindingSource } } | null
+  projectDir: string
+  fs?: TranscriptActivityFs
+}): SessionTranscriptReading {
+  const fs = input.fs ?? nodeTranscriptActivityFs
+  try {
+    const times: number[] = []
+    const note = (ms: number | null) => {
+      if (typeof ms === 'number' && Number.isFinite(ms)) times.push(ms)
+    }
+    const jsonl = (dir: string) => fs.listDir(dir).filter((name) => name.endsWith('.jsonl'))
+    const resolved = input.resolve()
+    let sessionId: string | null = null
+    if (resolved && resolved.path) {
+      note(fs.mtimeMs(resolved.path))
+      const id = basename(resolved.path).replace(/\.jsonl$/, '')
+      // The .meta.json beside each agent file is a file: never walked into.
+      const walk = (dir: string, depth: number): void => {
+        for (const name of fs.listDir(dir)) {
+          if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
+          else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
+        }
+      }
+      walk(join(dirname(resolved.path), id, 'subagents'), SUBAGENT_DIR_DEPTH)
+      if (POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && isSessionIdLike(id)) sessionId = id
+    } else if (input.projectDir) {
+      for (const name of jsonl(input.projectDir)) note(fs.mtimeMs(join(input.projectDir, name)))
+    }
+    return { activityMs: times.length > 0 ? Math.max(...times) : null, sessionId }
+  } catch {
+    return { activityMs: null, sessionId: null }
+  }
 }
 
 /** The filesystem calls the writer makes, injectable so a test can prove the
@@ -245,9 +502,9 @@ export function memoizeFor<T>(ttlMs: number, now: () => number, compute: () => T
  * A reading kept FOREVER once it answers, and retried at most once per
  * `retryMs` while it does not. For the claude ancestor: it cannot change under
  * a live daemon (when that claude dies our stdin closes and we exit), the
- * ancestry walk is a chain of synchronous `ps` spawns, and a host where it
- * cannot answer (no ps on Windows, a claude under another process name) must
- * not pay for it every second.
+ * ancestry walk is a chain of synchronous `ps` spawns (one PowerShell call
+ * on Windows), and a host where it cannot answer (a claude under another
+ * process name) must not pay for it every second.
  */
 export function memoizeUntilFound<T>(
   retryMs: number,
