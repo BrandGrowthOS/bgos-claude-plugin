@@ -21,6 +21,8 @@
  * non-string value (the wake-card contract; see test/ws-inbound-meta.test.ts).
  */
 
+import { readServerSenderMeta } from './inbound-channel.ts'
+
 export interface MeetingParticipantLike {
   assistantId: number
   name: string
@@ -107,6 +109,13 @@ export interface MeetingCardInput {
   senderAssistantId?: number | null
   currentSpeakerId?: number | null
   backlog?: boolean
+  /**
+   * The server's record for this turn, as the lane received it (the socket
+   * twin's inbound_message payload, the poll row, the meeting_message
+   * broadcast). The sender attributes come off it through readServerSenderMeta
+   * and are absent when it carries none, which the broadcast never does.
+   */
+  serverSender?: unknown
 }
 
 // A type alias, not an interface: the MCP notification params type carries a
@@ -157,6 +166,7 @@ export function buildMeetingCard(input: MeetingCardInput): MeetingCard {
         : {}),
       transport: String(input.transport),
       ...(input.backlog ? { backlog: 'true' } : {}),
+      ...readServerSenderMeta(input.serverSender),
     },
   }
 }
