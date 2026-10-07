@@ -165,6 +165,51 @@ test('F3: a keepalive whose script is alive defers even before its marker names 
   assert.deepEqual(readAlwaysOnSupervision(macProbe(m)), { state: 'none' })
 })
 
+// Delta review F1 (mission 104). The watcher's F6 rule (lib/agent-inventory.mjs
+// readDeclaredKeepalive) refuses a keepalive.json whose script pid was reused:
+// a process of another user, or one that started after the marker was
+// written. It needs the probe's exec to read the ps table, and the G11 reading
+// called it without one, so a retired script's marker whose pid went to a root
+// daemon after a reboot deferred every reconcile to nothing, for good.
+test('F1: a keepalive.json whose script pid was reused reads as none, by the watcher rule', () => {
+  const ourUid = typeof process.getuid === 'function' ? process.getuid() : 501
+  const otherUid = ourUid === 0 ? 1 : 0
+  const m = fakeMac({
+    files: {
+      [`${STATE_DIR}/keepalive.json`]: JSON.stringify({
+        kind: 'keepalive',
+        capabilities: ['relaunch'],
+        pid: 4622,
+        claudePid: 6000,
+        tmuxSession: 'agent-910',
+        startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      }),
+    },
+    alive: new Set([4622]),
+    loaded: ['com.apple.something'],
+  })
+  // One ps table row for pid 4622; every other ps question stays unanswered.
+  const withPs = (uid: number, etime: string) => {
+    const probe = macProbe(m)
+    return {
+      ...probe,
+      execSync: (file: string, args: string[]) =>
+        file === 'ps' && args.join(' ') === '-A -o pid=,ppid=,uid=,etime='
+          ? { code: 0, stdout: `  4622     1 ${uid} ${etime}\n` }
+          : probe.execSync(file, args),
+    }
+  }
+  // A root daemon took pid 4622 after a reboot: not the script.
+  assert.deepEqual(readAlwaysOnSupervision(withPs(otherUid, '2-00:00:00')), { state: 'none' })
+  // One of ours that started after the marker was written: not the script.
+  assert.deepEqual(readAlwaysOnSupervision(withPs(ourUid, '00:05')), { state: 'none' })
+  // The script that wrote the marker, still running: it holds the agent.
+  assert.deepEqual(readAlwaysOnSupervision(withPs(ourUid, '02:00:00')), {
+    state: 'other',
+    other: { kind: 'keepalive', handle: 'agent-910', via: 'keepalive-declared' },
+  })
+})
+
 test('F4: a failed job listing is unknown, never "no other supervisor"', () => {
   const m = fakeMac({
     plists: { [`${LA}/ai.bgos.session.910.plist`]: sessionPlist('ai.bgos.session.910') },

@@ -143,9 +143,19 @@ export function readAlwaysOnSupervision(probe: SupervisionProbe): AlwaysOnSuperv
     const id = validAssistantId(probe.assistantId)
     const alive = probe.pidAlive ?? defaultPidAlive
     // A keepalive whose script is alive has promised a relaunch (F3). The
-    // proven tier only names it better in the log.
+    // proven tier only names it better in the log. The exec is what lets the
+    // watcher's reuse rule (F6) run here too: without a ps table a retired
+    // script's pid, reused after a reboot by a root daemon, read as the script
+    // and deferred every reconcile to nothing (delta review F1).
     const declaredKeepalive = id
-      ? readDeclaredKeepalive({ platform: probe.platform, home: probe.home, assistantId: id, readFile: probe.readFile, pidAlive: alive })
+      ? readDeclaredKeepalive({
+          platform: probe.platform,
+          home: probe.home,
+          assistantId: id,
+          readFile: probe.readFile,
+          pidAlive: alive,
+          execSync: probe.execSync,
+        })
       : null
     if (declaredKeepalive) {
       const proven = resolveKeepalive(probe)
