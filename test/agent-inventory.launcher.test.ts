@@ -34,7 +34,7 @@ import {
   resolveAgentSupervisor,
   runsHoaiLauncher,
 } from '../lib/agent-inventory.mjs'
-import { supervisorFileBody } from '../bin/hoai-core.mjs'
+import { decideSupervisorArming, supervisorFileBody } from '../bin/hoai-core.mjs'
 import { buildDeclaredSupervisorBody } from '../lib/update-readiness.ts'
 
 const HOME = '/home/kc'
@@ -288,6 +288,55 @@ test('F1: runsHoaiLauncher anchors on argv[1]: another agent\'s tmux server, a w
   assert.equal(runsHoaiLauncher(`node ${ROOT}/bin/hoai-core.mjs.bak`), false)
   assert.equal(runsHoaiLauncher(`node --inspect ${ROOT}/bin/hoai-core.mjs`), false, 'argv[1] is a flag')
   assert.equal(runsHoaiLauncher('/usr/libexec/rapportd'), false)
+})
+
+// Review 3 F2: posix ps prints argv unquoted, and argv[0] is what run.sh baked
+// with `command -v node`, a full path that can hold a space: Laravel Herd's nvm
+// lives under `~/Library/Application Support`. The argv[1] parse took the first
+// word as argv[0] and stopped argv[1] at the next word starting with '/', so it
+// read `Support/.../bin/node` as the script and refused every live hoai there
+// (and a checkout path holding ' - '): launcherLive false, and a second
+// launcher reclaimed the live one's supervisor.json. argv[0] may now run past a
+// space when it is a path (the rest of a directory path follows that space),
+// while a tmux client, sh -c, env or another script before hoai-core.mjs still
+// never counts.
+const HERD_NODE = '/Users/kc/Library/Application Support/Herd/config/nvm/versions/node/v22.11.0/bin/node'
+
+test('review 3 F2: runsHoaiLauncher: a node path with a space (Herd), a checkout path with \' - \', and both at once are hoai; what is not hoai still is not', () => {
+  assert.equal(runsHoaiLauncher(`${HERD_NODE} ${ROOT}/bin/hoai-core.mjs`), true, 'the Herd node run.sh bakes')
+  assert.equal(runsHoaiLauncher(`${HERD_NODE} ${ROOT}/bin/hoai-core.mjs --keep-alive --new`), true)
+  assert.equal(runsHoaiLauncher('/usr/local/bin/node /Users/kc/My Work - Plugins/bgos-claude-plugin/bin/hoai-core.mjs'), true, 'a lone - inside a checkout path is no flag')
+  assert.equal(runsHoaiLauncher(`${HERD_NODE} /Users/kc/My Work - Plugins/bgos-claude-plugin/bin/hoai-core.mjs --keep-alive`), true)
+  assert.equal(runsHoaiLauncher('/Applications/Node Runtime.app/Contents/MacOS/node /Users/kc/My Projects/p/bin/hoai-core.mjs'), true)
+  assert.equal(runsHoaiLauncher('C:\\Program Files\\nodejs\\node.exe C:\\p\\bin\\hoai-core.mjs'), true, 'an unquoted Windows line reads the same way')
+  // Still refused: something other than node's script run sits before hoai-core.mjs.
+  assert.equal(runsHoaiLauncher(`/usr/bin/tmux new-session node ${ROOT}/bin/hoai-core.mjs`), false, 'an absolute tmux with no flag: new-session is no path')
+  assert.equal(runsHoaiLauncher(`/usr/bin/env PATH=/usr/bin /opt/homebrew/bin/node ${ROOT}/bin/hoai-core.mjs`), false, 'env: another path starts before the script')
+  assert.equal(runsHoaiLauncher(`/opt/homebrew/bin/node /Users/kc/other/script.mjs ${ROOT}/bin/hoai-core.mjs`), false, 'another script whose argument names hoai-core.mjs')
+  assert.equal(runsHoaiLauncher(`${HERD_NODE} --inspect ${ROOT}/bin/hoai-core.mjs`), false, 'argv[1] is a flag')
+  assert.equal(runsHoaiLauncher(`tmux -L hoai-913 new-session -d -s hoai-913 ${HERD_NODE} ${ROOT}/bin/hoai-core.mjs`), false, 'a tmux client running the Herd node')
+  assert.equal(runsHoaiLauncher(`/bin/sh -c ${HERD_NODE} ${ROOT}/bin/hoai-core.mjs`), false)
+  assert.equal(runsHoaiLauncher(`${HERD_NODE} ${ROOT}/bin/not-hoai-core.mjs`), false)
+  assert.equal(runsHoaiLauncher(HERD_NODE), false)
+})
+
+test('review 3 F2: a live hoai on the Herd node is its file\'s writer: listAgents reads it live and a second hoai refuses to arm beside it', () => {
+  const stamp = NOW - 10 * 60_000
+  const line = `${HERD_NODE} ${ROOT}/bin/hoai-core.mjs`
+  const files = {
+    [`${HOME}/.bgos-agent/credentials-912.json`]: '{}',
+    [`${HOME}/.bgos-agent/912/supervisor.json`]: supervisorFileBody(4242, new Date(stamp).toISOString()),
+  }
+  const ps = psAged({ 4242: { command: line, startedAtMs: stamp - 2000 } })
+  const [agent] = listAgents({ home: HOME, env: {}, platform: 'darwin', fs: fsWith(files), pidAlive: () => true, execSync: ps.execSync, now: NOW })
+  assert.equal(agent!.launcherLive, true)
+  assert.equal(agent!.supervisor, 'launcher-live')
+  const proc = readLauncherProcesses({ platform: 'darwin', pids: [4242], execSync: ps.execSync, now: NOW }).get(4242)!
+  assert.equal(proc.command, line, 'ps prints the argv unquoted, space and all')
+  assert.deepEqual(
+    decideSupervisorArming({ existingRaw: files[`${HOME}/.bgos-agent/912/supervisor.json`]!, ownPid: 5555, pidAlive: () => true, pidProcess: () => proc }),
+    { arm: false, ownerPid: 4242 },
+  )
 })
 
 test('F1: listAgents after a reboot: agent 912\'s stale file naming agent 913\'s hoai (started after the stamp) or tmux server is not 912\'s launcher', () => {
