@@ -729,6 +729,14 @@ import {
 // working child outlived, because the mapper emits that repaint and the live
 // turn's own card in the same batch (stage 8).
 import { PendingCards, HOOK_CARD_PENDING_MAX } from './lib/hook-card-pending.js'
+import {
+  PEER_NOT_PARTICIPANT,
+  classifyPeerRefusal,
+  createRefusedChats,
+  peerNotParticipantResult,
+  peerRefusalOf,
+  type PeerRefusal,
+} from './lib/peer-refusal.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -1224,14 +1232,20 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
  * anything by searching the text is a bug waiting for a chat id: the Steps
  * route embeds one in its URL, so a chat numbered 4403 used to look like a
  * permanent 403 refusal and silenced itself forever.
+ *
+ * `peerRefusal` is the same idea for the one refusal that is permanent for a
+ * chat (lib/peer-refusal.ts): read from the status and the WHOLE body when the
+ * response arrives, because this message keeps only an excerpt of it.
  */
 class HttpError extends Error {
   readonly status: number
+  readonly peerRefusal: PeerRefusal | null
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, peerRefusal: PeerRefusal | null = null) {
     super(message)
     this.name = 'HttpError'
     this.status = status
+    this.peerRefusal = peerRefusal
   }
 }
 
@@ -1260,7 +1274,11 @@ async function bgosPost(
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+        throw new HttpError(
+          `POST ${response.status}: ${text.slice(0, 200)}`,
+          response.status,
+          classifyPeerRefusal(response.status, text),
+        )
       }
       return response.json()
     },
@@ -5013,6 +5031,15 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       const resolvedChatId = replyAuth.chatId
       const replySessionHandle = replyAuth.sessionHandle
 
+      // A side-thread that already refused this agent's reply for good: no
+      // upload and no POST, the same typed answer, until a new message arrives
+      // there (see peerReplyRefusedChats).
+      if (peerReplyRefusedChats.has(String(resolvedChatId))) {
+        clearInbound(resolvedChatId)
+        log(`reply to chat ${resolvedChatId} not sent: refused earlier with 403 ${PEER_NOT_PARTICIPANT}`)
+        return peerNotParticipantResult(String(resolvedChatId))
+      }
+
       const meetingIdForChat = meetingIdByChatId.get(String(resolvedChatId))
       if (meetingIdForChat != null) {
         if (filesInput?.length || buttonsInput?.length) {
@@ -5176,6 +5203,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         clearInbound(resolvedChatId)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
+        if (peerRefusalOf(err) !== null) {
+          // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
+          // words the model cannot take for a hiccup, answer any later reply
+          // here locally, and drop the inbound it was answering so the overdue
+          // sweep does not ask for that reply again.
+          peerReplyRefusedChats.add(String(resolvedChatId))
+          clearInbound(resolvedChatId)
+          log(
+            `reply to chat ${resolvedChatId} refused with 403 ${PEER_NOT_PARTICIPANT}; ` +
+              'told the agent not to retry',
+          )
+          return peerNotParticipantResult(String(resolvedChatId))
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed to send: ${errMsg}` }], isError: true }
       }
@@ -7207,6 +7247,13 @@ const peerConvByChat = new Map<string, string>()
 // also clears any tracker that was already armed.
 const closedPeerChats = new Set<string>()
 const CLOSED_PEER_CHATS_MAX = 500
+// Side-thread chat ids where HOAI refused this agent's REPLY with the
+// participant 403 (lib/peer-refusal.ts): the conversation there is closed or
+// this agent is not in it, and the same send is refused every time. A later
+// reply into one is answered here with the same typed refusal, so a model that
+// tries again cannot loop the backend. recordInbound lifts it: a new message in
+// that chat is the one sign the agent may be in a conversation there again.
+const peerReplyRefusedChats = createRefusedChats()
 // 4 minutes: agents legitimately run long (some tasks work up to ~10 min), so a
 // 2-minute nudge fired too early on work still in progress. KC 2026-08-15: push
 // the reply-overdue window to 4 min so the reminder only fires on genuine silence.
@@ -7265,6 +7312,9 @@ function recordInbound(
   // guards below short-circuit (meeting chats, malformed ids). Receiving an
   // inbound is proof the backend routed this chat to us.
   noteMonitoredChat(chatId)
+  // And it is new evidence for a side-thread that refused this agent's reply:
+  // allow one more attempt there.
+  peerReplyRefusedChats.delete(chatId)
   if (meetingChatIds.has(chatId)) return
   if (!Number.isFinite(messageId)) return
   // A peer side-thread that is already closed owes no reply. Never arm an
@@ -8142,6 +8192,11 @@ let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
 /** A 403 means this chat does not take a Steps list from us (a room). Say it
  *  once and stop asking; the tool card and the replies are unaffected. */
 const hookStepsSilencedChats = new Set<string>()
+/** Chats that refused this rail's POST for good: a peer side-thread answers
+ *  every card and marker with the participant 403 (lib/peer-refusal.ts), and a
+ *  refused card used to be posted again on every flush. One attempt per chat,
+ *  then none; every other chat, the owner's included, is unaffected. */
+const hookRailRefusedChats = createRefusedChats()
 let hookIntake: HookIntake | null = null
 
 /**
@@ -8254,6 +8309,24 @@ function adoptCarriedCardIds(): void {
 }
 
 /**
+ * True when `err` is the refusal that is permanent for this chat; the chat is
+ * then recorded, and the reason logged once. Any other failure is the caller's
+ * to handle as it always was.
+ */
+function refuseHookRailChat(chatId: string, err: unknown): boolean {
+  const refusal = peerRefusalOf(err)
+  if (refusal === null) return false
+  if (!hookRailRefusedChats.has(chatId)) {
+    hookRailRefusedChats.add(chatId)
+    log(
+      `hook rail: chat ${chatId} refused the card with 403 ${refusal} (this agent cannot ` +
+        'post there); no more cards or markers go to that chat',
+    )
+  }
+  return true
+}
+
+/**
  * One card write. Returns the card's id: the created one for a POST, the same
  * one for a PATCH, so a caller that started the POST can hand the id to the
  * final update even after the turn state has been cleared.
@@ -8274,13 +8347,19 @@ async function writeHookCard(
   card: ReturnType<typeof hookCardBody>,
 ): Promise<string | null> {
   if (cardId === null) {
-    if (chatId === null) return null
-    const created = await bgosPost('messages', {
-      chatId: Number(chatId),
-      sender: 'assistant',
-      messageType: 'tool_progress',
-      ...card,
-    })
+    if (chatId === null || hookRailRefusedChats.has(chatId)) return null
+    let created: unknown
+    try {
+      created = await bgosPost('messages', {
+        chatId: Number(chatId),
+        sender: 'assistant',
+        messageType: 'tool_progress',
+        ...card,
+      })
+    } catch (err) {
+      if (refuseHookRailChat(chatId, err)) return null
+      throw err
+    }
     return createdMessageId(created)
   }
   await bgosPatch(`messages/${cardId}`, card)
@@ -8384,7 +8463,7 @@ function stopHookStepsHeartbeat(): void {
 
 async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Promise<void> {
   const chatId = hookChatId()
-  if (chatId === null) return
+  if (chatId === null || hookRailRefusedChats.has(chatId)) return
   const built = buildComponentEventMessage({
     kind: effect.markerKind,
     payload: effect.payload,
@@ -8408,6 +8487,7 @@ async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Prom
       text: effect.text,
     })
   } catch (err) {
+    if (refuseHookRailChat(chatId, err)) return
     log(`hook rail: marker ${effect.markerKind} post failed: ${err}`)
   }
 }
