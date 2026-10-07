@@ -2238,6 +2238,12 @@ export async function superviseClaude(args, opts = {}) {
           // The child already died; its exit resolves the loop below.
         }
       }, pollMs)
+      // Never what keeps this process alive: while claude runs, its own child
+      // handle does, and nothing here waits on an exit without one. A ref'd
+      // poller kept a loop that outlived its caller (a test left with a fake
+      // child nobody exits) ticking every few ms, and held `tsx --test` open,
+      // idle, for hours.
+      poller.unref?.()
       const code = await exited
       clearInterval(poller)
       stopSignal?.removeEventListener?.('abort', onStop)
