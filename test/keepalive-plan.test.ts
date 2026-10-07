@@ -27,6 +27,7 @@ import {
   LAUNCHER_STABLE_MS,
   LAUNCH_STATUS_FRESH_MS,
   LEGACY_QUIET_WINDOW_MS,
+  PAIRING_LOCK_FRESH_MS,
   MAX_ATTEMPTS_PER_TARGET,
   MAX_TASK_STARTS_PER_EPISODE,
   QUIET_WINDOW_MS,
@@ -49,11 +50,13 @@ import {
   decideTaskStartGate,
   isAgentStateFresh,
   isBackgroundJobCommand,
+  isConsentRefusal,
   parseAgentState,
   parseInstalledPluginRecord,
   parseKeepAliveCache,
   parseKeepAliveResponse,
   parseLaunchStatusOutcome,
+  parsePairingLock,
   reportEntry,
 } from '../lib/keepalive-plan.mjs'
 
@@ -75,6 +78,7 @@ function stateBody(overrides: Record<string, unknown> = {}) {
     lastActivityAt: '2026-10-06T18:00:00.000Z',
     sessionId: '8c1f0000-0000-4000-8000-000000000001',
     updatedAt: '2026-10-06T18:59:30.000Z',
+    turnSignal: 'hooks',
     ...overrides,
   })
 }
@@ -144,6 +148,26 @@ test('isAgentStateFresh: written in the last 120 s AND the writing pid alive', (
   assert.equal(isAgentStateFresh(null, { now: NOW, pidAlive: alive }), false)
 })
 
+test('parsePairingLock: the daemon pairing lock record (mirror of lib/pairing-lock.ts parseLockRecord), junk is null', async () => {
+  const daemon = await import('../lib/pairing-lock.ts')
+  const bodies = [
+    JSON.stringify({ pid: 4912, heartbeatAt: NOW, bootedAt: NOW - 1000 }),
+    JSON.stringify({ pid: 4912, heartbeatAt: NOW }),
+    JSON.stringify({ pid: 0, heartbeatAt: NOW }),
+    JSON.stringify({ pid: 4912 }),
+    JSON.stringify({ pid: 'x', heartbeatAt: NOW }),
+    JSON.stringify({ pid: 4912, heartbeatAt: -1 }),
+    '[]',
+    'garbage',
+  ]
+  for (const body of bodies) {
+    const theirs = daemon.parseLockRecord(body)
+    assert.deepEqual(parsePairingLock(body), theirs ? { pid: theirs.pid, heartbeatAt: theirs.heartbeatAt } : null, body)
+  }
+  assert.equal(parsePairingLock(null), null)
+  assert.equal(PAIRING_LOCK_FRESH_MS, 60_000)
+})
+
 // -- the background job marker (finding 9) -----------------------------------------------------
 
 test('isBackgroundJobCommand: shell-snapshots/snapshot- in either slash style; MCP servers and claude itself are not jobs', () => {
@@ -193,6 +217,29 @@ test('decideSafeMoment: the design 6 table, exact reasons', () => {
     const out = decideSafeMoment({ ...base, ...patch } as any)
     assert.deepEqual(out, { safe, reason }, name)
   }
+})
+
+test('decideSafeMoment: turnInFlight counts only when the daemon has the hook turn signal; without it the turn is UNKNOWN and the legacy 30 min rule applies (plugin-daemon F1 contract)', () => {
+  assert.equal(parseAgentState(stateBody(), '123')!.turnSignal, 'hooks')
+  assert.equal(parseAgentState(stateBody({ turnSignal: 'none' }), '123')!.turnSignal, 'none')
+  assert.equal(parseAgentState(stateBody({ turnSignal: undefined }), '123')!.turnSignal, 'none', 'a daemon from before the field')
+  assert.equal(parseAgentState(stateBody({ turnSignal: 'HOOKS' }), '123')!.turnSignal, 'none', 'only the exact word')
+  const rows: Array<[string, Record<string, unknown>, number, boolean, string]> = [
+    ['hooks: 11 min quiet is idle', {}, 11, true, 'idle'],
+    ['no hook signal: 11 min is NOT quiet enough', { turnSignal: 'none' }, 11, false, 'recent_activity'],
+    ['no hook signal: 29 min still not', { turnSignal: 'none' }, 29, false, 'recent_activity'],
+    ['no hook signal: 31 min quiet is safe', { turnSignal: 'none' }, 31, true, 'idle'],
+    ['a daemon from before the field: the legacy window', { turnSignal: undefined }, 11, false, 'recent_activity'],
+  ]
+  for (const [name, patch, quietMin, safe, reason] of rows) {
+    const state = parseAgentState(stateBody(patch), '123')!
+    const out = decideSafeMoment({ running: true, stateFresh: true, state, descendants: [], activityMs: [NOW - quietMin * MIN], now: NOW } as any)
+    assert.deepEqual(out, { safe, reason }, name)
+  }
+  // The job scan still runs without the signal.
+  const none = parseAgentState(stateBody({ turnSignal: 'none' }), '123')!
+  const job = '/bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh && tail -f x'
+  assert.deepEqual(decideSafeMoment({ running: true, stateFresh: true, state: none, descendants: [job], activityMs: [NOW - 60 * MIN], now: NOW } as any), { safe: false, reason: 'background_job' })
 })
 
 test('decideSafeMoment: a turn flag with NO activity for 2 h and no background job is stale (an interrupted turn never gets its Stop); anything less is still a turn', () => {
@@ -435,6 +482,14 @@ test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache 
   const future = parseKeepAliveCache(buildKeepAliveCache(live, NOW + 10 * MIN))
   assert.equal(decideKeepAliveConsent({ live: null, cache: future, now: NOW }).enabled, false, 'a cache from the future is not consent')
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache: null, now: NOW }).source, 'none')
+})
+
+test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF even with a fresh cache; an outage, a 5xx or a 404 is not a refusal', () => {
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'] }
+  const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 60 * MIN))
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), { enabled: false, enabledAt: null, assistantIds: [], source: 'refused' })
+  for (const status of [401, 403]) assert.equal(isConsentRefusal(status), true, String(status))
+  for (const status of [0, null, 404, 500, 502, 503, 200]) assert.equal(isConsentRefusal(status as any), false, String(status))
 })
 
 test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips; junk is null', () => {

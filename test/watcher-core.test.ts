@@ -1129,7 +1129,13 @@ test('runWatcher: a reconcile job restart hands the injected kill to the restart
   const { deps } = baseDeps(fs, backend, clock, {
     modules: stubModules({ plan }),
     pidAlive: (pid: number) => pid === 4242 || pid === 5151,
-    execSync: (file: string, args: string[]) => (file === 'ps' && args[1] === 'comm=' ? { code: 0, stdout: 'claude\n' } : { code: 1, stdout: '' }),
+    // claude 5151 runs under its keepalive script 4242: provably the script's (F6).
+    execSync: (file: string, args: string[]) =>
+      file === 'ps' && args[1] === 'comm='
+        ? { code: 0, stdout: 'claude\n' }
+        : file === 'ps' && args[0] === '-A'
+          ? { code: 0, stdout: `4242 1 ${process.getuid?.() ?? 0} 01:00:00\n5151 4242 ${process.getuid?.() ?? 0} 10:00\n` }
+          : { code: 1, stdout: '' },
     kill: (pid: number, signal: string) => void kills.push([pid, signal]),
     keepAliveSweep: async () => ({ enabled: false, agents: [] }),
   })
@@ -1146,4 +1152,84 @@ test('runWatcher: the first heartbeat after a restart carries the keep-alive sta
   const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
   await runWatcher(deps as any)
   assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
+})
+
+/** listAgents' sync probes answer nothing: the heartbeat's inventory never runs a real systemctl or ps. */
+const noOsExec = () => ({ code: 1, stdout: '' })
+
+test('runWatcher (F8): a long keep-alive sweep keeps the watcher online: it heartbeats when due, and an owner job sent meanwhile is acked inside the backend 60 s window and run right after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'job-s', op: 'bogus' }], jobs: { 'job-s': { op: 'bogus' } } })
+  const clock = fakeClock()
+  const during: Call[][] = []
+  const keepAliveSweep = async (c: any) => {
+    // 70 s of install, a touch, 70 s of verify, a touch: past the backend online window without them.
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules(), execSync: noOsExec, keepAliveSweep })
+  await runWatcher(deps as any)
+  const inSweep = during[1]!
+  assert.equal(inSweep.filter((c) => c.path.endsWith('/integrations/heartbeat')).length, 3, 'the start heartbeat, then one per due interval inside the sweep')
+  assert.ok(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/ack')), 'the job is acked while the sweep still runs')
+  assert.equal(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/progress')), false, 'it runs only after the sweep (single flight)')
+  assert.equal(backend.calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/ack')).length, 1, 'acked once')
+  assert.deepEqual(backend.progress('job-s').map((b: any) => [b.state, b.message]), [['failed', 'unknown_op:bogus']], 'run after the sweep')
+})
+
+test('runWatcher: a keep-alive state file with a null agent record (valid JSON, hand edited) never stops the start; the record is dropped', async () => {
+  // Before: reportEntry read `null.state` at startup, outside any try, so every
+  // start was a fatal and the watcher sat in crash_loop backoff for good (only a
+  // sweep rewrites the file, and no sweep was ever reached).
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': null, '7': { state: 'supervised', reason: 'canonical', since } } }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: noOsExec, keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '7', state: 'supervised', reason: 'canonical', since }] })
+})
+
+test('runWatcher (F8): a frame whose ack failed during the sweep comes back on the next touch; it is acked again, and runs ONCE after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const calls: Call[] = []
+  let ackLanded = false
+  let acks = 0
+  const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
+  // Like the real backend (machine-rpc.service.ts pending): a frame is returned
+  // on EVERY poll until an ack lands, and the first ack here is lost (a 503).
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) return respond(200, { frames: ackLanded ? [] : [{ rpcId: 'job-s', op: 'bogus' }] })
+    if (u.pathname.endsWith('/machine-rpc/job-s/ack')) {
+      acks += 1
+      if (acks === 1) return respond(503, { error: 'unavailable' })
+      ackLanded = true
+      return respond(200, {})
+    }
+    if (u.pathname.endsWith('/machine-rpc/job-s') && init?.method === 'GET') return respond(200, { op: 'bogus' })
+    return respond(200, {})
+  }
+  const clock = fakeClock()
+  const keepAliveSweep = async (c: any) => {
+    clock.advance(70_000)
+    await c.keepOnline()
+    clock.advance(70_000)
+    await c.keepOnline()
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { fetch, modules: stubModules(), execSync: noOsExec, keepAliveSweep })
+  await runWatcher(deps as any)
+  assert.equal(acks, 2, 'the lost ack is sent again when the frame comes back')
+  const progress = calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/progress')).map((c) => [c.body.state, c.body.message])
+  assert.deepEqual(progress, [['failed', 'unknown_op:bogus']], 'the job runs once, never once per delivery')
 })

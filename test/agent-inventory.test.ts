@@ -793,8 +793,12 @@ test('listAgents: an agent with NO credentials file is inventoried, and is resta
 
 const KEEPALIVE_BODY = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, tmuxSession: 'agent-912', capabilities: ['relaunch'], startedAt: 'x' })
 
-/** A sync exec that answers `ps -o comm= -p <pid>` from a table, and fails everything else. */
-function commExec(names: Record<number, string>) {
+/**
+ * A sync exec that answers `ps -o comm= -p <pid>` from a table, the process
+ * table `ps -A -o pid=,ppid=,uid=,etime=` from `procs`, a cwd lookup (lsof on
+ * darwin, readlink on linux) from `cwds`, and fails everything else.
+ */
+function commExec(names: Record<number, string>, opts: { procs?: Array<[number, number, number, string]>; cwds?: Record<number, string> } = {}) {
   const calls: string[][] = []
   const execSync = (file: string, args: string[]) => {
     calls.push([file, ...args])
@@ -802,10 +806,28 @@ function commExec(names: Record<number, string>) {
       const name = names[Number(args[3])]
       return name ? { code: 0, stdout: `${name}\n` } : { code: 1, stdout: '' }
     }
+    if (file === 'ps' && args[0] === '-A' && opts.procs) {
+      return { code: 0, stdout: opts.procs.map(([pid, ppid, uid, etime]) => `${pid} ${ppid} ${uid} ${etime}`).join('\n') + '\n' }
+    }
+    if (file === 'lsof' && opts.cwds) {
+      const pid = Number(args[args.indexOf('-p') + 1])
+      return opts.cwds[pid] ? { code: 0, stdout: `p${pid}\nfcwd\nn${opts.cwds[pid]}\n` } : { code: 1, stdout: '' }
+    }
+    if (file === 'readlink' && opts.cwds) {
+      const pid = Number(/\/proc\/(\d+)\/cwd/.exec(args[0] ?? '')?.[1])
+      return opts.cwds[pid] ? { code: 0, stdout: `${opts.cwds[pid]}\n` } : { code: 1, stdout: '' }
+    }
     return { code: 1, stdout: '' }
   }
   return { calls, execSync }
 }
+
+/** The script 33108 (started an hour ago) launched claude 33200 (10 min ago) directly. */
+const OWN_CHAIN: Array<[number, number, number, string]> = [
+  [1, 0, 0, '10-00:00:00'],
+  [33108, 1, 501, '01:00:00'],
+  [33200, 33108, 501, '10:00'],
+]
 
 test('parseKeepaliveMarker: the same table as the daemon side (lib/update-readiness.ts), so both trust one file the same way', async () => {
   const daemon = await import('../lib/update-readiness.ts')
@@ -833,17 +855,18 @@ test('parseKeepaliveMarker: the same table as the daemon side (lib/update-readin
   assert.equal(KEEPALIVE_MARKER_FILE_NAME, daemon.KEEPALIVE_MARKER_FILE)
 })
 
-test('verifyKeepaliveMarker: the script pid alive, claudePid alive AND named claude; anything else is no keepalive', () => {
+test('verifyKeepaliveMarker: the script pid alive, claudePid alive AND named claude AND provably the script\'s (it descends from it); anything else is no keepalive', () => {
   const path = '/home/kc/.bgos-agent/912/keepalive.json'
   const readFile = (p: string) => (p === path ? KEEPALIVE_BODY : null)
   const alive = (pid: number) => pid === 33108 || pid === 33200
-  const ok = commExec({ 33200: '/Users/kc/.local/bin/claude' })
-  assert.deepEqual(verifyKeepaliveMarker({ platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync }), {
+  const ok = commExec({ 33200: '/Users/kc/.local/bin/claude' }, { procs: OWN_CHAIN })
+  assert.deepEqual(verifyKeepaliveMarker({ platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync, uid: 501 }), {
     pid: 33108,
     claudePid: 33200,
     tmuxSession: 'agent-912',
   })
-  assert.deepEqual(ok.calls, [['ps', '-o', 'comm=', '-p', '33200']])
+  // One table (the script's and claude's owner, start, parent), then claude's name.
+  assert.deepEqual(ok.calls.map((c) => c.slice(0, 2)), [['ps', '-A'], ['ps', '-o']])
   const rows: Array<[string, Record<string, unknown>]> = [
     ['the keepalive script has exited', { pidAlive: (pid: number) => pid === 33200 }],
     ['the declared session is gone', { pidAlive: (pid: number) => pid === 33108 }],
@@ -858,6 +881,73 @@ test('verifyKeepaliveMarker: the script pid alive, claudePid alive AND named cla
     const probe = { platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: alive, execSync: ok.execSync, ...patch }
     assert.equal(verifyKeepaliveMarker(probe as any), null, name)
   }
+})
+
+test('verifyKeepaliveMarker (F6): a live claude that is NOT provably this agent\'s (not under the script, not in the agent folder, not the one its own daemon names) is never a SIGTERM target', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const statePath = '/home/kc/.bgos-plugin-state/912/agent-state.json'
+  const NOW = Date.parse('2026-10-06T19:00:00.000Z')
+  const startedAt = new Date(NOW - 5 * 60_000).toISOString()
+  const marker = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, tmuxSession: 'agent-912', capabilities: ['relaunch'], startedAt })
+  const alive = (pid: number) => pid === 33108 || pid === 33200
+  // 33200 runs under a tmux server (not the script) in ANOTHER folder: the old pid, reused by someone else's claude.
+  const elsewhere: Array<[number, number, number, string]> = [
+    [1, 0, 0, '10-00:00:00'],
+    [33108, 1, 501, '01:00:00'],
+    [4000, 1, 501, '02:00:00'],
+    [33200, 4000, 501, '10:00'],
+  ]
+  const base = { platform: 'darwin', home: HOME, assistantId: '912', pidAlive: alive, uid: 501, now: NOW, cwd: '/home/kc/agents/guru', agentStatePath: statePath }
+  const files = (extra: Record<string, string> = {}) => (p: string) => ({ [path]: marker, ...extra })[p] ?? null
+  const reused = commExec({ 33200: 'claude' }, { procs: elsewhere, cwds: { 33200: '/home/kc/projects/other' } })
+  assert.equal(verifyKeepaliveMarker({ ...base, readFile: files(), execSync: reused.execSync } as any), null, 'not under the script, not in the folder')
+  // The same claude in the agent's own folder (a tmux keepalive: claude is not under the script) verifies.
+  const inFolder = commExec({ 33200: 'claude' }, { procs: elsewhere, cwds: { 33200: '/home/kc/agents/guru' } })
+  assert.equal(verifyKeepaliveMarker({ ...base, readFile: files(), execSync: inFolder.execSync } as any)?.claudePid, 33200, 'in the agent folder')
+  // Or the agent's own live daemon names it as its claude (agent-state.json, fresh).
+  const state = JSON.stringify({ schemaVersion: 1, assistantId: '912', pid: 33300, claudePid: 33200, runningVersion: '0.62.0', pendingRestartVersion: null, turnInFlight: false, pendingMessages: 0, pendingPermissions: 0, activeOperations: 0, lastActivityAt: null, sessionId: null, updatedAt: new Date(NOW - 5_000).toISOString() })
+  const vouched = commExec({ 33200: 'claude' }, { procs: elsewhere })
+  const withState = { ...base, pidAlive: (pid: number) => alive(pid) || pid === 33300 }
+  assert.equal(verifyKeepaliveMarker({ ...withState, readFile: files({ [statePath]: state }), execSync: vouched.execSync } as any)?.claudePid, 33200, 'its own daemon names it')
+  // A claude in the folder that STARTED AFTER the marker was written is not the one it named (pid reuse).
+  const younger: Array<[number, number, number, string]> = [...elsewhere.slice(0, 3), [33200, 4000, 501, '01:00']]
+  const late = commExec({ 33200: 'claude' }, { procs: younger, cwds: { 33200: '/home/kc/agents/guru' } })
+  assert.equal(verifyKeepaliveMarker({ ...base, readFile: files(), execSync: late.execSync } as any), null, 'started 1 min ago, the marker is 5 min old')
+  // Another user's process at that pid is never ours.
+  const foreign: Array<[number, number, number, string]> = [...elsewhere.slice(0, 3), [33200, 4000, 502, '10:00']]
+  const other = commExec({ 33200: 'claude' }, { procs: foreign, cwds: { 33200: '/home/kc/agents/guru' } })
+  assert.equal(verifyKeepaliveMarker({ ...base, readFile: files(), execSync: other.execSync } as any), null, 'owned by uid 502')
+})
+
+test('verifyKeepaliveMarker (F6): the folder proof compares by realpath, since lsof reports the physical path of a folder recorded through a symlink', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const NOW = Date.parse('2026-10-06T19:00:00.000Z')
+  const marker = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, tmuxSession: 'agent-912', capabilities: ['relaunch'], startedAt: new Date(NOW - 5 * 60_000).toISOString() })
+  // claude runs under a tmux server, not the script: only the folder can prove it is this agent's.
+  const procs: Array<[number, number, number, string]> = [[1, 0, 0, '10-00:00:00'], [33108, 1, 501, '01:00:00'], [4000, 1, 501, '02:00:00'], [33200, 4000, 501, '10:00']]
+  const exec = commExec({ 33200: 'claude' }, { procs, cwds: { 33200: '/Volumes/Data/home/kc/agents/guru' } })
+  const base = { platform: 'darwin', home: HOME, assistantId: '912', readFile: (p: string) => (p === path ? marker : null), pidAlive: (pid: number) => pid === 33108 || pid === 33200, execSync: exec.execSync, uid: 501, now: NOW, cwd: '/home/kc/agents/guru' }
+  const realpath = (p: string) => (p === '/home/kc/agents/guru' ? '/Volumes/Data/home/kc/agents/guru' : p)
+  assert.equal(verifyKeepaliveMarker({ ...base, realpath } as any)?.claudePid, 33200, 'the same folder under its physical path')
+  assert.equal(verifyKeepaliveMarker({ ...base, realpath: (p: string) => p } as any), null, 'a folder that really is elsewhere')
+})
+
+test('readDeclaredKeepalive (F6): a script pid now held by a process that started AFTER the marker, or by another user, is a reused pid: not declared (the product supervisor is installed after all)', () => {
+  const path = '/home/kc/.bgos-agent/912/keepalive.json'
+  const NOW = Date.parse('2026-10-06T19:00:00.000Z')
+  const marker = JSON.stringify({ kind: 'keepalive', pid: 33108, claudePid: 33200, capabilities: ['relaunch'], startedAt: new Date(NOW - 3 * 24 * 60 * 60_000).toISOString() })
+  const readFile = (p: string) => (p === path ? marker : null)
+  const base = { platform: 'darwin', home: HOME, assistantId: '912', readFile, pidAlive: (pid: number) => pid === 33108, uid: 501, now: NOW }
+  // After a reboot the pid went to a daemon that started an hour ago; the marker is 3 days old.
+  const rebooted = commExec({}, { procs: [[33108, 1, 501, '01:00:00']] })
+  assert.equal(readDeclaredKeepalive({ ...base, execSync: rebooted.execSync } as any), null)
+  const root = commExec({}, { procs: [[33108, 1, 0, '5-00:00:00']] })
+  assert.equal(readDeclaredKeepalive({ ...base, execSync: root.execSync } as any), null, 'a root process at that pid')
+  const real = commExec({}, { procs: [[33108, 1, 501, '4-00:00:00']] })
+  assert.equal(readDeclaredKeepalive({ ...base, execSync: real.execSync } as any)?.pid, 33108, 'the script that wrote it, still running')
+  // No table, or a marker with no startedAt: nothing proves reuse, the declaration stands.
+  assert.equal(readDeclaredKeepalive({ ...base, execSync: commExec({}).execSync } as any)?.pid, 33108)
+  assert.equal(readDeclaredKeepalive({ ...base, readFile: (p: string) => (p === path ? KEEPALIVE_BODY : null), execSync: rebooted.execSync } as any)?.pid, 33108)
 })
 
 test('readDeclaredKeepalive: a marker that PARSES and whose script is ALIVE is a declared keepalive, even while its claude is gone between two relaunches (G11); the restart still needs the full verification', () => {
@@ -890,7 +980,7 @@ test('listAgents: a keepalive whose claude is between relaunches is DECLARED on 
   const between = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => pid === 33108, execSync: commExec({}).execSync })
   assert.equal(between[0]!.keepalive, null)
   assert.equal(between[0]!.keepaliveDeclared, true)
-  const both = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200].includes(pid), execSync: commExec({ 33200: 'claude' }).execSync })
+  const both = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200].includes(pid), execSync: commExec({ 33200: 'claude' }, { procs: OWN_CHAIN }).execSync, uid: 501 })
   assert.equal(both[0]!.keepaliveDeclared, true)
   assert.notEqual(both[0]!.keepalive, null)
   const gone = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => false, execSync: commExec({}).execSync })
@@ -930,8 +1020,8 @@ test('listAgents: rows carry the verified keepalive, the supervisor generation (
       '/home/kc/.bgos-agent/912/keepalive.json': KEEPALIVE_BODY,
     },
   )
-  const exec = commExec({ 33200: 'claude' })
-  const agents = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200, 5555].includes(pid), execSync: exec.execSync })
+  const exec = commExec({ 33200: 'claude' }, { procs: OWN_CHAIN })
+  const agents = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: (pid) => [33108, 33200, 5555].includes(pid), execSync: exec.execSync, uid: 501 })
   const byId = Object.fromEntries(agents.map((a) => [a.assistantId, a]))
   assert.deepEqual(byId['912']!.keepalive, { pid: 33108, claudePid: 33200, tmuxSession: 'agent-912' })
   assert.equal(byId['912']!.supervisorGeneration, null, 'not canonical: no generation')

@@ -91,6 +91,7 @@ function stateBody(id: string, at: number, overrides: Record<string, unknown> = 
     lastActivityAt: new Date(at - 60 * MIN).toISOString(),
     sessionId: null,
     updatedAt: new Date(at - 10_000).toISOString(),
+    turnSignal: 'hooks',
     ...overrides,
   })
 }
@@ -119,7 +120,8 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
       dirs.push(a.cwd)
     }
     if (a.service === 'canonical') {
-      files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}.plist`] = '<plist/>'
+      if (opts.platform === 'linux') files[`${HOME}/.config/systemd/user/bgos-agent-${a.id}.service`] = '[Service]\n'
+      else files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}.plist`] = '<plist/>'
       if (a.generation !== null) files[`${HOME}/.bgos-agent/${a.id}/supervisor-generation`] = `${a.generation ?? '2'}\n`
     }
     if (a.state) files[`${HOME}/.bgos-plugin-state/${a.id}/agent-state.json`] = stateBody(a.id, T0, a.state)
@@ -130,17 +132,20 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
   return memoryFs(files, dirs)
 }
 
-const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026') => ` ${pid} ${ppid} ${start} ${cmd}`
+const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026', uid = 501) => ` ${pid} ${ppid} ${uid} ${start} ${cmd}`
 
-function recorder(opts: { ps?: string | null; lsof?: string; bashCode?: number; launchctlCode?: number; win32Ps?: string } = {}) {
+function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
   const exec = async (file: string, args: readonly string[], o: any = {}) => {
     calls.push({ file, args: [...args], opts: o })
     if (file === 'powershell.exe' && args.includes('-Command') && opts.win32Ps != null) return { code: 0, stdout: opts.win32Ps, stderr: '', error: null, timedOut: false }
     if (file === 'ps') return opts.ps == null ? { code: 1, stdout: '', stderr: 'ps: denied', error: null, timedOut: false } : { code: 0, stdout: opts.ps, stderr: '', error: null, timedOut: false }
-    if (file === 'lsof') return { code: 0, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: false }
+    if (file === 'lsof') return { code: opts.lsofCode === undefined ? 0 : opts.lsofCode, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: opts.lsofCode === null }
     if (file === 'bash') return { code: opts.bashCode ?? 0, stdout: '', stderr: opts.bashCode ? `x  no .mcp.json in ${GURU} and no creds given` : '', error: null, timedOut: false }
     if (file === 'launchctl') return { code: opts.launchctlCode ?? 0, stdout: '', stderr: '', error: null, timedOut: false }
+    if (file === 'systemctl' && args.includes('show')) {
+      return opts.systemctlShow == null ? { code: 1, stdout: '', stderr: 'Failed to connect to bus', error: null, timedOut: false } : { code: 0, stdout: opts.systemctlShow, stderr: '', error: null, timedOut: false }
+    }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
   const kills: Array<[number, string]> = []
@@ -156,13 +161,14 @@ function recorder(opts: { ps?: string | null; lsof?: string; bashCode?: number; 
   return { calls, exec, kills, kill, spawns, spawnDetached }
 }
 
-/** listAgents' sync probes: no loaded jobs; `ps -o comm=` answers from a table. */
-function execSyncFor(comm: Record<number, string> = {}) {
+/** listAgents' sync probes: no loaded jobs; `ps -o comm=` answers from a table, `ps -A` (the keepalive check's table) from `procs`. */
+function execSyncFor(comm: Record<number, string> = {}, procs: Array<[number, number, number, string]> | null = null) {
   return (file: string, args: string[]) => {
     if (file === 'ps' && args[1] === 'comm=') {
       const name = comm[Number(args[3])]
       return name ? { code: 0, stdout: `${name}\n` } : { code: 1, stdout: '' }
     }
+    if (file === 'ps' && args[0] === '-A' && procs) return { code: 0, stdout: procs.map((r) => r.join(' ')).join('\n') + '\n' }
     return { code: 1, stdout: '' }
   }
 }
@@ -260,6 +266,26 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
 })
 
+test('consent: a 401 or 403 (the pairing was revoked) is a definitive OFF, never the cache; the cache is overwritten so a later outage cannot revive it', async () => {
+  for (const status of [401, 403]) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+    fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'] }, T0 - 2 * 60 * MIN))
+    const rec = recorder({ ps: IDLE_PS })
+    const clock = fakeClock()
+    const refused = consent({ message: 'Invalid pairing token' }, false, status)
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: refused.fetchKeepAlive }).ctx as any)
+    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [] }, String(status))
+    assert.deepEqual(rec.calls, [], `${status}: no install, no restart, no task start`)
+    assert.equal(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).enabled, false, `${status}: the ON cache is gone`)
+    // The network then goes down: the cache bridges the outage as OFF.
+    clock.advance(5 * MIN)
+    const down = consent(null, false, 0)
+    const later = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive }).ctx as any)
+    assert.equal(later.enabled, false, `${status}: an outage after a refusal stays off`)
+    assert.deepEqual(rec.calls, [])
+  }
+})
+
 test('consent: a live answer is cached in ~/.bgos-agent/watcher/keepalive.json (design 3.4 shape)', async () => {
   const fs = machine([])
   const { ctx } = ctxFor(fs, recorder(), fakeClock())
@@ -287,6 +313,31 @@ test('supervise: a cleared agent with no supervisor gets exactly ONE bgos-agent 
   // 300 is on disk but the backend did not clear it: nothing, not even a report row.
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason ?? null]), [['912', 'installing', 'installed']])
   assert.deepEqual(rec.kills, [])
+})
+
+test('supervise (supervisor F3): the install runs with the agent\'s own node dir (its launch recipe) and the watcher\'s node dir FIRST on PATH, so it bakes the node the agent really uses', async () => {
+  const NVM = `${HOME}/.nvm/versions/node/v22.1.0/bin`
+  const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  fs.writeFile(
+    `${HOME}/.bgos-agent/912/launch.json`,
+    JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: OLD_ROOT, node: `${NVM}/node`, startedAt: 'x', pid: null })),
+  )
+  fs.writeFile(`${NVM}/node`, '')
+  const rec = recorder({ ps: IDLE_PS })
+  // An upgraded watcher keeps the fixed service PATH it was installed with: no nvm on it.
+  await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { nodePath: '/opt/watcher-node/bin/node', env: { PATH: '/usr/local/bin:/usr/bin:/bin' } }).ctx as any)
+  const bash = rec.calls.filter((c) => c.file === 'bash')
+  assert.equal(bash.length, 1)
+  assert.equal(bash[0]!.opts.env.PATH, `${NVM}:/opt/watcher-node/bin:/usr/local/bin:/usr/bin:/bin`)
+  // A recipe node that is gone is not put on PATH; a dir already there is not repeated.
+  const gone = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  gone.writeFile(
+    `${HOME}/.bgos-agent/912/launch.json`,
+    JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: OLD_ROOT, node: `${NVM}/node`, startedAt: 'x', pid: null })),
+  )
+  const rec2 = recorder({ ps: IDLE_PS })
+  await runKeepAliveSweep(ctxFor(gone, rec2, fakeClock(), { nodePath: '/usr/local/bin/node', env: { PATH: '/usr/local/bin:/usr/bin' } }).ctx as any)
+  assert.equal(rec2.calls.find((c) => c.file === 'bash')!.opts.env.PATH, '/usr/local/bin:/usr/bin')
 })
 
 test('supervise: no known folder is needs_first_launch; a verified bespoke keepalive is supervised (never a second supervisor, G11)', async () => {
@@ -397,6 +448,22 @@ test('safe moment: a turn flag that has been quiet for 3 h with no job under cla
   assert.equal(busyRec.calls.some((c) => c.file === 'launchctl'), false)
 })
 
+test('safe moment: a fresh state WITHOUT the hook turn signal is judged by the legacy 30 min window (its turnInFlight=false is unknown, not idle)', async () => {
+  const quiet15 = { lastActivityAt: new Date(T0 - 15 * MIN).toISOString() }
+  const unsignalled = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { ...quiet15, turnSignal: 'none' } }])
+  const held = recorder({ ps: IDLE_PS })
+  const report = await runKeepAliveSweep(ctxFor(unsignalled, held, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'recent_activity']])
+  assert.equal(held.calls.some((c) => c.file === 'launchctl'), false)
+  // The same quiet with the signal is idle: the 10 min window.
+  const signalled = machine([{ id: '912', cwd: AVA, service: 'canonical', state: quiet15 }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(signalled, clock, ['912'])
+  const ok = await runKeepAliveSweep(ctxFor(signalled, rec, clock).ctx as any)
+  assert.deepEqual(ok.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
 // -- restart -------------------------------------------------------------------------------------
 
 test('restart: idle + update_pending => restart through the canonical service, then verify the channel is live', async () => {
@@ -437,6 +504,48 @@ test('restart (D4): a live hoai launcher with the canonical supervisor waiting b
   assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false)
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+})
+
+test('restart (design): the canonical v2 service\'s OWN live hoai is restarted through the service (hoai itself moves onto the installed code), never only its claude', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const ps = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(2900, 1, `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ].join('\n')
+  const rec = recorder({ ps })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false)
+  assert.equal(rec.calls.filter((c) => c.file === 'ps').length, 1, 'the sweep hands its own listing to the ladder')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
+test('restart (design): a job the agent started on its OWN tmux server (`tmux new-session -d`, outside claude\'s tree) keeps the marker: the service restart would kill that server, and the job with it', async () => {
+  for (const platform of ['darwin', 'linux']) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform })
+    fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+    const ps = [
+      psLine(1, 0, platform === 'linux' ? '/sbin/init' : '/sbin/launchd', undefined, 0),
+      psLine(2900, 1, platform === 'linux' ? 'tmux: server (/tmp/tmux-501/hoai-912)' : `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+      psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+      psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+      psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+      psLine(6100, 2900, 'npm run dev'),
+    ].join('\n')
+    const rec = recorder({ ps, systemctlShow: `MainPID=1000\nControlGroup=/user.slice/bgos-agent-912.service\n` })
+    const clock = fakeClock()
+    answerProbes(fs, clock, ['912'])
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { platform, pidAlive: (pid: number) => [3000, 4912, 5912, 6100].includes(pid) }).ctx as any)
+    assert.equal(rec.calls.some((c) => c.file === 'launchctl' || (c.file === 'systemctl' && c.args.includes('restart'))), false, `${platform}: no service restart over the job`)
+    assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/restart-requested.json`), '{}', `${platform}: claude alone restarts`)
+    assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']], platform)
+  }
 })
 
 test('restart (D4): a plain hand-run claude the canonical supervisor waits behind is waiting_idle manual_session: no restart, no kill, no attempt spent', async () => {
@@ -499,6 +608,37 @@ test('restart: a verified keepalive is restarted by SIGTERM to its claudePid ONL
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'keepalive']])
 })
 
+test('restart (F6): a keepalive.json whose claudePid is a live claude that is NOT this agent\'s (a reused pid) is never signalled: keepalive_unverified', async () => {
+  // The agent's own claude is 60 (its daemon says so); the stale marker still names 57, now a person's claude elsewhere.
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 }, state: { claudePid: 60, pid: 4100 } }])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(47, 1, '/bin/bash keepalive.sh'), psLine(60, 47, 'claude --x'), psLine(4000, 1, 'zsh'), psLine(57, 4000, 'claude --y')].join('\n')
+  const rec = recorder({ ps })
+  const procs: Array<[number, number, number, string]> = [[1, 0, 0, '9-00:00:00'], [47, 1, 501, '02:00:00'], [60, 47, 501, '01:00:00'], [4000, 1, 501, '03:00:00'], [57, 4000, 501, '01:30:00']]
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync: execSyncFor({ 57: 'claude', 60: 'claude' }, procs), pidAlive: (pid: number) => [47, 57, 60, 4100, 4000].includes(pid) })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.kills, [], 'never a SIGTERM to a claude that is not provably this agent\'s')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['update_pending', 'keepalive_unverified']])
+})
+
+test('restart (F6): the keepalive is verified again right before its SIGTERM; a claude pid that stopped being this agent\'s while the sweep ran is not signalled', async () => {
+  const FIVE = `${HOME}/hoai-agents/five`
+  const fs = machine([
+    { id: '5', cwd: FIVE, service: 'none' },
+    { id: '7', cwd: GURU, service: 'none', keepalive: { pid: 47, claudePid: 57 }, state: { claudePid: 57, pid: 47 } },
+  ])
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(57, 1, 'claude --x'), psLine(47, 1, '/bin/bash keepalive.sh')].join('\n')
+  const rec = recorder({ ps })
+  // While agent 5's install ran, claude 57 exited and its pid went to a tmux server.
+  const before = execSyncFor({ 57: 'claude' })
+  const after = execSyncFor({ 57: 'tmux' })
+  const execSync = (file: string, args: string[]) => (rec.calls.some((c) => c.file === 'bash') ? after : before)(file, args)
+  const { ctx } = ctxFor(fs, rec, fakeClock(), { execSync, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [5, 7] }).fetchKeepAlive })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[3]), ['5'])
+  assert.deepEqual(rec.kills, [])
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['5', 'installing', 'installed'], ['7', 'update_pending', 'keepalive_unverified']])
+})
+
 test('restart: a canonical generation 1 supervisor is upgraded by a reinstall at an idle moment, then verified', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }])
   const rec = recorder({ ps: IDLE_PS })
@@ -551,6 +691,274 @@ test('restart: a legacy daemon with recent activity and no claude visible is NOT
   const report = await runKeepAliveSweep(ctx as any)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'recent_activity']])
   assert.equal(rec.calls.some((c) => c.file === 'bash'), false, 'no reinstall over a session we could not see')
+})
+
+test('safe moment (F3): the process table is read again after an install: a job started while the install ran is seen, never judged on the old table', async () => {
+  const FIVE = `${HOME}/hoai-agents/five`
+  // 5: canonical, a daemon too old to publish state (its observe takes the first listing);
+  // 7: no supervisor (the install runs here, up to 10 min); 912: fresh state, update pending.
+  const fs = machine([
+    { id: '5', cwd: FIVE, service: 'canonical', state: null },
+    { id: '7', cwd: GURU, service: 'none' },
+    { id: '912', cwd: AVA, service: 'canonical', state: {} },
+  ])
+  const rec = recorder({ ps: IDLE_PS })
+  let listings = 0
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'ps') {
+      listings += 1
+      // While 7's install ran, 912 started a background monitor.
+      const bashRan = rec.calls.some((c) => c.file === 'bash')
+      rec.calls.push({ file, args: [...args], opts: o })
+      return { code: 0, stdout: bashRan ? JOB_PS : IDLE_PS, stderr: '', error: null, timedOut: false }
+    }
+    return rec.exec(file, args, o)
+  }
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const { ctx } = ctxFor(fs, rec, clock, { exec, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [5, 7, 912] }).fetchKeepAlive })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[3]), ['7'])
+  assert.ok(listings >= 2, 'a fresh listing after the install')
+  assert.equal(rec.calls.some((c) => c.file === 'launchctl'), false, 'no kickstart -k over the live job')
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]).filter((r: any) => r[0] === '912'), [['912', 'waiting_idle', 'background_job']])
+})
+
+test('state (F8): an act is persisted BEFORE its verify, so a watcher killed mid verify keeps the attempt and the 30 min limit', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  let release: () => void = () => {}
+  const parked = new Promise<void>((resolve) => (release = resolve))
+  // verify sleeps between probes: park it there, the moment a kill would land.
+  const { ctx } = ctxFor(fs, rec, clock, {
+    sleep: async (ms: number) => {
+      await parked
+      clock.advance(ms)
+    },
+  })
+  const running = runKeepAliveSweep(ctx as any)
+  try {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
+    assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1, 'the restart happened')
+    const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME)) ?? '{}')
+    assert.equal(saved.agents?.['912']?.attempts, 1, 'the attempt is on disk while verify runs')
+    assert.equal(saved.agents?.['912']?.lastRestartAt, new Date(T0).toISOString())
+    assert.equal(saved.agents?.['912']?.target, '0.62.1')
+  } finally {
+    release()
+    await running
+  }
+})
+
+test('state (F8): a throw during verify still counts the attempt (counted before the act, never rebuilt from the old record)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const { ctx } = ctxFor(fs, rec, fakeClock(), {
+    sleep: async () => {
+      throw new Error('boom')
+    },
+  })
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.match(report.agents[0].reason, /^internal_error:boom/)
+  const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME))!)
+  assert.equal(saved.agents['912'].attempts, 1)
+  assert.equal(saved.agents['912'].lastRestartAt, new Date(T0).toISOString())
+})
+
+test('state (F8): a supervisor install is on disk BEFORE it runs, so a watcher killed mid install waits out the retry hour instead of installing again at once', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  const rec = recorder({ ps: IDLE_PS })
+  let duringInstall: string | null = null
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    // What a kill at this moment (bun install running) would leave on disk.
+    if (file === 'bash') duringInstall = fs.files.get(keepAliveStatePath(HOME)) ?? null
+    return rec.exec(file, args, o)
+  }
+  await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { exec }).ctx as any)
+  assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
+  const saved = JSON.parse(duringInstall ?? '{}')
+  assert.equal(saved.agents?.['912']?.lastInstallAt, new Date(T0).toISOString(), 'the install is recorded before bgos-agent runs')
+  assert.deepEqual([saved.agents?.['912']?.state, saved.agents?.['912']?.reason], ['installing', 'install_in_progress'])
+  // The watcher died there: the next start reads that file, and does not install again within the hour.
+  const killed = machine([{ id: '912', cwd: AVA, service: 'none' }])
+  killed.writeFile(keepAliveStatePath(HOME), duringInstall!)
+  const again = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  clock.advance(5 * MIN)
+  const report = await runKeepAliveSweep(ctxFor(killed, again, clock).ctx as any)
+  assert.deepEqual(again.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'install_retry_wait']])
+})
+
+test('online (F8): a long sweep keeps the watcher online: keepOnline between agents, through a long install, and through verify', { timeout: 10_000 }, async () => {
+  const fs = machine([
+    { id: '7', cwd: GURU, service: 'none' },
+    { id: '912', cwd: AVA, service: 'canonical', state: {} },
+  ])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  // The install takes 5 minutes of (fake) wall time.
+  let installDone: () => void = () => {}
+  const installAt = { start: 0 }
+  clock.onSleep((_ms, at) => {
+    if (installAt.start && at - installAt.start >= 5 * MIN) installDone()
+  })
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'bash') {
+      rec.calls.push({ file, args: [...args], opts: o })
+      installAt.start = clock.now()
+      await new Promise<void>((resolve) => (installDone = resolve))
+      return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    }
+    return rec.exec(file, args, o)
+  }
+  const touches: Array<[string, number]> = []
+  let phase = 'start'
+  const keepOnline = async () => {
+    touches.push([phase, clock.now()])
+  }
+  answerProbes(fs, clock, [])
+  const { ctx } = ctxFor(fs, rec, clock, { exec, keepOnline, verifyTimeoutMs: 120_000, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912] }).fetchKeepAlive })
+  clock.onSleep(() => {
+    phase = rec.calls.some((c) => c.file === 'launchctl') ? 'verify' : rec.calls.some((c) => c.file === 'bash') ? 'install' : 'start'
+  })
+  await runKeepAliveSweep(ctx as any)
+  assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
+  assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1)
+  const during = (name: string) => touches.filter(([p]) => p === name).length
+  assert.ok(during('install') >= 5, `touched through the 5 min install (${during('install')})`)
+  assert.ok(during('verify') >= 1, `touched through the 2 min verify (${during('verify')})`)
+  // No gap between two touches (or the sweep start) long enough to leave the backend's 3 min online window.
+  const stamps = [T0, ...touches.map(([, at]) => at)]
+  for (let i = 1; i < stamps.length; i++) assert.ok(stamps[i]! - stamps[i - 1]! < 3 * MIN, `gap ${i}`)
+})
+
+// -- F1: a cwd lookup that failed or spelled the folder differently is never "not running" ----------
+
+test('F1: a cwd lookup that FAILED is unknown, never "stopped": a generation 1 supervisor over a live claude with a job is not reinstalled', async () => {
+  for (const [name, lsof] of [
+    ['lsof exit 1 with nothing printed', { lsofCode: 1, lsof: '' }],
+    ['lsof timed out', { lsofCode: null, lsof: '' }],
+    ['lsof answered, but not for our live claude', { lsofCode: 0, lsof: '' }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+    const rec = recorder({ ps: JOB_PS, ...lsof })
+    const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+    assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [], `${name}: no reinstall over the job`)
+    assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']], name)
+  }
+})
+
+test('F1: the folder is compared by its realpath (the kernel reports the physical path): the job under that claude is seen', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  const rec = recorder({ ps: JOB_PS, lsof: `p5912\nfcwd\nn/Volumes/Data${AVA}\n` })
+  const realpath = (path: string) => (path === AVA ? `/Volumes/Data${AVA}` : path)
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { realpath }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+})
+
+test('F1: another user\'s claude (its cwd is not ours to read) never makes this agent unknown; with no claude of ours it is really stopped', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  const ps = [psLine(1, 0, '/sbin/launchd', undefined, 0), psLine(1618, 1, 'claude --x', undefined, 502)].join('\n')
+  const rec = recorder({ ps, lsofCode: 1, lsof: '' })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => pid === 1618 }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash').map((c) => c.args[1]), ['install'])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+})
+
+test('F1: a daemon too old to publish its state still holds the pairing lock: its claude (the one above it) is the agent\'s, no cwd needed', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000, bootedAt: T0 - 60 * MIN }))
+  // lsof cannot help at all, yet the job under the lock holder's claude is found.
+  const rec = recorder({ ps: JOB_PS, lsofCode: 1, lsof: '' })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(rec.calls.some((c) => c.file === 'lsof'), false, 'no cwd lookup needed')
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  // A lock nobody has stamped for 10 minutes names no live daemon (its pid may be anyone's now).
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }))
+  const stale = recorder({ ps: JOB_PS, lsofCode: 1, lsof: '' })
+  const staleReport = await runKeepAliveSweep(ctxFor(fs, stale, fakeClock()).ctx as any)
+  assert.deepEqual(staleReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
+  assert.equal(stale.calls.some((c) => c.file === 'lsof'), true, 'back to the cwd lookup')
+})
+
+// -- F5: a systemd restart kills the unit's whole cgroup, so a job orphaned out of claude's tree counts --------
+
+const CGROUP = '/user.slice/user-501.slice/user@501.service/app.slice/bgos-agent-912.service'
+const UNIT_SHOW = `MainPID=1000\nControlGroup=${CGROUP}\n`
+
+/** A v2 unit: run.sh 1000 (main) waiting on tmux; tmux server 2900 > hoai-core 3000 > claude 5912 > daemon 4912. */
+function unitTable(orphan: boolean, tmuxTitle = 'tmux: server (/tmp/tmux-501/hoai-912)') {
+  const rows = [
+    psLine(1, 0, '/sbin/init', undefined, 0),
+    psLine(900, 1, '/lib/systemd/systemd --user'),
+    psLine(1000, 900, `/bin/bash ${HOME}/.bgos-agent/912/run.sh`),
+    psLine(1100, 1000, 'sleep 5'),
+    psLine(2900, 900, tmuxTitle),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume x'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ]
+  // `nohup python monitor.py &` from a Bash tool call: its shell exited, systemd --user reaped it.
+  if (orphan) rows.push(psLine(7000, 900, 'python monitor.py'))
+  const members = [1000, 1100, 2900, 3000, 5912, 4912, ...(orphan ? [7000] : [])]
+  return { ps: rows.join('\n'), procs: `${members.join('\n')}\n` }
+}
+
+test('F5 (linux): a background job orphaned out of claude\'s tree but still in the unit\'s cgroup holds a service restart (systemd would kill it): background_job', async () => {
+  const busy = unitTable(true)
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, busy.procs)
+  const rec = recorder({ ps: busy.ps, systemctlShow: UNIT_SHOW })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.equal(rec.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false, 'no systemctl --user restart over the job')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  // The same unit with nothing outside the supervisor and claude restarts.
+  const idle = unitTable(false)
+  const quiet = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  quiet.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, idle.procs)
+  const ok = recorder({ ps: idle.ps, systemctlShow: UNIT_SHOW })
+  const clock = fakeClock()
+  answerProbes(quiet, clock, ['912'])
+  const done = await runKeepAliveSweep(ctxFor(quiet, ok, clock, { platform: 'linux' }).ctx as any)
+  assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl' && c.args.includes('restart')).map((c) => c.args), [['--user', 'restart', 'bgos-agent-912']])
+  assert.deepEqual(done.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // A tmux whose title says nothing about its socket is still claude's ancestor in the group: accounted, not a job.
+  const plain = unitTable(false, 'tmux')
+  const plainFs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  plainFs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, plain.procs)
+  const plainRec = recorder({ ps: plain.ps, systemctlShow: UNIT_SHOW })
+  const plainClock = fakeClock()
+  answerProbes(plainFs, plainClock, ['912'])
+  const plainReport = await runKeepAliveSweep(ctxFor(plainFs, plainRec, plainClock, { platform: 'linux' }).ctx as any)
+  assert.deepEqual(plainReport.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
+test('F5 (linux): a generation 1 unit is not reinstalled (its active unit restarted) over an orphaned job; a cgroup that cannot be read is unreadable, never "no job"', async () => {
+  const gen1 = [
+    psLine(1, 0, '/sbin/init', undefined, 0),
+    psLine(900, 1, '/lib/systemd/systemd --user'),
+    psLine(1000, 900, `/bin/bash ${HOME}/.bgos-agent/912/run.sh`),
+    psLine(1050, 1000, `expect ${HOME}/.bgos-agent/912/run.expect`),
+    psLine(5912, 1050, 'claude --x'),
+    psLine(7000, 900, 'python monitor.py'),
+  ].join('\n')
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: { runningVersion: '0.62.1' } }], { platform: 'linux' })
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, '1000\n1050\n5912\n7000\n')
+  const rec = recorder({ ps: gen1, systemctlShow: UNIT_SHOW })
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash'), [])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  const blind = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  const noBus = recorder({ ps: unitTable(false).ps, systemctlShow: null })
+  const unread = await runKeepAliveSweep(ctxFor(blind, noBus, fakeClock(), { platform: 'linux' }).ctx as any)
+  assert.equal(noBus.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false)
+  assert.deepEqual(unread.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
 })
 
 // -- gates -------------------------------------------------------------------------------------------
@@ -809,6 +1217,79 @@ test('win32: an update at an idle moment with the launcher dead (a schtasks /Run
   assert.deepEqual(pendingReport.agents.map((a: any) => [a.state, a.reason]), [['failed', 'supervisor_v2_unavailable']])
 })
 
+// -- F2: Windows finds the agent's claude above its daemon ----------------------------------------------
+
+/** The CIM listing of a Windows agent: claude.exe 5912 > bgos-launch 6000 > daemon 4912, optionally a job. */
+function winListing(withJob = false) {
+  return JSON.stringify([
+    { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+    { ProcessId: 6000, ParentProcessId: 5912, CreationDate: T0 - 120 * MIN, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
+    { ProcessId: 4912, ParentProcessId: 6000, CreationDate: T0 - 120 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
+    ...(withJob
+      ? [{ ProcessId: 7100, ParentProcessId: 5912, CreationDate: T0 - 5 * MIN, CommandLine: 'C:\\Program Files\\Git\\bin\\bash.exe -c source C:\\Users\\kc\\.claude\\shell-snapshots\\snapshot-bash-1.sh && python monitor.py' }]
+      : []),
+  ])
+}
+
+test('F2 (win32): with claudePid null (the daemon has no ps there) the claude above the daemon is found: an idle agent restarts onto the staged update, a job still waits', async () => {
+  const files = {
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+  }
+  const alive = (pid: number) => [777, 4912, 5912].includes(pid)
+  const idle = windowsMachine(files)
+  const rec = recorder({ win32Ps: winListing(false) })
+  const clock = fakeClock()
+  clock.onSleep((_ms, at) => {
+    if (idle.files.has(`${WSTATE}\\probe-requested.json`)) idle.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+  })
+  const report = await runKeepAliveSweep(windowsCtx(idle, rec, { now: clock.now, sleep: clock.sleep, pidAlive: alive }) as any)
+  assert.equal(idle.files.get(`${WSTATE}\\restart-requested.json`), '{}', 'the live launcher restarts claude in place')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+  const busy = windowsMachine(files)
+  const busyRec = recorder({ win32Ps: winListing(true) })
+  const held = await runKeepAliveSweep(windowsCtx(busy, busyRec, { pidAlive: alive }) as any)
+  assert.deepEqual(held.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'background_job']])
+  assert.equal(busy.files.has(`${WSTATE}\\restart-requested.json`), false)
+})
+
+// -- F4: Windows never starts a second session beside a live one ------------------------------------------
+
+test('F4 (win32): an update for an agent whose launcher died but whose claude still runs waits (session_without_launcher): no schtasks /Run beside it, no attempt spent', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0),
+  })
+  const rec = recorder({ win32Ps: winListing(false) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.equal(rec.calls.some((c) => c.file === 'schtasks.exe'), false)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0)
+})
+
+test('F4 (win32): a daemon too old to publish state but holding the pairing lock (a person\'s plain claude) is running: the task is registered, never started beside it', async () => {
+  const lock = { ['C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock']: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) }
+  // No task yet: registered for the next logon, not started.
+  const fresh = windowsMachine(lock)
+  const rec = recorder({ win32Ps: winListing(false) })
+  const report = await runKeepAliveSweep(windowsCtx(fresh, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'install']])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  // Task installed, launcher dead: still not started.
+  const installed = windowsMachine({ ...lock, [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n", [`${WSTATE}\\supervisor-generation`]: '2\n' })
+  const quiet = recorder({ win32Ps: winListing(false) })
+  const later = await runKeepAliveSweep(windowsCtx(installed, quiet, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
+  assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
+  // Not a refused start either (no task start spent): that claude started before the
+  // install landed, so it is an update waiting for the session to end.
+  assert.deepEqual(later.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  assert.equal(JSON.parse(installed.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 0)
+})
+
 // -- the report --------------------------------------------------------------------------------------
 
 test('readKeepAliveReport: the persisted state as the heartbeat block (bounded to 64 agents)', () => {
@@ -882,7 +1363,8 @@ const SNAPSHOT_JOB = `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapsho
 
 test('null claudePid, fresh state: the background job scan walks the claude found by its working directory (a live shell-snapshot child is background_job)', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { claudePid: null } }])
-  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE), psLine(4912, 7000, `node ${OLD_ROOT}/server.ts`), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
+  // The daemon is not listed under it (the walk above the daemon finds nothing): the cwd is the evidence.
+  const ps = [psLine(1, 0, '/sbin/launchd'), psLine(7000, 4100, NODE_CLAUDE), psLine(4912, 1, `node ${OLD_ROOT}/server.ts`), psLine(7100, 7000, SNAPSHOT_JOB)].join('\n')
   const rec = recorder({ ps, lsof: `p7000\nfcwd\nn${AVA}\n` })
   const report = await runKeepAliveSweep(ctxFor(fs, rec, fakeClock()).ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'lsof').map((c) => c.args), [['-a', '-d', 'cwd', '-p', '7000', '-Fn']])
