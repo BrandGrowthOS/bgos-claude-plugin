@@ -216,6 +216,26 @@ test('the repair is bounded: one attempt per 10 minutes, recorded in the bundle 
   }
 })
 
+test('the bundle\'s own lib/watcher-bundle.mjs has no repairWatcherBundle: the entry repairs through the plugin root\'s copy', () => {
+  const box = sandbox()
+  try {
+    // A copy that predates the repair (any release before this one): it loads, but has no repairWatcherBundle.
+    writeFileSync(join(box.bundle, 'lib', 'watcher-bundle.mjs'), 'export const WATCHER_BUNDLE_FILES = Object.freeze([])\n')
+    const first = runEntry(box.bundle, box.home, ['help'])
+    assert.equal(first.signal, null, `the first run did not hang: ${first.stderr}`)
+    assert.match(first.stderr, /bundle repaired/, first.stderr)
+    assert.doesNotMatch(first.stderr, /repair module did not load/, first.stderr)
+    for (const rel of NOT_IN_0_61_4) assert.equal(existsSync(join(box.bundle, rel)), true, `${rel} was repaired into the bundle`)
+    // The stale copy differs from the root, so the repair replaced it too.
+    assert.equal(readFileSync(join(box.bundle, 'lib', 'watcher-bundle.mjs'), 'utf8'), readFileSync(join(REPO, 'lib', 'watcher-bundle.mjs'), 'utf8'))
+    const second = runEntry(box.bundle, box.home, ['help'])
+    assert.equal(second.status, 0, second.stderr)
+    assert.doesNotMatch(second.stderr, /repair|Cannot find module/i, second.stderr)
+  } finally {
+    box.cleanup()
+  }
+})
+
 // -- B1: the entry loads beside nothing but itself ---------------------------------------------------
 
 test('B1: the entry imports node builtins only, statically; alone in a dir it still loads and fails by name, never an uncaught load error', () => {
