@@ -750,10 +750,15 @@ let browserHost: BrowserHostSupervisor | null = null
 // update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
 // the backend immediately instead of on the next 6h tick.
 let versionHeartbeat: { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null = null
+// The root this process actually runs from (server.ts sits at the plugin
+// root), never CLAUDE_PLUGIN_ROOT or another install's root: both the version
+// captured at boot and the version on disk now are read from HERE, so a
+// difference means this very checkout moved under this process (E5).
+const RUNNING_ROOT = import.meta.dir
 // Captured ONCE at boot: after an install the package.json on disk already
 // shows the NEW version while this process still runs the old code, and
 // readiness must compare against what is RUNNING.
-const RUNNING_VERSION = readOwnVersion(import.meta.dir)
+const RUNNING_VERSION = readOwnVersion(RUNNING_ROOT)
 let updateDrainMode = false
 const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
@@ -10848,8 +10853,13 @@ function updateReadinessSnapshot(): UpdateReadiness {
 // above and agent-state.json (lib/pending-restart.ts). Fact 6: a marketplace
 // install has no git updater and no auto-update.json target, so before this
 // it reported null forever; its answer is installed_plugins.json against the
-// version captured at boot. `state` is the auto-update.json read the caller
-// already made, when it made one.
+// version captured at boot. E5: a clone moved by anything but its own self
+// updater (git pull, bgos-agent update) reported null too, and the watcher
+// believes a fresh daemon, so the agent never restarted onto code already on
+// disk; after the self updater's answer, the clone's is the package.json of
+// RUNNING_ROOT read now. Both callers re-read it on their own cadence (per
+// heartbeat send and readiness poll, and agent-state.json's memoizeFor).
+// `state` is the auto-update.json read the caller already made, when it made one.
 function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
   return resolvePendingRestartVersion({
     installMethod: INSTALL_METHOD,
@@ -10860,6 +10870,7 @@ function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateSta
       return s.validationPending ? s.targetVersion : null
     },
     readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
   })
 }
 
