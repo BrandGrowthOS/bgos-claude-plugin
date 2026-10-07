@@ -29,9 +29,11 @@
 
 import type { StreamUpdate } from './update-stream.ts'
 import {
+  buildButtonClickedMeta,
   buildInboundChannel,
   type AgentOriginLike,
   isSelfAuthoredAgentOrigin,
+  readTapperUserId,
 } from './inbound-channel.ts'
 import { senderUserIdCandidate } from './permission-relay.ts'
 
@@ -44,8 +46,9 @@ export interface StreamAnswerPayload {
   /**
    * WHO TAPPED, as the RAW answer payload names them, read with the null aware
    * senderUserIdCandidate (the keys it knows: sender.userId, senderUserId,
-   * sender_user_id, userId, user_id). Null when the tap names nobody, which is
-   * every tap on today's backend. This is the only place the stream keeps the
+   * sender_user_id, userId, user_id). Null when the tap names nobody under
+   * those keys; the backend's own tapper key, `answeredByUserId`, is read
+   * separately into tapperUserId below. This is the only place the stream keeps the
    * id: everything else on the raw answer is dropped by the normalisation, and
    * reading senderUserIdCandidate off THIS object instead of the raw payload
    * is the defect the checker found on #150 (always null, so a stamped tap
@@ -58,6 +61,13 @@ export interface StreamAnswerPayload {
    * not this change's to move. Only the plan binding reads this field.
    */
   clickerUserId: string | null
+  /**
+   * WHO TAPPED, for the channel tag only: the server's `answeredByUserId`
+   * (readTapperUserId), null when the payload names nobody. Kept apart from
+   * clickerUserId on purpose: that one feeds the plan and sign-in bindings,
+   * and moving what they decide on is not this field's job.
+   */
+  tapperUserId: string | null
 }
 
 export interface StreamMessageView {
@@ -98,7 +108,13 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
   const buttonText = String(r.buttonText ?? r.button_text ?? '')
   const customText = str(r.customText ?? r.custom_text)
   if (!callbackData && !buttonText && !customText) return null
-  return { callbackData, buttonText, customText, clickerUserId: senderUserIdCandidate(r) }
+  return {
+    callbackData,
+    buttonText,
+    customText,
+    clickerUserId: senderUserIdCandidate(r),
+    tapperUserId: readTapperUserId(r),
+  }
 }
 
 /**
@@ -397,28 +413,19 @@ export function buildStreamInboundMeta(opts: {
   }).meta
 }
 
-/** The stream twin of the poll path's button_clicked meta. */
+/**
+ * The stream twin of the poll path's button_clicked meta: the same builder,
+ * transport 'stream'. `user_id` is the tapper the server named, or absent.
+ */
 export function buildStreamClickMeta(opts: {
   chatId: string
   messageId: number
   callbackData: string
   buttonText: string
   customText?: string
-  senderUserId: string
+  tapperUserId: string | null
   assistantId: string
   ts?: string
 }): Record<string, string> {
-  return {
-    chat_id: String(opts.chatId),
-    message_id: String(opts.messageId),
-    event_type: 'button_clicked',
-    callback_data: String(opts.callbackData),
-    button_text: String(opts.buttonText),
-    ...(opts.customText ? { custom_text: String(opts.customText) } : {}),
-    user: 'User',
-    user_id: String(opts.senderUserId),
-    assistant_id: String(opts.assistantId),
-    ts: String(opts.ts ?? new Date().toISOString()),
-    transport: 'stream',
-  }
+  return buildButtonClickedMeta({ ...opts, transport: 'stream' })
 }

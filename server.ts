@@ -44,12 +44,15 @@ import {
   buildEventMeta,
 } from './lib/message-text.js'
 import {
+  buildButtonClickedMeta,
   buildInboundChannel,
+  finalInboundMeta,
   type AgentOriginLike,
   createPlanPolicyMemo,
   isAgentInbound,
   isSelfAuthoredAgentOrigin,
   readPlanPolicyField,
+  readTapperUserId,
 } from './lib/inbound-channel.js'
 import {
   buildMeetingCard,
@@ -729,6 +732,17 @@ import {
 // working child outlived, because the mapper emits that repaint and the live
 // turn's own card in the same batch (stage 8).
 import { PendingCards, HOOK_CARD_PENDING_MAX } from './lib/hook-card-pending.js'
+import {
+  A2A_ROUTE_REQUIRED,
+  PEER_NOT_PARTICIPANT,
+  a2aRouteRequiredResult,
+  classifyPeerRefusal,
+  createRefusedChats,
+  peerNotParticipantResult,
+  peerRefusalOf,
+  peerRefusalStatus,
+  type PeerRefusal,
+} from './lib/peer-refusal.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -1224,14 +1238,20 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
  * anything by searching the text is a bug waiting for a chat id: the Steps
  * route embeds one in its URL, so a chat numbered 4403 used to look like a
  * permanent 403 refusal and silenced itself forever.
+ *
+ * `peerRefusal` is the same idea for the refusals that are permanent for a
+ * chat (lib/peer-refusal.ts): read from the status and the WHOLE body when the
+ * response arrives, because this message keeps only an excerpt of it.
  */
 class HttpError extends Error {
   readonly status: number
+  readonly peerRefusal: PeerRefusal | null
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, peerRefusal: PeerRefusal | null = null) {
     super(message)
     this.name = 'HttpError'
     this.status = status
+    this.peerRefusal = peerRefusal
   }
 }
 
@@ -1260,7 +1280,11 @@ async function bgosPost(
     async (response) => {
       if (!response.ok) {
         const text = await response.text().catch(() => '')
-        throw new Error(`POST ${response.status}: ${text.slice(0, 200)}`)
+        throw new HttpError(
+          `POST ${response.status}: ${text.slice(0, 200)}`,
+          response.status,
+          classifyPeerRefusal(response.status, text),
+        )
       }
       return response.json()
     },
@@ -2610,10 +2634,15 @@ const mcp = new Server(
       '  - user_id            : id of the user who sent THIS message. Always present',
       '                         (live and backfilled). Trust it for isolation; do NOT',
       '                         assume it is the assistant owner.',
-      '  - sender_display_name: that user\'s display name (on live messages).',
-      '  - sender_relationship: "owner" or "shared_recipient" (on live messages).',
-      '  - is_shared_recipient: true when the sender is a share recipient, not the owner.',
+      '  - sender_display_name: that user\'s display name, when the server sends it.',
+      '  - sender_relationship: "owner", "shared_recipient" or "room_member", set from',
+      '                         the server\'s record on every delivery that carries',
+      '                         it. Absent means unknown, never the owner.',
+      '  - is_shared_recipient: true when the sender is a share recipient, not the owner',
+      '                         (absent when the server did not answer it).',
       '  - share_owner_user_id: the original assistant creator\'s id on shared messages.',
+      'A button_clicked event names who tapped in `user_id` when the server stamped',
+      'it, and has no `user_id` when it did not.',
       '',
       'Segregate per-user context by `user_id`: if you keep memory, files, notes or',
       'preferences, key them on `user_id` so each human stays isolated from the owner',
@@ -4889,6 +4918,10 @@ async function handleShowComponent(opts: {
     }
   }
 
+  // A peer side-thread already refused a post for good: answer here, no POST.
+  if (a2aRouteRefusedChats.has(String(auth.chatId))) {
+    return a2aRouteRequiredResult(String(auth.chatId), 'this card')
+  }
   try {
     await bgosPost('messages', built.body as unknown as Record<string, unknown>)
     log(`${opts.toolName}: kind ${opts.kind} chat ${auth.chatId}`)
@@ -4907,6 +4940,9 @@ async function handleShowComponent(opts: {
       ],
     }
   } catch (err) {
+    if (refuseA2aToolPost(String(auth.chatId), err)) {
+      return a2aRouteRequiredResult(String(auth.chatId), 'this card')
+    }
     const errMsg = err instanceof Error ? err.message : String(err)
     return {
       content: [
@@ -5012,6 +5048,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (!replyAuth.ok) return replyAuth.error
       const resolvedChatId = replyAuth.chatId
       const replySessionHandle = replyAuth.sessionHandle
+
+      // A side-thread that already refused this agent's reply for good: no
+      // upload and no POST, the same typed answer, until something new happens
+      // there (see peerReplyRefusedChats).
+      if (peerReplyRefusedChats.has(String(resolvedChatId))) {
+        clearInbound(resolvedChatId)
+        log(`reply to chat ${resolvedChatId} not sent: refused earlier with 403 ${PEER_NOT_PARTICIPANT}`)
+        return peerNotParticipantResult(String(resolvedChatId))
+      }
+      // The inbound this reply answers, as it stands before the send. A refusal
+      // may block the chat and drop that tracker only if no newer message
+      // arrived while the send was in flight.
+      const answeringInboundId = pendingInbounds.get(String(resolvedChatId))?.messageId
 
       const meetingIdForChat = meetingIdByChatId.get(String(resolvedChatId))
       if (meetingIdForChat != null) {
@@ -5176,6 +5225,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         clearInbound(resolvedChatId)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
+        if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
+          // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
+          // words the model cannot take for a hiccup, answer any later reply
+          // here locally, and drop the inbound it was answering so the overdue
+          // sweep does not ask for that reply again. A message that arrived
+          // during the send is the news recordInbound lifts the block on, so
+          // then neither happens and that message keeps its tracker.
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            peerReplyRefusedChats.add(String(resolvedChatId))
+            clearInbound(resolvedChatId)
+          }
+          log(
+            `reply to chat ${resolvedChatId} refused with 403 ${PEER_NOT_PARTICIPANT}; ` +
+              'told the agent not to retry',
+          )
+          return peerNotParticipantResult(String(resolvedChatId))
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: 'text', text: `Failed to send: ${errMsg}` }], isError: true }
       }
@@ -5208,6 +5274,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (wrongChat) {
         log(`propose_plan refused in chat ${planChatId}: not the owner's agent chat`)
         return { content: [{ type: 'text', text: wrongChat }], isError: true }
+      }
+      // A side-thread this process did not know as one (its map is empty after
+      // a restart) but that already refused a post for good: answer here.
+      if (a2aRouteRefusedChats.has(planChatId)) {
+        return a2aRouteRequiredResult(planChatId, 'this plan')
       }
 
       // The revision chain. `supersedes` is what decides it, not whatever this
@@ -5383,6 +5454,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           ],
         }
       } catch (err) {
+        if (refuseA2aToolPost(planChatId, err)) {
+          return a2aRouteRequiredResult(planChatId, 'this plan')
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to post the plan: ${errMsg}` }],
@@ -5535,6 +5609,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
+      // A peer side-thread already refused a post for good: answer here, no POST.
+      if (a2aRouteRefusedChats.has(String(askChatId))) {
+        return a2aRouteRequiredResult(String(askChatId), 'these questions')
+      }
       try {
         // Post each question. The first one returns an ask_id we reuse for
         // the rest so they group into one carousel.
@@ -5669,6 +5747,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           ],
         }
       } catch (err) {
+        if (refuseA2aToolPost(String(askChatId), err)) {
+          return a2aRouteRequiredResult(String(askChatId), 'these questions')
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
@@ -5879,6 +5960,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const sideThreadChatId = (result as any)?.sideThreadChatId
         const resultConvId =
           (result as any)?.conversationId ?? (result as any)?.peerConversationId
+        // This agent is a participant of whatever it just sent into, so a reply
+        // refused there before may land now.
+        if (sideThreadChatId != null) peerReplyRefusedChats.delete(String(sideThreadChatId))
         if (turn_state === 'final') {
           // The agent just closed the thread. Pin it closed so neither the
           // peer's prior inbound nor a final inbound that races this can fire
@@ -7207,6 +7291,14 @@ const peerConvByChat = new Map<string, string>()
 // also clears any tracker that was already armed.
 const closedPeerChats = new Set<string>()
 const CLOSED_PEER_CHATS_MAX = 500
+// Side-thread chat ids where HOAI refused this agent's REPLY with the
+// participant 403 (lib/peer-refusal.ts): the conversation open there is not one
+// this agent is in, and the same send is refused every time. A later reply into
+// one is answered here with the same typed refusal, so a model that tries again
+// cannot loop the backend. Only news about that chat lifts it: a new message in
+// it (recordInbound), a close (markConversationClosed), or a send_to_peer that
+// lands in it.
+const peerReplyRefusedChats = createRefusedChats()
 // 4 minutes: agents legitimately run long (some tasks work up to ~10 min), so a
 // 2-minute nudge fired too early on work still in progress. KC 2026-08-15: push
 // the reply-overdue window to 4 min so the reminder only fires on genuine silence.
@@ -7222,6 +7314,9 @@ function markConversationClosed(opts: { convId?: string | number | null; chatId?
   const convId = opts.convId != null && opts.convId !== '' ? String(opts.convId) : undefined
   if (!chatId && convId) chatId = peerConvChats.get(convId)
   if (!chatId) return
+  // A close changes which conversation a reply there would join (a closed one
+  // this agent was in is revived on write), so a refused reply gets one more try.
+  peerReplyRefusedChats.delete(chatId)
   // Drop any pending overdue for this chat and pin it closed so a late inbound
   // (or a re-delivery that races the close) cannot re-arm the tracker.
   pendingInbounds.delete(chatId)
@@ -7265,6 +7360,9 @@ function recordInbound(
   // guards below short-circuit (meeting chats, malformed ids). Receiving an
   // inbound is proof the backend routed this chat to us.
   noteMonitoredChat(chatId)
+  // And it is new evidence for a side-thread that refused this agent's reply:
+  // allow one more attempt there.
+  peerReplyRefusedChats.delete(chatId)
   if (meetingChatIds.has(chatId)) return
   if (!Number.isFinite(messageId)) return
   // A peer side-thread that is already closed owes no reply. Never arm an
@@ -7978,19 +8076,17 @@ async function announceMissedPlanAnswers(): Promise<void> {
           method: 'notifications/claude/channel',
           params: {
             content: contentLines.join('\n'),
-            meta: {
-              chat_id: String(chatId),
-              message_id: String(row.id),
-              event_type: 'button_clicked',
-              callback_data:
+            meta: buildButtonClickedMeta({
+              chatId,
+              messageId: row.id,
+              callbackData:
                 planAnswer.callbackData ?? unescapeAgentButtonValue(String(callbackData)),
-              button_text: String(buttonText),
-              ...(customText ? { custom_text: String(customText) } : {}),
-              user: 'User',
-              user_id: USER_ID,
-              assistant_id: ASSISTANT_ID,
+              buttonText: String(buttonText),
+              customText: customText ? String(customText) : undefined,
+              tapperUserId: readTapperUserId(payload),
+              assistantId: ASSISTANT_ID,
               ts: mm.answeredAt ?? '',
-            },
+            }),
           },
         }),
       ).catch((err) => {
@@ -8142,6 +8238,18 @@ let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
 /** A 403 means this chat does not take a Steps list from us (a room). Say it
  *  once and stop asking; the tool card and the replies are unaffected. */
 const hookStepsSilencedChats = new Set<string>()
+/** Chats that refused this rail's POST for good: a peer side-thread answers
+ *  every card and marker with the participant 403, or, once closed, with the
+ *  a2a 400 (lib/peer-refusal.ts), and a refused card used to be posted again on
+ *  every flush. One attempt per chat, then none; every other chat, the owner's
+ *  included, is unaffected. */
+const hookRailRefusedChats = createRefusedChats()
+/** Chats that answered POST /messages with the a2a 400: peer side-threads,
+ *  which take messages only through /send-message. A chat's kind never
+ *  changes, so nothing lifts this. Learned by the rail or by a tool, whichever
+ *  posts first, and read by show_component, ask_user_input and propose_plan,
+ *  which then answer the model locally instead of posting again. */
+const a2aRouteRefusedChats = createRefusedChats()
 let hookIntake: HookIntake | null = null
 
 /**
@@ -8254,6 +8362,44 @@ function adoptCarriedCardIds(): void {
 }
 
 /**
+ * True when `err` is the refusal that is permanent for this chat; the chat is
+ * then recorded, and the reason logged once. Any other failure is the caller's
+ * to handle as it always was.
+ */
+function refuseHookRailChat(chatId: string, err: unknown): boolean {
+  const refusal = peerRefusalOf(err)
+  if (refusal === null) return false
+  if (refusal === A2A_ROUTE_REQUIRED) a2aRouteRefusedChats.add(chatId)
+  if (!hookRailRefusedChats.has(chatId)) {
+    hookRailRefusedChats.add(chatId)
+    log(
+      `hook rail: chat ${chatId} refused the card with ${peerRefusalStatus(refusal)} ${refusal} ` +
+        '(this agent cannot post there); no more cards or markers go to that chat',
+    )
+  }
+  return true
+}
+
+/**
+ * True when `err` is the a2a 400 for a card, a question or a plan a tool
+ * posted into `chatId`; the chat is then recorded, so the next post there is
+ * answered locally and the rail does not try either, and the reason logged
+ * once. Any other failure stays the caller's.
+ */
+function refuseA2aToolPost(chatId: string, err: unknown): boolean {
+  if (peerRefusalOf(err) !== A2A_ROUTE_REQUIRED) return false
+  hookRailRefusedChats.add(chatId)
+  if (!a2aRouteRefusedChats.has(chatId)) {
+    a2aRouteRefusedChats.add(chatId)
+    log(
+      `chat ${chatId} refused a post with 400 ${A2A_ROUTE_REQUIRED} (a peer side-thread ` +
+        'takes messages only through /send-message); no more cards, questions or plans go to that chat',
+    )
+  }
+  return true
+}
+
+/**
  * One card write. Returns the card's id: the created one for a POST, the same
  * one for a PATCH, so a caller that started the POST can hand the id to the
  * final update even after the turn state has been cleared.
@@ -8274,13 +8420,19 @@ async function writeHookCard(
   card: ReturnType<typeof hookCardBody>,
 ): Promise<string | null> {
   if (cardId === null) {
-    if (chatId === null) return null
-    const created = await bgosPost('messages', {
-      chatId: Number(chatId),
-      sender: 'assistant',
-      messageType: 'tool_progress',
-      ...card,
-    })
+    if (chatId === null || hookRailRefusedChats.has(chatId)) return null
+    let created: unknown
+    try {
+      created = await bgosPost('messages', {
+        chatId: Number(chatId),
+        sender: 'assistant',
+        messageType: 'tool_progress',
+        ...card,
+      })
+    } catch (err) {
+      if (refuseHookRailChat(chatId, err)) return null
+      throw err
+    }
     return createdMessageId(created)
   }
   await bgosPatch(`messages/${cardId}`, card)
@@ -8384,7 +8536,7 @@ function stopHookStepsHeartbeat(): void {
 
 async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Promise<void> {
   const chatId = hookChatId()
-  if (chatId === null) return
+  if (chatId === null || hookRailRefusedChats.has(chatId)) return
   const built = buildComponentEventMessage({
     kind: effect.markerKind,
     payload: effect.payload,
@@ -8408,6 +8560,7 @@ async function postHookMarker(effect: Extract<Effect, { kind: 'marker' }>): Prom
       text: effect.text,
     })
   } catch (err) {
+    if (refuseHookRailChat(chatId, err)) return
     log(`hook rail: marker ${effect.markerKind} post failed: ${err}`)
   }
 }
@@ -9253,15 +9406,16 @@ async function pollChat(chatId: string): Promise<void> {
       // resolve now live in lib/permission-relay.ts so both transports share
       // one copy of them.
       //
-      // The answer payload carries no clicker user id on any backend today, so
-      // this read falls back to the owner: on a SHARED assistant, where the
+      // This intake does not read the tapper the backend now stamps on the
+      // answer (`answeredByUserId`, BGOS #1592; the channel tag reads it through
+      // readTapperUserId), so this read falls back to the owner: on a SHARED assistant, where the
       // requester is the person the agent was shared with, their own click is
       // refused here as foreign. That rule predates the card read and is left
       // exactly as it is, because the tap is not lost when it happens, whenever
       // the card's id came back off the post: the watch then reads the same
       // answer off the card row a tick later, and THAT read is null aware (see
-      // answeredOn in waitForVerdict; with no card id that read is off). Both decide on
-      // the same field the day the backend stamps a clicker user id.
+      // answeredOn in waitForVerdict; with no card id that read is off). Moving
+      // both onto `answeredByUserId` is a separate change to this rule.
       const permOutcome = resolvePermissionClick({
         callbackData,
         clickerUserId: senderUserIdOf(payload),
@@ -9369,18 +9523,19 @@ async function pollChat(chatId: string): Promise<void> {
         method: 'notifications/claude/channel',
         params: {
           content: contentLines.join('\n'),
-          meta: {
-            chat_id: chatId,
-            message_id: String(mm.id),
-            event_type: 'button_clicked',
-            callback_data: planAnswer.callbackData ?? agentCallbackData,
-            button_text: buttonText,
-            ...(customText ? { custom_text: customText } : {}),
-            user: 'User',
-            user_id: USER_ID,
-            assistant_id: ASSISTANT_ID,
+          // `user_id` is the tapper the server stamped on the answer, or
+          // absent. It was this daemon's own USER_ID, so every tap read as
+          // the owner's whoever made it.
+          meta: buildButtonClickedMeta({
+            chatId,
+            messageId: mm.id,
+            callbackData: planAnswer.callbackData ?? agentCallbackData,
+            buttonText,
+            customText,
+            tapperUserId: readTapperUserId(payload),
+            assistantId: ASSISTANT_ID,
             ts: mm.answeredAt,
-          },
+          }),
         },
       })).catch((err) => {
         log(`Failed to deliver button_clicked to Claude: ${err}`)
@@ -9481,6 +9636,7 @@ async function pollChat(chatId: string): Promise<void> {
           text,
           currentSpeakerId: meetingCtx.currentSpeakerId,
           backlog: isBacklog,
+          serverSender: msg.message,
         })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
@@ -9523,6 +9679,9 @@ async function pollChat(chatId: string): Promise<void> {
         // still read first, so a backend that ever adds the field wins, and
         // the memo the socket and the stream fill answers when it does not.
         planPolicy: readPlanPolicyField(msg.message) ?? planPolicyMemo.recall(),
+        // The chat history row names the author (senderUserId) but carries no
+        // relationship today, so this sets nothing until the projection does.
+        serverSender: msg.message,
         backlog: isBacklog,
         backlogPrefix: isBacklog
           ? '[backlog - message arrived while you were offline; please respond]'
@@ -9648,11 +9807,11 @@ async function pollChat(chatId: string): Promise<void> {
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...pollChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
-          },
+          meta: finalInboundMeta(
+            pollChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            !isSlashCommand ? pollEventMeta : null,
+          ),
         },
       })).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
@@ -11579,6 +11738,9 @@ async function forwardStreamInbound(
     // an omitted key is the backend saying "the default level", which is what
     // stops a stale sentence outliving a level the owner turned back down.
     planPolicy: planPolicyMemo.learn(view.raw),
+    // Hydration carries senderRelationship and senderDisplayName flat beside
+    // senderUserId on a human authored row; this lane used to drop both.
+    serverSender: view.raw,
   })
   const originalContent = streamChannel.content
   const slashRoute = routeSlashCommand({
@@ -11683,11 +11845,11 @@ async function forwardStreamInbound(
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...streamChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(streamEventMeta ?? {}),
-          },
+          meta: finalInboundMeta(
+            streamChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            streamEventMeta,
+          ),
         },
       }),
     )
@@ -11881,7 +12043,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
           callbackData: planAnswer.callbackData ?? agentCallbackData,
           buttonText: answer.buttonText,
           customText: answer.customText,
-          senderUserId: senderUserIdOf(answer),
+          tapperUserId: answer.tapperUserId,
           assistantId: String(ASSISTANT_ID),
         }),
       },
@@ -12638,6 +12800,8 @@ function connectWebsocket(): void {
           senderType: wsMeeting.senderType,
           text,
           currentSpeakerId: wsMeeting.currentSpeakerId,
+          // The twin is an inbound_message: it carries the sender block.
+          serverSender: payload,
         })
         log(
           `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
@@ -12665,18 +12829,11 @@ function connectWebsocket(): void {
         sessionHandle: wsSessionHandle,
         // Carries the field, so it teaches the memo. See the stream site.
         planPolicy: planPolicyMemo.learn(payload),
-        extraMeta: {
-          ...(payload?.sender?.displayName
-            ? { sender_display_name: String(payload.sender.displayName) }
-            : {}),
-          ...(payload?.sender?.relationship
-            ? { sender_relationship: String(payload.sender.relationship) }
-            : {}),
-          is_shared_recipient: String(payload?.isSharedRecipient ?? false),
-          ...(payload?.shareOwnerUserId
-            ? { share_owner_user_id: String(payload.shareOwnerUserId) }
-            : {}),
-        },
+        // The sender block, the share flag and the share owner, read off the
+        // server's payload by the one reader every lane uses. Absent ones stay
+        // absent: a room's payload omits both share keys, and the old
+        // `?? false` here answered a question the server had not been asked.
+        serverSender: payload,
       })
       const originalContent = wsChannel.content
       const slashRoute = routeSlashCommand({
@@ -12749,11 +12906,11 @@ function connectWebsocket(): void {
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...wsChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
-          },
+          meta: finalInboundMeta(
+            wsChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            !isWsSlashCommand ? wsEventMeta : null,
+          ),
         },
       })).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
@@ -13036,6 +13193,9 @@ function connectWebsocket(): void {
           !Number.isFinite(Number(currentSpeakerRaw))
             ? null
             : Number(currentSpeakerRaw),
+        // The broadcast carries no sender block today (its userId is the
+        // meeting HOST), so this sets nothing until the backend sends one.
+        serverSender: payload,
       })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',

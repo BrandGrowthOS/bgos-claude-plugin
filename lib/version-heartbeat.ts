@@ -16,12 +16,24 @@ import { join } from 'node:path'
 import { MACHINE_ID_RE } from './machine-id.mjs'
 import type { UpdateReadiness } from './update-readiness.js'
 
+/**
+ * The version shape this daemon reports, the SAME one the backend heartbeat
+ * DTO (DAEMON_VERSION_REGEX) and the watcher (VERSION_RE in
+ * watcher-bundle.mjs, keepalive-plan.mjs) accept: X.Y.Z plus an optional
+ * prerelease or build suffix. Until 0.62.1 this reader alone demanded strict
+ * X.Y.Z, so a clone on `0.62.1-local` reported runningVersion null and the
+ * watcher never restarted it onto the staged update (mission 104 goal 4
+ * proof, finding F1). Self-update still compares strict X.Y.Z only
+ * (parseSemver), so a prerelease running version is skipped there as before.
+ */
+export const OWN_VERSION_RE = /^\d+\.\d+\.\d+[-\w.]*$/
+
 /** Read the plugin version from package.json next to the server entry. Never throws. */
 export function readOwnVersion(rootDir: string): string | null {
   try {
     const raw = readFileSync(join(rootDir, 'package.json'), 'utf8')
     const v = (JSON.parse(raw) as { version?: unknown }).version
-    return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : null
+    return typeof v === 'string' && v.length <= 32 && OWN_VERSION_RE.test(v) ? v : null
   } catch {
     return null
   }

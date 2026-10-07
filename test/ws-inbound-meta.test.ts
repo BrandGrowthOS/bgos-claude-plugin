@@ -34,6 +34,7 @@ import {
   prepareSlashCommands,
   routeSlashCommand,
 } from '../lib/slash-catalog.ts'
+import { readServerSenderMeta } from '../lib/inbound-channel.ts'
 
 const USER_ID = 'user_owner'
 const ASSISTANT_ID = 'agent_1'
@@ -61,16 +62,9 @@ function buildWsInboundMeta(payload: any): Record<string, unknown> {
     message_id: String(messageId),
     user: isWsSystem ? 'System' : 'User',
     user_id: String(payload?.sender?.userId ?? payload?.userId ?? USER_ID),
-    ...(payload?.sender?.displayName
-      ? { sender_display_name: String(payload.sender.displayName) }
-      : {}),
-    ...(payload?.sender?.relationship
-      ? { sender_relationship: String(payload.sender.relationship) }
-      : {}),
-    is_shared_recipient: String(payload?.isSharedRecipient ?? false),
-    ...(payload?.shareOwnerUserId
-      ? { share_owner_user_id: String(payload.shareOwnerUserId) }
-      : {}),
+    // The real reader: server.ts hands buildInboundChannel the payload as
+    // `serverSender` (test/owner-marker-lanes.test.ts pins that call site).
+    ...readServerSenderMeta(payload),
     assistant_id: ASSISTANT_ID,
     ts: '2026-01-01T00:00:00.000Z',
     transport: 'ws',
@@ -113,7 +107,9 @@ test('WS inbound meta is all-string for the exact #17 regression payload (unshar
     // absent -> was `?? null`. Both used to poison the meta.
   })
   assertAllStrings(meta)
-  assert.equal(meta.is_shared_recipient, 'false')
+  // Absent, not "false": an attribute the server did not send is left off
+  // (the owner marker rule, BGOS #2026), on this lane as on every other.
+  assert.equal('is_shared_recipient' in meta, false)
   assert.equal('share_owner_user_id' in meta, false, 'absent owner must be omitted, not null')
   assert.equal('sender_display_name' in meta, false, 'absent display name must be omitted, not undefined')
 })
