@@ -23,6 +23,7 @@ import {
   AgentStatePublisher,
   buildAgentState,
   findClaudeAncestor,
+  hookTurnSignal,
   isWin32ClaudeProcess,
   memoizeFor,
   memoizeUntilFound,
@@ -377,7 +378,7 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.match(wiring, /path: pathJoin\(pathDirname\(CURSOR_FILE_PATH\), AGENT_STATE_FILE_NAME\),/)
   assert.match(wiring, /shouldPublish: \(\) => lockHeld/)
   assert.match(wiring, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0,/)
-  assert.match(wiring, /sessionId: liveSessionId/)
+  assert.match(wiring, /sessionId: \(hookEndedSessionId === null \? liveSessionId : null\)/)
   assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, /)
   assert.match(wiring, /claudePid: agentClaudePid\(\)/)
   assert.match(wiring, /pendingMessages: pendingInbounds\.size/)
@@ -486,6 +487,7 @@ test('a hookless agent writing its transcript a minute ago publishes that minute
     const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root, envSessionId: SESSION })
     const reading = () => readSessionTranscript({ resolve: () => binder.resolve(T0), projectDir: binder.projectDirectory })
     const lastHookEventAtMs: number | null = null
+    const hookEndedSessionId: string | null = null
     const liveSessionId: string | null = null
     const writes: Array<ReturnType<typeof buildAgentState>> = []
     const publisher = new AgentStatePublisher({
@@ -501,9 +503,9 @@ test('a hookless agent writing its transcript a minute ago publishes that minute
       snapshot: () => ({
         ...baseSnapshot(),
         turnInFlight: false,
-        turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
+        turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
         activityAtMs: [T0 - 30 * 60_000, null, lastHookEventAtMs, reading().activityMs],
-        sessionId: liveSessionId ?? reading().sessionId,
+        sessionId: (hookEndedSessionId === null ? liveSessionId : null) ?? reading().sessionId,
       }),
     })
     assert.equal(publisher.tick(), 'written')
@@ -582,20 +584,84 @@ test('F3: a guessed binding adds the folder, subagents included, to the activity
   }
 })
 
+// ── Delta review F2 (mission 104): the rail outlived its session ────────────
+//
+// turnSignal turned 'hooks' at the first consumed event and stayed so for the
+// life of the process. After a /clear the old session's SessionEnd is
+// consumed and the intake unbinds, but the binder's hook binding still names
+// the OLD transcript and outranks every other proof, so the new session's
+// events are refused as unproven and its transcript is never read. The file
+// then said 'hooks', turnInFlight false and an old activity stamp, and the
+// watcher's 10 min window restarted a keyboard job mid turn. Now the rail
+// vouches for turnInFlight only while it follows a live session, and the
+// ended session's binding proves nothing: the folder is read as for a guess.
+
+test('F2: after the bound session ends, turnSignal is none and the new transcript is the activity', () => {
+  const f = transcriptFixture()
+  try {
+    const OLD = SESSION
+    const NEW = SUB
+    const old = f.write(join(f.projectDir, `${OLD}.jsonl`), T0 - 30 * 60_000)
+    const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root })
+    binder.noteHookSession(OLD, old)
+    // /clear: the person keeps typing in the new session, which the intake
+    // never admitted, so only its transcript moves.
+    f.write(join(f.projectDir, `${NEW}.jsonl`), T0 - 20_000)
+    assert.equal(binder.resolve(T0)?.binding.source, 'hook', 'the binder still names the old file')
+    const lastEventAtMs = T0 - 30 * 60_000
+    const reading = readSessionTranscript({
+      resolve: () => binder.resolve(T0),
+      projectDir: f.projectDir,
+      now: T0,
+      endedSessionId: OLD,
+    })
+    assert.deepEqual(reading, { activityMs: T0 - 20_000, sessionId: null }, 'the new transcript, and no dead session')
+    assert.equal(hookTurnSignal({ lastEventAtMs, endedSessionId: OLD }), 'none', 'the 30 min rule, not the 10 min one')
+    // The same binding while its session lives is proof, and the rail counts.
+    assert.deepEqual(
+      readSessionTranscript({ resolve: () => binder.resolve(T0), projectDir: f.projectDir, now: T0, endedSessionId: null }),
+      { activityMs: T0 - 30 * 60_000, sessionId: OLD },
+    )
+    assert.equal(hookTurnSignal({ lastEventAtMs, endedSessionId: null }), 'hooks')
+    // No event ever consumed: nothing to vouch for, ended or not.
+    assert.equal(hookTurnSignal({ lastEventAtMs: null, endedSessionId: null }), 'none')
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+test('server.ts drops the hook turn signal at a consumed SessionEnd and takes it back at the next admitted event', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  assert.ok(server.includes('let hookEndedSessionId: string | null = null'), 'process scoped')
+  const at = server.indexOf('function onHookPayload(')
+  const body = server.slice(at, server.indexOf('\n}\n', at))
+  // Every admitted event decides it: a SessionEnd names the ended session,
+  // anything else is a live one again (a new session bound, or a resume).
+  assert.match(body, /\n  hookEndedSessionId = event\.name === 'SessionEnd' \? hookSessionId \|\| null : null\n/)
+  const wiring = server.slice(server.indexOf('const agentStatePublisher = new AgentStatePublisher('))
+  assert.match(wiring, /turnSignal: hookTurnSignal\(\{ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId \}\),/)
+  assert.match(wiring, /sessionId: \(hookEndedSessionId === null \? liveSessionId : null\) \?\? agentTranscript\(\)\.sessionId,/)
+  assert.match(
+    server,
+    /readSessionTranscript\(\{\s*resolve: \(\) => sessionBinder\.resolve\(\),\s*projectDir: sessionBinder\.projectDirectory,\s*endedSessionId: hookEndedSessionId,\s*\}\)/,
+  )
+})
+
 test('server.ts publishes turnSignal, the transcript activity and the proven session', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const server = readFileSync(join(root, 'server.ts'), 'utf8')
   const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
   const wiring = server.slice(at, server.indexOf('\n})\n', at))
-  // 'hooks' once this daemon consumed an event of its own session (the intake
-  // admits nothing else, and onHookPayload is its only consumer).
-  assert.match(wiring, /turnSignal: lastHookEventAtMs === null \? 'none' : 'hooks',/)
+  // 'hooks' while this daemon follows a live session of its own (the intake
+  // admits nothing else, and onHookPayload is its only consumer; delta F2).
+  assert.match(wiring, /turnSignal: hookTurnSignal\(\{ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId \}\),/)
   assert.match(wiring, /activityAtMs: \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
-  assert.match(wiring, /sessionId: liveSessionId \?\? agentTranscript\(\)\.sessionId,/)
+  assert.match(wiring, /sessionId: \(hookEndedSessionId === null \? liveSessionId : null\) \?\? agentTranscript\(\)\.sessionId,/)
   // One binder read per window, not per 1 s tick: it lists the project dir.
   assert.match(
     server,
-    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{ resolve: \(\) => sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\),?\s*\)/,
+    /const agentTranscript = memoizeFor\(AGENT_TRANSCRIPT_READ_MS, Date\.now, \(\) =>\s*readSessionTranscript\(\{\s*resolve: \(\) => sessionBinder\.resolve\(\),\s*projectDir: sessionBinder\.projectDirectory,\s*endedSessionId: hookEndedSessionId,\s*\}\),?\s*\)/,
   )
 })
 

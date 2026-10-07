@@ -39,9 +39,11 @@
  * the watcher's quiet window starts when the work ended, not when it began.
  *
  * `turnSignal` (code review F1, 2026-10-07) says whether `turnInFlight` means
- * anything: 'hooks' once this daemon consumed a hook event of its own session
- * in this process, else 'none'. A clone agent whose folder registers no BGOS
- * hooks (the whole fleet on KC's Mac when it was reviewed) never sees one, so
+ * anything: 'hooks' while this daemon's hook rail follows a live session of
+ * its own (an event consumed, and the last one not that session's SessionEnd:
+ * delta review F2, hookTurnSignal), else 'none'. A clone agent whose folder
+ * registers no BGOS hooks (the whole fleet on KC's Mac when it was reviewed)
+ * never sees one, so
  * its turnInFlight is false for good, and the watcher must not read that as
  * idle. The one field added to section 7, at schemaVersion 1: the watcher's
  * parser ignores a field it does not know, and the meaning of every other
@@ -330,6 +332,25 @@ export function findClaudeAncestor(input: {
   )
 }
 
+/**
+ * The turn signal the hook rail can vouch for: 'hooks' only while it follows
+ * a LIVE session of this daemon's own. `lastEventAtMs` is the last consumed
+ * event (null: none yet, so nothing backs turnInFlight); `endedSessionId` is
+ * the session whose SessionEnd was the last event consumed, null once any
+ * other event was admitted after it.
+ *
+ * WHY (delta review F2). The signal used to turn 'hooks' at the first event
+ * and stay so for the process's life. A /clear ends the bound session: the
+ * intake unbinds, and the binder's hook binding still names the OLD
+ * transcript and outranks every other proof, so the new session's events are
+ * refused as unproven until a delivered prompt binds it. Through all of that
+ * turnInFlight stayed false and the file still said 'hooks', so the watcher
+ * applied its 10 min window to a keyboard job the rail could not see.
+ */
+export function hookTurnSignal(rail: { lastEventAtMs: number | null; endedSessionId: string | null }): TurnSignal {
+  return rail.lastEventAtMs !== null && rail.endedSessionId === null ? 'hooks' : 'none'
+}
+
 /** The two reads readSessionTranscript makes, injectable. */
 export interface TranscriptActivityFs {
   mtimeMs: (path: string) => number | null
@@ -370,7 +391,8 @@ export interface SessionTranscriptReading {
  * hook rail may be silent (F1). `resolve` is the session binder's answer
  * (lib/session-binding.ts resolve()) with ANY binding source. Only a POSITIVE
  * binding narrows the reading to that one transcript; anything less (a
- * newest-mtime guess, its sticky keep, no binding at all) ADDS the whole
+ * newest-mtime guess, its sticky keep, a binding to a session that ended, no
+ * binding at all) ADDS the whole
  * folder, so a wrong guess only makes the agent look busier, which is the
  * safe direction for a restart (delta review F3: a guess used to REPLACE the
  * folder with a neighbour's file, and the agent's own long subagent job read
@@ -400,6 +422,12 @@ export function readSessionTranscript(input: {
   fs?: TranscriptActivityFs
   /** Epoch ms the subagent window is measured from (Date.now()). */
   now?: number
+  /** The session whose SessionEnd the hook rail consumed last (hookTurnSignal).
+   *  A binding naming it proves only a session that is over (delta review F2:
+   *  after a /clear the hook binding still names it, and the new session's
+   *  transcript was never read), so it is read as a guess: the folder counts
+   *  and no session is published. */
+  endedSessionId?: string | null
 }): SessionTranscriptReading {
   const fs = input.fs ?? nodeTranscriptActivityFs
   try {
@@ -425,7 +453,7 @@ export function readSessionTranscript(input: {
       note(fs.mtimeMs(resolved.path))
       subagentsOf(resolved.path)
       const id = basename(resolved.path).replace(/\.jsonl$/, '')
-      proven = POSITIVE_BINDING_SOURCES.includes(resolved.binding.source)
+      proven = POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && id !== input.endedSessionId
       if (proven && isSessionIdLike(id)) sessionId = id
     }
     if (!proven && input.projectDir) {

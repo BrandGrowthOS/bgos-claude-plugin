@@ -554,7 +554,7 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.match(server, /new AgentSessionLibrary\(\{\s*projectDir: sessionBinder\.projectDirectory,/)
   // The third reader is agent-state.json's transcript activity (code review
   // F1), which reads the same dir for an agent whose hook rail is silent.
-  assert.match(server, /readSessionTranscript\(\{ resolve: \(\) => sessionBinder\.resolve\(\), projectDir: sessionBinder\.projectDirectory \}\)/)
+  assert.match(server, /readSessionTranscript\(\{\s*resolve: \(\) => sessionBinder\.resolve\(\),\s*projectDir: sessionBinder\.projectDirectory,/)
   assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 3)
 })
 

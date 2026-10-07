@@ -493,6 +493,7 @@ import {
   AGENT_STATE_MAX_INTERVAL_MS,
   AgentStatePublisher,
   findClaudeAncestor,
+  hookTurnSignal,
   memoizeFor,
   memoizeUntilFound,
   readSessionTranscript,
@@ -8081,6 +8082,15 @@ let liveSessionSeenAtMs = 0
  *  `lastActivityAt`). */
 let lastHookEventAtMs: number | null = null
 /**
+ * The session whose SessionEnd was the last event consumed, else null. While
+ * it is set the rail follows no live session: after a /clear the new
+ * session's events are refused until a delivered prompt binds it, so
+ * agent-state.json must not let the watcher trust turnInFlight, and the hook
+ * binding the binder keeps for the old transcript proves nothing about what
+ * the agent writes now (lib/agent-state.ts hookTurnSignal, delta review F2).
+ */
+let hookEndedSessionId: string | null = null
+/**
  * How many cards this daemon can still address at once.
  *
  * One for the live turn, plus the card of a turn whose child agent outlived
@@ -8622,6 +8632,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   }
   lastHookEventAtMs = Date.now()
   const hookSessionId = String(event.sessionId ?? '').trim()
+  // Every admitted event decides it: a SessionEnd names the session that is
+  // over, anything else is a live one again (a new session bound, a resume).
+  hookEndedSessionId = event.name === 'SessionEnd' ? hookSessionId || null : null
   if (hookSessionId && hookSessionId !== liveSessionId) {
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
@@ -10875,8 +10888,14 @@ const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.no
 // with no session, through a whole Read/Edit/Task job. The binder lists the
 // project dir, so it is read at most every 10 s, not on every 1 s tick.
 const AGENT_TRANSCRIPT_READ_MS = 10_000
+// A binding to a session whose SessionEnd was consumed is read as a guess:
+// after a /clear the agent writes a transcript the binder does not name yet.
 const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
-  readSessionTranscript({ resolve: () => sessionBinder.resolve(), projectDir: sessionBinder.projectDirectory }),
+  readSessionTranscript({
+    resolve: () => sessionBinder.resolve(),
+    projectDir: sessionBinder.projectDirectory,
+    endedSessionId: hookEndedSessionId,
+  }),
 )
 const agentStatePublisher = new AgentStatePublisher({
   path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
@@ -10892,11 +10911,12 @@ const agentStatePublisher = new AgentStatePublisher({
     // "in flight" (the intake's own isTurnLive rule): restarting then would
     // kill that child mid job, which finding 9 forbids.
     turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
-    // Whether turnInFlight means anything: 'hooks' once this daemon consumed
-    // an event of its own session (the intake admits nothing else, and
+    // Whether turnInFlight means anything: 'hooks' while the rail follows a
+    // live session of this daemon's own (the intake admits nothing else, and
     // onHookPayload is its only consumer). 'none' tells the watcher that a
-    // false turnInFlight is no evidence of idle.
-    turnSignal: lastHookEventAtMs === null ? 'none' : 'hooks',
+    // false turnInFlight is no evidence of idle: before the first event, and
+    // after the bound session's SessionEnd until another event is admitted.
+    turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
     pendingMessages: pendingInbounds.size,
     pendingPermissions: pendingPermissions.size,
     activeOperations: messageActivity.activeOperations,
@@ -10905,8 +10925,9 @@ const agentStatePublisher = new AgentStatePublisher({
     // The transcript the agent is writing counts too, hooks or not.
     activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
     // The hooks name the live session; without them, the transcript the
-    // binding chain proved (a reply marker, the CLI assigned id) does.
-    sessionId: liveSessionId ?? agentTranscript().sessionId,
+    // binding chain proved (a reply marker, the CLI assigned id) does. A
+    // session whose SessionEnd was consumed is not live, and is not named.
+    sessionId: (hookEndedSessionId === null ? liveSessionId : null) ?? agentTranscript().sessionId,
   }),
 })
 
