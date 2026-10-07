@@ -58,6 +58,7 @@ import {
   parseKeepAliveResponse,
   parseLaunchStatusOutcome,
   parsePairingLock,
+  pendingKindOf,
   reportEntry,
 } from '../lib/keepalive-plan.mjs'
 
@@ -610,4 +611,25 @@ test('reportEntry: a waiting or pending agent says what it waits for (pending: u
   for (const state of ['supervised', 'restarted', 'failed', 'installing', 'needs_first_launch']) {
     assert.equal('pending' in at(state, '0.62.1', 'x'), false, state)
   }
+})
+
+// Review 3 F3: `pending` is what puts Restart now in the app, and Restart now is
+// a plain restart. Two waits are ones a plain restart cannot end: D4's
+// manual_session (a person's own claude behind the canonical supervisor) and
+// its Windows twin session_without_launcher (the task's launcher is dead while
+// the agent's claude still runs; the task tier refuses for as long as that
+// daemon lives). Both are written on the record that carries the update's
+// target, so without a reason guard they read `update` after 24 h like any
+// busy agent. Every other wait keeps its kind.
+test('review 3 F3: reportEntry: a wait a plain restart cannot end (manual_session, session_without_launcher) carries no pending; every other wait keeps it', () => {
+  const since = new Date(NOW - 25 * 60 * MIN).toISOString()
+  // Exactly the record the sweep writes (lib/watcher-keepalive.mjs: base = {...prev, target, attempts}).
+  const record = { state: 'waiting_idle', reason: 'session_without_launcher', since, target: '0.62.1', attempts: 0 }
+  assert.deepEqual(reportEntry('912', record, NOW), { id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since, waitingSince: since })
+  assert.deepEqual(reportEntry('912', { ...record, reason: 'manual_session' }, NOW), { id: '912', state: 'waiting_idle', reason: 'manual_session', since, waitingSince: since })
+  assert.equal(pendingKindOf(record), null)
+  for (const reason of ['background_job', 'recent_activity', 'turn_in_flight', 'pending_messages']) {
+    assert.equal(reportEntry('912', { ...record, reason }, NOW).pending, 'update', reason)
+  }
+  assert.equal(reportEntry('912', { ...record, reason: 'background_job', target: UPGRADE_TARGET }, NOW).pending, 'upgrade')
 })
