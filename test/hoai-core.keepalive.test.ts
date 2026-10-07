@@ -20,7 +20,7 @@
  */
 
 import { EventEmitter } from 'node:events'
-import { test } from 'node:test'
+import { test as nodeTest, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
@@ -53,6 +53,19 @@ const PINNED = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const FRESH = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const TRANSCRIPT = `${HOME}/.claude/projects/-agents-athena/${PINNED}.jsonl`
 const BASE = ['--dangerously-skip-permissions', '--dangerously-load-development-channels', 'server:bgos']
+
+/**
+ * Every test here is bounded. node:test's default timeout is INFINITE, and a
+ * test still awaiting a loop that never ended (a regression in the loop, a
+ * FakeChild nobody exits) held `tsx --test` open, idle, for hours: the
+ * t.after that stops the loop runs only once the test itself has ended. A
+ * finite timeout ends the test, t.after then stops the loop, and the file
+ * finishes, with or without --test-timeout.
+ */
+const TEST_TIMEOUT_MS = 20_000
+function test(name: string, fn: (t: TestContext) => void | Promise<void>) {
+  return nodeTest(name, { timeout: TEST_TIMEOUT_MS }, fn)
+}
 
 // -- the pure decisions -------------------------------------------------------
 
@@ -187,6 +200,25 @@ function harness({ transcript = true, pinned = true }: { transcript?: boolean; p
   return { files, spawns, sleeps, prints, clock, stop, run }
 }
 
+/**
+ * The loop's result, or a NAMED failure once `ms` have passed, after which the
+ * loop is stopped (so it ends instead of outliving the test).
+ */
+async function settled<T>(done: Promise<T>, stop: AbortController, ms = 5_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      stop.abort()
+      reject(new Error(`the supervise loop did not end within ${ms} ms`))
+    }, ms)
+  })
+  try {
+    return await Promise.race([done, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function until(check: () => boolean, what: string): Promise<void> {
   const deadline = Date.now() + 3000
   while (!check()) {
@@ -216,7 +248,7 @@ test('keep-alive: an exit on its own relaunches after 5 s RESUMING the pinned se
   assert.equal(h.files.get(SESSION_ID_PATH), PINNED, 'the pin is untouched')
   // Stopping the launcher stops the agent and does NOT relaunch it.
   h.stop.abort()
-  assert.equal(await done, 143)
+  assert.equal(await settled(done, h.stop), 143)
   assert.equal(h.spawns.length, 2)
   assert.equal(h.spawns[1]!.killedWith, 'SIGTERM')
   assert.equal(h.files.has(SUPERVISOR_PATH), false, 'cleaned up on the way out')
@@ -238,7 +270,7 @@ test('keep-alive: quick exits back off 5, 10, 20, 40, 60, 60 s, and a session th
   await until(() => h.spawns.length === 8, 'launch 8')
   assert.equal(h.sleeps.at(-1), 5_000, 'the streak ended with the healthy session')
   h.stop.abort()
-  await done
+  await settled(done, h.stop)
 })
 
 test('keep-alive: three exits inside five minutes are recorded in launch-status as a crash loop', async (t) => {
@@ -261,7 +293,7 @@ test('keep-alive: three exits inside five minutes are recorded in launch-status 
   assert.match(status, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=crash-loop exits=3 window=300s exit=3 delay=20s\n$/, status)
   assert.ok(h.prints.some((l) => /crash loop/i.test(l)), h.prints.join('\n'))
   h.stop.abort()
-  await done
+  await settled(done, h.stop)
 })
 
 test('keep-alive: the one-shot fresh fallback for a fast-dying resume still applies, then the backoff, and the pin stays on the real session', async (t) => {
@@ -281,7 +313,7 @@ test('keep-alive: the one-shot fresh fallback for a fast-dying resume still appl
   assert.deepEqual(h.spawns[2]!.args, [...BASE, '--resume', PINNED], 'back to the agent\'s real session')
   assert.equal(h.files.get(SESSION_ID_PATH), PINNED)
   h.stop.abort()
-  await done
+  await settled(done, h.stop)
 })
 
 test('keep-alive: a session that stayed up past the health window earns the fresh fallback again, so a later rejected resume is retried at once', async (t) => {
@@ -302,7 +334,7 @@ test('keep-alive: a session that stayed up past the health window earns the fres
   assert.deepEqual(h.sleeps, [5_000], 'retried at once, not left to the backoff')
   assert.ok(h.spawns[3]!.args.includes('--session-id'), h.spawns[3]!.args.join(' '))
   h.stop.abort()
-  await done
+  await settled(done, h.stop)
 })
 
 test('keep-alive: a stop request during the backoff wait ends the loop there, and nothing is relaunched', async (t) => {
@@ -317,7 +349,7 @@ test('keep-alive: a stop request during the backoff wait ends the loop there, an
   await until(() => h.spawns.length === 1, 'launch 1')
   h.clock.t += 60_000
   h.spawns[0]!.exit(0)
-  assert.equal(await done, 0)
+  assert.equal(await settled(done, h.stop), 0)
   assert.deepEqual(h.sleeps, [5_000])
   assert.equal(h.spawns.length, 1, 'stopped while waiting: no relaunch')
   assert.equal(h.files.has(SUPERVISOR_PATH), false)
@@ -334,7 +366,98 @@ test('keep-alive: a restart marker still relaunches at once (no backoff), exactl
   assert.equal(h.spawns[0]!.killedWith, 'SIGTERM')
   assert.deepEqual(h.spawns[1]!.args, [...BASE, '--resume', PINNED])
   h.stop.abort()
-  await done
+  await settled(done, h.stop)
+})
+
+test('daemon F6: a pin the daemon rewrote while claude ran is what the marker relaunch AND the keep-alive relaunch resume, never the id hoai read at launch', async (t) => {
+  const LIVE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const h = harness()
+  t.after(() => h.stop.abort())
+  const done = h.run()
+  await until(() => h.spawns.length === 1, 'launch 1')
+  assert.deepEqual(h.spawns[0]!.args, [...BASE, '--resume', PINNED])
+  // The daemon found the live session is another resumable one and repinned to it (design 13).
+  h.files.set(SESSION_ID_PATH, `${LIVE}\n`)
+  h.files.set(`${HOME}/.claude/projects/-agents-athena/${LIVE}.jsonl`, '{}')
+  h.files.set(MARKER_PATH, '{}')
+  await until(() => h.spawns.length === 2, 'marker relaunch')
+  assert.deepEqual(h.spawns[1]!.args, [...BASE, '--resume', LIVE], 'the marker relaunch reads the pin again')
+  // Junk on disk is no pin: the last good one stands.
+  h.files.set(SESSION_ID_PATH, 'not-a-session')
+  h.clock.t += 60_000
+  h.spawns[1]!.exit(0)
+  await until(() => h.spawns.length === 3, 'keep-alive relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE, '--resume', LIVE], 'junk keeps the pin it had')
+  // And a later rewrite reaches the keep-alive relaunch too.
+  h.files.set(SESSION_ID_PATH, PINNED)
+  h.clock.t += 60_000
+  h.spawns[2]!.exit(0)
+  await until(() => h.spawns.length === 4, 'second keep-alive relaunch')
+  assert.deepEqual(h.spawns[3]!.args, [...BASE, '--resume', PINNED], 'the keep-alive relaunch reads the pin again')
+  h.stop.abort()
+  await settled(done, h.stop)
+})
+
+test('daemon F6: a `hoai --new` whose repin could not be written never takes the abandoned pin back on a relaunch; a pin the daemon writes later is taken', async (t) => {
+  const LIVE = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+  const h = harness()
+  t.after(() => h.stop.abort())
+  let pinWritable = false
+  const done = h.run({
+    freshSession: true,
+    writeFile: (p: string, c: string) => {
+      if (p === SESSION_ID_PATH && !pinWritable) return false
+      h.files.set(p, c)
+      return true
+    },
+  })
+  await until(() => h.spawns.length === 1, 'launch 1')
+  assert.deepEqual(h.spawns[0]!.args, BASE, 'an unpinned fresh session, exactly as before')
+  h.files.set(MARKER_PATH, '{}')
+  await until(() => h.spawns.length === 2, 'marker relaunch')
+  assert.deepEqual(h.spawns[1]!.args, BASE, 'never the session the user asked to leave')
+  // The daemon pins the live session it found.
+  pinWritable = true
+  h.files.set(SESSION_ID_PATH, LIVE)
+  h.files.set(`${HOME}/.claude/projects/-agents-athena/${LIVE}.jsonl`, '{}')
+  h.clock.t += 60_000
+  h.spawns[1]!.exit(0)
+  await until(() => h.spawns.length === 3, 'keep-alive relaunch')
+  assert.deepEqual(h.spawns[2]!.args, [...BASE, '--resume', LIVE])
+  h.stop.abort()
+  await settled(done, h.stop)
+})
+
+test('the file\'s own bound: a loop that never ends is stopped and named within the bound, never awaited for ever', async (t) => {
+  const h = harness()
+  t.after(() => h.stop.abort())
+  const done = h.run()
+  await until(() => h.spawns.length === 1, 'launch 1')
+  // Nobody exits this child: exactly the wait that hung a run for hours.
+  await assert.rejects(settled(done, h.stop, 200), /did not end within 200 ms/)
+  assert.equal(h.stop.signal.aborted, true, 'the bound stopped the loop')
+  assert.equal(await done, 143, 'and the stopped loop really ended')
+})
+
+test('the restart-marker poller never holds the process open by itself (claude\'s own handle does while it runs), so a loop a failed test left behind cannot hang the run', async (t) => {
+  const realSetInterval = globalThis.setInterval
+  const made: Array<ReturnType<typeof setInterval>> = []
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const timer = realSetInterval(...args)
+    made.push(timer)
+    return timer
+  }) as typeof setInterval
+  t.after(() => {
+    globalThis.setInterval = realSetInterval
+  })
+  const h = harness()
+  t.after(() => h.stop.abort())
+  const done = h.run()
+  await until(() => h.spawns.length === 1, 'launch 1')
+  assert.ok(made.length >= 1, 'the marker poller runs')
+  assert.deepEqual(made.map((timer) => timer.hasRef()), made.map(() => false), 'unref\'d: a FakeChild has no handle, and neither has a leaked loop')
+  h.stop.abort()
+  assert.equal(await settled(done, h.stop), 143)
 })
 
 test('keep-alive: a launch with no identity at all is REFUSED by name, because every relaunch would be a fresh unpinned session (finding 7)', async () => {
@@ -403,7 +526,7 @@ test('main(): --keep-alive reaches the loop (an exit is relaunched), and the sto
     await until(() => spawns.length === 2, 'relaunch')
     assert.deepEqual(sleeps, [5_000])
     stop.abort()
-    assert.equal(await done, 143)
+    assert.equal(await settled(done, stop), 143)
   } finally {
     rmSync(home, { recursive: true, force: true })
     rmSync(cwd, { recursive: true, force: true })

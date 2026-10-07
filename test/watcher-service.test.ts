@@ -263,6 +263,56 @@ test('win32 spec: a double quote inside a path is refused (it would break the vb
   assert.throws(() => watcherServiceSpec({ platform: 'win32', ...WIN, bundleDir: 'C:\\x"y' }), /quote/)
 })
 
+/** Evaluate a VBScript string expression of "literal" and ChrW(n) parts joined by &. */
+function evalVbs(expr: string) {
+  let out = ''
+  for (const part of expr.split(' & ')) {
+    const chr = /^ChrW\((\d+)\)$/.exec(part)
+    if (chr) out += String.fromCharCode(Number(chr[1]))
+    else if (/^"(?:[^"]|"")*"$/.test(part)) out += part.slice(1, -1).replace(/""/g, '"')
+    else throw new Error(`not a vbs string part: ${part}`)
+  }
+  return out
+}
+
+/** Evaluate a PowerShell expression of 'literal' and [char]0xNNNN parts joined by +, optionally parenthesized. */
+function evalPs(expr: string) {
+  const body = expr.startsWith('(') && expr.endsWith(')') ? expr.slice(1, -1) : expr
+  const parts = body.split(' + ')
+  // A leading [char] would make PowerShell ADD the parts as numbers.
+  assert.equal(parts[0]!.startsWith('[char]'), false, `${expr} starts with a [char]`)
+  let out = ''
+  for (const part of parts) {
+    const chr = /^\[char\]0x([0-9A-F]{4})$/.exec(part)
+    if (chr) out += String.fromCharCode(parseInt(chr[1]!, 16))
+    else if (/^'(?:[^']|'')*'$/.test(part)) out += part.slice(1, -1).replace(/''/g, "'")
+    else throw new Error(`not a ps string part: ${part}`)
+  }
+  return out
+}
+
+test('win32 spec (the agent task F7 twin): a non-ASCII profile is written as pure ASCII (WSH reads a .vbs as ANSI, PowerShell 5.1 a BOM-less .ps1 too), and decodes back to the exact paths', () => {
+  // Read as ANSI, the UTF-8 bytes of these were mojibake: the watcher never
+  // started, so the agent task it installs never existed either.
+  const home = 'C:\\Users\\Jos\u00e9 \u0648\u0643\u064a\u0644'
+  const bundleDir = `${home}\\.bgos-agent\\watcher`
+  const nodePath = `${home}\\nvm\\n\u00f6de \ud83d\ude80\\node.exe`
+  const spec = watcherServiceSpec({ platform: 'win32', ...WIN, home, bundleDir, nodePath })
+  for (const file of spec.files) {
+    const wide = [...file.content].filter((ch) => ch.charCodeAt(0) > 0x7e && ch !== '\r' && ch !== '\n')
+    assert.deepEqual(wide, [], `${file.path} is pure ASCII`)
+  }
+  const vbs = spec.files[0]!.content.split('\r\n')
+  const cd = vbs.find((l) => l.startsWith('shell.CurrentDirectory = '))!
+  assert.equal(evalVbs(cd.slice('shell.CurrentDirectory = '.length)), bundleDir)
+  const run = /^shell\.Run (.*), 0, False$/.exec(vbs.find((l) => l.startsWith('shell.Run '))!)![1]!
+  assert.equal(evalVbs(run), `"${nodePath}" "${bundleDir}\\bin\\hoai-watcher.mjs" run`)
+  const ps1 = spec.files[1]!.content.split('\r\n')
+  const decl = (name: string) => ps1.find((l) => l.startsWith(`$${name} = `))!.slice(`$${name} = `.length)
+  assert.equal(evalPs(decl('vbs')), `${bundleDir}\\run-hidden.vbs`)
+  assert.equal(evalPs(decl('watcherScript')), `${bundleDir}\\bin\\hoai-watcher.mjs`)
+})
+
 test('unsupported platform is refused by name', () => {
   assert.throws(() => watcherServiceSpec({ platform: 'freebsd', ...POSIX }), /freebsd/)
 })

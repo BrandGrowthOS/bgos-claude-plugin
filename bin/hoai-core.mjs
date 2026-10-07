@@ -2135,6 +2135,20 @@ export async function superviseClaude(args, opts = {}) {
   // rejected resume.
   const sessionExistsNow = () =>
     pinnedId ? exists(sessionTranscriptPath(home, cwd, pinnedId, env.CLAUDE_CONFIG_DIR)) : false
+  // The pin on disk can change under a live launcher: the daemon rewrites it
+  // when the live session is a different resumable one (design 13, 'Plugin:
+  // daemon'). Every relaunch reads it again, or the id read at launch would
+  // undo that rewrite at the next marker or --keep-alive relaunch (review
+  // daemon F6: A, then B, then A again). Junk on disk is no pin, so the last
+  // good id stands. A `--new` whose repin could not be written left the
+  // abandoned pin on disk: that one id is never taken back, because resuming
+  // it is the one thing --new must not do. The deferred fresh-retry pin is
+  // untouched: until it commits, the file still names the previous session.
+  const abandonedPin = freshSession && !pinnedId ? String(readFile(sessionIdPath) ?? '').trim() : ''
+  const rereadPin = () => {
+    const onDisk = String(readFile(sessionIdPath) ?? '').trim()
+    if (isSessionIdLike(onDisk) && onDisk !== abandonedPin) pinnedId = onDisk
+  }
 
   let relaunchesAt = []
   let exhausted = false
@@ -2224,6 +2238,12 @@ export async function superviseClaude(args, opts = {}) {
           // The child already died; its exit resolves the loop below.
         }
       }, pollMs)
+      // Never what keeps this process alive: while claude runs, its own child
+      // handle does, and nothing here waits on an exit without one. A ref'd
+      // poller kept a loop that outlived its caller (a test left with a fake
+      // child nobody exits) ticking every few ms, and held `tsx --test` open,
+      // idle, for hours.
+      poller.unref?.()
       const code = await exited
       clearInterval(poller)
       stopSignal?.removeEventListener?.('abort', onStop)
@@ -2237,6 +2257,7 @@ export async function superviseClaude(args, opts = {}) {
         // A daemon-driven update restart: relaunch THIS agent's OWN session
         // (resume it when its transcript exists, else create it again by
         // id; never --continue), and give this cycle a fresh fallback.
+        rereadPin()
         const relaunchArgs = relaunchClaudeArgs({
           scriptDir,
           env,
@@ -2333,6 +2354,7 @@ export async function superviseClaude(args, opts = {}) {
       if (stopSignal?.aborted) return code
       // The channel is re-resolved, and the session args are the identity-safe
       // pair: --resume <pin> when its transcript exists, else --session-id <pin>.
+      rereadPin()
       const keepArgs = relaunchClaudeArgs({
         scriptDir,
         env,

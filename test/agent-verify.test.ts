@@ -208,3 +208,20 @@ test('verifyAgent: the probe is asked again the moment the launcher consumes the
   assert.deepEqual(probeWrites, [new Date(T0).toISOString(), new Date(T0 + 2 * 3000).toISOString()])
   assert.deepEqual(clock.sleeps, [3000, 3000, 3000, 3000])
 })
+
+test('verifyAgent: a clock that never reaches the deadline still ends the wait (a lap bound), never a loop that starves every timer', async () => {
+  // Every lap awaits only the injected sleep. With a sleep that does not move
+  // the clock (a test's fake, or a wall clock stepped back) the loop never
+  // yielded to a timer, so not even --test-timeout could stop it: a watcher
+  // test run sat at 100% CPU for 50 minutes.
+  let sleeps = 0
+  const sleep = async () => {
+    sleeps += 1
+    // Only so the defect fails this test instead of hanging the file.
+    if (sleeps > 1000) throw new Error('verify did not stop polling')
+  }
+  const result = await verifyAgent(agentRow(), { restartedAtMs: T0, fs: memoryFs(), now: () => T0, sleep, timeoutMs: 30_000, pollMs: 3000 })
+  assert.equal(result.ok, false)
+  assert.equal(result.message, 'agent_deaf_after_restart')
+  assert.equal(sleeps, 11, 'one lap per poll the timeout allows, plus one')
+})

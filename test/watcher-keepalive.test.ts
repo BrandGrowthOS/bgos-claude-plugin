@@ -22,11 +22,12 @@
  * Run: npx tsx --test test/watcher-keepalive.test.ts
  */
 
-import { test } from 'node:test'
+import { test as nodeTest, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
   INSTALL_TIMEOUT_MS,
+  KEEP_ONLINE_TICK_MS,
   hookSpoolPathFor,
   keepAliveCachePath,
   mungeCwd,
@@ -48,6 +49,21 @@ const T0 = Date.parse('2026-10-06T19:00:00.000Z')
 const MIN = 60_000
 const AVA = `${HOME}/hoai-agents/ava`
 const GURU = `${HOME}/hoai-agents/guru`
+
+/**
+ * Every test here is bounded. node:test's default timeout is INFINITE, so a
+ * sweep left awaiting something that never settles would hold `tsx --test`
+ * open for good. A loop that never yields at all is a different hang no timer
+ * can stop (an F8 run sat at 100% CPU for 50 minutes): verify's polls and the
+ * keepOnline ticks are bounded in the code for that.
+ */
+const TEST_TIMEOUT_MS = 20_000
+function test(name: string, fn: (t: TestContext) => void | Promise<void>): Promise<void>
+function test(name: string, options: { timeout?: number }, fn: (t: TestContext) => void | Promise<void>): Promise<void>
+function test(name: string, a: unknown, b?: unknown) {
+  if (typeof a === 'function') return nodeTest(name, { timeout: TEST_TIMEOUT_MS }, a as (t: TestContext) => void | Promise<void>)
+  return nodeTest(name, { timeout: TEST_TIMEOUT_MS, ...(a as { timeout?: number }) }, b as (t: TestContext) => void | Promise<void>)
+}
 
 // -- the fake machine --------------------------------------------------------------------------
 
@@ -77,13 +93,16 @@ type AgentSpec = {
 }
 
 function stateBody(id: string, at: number, overrides: Record<string, unknown> = {}) {
+  const running = 'runningVersion' in overrides ? overrides.runningVersion : '0.62.0'
   return JSON.stringify({
     schemaVersion: 1,
     assistantId: id,
     pid: Number(`4${id}`),
     claudePid: Number(`5${id}`),
     runningVersion: '0.62.0',
-    pendingRestartVersion: null,
+    // What the daemon itself reads from the installed_plugins.json machine() writes
+    // (0.62.1): a fresh daemon's answer is the one the sweep acts on (daemon F7).
+    pendingRestartVersion: running === '0.62.1' ? null : '0.62.1',
     turnInFlight: false,
     pendingMessages: 0,
     pendingPermissions: 0,
@@ -834,6 +853,34 @@ test('online (F8): a long sweep keeps the watcher online: keepOnline between age
   for (let i = 1; i < stamps.length; i++) assert.ok(stamps[i]! - stamps[i - 1]! < 3 * MIN, `gap ${i}`)
 })
 
+test('online (F8): an install that ends on a later event loop turn (a real child process) still ends the sweep when the sleep resolves at once: the keepOnline ticks are bounded, never a microtask loop that starves it', async () => {
+  const fs = machine([{ id: '7', cwd: GURU, service: 'none' }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  let ticks = 0
+  const sleep = async (ms: number) => {
+    ticks += 1
+    // Only so the defect fails this test instead of hanging the file.
+    if (ticks > 2000) throw new Error('keepOnline never stopped ticking')
+    await clock.sleep(ms)
+  }
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file !== 'bash') return rec.exec(file, args, o)
+    rec.calls.push({ file, args: [...args], opts: o })
+    // Settles on a macrotask, as a real child's exit does: a loop that only
+    // ever awaits resolved promises never lets this run.
+    return new Promise((resolve) => setImmediate(() => resolve({ code: 0, stdout: '', stderr: '', error: null, timedOut: false })))
+  }
+  let touches = 0
+  const keepOnline = async () => {
+    touches += 1
+  }
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { exec, sleep, keepOnline, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [7] }).fetchKeepAlive }).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  assert.equal(ticks, Math.ceil(INSTALL_TIMEOUT_MS / KEEP_ONLINE_TICK_MS) + 1, 'ticks for as long as the install may take, then only waits')
+  assert.ok(touches >= ticks, `kept online through every tick (${touches})`)
+})
+
 // -- F1: a cwd lookup that failed or spelled the folder differently is never "not running" ----------
 
 test('F1: a cwd lookup that FAILED is unknown, never "stopped": a generation 1 supervisor over a live claude with a job is not reinstalled', async () => {
@@ -885,6 +932,27 @@ test('F1: a daemon too old to publish its state still holds the pairing lock: it
   const staleReport = await runKeepAliveSweep(ctxFor(fs, stale, fakeClock()).ctx as any)
   assert.deepEqual(staleReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
   assert.equal(stale.calls.some((c) => c.file === 'lsof'), true, 'back to the cwd lookup')
+})
+
+test('F1 hardening: a LIVE pairing-lock daemon with no recognisable claude above it and none in its folder is UNKNOWN (waits), never stopped: nothing is reinstalled under it', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4300, heartbeatAt: T0 - 3_000, bootedAt: T0 - 60 * MIN }))
+  // The daemon runs under something the watcher does not recognise as claude.
+  const ps = [psLine(1, 0, '/sbin/launchd', undefined, 0), psLine(4200, 1, '/opt/tools/agent-wrapper --session'), psLine(4300, 4200, `node ${OLD_ROOT}/server.ts`)].join('\n')
+  const rec = recorder({ ps, lsofCode: 1, lsof: '' })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => pid === 4300 || pid === 4200 }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash' || c.file === 'launchctl'), [], 'no reinstall, no restart under a live daemon')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
+  // The same table with a lock nobody stamps any more: no live daemon, really stopped.
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4300, heartbeatAt: T0 - 10 * MIN }))
+  const stale = recorder({ ps, lsofCode: 1, lsof: '' })
+  const staleClock = fakeClock()
+  answerProbes(fs, staleClock, ['912'])
+  const stopped = await runKeepAliveSweep(ctxFor(fs, stale, staleClock, { pidAlive: (pid: number) => pid === 4300 || pid === 4200 }).ctx as any)
+  assert.deepEqual(stale.calls.filter((c) => c.file === 'bash').map((c) => c.args[1]), ['install'])
+  assert.deepEqual(stopped.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
 })
 
 // -- F5: a systemd restart kills the unit's whole cgroup, so a job orphaned out of claude's tree counts --------
@@ -1324,7 +1392,8 @@ function lstartFor(isoString: string) {
 test('an agent with its own CLAUDE_CONFIG_DIR is judged against ITS installed plugin, and restarted onto that root', async () => {
   const ALT = `${HOME}/.claude-alt`
   const ALT_ROOT = `${ALT}/plugins/cache/hoai/hoai/0.70.0`
-  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1' } }])
+  // The agent's daemon reads ITS config dir, so it is the one that names 0.70.0.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1', pendingRestartVersion: '0.70.0' } }])
   fs.writeFile(
     `${HOME}/.bgos-agent/912/launch.json`,
     JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: ALT_ROOT, node: '/usr/local/bin/node', claudeConfigDir: ALT, startedAt: 'x', pid: null } as any)),
@@ -1337,6 +1406,26 @@ test('an agent with its own CLAUDE_CONFIG_DIR is judged against ITS installed pl
   const report = await runKeepAliveSweep(ctx as any)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['912'].target, '0.70.0', "its own install, not the watcher's 0.62.1")
+})
+
+test('daemon F7: a FRESH daemon that reports nothing pending is not restarted, whatever installed version the watcher itself reads', async () => {
+  // The daemon runs under another CLAUDE_CONFIG_DIR the watcher knows nothing of
+  // (no launch recipe says so), and there its plugin is current: it publishes null.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.0', pendingRestartVersion: null } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl'), [], 'no restart onto the watcher\'s 0.62.1')
+  // The same daemon naming its own pending version is restarted onto THAT version.
+  const named = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.0', pendingRestartVersion: '0.62.3' } }])
+  const rec2 = recorder({ ps: IDLE_PS })
+  const clock2 = fakeClock()
+  answerProbes(named, clock2, ['912'])
+  const restarted = await runKeepAliveSweep(ctxFor(named, rec2, clock2).ctx as any)
+  assert.deepEqual(restarted.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.equal(JSON.parse(named.files.get(keepAliveStatePath(HOME))!).agents['912'].target, '0.62.3')
 })
 
 test("a stale state's claudePid that now belongs to some other process is not the agent's claude (pid reuse)", async () => {
