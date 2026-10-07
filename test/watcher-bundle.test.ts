@@ -11,19 +11,24 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  BUNDLE_INCOMPLETE_CODE,
   MANIFEST_FILE_NAME,
   WATCHER_BUNDLE_FILES,
+  WatcherBundleIncompleteError,
+  assertWatcherBundleComplete,
   bundleFingerprint,
   installWatcherBundle,
   nodeFs,
   readBundleManifest,
+  relativeImportSpecifiers,
   swapStagedBundle,
   watcherHome,
+  watcherImportClosure,
   watcherLogPath,
   watcherStatePath,
 } from '../lib/watcher-bundle.mjs'
@@ -309,4 +314,183 @@ test('the bundle list covers the entire import closure of the watcher entry poin
     seen.has('lib/known-good-store.mjs'),
     'the walk did not reach known-good-store.mjs, the very file whose absence caused this test to exist',
   )
+})
+
+// -- e2e E4: what is copied comes from the ROOT's real code, not from the caller's list ----------
+
+/** A small real plugin root in a temp dir: every listed file as a stub, then the overrides. */
+function tinyRoot(root: string, overrides: Record<string, string> = {}) {
+  const fs = nodeFs()
+  for (const rel of WATCHER_BUNDLE_FILES) fs.writeFile(join(root, rel), `// ${rel}\n`)
+  fs.writeFile(join(root, 'package.json'), '{"version":"0.62.1"}')
+  for (const [rel, body] of Object.entries(overrides)) fs.writeFile(join(root, rel), body)
+  return fs
+}
+
+const ENTRY_IMPORTING_CORE_AND_HEALTH = [
+  "// the entry: builtins only at load, everything else inside the guard",
+  "export const loadHealth = () => import('../lib/watcher-health.mjs')",
+  "export const loadCore = () => import('../lib/watcher-core.mjs')",
+  '',
+].join('\n')
+
+test('installWatcherBundle copies the import closure of the GIVEN root: lib/new-thing.mjs, imported by watcher-core and absent from the list passed in, is copied anyway (e2e E4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-bundle-closure-'))
+  try {
+    const root = join(dir, 'plugin')
+    const home = join(dir, 'home')
+    const fs = tinyRoot(root, {
+      'bin/hoai-watcher.mjs': ENTRY_IMPORTING_CORE_AND_HEALTH,
+      'lib/watcher-core.mjs': "import {\n  thing,\n} from './new-thing.mjs'\nexport { thing }\n",
+      'lib/new-thing.mjs': 'export const thing = 1\n',
+    })
+    assert.equal(WATCHER_BUNDLE_FILES.includes('lib/new-thing.mjs'), false, 'fixture: the list does not name it')
+    const result = await installWatcherBundle({ pluginRoot: root, home, fs, files: WATCHER_BUNDLE_FILES })
+    const bundle = watcherHome(home)
+    assert.equal(readFileSync(join(bundle, 'lib', 'new-thing.mjs'), 'utf8'), 'export const thing = 1\n')
+    assert.deepEqual(result.files, [...WATCHER_BUNDLE_FILES, 'lib/new-thing.mjs'], 'the list in its order, then what the closure added')
+    assert.deepEqual(JSON.parse(readFileSync(join(bundle, 'manifest.json'), 'utf8')).files, result.files, 'manifest.files lists what was copied')
+    assert.equal(result.fingerprint, bundleFingerprint(root, fs))
+    assert.equal(bundleFingerprint(bundle, fs), result.fingerprint, 'the copy fingerprints like its source')
+
+    // An OLDER installer's shorter list (0.61.4 named no watcher-health.mjs) gets the same bundle.
+    const older = WATCHER_BUNDLE_FILES.filter((f) => f !== 'lib/watcher-health.mjs')
+    const home2 = join(dir, 'home2')
+    const fromOlder = await installWatcherBundle({ pluginRoot: root, home: home2, fs, files: older })
+    assert.equal(existsSync(join(watcherHome(home2), 'lib', 'watcher-health.mjs')), true)
+    assert.equal(existsSync(join(watcherHome(home2), 'lib', 'new-thing.mjs')), true)
+    assert.deepEqual([...fromOlder.files].sort(), [...result.files].sort())
+
+    // A file ONLY the closure names still moves the fingerprint (a refresh is then due).
+    const before = bundleFingerprint(root, fs)
+    writeFileSync(join(root, 'lib', 'new-thing.mjs'), 'export const thing = 2\n')
+    assert.notEqual(bundleFingerprint(root, fs), before)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the completeness check names a missing file: WatcherBundleIncompleteError by name, and no manifest for a bundle that cannot load', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-bundle-complete-'))
+  try {
+    const fs = nodeFs()
+    // 1. A bundle dir whose watcher-core imports a file the bundle does not hold.
+    const bundle = join(dir, 'bundle')
+    fs.writeFile(join(bundle, 'bin', 'hoai-watcher.mjs'), "export const go = () => import('../lib/watcher-core.mjs')\n")
+    fs.writeFile(join(bundle, 'lib', 'watcher-core.mjs'), "import { x } from './gone.mjs'\nexport { x }\n")
+    assert.throws(
+      () => assertWatcherBundleComplete(bundle, ['bin/hoai-watcher.mjs'], fs),
+      (err: any) => {
+        assert.ok(err instanceof WatcherBundleIncompleteError)
+        assert.equal(err.code, BUNDLE_INCOMPLETE_CODE)
+        assert.equal(err.summary, 'lib/gone.mjs (imported by lib/watcher-core.mjs)')
+        assert.deepEqual(err.missing, ['lib/gone.mjs'])
+        assert.match(err.message, /watcher bundle incomplete: lib\/gone\.mjs \(imported by lib\/watcher-core\.mjs\)/)
+        return true
+      },
+    )
+    fs.writeFile(join(bundle, 'lib', 'gone.mjs'), 'export const x = 1\n')
+    assert.deepEqual(assertWatcherBundleComplete(bundle, ['bin/hoai-watcher.mjs'], fs).sort(), ['bin/hoai-watcher.mjs', 'lib/gone.mjs', 'lib/watcher-core.mjs'])
+
+    // 2. A root whose own code imports a file it does not ship: named, and NOTHING is written.
+    const root = join(dir, 'plugin')
+    const home = join(dir, 'home')
+    tinyRoot(root, {
+      'bin/hoai-watcher.mjs': ENTRY_IMPORTING_CORE_AND_HEALTH,
+      'lib/watcher-core.mjs': "import { thing } from './new-thing.mjs'\nexport { thing }\n",
+    })
+    await assert.rejects(
+      () => installWatcherBundle({ pluginRoot: root, home, fs }),
+      (err: any) => err.code === BUNDLE_INCOMPLETE_CODE && err.summary === 'lib/new-thing.mjs (imported by lib/watcher-core.mjs)',
+    )
+    assert.equal(existsSync(watcherHome(home)), false, 'nothing half copied')
+
+    // 3. A copy that silently drops a file: the COPY is checked, by name, before the manifest exists.
+    fs.writeFile(join(root, 'lib', 'new-thing.mjs'), 'export const thing = 1\n')
+    const lossy = { ...fs, copyFile: (from: string, to: string) => (from.endsWith('new-thing.mjs') ? undefined : fs.copyFile(from, to)) }
+    await assert.rejects(
+      () => installWatcherBundle({ pluginRoot: root, home, fs: lossy }),
+      (err: any) => err.code === BUNDLE_INCOMPLETE_CODE && err.missing.includes('lib/new-thing.mjs'),
+    )
+    assert.equal(existsSync(join(watcherHome(home), 'manifest.json')), false, 'no manifest names a bundle that cannot load')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('relativeImportSpecifiers: static, export from, side effect and dynamic literal imports; never bare names, builtins, template holes or comments', () => {
+  const source = [
+    '/**',
+    " * @param {import('./typedef-only.mjs').T} x   a JSDoc type, not an import",
+    ' */',
+    "import { a } from './a.mjs'",
+    'import {',
+    '  b,',
+    '  c,',
+    "} from '../lib/b.mjs'",
+    "import './side-effect.mjs'",
+    "export { d } from './d.js'",
+    "export * from './e.mjs'",
+    "import fs from 'node:fs'",
+    "import zod from 'zod'",
+    "const lazy = () => import('./lazy.mjs')",
+    'const two = await import("./double-quoted.mjs")',
+    'const tpl = await import(`./template.mjs`)',
+    'const computed = await import(`./${name}.mjs`)',
+    "// import { old } from './commented-out.mjs'",
+    "const notAnImport = Array.from('./not-a-path')",
+  ].join('\n')
+  assert.deepEqual(relativeImportSpecifiers(source).sort(), [
+    '../lib/b.mjs',
+    './a.mjs',
+    './d.js',
+    './double-quoted.mjs',
+    './e.mjs',
+    './lazy.mjs',
+    './side-effect.mjs',
+    './template.mjs',
+  ])
+})
+
+test('watcherImportClosure: resolved per file, confined to the root, missing and escaping imports named', () => {
+  const fs = memoryFs({
+    '/r/bin/hoai-watcher.mjs': "const core = () => import('../lib/watcher-core.mjs')\n",
+    '/r/lib/watcher-core.mjs': "import './sub/inner.mjs'\nimport { y } from './absent.mjs'\n",
+    '/r/lib/sub/inner.mjs': "import { z } from '../../../outside.mjs'\nimport { w } from '../watcher-core.mjs'\n",
+  })
+  const walk = watcherImportClosure('/r', { fs })
+  assert.equal(walk.ok, false)
+  assert.deepEqual(walk.files, ['bin/hoai-watcher.mjs', 'lib/watcher-core.mjs', 'lib/sub/inner.mjs'])
+  assert.deepEqual(walk.missing, [{ file: 'lib/absent.mjs', importedBy: 'lib/watcher-core.mjs' }])
+  assert.deepEqual(walk.escaped, [{ specifier: '../../../outside.mjs', importedBy: 'lib/sub/inner.mjs' }])
+})
+
+test('watcherImportClosure of THIS checkout: complete, inside the list, and the same graph the naive walk of the test above reads', () => {
+  const root = join(import.meta.dirname, '..')
+  const walk = watcherImportClosure(root)
+  assert.equal(walk.ok, true, JSON.stringify({ missing: walk.missing, escaped: walk.escaped }))
+  for (const rel of ['lib/known-good-store.mjs', 'lib/watcher-health.mjs', 'lib/win32-script-text.mjs', 'lib/watcher-keepalive.mjs']) {
+    assert.ok(walk.files.includes(rel), `the shared walk reaches ${rel}`)
+  }
+  assert.deepEqual(walk.files.filter((f) => !WATCHER_BUNDLE_FILES.includes(f)), [])
+  // The independent naive walk (the test below) must agree, so neither can drift alone.
+  const seen = new Set<string>()
+  const queue = ['bin/hoai-watcher.mjs']
+  while (queue.length > 0) {
+    const rel = queue.shift() as string
+    if (seen.has(rel)) continue
+    seen.add(rel)
+    for (const m of readFileSync(join(root, rel), 'utf8').matchAll(/(?:from\s+|import\()\s*'(\.[^']+)'/g)) {
+      queue.push(join(rel, '..', m[1] as string).split('\\').join('/'))
+    }
+  }
+  assert.deepEqual([...walk.files].sort(), [...seen].sort())
+})
+
+test('lib/watcher-bundle.mjs imports node builtins only: the entry reaches the self repair through it when nothing else loads', () => {
+  const source = readFileSync(join(import.meta.dirname, '..', 'lib', 'watcher-bundle.mjs'), 'utf8')
+  const specifiers = [...source.matchAll(/^import\s[^;]*?from\s+'([^']+)'/gm)].map((m) => m[1])
+  assert.ok(specifiers.length >= 3, 'the scan reads the import block')
+  assert.deepEqual(specifiers.filter((s) => !String(s).startsWith('node:')), [])
+  assert.deepEqual(relativeImportSpecifiers(source), [], 'and no relative import at all, static or dynamic')
 })

@@ -36,7 +36,7 @@ import {
   runWatcher,
   scrubLine,
 } from '../lib/watcher-core.mjs'
-import { WATCHER_BUNDLE_FILES, bundleFingerprint } from '../lib/watcher-bundle.mjs'
+import { WATCHER_BUNDLE_FILES, bundleFingerprint, installWatcherBundle, readBundleManifest } from '../lib/watcher-bundle.mjs'
 import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -1098,6 +1098,18 @@ test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); 
   assert.equal(after.lastPollOkAt, new Date(T0).toISOString(), 'carried over from the previous process, not erased by the failed poll')
 })
 
+test('runWatcher: the last bundle self repair (bundleRepair) survives a restart, so the one-per-10-minutes bound holds (e2e E4)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const repair = { at: new Date(T0 - 60_000).toISOString(), outcome: 'repaired', files: ['lib/watcher-health.mjs'] }
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/state.json`, JSON.stringify({ bundleRepair: repair, lastJob: 'old' }))
+  const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.deepEqual(state.bundleRepair, repair)
+  assert.equal(state.lastJob, undefined, 'everything else still starts fresh')
+})
+
 test('runWatcher: the heartbeat carries the recorded boots and the last fatal (design 8)', async () => {
   const fs = machineFs()
   manifestFor(fs)
@@ -1232,4 +1244,66 @@ test('runWatcher (F8): a frame whose ack failed during the sweep comes back on t
   assert.equal(acks, 2, 'the lost ack is sent again when the frame comes back')
   const progress = calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/progress')).map((c) => [c.body.state, c.body.message])
   assert.deepEqual(progress, [['failed', 'unknown_op:bogus']], 'the job runs once, never once per delivery')
+})
+
+// --- e2e E4: the refresh copies the ROOT's closure and never stages a bundle that cannot load ----
+
+function twoRoots() {
+  const fs = memoryFs()
+  const OLD = '/plugins/hoai/0.62.0'
+  const NEW = '/plugins/hoai/0.62.1'
+  for (const rel of WATCHER_BUNDLE_FILES) {
+    fs.writeFile(`${OLD}/${rel}`, `// ${rel} old\n`)
+    fs.writeFile(`${NEW}/${rel}`, `// ${rel} new\n`)
+  }
+  fs.writeFile(`${OLD}/package.json`, '{"version":"0.62.0"}')
+  fs.writeFile(`${NEW}/package.json`, '{"version":"0.62.1"}')
+  // The new release adds a watcher file the list never names.
+  fs.writeFile(`${NEW}/bin/hoai-watcher.mjs`, "export const go = () => import('../lib/watcher-core.mjs')\n")
+  fs.writeFile(`${NEW}/lib/watcher-core.mjs`, "import { thing } from './new-thing.mjs'\nexport { thing }\n")
+  return { fs, OLD, NEW }
+}
+
+function probeRecorder() {
+  const probes: unknown[][] = []
+  const exec = async (...args: unknown[]) => {
+    probes.push(args)
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  return { probes, exec }
+}
+
+test('refreshWatcherIfStale: a root whose closure does not resolve fails BY NAME (bundle_incomplete), is never probed or swapped, the live bundle untouched', async () => {
+  const { fs, OLD, NEW } = twoRoots()
+  await installWatcherBundle({ pluginRoot: OLD, home: HOME, fs })
+  const { probes, exec } = probeRecorder()
+  const logs: string[] = []
+  const result = await refreshWatcherIfStale({ home: HOME, fs, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node', log: (l: string) => void logs.push(l) })
+  assert.deepEqual(
+    { needed: result.needed, ok: result.ok, message: result.message },
+    { needed: true, ok: false, message: 'watcher_refresh_failed:bundle_incomplete:lib/new-thing.mjs (imported by lib/watcher-core.mjs)' },
+  )
+  assert.equal(probes.length, 0, 'never probed')
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/watcher/lib/watcher-core.mjs`), '// lib/watcher-core.mjs old\n', 'the live bundle keeps running')
+  assert.equal(readBundleManifest(HOME, fs)?.pluginRoot, OLD)
+  assert.ok(logs.some((l) => l.includes('incomplete')), logs.join('\n'))
+})
+
+test('refreshWatcherIfStale: a copy that comes out incomplete is cleared from next/ by name; with the root complete the closure-only file goes live', async () => {
+  const { fs, OLD, NEW } = twoRoots()
+  fs.writeFile(`${NEW}/lib/new-thing.mjs`, 'export const thing = 1\n')
+  await installWatcherBundle({ pluginRoot: OLD, home: HOME, fs })
+  const { probes, exec } = probeRecorder()
+  const lossy = { ...fs, copyFile: (from: string, to: string) => (from.endsWith('new-thing.mjs') ? undefined : fs.copyFile(from, to)) }
+  const failed = await refreshWatcherIfStale({ home: HOME, fs: lossy as any, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node' })
+  assert.equal(failed.ok, false)
+  assert.match(failed.message, /^watcher_refresh_failed:bundle_incomplete:lib\/new-thing\.mjs/)
+  assert.equal([...fs.files.keys()].some((k) => k.includes('/watcher/next/')), false, 'the half staged bundle is cleared')
+  assert.equal(probes.length, 0)
+  // The control: the same refresh on an honest filesystem stages, probes, swaps, and new-thing is live.
+  const ok = await refreshWatcherIfStale({ home: HOME, fs, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node' })
+  assert.equal(ok.message, 'watcher_bundle_refreshed:0.62.1')
+  assert.equal(probes.length, 1)
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/watcher/lib/new-thing.mjs`), 'export const thing = 1\n')
+  assert.ok(readBundleManifest(HOME, fs)?.files.includes('lib/new-thing.mjs'))
 })
