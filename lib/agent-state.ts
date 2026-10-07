@@ -39,9 +39,11 @@
  * the watcher's quiet window starts when the work ended, not when it began.
  *
  * `turnSignal` (code review F1, 2026-10-07) says whether `turnInFlight` means
- * anything: 'hooks' once this daemon consumed a hook event of its own session
- * in this process, else 'none'. A clone agent whose folder registers no BGOS
- * hooks (the whole fleet on KC's Mac when it was reviewed) never sees one, so
+ * anything: 'hooks' while this daemon's hook rail follows a live session of
+ * its own (an event consumed, and the last one not that session's SessionEnd:
+ * delta review F2, hookTurnSignal), else 'none'. A clone agent whose folder
+ * registers no BGOS hooks (the whole fleet on KC's Mac when it was reviewed)
+ * never sees one, so
  * its turnInFlight is false for good, and the watcher must not read that as
  * idle. The one field added to section 7, at schemaVersion 1: the watcher's
  * parser ignores a field it does not know, and the meaning of every other
@@ -55,6 +57,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync,
 import { basename, dirname, join } from 'node:path'
 
 import { isSessionIdLike } from '../bin/hoai-core.mjs'
+import { STALE_TURN_MS } from './keepalive-plan.mjs'
 import { type BindingSource, POSITIVE_BINDING_SOURCES } from './session-binding.js'
 import {
   isKeepaliveSessionProcess,
@@ -329,6 +332,25 @@ export function findClaudeAncestor(input: {
   )
 }
 
+/**
+ * The turn signal the hook rail can vouch for: 'hooks' only while it follows
+ * a LIVE session of this daemon's own. `lastEventAtMs` is the last consumed
+ * event (null: none yet, so nothing backs turnInFlight); `endedSessionId` is
+ * the session whose SessionEnd was the last event consumed, null once any
+ * other event was admitted after it.
+ *
+ * WHY (delta review F2). The signal used to turn 'hooks' at the first event
+ * and stay so for the process's life. A /clear ends the bound session: the
+ * intake unbinds, and the binder's hook binding still names the OLD
+ * transcript and outranks every other proof, so the new session's events are
+ * refused as unproven until a delivered prompt binds it. Through all of that
+ * turnInFlight stayed false and the file still said 'hooks', so the watcher
+ * applied its 10 min window to a keyboard job the rail could not see.
+ */
+export function hookTurnSignal(rail: { lastEventAtMs: number | null; endedSessionId: string | null }): TurnSignal {
+  return rail.lastEventAtMs !== null && rail.endedSessionId === null ? 'hooks' : 'none'
+}
+
 /** The two reads readSessionTranscript makes, injectable. */
 export interface TranscriptActivityFs {
   mtimeMs: (path: string) => number | null
@@ -367,9 +389,14 @@ export interface SessionTranscriptReading {
 /**
  * Read the activity and the session off the transcripts, for an agent whose
  * hook rail may be silent (F1). `resolve` is the session binder's answer
- * (lib/session-binding.ts resolve()) with ANY binding source, because a wrong
- * guess here only makes the agent look busier, which is the safe direction for
- * a restart. The session id is published only from a POSITIVE binding: it
+ * (lib/session-binding.ts resolve()) with ANY binding source. Only a POSITIVE
+ * binding narrows the reading to that one transcript; anything less (a
+ * newest-mtime guess, its sticky keep, a binding to a session that ended, no
+ * binding at all) ADDS the whole
+ * folder, so a wrong guess only makes the agent look busier, which is the
+ * safe direction for a restart (delta review F3: a guess used to REPLACE the
+ * folder with a neighbour's file, and the agent's own long subagent job read
+ * as quiet). The session id is published only from a positive binding: it
  * names a transcript and a spool the watcher stats, and the pin rules key on
  * it. The activity is the newest of:
  *   - the transcript itself;
@@ -380,9 +407,11 @@ export interface SessionTranscriptReading {
  *     subagents/workflows/<run id>/agent-<id>.jsonl (both seen on disk under
  *     2.1.292). Every .jsonl up to SUBAGENT_DIR_DEPTH dirs below subagents/
  *     counts;
- *   - while the binder cannot tell which transcript is ours (two live ones and
- *     no proof yet), every transcript in the project dir: someone in this
- *     agent's folder is writing, and it may be the agent.
+ *   - while the binder cannot PROVE which transcript is ours, every transcript
+ *     in the project dir and the subagents of each one written in the last
+ *     STALE_TURN_MS: someone in this agent's folder is writing, and it may be
+ *     the agent. The window bounds the walk (a long lived folder holds
+ *     hundreds of transcripts) at the watcher's own stale turn horizon.
  * Never throws; a missing file or dir is simply no reading.
  */
 export function readSessionTranscript(input: {
@@ -391,30 +420,49 @@ export function readSessionTranscript(input: {
   resolve: () => { path: string; binding: { source: BindingSource } } | null
   projectDir: string
   fs?: TranscriptActivityFs
+  /** Epoch ms the subagent window is measured from (Date.now()). */
+  now?: number
+  /** The session whose SessionEnd the hook rail consumed last (hookTurnSignal).
+   *  A binding naming it proves only a session that is over (delta review F2:
+   *  after a /clear the hook binding still names it, and the new session's
+   *  transcript was never read), so it is read as a guess: the folder counts
+   *  and no session is published. */
+  endedSessionId?: string | null
 }): SessionTranscriptReading {
   const fs = input.fs ?? nodeTranscriptActivityFs
   try {
+    const now = input.now ?? Date.now()
     const times: number[] = []
     const note = (ms: number | null) => {
       if (typeof ms === 'number' && Number.isFinite(ms)) times.push(ms)
     }
     const jsonl = (dir: string) => fs.listDir(dir).filter((name) => name.endsWith('.jsonl'))
+    // The .meta.json beside each agent file is a file: never walked into.
+    const walk = (dir: string, depth: number): void => {
+      for (const name of fs.listDir(dir)) {
+        if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
+        else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
+      }
+    }
+    const subagentsOf = (transcript: string) =>
+      walk(join(dirname(transcript), basename(transcript).replace(/\.jsonl$/, ''), 'subagents'), SUBAGENT_DIR_DEPTH)
     const resolved = input.resolve()
     let sessionId: string | null = null
+    let proven = false
     if (resolved && resolved.path) {
       note(fs.mtimeMs(resolved.path))
+      subagentsOf(resolved.path)
       const id = basename(resolved.path).replace(/\.jsonl$/, '')
-      // The .meta.json beside each agent file is a file: never walked into.
-      const walk = (dir: string, depth: number): void => {
-        for (const name of fs.listDir(dir)) {
-          if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
-          else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
-        }
+      proven = POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && id !== input.endedSessionId
+      if (proven && isSessionIdLike(id)) sessionId = id
+    }
+    if (!proven && input.projectDir) {
+      for (const name of jsonl(input.projectDir)) {
+        const path = join(input.projectDir, name)
+        const ms = fs.mtimeMs(path)
+        note(ms)
+        if (path !== resolved?.path && typeof ms === 'number' && now - ms < STALE_TURN_MS) subagentsOf(path)
       }
-      walk(join(dirname(resolved.path), id, 'subagents'), SUBAGENT_DIR_DEPTH)
-      if (POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && isSessionIdLike(id)) sessionId = id
-    } else if (input.projectDir) {
-      for (const name of jsonl(input.projectDir)) note(fs.mtimeMs(join(input.projectDir, name)))
     }
     return { activityMs: times.length > 0 ? Math.max(...times) : null, sessionId }
   } catch {
