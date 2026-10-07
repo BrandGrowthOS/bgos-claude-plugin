@@ -15,6 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  RESTART_EXEC_TIMEOUT_MS,
   hoaiCorePath,
   recipeLaunchCommand,
   restartAgent,
@@ -471,6 +472,32 @@ test('restartAgent win32: the agent task with a LIVE launcher restarts through t
   assert.equal(bad.ok, false)
   assert.equal(bad.how, 'task')
   assert.match(bad.message, /rc 1/)
+})
+
+// systemctl --user restart blocks until the unit has stopped (SIGTERM to the
+// whole cgroup, then up to TimeoutStopSec, 90 s by default) and started; a
+// hung user bus blocks it for ever. nodeExec's default timeout is 0 (none),
+// and the watcher's whole job loop and heartbeat wait on this call.
+test('restartAgent: the service and task commands are BOUNDED (RESTART_EXEC_TIMEOUT_MS); one that times out is a named failure', async () => {
+  const seen: Array<{ file: string; opts: any }> = []
+  const exec = (timedOut: boolean) => async (file: string, _args: readonly string[], opts?: any) => {
+    seen.push({ file, opts })
+    return timedOut ? { code: null, stdout: '', stderr: '', error: 'Command failed: killed', timedOut: true } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const spawnDetached = recordingSpawn().spawnDetached
+  await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(false), spawnDetached })
+  await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.plist' }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: exec(false), spawnDetached })
+  await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(false), spawnDetached })
+  assert.deepEqual(seen.map((c) => c.file), ['systemctl', 'launchctl', 'schtasks.exe'])
+  for (const call of seen) assert.equal(call.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, call.file)
+  assert.ok(RESTART_EXEC_TIMEOUT_MS > 90_000 && RESTART_EXEC_TIMEOUT_MS <= 5 * 60_000, 'past systemd\'s default 90 s stop, never unbounded')
+  const hung = await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(true), spawnDetached })
+  assert.equal(hung.ok, false)
+  assert.equal(hung.how, 'service')
+  assert.match(hung.message, /^systemctl --user restart bgos-agent-912 failed \(rc null, timed out\)/)
+  const task = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(true), spawnDetached })
+  assert.equal(task.ok, false)
+  assert.match(task.message, /failed \(rc null, timed out\)/)
 })
 
 test('restartAgent win32 (F4): a dead launcher whose agent session is still live (an orphaned claude, a person\'s) is never started beside it: no schtasks /Run, a named refusal', async () => {

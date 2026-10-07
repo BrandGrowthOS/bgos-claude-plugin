@@ -38,6 +38,7 @@ import {
   supervisorInstallCommand,
 } from '../lib/watcher-keepalive.mjs'
 import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -886,6 +887,44 @@ test('online (F8): an install that ends on a later event loop turn (a real child
   assert.ok(touches >= ticks, `kept online through every tick (${touches})`)
 })
 
+test('online (F8): a service restart that takes long (systemd stopping a slow cgroup, up to 90 s) keeps the watcher online through it, and the bound is the restart\'s own', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  // The kickstart returns 100 s (fake) after it started, or, for a sweep that
+  // never ticks the clock while it waits (the defect), after a real 200 ms, so
+  // the defect fails this test instead of hanging it.
+  let restartDone: () => void = () => {}
+  let restartAt = 0
+  clock.onSleep((_ms, at) => {
+    if (restartAt && at - restartAt >= 100_000) restartDone()
+  })
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file !== 'launchctl') return rec.exec(file, args, o)
+    rec.calls.push({ file, args: [...args], opts: o })
+    restartAt = clock.now()
+    await new Promise<void>((resolve) => {
+      restartDone = resolve
+      setTimeout(resolve, 200)
+    })
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  let inRestart = false
+  let touchesInRestart = 0
+  const keepOnline = async () => {
+    if (inRestart) touchesInRestart += 1
+  }
+  clock.onSleep(() => {
+    inRestart = restartAt > 0 && !fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)
+  })
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { exec, keepOnline }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.equal(rec.calls.find((c) => c.file === 'launchctl')!.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, 'the command itself is bounded')
+  assert.ok(touchesInRestart >= 4, `touched every 20 s through the 100 s restart (${touchesInRestart})`)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
 // -- F1: a cwd lookup that failed or spelled the folder differently is never "not running" ----------
 
 test('F1: a cwd lookup that FAILED is unknown, never "stopped": a generation 1 supervisor over a live claude with a job is not reinstalled', async () => {
@@ -1211,6 +1250,39 @@ test('win32: a canonical task whose launcher is dead and agent stopped is starte
   const quiet = recorder()
   await runKeepAliveSweep(windowsCtx(live, quiet, { pidAlive: (pid: number) => pid === 777 }) as any)
   assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
+})
+
+test('online (F8, win32): a task start is kept online through its command like a service restart', async () => {
+  const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n", [`${WSTATE}\\supervisor-generation`]: '2\n' })
+  const rec = recorder()
+  // schtasks /Run returns after three keepOnline ticks, or (a sweep that never
+  // ticks while it waits) after a real 200 ms, so the defect fails, never hangs.
+  let starting = false
+  let ticks = 0
+  let release: () => void = () => {}
+  const sleep = async () => {
+    ticks += 1
+    if (ticks >= 3) release()
+  }
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file !== 'schtasks.exe' || args[0] !== '/Run') return rec.exec(file, args, o)
+    rec.calls.push({ file, args: [...args], opts: o })
+    starting = true
+    await new Promise<void>((resolve) => {
+      release = resolve
+      setTimeout(resolve, 200)
+    })
+    starting = false
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  let touchesInStart = 0
+  const keepOnline = async () => {
+    if (starting) touchesInStart += 1
+  }
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { exec, sleep, keepOnline }) as any)
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, ...c.args]), [['schtasks.exe', '/Run', '/TN', 'HOAI Agent 912']])
+  assert.ok(touchesInStart >= 2, `touched while schtasks ran (${touchesInStart})`)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
 })
 
 test('win32: a dead launcher gets the restart limits (1 task start per 30 min, 3 per death episode, then failed task_start_failed); 10 min alive ends the episode', async () => {
