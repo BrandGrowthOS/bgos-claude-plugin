@@ -107,10 +107,11 @@ export interface UpdateRpcProgress {
 }
 
 /** The SelfUpdater surface this handler needs (structural, so tests can
- *  fake it without a git checkout). */
+ *  fake it without a git checkout). What is pending is not asked of it: that
+ *  is the daemon's shared answer (UpdateRpcDeps.pendingRestartVersion, E5b),
+ *  which starts with this updater's own. */
 export interface TriggeredUpdater {
   isRollbackLatched(): boolean
-  pendingRestartVersion(): string | null
   updateNow(
     report: (stage: 'draining' | 'installing', targetVersion: string | null) => Promise<void>,
   ): Promise<UpdateNowOutcome>
@@ -196,6 +197,13 @@ export interface UpdateRpcDeps {
   autoUpdateEnabled: () => boolean
   /** Clone installs: the SelfUpdater (null when not a git checkout). */
   updater: () => TriggeredUpdater | null
+  /** The version installed on disk that this process is not running yet, or
+   *  null: the daemon's ONE composition (server.ts daemonPendingRestartVersion,
+   *  lib/pending-restart.ts), the answer the heartbeat's updateReadiness and
+   *  agent-state.json carry. For a clone it is the self updater's own answer
+   *  first, then the staged auto-update.json target, then the checkout's
+   *  package.json against the running version (E5). */
+  pendingRestartVersion: () => string | null
   /** Marketplace installs: plan + execute (lib/marketplace-update.mjs
    *  runMarketplaceUpdate over observeMarketplaceState, agents = [self]). */
   marketplaceUpdate: (
@@ -351,7 +359,14 @@ export class UpdateRpcHandler {
       return this.fail(rpcId, 'no_restart_authority')
     }
 
-    let targetVersion = updater.pendingRestartVersion()
+    // E5b: the SAME pending answer the heartbeat reports, not the self
+    // updater's alone. A clone moved by git pull (or bgos-agent update, or a
+    // hand checkout) has nothing pending in its self updater while its
+    // checkout is ahead of the running code; the heartbeat said
+    // restart_pending, and this click then pulled, found origin/main already
+    // checked out, and answered no_update_available, so the app showed an
+    // update waiting for a restart that the one button for it refused.
+    let targetVersion = this.deps.pendingRestartVersion()
     if (targetVersion) {
       // An update is already installed and waiting for a restart; there is
       // nothing to pull, go straight to the restart ladder.

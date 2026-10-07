@@ -11097,6 +11097,9 @@ const updateRpc = new UpdateRpcHandler({
   installMethod: () => INSTALL_METHOD,
   autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
   updater: () => selfUpdater,
+  // E5b: a click restarts onto exactly what the heartbeat reports as pending
+  // (a clone moved by git pull included), never the self updater's answer alone.
+  pendingRestartVersion: () => daemonPendingRestartVersion(),
   // Marketplace installs (design 1.4): observe THIS machine, then plan +
   // execute with agents = [self]. The executor's restart/verify hooks are
   // satisfied by the daemon's own ladder, which runs after the outcome.
