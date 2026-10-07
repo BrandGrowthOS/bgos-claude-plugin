@@ -200,5 +200,9 @@ test('the model is told plainly for the a2a 400: typed, why, and not to retry', 
   assert.match(text, /400: "A2A messages must use \/send-message"/)
   assert.match(text, /peer side-thread/)
   assert.match(text, /Do not retry it\./)
+  // Where the thing belongs, and what a reply here would really do.
+  assert.match(text, /Anything for your owner belongs in your owner's chat\./)
+  assert.match(text, /reaches the peer agent, not your owner, and reopens a closed conversation/)
+  assert.doesNotMatch(text, /say it with reply instead/)
   assert.doesNotMatch(text, /[\u2013\u2014]/, 'no en or em dashes')
 })

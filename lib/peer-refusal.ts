@@ -34,7 +34,8 @@
  * (BGOS MessageService.prepareMessageForWrite: an a2a chat takes writes only
  * through /send-message; HttpExceptionAdvicer turns its ServiceException into
  * a 400 with `operation` and no `code`, and logs only 401, 403 and 429, so the
- * backend kept no trace of the loop). A chat's kind never changes, so this
+ * denial log that counted the 403s never counted these; the backend's trace is
+ * the participation check's legacy a2a warning, one line per post). A chat's kind never changes, so this
  * one is permanent for the chat outright. It is read the same narrow way: the
  * 400 status, and the `message` whole and anchored, or a `code` of
  * `a2a_route_required` once the backend sends one. Every other 400 stays
@@ -172,9 +173,11 @@ export function a2aRouteRequiredResult(
         text:
           `${A2A_ROUTE_REQUIRED}: HOAI refused ${what} in chat ${chatId} ` +
           `(400: "${A2A_ROUTE_REQUIRED_MESSAGE}"). That chat is a peer side-thread, ` +
-          'which takes messages only through the reply tool, so cards and questions ' +
-          'cannot be posted there, and the same post is refused every time. Do not ' +
-          'retry it. If it still matters, say it with reply instead.',
+          'which takes messages only through /send-message, so cards, questions and ' +
+          'plans cannot be posted there, and the same post is refused every time. Do ' +
+          'not retry it. Anything for your owner belongs in your owner\'s chat. A ' +
+          'reply in this side-thread reaches the peer agent, not your owner, and ' +
+          'reopens a closed conversation, so send one only if the peer needs to hear it.',
       },
     ],
     isError: true,
