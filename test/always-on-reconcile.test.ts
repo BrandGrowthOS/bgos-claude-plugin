@@ -29,6 +29,7 @@ import {
   readAlwaysOnSupervision,
   userBusExecSync,
 } from '../lib/always-on-reconcile.ts'
+import { readDeclaredKeepalive } from '../lib/agent-inventory.mjs'
 import { buildServiceRecord, verifyServiceRecord } from '../lib/service-supervision.mjs'
 import { resolveSupervision } from '../lib/update-readiness.ts'
 
@@ -171,9 +172,18 @@ test('F3: a keepalive whose script is alive defers even before its marker names 
 // written. It needs the probe's exec to read the ps table, and the G11 reading
 // called it without one, so a retired script's marker whose pid went to a root
 // daemon after a reboot deferred every reconcile to nothing, for good.
+//
+// The probe describes a Mac, so it carries that Mac's user id. Read from the
+// HOST instead, the rule lost its uid half on a Windows runner (no
+// process.getuid) and a root daemon's pid read as the script. 4242 is not the
+// host's uid, so the rule must take the probe's. On a win32 MACHINE the rule
+// cannot apply and does not run: keepalive.json is written only by a POSIX
+// shell keepalive (bin/hoai-keepalive-marker.mjs, a tmux session restarted by
+// SIGTERM, a ps table with POSIX uids); a Windows agent is kept by its Task
+// Scheduler task, and readDeclaredKeepalive answers null there before any read.
 test('F1: a keepalive.json whose script pid was reused reads as none, by the watcher rule', () => {
-  const ourUid = typeof process.getuid === 'function' ? process.getuid() : 501
-  const otherUid = ourUid === 0 ? 1 : 0
+  const ourUid = 4242
+  const otherUid = 0
   const m = fakeMac({
     files: {
       [`${STATE_DIR}/keepalive.json`]: JSON.stringify({
@@ -193,6 +203,7 @@ test('F1: a keepalive.json whose script pid was reused reads as none, by the wat
     const probe = macProbe(m)
     return {
       ...probe,
+      uid: ourUid,
       execSync: (file: string, args: string[]) =>
         file === 'ps' && args.join(' ') === '-A -o pid=,ppid=,uid=,etime='
           ? { code: 0, stdout: `  4622     1 ${uid} ${etime}\n` }
@@ -208,6 +219,12 @@ test('F1: a keepalive.json whose script pid was reused reads as none, by the wat
     state: 'other',
     other: { kind: 'keepalive', handle: 'agent-910', via: 'keepalive-declared' },
   })
+  // The same live marker on a win32 machine declares nothing (see above).
+  const win = withPs(ourUid, '02:00:00')
+  assert.equal(
+    readDeclaredKeepalive({ platform: 'win32', home: MAC_HOME, assistantId: ID, readFile: win.readFile, pidAlive: win.pidAlive, execSync: win.execSync, uid: ourUid }),
+    null,
+  )
 })
 
 test('F4: a failed job listing is unknown, never "no other supervisor"', () => {

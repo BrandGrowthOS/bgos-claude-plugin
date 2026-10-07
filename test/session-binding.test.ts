@@ -621,6 +621,7 @@ test('server.ts resolves the config dir once against the agent folder, and the i
   const agent = '/Users/a/agent'
   for (const raw of ['.claude-work', './.claude-work/', '/Users/a/agent/../agent/.claude-work']) {
     const home = resolvePath(agent, claudeConfigDir({ env: { CLAUDE_CONFIG_DIR: raw }, home: '/Users/a' }))
-    assert.equal(new SessionTranscriptBinder(agent, { claudeHome: home }).projectDirectory, `${agent}/.claude-work/projects/-Users-a-agent`)
+    // resolvePath(agent) is the agent folder as the host spells it (D:\Users\a\agent on Windows).
+    assert.equal(new SessionTranscriptBinder(agent, { claudeHome: home }).projectDirectory, join(resolvePath(agent), '.claude-work', 'projects', '-Users-a-agent'))
   }
 })

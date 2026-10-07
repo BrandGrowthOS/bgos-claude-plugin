@@ -24,6 +24,7 @@
 
 import { test as nodeTest, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { normalize } from 'node:path'
 
 import {
   INSTALL_TIMEOUT_MS,
@@ -1513,8 +1514,13 @@ test('activity paths mirror their writers: the transcript (bin/hoai-core.mjs) an
   const sid = '8c1f0000-0000-4000-8000-000000000001'
   assert.equal(mungeCwd('/Users/kc/hoai agents/ava.x'), core.mungeSessionCwd('/Users/kc/hoai agents/ava.x'))
   assert.equal(transcriptPathFor({ configDir: CONFIG, cwd: AVA, sessionId: sid }), core.sessionTranscriptPath(HOME, AVA, sid, CONFIG))
-  assert.equal(hookSpoolPathFor({ env: {}, home: HOME, sessionId: sid }), hook.spoolPath(sid, {}, HOME))
-  assert.equal(hookSpoolPathFor({ env: { BGOS_PLUGIN_STATE_DIR: '/s' }, home: HOME, sessionId: sid }), hook.spoolPath(sid, { BGOS_PLUGIN_STATE_DIR: '/s' }, HOME))
+  // The hook joins with the HOST's separator and the watcher with the home's own, so a POSIX
+  // home on a Windows runner differs only in the separator; the same file either way.
+  assert.equal(normalize(hookSpoolPathFor({ env: {}, home: HOME, sessionId: sid })), normalize(hook.spoolPath(sid, {}, HOME)))
+  assert.equal(
+    normalize(hookSpoolPathFor({ env: { BGOS_PLUGIN_STATE_DIR: '/s' }, home: HOME, sessionId: sid })),
+    normalize(hook.spoolPath(sid, { BGOS_PLUGIN_STATE_DIR: '/s' }, HOME)),
+  )
 })
 
 /** ps's lstart for an instant, in this machine's local time (what ps prints). */

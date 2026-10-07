@@ -3141,6 +3141,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       healthyMs: opts.healthyMs,
       setTimer: opts.setTimer,
       clearTimer: opts.clearTimer,
+      hasExpect: opts.hasExpect,
+      expectExists: opts.expectExists,
     })
   } finally {
     unwireStop()

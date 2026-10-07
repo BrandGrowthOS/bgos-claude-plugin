@@ -142,6 +142,9 @@ test('the finding\'s scenario: `hoai` typed inside agent A\'s session, in agent 
         signals: new EventEmitter(),
         stdinIsTTY: false,
         healthyMs: 60_000,
+        // This pretend Linux host has expect; a Windows temp dir on PATH is not a POSIX PATH
+        // entry, so the PATH expect alone read as missing on a Windows runner (exit 8).
+        hasExpect: true,
         spawnImpl: ((file: string, args: readonly string[], opts: Spawned['opts']) => {
           spawns.push({ file, args: [...args], opts })
           return exitingChild(0)

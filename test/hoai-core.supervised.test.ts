@@ -166,6 +166,9 @@ async function runMain(
     listProcesses: () => [],
     print: (l: string) => prints.push(l),
     healthyMs: 60_000,
+    // This pretend Linux host has expect. Left to the real one, the answer was the HOST's:
+    // yes on macOS and Ubuntu, no on a Windows runner, where every launch stopped with exit 8.
+    hasExpect: true,
     spawnImpl: ((file: string, args: readonly string[]) => {
       spawns.push({ file, args: [...args] })
       return childExiting(codes[n++] ?? 0)
@@ -275,7 +278,8 @@ test('supervised: the spawned script is the SUPERVISED one (launch-status, named
     writeFileSync(join(sb.cwd, FOLDER_PIN_FILE), '900\n')
     const r = await runMain(sb)
     const script = r.spawns[0]?.args[1] ?? ''
-    assert.match(script, /set hoai_statedir ".*\/\.bgos-agent\/900"/)
+    // The sandbox is a real temp dir, so the separator is the host's (a backslash on Windows).
+    assert.match(script, /set hoai_statedir ".*[\\/]+\.bgos-agent[\\/]+900"/)
     assert.match(script, new RegExp(`exit ${EXIT_SUPERVISED_GATE} \\}`))
     assert.match(script, /append hoai_line \{ compact=off reason=no-tmux\}/, 'no BGOS_TMUX_SESSION in this env')
     // The test runner has no terminal on stdin, exactly like a launchd job without tmux.
@@ -367,6 +371,23 @@ test('supervised: with no expect on a posix host the launch is refused (exit 8),
     assert.match(sb.statusOf('900'), /outcome=expect-missing/)
   } finally {
     sb.cleanup()
+  }
+})
+
+test('main() hands its expect answer to the launch: hasExpect false, or an expectExists that finds none, stops it with exit 8', async () => {
+  // main() used to drop both, so the launch asked the HOST: a test of a pretend Linux host
+  // passed on macOS and Ubuntu (a real /usr/bin/expect) and failed on a Windows runner.
+  for (const extra of [{ hasExpect: false }, { hasExpect: undefined, expectExists: () => false }]) {
+    const sb = sandbox()
+    try {
+      writeFileSync(join(sb.cwd, FOLDER_PIN_FILE), '900\n')
+      const r = await runMain(sb, { env: { ...SUPERVISED, PATH: '' }, extra })
+      assert.equal(r.code, EXIT_SUPERVISED_NO_EXPECT, JSON.stringify(Object.keys(extra)))
+      assert.equal(r.spawns.length, 0)
+      assert.match(sb.statusOf('900'), /outcome=expect-missing/)
+    } finally {
+      sb.cleanup()
+    }
   }
 })
 

@@ -155,6 +155,7 @@ export function readAlwaysOnSupervision(probe: SupervisionProbe): AlwaysOnSuperv
           readFile: probe.readFile,
           pidAlive: alive,
           execSync: probe.execSync,
+          uid: probe.uid,
         })
       : null
     if (declaredKeepalive) {

@@ -79,6 +79,9 @@ for (const name of ['SIGHUP', 'SIGTERM'] as const) {
         print: () => {},
         registerHooks: () => {},
         preseedTrust: () => {},
+        // Said outright as well: a Windows temp dir on PATH is not a POSIX PATH entry, so
+        // the PATH expect alone read as missing there and the launch never came (exit 8).
+        hasExpect: true,
         signals,
         spawnImpl: (() => {
           const child = new FakeChild()

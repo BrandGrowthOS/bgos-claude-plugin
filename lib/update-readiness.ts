@@ -458,6 +458,12 @@ export interface SupervisionProbe {
    *  the pre-discovery behaviour and is fail-closed. */
   listDir?: (path: string) => string[]
   execSync?: (file: string, args: string[]) => SyncExecResult
+  /** The user id a keepalive.json's script must run as (the watcher's F6
+   *  reuse rule compares it with the ps table's uid). Defaults to this
+   *  process's uid. Supplied so a probe is judged as the machine it describes:
+   *  a Windows host has no process.getuid, which silently dropped the uid
+   *  half of the rule from a simulated macOS or Linux probe. */
+  uid?: number | null
 }
 
 export interface Supervision {
