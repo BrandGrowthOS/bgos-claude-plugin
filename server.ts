@@ -730,11 +730,14 @@ import {
 // turn's own card in the same batch (stage 8).
 import { PendingCards, HOOK_CARD_PENDING_MAX } from './lib/hook-card-pending.js'
 import {
+  A2A_ROUTE_REQUIRED,
   PEER_NOT_PARTICIPANT,
+  a2aRouteRequiredResult,
   classifyPeerRefusal,
   createRefusedChats,
   peerNotParticipantResult,
   peerRefusalOf,
+  peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
@@ -1233,7 +1236,7 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
  * route embeds one in its URL, so a chat numbered 4403 used to look like a
  * permanent 403 refusal and silenced itself forever.
  *
- * `peerRefusal` is the same idea for the one refusal that is permanent for a
+ * `peerRefusal` is the same idea for the refusals that are permanent for a
  * chat (lib/peer-refusal.ts): read from the status and the WHOLE body when the
  * response arrives, because this message keeps only an excerpt of it.
  */
@@ -4907,6 +4910,10 @@ async function handleShowComponent(opts: {
     }
   }
 
+  // A peer side-thread already refused a post for good: answer here, no POST.
+  if (a2aRouteRefusedChats.has(String(auth.chatId))) {
+    return a2aRouteRequiredResult(String(auth.chatId), 'this card')
+  }
   try {
     await bgosPost('messages', built.body as unknown as Record<string, unknown>)
     log(`${opts.toolName}: kind ${opts.kind} chat ${auth.chatId}`)
@@ -4925,6 +4932,9 @@ async function handleShowComponent(opts: {
       ],
     }
   } catch (err) {
+    if (refuseA2aToolPost(String(auth.chatId), err)) {
+      return a2aRouteRequiredResult(String(auth.chatId), 'this card')
+    }
     const errMsg = err instanceof Error ? err.message : String(err)
     return {
       content: [
@@ -5207,7 +5217,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         clearInbound(resolvedChatId)
         return { content: [{ type: 'text', text: `Sent (${parts.join(', ')})` }] }
       } catch (err) {
-        if (peerRefusalOf(err) !== null) {
+        if (peerRefusalOf(err) === PEER_NOT_PARTICIPANT) {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
           // words the model cannot take for a hiccup, answer any later reply
           // here locally, and drop the inbound it was answering so the overdue
@@ -5256,6 +5266,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (wrongChat) {
         log(`propose_plan refused in chat ${planChatId}: not the owner's agent chat`)
         return { content: [{ type: 'text', text: wrongChat }], isError: true }
+      }
+      // A side-thread this process did not know as one (its map is empty after
+      // a restart) but that already refused a post for good: answer here.
+      if (a2aRouteRefusedChats.has(planChatId)) {
+        return a2aRouteRequiredResult(planChatId, 'this plan')
       }
 
       // The revision chain. `supersedes` is what decides it, not whatever this
@@ -5431,6 +5446,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           ],
         }
       } catch (err) {
+        if (refuseA2aToolPost(planChatId, err)) {
+          return a2aRouteRequiredResult(planChatId, 'this plan')
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `Failed to post the plan: ${errMsg}` }],
@@ -5583,6 +5601,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
+      // A peer side-thread already refused a post for good: answer here, no POST.
+      if (a2aRouteRefusedChats.has(String(askChatId))) {
+        return a2aRouteRequiredResult(String(askChatId), 'these questions')
+      }
       try {
         // Post each question. The first one returns an ask_id we reuse for
         // the rest so they group into one carousel.
@@ -5717,6 +5739,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           ],
         }
       } catch (err) {
+        if (refuseA2aToolPost(String(askChatId), err)) {
+          return a2aRouteRequiredResult(String(askChatId), 'these questions')
+        }
         const errMsg = err instanceof Error ? err.message : String(err)
         return {
           content: [{ type: 'text', text: `ask_user_input failed: ${errMsg}` }],
@@ -8208,10 +8233,17 @@ let hookStepsHeartbeat: ReturnType<typeof setInterval> | null = null
  *  once and stop asking; the tool card and the replies are unaffected. */
 const hookStepsSilencedChats = new Set<string>()
 /** Chats that refused this rail's POST for good: a peer side-thread answers
- *  every card and marker with the participant 403 (lib/peer-refusal.ts), and a
- *  refused card used to be posted again on every flush. One attempt per chat,
- *  then none; every other chat, the owner's included, is unaffected. */
+ *  every card and marker with the participant 403, or, once closed, with the
+ *  a2a 400 (lib/peer-refusal.ts), and a refused card used to be posted again on
+ *  every flush. One attempt per chat, then none; every other chat, the owner's
+ *  included, is unaffected. */
 const hookRailRefusedChats = createRefusedChats()
+/** Chats that answered POST /messages with the a2a 400: peer side-threads,
+ *  which take messages only through /send-message. A chat's kind never
+ *  changes, so nothing lifts this. Learned by the rail or by a tool, whichever
+ *  posts first, and read by show_component, ask_user_input and propose_plan,
+ *  which then answer the model locally instead of posting again. */
+const a2aRouteRefusedChats = createRefusedChats()
 let hookIntake: HookIntake | null = null
 
 /**
@@ -8331,11 +8363,31 @@ function adoptCarriedCardIds(): void {
 function refuseHookRailChat(chatId: string, err: unknown): boolean {
   const refusal = peerRefusalOf(err)
   if (refusal === null) return false
+  if (refusal === A2A_ROUTE_REQUIRED) a2aRouteRefusedChats.add(chatId)
   if (!hookRailRefusedChats.has(chatId)) {
     hookRailRefusedChats.add(chatId)
     log(
-      `hook rail: chat ${chatId} refused the card with 403 ${refusal} (this agent cannot ` +
-        'post there); no more cards or markers go to that chat',
+      `hook rail: chat ${chatId} refused the card with ${peerRefusalStatus(refusal)} ${refusal} ` +
+        '(this agent cannot post there); no more cards or markers go to that chat',
+    )
+  }
+  return true
+}
+
+/**
+ * True when `err` is the a2a 400 for a card, a question or a plan a tool
+ * posted into `chatId`; the chat is then recorded, so the next post there is
+ * answered locally and the rail does not try either, and the reason logged
+ * once. Any other failure stays the caller's.
+ */
+function refuseA2aToolPost(chatId: string, err: unknown): boolean {
+  if (peerRefusalOf(err) !== A2A_ROUTE_REQUIRED) return false
+  hookRailRefusedChats.add(chatId)
+  if (!a2aRouteRefusedChats.has(chatId)) {
+    a2aRouteRefusedChats.add(chatId)
+    log(
+      `chat ${chatId} refused a post with 400 ${A2A_ROUTE_REQUIRED} (a peer side-thread ` +
+        'takes messages only through /send-message); no more cards, questions or plans go to that chat',
     )
   }
   return true
