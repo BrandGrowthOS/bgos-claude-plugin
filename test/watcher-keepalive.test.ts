@@ -77,13 +77,16 @@ type AgentSpec = {
 }
 
 function stateBody(id: string, at: number, overrides: Record<string, unknown> = {}) {
+  const running = 'runningVersion' in overrides ? overrides.runningVersion : '0.62.0'
   return JSON.stringify({
     schemaVersion: 1,
     assistantId: id,
     pid: Number(`4${id}`),
     claudePid: Number(`5${id}`),
     runningVersion: '0.62.0',
-    pendingRestartVersion: null,
+    // What the daemon itself reads from the installed_plugins.json machine() writes
+    // (0.62.1): a fresh daemon's answer is the one the sweep acts on (daemon F7).
+    pendingRestartVersion: running === '0.62.1' ? null : '0.62.1',
     turnInFlight: false,
     pendingMessages: 0,
     pendingPermissions: 0,
@@ -1324,7 +1327,8 @@ function lstartFor(isoString: string) {
 test('an agent with its own CLAUDE_CONFIG_DIR is judged against ITS installed plugin, and restarted onto that root', async () => {
   const ALT = `${HOME}/.claude-alt`
   const ALT_ROOT = `${ALT}/plugins/cache/hoai/hoai/0.70.0`
-  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1' } }])
+  // The agent's daemon reads ITS config dir, so it is the one that names 0.70.0.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.1', pendingRestartVersion: '0.70.0' } }])
   fs.writeFile(
     `${HOME}/.bgos-agent/912/launch.json`,
     JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: AVA, argv: [], installMethod: 'marketplace', pluginRoot: ALT_ROOT, node: '/usr/local/bin/node', claudeConfigDir: ALT, startedAt: 'x', pid: null } as any)),
@@ -1337,6 +1341,26 @@ test('an agent with its own CLAUDE_CONFIG_DIR is judged against ITS installed pl
   const report = await runKeepAliveSweep(ctx as any)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['912'].target, '0.70.0', "its own install, not the watcher's 0.62.1")
+})
+
+test('daemon F7: a FRESH daemon that reports nothing pending is not restarted, whatever installed version the watcher itself reads', async () => {
+  // The daemon runs under another CLAUDE_CONFIG_DIR the watcher knows nothing of
+  // (no launch recipe says so), and there its plugin is current: it publishes null.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.0', pendingRestartVersion: null } }])
+  const rec = recorder({ ps: IDLE_PS })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl'), [], 'no restart onto the watcher\'s 0.62.1')
+  // The same daemon naming its own pending version is restarted onto THAT version.
+  const named = machine([{ id: '912', cwd: AVA, service: 'canonical', state: { runningVersion: '0.62.0', pendingRestartVersion: '0.62.3' } }])
+  const rec2 = recorder({ ps: IDLE_PS })
+  const clock2 = fakeClock()
+  answerProbes(named, clock2, ['912'])
+  const restarted = await runKeepAliveSweep(ctxFor(named, rec2, clock2).ctx as any)
+  assert.deepEqual(restarted.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  assert.equal(JSON.parse(named.files.get(keepAliveStatePath(HOME))!).agents['912'].target, '0.62.3')
 })
 
 test("a stale state's claudePid that now belongs to some other process is not the agent's claude (pid reuse)", async () => {

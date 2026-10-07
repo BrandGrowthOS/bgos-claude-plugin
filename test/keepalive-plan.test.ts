@@ -290,16 +290,40 @@ test('decidePendingRestart: upgrade, update, the legacy time rule, and nothing',
     ['canonical generation 1 supervisor', { generation: 1 }, { kind: 'upgrade_pending', target: 'supervisor-generation-2', reason: 'supervisor_generation_1' }],
     ['generation 1 but NOT canonical (bespoke) is never upgraded', { canonical: false, generation: 1 }, null],
     ['the upgrade outranks a version gap', { generation: 1, runningVersion: '0.61.0' }, { kind: 'upgrade_pending', target: 'supervisor-generation-2', reason: 'supervisor_generation_1' }],
-    ['running differs from installed', { runningVersion: '0.61.4' }, { kind: 'update_pending', target: '0.62.0', reason: 'running_differs_from_installed' }],
-    ['a rollback (installed older) also differs', { runningVersion: '0.62.1' }, { kind: 'update_pending', target: '0.62.0', reason: 'running_differs_from_installed' }],
-    ['installed unknown: the daemon-reported staged version stands in', { installedVersion: null, pendingRestartVersion: '0.62.1' }, { kind: 'update_pending', target: '0.62.1', reason: 'running_differs_from_installed' }],
-    ['running unknown', { runningVersion: null }, null],
+    ['the daemon says the installed version differs', { runningVersion: '0.61.4', pendingRestartVersion: '0.62.0' }, { kind: 'update_pending', target: '0.62.0', reason: 'running_differs_from_installed' }],
+    ['a rollback (installed older) also differs', { runningVersion: '0.62.1', pendingRestartVersion: '0.62.0' }, { kind: 'update_pending', target: '0.62.0', reason: 'running_differs_from_installed' }],
+    ['installed unknown to the watcher: the daemon\'s version is the target', { installedVersion: null, pendingRestartVersion: '0.62.1' }, { kind: 'update_pending', target: '0.62.1', reason: 'running_differs_from_installed' }],
+    ['running unknown, nothing pending', { runningVersion: null }, null],
+    ['running unknown, the daemon still names its pending version', { runningVersion: null, pendingRestartVersion: '0.62.1' }, { kind: 'update_pending', target: '0.62.1', reason: 'running_differs_from_installed' }],
     ['legacy: claude started before the install landed', { stateFresh: false, runningVersion: null, claudeStartedAtMs: NOW - 60 * MIN, installLandedAtMs: NOW - 30 * MIN }, { kind: 'update_pending', target: '0.62.0', reason: 'started_before_install' }],
     ['legacy: claude started after the install landed', { stateFresh: false, runningVersion: null, claudeStartedAtMs: NOW - 10 * MIN, installLandedAtMs: NOW - 30 * MIN }, null],
     ['legacy: no claude found', { stateFresh: false, claudeStartedAtMs: null, installLandedAtMs: NOW - 30 * MIN }, null],
     ['legacy: landing time unknown', { stateFresh: false, claudeStartedAtMs: NOW - 60 * MIN, installLandedAtMs: null }, null],
     ['legacy with no installed version names the landing instant', { stateFresh: false, installedVersion: null, claudeStartedAtMs: NOW - 60 * MIN, installLandedAtMs: NOW - 30 * MIN }, { kind: 'update_pending', target: `landed:${NOW - 30 * MIN}`, reason: 'started_before_install' }],
     ['a fresh state is never judged by time', { claudeStartedAtMs: NOW - 60 * MIN, installLandedAtMs: NOW - 30 * MIN }, null],
+    // Stale or missing state: the daemon cannot answer, so the watcher's own installed version is the fallback.
+    ['legacy: the watcher\'s installed version is the target even when a stale state named another', { stateFresh: false, runningVersion: null, pendingRestartVersion: '0.61.9', claudeStartedAtMs: NOW - 60 * MIN, installLandedAtMs: NOW - 30 * MIN }, { kind: 'update_pending', target: '0.62.0', reason: 'started_before_install' }],
+  ]
+  for (const [name, patch, expected] of rows) {
+    assert.deepEqual(decidePendingRestart({ ...base, ...patch } as any), expected, name)
+  }
+})
+
+test('decidePendingRestart (review daemon F7): with a FRESH state the daemon is the answer; the watcher\'s installed version (maybe another config dir) never overrides it', () => {
+  const base = {
+    canonical: true,
+    generation: 2,
+    stateFresh: true,
+    runningVersion: '0.62.0',
+    pendingRestartVersion: null,
+    installedVersion: '0.62.1',
+    claudeStartedAtMs: null,
+    installLandedAtMs: null,
+  }
+  const rows: Array<[string, Record<string, unknown>, unknown]> = [
+    ['the daemon says nothing is pending: believed, though the watcher reads 0.62.1 installed', {}, null],
+    ['the daemon\'s pending version is the target, never the watcher\'s reading', { pendingRestartVersion: '0.62.2' }, { kind: 'update_pending', target: '0.62.2', reason: 'running_differs_from_installed' }],
+    ['a pending version equal to the running one is nothing to restart onto', { runningVersion: '0.62.2', pendingRestartVersion: '0.62.2' }, null],
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decidePendingRestart({ ...base, ...patch } as any), expected, name)
