@@ -46,6 +46,7 @@ import {
 import {
   buildButtonClickedMeta,
   buildInboundChannel,
+  finalInboundMeta,
   type AgentOriginLike,
   createPlanPolicyMemo,
   isAgentInbound,
@@ -9258,15 +9259,16 @@ async function pollChat(chatId: string): Promise<void> {
       // resolve now live in lib/permission-relay.ts so both transports share
       // one copy of them.
       //
-      // The answer payload carries no clicker user id on any backend today, so
-      // this read falls back to the owner: on a SHARED assistant, where the
+      // This intake does not read the tapper the backend now stamps on the
+      // answer (`answeredByUserId`, BGOS #1592; the channel tag reads it through
+      // readTapperUserId), so this read falls back to the owner: on a SHARED assistant, where the
       // requester is the person the agent was shared with, their own click is
       // refused here as foreign. That rule predates the card read and is left
       // exactly as it is, because the tap is not lost when it happens, whenever
       // the card's id came back off the post: the watch then reads the same
       // answer off the card row a tick later, and THAT read is null aware (see
-      // answeredOn in waitForVerdict; with no card id that read is off). Both decide on
-      // the same field the day the backend stamps a clicker user id.
+      // answeredOn in waitForVerdict; with no card id that read is off). Moving
+      // both onto `answeredByUserId` is a separate change to this rule.
       const permOutcome = resolvePermissionClick({
         callbackData,
         clickerUserId: senderUserIdOf(payload),
@@ -9658,11 +9660,11 @@ async function pollChat(chatId: string): Promise<void> {
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...pollChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isSlashCommand && pollEventMeta ? pollEventMeta : {}),
-          },
+          meta: finalInboundMeta(
+            pollChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            !isSlashCommand ? pollEventMeta : null,
+          ),
         },
       })).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
@@ -11696,11 +11698,11 @@ async function forwardStreamInbound(
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...streamChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(streamEventMeta ?? {}),
-          },
+          meta: finalInboundMeta(
+            streamChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            streamEventMeta,
+          ),
         },
       }),
     )
@@ -12757,11 +12759,11 @@ function connectWebsocket(): void {
         method: 'notifications/claude/channel',
         params: {
           content,
-          meta: {
-            ...wsChannel.meta,
-            ...(slashDelivery ? slashDelivery.meta : {}),
-            ...(!isWsSlashCommand && wsEventMeta ? wsEventMeta : {}),
-          },
+          meta: finalInboundMeta(
+            wsChannel.meta,
+            slashDelivery ? slashDelivery.meta : null,
+            !isWsSlashCommand ? wsEventMeta : null,
+          ),
         },
       })).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which

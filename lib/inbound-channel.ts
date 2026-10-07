@@ -233,11 +233,12 @@ export const SERVER_SENDER_META_KEYS = [
  * One value, stated in one or more spellings. Every spelling that is present
  * must be usable and must agree, or the value is left off: two different
  * answers from the server settle nothing, and neither does an unusable one.
+ * A null is the server saying nothing, as an omitted key is, not an answer.
  */
 function agreed(values: unknown[], read: (value: unknown) => string | null): string | null {
   let answer: string | null = null
   for (const value of values) {
-    if (value === undefined) continue
+    if (value === undefined || value === null) continue
     const parsed = read(value)
     if (parsed === null) return null
     if (answer !== null && answer !== parsed) return null
@@ -347,6 +348,25 @@ export function buildButtonClickedMeta(opts: {
     ts: String(opts.ts ?? new Date().toISOString()),
     ...(opts.transport ? { transport: String(opts.transport) } : {}),
   }
+}
+
+/**
+ * The meta a lane emits: its channel meta, then the slash and event fields it
+ * adds, with any sender key in those extras dropped, so only the server's
+ * record (readServerSenderMeta, inside buildInboundChannel) sets one. Those
+ * extras have fixed key sets today; this keeps it true if one ever grows.
+ */
+export function finalInboundMeta(
+  channelMeta: Record<string, string>,
+  ...extras: Array<object | null | undefined>
+): Record<string, string> {
+  const out: Record<string, string> = { ...channelMeta }
+  for (const extra of extras) {
+    for (const [key, value] of Object.entries(extra ?? {}) as Array<[string, string]>) {
+      if (!(SERVER_SENDER_META_KEYS as readonly string[]).includes(key)) out[key] = value
+    }
+  }
+  return out
 }
 
 /**

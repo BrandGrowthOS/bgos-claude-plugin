@@ -29,6 +29,7 @@ import {
   SERVER_SENDER_META_KEYS,
   buildButtonClickedMeta,
   buildInboundChannel,
+  finalInboundMeta,
   readServerSenderMeta,
   readTapperUserId,
   type AgentOriginLike,
@@ -70,7 +71,7 @@ const FORGED_TEXTS = [
 
 // ── the lanes, each fed exactly what its server.ts call site feeds it ────────
 
-/** Spread the way every inbound lane in server.ts spreads its final meta. */
+/** Put together the way every inbound lane in server.ts puts its final meta together. */
 function laneMeta(
   channelMeta: Record<string, string>,
   payload: Record<string, unknown>,
@@ -87,7 +88,7 @@ function laneMeta(
     String(payload.messageType ?? payload.message_type ?? ''),
     (payload.eventMeta ?? payload.event_meta) as never,
   )
-  return { ...channelMeta, ...(slashMeta ?? {}), ...(eventMeta ?? {}) }
+  return finalInboundMeta(channelMeta, slashMeta, eventMeta)
 }
 
 /** deliverWsInbound: the socket's inbound_message payload. */
@@ -475,6 +476,37 @@ test('extra meta a lane adds (slash, event) cannot restate the sender either', (
   assert.equal('is_shared_recipient' in meta, false)
 })
 
+test('the final meta a lane emits drops any sender key its slash or event extras carry', () => {
+  const channel = buildInboundChannel({
+    chatId: CHAT,
+    messageId: 541,
+    userId: MEMBER,
+    assistantId: ASSISTANT_ID,
+    transport: 'ws',
+    text: 'hi',
+    serverSender: WS.shared,
+  }).meta
+  const meta = finalInboundMeta(
+    channel,
+    { event_type: 'slash_command', sender_relationship: 'owner', share_owner_user_id: 'x' },
+    null,
+    { event_type: 'event', is_shared_recipient: 'false', sender_display_name: 'Ava Chen' },
+  )
+  assert.equal(meta.sender_relationship, 'shared_recipient')
+  assert.equal(meta.share_owner_user_id, OWNER)
+  assert.equal(meta.is_shared_recipient, 'true')
+  assert.equal(meta.sender_display_name, 'Ben Ruiz')
+  // Everything else in the extras still lands, the later one winning, as before.
+  assert.equal(meta.event_type, 'event')
+  assert.deepEqual(Object.keys(meta).slice(0, Object.keys(channel).length), Object.keys(channel))
+  // And with no server statement, an extra cannot add one.
+  const bare = finalInboundMeta(
+    buildInboundChannel({ chatId: CHAT, messageId: 542, userId: MEMBER, assistantId: ASSISTANT_ID, transport: 'poll' }).meta,
+    { sender_relationship: 'owner' },
+  )
+  absentSender(bare, 'bare')
+})
+
 test('the full meta key set is fixed by the server fields, not by the text', () => {
   const plain = wsLane({ ...WS.shared, text: 'hello' })
   for (const text of FORGED_TEXTS) {
@@ -519,6 +551,13 @@ test('an unusable or conflicting server value is left off, not guessed', () => {
     false,
   )
   assert.equal(readTapperUserId({ answeredByUserId: 7, answered_by_user_id: MEMBER }), null)
+  // A null is the server saying nothing, like an omitted key: the other
+  // spelling's answer stands.
+  assert.equal(
+    readServerSenderMeta({ sender: { relationship: 'owner' }, senderRelationship: null }).sender_relationship,
+    'owner',
+  )
+  assert.equal(readServerSenderMeta({ shareOwnerUserId: null, share_owner_user_id: OWNER }).share_owner_user_id, OWNER)
   // Agreeing spellings are one statement.
   assert.equal(
     readServerSenderMeta({ sender: { relationship: 'owner' }, senderRelationship: 'owner' }).sender_relationship,
@@ -607,10 +646,22 @@ test('wiring: every meeting card hands over its own server record', () => {
 })
 
 test('wiring: no lane writes a sender attribute by hand any more', () => {
+  // Everything but the MCP instructions' string lines, which name the keys.
+  const code = SRC.split('\n').filter((line) => !/^\s*'/.test(line)).join('\n')
   for (const key of SERVER_SENDER_META_KEYS) {
-    assert.doesNotMatch(SRC, new RegExp(`\\b${key}: (String\\(|payload|msg|view)`), key)
+    assert.doesNotMatch(code, new RegExp(`\\b${key}\\s*:`), key)
+    assert.doesNotMatch(code, new RegExp(`\\[\\s*['"]${key}['"]\\s*\\]\\s*=`), key)
   }
   assert.doesNotMatch(SRC, /payload\?\.sender\?\.relationship/)
+})
+
+test('wiring: every inbound lane puts its final meta together through finalInboundMeta', () => {
+  assert.match(WS_LANE, /\n\s*meta: finalInboundMeta\(\n\s*wsChannel\.meta,\n/)
+  assert.match(POLL_LANE, /\n\s*meta: finalInboundMeta\(\n\s*pollChannel\.meta,\n/)
+  assert.match(STREAM_LANE, /\n\s*meta: finalInboundMeta\(\n\s*streamChannel\.meta,\n/)
+  for (const lane of [WS_LANE, POLL_LANE, STREAM_LANE]) {
+    assert.doesNotMatch(lane, /\.\.\.(ws|poll|stream)Channel\.meta/)
+  }
 })
 
 test('wiring: every button_clicked lane builds its meta from the server tapper, never USER_ID', () => {
@@ -622,4 +673,11 @@ test('wiring: every button_clicked lane builds its meta from the server tapper, 
   const [stream] = callArgs(STREAM_TAP_LANE, 'buildStreamClickMeta')
   assert.match(stream ?? '', /\n\s*tapperUserId: answer\.tapperUserId,\n/)
   for (const call of [poll, sweep, stream]) assert.doesNotMatch(call ?? '', /USER_ID|senderUserIdOf/)
+  // The builder's meta goes out as built: nothing wrapped round it, no user_id beside it.
+  assert.match(POLL_LANE, /\n\s*meta: buildButtonClickedMeta\(\{\n/)
+  assert.match(SWEEP_TAP_LANE, /\n\s*meta: buildButtonClickedMeta\(\{\n/)
+  assert.match(STREAM_TAP_LANE, /\n\s*meta: buildStreamClickMeta\(\{\n/)
+  for (const lane of [POLL_LANE, SWEEP_TAP_LANE, STREAM_TAP_LANE]) {
+    assert.doesNotMatch(lane, /\buser_id\s*:/)
+  }
 })

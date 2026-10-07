@@ -46,8 +46,9 @@ export interface StreamAnswerPayload {
   /**
    * WHO TAPPED, as the RAW answer payload names them, read with the null aware
    * senderUserIdCandidate (the keys it knows: sender.userId, senderUserId,
-   * sender_user_id, userId, user_id). Null when the tap names nobody, which is
-   * every tap on today's backend. This is the only place the stream keeps the
+   * sender_user_id, userId, user_id). Null when the tap names nobody under
+   * those keys; the backend's own tapper key, `answeredByUserId`, is read
+   * separately into tapperUserId below. This is the only place the stream keeps the
    * id: everything else on the raw answer is dropped by the normalisation, and
    * reading senderUserIdCandidate off THIS object instead of the raw payload
    * is the defect the checker found on #150 (always null, so a stamped tap
