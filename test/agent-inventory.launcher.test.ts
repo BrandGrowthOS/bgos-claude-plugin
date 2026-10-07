@@ -319,6 +319,12 @@ test('review 3 F2: runsHoaiLauncher: a node path with a space (Herd), a checkout
   assert.equal(runsHoaiLauncher(`/bin/sh -c ${HERD_NODE} ${ROOT}/bin/hoai-core.mjs`), false)
   assert.equal(runsHoaiLauncher(`${HERD_NODE} ${ROOT}/bin/not-hoai-core.mjs`), false)
   assert.equal(runsHoaiLauncher(HERD_NODE), false)
+  // A RELATIVE script path starts no path, so the run reaches back to argv[1]
+  // and only the flag refusal keeps these out (as before this change).
+  assert.equal(runsHoaiLauncher('node bin/hoai-core.mjs'), true)
+  assert.equal(runsHoaiLauncher('tmux -L hoai-913 new-session -d -s hoai-913 node bin/hoai-core.mjs'), false, 'a tmux client with a relative script')
+  assert.equal(runsHoaiLauncher('node --inspect bin/hoai-core.mjs'), false, 'argv[1] is a flag')
+  assert.equal(runsHoaiLauncher('/bin/sh -c node bin/hoai-core.mjs'), false)
 })
 
 test('review 3 F2: a live hoai on the Herd node is its file\'s writer: listAgents reads it live and a second hoai refuses to arm beside it', () => {
