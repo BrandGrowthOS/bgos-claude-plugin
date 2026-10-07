@@ -12,7 +12,7 @@
  *   decideRestartGate / decideInstallGate the rate limits (30 min, 3 attempts, 1 per sweep, 1 h retry)
  *   parseKeepAliveResponse / decideKeepAliveConsent   the backend list and its 24 h cache
  *   parseInstalledPluginRecord            the installed version and when it landed
- *   advanceAgentRecord / reportEntry      since, waitingSince after 24 h, the 120 char bound
+ *   advanceAgentRecord / reportEntry      since, waitingSince after 24 h, pending (update or upgrade), the 120 char bound
  *
  * Run: npx tsx --test test/keepalive-plan.test.ts
  */
@@ -34,6 +34,7 @@ import {
   RESTART_MIN_INTERVAL_MS,
   STALE_TURN_MS,
   TASK_START_MIN_INTERVAL_MS,
+  UPGRADE_TARGET,
   WAITING_ASK_AFTER_MS,
   advanceAgentRecord,
   advanceLauncherEpisode,
@@ -583,4 +584,30 @@ test('reportEntry: waitingSince appears only after 24 h of waiting_idle; strings
   const long = reportEntry('7', { state: 'failed', reason: `install_failed:${'x'.repeat(300)}`, since: recent }, NOW)
   assert.equal(long.reason!.length, 120)
   assert.deepEqual(reportEntry('7', { state: 'supervised', reason: null, since: recent }, NOW), { id: '7', state: 'supervised', since: recent })
+})
+
+// Design 6 and 13: the app offers Restart now only for an entry that says the
+// wait is for an UPDATE (machineModel.ts canRestartNow: pending === "update"),
+// and the backend keeps `pending` only as `update` or `upgrade`
+// (watcher-health.ts WATCHER_PENDING_KINDS). The record's target says which:
+// the upgrade's is UPGRADE_TARGET, an update's is the version it restarts onto.
+test('reportEntry: a waiting or pending agent says what it waits for (pending: update or upgrade, from its target); nothing else carries it', () => {
+  const since = new Date(NOW - 25 * 60 * MIN).toISOString()
+  const at = (state: string, target: unknown, reason = 'background_job') => reportEntry('912', { state, reason, since, target } as any, NOW)
+  assert.deepEqual(at('waiting_idle', '0.62.1'), { id: '912', state: 'waiting_idle', reason: 'background_job', since, waitingSince: since, pending: 'update' })
+  assert.equal(at('waiting_idle', UPGRADE_TARGET).pending, 'upgrade', 'the generation 2 upgrade is never offered a plain restart')
+  assert.equal(at('update_pending', '0.62.1', 'restart_rate_limited').pending, 'update')
+  assert.equal(at('upgrade_pending', UPGRADE_TARGET, 'one_restart_per_sweep').pending, 'upgrade')
+  // The pending states name their own kind: the sweep writes upgrade_pending
+  // supervisor_v2_unavailable and no_known_folder on the record as it was, so
+  // it can still carry an earlier update's target. It is an upgrade all the same.
+  assert.equal(at('upgrade_pending', '0.62.1', 'supervisor_v2_unavailable').pending, 'upgrade')
+  assert.equal(at('update_pending', UPGRADE_TARGET, 'keepalive_unverified').pending, 'update')
+  // A wait with no target on record says nothing (the safe side: no button).
+  assert.equal('pending' in at('waiting_idle', undefined), false)
+  assert.equal('pending' in at('waiting_idle', ''), false)
+  // A target rides along on the record after the restart: it is history, not a wait.
+  for (const state of ['supervised', 'restarted', 'failed', 'installing', 'needs_first_launch']) {
+    assert.equal('pending' in at(state, '0.62.1', 'x'), false, state)
+  }
 })
