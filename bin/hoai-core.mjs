@@ -2050,7 +2050,8 @@ export async function superviseClaude(args, opts = {}) {
       print(incumbentTimeoutMessage({ pid: incumbent.lastPid, cwd, waitedMs: incumbentTimeoutMs }))
       return EXIT_INCUMBENT_TIMEOUT
     }
-    if (incumbent.waited) {
+    // A wait ended by a stop request took nothing over: the incumbent may well still be there.
+    if (incumbent.waited && !incumbent.stopped) {
       print(`[hoai] the incumbent claude (pid ${incumbent.lastPid}) has exited; taking over assistant ${id}`)
     }
   }

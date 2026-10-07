@@ -138,6 +138,7 @@ test('a person-facing hoai (not supervised, no --keep-alive) still leaves both s
 function preArm(signal: AbortSignal, listProcesses: () => Array<Record<string, unknown>>) {
   const files = new Map<string, string>()
   const spawns: FakeChild[] = []
+  const prints: string[] = []
   const done = superviseClaude(['--dangerously-skip-permissions'], {
     platform: 'linux',
     env: { HOAI_SUPERVISED: '1', HOAI_SUPERVISED_ASSISTANT_ID: '871' },
@@ -160,7 +161,7 @@ function preArm(signal: AbortSignal, listProcesses: () => Array<Record<string, u
       return true
     },
     removeFile: (p: string) => files.delete(p),
-    print: () => {},
+    print: (line: string) => prints.push(line),
     hasExpect: true,
     listProcesses,
     pollMs: 250,
@@ -168,7 +169,7 @@ function preArm(signal: AbortSignal, listProcesses: () => Array<Record<string, u
     incumbentTimeoutMs: 5_000,
     signal,
   } as never)
-  return { files, spawns, done }
+  return { files, spawns, prints, done }
 }
 
 test('a stop that lands before anything is armed returns at once: no supervisor.json, no claude', async () => {
@@ -191,4 +192,16 @@ test('a stop during the incumbent wait ends the wait at once instead of sitting 
   assert.ok(Date.now() - started < 3000, `the wait ended on the stop (${Date.now() - started} ms)`)
   assert.equal(h.spawns.length, 0)
   assert.equal(h.files.size, 0)
+})
+
+test('a stop that ends a wait already polling for a while never claims the incumbent has exited or that it is taking over', async () => {
+  const stop = new AbortController()
+  const incumbent = () => [{ pid: 4243, ppid: 1, uid: typeof process.getuid === 'function' ? process.getuid() : null, comm: 'claude', cwd: '/agents/athena' }]
+  const h = preArm(stop.signal, incumbent)
+  // Past the second poll (one every 250 ms), so the wait reports that it waited.
+  setTimeout(() => stop.abort(), 700)
+  assert.equal(await h.done, 143)
+  assert.ok(h.prints.some((l) => l.includes('waiting for an incumbent claude (pid 4243)')), h.prints.join('\n'))
+  assert.ok(!h.prints.some((l) => /has exited; taking over/.test(l)), `the incumbent is still there: ${h.prints.join('\n')}`)
+  assert.equal(h.spawns.length, 0)
 })
