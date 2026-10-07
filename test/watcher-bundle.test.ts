@@ -71,6 +71,8 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/keepalive-plan.mjs',
     'lib/process-tree.mjs',
     'lib/agent-task-win32.mjs',
+    // The shared ASCII-only vbs/ps1 strings (the watcher's own service files and the agent task).
+    'lib/win32-script-text.mjs',
   ])
   assert.equal(Object.isFrozen(WATCHER_BUNDLE_FILES), true)
 })
