@@ -55,6 +55,7 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync,
 import { basename, dirname, join } from 'node:path'
 
 import { isSessionIdLike } from '../bin/hoai-core.mjs'
+import { STALE_TURN_MS } from './keepalive-plan.mjs'
 import { type BindingSource, POSITIVE_BINDING_SOURCES } from './session-binding.js'
 import {
   isKeepaliveSessionProcess,
@@ -367,9 +368,13 @@ export interface SessionTranscriptReading {
 /**
  * Read the activity and the session off the transcripts, for an agent whose
  * hook rail may be silent (F1). `resolve` is the session binder's answer
- * (lib/session-binding.ts resolve()) with ANY binding source, because a wrong
- * guess here only makes the agent look busier, which is the safe direction for
- * a restart. The session id is published only from a POSITIVE binding: it
+ * (lib/session-binding.ts resolve()) with ANY binding source. Only a POSITIVE
+ * binding narrows the reading to that one transcript; anything less (a
+ * newest-mtime guess, its sticky keep, no binding at all) ADDS the whole
+ * folder, so a wrong guess only makes the agent look busier, which is the
+ * safe direction for a restart (delta review F3: a guess used to REPLACE the
+ * folder with a neighbour's file, and the agent's own long subagent job read
+ * as quiet). The session id is published only from a positive binding: it
  * names a transcript and a spool the watcher stats, and the pin rules key on
  * it. The activity is the newest of:
  *   - the transcript itself;
@@ -380,9 +385,11 @@ export interface SessionTranscriptReading {
  *     subagents/workflows/<run id>/agent-<id>.jsonl (both seen on disk under
  *     2.1.292). Every .jsonl up to SUBAGENT_DIR_DEPTH dirs below subagents/
  *     counts;
- *   - while the binder cannot tell which transcript is ours (two live ones and
- *     no proof yet), every transcript in the project dir: someone in this
- *     agent's folder is writing, and it may be the agent.
+ *   - while the binder cannot PROVE which transcript is ours, every transcript
+ *     in the project dir and the subagents of each one written in the last
+ *     STALE_TURN_MS: someone in this agent's folder is writing, and it may be
+ *     the agent. The window bounds the walk (a long lived folder holds
+ *     hundreds of transcripts) at the watcher's own stale turn horizon.
  * Never throws; a missing file or dir is simply no reading.
  */
 export function readSessionTranscript(input: {
@@ -391,30 +398,43 @@ export function readSessionTranscript(input: {
   resolve: () => { path: string; binding: { source: BindingSource } } | null
   projectDir: string
   fs?: TranscriptActivityFs
+  /** Epoch ms the subagent window is measured from (Date.now()). */
+  now?: number
 }): SessionTranscriptReading {
   const fs = input.fs ?? nodeTranscriptActivityFs
   try {
+    const now = input.now ?? Date.now()
     const times: number[] = []
     const note = (ms: number | null) => {
       if (typeof ms === 'number' && Number.isFinite(ms)) times.push(ms)
     }
     const jsonl = (dir: string) => fs.listDir(dir).filter((name) => name.endsWith('.jsonl'))
+    // The .meta.json beside each agent file is a file: never walked into.
+    const walk = (dir: string, depth: number): void => {
+      for (const name of fs.listDir(dir)) {
+        if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
+        else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
+      }
+    }
+    const subagentsOf = (transcript: string) =>
+      walk(join(dirname(transcript), basename(transcript).replace(/\.jsonl$/, ''), 'subagents'), SUBAGENT_DIR_DEPTH)
     const resolved = input.resolve()
     let sessionId: string | null = null
+    let proven = false
     if (resolved && resolved.path) {
       note(fs.mtimeMs(resolved.path))
+      subagentsOf(resolved.path)
       const id = basename(resolved.path).replace(/\.jsonl$/, '')
-      // The .meta.json beside each agent file is a file: never walked into.
-      const walk = (dir: string, depth: number): void => {
-        for (const name of fs.listDir(dir)) {
-          if (name.endsWith('.jsonl')) note(fs.mtimeMs(join(dir, name)))
-          else if (depth > 0 && !name.endsWith('.json')) walk(join(dir, name), depth - 1)
-        }
+      proven = POSITIVE_BINDING_SOURCES.includes(resolved.binding.source)
+      if (proven && isSessionIdLike(id)) sessionId = id
+    }
+    if (!proven && input.projectDir) {
+      for (const name of jsonl(input.projectDir)) {
+        const path = join(input.projectDir, name)
+        const ms = fs.mtimeMs(path)
+        note(ms)
+        if (path !== resolved?.path && typeof ms === 'number' && now - ms < STALE_TURN_MS) subagentsOf(path)
       }
-      walk(join(dirname(resolved.path), id, 'subagents'), SUBAGENT_DIR_DEPTH)
-      if (POSITIVE_BINDING_SOURCES.includes(resolved.binding.source) && isSessionIdLike(id)) sessionId = id
-    } else if (input.projectDir) {
-      for (const name of jsonl(input.projectDir)) note(fs.mtimeMs(join(input.projectDir, name)))
     }
     return { activityMs: times.length > 0 ? Math.max(...times) : null, sessionId }
   } catch {

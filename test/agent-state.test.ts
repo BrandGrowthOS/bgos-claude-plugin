@@ -451,10 +451,11 @@ test('readSessionTranscript: the bound transcript and its subagents are the acti
     // layout 2.1.292 writes on disk): a long workflow is activity too.
     f.write(join(f.projectDir, SESSION, 'subagents', 'workflows', 'wf_458dea5c-4d9', 'agent-b2.jsonl'), T0 - 2 * 60_000)
     assert.equal(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir }).activityMs, T0 - 2 * 60_000)
-    // A guess (newest-mtime) still counts as activity, never as the session.
+    // A guess (newest-mtime) still counts as activity, never as the session,
+    // and it adds the folder rather than narrowing to itself (delta F3).
     const guessed = { path: ours, binding: { name: `${SESSION}.jsonl`, source: 'newest-mtime' as const } }
-    assert.deepEqual(readSessionTranscript({ resolve: () => guessed, projectDir: f.projectDir }), {
-      activityMs: T0 - 2 * 60_000,
+    assert.deepEqual(readSessionTranscript({ resolve: () => guessed, projectDir: f.projectDir, now: T0 }), {
+      activityMs: T0 - 60_000,
       sessionId: null,
     })
     // Unbound (the binder refuses to guess between two live transcripts): any
@@ -511,6 +512,71 @@ test('a hookless agent writing its transcript a minute ago publishes that minute
     assert.equal(state.turnInFlight, false)
     assert.equal(state.lastActivityAt, new Date(T0 - 60_000).toISOString(), 'the transcript write, not the boot')
     assert.equal(state.sessionId, SESSION)
+  } finally {
+    rmSync(f.root, { recursive: true, force: true })
+  }
+})
+
+// ── Delta review F3 (mission 104): a guess replaced the folder scan ─────────
+//
+// The docstring promised that a wrong guess "only makes the agent look
+// busier", but any binding at all, a newest-mtime guess or its sticky keep
+// included, replaced the project dir scan with ONE file: a neighbour's. The
+// agent's own transcript and its Task or workflow subagent files were never
+// read, and the unbound scan never walked subagents/ either. A hookless
+// agent busy in a long subagent job then read as quiet past the watcher's
+// 30 min window. Now only a POSITIVE binding narrows the reading; anything
+// else adds every transcript in the folder, and the subagents of each one
+// written in the last STALE_TURN_MS.
+
+test('F3: a guessed binding adds the folder, subagents included, to the activity; it never replaces it', () => {
+  const f = transcriptFixture()
+  try {
+    const NEIGHBOUR = SUB
+    const DISCARDED = '0f0e0d0c-0b0a-4908-8706-050403020100'
+    // A --resume whose env id names no file; at boot only the neighbour wrote
+    // in the last 10 min, so the binder guesses it, then keeps it (sticky).
+    f.write(join(f.projectDir, `${SESSION}.jsonl`), T0 - 40 * 60_000)
+    f.write(join(f.projectDir, `${NEIGHBOUR}.jsonl`), T0 - 60_000)
+    const binder = new SessionTranscriptBinder(f.agent, { claudeHome: f.root, envSessionId: DISCARDED })
+    assert.equal(binder.resolve(T0)?.binding.source, 'newest-mtime', 'the boot guess')
+    // 35 min later only our own Task subagent has written.
+    const later = T0 + 35 * 60_000
+    f.write(join(f.projectDir, SESSION, 'subagents', 'agent-a1.jsonl'), later - 30_000)
+    const guessed = readSessionTranscript({ resolve: () => binder.resolve(later), projectDir: f.projectDir, now: later })
+    assert.deepEqual(guessed, { activityMs: later - 30_000, sessionId: null }, 'our subagent, not the idle neighbour')
+
+    // Unbound: two live transcripts and no proof. A subagent writing under
+    // one of them is activity as much as the transcript itself.
+    const g = transcriptFixture()
+    try {
+      g.write(join(g.projectDir, `${SESSION}.jsonl`), T0 - 5 * 60_000)
+      g.write(join(g.projectDir, `${NEIGHBOUR}.jsonl`), T0 - 3 * 60_000)
+      const unbound = new SessionTranscriptBinder(g.agent, { claudeHome: g.root, envSessionId: DISCARDED })
+      assert.equal(unbound.resolve(T0), null, 'the binder refuses to guess')
+      const at = T0 + 40 * 60_000
+      g.write(join(g.projectDir, SESSION, 'subagents', 'workflows', 'wf_1', 'agent-b2.jsonl'), at - 10_000)
+      assert.equal(readSessionTranscript({ resolve: () => unbound.resolve(at), projectDir: g.projectDir, now: at }).activityMs, at - 10_000)
+      // A transcript idle past STALE_TURN_MS costs no subagent walk.
+      const old = transcriptFixture()
+      try {
+        old.write(join(old.projectDir, `${SESSION}.jsonl`), at - 3 * 60 * 60_000)
+        old.write(join(old.projectDir, `${NEIGHBOUR}.jsonl`), at - 3 * 60 * 60_000)
+        old.write(join(old.projectDir, SESSION, 'subagents', 'agent-c3.jsonl'), at - 60_000)
+        assert.equal(readSessionTranscript({ resolve: () => null, projectDir: old.projectDir, now: at }).activityMs, at - 3 * 60 * 60_000)
+      } finally {
+        rmSync(old.root, { recursive: true, force: true })
+      }
+    } finally {
+      rmSync(g.root, { recursive: true, force: true })
+    }
+    // A POSITIVE binding still narrows the reading to our own files.
+    const proven = { path: join(f.projectDir, `${SESSION}.jsonl`), binding: { name: `${SESSION}.jsonl`, source: 'marker' as const } }
+    f.write(join(f.projectDir, `${NEIGHBOUR}.jsonl`), later)
+    assert.deepEqual(readSessionTranscript({ resolve: () => proven, projectDir: f.projectDir, now: later }), {
+      activityMs: later - 30_000,
+      sessionId: SESSION,
+    })
   } finally {
     rmSync(f.root, { recursive: true, force: true })
   }
