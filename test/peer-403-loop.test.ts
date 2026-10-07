@@ -66,6 +66,8 @@ interface Backend {
   url: string
   mode: Mode
   count(route: string): number
+  /** Runs while a request is on the wire, before it is answered. */
+  onRequest?: () => void
 }
 
 const servers: Server[] = []
@@ -91,6 +93,7 @@ async function startBackend(mode: Mode): Promise<Backend> {
       const path = req.url ?? '/'
       const route = `${req.method} ${path.split('?')[0]}`
       counts.set(route, (counts.get(route) ?? 0) + 1)
+      backend.onRequest?.()
       const send = (status: number, body: string) => {
         res.writeHead(status, { 'Content-Type': 'application/json' })
         res.end(body)
@@ -144,6 +147,14 @@ function liftReplyCase(): string {
   return `async function replyTool(rawArgs) {\n  switch ('reply') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
 }
 
+/** The send_to_peer case, wrapped the same way. */
+function liftSendToPeerCase(): string {
+  const start = SERVER.indexOf("\n    case 'send_to_peer': {")
+  const end = SERVER.indexOf("\n    case 'complete_peer_thread': {", start)
+  assert.ok(start > 0 && end > start, 'the send_to_peer case exists')
+  return `async function sendToPeerTool(rawArgs) {\n  switch ('send_to_peer') {\n${SERVER.slice(start + 1, end)}\n  }\n}\n`
+}
+
 /** The per chat refusal memories the fix declares, when it declares them. */
 function refusalLedgers(): string[] {
   return [...SERVER.matchAll(/^const \w+ = createRefusedChats\([^\n]*\)$/gm)].map((m) => m[0])
@@ -157,9 +168,11 @@ interface Harness {
   marker(): Promise<void>
   recordInbound(chatId: string, messageId: number): void
   reply(chatId: string, text: string): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
+  sendToPeer(sideThreadChatId: string): Promise<unknown>
+  closeConversation(chatId: string): void
   sweep(): void
   nudgesFor(chatId: string): number
-  pendingFor(chatId: string): unknown
+  pendingFor(chatId: string): { messageId: number } | undefined
   cardIdFor(cardKey: string): string | undefined
   logs: string[]
 }
@@ -183,6 +196,7 @@ function harness(apiBase: string, turnChat: string): Harness {
     lift('function checkReplyOverdue('),
     ...refusalLedgers(),
     liftReplyCase(),
+    liftSendToPeerCase(),
   ]
     .join('\n')
     // The sweep's deaf branch names the script it runs from; it never runs
@@ -206,7 +220,8 @@ function harness(apiBase: string, turnChat: string): Harness {
 
   const logs: string[] = []
   const nudges: Array<{ chatId: string }> = []
-  const pendingInbounds = new Map<string, unknown>()
+  const pendingInbounds = new Map<string, { messageId: number }>()
+  let peerSendResult: Record<string, unknown> = {}
   const hookCardIds = new Map<string, string>()
   const hookCardPending = new PendingCards(8)
 
@@ -263,6 +278,8 @@ function harness(apiBase: string, turnChat: string): Harness {
     meetingIdByChatId: new Map<string, number>(),
     protectBackslashesForMarkdown: (text: string) => text,
     recentButtonPrompts: new Map<string, unknown>(),
+    // send_to_peer.
+    bgosPeerPost: async () => peerSendResult,
   }
   const scope = new Proxy(known, {
     has: (target, key) => key in target || !(key in globalThis),
@@ -275,14 +292,16 @@ function harness(apiBase: string, turnChat: string): Harness {
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'scope',
-    `with (scope) {\n${js}\nreturn { flushHookCard, postHookMarker, recordInbound, checkReplyOverdue, replyTool }\n}`,
+    `with (scope) {\n${js}\nreturn { flushHookCard, postHookMarker, recordInbound, markConversationClosed, checkReplyOverdue, replyTool, sendToPeerTool }\n}`,
   )
   const lifted = factory(scope) as {
     flushHookCard(): Promise<void>
     postHookMarker(effect: Record<string, unknown>): Promise<void>
     recordInbound(chatId: string, messageId: number, turnState?: string, senderKind?: string | null): void
     checkReplyOverdue(): void
+    markConversationClosed(opts: { chatId?: string | null }): void
     replyTool(args: Record<string, unknown>): Promise<{ content: Array<{ text: string }>; isError?: boolean }>
+    sendToPeerTool(args: Record<string, unknown>): Promise<unknown>
   }
 
   return {
@@ -305,6 +324,11 @@ function harness(apiBase: string, turnChat: string): Harness {
       }),
     recordInbound: (chatId, messageId) => lifted.recordInbound(chatId, messageId, 'expecting_reply', 'assistant'),
     reply: (chatId, text) => lifted.replyTool({ chat_id: chatId, text }),
+    sendToPeer: (sideThreadChatId) => {
+      peerSendResult = { sideThreadChatId: Number(sideThreadChatId), conversationId: 77, message: { id: 9100 } }
+      return lifted.sendToPeerTool({ target_assistant_id: 950, parent_message_id: 501, text: 'Picking this back up.' })
+    },
+    closeConversation: (chatId) => lifted.markConversationClosed({ chatId }),
     sweep: () => lifted.checkReplyOverdue(),
     nudgesFor: (chatId) => nudges.filter((n) => n.chatId === chatId).length,
     pendingFor: (chatId) => pendingInbounds.get(chatId),
@@ -346,7 +370,7 @@ function assertTyped(result: { content: Array<{ text: string }>; isError?: boole
   const text = result.content[0]?.text ?? ''
   assert.equal(result.isError, true, 'the send did not happen, and the result says so')
   assert.match(text, /^peer_not_participant\b/, `typed: ${text.slice(0, 120)}`)
-  assert.match(text, /closed or you are not in it/)
+  assert.match(text, /not one you are in: yours there has closed, or you were never in it/)
   assert.match(text, /Do not retry/)
   assert.match(text, /owner only if it matters/)
 }
@@ -415,6 +439,52 @@ test('reply: a new message in that chat lifts the block, so a conversation the a
   const sent = await h.reply(A2A, 'answering the new message')
   assert.match(sent.content[0]!.text, /^Sent \(message_id: 9002\)/)
   assert.equal(backend.count('POST /api/v1/send-message'), 2)
+})
+
+test('reply: a close for that chat, or a send_to_peer that lands in it, lifts the block too', async () => {
+  for (const lift of ['close', 'send_to_peer'] as const) {
+    const backend = await startBackend('peer403')
+    const h = harness(backend.url, A2A)
+    h.recordInbound(A2A, 501)
+    assertTyped(await h.reply(A2A, 'first'))
+    assertTyped(await h.reply(A2A, 'again'))
+    assert.equal(backend.count('POST /api/v1/send-message'), 1, lift)
+    backend.mode = 'ok'
+    if (lift === 'close') h.closeConversation(A2A)
+    else await h.sendToPeer(A2A)
+    const sent = await h.reply(A2A, 'now it can land')
+    assert.match(sent.content[0]!.text, /^Sent \(message_id: 9002\)/, lift)
+    assert.equal(backend.count('POST /api/v1/send-message'), 2, lift)
+  }
+})
+
+test('reply: a message that arrives while the refused reply is in flight keeps its tracker and is not blocked', async () => {
+  const backend = await startBackend('peer403')
+  const h = harness(backend.url, A2A)
+  h.recordInbound(A2A, 501)
+  backend.onRequest = () => {
+    backend.onRequest = undefined
+    h.recordInbound(A2A, 502)
+  }
+  assertTyped(await h.reply(A2A, 'answering 501'))
+  assert.equal(h.pendingFor(A2A)?.messageId, 502, 'the newer message is still owed its reply')
+  backend.mode = 'ok'
+  const sent = await h.reply(A2A, 'answering 502')
+  assert.match(sent.content[0]!.text, /^Sent \(message_id: 9002\)/)
+  assert.equal(backend.count('POST /api/v1/send-message'), 2)
+})
+
+test('hook rail: a refused marker silences the chat for cards too', async () => {
+  const backend = await startBackend('peer403')
+  const h = harness(backend.url, A2A)
+  await h.marker()
+  for (let i = 0; i < 50; i++) {
+    h.queueCard(i)
+    await h.flush()
+  }
+  await h.marker()
+  assert.equal(backend.count('POST /api/v1/messages'), 1)
+  assert.equal(h.logs.filter((l) => l.includes('peer_not_participant')).length, 1)
 })
 
 // ── everything else keeps today's behaviour ───────────────────────────────────

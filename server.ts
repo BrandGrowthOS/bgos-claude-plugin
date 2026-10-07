@@ -5032,13 +5032,17 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       const replySessionHandle = replyAuth.sessionHandle
 
       // A side-thread that already refused this agent's reply for good: no
-      // upload and no POST, the same typed answer, until a new message arrives
+      // upload and no POST, the same typed answer, until something new happens
       // there (see peerReplyRefusedChats).
       if (peerReplyRefusedChats.has(String(resolvedChatId))) {
         clearInbound(resolvedChatId)
         log(`reply to chat ${resolvedChatId} not sent: refused earlier with 403 ${PEER_NOT_PARTICIPANT}`)
         return peerNotParticipantResult(String(resolvedChatId))
       }
+      // The inbound this reply answers, as it stands before the send. A refusal
+      // may block the chat and drop that tracker only if no newer message
+      // arrived while the send was in flight.
+      const answeringInboundId = pendingInbounds.get(String(resolvedChatId))?.messageId
 
       const meetingIdForChat = meetingIdByChatId.get(String(resolvedChatId))
       if (meetingIdForChat != null) {
@@ -5207,9 +5211,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           // HOAI refuses this reply every time (lib/peer-refusal.ts). Say so in
           // words the model cannot take for a hiccup, answer any later reply
           // here locally, and drop the inbound it was answering so the overdue
-          // sweep does not ask for that reply again.
-          peerReplyRefusedChats.add(String(resolvedChatId))
-          clearInbound(resolvedChatId)
+          // sweep does not ask for that reply again. A message that arrived
+          // during the send is the news recordInbound lifts the block on, so
+          // then neither happens and that message keeps its tracker.
+          if (pendingInbounds.get(String(resolvedChatId))?.messageId === answeringInboundId) {
+            peerReplyRefusedChats.add(String(resolvedChatId))
+            clearInbound(resolvedChatId)
+          }
           log(
             `reply to chat ${resolvedChatId} refused with 403 ${PEER_NOT_PARTICIPANT}; ` +
               'told the agent not to retry',
@@ -5919,6 +5927,9 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const sideThreadChatId = (result as any)?.sideThreadChatId
         const resultConvId =
           (result as any)?.conversationId ?? (result as any)?.peerConversationId
+        // This agent is a participant of whatever it just sent into, so a reply
+        // refused there before may land now.
+        if (sideThreadChatId != null) peerReplyRefusedChats.delete(String(sideThreadChatId))
         if (turn_state === 'final') {
           // The agent just closed the thread. Pin it closed so neither the
           // peer's prior inbound nor a final inbound that races this can fire
@@ -7248,11 +7259,12 @@ const peerConvByChat = new Map<string, string>()
 const closedPeerChats = new Set<string>()
 const CLOSED_PEER_CHATS_MAX = 500
 // Side-thread chat ids where HOAI refused this agent's REPLY with the
-// participant 403 (lib/peer-refusal.ts): the conversation there is closed or
-// this agent is not in it, and the same send is refused every time. A later
-// reply into one is answered here with the same typed refusal, so a model that
-// tries again cannot loop the backend. recordInbound lifts it: a new message in
-// that chat is the one sign the agent may be in a conversation there again.
+// participant 403 (lib/peer-refusal.ts): the conversation open there is not one
+// this agent is in, and the same send is refused every time. A later reply into
+// one is answered here with the same typed refusal, so a model that tries again
+// cannot loop the backend. Only news about that chat lifts it: a new message in
+// it (recordInbound), a close (markConversationClosed), or a send_to_peer that
+// lands in it.
 const peerReplyRefusedChats = createRefusedChats()
 // 4 minutes: agents legitimately run long (some tasks work up to ~10 min), so a
 // 2-minute nudge fired too early on work still in progress. KC 2026-08-15: push
@@ -7269,6 +7281,9 @@ function markConversationClosed(opts: { convId?: string | number | null; chatId?
   const convId = opts.convId != null && opts.convId !== '' ? String(opts.convId) : undefined
   if (!chatId && convId) chatId = peerConvChats.get(convId)
   if (!chatId) return
+  // A close changes which conversation a reply there would join (a closed one
+  // this agent was in is revived on write), so a refused reply gets one more try.
+  peerReplyRefusedChats.delete(chatId)
   // Drop any pending overdue for this chat and pin it closed so a late inbound
   // (or a re-delivery that races the close) cannot re-arm the tracker.
   pendingInbounds.delete(chatId)

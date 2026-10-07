@@ -112,10 +112,10 @@ export function peerNotParticipantResult(chatId: string): {
         type: 'text',
         text:
           `${PEER_NOT_PARTICIPANT}: HOAI refused this reply into chat ${chatId} ` +
-          `(403: "${PEER_NOT_PARTICIPANT_MESSAGE}"). The peer conversation there is ` +
-          'closed or you are not in it, so the reply cannot be delivered and the same ' +
-          'send is refused every time. Do not retry it. Tell your owner only if it ' +
-          'matters to them.',
+          `(403: "${PEER_NOT_PARTICIPANT_MESSAGE}"). The conversation open in that ` +
+          'side-thread is not one you are in: yours there has closed, or you were ' +
+          'never in it. The reply cannot be delivered, and the same send is refused ' +
+          'every time. Do not retry it. Tell your owner only if it matters to them.',
       },
     ],
     isError: true,

@@ -113,7 +113,7 @@ test('the model is told plainly: typed, why, and not to retry', () => {
   const text = result.content[0]!.text
   assert.match(text, /^peer_not_participant: /)
   assert.match(text, /chat 33017/)
-  assert.match(text, /closed or you are not in it/)
+  assert.match(text, /not one you are in: yours there has closed, or you were never in it/)
   assert.match(text, /Do not retry it\./)
   assert.match(text, /Tell your owner only if it matters to them\./)
   assert.doesNotMatch(text, /[\u2013\u2014]/, 'no en or em dashes')
