@@ -1036,6 +1036,36 @@ test('F5 (linux): a generation 1 unit is not reinstalled (its active unit restar
   assert.deepEqual(unread.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
 })
 
+test('F5 (linux): a stray in the cgroup of a unit whose OWN hoai is live restarts claude through the MARKER (the stray lives on), never waits for good', async () => {
+  // A daemonized process the agent left behind (an ssh ControlPersist master,
+  // a gpg-agent, a `nohup` dev server): reparented to systemd --user, still in
+  // the unit's cgroup, and it may live for ever. The service restart would
+  // kill it; the marker SIGTERMs only claude, exactly as for a person's hoai.
+  const busy = unitTable(true)
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, busy.procs)
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const rec = recorder({ ps: busy.ps, systemctlShow: UNIT_SHOW })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { platform: 'linux', pidAlive: (pid: number) => [3000, 4912, 5912, 7000].includes(pid) }).ctx as any)
+  assert.equal(rec.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false, 'no systemctl --user restart over the stray')
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/912/restart-requested.json`), '{}', 'claude alone restarts')
+  assert.deepEqual(rec.kills, [], 'the stray is never signalled')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+  // The same group with nothing outside the supervisor and claude keeps the service restart (hoai itself moves).
+  const idle = unitTable(false)
+  const quiet = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
+  quiet.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, idle.procs)
+  quiet.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const ok = recorder({ ps: idle.ps, systemctlShow: UNIT_SHOW })
+  const okClock = fakeClock()
+  answerProbes(quiet, okClock, ['912'])
+  const done = await runKeepAliveSweep(ctxFor(quiet, ok, okClock, { platform: 'linux', pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl' && c.args.includes('restart')).map((c) => c.args), [['--user', 'restart', 'bgos-agent-912']])
+  assert.deepEqual(done.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})
+
 // -- gates -------------------------------------------------------------------------------------------
 
 test('gates: one restart per sweep; the second pending agent waits its turn', async () => {
