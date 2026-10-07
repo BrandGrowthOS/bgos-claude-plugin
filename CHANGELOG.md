@@ -2,6 +2,20 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.62.0 (2026-10-07)
+
+**Keep agents running: one switch per computer keeps every agent alive and up to date (mission 104).** Design: BGOS `docs/superpowers/specs/2026-10-06-keep-agents-alive-design.md`. With the switch on in the app (Integrations, the computer's card), the backend marks every Claude Code agent on that computer always-on FIRST, the per-machine watcher is installed, and the watcher's keep-alive sweep gives every agent on disk, including agents created later, its own supervisor. A crash or a reboot brings the agent back on its own conversation, and a staged plugin update is applied only at a safe moment.
+
+**The supervisor, generation 2 (`hoai-agent install --always-on`).** launchd, systemd `--user` (linger) or a Windows logon task runs `run.sh`, which starts the hoai launcher inside a detached tmux session on the agent's own socket (`tmux -L hoai-<id>`), so the agent RESUMES its pinned session (`claude --resume <pin>`) instead of starting a fresh one, and remote compact stays ON. The plugin root is resolved at every launch, so a restart lands on the installed version. `hoai-agent attach --assistant <id>` watches the session. New: `hoai --keep-alive` (the Windows task), `HOAI_SUPERVISED` named exits 6 to 11, an install lock, a Linux restart of an active unit on reinstall, `CLAUDE_CONFIG_DIR` and `HOAI_SERVICE_NAMESPACE` carried into the service, `installed-at` stamped for every install, and every service stop removes `supervisor.json` (a stale one could keep an agent down after a reboot through pid reuse).
+
+**The watcher sweep and the safe moment.** Every minute, with the switch on: install a supervisor for an agent that has none (a hand-run hoai launcher counts as none: it does not survive a reboot), upgrade a generation 1 supervisor, and restart an agent onto a staged update only when no turn is in flight, no reply or permission is pending, no Claude Code background job (Bash or Monitor tool process) runs under its claude, and it has been quiet for 10 minutes (30 for an older daemon). It never kills: a hand-run plain claude is waited for, and after 24 h of waiting the app shows the reason with Restart now. One restart and one install per sweep, 3 attempts per version.
+
+**The watcher reports its own health.** A crash-safe entry records every start and any failure before the loop, sends a minimal heartbeat with `watcherHealth {status: crash_loop, lastFatal}`, and backs off (30 s doubling to 10 min) instead of restarting every 5 s; the app shows a red row with a Reinstall action. Reinstalling a running watcher now retries the launchd bootstrap that loses the race with an async bootout, and the watcher's service PATH carries the directories where its tools were found.
+
+**The daemon.** `~/.bgos-plugin-state/<id>/agent-state.json` publishes the turn state, pending work, running and pending versions and the live session for the watcher; the live session id is pinned so a takeover resumes it; the always-on reconcile never adds a second supervisor beside a bespoke one (G11) and installs with the agent's real folder; marketplace installs now report `pendingRestartVersion`; the hook session binder honours the launch folder and `CLAUDE_CONFIG_DIR`.
+
+Every behaviour has a focused test with a recorded mutation proof; an end to end run on a Mac under launchd (isolated from the live fleet) proved switch on, crash and return on the same session, and an update applied only after a background job ended.
+
 ## 0.61.4 (2026-10-06)
 
 The remote pane can navigate, use history and reload, and create, select or close tabs in the agent's actual browser. Owner actions retain exclusive control until the physical operation settles. Navigation acknowledges dispatch promptly so Stop remains available during delayed headers or documents. Physical links and same-document history publish loading completion. Tab actions verify the displayed target identity, roster changes refresh even when the selected page stays unchanged, and pending capture survives a target replacement. The browser keeps at most 16 tabs whether the agent or owner creates them.
