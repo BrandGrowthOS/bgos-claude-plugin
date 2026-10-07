@@ -7,10 +7,11 @@
  * pid can be ANY process, and decideSupervisorArming refused to arm behind any
  * live pid: run.sh then lapped on exit 3 (already-supervised) for as long as
  * that unrelated process ran, and the agent stayed down. A recorded pid is a
- * live owner only when it is alive AND still runs hoai-core.mjs; a command line
- * that cannot be read keeps the liveness answer (fail toward not
- * double-launching). The query is lib/agent-inventory.mjs's, so the watcher's
- * launcherLive judges the same pid the same way.
+ * live owner only when it is alive AND still the launcher that wrote the file
+ * (it started no later than the file's startedAt and runs hoai-core.mjs as its
+ * script, delta review F1 below); what cannot be read keeps the liveness answer
+ * (fail toward not double-launching). The query is lib/agent-inventory.mjs's,
+ * so the watcher's launcherLive judges the same pid the same way.
  *
  * Every OS effect is a fake: spawnSync, spawn and the fs are injected.
  *
@@ -25,7 +26,7 @@ import {
   EXIT_ALREADY_SUPERVISED,
   SUPERVISOR_FILE_NAME,
   decideSupervisorArming,
-  defaultPidCommandLine,
+  defaultPidProcess,
   superviseClaude,
   supervisorFileBody,
 } from '../bin/hoai-core.mjs'
@@ -44,26 +45,26 @@ test('decideSupervisorArming: a live pid that still runs hoai-core.mjs refuses; 
   const asked: number[] = []
   const commandOf = (cmd: string | null) => (pid: number) => {
     asked.push(pid)
-    return cmd
+    return cmd === null ? null : { command: cmd, startedAtMs: null }
   }
   assert.deepEqual(
-    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidCommandLine: commandOf(HOAI_CMD) }),
+    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidProcess: commandOf(HOAI_CMD) }),
     { arm: false, ownerPid: 626 },
   )
   assert.deepEqual(
-    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidCommandLine: commandOf('/usr/libexec/rapportd') }),
+    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidProcess: commandOf('/usr/libexec/rapportd') }),
     { arm: true, reclaimedStale: true },
   )
   // Cannot be read at all: the liveness answer stands, never a double launch on a guess.
   assert.deepEqual(
-    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidCommandLine: commandOf(null) }),
+    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => true, pidProcess: commandOf(null) }),
     { arm: false, ownerPid: 626 },
   )
   assert.deepEqual(asked, [626, 626, 626])
   // A dead pid is reclaimed without spending a process on its command line.
   asked.length = 0
   assert.deepEqual(
-    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => false, pidCommandLine: commandOf(HOAI_CMD) }),
+    decideSupervisorArming({ existingRaw: STALE, ownPid: 100, pidAlive: () => false, pidProcess: commandOf(HOAI_CMD) }),
     { arm: true, reclaimedStale: true },
   )
   assert.deepEqual(asked, [])
@@ -84,30 +85,31 @@ function fakeSpawnSync(answer: { status: number | null; stdout?: string } | 'thr
   return { calls, spawn: spawn as never }
 }
 
-test('defaultPidCommandLine: posix asks ps for that pid at unlimited width, bounded by a timeout, and answers the command line', () => {
-  const ps = fakeSpawnSync({ status: 0, stdout: `  4242 ${HOAI_CMD}\n` })
-  assert.equal(defaultPidCommandLine(4242, 'darwin', { spawn: ps.spawn }), HOAI_CMD)
+test('defaultPidProcess: posix asks ps for that pid at unlimited width with its etime, bounded by a timeout, and answers the command line and start', () => {
+  const now = Date.parse('2026-10-07T09:00:00.000Z')
+  const ps = fakeSpawnSync({ status: 0, stdout: `  4242    02:00:00 ${HOAI_CMD}\n` })
+  assert.deepEqual(defaultPidProcess(4242, 'darwin', { spawn: ps.spawn, now }), { command: HOAI_CMD, startedAtMs: now - 7_200_000 })
   assert.equal(ps.calls.length, 1)
   assert.equal(ps.calls[0]!.file, 'ps')
-  assert.deepEqual(ps.calls[0]!.args, ['-ww', '-o', 'pid=,command=', '-p', '4242'])
+  assert.deepEqual(ps.calls[0]!.args, ['-ww', '-o', 'pid=,etime=,command=', '-p', '4242'])
   assert.equal(typeof ps.calls[0]!.opts.timeout, 'number')
   assert.equal(ps.calls[0]!.opts.windowsHide, true)
 })
 
-test('defaultPidCommandLine: win32 asks Win32_Process for that pid\'s CommandLine', () => {
-  const ps = fakeSpawnSync({ status: 0, stdout: JSON.stringify({ ProcessId: 777, CommandLine: '"C:\\node.exe" "C:\\p\\bin\\hoai-core.mjs" --keep-alive' }) })
-  assert.equal(defaultPidCommandLine(777, 'win32', { spawn: ps.spawn }), '"C:\\node.exe" "C:\\p\\bin\\hoai-core.mjs" --keep-alive')
+test('defaultPidProcess: win32 asks Win32_Process for that pid\'s CommandLine and creation time', () => {
+  const ps = fakeSpawnSync({ status: 0, stdout: JSON.stringify({ ProcessId: 777, CommandLine: '"C:\\node.exe" "C:\\p\\bin\\hoai-core.mjs" --keep-alive', StartedAtMs: 1_700_000_000_000 }) })
+  assert.deepEqual(defaultPidProcess(777, 'win32', { spawn: ps.spawn }), { command: '"C:\\node.exe" "C:\\p\\bin\\hoai-core.mjs" --keep-alive', startedAtMs: 1_700_000_000_000 })
   assert.equal(ps.calls[0]!.file, 'powershell.exe')
   assert.match(ps.calls[0]!.args.at(-1)!, /Get-CimInstance Win32_Process -Filter 'ProcessId=777'/)
 })
 
-test('defaultPidCommandLine: anything it cannot read is null (gone, failed, timed out, thrown, not a pid)', () => {
-  assert.equal(defaultPidCommandLine(4242, 'linux', { spawn: fakeSpawnSync({ status: 1, stdout: '' }).spawn }), null)
-  assert.equal(defaultPidCommandLine(4242, 'linux', { spawn: fakeSpawnSync({ status: null, stdout: '' }).spawn }), null, 'a timed-out spawnSync has status null')
-  assert.equal(defaultPidCommandLine(4242, 'linux', { spawn: fakeSpawnSync('throw').spawn }), null)
-  assert.equal(defaultPidCommandLine(4242, 'win32', { spawn: fakeSpawnSync({ status: 0, stdout: JSON.stringify({ ProcessId: 4242, CommandLine: null }) }).spawn }), null, 'another session\'s process')
+test('defaultPidProcess: anything it cannot read is null (gone, failed, timed out, thrown, not a pid)', () => {
+  assert.equal(defaultPidProcess(4242, 'linux', { spawn: fakeSpawnSync({ status: 1, stdout: '' }).spawn }), null)
+  assert.equal(defaultPidProcess(4242, 'linux', { spawn: fakeSpawnSync({ status: null, stdout: '' }).spawn }), null, 'a timed-out spawnSync has status null')
+  assert.equal(defaultPidProcess(4242, 'linux', { spawn: fakeSpawnSync('throw').spawn }), null)
+  assert.equal(defaultPidProcess(4242, 'win32', { spawn: fakeSpawnSync({ status: 0, stdout: JSON.stringify({ ProcessId: 4242, CommandLine: null, StartedAtMs: null }) }).spawn }), null, 'another session\'s process, undated')
   const never = fakeSpawnSync({ status: 0, stdout: HOAI_CMD })
-  for (const pid of [0, -1, 1.5, Number.NaN]) assert.equal(defaultPidCommandLine(pid, 'linux', { spawn: never.spawn }), null)
+  for (const pid of [0, -1, 1.5, Number.NaN]) assert.equal(defaultPidProcess(pid, 'linux', { spawn: never.spawn }), null)
   assert.equal(never.calls.length, 0, 'nothing that is not a pid reaches a process')
 })
 
@@ -128,7 +130,7 @@ class FakeChild extends EventEmitter {
   }
 }
 
-function loop(pidCommandLine: (pid: number) => string | null) {
+function loop(pidProcess: (pid: number) => { command: string | null; startedAtMs: number | null } | null) {
   const files = new Map<string, string>([[SUPERVISOR_PATH, STALE]])
   const spawns: FakeChild[] = []
   const prints: string[] = []
@@ -159,7 +161,7 @@ function loop(pidCommandLine: (pid: number) => string | null) {
     hasExpect: false,
     // The stale file's pid is ALIVE: after a reboot it belongs to someone else.
     pidAlive: (pid: number) => pid === 626,
-    pidCommandLine,
+    pidProcess,
   } as never)
   return { files, spawns, prints, done }
 }
@@ -173,7 +175,7 @@ async function until(check: () => boolean, what: string) {
 }
 
 test('superviseClaude: a supervisor.json left by an unclean stop, whose pid is now an unrelated process, no longer keeps the agent down', async () => {
-  const h = loop((pid) => (pid === 626 ? '/usr/libexec/rapportd' : null))
+  const h = loop((pid) => (pid === 626 ? { command: '/usr/libexec/rapportd', startedAtMs: null } : null))
   await until(() => h.spawns.length === 1, 'the launch')
   const armed = JSON.parse(h.files.get(SUPERVISOR_PATH)!)
   assert.equal(armed.pid, process.pid, 'this launcher took the file over')
@@ -184,8 +186,53 @@ test('superviseClaude: a supervisor.json left by an unclean stop, whose pid is n
 })
 
 test('superviseClaude: the same file whose pid still runs hoai-core.mjs is a live owner: no second session', async () => {
-  const h = loop((pid) => (pid === 626 ? HOAI_CMD : null))
+  const h = loop((pid) => (pid === 626 ? { command: HOAI_CMD, startedAtMs: null } : null))
   assert.equal(await h.done, EXIT_ALREADY_SUPERVISED)
   assert.equal(h.spawns.length, 0)
   assert.equal(h.files.get(SUPERVISOR_PATH), STALE, 'the owner\'s file is left alone')
+})
+
+// -- delta review F1: prove the WRITER, not just "a hoai" -------------------------
+//
+// After a reboot the fleet starts inside a few hundred pids, so agent 871's
+// stale file can name another agent's hoai, or (macOS: tmux keeps its client
+// argv) another agent's tmux server. Both run "hoai-core.mjs" somewhere in their
+// command line, and refusing behind them kept 871 down, lap after lap of exit 3,
+// for as long as the other agent ran.
+
+const STAMP = '2026-10-06T21:00:00.000Z'
+const STAMP_MS = Date.parse(STAMP)
+const TMUX_OTHER =
+  'tmux -f /dev/null -L hoai-913 new-session -d -s hoai-913 -x 200 -y 50 -c /agents/b /bin/sh -c err=$1; shift; exec "$@" 2>>"$err" ' +
+  'hoai-stderr /home/kc/.bgos-agent/913/hoai.err /usr/bin/env HOAI_SUPERVISED=1 HOAI_SUPERVISED_ASSISTANT_ID=913 /opt/homebrew/bin/node ' +
+  '/Users/kc/.claude/plugins/cache/hoai/hoai/0.62.0/bin/hoai-core.mjs'
+
+test('F1: decideSupervisorArming proves the writer: a pid that started after the file was written is reused, whatever it runs', () => {
+  const stale = supervisorFileBody(626, STAMP)
+  const arm = (proc: { command: string | null; startedAtMs: number | null } | null) =>
+    decideSupervisorArming({ existingRaw: stale, ownPid: 100, pidAlive: () => true, pidProcess: () => proc } as never)
+  // Another agent's hoai, started at this boot, hours after the stale stamp.
+  assert.deepEqual(arm({ command: HOAI_CMD, startedAtMs: STAMP_MS + 12 * 3_600_000 }), { arm: true, reclaimedStale: true })
+  // The writer itself: started before its stamp (a keep-alive relaunch re-stamps it), or inside the minute of slack.
+  assert.deepEqual(arm({ command: HOAI_CMD, startedAtMs: STAMP_MS - 3 * 86_400_000 }), { arm: false, ownerPid: 626 })
+  assert.deepEqual(arm({ command: HOAI_CMD, startedAtMs: STAMP_MS + 30_000 }), { arm: false, ownerPid: 626 })
+  // No start time to compare: the command line alone decides.
+  assert.deepEqual(arm({ command: HOAI_CMD, startedAtMs: null }), { arm: false, ownerPid: 626 })
+})
+
+test('F1: decideSupervisorArming anchors the script on argv[1]: another agent\'s tmux server never owns this agent', () => {
+  // A file without a stamp: the command line is all there is.
+  const unstamped = JSON.stringify({ pid: 626, capabilities: ['relaunch'] })
+  const arm = (command: string) =>
+    decideSupervisorArming({ existingRaw: unstamped, ownPid: 100, pidAlive: () => true, pidProcess: () => ({ command, startedAtMs: null }) } as never)
+  assert.deepEqual(arm(TMUX_OTHER), { arm: true, reclaimedStale: true })
+  assert.deepEqual(arm(HOAI_CMD), { arm: false, ownerPid: 626 })
+})
+
+test('F1: superviseClaude after a reboot: the stale file\'s pid is another agent\'s hoai, so this agent arms and launches', async () => {
+  const h = loop((pid) => (pid === 626 ? { command: HOAI_CMD, startedAtMs: STAMP_MS + 12 * 3_600_000 } : null))
+  await until(() => h.spawns.length === 1, 'the launch')
+  assert.equal(JSON.parse(h.files.get(SUPERVISOR_PATH)!).pid, process.pid)
+  h.spawns[0]!.exit(0)
+  assert.equal(await h.done, 0)
 })

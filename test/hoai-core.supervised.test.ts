@@ -424,7 +424,7 @@ test('supervised: a live launcher already owning the agent is a named outcome in
     // The parent of this test process is alive and is not us: a live owner, once its command
     // line says it runs hoai (the pid identity check; the real parent is the test runner).
     writeFileSync(join(sb.home, '.bgos-agent', '900', SUPERVISOR_FILE_NAME), JSON.stringify({ pid: process.ppid, capabilities: ['relaunch'] }))
-    const r = await runMain(sb, { extra: { pidCommandLine: (pid: number) => (pid === process.ppid ? '/usr/local/bin/node /p/bin/hoai-core.mjs' : null) } })
+    const r = await runMain(sb, { extra: { pidProcess: (pid: number) => (pid === process.ppid ? { command: '/usr/local/bin/node /p/bin/hoai-core.mjs', startedAtMs: null } : null) } })
     assert.equal(r.code, EXIT_ALREADY_SUPERVISED)
     assert.equal(r.spawns.length, 0)
     assert.match(sb.statusOf('900'), new RegExp(`outcome=already-supervised owner=${process.ppid}`))
