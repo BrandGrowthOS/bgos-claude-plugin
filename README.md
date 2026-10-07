@@ -169,8 +169,14 @@ launchd / systemd --user
   the folder. A reinstall over a running Linux unit restarts it onto the new
   supervisor, as a reinstall on macOS always did. hoai handles that stop (TERM
   or HUP) too: it ends claude and removes its `supervisor.json`, so no stale
-  file outlives the service. One that an unclean stop (a power cut) still leaves
-  behind counts only while its pid is alive AND still runs `hoai-core.mjs`.
+  file outlives the service. One that an unclean stop (a power cut, a Windows
+  logoff) still leaves behind counts only while its pid is alive AND still the
+  launcher that wrote it: it started no later than the file's `startedAt` (a
+  minute of slack) and runs `hoai-core.mjs` as its script, so another agent's
+  hoai or tmux server that took the pid after a reboot does not count. The
+  record the agent's daemon writes for a declared launcher
+  (`BGOS_SUPERVISOR_KIND=launcher`) names the daemon itself and is proven by
+  its start time alone.
 - **One install at a time.** `install` first takes
   `~/.bgos-agent/<id>.install.lock`. A second install of the same agent while
   one is running (the agent's own daemon and the watcher can both decide it is

@@ -77,7 +77,7 @@ function launch(platform: 'linux' | 'win32', env: Record<string, string | undefi
     hasExpect: true,
     stdinIsTTY: false,
     listProcesses: () => [],
-    pidCommandLine: () => null,
+    pidProcess: () => null,
   } as never)
   return { spawns, done }
 }

@@ -85,8 +85,9 @@ import {
 } from './bgos-install-method.mjs'
 import {
   buildLaunchRecipe,
-  readLauncherCommandLines,
-  runsHoaiLauncher,
+  isSupervisorWriter,
+  parseSupervisorRecord,
+  readLauncherProcesses,
   writeLaunchRecipe,
 } from '../lib/agent-inventory.mjs'
 import {
@@ -249,17 +250,18 @@ export function defaultPidAlive(pid) {
 export const PID_COMMAND_LINE_TIMEOUT_MS = 10_000
 
 /**
- * The command line of `pid` on THIS host, or null when it cannot be read at
- * all (the pid is gone, the query failed or timed out, Windows hides another
- * session's process, `pid` is not a pid). The query is lib/agent-inventory.mjs
- * readLauncherCommandLines, the one the watcher's launcherLive uses, so hoai and
- * the watcher judge a supervisor.json pid the same way.
+ * The command line and start time of `pid` on THIS host ({command,
+ * startedAtMs}, either one null when it cannot be read), or null when nothing
+ * can be read at all (the pid is gone, the query failed or timed out, `pid` is
+ * not a pid). The query is lib/agent-inventory.mjs readLauncherProcesses, the
+ * one the watcher's launcherLive uses, so hoai and the watcher judge a
+ * supervisor.json pid the same way.
  * @param {number} pid
  * @param {string} [platform]
- * @param {{ spawn?: typeof spawnSync }} [opts]
- * @returns {string | null}
+ * @param {{ spawn?: typeof spawnSync, now?: number }} [opts]
+ * @returns {{ command: string | null, startedAtMs: number | null } | null}
  */
-export function defaultPidCommandLine(pid, platform = process.platform, opts = {}) {
+export function defaultPidProcess(pid, platform = process.platform, opts = {}) {
   const run = opts.spawn ?? spawnSync
   const execSync = (file, args) => {
     const res = run(file, args, {
@@ -271,7 +273,7 @@ export function defaultPidCommandLine(pid, platform = process.platform, opts = {
     // A timed-out spawnSync reports status null: unreadable.
     return { code: typeof res?.status === 'number' ? res.status : 1, stdout: String(res?.stdout ?? '') }
   }
-  return readLauncherCommandLines({ platform, pids: [pid], execSync }).get(pid) ?? null
+  return readLauncherProcesses({ platform, pids: [pid], execSync, now: opts.now ?? Date.now() }).get(pid) ?? null
 }
 
 /** Best-effort text read; null when absent or unreadable. */
@@ -1038,24 +1040,31 @@ export function decideMarkerRelaunch(relaunchesAt, now) {
  * Fails toward NOT double-launching a LIVE owner, but never wedges on junk:
  *   - absent/empty body                         -> arm (nothing owns it)
  *   - a valid authority (integer pid + 'relaunch' cap) whose pid is ALIVE, is
- *     not our own, and still runs hoai-core.mjs -> refuse, name the owner
- *   - our own pid, a dead pid, a live pid running something else, malformed
- *     json, or a body without the relaunch
- *     capability                                -> arm and reclaim (a crashed
+ *     not our own, and is still the launcher that
+ *     wrote the file (isSupervisorWriter)       -> refuse, name the owner
+ *   - our own pid, a dead pid, a live pid that is
+ *     not that writer, malformed json, or a body
+ *     without the relaunch capability           -> arm and reclaim (a crashed
  *                                                  prior run left a stale file)
  *
- * The command line is the pid identity. A launcher that dies without its
- * finally block (a power cut, a panic, a SIGKILL) leaves the file behind, and
- * after a reboot its pid can belong to any process: refusing behind ANY live
- * pid kept the agent down, lap after lap of exit 3, for as long as that
- * unrelated process ran. A command line that cannot be read (pidCommandLine
- * answers null, and the default does) keeps the liveness answer.
+ * The pid identity is the writer's, not just "a hoai": it started no later
+ * than the file's startedAt (plus a minute of slack) and runs hoai-core.mjs as
+ * its script. The record the agent's daemon writes for a declared marker
+ * launcher (BGOS_SUPERVISOR_KIND=launcher) names the daemon's own pid, a
+ * `bun server.ts`: its start alone proves it, and while it lives a bespoke
+ * launcher owns the agent (a second session here is G11). A launcher that dies without its finally block (a power cut, a
+ * panic, a SIGKILL, a Windows logoff) leaves the file behind, and after a
+ * reboot its pid can belong to any process, another agent's hoai or tmux
+ * server included: refusing behind it kept the agent down, lap after lap of
+ * exit 3, for as long as that process ran. What cannot be read (pidProcess
+ * answers null, and the default when no reader is given does) keeps the
+ * liveness answer.
  * @param {{ existingRaw: string | null | undefined, ownPid: number,
  *   pidAlive?: (pid: number) => boolean,
- *   pidCommandLine?: (pid: number) => string | null }} params
+ *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null }} params
  * @returns {{ arm: true, reclaimedStale?: true } | { arm: false, ownerPid: number }}
  */
-export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive, pidCommandLine = () => null }) {
+export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = defaultPidAlive, pidProcess = () => null }) {
   if (existingRaw == null || String(existingRaw).length === 0) return { arm: true }
   let parsed
   try {
@@ -1075,7 +1084,9 @@ export function decideSupervisorArming({ existingRaw, ownPid, pidAlive = default
     capabilities.includes('relaunch')
   if (!isAuthority) return { arm: true, reclaimedStale: true }
   if (pid === ownPid) return { arm: true, reclaimedStale: true }
-  if (pidAlive(pid) && runsHoaiLauncher(pidCommandLine(pid))) return { arm: false, ownerPid: pid }
+  if (pidAlive(pid) && isSupervisorWriter(parseSupervisorRecord(String(existingRaw)), pidProcess(pid))) {
+    return { arm: false, ownerPid: pid }
+  }
   return { arm: true, reclaimedStale: true }
 }
 
@@ -1505,7 +1516,7 @@ export function hostHasExpect({ platform, env = process.env, exists = existsSync
  *   removeFile?: (path: string) => boolean,
  *   pollMs?: number, now?: () => number, print?: (line: string) => void,
  *   pidAlive?: (pid: number) => boolean,
- *   pidCommandLine?: (pid: number) => string | null,
+ *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
  *   generateId?: () => string, hasExpect?: boolean,
  *   freshSession?: boolean,
  *   listProcesses?: () => Array<{ pid: number, uid?: number | null, comm: string, cwd: string | null }>,
@@ -1852,7 +1863,7 @@ export async function superviseClaude(args, opts = {}) {
   const now = opts.now ?? Date.now
   const print = opts.print ?? ((line) => console.log(line))
   const pidAlive = opts.pidAlive ?? defaultPidAlive
-  const pidCommandLine = opts.pidCommandLine ?? ((pid) => defaultPidCommandLine(pid, platform))
+  const pidProcess = opts.pidProcess ?? ((pid) => defaultPidProcess(pid, platform))
   const generateId = opts.generateId ?? randomUUID
   const hasExpect = opts.hasExpect ?? hostHasExpect({ platform, env, exists: opts.expectExists ?? existsSync })
   const freshSession = opts.freshSession === true
@@ -2063,7 +2074,7 @@ export async function superviseClaude(args, opts = {}) {
     existingRaw: readFile(supervisorPath),
     ownPid: process.pid,
     pidAlive,
-    pidCommandLine,
+    pidProcess,
   })
   if (!arming.arm) {
     noteStatus('already-supervised', { owner: arming.ownerPid })
@@ -2917,7 +2928,7 @@ function defaultScriptDir() {
  *   setTimer?: (fn: () => void, ms: number) => unknown,
  *   clearTimer?: (handle: unknown) => void,
  *   pidAlive?: (pid: number) => boolean,
- *   pidCommandLine?: (pid: number) => string | null,
+ *   pidProcess?: (pid: number) => { command: string | null, startedAtMs: number | null } | null,
  *   signals?: { once: (name: string, fn: () => void) => unknown, removeListener: (name: string, fn: () => void) => unknown },
  * }} [opts]
  * @returns {Promise<number>}
@@ -3100,7 +3111,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       print: opts.print,
       pollMs: opts.pollMs,
       pidAlive: opts.pidAlive,
-      pidCommandLine: opts.pidCommandLine,
+      pidProcess: opts.pidProcess,
       listProcesses: opts.listProcesses,
       sleep: opts.sleep,
       incumbentTimeoutMs: opts.incumbentTimeoutMs,
