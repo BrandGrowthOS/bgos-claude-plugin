@@ -890,6 +890,27 @@ test('F1: a daemon too old to publish its state still holds the pairing lock: it
   assert.equal(stale.calls.some((c) => c.file === 'lsof'), true, 'back to the cwd lookup')
 })
 
+test('F1 hardening: a LIVE pairing-lock daemon with no recognisable claude above it and none in its folder is UNKNOWN (waits), never stopped: nothing is reinstalled under it', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', generation: null, state: null }])
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4300, heartbeatAt: T0 - 3_000, bootedAt: T0 - 60 * MIN }))
+  // The daemon runs under something the watcher does not recognise as claude.
+  const ps = [psLine(1, 0, '/sbin/launchd', undefined, 0), psLine(4200, 1, '/opt/tools/agent-wrapper --session'), psLine(4300, 4200, `node ${OLD_ROOT}/server.ts`)].join('\n')
+  const rec = recorder({ ps, lsofCode: 1, lsof: '' })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => pid === 4300 || pid === 4200 }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'bash' || c.file === 'launchctl'), [], 'no reinstall, no restart under a live daemon')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
+  // The same table with a lock nobody stamps any more: no live daemon, really stopped.
+  fs.writeFile(`${HOME}/.bgos-agent/credentials-912.json.lock`, JSON.stringify({ pid: 4300, heartbeatAt: T0 - 10 * MIN }))
+  const stale = recorder({ ps, lsofCode: 1, lsof: '' })
+  const staleClock = fakeClock()
+  answerProbes(fs, staleClock, ['912'])
+  const stopped = await runKeepAliveSweep(ctxFor(fs, stale, staleClock, { pidAlive: (pid: number) => pid === 4300 || pid === 4200 }).ctx as any)
+  assert.deepEqual(stale.calls.filter((c) => c.file === 'bash').map((c) => c.args[1]), ['install'])
+  assert.deepEqual(stopped.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'reinstall']])
+})
+
 // -- F5: a systemd restart kills the unit's whole cgroup, so a job orphaned out of claude's tree counts --------
 
 const CGROUP = '/user.slice/user-501.slice/user@501.service/app.slice/bgos-agent-912.service'
