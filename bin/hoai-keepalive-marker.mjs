@@ -27,7 +27,11 @@
  *
  * What it writes, to ~/.bgos-agent/<id>/keepalive.json:
  *   {"kind":"keepalive","pid":<script pid>,"claudePid":<session pid>,
- *    "tmuxSession":<name|null>,"capabilities":["relaunch"],"startedAt":<iso>}
+ *    "tmuxSession":<name|null>,"capabilities":["relaunch"],"startedAt":<iso>,
+ *    "boot":{"id":<boot id>,"uptimeMs":<ms>}}
+ * `boot` (Linux only) is the boot clock read with startedAt: the watcher proves
+ * the script and its claude are the ones named on the clock ps measures etime
+ * with, which a wall clock step does not move (review 3 F1).
  *
  * The daemon (lib/update-readiness.ts resolveKeepalive) accepts it only while
  * the script pid is ALIVE and the session pid is one of its own ancestors, and
@@ -44,6 +48,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 
+import { readBootClock } from '../lib/agent-inventory.mjs'
 import { KEEPALIVE_MARKER_FILE_NAME, joinDir, keepaliveMarkerBody } from './hoai-core.mjs'
 
 /**
@@ -86,10 +91,11 @@ function validPid(value) {
  * argv in, the file to write and its body out. Anything missing or unusable is
  * 'usage', which writes NOTHING: a marker the daemon would reject is no better
  * than no marker, and a marker with a wrong pid is worse.
- * @param {{ argv: readonly string[], home: string, startedAt: string }} input
+ * @param {{ argv: readonly string[], home: string, startedAt: string,
+ *   boot?: { id: string, uptimeMs: number } | null }} input
  * @returns {{ action: 'write', path: string, body: string } | { action: 'usage' }}
  */
-export function decideKeepaliveMarkerWrite({ argv, home, startedAt }) {
+export function decideKeepaliveMarkerWrite({ argv, home, startedAt, boot = null }) {
   const flags = parseArgs(argv)
   const id = validId(flags.assistant)
   const pid = validPid(flags['keepalive-pid'])
@@ -102,7 +108,7 @@ export function decideKeepaliveMarkerWrite({ argv, home, startedAt }) {
   return {
     action: 'write',
     path: joinDir(joinDir(joinDir(home, '.bgos-agent'), id), KEEPALIVE_MARKER_FILE_NAME),
-    body: keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt }),
+    body: keepaliveMarkerBody({ pid, claudePid, tmuxSession, startedAt, boot }),
   }
 }
 
@@ -116,6 +122,7 @@ export function main(argv) {
     argv,
     home: homedir(),
     startedAt: new Date().toISOString(),
+    boot: readBootClock({ platform: process.platform }),
   })
   if (decision.action !== 'write') {
     process.stderr.write(USAGE)

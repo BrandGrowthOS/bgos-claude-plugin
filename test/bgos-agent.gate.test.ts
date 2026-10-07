@@ -1,25 +1,29 @@
 /**
- * The always-on supervisor's run.expect and run.sh, as bin/bgos-agent GENERATES
- * them, because that generated pair is what desktop one-click actually leaves
- * running under launchd or systemd.
+ * The always-on supervisor's startup gates, as the service RUNS them since
+ * supervisor generation 2 (design section 4).
  *
  * WHAT WAS MEASURED ON 2026-09-21 (Claude Code 2.1.278). The shipped run.expect,
  * run on a folder whose trust seed had missed, saw "confirm", pressed Enter on
  * "No, exit", and ended: exit code 0 after 2 seconds, no trust written, not one
  * line saying why. launchd restarted it forever, run.sh's WEDGED line guessed
- * "Likely auth", and the app told the owner to go and sign in. None of the
- * ergonomics fixes of that week touched this file; they all landed in the hoai
- * launcher, which one-click never runs.
+ * "Likely auth", and the app told the owner to go and sign in.
  *
- * These tests generate the real files with the real bash function and then RUN
- * run.expect against a simulator, so what is pinned is the behaviour under
- * launchd (exit code, launch-status line), not the look of the text. Where bash
- * or expect is missing they SKIP with the reason (expect never exists on Windows,
- * where run.expect never runs); CI turns a missing tool into a failure.
+ * Generation 1 fixed that inside a run.expect that bin/bgos-agent generated.
+ * Generation 2 removes run.expect: run.sh starts hoai with HOAI_SUPERVISED=1,
+ * and hoai builds the script from the SAME shared lib/gate-block.tcl with the
+ * supervised tail (bin/hoai-core.mjs buildGateAutoAcceptExpect). So the
+ * invariants these tests pinned against run.expect are pinned here against
+ * that script, run for real under expect against a simulator: the trust gate
+ * is ACCEPTED and the session HELD, a launch that lost the startup race is
+ * named and the next one (with run.sh's fail count) wins, and a screen nobody
+ * can answer, an exit during startup and a signed-out claude are each a named
+ * exit with the reason in launch-status. Where bash or expect is missing they
+ * SKIP with the reason (expect never exists on Windows); CI turns a missing
+ * tool into a failure.
  *
  * Run: npm test, or npx tsx --test test/bgos-agent.gate.test.ts
  */
-import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -27,51 +31,32 @@ import { fileURLToPath } from 'node:url'
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { assertBashParses, bashOrSkip, bashPath, resolvePosixBash } from './helpers/posix-bash.ts'
+import {
+  EXIT_SUPERVISED_GATE,
+  EXIT_SUPERVISED_SIGNED_OUT,
+  EXIT_SUPERVISED_STARTUP_EXIT,
+  buildGateAutoAcceptExpect,
+  readGateBlock,
+} from '../bin/hoai-core.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const agentPath = join(repoRoot, 'bin', 'bgos-agent')
-const agentSource = readFileSync(agentPath, 'utf8')
-const gateBlock = readFileSync(join(repoRoot, 'lib', 'gate-block.tcl'), 'utf8')
+const agentSource = readFileSync(join(repoRoot, 'bin', 'bgos-agent'), 'utf8')
 const expectBin = ['/usr/bin/expect', '/opt/homebrew/bin/expect', '/usr/local/bin/expect'].find((p) => existsSync(p))
-// Git for Windows' bash on Windows, never the WSL launcher (test/helpers/posix-bash.ts).
-const BASH = resolvePosixBash()
 const SLOW = { timeout: 90_000 }
 
-/**
- * The bash these tests run under, or null after skipping with the reason. A skip, never an
- * early return, which would report PASS: CI sets HOAI_REQUIRE_BASH=1, and HOAI_REQUIRE_EXPECT=1
- * where it installs expect, so a missing tool there is a failure.
- */
-function toolsOrSkip(t: TestContext, needExpect: boolean): string | null {
-  if (!BASH) {
-    assert.notEqual(process.env.HOAI_REQUIRE_EXPECT, '1', 'HOAI_REQUIRE_EXPECT=1 but bash is missing')
-    return bashOrSkip(t)
-  }
-  if (needExpect && !expectBin) {
-    assert.notEqual(process.env.HOAI_REQUIRE_EXPECT, '1', 'HOAI_REQUIRE_EXPECT=1 but expect is missing')
-    t.skip(
-      process.platform === 'win32'
-        ? 'expect does not exist on Windows, and run.expect never runs there (it is the launchd and systemd wrapper)'
-        : 'expect is not installed on this machine',
-    )
-    return null
-  }
-  return BASH
-}
-
-/** Cut one bash function (up to and including the line after its last heredoc terminator) out of the script. */
-function bashFunction(name: string, lastTerminator: string): string {
-  const lines = agentSource.split('\n')
-  const start = lines.findIndex((line) => line.startsWith(`${name}() {`))
-  assert.ok(start >= 0, `${name} not found`)
-  const end = lines.findIndex((line, i) => i > start && line === lastTerminator)
-  assert.ok(end > start, `${name}: heredoc terminator ${lastTerminator} not found`)
-  return lines.slice(start, end + 2).join('\n')
+function expectOrSkip(t: TestContext): boolean {
+  if (expectBin) return true
+  assert.notEqual(process.env.HOAI_REQUIRE_EXPECT, '1', 'HOAI_REQUIRE_EXPECT=1 but expect is missing')
+  t.skip(
+    process.platform === 'win32'
+      ? 'expect does not exist on Windows, where the supervisor is the logon task running hoai --keep-alive'
+      : 'expect is not installed on this machine',
+  )
+  return false
 }
 
 const SIMULATOR = `
-// SIMULATION, not Claude Code. Mode comes from HOAI_SIM_MODE because run.expect owns the argv.
+// SIMULATION, not Claude Code. Mode comes from HOAI_SIM_MODE because the script owns the argv.
 // It repaints the selection marker on every Down the way the real TUI does, and goes live only
 // if Enter lands on the wanted option; otherwise it leaves, as the real CLI does.
 const M = '\\u276f'
@@ -108,39 +93,31 @@ if (mode === 'signed-out') setTimeout(() => process.stdout.write(LIVE + '\\x1b[5
 setTimeout(() => process.exit(0), 14000)
 `
 
-function generate(failcount?: number): { dir: string; runExpect: string; runSh: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'hoai-agent-gate-'))
-  const state = join(dir, 'state')
-  mkdirSync(state)
-  if (failcount !== undefined) writeFileSync(join(state, 'failcount'), `${failcount}\n`)
-  // A two line sh wrapper, not a shebang: a shebang cannot carry a runtime path with a space in it.
-  const simJs = join(dir, 'sim.cjs')
+/** The supervised script hoai would spawn, with the simulator standing in for claude. */
+function generate(failcount?: number): { dir: string; script: string } {
+  const root = mkdtempSync(join(tmpdir(), 'hoai-agent-gate-'))
+  const dir = join(root, 'state')
+  mkdirSync(dir)
+  if (failcount !== undefined) writeFileSync(join(dir, 'failcount'), `${failcount}\n`)
+  const simJs = join(root, 'sim.cjs')
   writeFileSync(simJs, SIMULATOR)
-  const sim = join(dir, 'fake-claude')
+  // A two line sh wrapper, not a shebang: a shebang cannot carry a runtime path with a space in it.
+  const sim = join(root, 'fake-claude')
   writeFileSync(sim, `#!/bin/sh\nexec "${process.execPath}" "${simJs}" "$@"\n`)
   chmodSync(sim, 0o755)
-  // Paths in bash form, and the generator run from a FILE rather than `bash -c <script>`: a
-  // multi-line script with nested quotes does not survive the Windows command line intact.
-  const [root, st, simPath] = [bashPath(repoRoot), bashPath(state), bashPath(sim)]
-  const script = [
-    'set -euo pipefail',
-    'die() { echo "DIE: $*" >&2; exit 1; }',
-    `PLUGIN_DIR='${root}'`,
-    bashFunction('write_run_expect', 'EXP_TAIL'),
-    bashFunction('write_run_sh', 'SH'),
-    `write_run_expect '${st}/run.expect' '${st}' '${simPath}' 'plugin:hoai@hoai' ''`,
-    `write_run_sh '${st}/run.sh' '${st}' '${st}/run.expect' '${expectBin ?? 'expect'}'`,
-  ].join('\n')
-  const genFile = join(dir, 'generate.sh')
-  writeFileSync(genFile, script)
-  const gen = spawnSync(BASH!, [bashPath(genFile)], { encoding: 'utf8', windowsHide: true })
-  assert.equal(gen.status, 0, gen.stderr)
-  return { dir: state, runExpect: readFileSync(join(state, 'run.expect'), 'utf8'), runSh: readFileSync(join(state, 'run.sh'), 'utf8') }
+  const script = buildGateAutoAcceptExpect({
+    claudePath: sim,
+    args: ['--dangerously-skip-permissions', '--dangerously-load-development-channels', 'plugin:hoai@hoai'],
+    // A launchd job with no tmux: no terminal, so the live session is held with expect eof.
+    supervised: { stateDir: dir, interactive: false, compact: 'compact=off reason=no-tmux' },
+  })
+  writeFileSync(join(dir, 'supervised.exp'), script)
+  return { dir, script }
 }
 
 function runExpect(state: string, mode: string): Promise<{ status: number | null; launchStatus: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(expectBin!, ['-f', join(state, 'run.expect')], {
+    const child = spawn(expectBin!, ['-f', join(state, 'supervised.exp')], {
       stdio: 'ignore',
       env: { ...process.env, HOAI_SIM_MODE: mode },
     })
@@ -152,99 +129,29 @@ function runExpect(state: string, mode: string): Promise<{ status: number | null
   })
 }
 
-test('bin/bgos-agent: the script carries no key press of its own, it copies the shared gate block', () => {
-  // No Tcl `send` anywhere in the bash source: the only sends that reach
-  // run.expect arrive inside lib/gate-block.tcl.
+test('bin/bgos-agent carries no gate rules and no key press of its own: the supervisor runs hoai, which owns the shared block', () => {
   const code = agentSource
     .split('\n')
     .filter((line) => !/^\s*#/.test(line))
     .join('\n')
-  assert.doesNotMatch(code, /\bsend (--|")/, 'a send in bin/bgos-agent is a second hand-kept copy of the gate rules')
-  assert.match(code, /cat "\$gate_block" >> "\$1"/)
-  assert.match(code, /\[ -f "\$gate_block" \] \|\| die /, 'a missing block must stop the install, never produce a wrapper with no gate handling')
+  // A send, a spawn or a copy of the block in the bash source would be a second hand-kept
+  // copy of the gate rules, which is how the 2026-09-21 fix once reached one launcher and
+  // not the other.
+  assert.doesNotMatch(code, /\bsend (--|")/)
+  assert.doesNotMatch(code, /gate-block\.tcl/)
+  assert.doesNotMatch(code, /^\s*spawn /m)
+  assert.doesNotMatch(code, /run\.expect"\s*\|\|/, 'run.expect is not the launch path any more')
+  assert.match(code, /"\$root\/bin\/hoai-core\.mjs"/, 'run.sh starts hoai from the resolved plugin root')
+  // And hoai's supervised script embeds that block verbatim.
+  assert.ok(generateText().includes(readGateBlock()))
 })
 
-test('generated run.expect: spawn line, then the shared block VERBATIM, then the supervisor tail', (t) => {
-  if (!toolsOrSkip(t, false)) return
-  const { runExpect: text } = generate()
-  assert.match(text, /spawn ".*fake-claude" --dangerously-skip-permissions --dangerously-load-development-channels "plugin:hoai@hoai"/)
-  assert.ok(text.includes(gateBlock), 'the block must be copied byte for byte, not re-typed')
-  // The extra settle is derived from run.sh's own fail count, and it is set BEFORE the block reads it.
-  const pre = text.slice(0, text.indexOf(gateBlock))
-  assert.match(pre, /set hoai_extra_settle 0/)
-  assert.match(pre, /open "\$hoai_statedir\/failcount"/)
-  assert.match(pre, /\$hoai_fails >= 5 \? 10 : 2 \* \$hoai_fails/)
-  const tail = text.slice(text.indexOf(gateBlock) + gateBlock.length)
-  // The tail presses nothing either.
-  assert.doesNotMatch(tail, /\bsend\b/)
-  assert.match(tail, /launch-status/)
-  assert.match(tail, /string match "gate-\*" \$hoai_outcome\]\} \{ catch \{close\}; exit 3 \}/)
-  assert.match(tail, /"exited-during-startup"\} \{ exit 4 \}/)
-  assert.match(tail, /"live-but-not-signed-in"\} \{ catch \{close\}; exit 5 \}/)
-  assert.ok(tail.trimEnd().endsWith('expect eof'), 'a live agent is held until claude exits, with no interact (launchd has no terminal)')
-  // The heredoc is quoted, so bash must not have eaten the Tcl variables.
-  assert.match(tail, /\$hoai_outcome/)
-  assert.match(tail, /set hoai_statedir|\$hoai_statedir/)
-})
+function generateText(): string {
+  return buildGateAutoAcceptExpect({ claudePath: 'claude', args: [], supervised: { stateDir: '/s', interactive: false, compact: 'compact=on' } })
+}
 
-test('generated run.sh: WEDGED reports what run.expect measured instead of guessing, and the incumbent wait is visible', (t) => {
-  const bash = toolsOrSkip(t, false)
-  if (!bash) return
-  const { runSh } = generate()
-  assert.doesNotMatch(runSh, /Likely auth/, 'the old text blamed sign-in for a declined startup gate')
-  assert.match(runSh, /Last launch: \$\(cat "\$sd\/launch-status"/)
-  assert.match(runSh, /rc=0\n"\$expect_bin" "\$expectfile" \|\| rc=\$\?/)
-  assert.match(runSh, /outcome=waiting-for-incumbent pids=/)
-  // Cleared before every launch, so a launch that dies before run.expect writes its line is
-  // never reported with the PREVIOUS launch's reason.
-  assert.ok(runSh.indexOf('outcome=starting') > 0 && runSh.indexOf('outcome=starting') < runSh.indexOf('"$expect_bin" "$expectfile"'))
-  // PARSE A FILE, NOT /dev/stdin. On CI this returned 126, which is bash
-  // saying it could not EXECUTE or open the path; a real syntax error is 2.
-  // So the check was reporting the plumbing, not the script, and it had never
-  // parsed anything there. Same check, a path bash can actually open.
-  // assertBashParses first proves this bash can parse a file at this path at all (a broken
-  // control must fail with 2), which covers the 126 and the 127 alike.
-  const parseFile = join(mkdtempSync(join(tmpdir(), 'hoai-parse-')), 'run.sh')
-  writeFileSync(parseFile, runSh)
-  assertBashParses(bash, parseFile)
-  // and the installer that GENERATES it, under whatever bash this machine has (3.2 on macOS, 5.x on CI)
-  assertBashParses(bash, agentPath)
-})
-
-test('behaviour: the generated run.sh really RUNS under the bash of this machine, keeps the exit code, counts the failure and names it', SLOW, async (t) => {
-  const bash = toolsOrSkip(t, false)
-  if (!bash) return
-  // Parsing is not running. run.sh is what launchd and systemd execute on the
-  // OWNER'S machine, with the owner's bash (3.2 on macOS, 5.x on Linux), so it
-  // is executed here for real against a stand-in for expect that fails fast,
-  // the way a declined gate does. Three laps take the fail count to the WEDGED
-  // branch; the 60 s sleep there is the only thing stubbed out.
-  const { dir } = generate()
-  const stub = join(dir, 'fake-expect')
-  writeFileSync(stub, `#!/bin/sh\necho "2026-09-22 00:00:00 outcome=gate-unrecognised answered=[] screen=\\"shiny new telemetry\\"" > "${bashPath(dir)}/launch-status"\nexit 3\n`)
-  chmodSync(stub, 0o755)
-  const runShPath = join(dir, 'run.sh')
-  writeFileSync(
-    runShPath,
-    readFileSync(runShPath, 'utf8')
-      .replace(/^expect_bin=.*$/m, `expect_bin="${bashPath(stub)}"`)
-      .replace(/^  sleep 60$/m, '  : # the 60 s back-off, skipped in the test'),
-  )
-  const workdir = mkdtempSync(join(tmpdir(), 'hoai-agent-cwd-'))
-  for (let lap = 1; lap <= 3; lap++) {
-    const run: SpawnSyncReturns<string> = spawnSync(bash, [bashPath(runShPath)], { cwd: workdir, encoding: 'utf8', timeout: 60_000, windowsHide: true })
-    assert.equal(run.status, 0, `lap ${lap}: run.sh itself must not die (${run.stderr})`)
-    assert.equal(readFileSync(join(dir, 'failcount'), 'utf8').trim(), String(lap))
-  }
-  const log = readFileSync(join(dir, 'agent.log'), 'utf8')
-  assert.match(log, /starting agent \(consecutive fast-fails: 2\)/)
-  assert.match(log, /WEDGED: agent exited after \d+s \(expect exit 3\), 3 times in a row\./, 'the exit code survives `|| rc=$?`')
-  assert.match(log, /Last launch: .*outcome=gate-unrecognised .*shiny new telemetry/, 'the MEASURED reason, not a guess')
-  assert.doesNotMatch(log, /syntax error|command not found|unbound variable|bad substitution/)
-})
-
-test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the shipped wrapper exited 0 in 2 s here)', SLOW, async (t) => {
-  if (!toolsOrSkip(t, true)) return
+test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent stays up (the generation 1 wrapper once exited 0 in 2 s here)', SLOW, async (t) => {
+  if (!expectOrSkip(t)) return
   const { dir } = generate()
   const started = Date.now()
   const run = await runExpect(dir, 'trust')
@@ -253,42 +160,41 @@ test('behaviour: the trust gate with "No, exit" first is ACCEPTED and the agent 
   // means the gate was answered correctly and the session was HELD.
   assert.equal(run.status, 0)
   assert.ok(Date.now() - started > 10_000, 'the supervisor must hold a live session, not return in seconds')
-  assert.match(run.launchStatus, /outcome=live answered=\[trust\]/)
+  assert.match(run.launchStatus, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} outcome=live answered=\[trust\] compact=off reason=no-tmux$/)
 })
 
-test('behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (the fail count drives it)', SLOW, async (t) => {
-  if (!toolsOrSkip(t, true)) return
+test('behaviour: a launch that LOSES the startup race is named, and the next one waits longer and wins (run.sh\'s fail count drives it)', SLOW, async (t) => {
+  if (!expectOrSkip(t)) return
   // MEASURED on a signed-in config, 2026-09-22: a Down sent before claude has
   // finished initialising is painted ("Yes" lights up) and not honoured, so the
   // Enter that follows declines and claude exits. The simulator's slow-init mode
   // is deaf for 2.5 s. With no counted failure the block's quiet second is not
-  // enough, and the launch ends as a NAMED exit 4, which run.sh counts. With one
-  // counted failure the same wrapper waits 2 s longer and gets through. Nothing
-  // about the machine changed between the two: only the number run.sh wrote.
+  // enough, and the launch ends as a NAMED exit, which run.sh counts. With one
+  // counted failure the same script waits 2 s longer and gets through.
   const first = generate(0)
   const second = generate(1)
   const [lost, won] = await Promise.all([runExpect(first.dir, 'slow-init'), runExpect(second.dir, 'slow-init')])
-  assert.equal(lost.status, 4)
+  assert.equal(lost.status, EXIT_SUPERVISED_STARTUP_EXIT)
   assert.match(lost.launchStatus, /outcome=exited-during-startup answered=\[trust\]/, 'the reason names the gate it answered before claude left')
   assert.equal(won.status, 0)
   assert.match(won.launchStatus, /outcome=live answered=\[trust\]/)
 })
 
-test('behaviour: a screen nobody can answer is a failed launch with a reason, exit 3, never a process that looks healthy', SLOW, async (t) => {
-  if (!toolsOrSkip(t, true)) return
+test('behaviour: a screen nobody can answer is a failed launch with a reason, never a process that looks healthy', SLOW, async (t) => {
+  if (!expectOrSkip(t)) return
   const { dir } = generate()
   const run = await runExpect(dir, 'unknown')
-  assert.equal(run.status, 3)
-  assert.match(run.launchStatus, /outcome=gate-unrecognised answered=\[\] screen=".*shiny new telemetry/)
+  assert.equal(run.status, EXIT_SUPERVISED_GATE)
+  assert.match(run.launchStatus, /outcome=gate-unrecognised answered=\[\] screen=".*shiny new telemetry.*" compact=off reason=no-tmux/)
 })
 
-test('behaviour: claude exiting during startup is exit 4, and a signed-out claude is exit 5, each with its reason on disk', SLOW, async (t) => {
-  if (!toolsOrSkip(t, true)) return
+test('behaviour: claude exiting during startup, and a signed-out claude, are each a named exit with the reason on disk', SLOW, async (t) => {
+  if (!expectOrSkip(t)) return
   const a = generate()
   const b = generate()
   const [died, signedOut] = await Promise.all([runExpect(a.dir, 'dies'), runExpect(b.dir, 'signed-out')])
-  assert.equal(died.status, 4)
+  assert.equal(died.status, EXIT_SUPERVISED_STARTUP_EXIT)
   assert.match(died.launchStatus, /outcome=exited-during-startup/)
-  assert.equal(signedOut.status, 5)
+  assert.equal(signedOut.status, EXIT_SUPERVISED_SIGNED_OUT)
   assert.match(signedOut.launchStatus, /outcome=live-but-not-signed-in/)
 })

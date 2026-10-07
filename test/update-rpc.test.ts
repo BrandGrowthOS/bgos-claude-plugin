@@ -50,6 +50,12 @@ interface HarnessOverrides {
   installMethod?: 'marketplace' | 'clone'
   autoUpdateEnabled?: boolean
   updater?: UpdateRpcDeps['updater']
+  /** The daemon's shared pending answer (server.ts daemonPendingRestartVersion).
+   *  The default is the updater's own answer, which is what that composition
+   *  returns when the updater has one, so every older test keeps its meaning. */
+  pendingRestartVersion?: () => string | null
+  /** Does another daemon hold the shared checkout's update lock right now? */
+  updateLockHeld?: () => boolean
   marketplaceUpdate?: UpdateRpcDeps['marketplaceUpdate']
   drainSnapshot?: () => Snapshot
   authority?: RestartAuthority
@@ -175,6 +181,10 @@ function harness(overrides: HarnessOverrides = {}) {
     installMethod: () => overrides.installMethod ?? 'clone',
     autoUpdateEnabled: () => overrides.autoUpdateEnabled ?? true,
     updater: overrides.updater ?? (() => fakeUpdater()),
+    pendingRestartVersion:
+      overrides.pendingRestartVersion ??
+      (() => ((overrides.updater ?? (() => fakeUpdater()))() as { pendingRestartVersion?: () => string | null } | null)?.pendingRestartVersion?.() ?? null),
+    updateLockHeld: overrides.updateLockHeld ?? (() => false),
     marketplaceUpdate: overrides.marketplaceUpdate ?? fakeMarketplace().fn,
     drainSnapshot: overrides.drainSnapshot ?? (() => IDLE),
     // Default authority differs by install method on purpose: a CLONE update
@@ -383,6 +393,74 @@ describe('UpdateRpcHandler restart ladder', () => {
     expect(h.progress).toEqual([{ stage: 'restarting', targetVersion: '0.39.0' }])
     expect(h.markers).toEqual(['/state/871/restart-requested.json'])
     expect(h.heartbeats()).toBe(0)
+  })
+})
+
+// E5b (end to end run, 2026-10-07). E5 made the daemon's pendingRestartVersion
+// (lib/pending-restart.ts, server.ts daemonPendingRestartVersion) answer for a
+// clone moved by git pull: the self updater has nothing, the checkout's
+// package.json is ahead of the running version. The heartbeat then said
+// restart_pending, but the one-click path still asked the self updater alone:
+// nothing pending there, so it pulled, origin/main was already the checkout,
+// and the click answered no_update_available while the app went on showing the
+// update as waiting for a restart. The click now asks the same composition and
+// restarts onto that version through the ladder.
+describe('E5b: the one-click pending answer is the heartbeat\'s', () => {
+  // What the self updater answers once git pull has already moved the checkout
+  // to origin/main: nothing newer to pull.
+  const PULLED: UpdateNowOutcome = { kind: 'no-update', latestVersion: '0.62.0', reason: 'not-newer' }
+  test('a clone moved by git pull (the self updater has nothing, the checkout is ahead) restarts onto it through the ladder, never no_update_available', async () => {
+    const updater = fakeUpdater({ pending: null, outcome: PULLED })
+    const h = harness({ updater: () => updater, pendingRestartVersion: () => '0.62.0' })
+    await h.handler.handle(FRAME)
+    expect(updater.updateNowCalls).toBe(0)
+    expect(h.progress).toEqual([{ stage: 'restarting', targetVersion: '0.62.0' }])
+    expect(h.markers).toEqual(['/state/871/restart-requested.json'])
+    expect(h.timers.map((t) => t.ms)).toEqual([RESTART_WATCHDOG_MS])
+  })
+
+  test('the same answer through every rung: a keepalive is signalled, an owning service restarted, no authority refused before anything moves', async () => {
+    const KEEPALIVE: RestartAuthority = { kind: 'keepalive', keepalivePid: 97998, sessionPid: 52030, tmuxSession: 'agent-930' }
+    const kept = harness({ authority: KEEPALIVE, updater: () => fakeUpdater({ outcome: PULLED }), pendingRestartVersion: () => '0.62.0' })
+    await kept.handler.handle(FRAME)
+    expect(kept.signals).toEqual([{ pid: 52030, signal: 'SIGTERM' }])
+    expect(kept.progress).toEqual([{ stage: 'restarting', targetVersion: '0.62.0' }])
+    const service: RestartAuthority = { kind: 'service', service: LAUNCHD_JOB, command: { file: '/bin/sh', args: ['-c', 'x'] } }
+    const kicked = harness({ authority: service, updater: () => fakeUpdater({ outcome: PULLED }), pendingRestartVersion: () => '0.62.0' })
+    await kicked.handler.handle(FRAME)
+    expect(kicked.spawned).toEqual([{ file: '/bin/sh', args: ['-c', 'x'] }])
+    expect(kicked.progress).toEqual([{ stage: 'restarting', targetVersion: '0.62.0' }])
+    // The pre-flights still come first: nothing that could restart us, nothing done.
+    const refused = harness({ authority: { kind: 'staged' }, updater: () => fakeUpdater({ outcome: PULLED }), pendingRestartVersion: () => '0.62.0' })
+    await refused.handler.handle(FRAME)
+    expect(refused.progress).toEqual([{ stage: 'error', message: 'no_restart_authority' }])
+    expect(refused.markers).toEqual([])
+  })
+
+  test('a pending version while ANOTHER daemon holds the shared checkout\'s update lock is refused update_in_flight: never a restart onto a node_modules still being rewritten', async () => {
+    // Found by the third review round's verifier: two agents share one clone; A's nightly update holds
+    // the lock while bun install rewrites node_modules (up to 120 s); B's heartbeat already says
+    // restart_pending from the checkout's package.json, and a click on B went straight to the ladder.
+    const updater = fakeUpdater({ pending: null, outcome: PULLED })
+    const held = harness({ updater: () => updater, pendingRestartVersion: () => '0.62.0', updateLockHeld: () => true })
+    await held.handler.handle(FRAME)
+    expect(held.progress).toEqual([{ stage: 'error', message: 'update_in_flight' }])
+    expect(held.markers).toEqual([])
+    expect(held.signals).toEqual([])
+    expect(held.spawned).toEqual([])
+    expect(updater.updateNowCalls).toBe(0)
+    // Once the lock is free the same click restarts onto it.
+    const free = harness({ updater: () => fakeUpdater({ pending: null, outcome: PULLED }), pendingRestartVersion: () => '0.62.0', updateLockHeld: () => false })
+    await free.handler.handle(FRAME)
+    expect(free.progress).toEqual([{ stage: 'restarting', targetVersion: '0.62.0' }])
+  })
+
+  test('nothing pending anywhere still pulls, exactly as before', async () => {
+    const pulls = fakeUpdater({ pending: null })
+    const h = harness({ updater: () => pulls, pendingRestartVersion: () => null })
+    await h.handler.handle(FRAME)
+    expect(pulls.updateNowCalls).toBe(1)
+    expect(h.progress.at(-1)).toEqual({ stage: 'restarting', targetVersion: '0.39.0' })
   })
 })
 

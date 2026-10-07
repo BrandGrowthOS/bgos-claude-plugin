@@ -727,8 +727,10 @@ test('superviseClaude: refuses to double-launch when a live supervisor already o
     pollMs: 5,
     now: () => 1_000,
     pidAlive: (pid: number) => pid === 4242,
+    // and it still runs hoai (the pid identity check; test/hoai-core.identity.test.ts)
+    pidProcess: (pid: number) => (pid === 4242 ? { command: '/usr/bin/node /home/kc/bgos-claude-plugin/bin/hoai-core.mjs', startedAtMs: null } : null),
     print: (line: string) => prints.push(line),
-  })
+  } as never)
   assert.equal(code, EXIT_ALREADY_SUPERVISED)
   // No second claude session was started.
   assert.equal(spawns.length, 0)

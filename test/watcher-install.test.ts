@@ -9,13 +9,25 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
+  BUNDLE_INCOMPLETE_CODE as BUNDLE_INCOMPLETE_CODE_IN_BUNDLE,
+  WATCHER_BUNDLE_FILES,
+  WatcherBundleIncompleteError,
+  installWatcherBundle,
+  nodeFs,
+  watcherHome,
+} from '../lib/watcher-bundle.mjs'
+import {
+  BUNDLE_INCOMPLETE_CODE,
   WATCHER_INSTALL_OP,
   WATCHER_INSTALL_STEP_IDS,
   WATCHER_PROGRESS_MESSAGE_MAX_CHARS,
   WatcherInstallRpcHandler,
+  bundleFailureMessage,
   clipWatcherMessage,
   normalizeWatcherInstallRpc,
   resolveNodePath,
@@ -313,6 +325,62 @@ test('bundle failure: failed at bundle, credentials never written', async () => 
   await missingDir.handler.handle(FRAME)
   assert.equal(missingDir.progress[missingDir.progress.length - 1]!.message, 'bundle_dir_missing')
   assert.equal(missingDir.credentials.length, 0)
+})
+
+// e2e E4: the bundle step is where an incomplete bundle stops. An older installer copying a newer
+// root shipped bundles that could not load; the completeness check (lib/watcher-bundle.mjs) now
+// throws a named error and this step fails BY NAME, so the service step never starts that bundle.
+test('an incomplete bundle fails the bundle step by name (bundle_incomplete); credentials, spec and service are never reached', async () => {
+  assert.equal(BUNDLE_INCOMPLETE_CODE, BUNDLE_INCOMPLETE_CODE_IN_BUNDLE, 'the daemon matches the code the bundle module throws')
+  const h = harness({
+    bundle: async () => {
+      throw new WatcherBundleIncompleteError({ missing: [{ file: 'lib/new-thing.mjs', importedBy: 'lib/watcher-core.mjs' }], where: '/Users/x/.bgos-agent/watcher' })
+    },
+  })
+  await h.handler.handle(FRAME)
+  const last = h.progress[h.progress.length - 1]!
+  assert.equal(last.state, 'failed')
+  assert.deepEqual(stepStates(last), [
+    ['enroll', 'ok'],
+    ['bundle', 'failed'],
+    ['credentials', 'skipped'],
+    ['service', 'skipped'],
+    ['start', 'skipped'],
+  ])
+  assert.deepEqual(last.failedStep, { id: 'bundle', kind: 'watcher_bundle', message: 'bundle_incomplete: lib/new-thing.mjs (imported by lib/watcher-core.mjs)' })
+  assert.equal(JSON.stringify(last).includes('/Users/x'), false, 'bundle relative names only on the wire')
+  assert.equal(h.credentials.length, 0)
+  assert.equal(h.specs.length, 0)
+  assert.equal(h.installs.length, 0)
+  assert.equal(bundleFailureMessage(new Error('EACCES')), 'bundle_failed: EACCES')
+})
+
+test('with the REAL installWatcherBundle: a root whose code imports a file it does not ship fails at bundle by name and leaves no bundle', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hoai-watcher-install-'))
+  try {
+    const fs = nodeFs()
+    const root = join(dir, 'plugin')
+    const home = join(dir, 'home')
+    for (const rel of WATCHER_BUNDLE_FILES) fs.writeFile(join(root, rel), `// ${rel}\n`)
+    fs.writeFile(join(root, 'package.json'), '{"version":"0.62.1"}')
+    fs.writeFile(join(root, 'bin', 'hoai-watcher.mjs'), "export const go = () => import('../lib/watcher-core.mjs')\n")
+    fs.writeFile(join(root, 'lib', 'watcher-core.mjs'), "import { thing } from './new-thing.mjs'\nexport { thing }\n")
+    const h = harness({ bundle: async (args) => installWatcherBundle({ pluginRoot: root, home, pluginVersion: String(args.pluginVersion ?? '') || null, fs }) })
+    await h.handler.handle(FRAME)
+    const last = h.progress[h.progress.length - 1]!
+    assert.equal((last.failedStep as { id: string }).id, 'bundle')
+    assert.equal(last.message, 'bundle_incomplete: lib/new-thing.mjs (imported by lib/watcher-core.mjs)')
+    assert.equal(h.installs.length, 0, 'the service step never ran')
+    assert.equal(existsSync(join(watcherHome(home), 'manifest.json')), false)
+    // The control: once the root ships the file, the same install goes all the way.
+    fs.writeFile(join(root, 'lib', 'new-thing.mjs'), 'export const thing = 1\n')
+    const ok = harness({ bundle: async (args) => installWatcherBundle({ pluginRoot: root, home, pluginVersion: String(args.pluginVersion ?? '') || null, fs }) })
+    await ok.handler.handle({ rpcId: 'rpc-w2', op: 'install_watcher' })
+    assert.equal(ok.progress[ok.progress.length - 1]!.state, 'done')
+    assert.equal(existsSync(join(watcherHome(home), 'lib', 'new-thing.mjs')), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('service install failure: failed at service and the credentials file is REMOVED', async () => {

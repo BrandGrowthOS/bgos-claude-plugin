@@ -1,6 +1,9 @@
-# hoai startup gate block. ONE copy, two consumers: bin/hoai-core.mjs embeds it in
-# the launcher's expect script, bin/bgos-agent copies it into the supervisor's
-# run.expect at install time. It runs right after `spawn claude ...` and leaves:
+# hoai startup gate block. ONE copy, read from the plugin root at every launch:
+# bin/hoai-core.mjs embeds it in the expect script it spawns claude under, for a
+# person at a terminal and for the always-on supervisor alike (bin/bgos-agent's
+# run.sh starts hoai with HOAI_SUPERVISED=1; nothing is copied at install, and the
+# generation 1 run.expect that carried a copy is gone). It runs right after
+# `spawn claude ...` and leaves:
 #
 #   hoai_outcome   live | live-but-not-signed-in | no-live-marker |
 #                  gate-unrecognised | gate-unreadable:<gate> | gate-repeated:<gate> |
@@ -49,9 +52,9 @@
 # trusting a fixed delay under launchd at login:
 #   1. it waits until the screen has been QUIET for a full second before the
 #      first key, so a slow start pushes the key later by itself;
-#   2. the supervisor adds hoai_extra_settle seconds, which run.expect derives
-#      from run.sh's own fail count, so a launch that lost the race is followed by
-#      one that waits longer (2 s, 4 s, ... 10 s);
+#   2. the supervisor adds hoai_extra_settle seconds, which hoai's supervised
+#      expect script derives from run.sh's own fail count, so a launch that lost
+#      the race is followed by one that waits longer (2 s, 4 s, ... 10 s);
 #   3. after every Down it reads the repaint, sends Down again if the marker is
 #      not on the wanted option, and presses Enter only once it has sat there
 #      for a quiet second.

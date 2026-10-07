@@ -815,6 +815,19 @@ export interface HeldUpdateLock {
 
 export type UpdateLockResult = HeldUpdateLock | { kind: 'held' }
 
+/**
+ * Is the shared checkout's update lock held by a live update right now? The same freshness rule
+ * tryAcquireUpdateLock applies (a lock older than UPDATE_LOCK_STALE_MS is stale and free). Read only,
+ * never throws: a lock that cannot be read is not held, which is today's behaviour for every caller.
+ */
+export function isUpdateLockHeld(lockPath: string, now = Date.now()): boolean {
+  try {
+    return now - statSync(lockPath).mtimeMs <= UPDATE_LOCK_STALE_MS
+  } catch {
+    return false
+  }
+}
+
 export function tryAcquireUpdateLock(
   lockPath: string,
   now = Date.now(),

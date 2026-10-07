@@ -315,10 +315,21 @@ export function createDedupe(limit: number = DEDUPE_LIMIT): Dedupe {
 
 // ── Admission ────────────────────────────────────────────────────────────────
 
-/** Path containment, separator agnostic, with no fs access. */
-export function isUnderDir(child: string, dir: string): boolean {
-  const c = normalizePath(child)
-  const d = normalizePath(dir)
+/**
+ * Path containment, separator agnostic, with no fs access.
+ *
+ * Both sides are compared in their resolved spelling (comparablePath): the
+ * CLI writes transcript_path from CLAUDE_CONFIG_DIR as the user spelled it, so
+ * `~/./.claude-work/` or a doubled separator is the same directory, and a raw
+ * string compare refused the agent's OWN events as foreign-project (verifier
+ * item b). `..` is resolved too, so it is never a way out of the dir. `base`
+ * is the folder the CLI runs in; a relative path on either side resolves
+ * against it, and without one a relative path matches only another relative
+ * path, never a guess.
+ */
+export function isUnderDir(child: string, dir: string, base?: string | null): boolean {
+  const c = comparablePath(child, base)
+  const d = comparablePath(dir, base)
   if (!c || !d) return false
   if (process.platform === 'win32') {
     return c.toLowerCase() === d.toLowerCase() || c.toLowerCase().startsWith(`${d.toLowerCase()}/`)
@@ -332,24 +343,66 @@ function normalizePath(value: string): string {
     .replace(/\/+$/, '')
 }
 
+function isAbsoluteSpelling(path: string): boolean {
+  return path.startsWith('/') || /^[A-Za-z]:(\/|$)/.test(path)
+}
+
+/**
+ * One spelling per path, by string work alone: forward slashes, `.` and empty
+ * segments dropped, `..` applied, and a relative path made absolute against
+ * `base` when one is given. A symlink is not followed, and neither does the
+ * CLI follow one when it names its transcript.
+ */
+export function comparablePath(value: string, base?: string | null): string {
+  const raw = String(value ?? '').trim()
+  let path = raw.replace(/\\/g, '/')
+  if (!path) return ''
+  let windowsShaped = process.platform === 'win32' || raw.startsWith('\\\\')
+  if (!isAbsoluteSpelling(path)) {
+    const root = base ? comparablePath(base) : ''
+    if (root && isAbsoluteSpelling(root)) {
+      path = `${root}/${path}`
+      windowsShaped ||= String(base ?? '').trim().startsWith('\\\\')
+    }
+  }
+  // A leading `//` is a UNC share on Windows and plain `/` everywhere else.
+  const unc = path.startsWith('//') && windowsShaped
+  const drive = /^[A-Za-z]:/.exec(path)?.[0] ?? ''
+  const rest = path.slice(drive.length)
+  const lead = unc ? '//' : drive ? `${drive}/` : rest.startsWith('/') ? '/' : ''
+  const absolute = lead !== ''
+  const out: string[] = []
+  for (const segment of rest.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (out.length > 0 && out[out.length - 1] !== '..') out.pop()
+      else if (!absolute) out.push('..')
+      continue
+    }
+    out.push(segment)
+  }
+  return `${lead}${out.join('/')}`
+}
+
 /**
  * Is this the transcript the binding chain proved?
  *
  * The chain names a file, sometimes as a full path and sometimes as the bare
  * <session-id>.jsonl basename, so the basenames are compared when either side
- * is bare. Case insensitive on Windows, where the two spellings of one path
- * differ freely.
+ * is bare. Otherwise both are compared in their resolved spelling, against
+ * `base` when one is relative (isUnderDir). Case insensitive on Windows, where
+ * the two spellings of one path differ freely.
  */
-export function isSameTranscript(a: string, b: string): boolean {
+export function isSameTranscript(a: string, b: string, base?: string | null): boolean {
   const left = normalizePath(a)
   const right = normalizePath(b)
   if (!left || !right) return false
   const same = (x: string, y: string): boolean =>
     process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y
   if (same(left, right)) return true
-  const base = (p: string): string => p.split('/').pop() ?? p
-  if (!left.includes('/') || !right.includes('/')) return same(base(left), base(right))
-  return false
+  const baseName = (p: string): string => p.split('/').pop() ?? p
+  if (!left.includes('/') || !right.includes('/')) return same(baseName(left), baseName(right))
+  return same(comparablePath(left, base), comparablePath(right, base))
 }
 
 export type AdmissionProof = 'delivered-prompt' | 'binding-chain' | 'session-start'
@@ -384,6 +437,8 @@ export function decideSessionAdmission(input: {
   projectDir: string
   /** The transcript lib/session-binding.ts has already proven is ours. */
   provenTranscript?: string | null
+  /** The folder the CLI runs in: a relative path resolves against it. */
+  baseDir?: string | null
 }): SessionAdmission {
   const incomingId = String(input.incoming?.sessionId ?? '').trim()
   if (!incomingId) return { admit: false, reason: 'foreign-session' }
@@ -394,7 +449,7 @@ export function decideSessionAdmission(input: {
       : { admit: false, reason: 'foreign-session' }
   }
   const transcript = String(input.incoming?.transcriptPath ?? '').trim()
-  if (!transcript || !isUnderDir(transcript, input.projectDir)) {
+  if (!transcript || !isUnderDir(transcript, input.projectDir, input.baseDir)) {
     return { admit: false, reason: 'foreign-project' }
   }
   const event = String(input.incoming?.event ?? '')
@@ -402,7 +457,7 @@ export function decideSessionAdmission(input: {
     return { admit: true, binds: true, proof: 'delivered-prompt' }
   }
   const proven = String(input.provenTranscript ?? '').trim()
-  if (proven && isSameTranscript(transcript, proven)) {
+  if (proven && isSameTranscript(transcript, proven, input.baseDir)) {
     return {
       admit: true,
       binds: true,
@@ -432,6 +487,9 @@ export interface HookIntakeOptions {
   stateRoot: string
   /** This daemon's Claude project dir. A necessary condition, not a proof. */
   projectDir: string
+  /** The folder the CLI runs in, which a relative transcript_path or project
+   *  dir is resolved against (isUnderDir). */
+  baseDir?: string
   /** Every admitted payload, in spool order. Must never throw. */
   onEvent(payload: Record<string, unknown>, line: SpoolLine): void
   /** The pairing lock plus delivery gate. Checked on every pump. */
@@ -663,6 +721,7 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
         },
         projectDir: opts.projectDir,
         provenTranscript: proven,
+        baseDir: opts.baseDir ?? null,
       })
       if (!verdict.admit) {
         if (verdict.reason === 'unproven') {

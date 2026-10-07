@@ -68,7 +68,7 @@ import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './li
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor } from './lib/agent-inventory.mjs'
+import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -442,13 +442,14 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import {
+  AUTO_UPDATE_LOCK_FILE,
   AUTO_UPDATE_SAFETY_FILE,
   initializeSelfUpdater,
   isAutoUpdateEnabled,
+  isUpdateLockHeld,
   loadAutoUpdateState,
   loadSharedUpdateSafety,
   MessageActivityTracker,
-  pendingRestartVersionFrom,
   resolveAutoUpdateStatePath,
   type SelfUpdater,
 } from './lib/self-update'
@@ -481,6 +482,30 @@ import {
   type ResolvedService,
   type UpdateReadiness,
 } from './lib/update-readiness.js'
+import {
+  type AlwaysOnSupervision,
+  decideAlwaysOnReconcile,
+  describeOtherSupervisor,
+  readAlwaysOnSupervision,
+  userBusExecSync,
+} from './lib/always-on-reconcile.js'
+import { installedPluginsPath, resolvePendingRestartVersion } from './lib/pending-restart.js'
+import {
+  AGENT_STATE_FILE_NAME,
+  AGENT_STATE_MAX_INTERVAL_MS,
+  AgentStatePublisher,
+  findClaudeAncestor,
+  hookTurnSignal,
+  memoizeFor,
+  memoizeUntilFound,
+  readSessionTranscript,
+} from './lib/agent-state.js'
+import {
+  SESSION_PIN_CHECK_MS,
+  SessionPinKeeper,
+  isPrintModeCommand,
+  readProcessCommand,
+} from './lib/session-pin.js'
 import { join as joinPath } from 'node:path'
 import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
@@ -543,6 +568,16 @@ const DEFAULT_CREDENTIALS_FILE = joinPath(homedir(), '.bgos-agent', 'credentials
 // through as BGOS_LAUNCH_CWD. Without that, the folder pin was looked up inside
 // the plugin cache and could never be found on a marketplace install.
 const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
+// The CLI's config dir: CLAUDE_CONFIG_DIR (trimmed) when set, else ~/.claude.
+// Declared up here, beside the launch folder, because the session binder below
+// reads it at module load and a const read before its declaration throws.
+// Resolved ONCE, against the launch folder: the CLI resolves a relative value
+// from its own cwd, which is that folder, while this process runs in the
+// plugin cache on a marketplace install. Raw, a relative or non-normalised
+// value (./.claude-work, ~/./.claude-work/) named another directory or another
+// spelling, and the hook intake refused the agent's OWN events as
+// foreign-project (lib/hook-intake.ts isUnderDir).
+const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process.env, home: homedir() }))
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -660,7 +695,7 @@ import {
   watch,
   writeFileSync,
 } from 'node:fs'
-import { join as pathJoin, dirname as pathDirname } from 'node:path'
+import { join as pathJoin, dirname as pathDirname, resolve as pathResolve } from 'node:path'
 import { ensureLogDir, resolveLogPath } from './lib/log-path.js'
 // Agent activity from the session's own hooks (stage 4). The mapper is pure
 // (lib/hook-events.ts), the intake is a spool file per session
@@ -717,10 +752,15 @@ let browserHost: BrowserHostSupervisor | null = null
 // update_rpc 'staged' path fires sendNow so pendingRestartVersion reaches
 // the backend immediately instead of on the next 6h tick.
 let versionHeartbeat: { timer: ReturnType<typeof setInterval>; sendNow: () => void } | null = null
+// The root this process actually runs from (server.ts sits at the plugin
+// root), never CLAUDE_PLUGIN_ROOT or another install's root: both the version
+// captured at boot and the version on disk now are read from HERE, so a
+// difference means this very checkout moved under this process (E5).
+const RUNNING_ROOT = import.meta.dir
 // Captured ONCE at boot: after an install the package.json on disk already
 // shows the NEW version while this process still runs the old code, and
 // readiness must compare against what is RUNNING.
-const RUNNING_VERSION = readOwnVersion(import.meta.dir)
+const RUNNING_VERSION = readOwnVersion(RUNNING_ROOT)
 let updateDrainMode = false
 const messageActivity = new MessageActivityTracker()
 // Channel liveness (fix 04): flips true on the first bgos tool call this
@@ -1040,7 +1080,12 @@ async function bgosGetCachedOn304(path: string): Promise<unknown> {
 // next report). Env: BGOS_USAGE_REPORT=off disables,
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
 // subscription, the Claude Max plan: tokens only, never dollars).
-const usageTracker = new UsageTracker(process.cwd())
+// The transcripts are the binder's (sessionBinder below explains): the folder
+// claude runs in, LAUNCH_CWD, under the CLI config dir. Built from
+// process.cwd() under a fixed ~/.claude, a marketplace install (cwd is the
+// plugin cache) or a custom CLAUDE_CONFIG_DIR read an empty project dir and
+// no reply ever carried a token count.
+const usageTracker = new UsageTracker(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 
 // ── Capability bootstrap (served canon) ──────────────────────────────────────
 // Fetched once at connect and cached; exposed to the agent via the
@@ -1272,7 +1317,17 @@ async function bgosDelete(path: string): Promise<unknown> {
 // (positive proof, recorded in the reply handler) > CLAUDE_CODE_SESSION_ID
 // (fresh launches only; --continue discards it) > sticky previous binding >
 // newest-mtime at boot (logged last resort).
-const sessionBinder = new SessionTranscriptBinder(process.cwd(), {
+//
+// The transcripts live where the CLI writes them: <config dir>/projects/
+// <munged folder claude runs in>. That folder is LAUNCH_CWD, never this
+// process's cwd (a marketplace install runs it in the plugin cache), and the
+// config dir moves with CLAUDE_CONFIG_DIR. Built from the cwd under a fixed
+// ~/.claude, the binder named a project dir no transcript of this agent lives
+// in, so the hook intake refused the agent's OWN events as foreign-project:
+// hookTurnLive never set, agent-state.json reported no turn in flight (design
+// section 6) and the session pin was never written (section 4).
+const sessionBinder = new SessionTranscriptBinder(LAUNCH_CWD, {
+  claudeHome: CLAUDE_CONFIG_DIR,
   envSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
   log,
 })
@@ -1308,7 +1363,10 @@ function reportContextPct(): void {
 // covers credits-out, which carries no reset time and gets a conservative
 // now+30min horizon). `emittedResting` advances only on a successful PATCH,
 // so a failed send retries on the next sweep.
-const restingWatcher = new RestingWatcher(process.cwd())
+// Same transcripts, same folder and config dir as the binder above: from the
+// relocated cwd a usage cap the agent hit was never seen, so it was never
+// reported as resting.
+const restingWatcher = new RestingWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
 let observedResting: RestingEpisode | null = null
 let emittedResting: RestingEpisode | null = null
 // Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
@@ -8018,6 +8076,28 @@ const turnChat = createTurnChatTracker()
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
 /**
+ * The live Claude session this daemon serves, as its OWN hook events name it
+ * (agent-state.json `sessionId`, and the session pin, finding 7). Only the
+ * pairing lock holder drains hooks, and the intake admits only the session it
+ * has positively bound (lib/hook-intake.ts), so this is never a neighbour's
+ * session. `liveSessionSeenAtMs` is when THIS id was first seen: the pin waits
+ * for it to have stayed up a while (lib/session-pin.ts).
+ */
+let liveSessionId: string | null = null
+let liveSessionSeenAtMs = 0
+/** The last hook event of any kind: the agent doing something (agent-state
+ *  `lastActivityAt`). */
+let lastHookEventAtMs: number | null = null
+/**
+ * The session whose SessionEnd was the last event consumed, else null. While
+ * it is set the rail follows no live session: after a /clear the new
+ * session's events are refused until a delivered prompt binds it, so
+ * agent-state.json must not let the watcher trust turnInFlight, and the hook
+ * binding the binder keeps for the old transcript proves nothing about what
+ * the agent writes now (lib/agent-state.ts hookTurnSignal, delta review F2).
+ */
+let hookEndedSessionId: string | null = null
+/**
  * How many cards this daemon can still address at once.
  *
  * One for the live turn, plus the card of a turn whose child agent outlived
@@ -8557,6 +8637,15 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   } catch {
     /* binding is telemetry; it may never break the rail */
   }
+  lastHookEventAtMs = Date.now()
+  const hookSessionId = String(event.sessionId ?? '').trim()
+  // Every admitted event decides it: a SessionEnd names the session that is
+  // over, anything else is a live one again (a new session bound, a resume).
+  hookEndedSessionId = event.name === 'SessionEnd' ? hookSessionId || null : null
+  if (hookSessionId && hookSessionId !== liveSessionId) {
+    liveSessionId = hookSessionId
+    liveSessionSeenAtMs = Date.now()
+  }
   if (event.name === 'UserPromptSubmit') {
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
@@ -8569,6 +8658,9 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
   hookTurn = next
   runHookEffects(effects)
+  // A turn starting or ending is exactly what the watcher's safe moment reads,
+  // so it is published now rather than on the next tick.
+  agentStatePublisher.tick()
 }
 
 /**
@@ -8590,6 +8682,9 @@ function startHookIntakeIfHolder(): void {
     hookIntake = startHookIntake({
       stateRoot: root,
       projectDir: sessionBinder.projectDirectory,
+      // The folder the CLI runs in: a transcript_path it spelled relative
+      // resolves against it, as the config dir above does.
+      baseDir: LAUNCH_CWD,
       onEvent: (payload, line) => onHookPayload(payload, line),
       isArmed: () => channelArmed && lockHeld,
       // A child agent still working after its parent stopped keeps this true:
@@ -10628,12 +10723,20 @@ function listDirOrEmpty(path: string): string[] {
 // bespoke supervisor findable at all: an agent takes its identity from the
 // .mcp.json of the folder it runs in, so a loaded job whose WorkingDirectory
 // is THIS folder is a job that brings back THIS agent (lib/service-supervision.mjs).
+// That folder is the one claude runs in, LAUNCH_CWD, and never this process's
+// cwd: a marketplace install runs this process in the plugin cache
+// (bin/bgos-launch.mjs relocates it), where no job's WorkingDirectory points,
+// so a bespoke job was never found at boot (no declared supervisor.json), the
+// update ladder could only stage, and service.json named a folder the watcher
+// could never verify. On a clone install the two are the same folder. Its own
+// name keeps the counted identity literal at six (test/agent-credentials.test.ts).
+const SUPERVISION_WORKDIR = LAUNCH_CWD
 function supervisionProbe() {
   return {
     platform: process.platform,
     home: homedir(),
     assistantId: ASSISTANT_ID,
-    cwd: process.cwd(),
+    cwd: SUPERVISION_WORKDIR,
     // The anchor of the keepalive tier's ancestry walk. Without it that tier
     // cannot prove a marker describes THIS session, so it never fires.
     ownPid: process.pid,
@@ -10665,7 +10768,9 @@ function publishServiceRecord(service: ResolvedService | null): void {
       ? buildServiceRecord({
           assistantId: ASSISTANT_ID,
           service,
-          cwd: process.cwd(),
+          // The anchor the watcher re-verifies with: the folder the probe
+          // above matched the job by.
+          cwd: SUPERVISION_WORKDIR,
           resolvedAt: new Date().toISOString(),
         })
       : null
@@ -10701,6 +10806,8 @@ function writeSupervisorRecordAtBoot(): void {
       existingRaw: readTextOrNull(supPath),
       ownPid: process.pid,
       startedAt: new Date().toISOString(),
+      // Review 3 F1: the boot clock with the wall clock stamp (Linux only).
+      boot: readBootClock({ platform: process.platform }),
       detection: resolveSupervision(supervisionProbe()),
     })
     if (decision.action !== 'write') {
@@ -10742,13 +10849,149 @@ function updateReadinessSnapshot(): UpdateReadiness {
             loadSharedUpdateSafety(
               pathJoin(import.meta.dir, '.git', AUTO_UPDATE_SAFETY_FILE),
             ).disabled)),
-    pendingRestartVersion:
-      selfUpdater?.pendingRestartVersion() ??
-      pendingRestartVersionFrom(
-        RUNNING_VERSION,
-        state.validationPending ? state.targetVersion : null,
-      ),
+    pendingRestartVersion: daemonPendingRestartVersion(state),
   }
+}
+
+// The installed-but-not-running version, shared by the heartbeat readiness
+// above and agent-state.json (lib/pending-restart.ts). Fact 6: a marketplace
+// install has no git updater and no auto-update.json target, so before this
+// it reported null forever; its answer is installed_plugins.json against the
+// version captured at boot. E5: a clone moved by anything but its own self
+// updater (git pull, bgos-agent update) reported null too, and the watcher
+// believes a fresh daemon, so the agent never restarted onto code already on
+// disk; after the self updater's answer, the clone's is the package.json of
+// RUNNING_ROOT read now. Both callers re-read it on their own cadence (per
+// heartbeat send and readiness poll, and agent-state.json's memoizeFor).
+// `state` is the auto-update.json read the caller already made, when it made one.
+function daemonPendingRestartVersion(state?: ReturnType<typeof loadAutoUpdateState>): string | null {
+  return resolvePendingRestartVersion({
+    installMethod: INSTALL_METHOD,
+    runningVersion: RUNNING_VERSION,
+    updaterPending: () => selfUpdater?.pendingRestartVersion() ?? null,
+    stagedTargetVersion: () => {
+      const s = state ?? loadAutoUpdateState(resolveAutoUpdateStatePath(cursorStore.filePath))
+      return s.validationPending ? s.targetVersion : null
+    },
+    readInstalledPlugins: () => readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+    readCheckoutVersion: () => readOwnVersion(RUNNING_ROOT),
+  })
+}
+
+// ── Published agent state (design section 7, finding 9) ─────────────────────
+// ~/.bgos-plugin-state/<id>/agent-state.json: what the per-machine watcher
+// reads before it restarts this agent onto an update (lib/agent-state.ts has
+// the contract and the reasons). Published by the pairing LOCK HOLDER only, on
+// every change (a 1 s tick plus a poke per hook event) and at least every
+// 30 s; removed by both exit paths below. Never throws.
+const AGENT_STATE_TICK_MS = 1_000
+// The ancestor walk is synchronous ps spawns (one PowerShell call on Windows,
+// code review F2: before it, a Windows daemon published claudePid null forever
+// and the watcher could never read its process tree); a found claude never
+// changes, a miss is retried every 10 minutes.
+const CLAUDE_ANCESTOR_RETRY_MS = 10 * 60_000
+const agentClaudePid = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () =>
+  findClaudeAncestor({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync }),
+)
+// installed_plugins.json is a file read; the 1 s tick must not repeat it.
+const agentStatePendingRestart = memoizeFor(AGENT_STATE_MAX_INTERVAL_MS, Date.now, () =>
+  daemonPendingRestartVersion(),
+)
+// What the transcripts say (code review F1): the hook rail is the only source
+// of turnInFlight and of liveSessionId, and a clone agent whose folder
+// registers no BGOS hooks never feeds it, so without this its file said idle,
+// with no session, through a whole Read/Edit/Task job. The binder lists the
+// project dir, so it is read at most every 10 s, not on every 1 s tick.
+const AGENT_TRANSCRIPT_READ_MS = 10_000
+// A binding to a session whose SessionEnd was consumed is read as a guess:
+// after a /clear the agent writes a transcript the binder does not name yet.
+const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
+  readSessionTranscript({
+    resolve: () => sessionBinder.resolve(),
+    projectDir: sessionBinder.projectDirectory,
+    endedSessionId: hookEndedSessionId,
+  }),
+)
+const agentStatePublisher = new AgentStatePublisher({
+  path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
+  pid: process.pid,
+  now: Date.now,
+  shouldPublish: () => lockHeld,
+  snapshot: () => ({
+    assistantId: ASSISTANT_ID,
+    claudePid: agentClaudePid(),
+    runningVersion: RUNNING_VERSION,
+    pendingRestartVersion: agentStatePendingRestart(),
+    // A child agent still working after its parent's Stop keeps the turn
+    // "in flight" (the intake's own isTurnLive rule): restarting then would
+    // kill that child mid job, which finding 9 forbids.
+    turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    // Whether turnInFlight means anything: 'hooks' while the rail follows a
+    // live session of this daemon's own (the intake admits nothing else, and
+    // onHookPayload is its only consumer). 'none' tells the watcher that a
+    // false turnInFlight is no evidence of idle: before the first event, and
+    // after the bound session's SessionEnd until another event is admitted.
+    turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+    pendingMessages: pendingInbounds.size,
+    pendingPermissions: pendingPermissions.size,
+    activeOperations: messageActivity.activeOperations,
+    // Boot counts as activity: a session that just started may have a person
+    // at its keyboard, and the watcher's quiet window should run from there.
+    // The transcript the agent is writing counts too, hooks or not.
+    activityAtMs: [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+    // The hooks name the live session; without them, the transcript the
+    // binding chain proved (a reply marker, the CLI assigned id) does. A
+    // session whose SessionEnd was consumed is not live, and is not named.
+    sessionId: (hookEndedSessionId === null ? liveSessionId : null) ?? agentTranscript().sessionId,
+  }),
+})
+
+// ── Session pin (finding 7, design section 4) ───────────────────────────────
+// The live session this daemon's own hooks named goes into
+// ~/.bgos-agent/<id>/session-id, the pin hoai resumes on every supervised
+// (re)launch, so an agent first started with plain `claude` keeps its
+// conversation when the supervisor takes over. lib/session-pin.ts has the
+// guards: the channel holder only, never a print-mode claude, a session that
+// stayed up past hoai's own health window, a transcript hoai can resume, and
+// once per live session. Checked every 30 s; never throws.
+const claudePrintMode = memoizeUntilFound(CLAUDE_ANCESTOR_RETRY_MS, Date.now, () => {
+  const pid = agentClaudePid()
+  if (pid === null) return null
+  const command = readProcessCommand(pid, defaultExecSync)
+  return command === null ? null : isPrintModeCommand(command)
+})
+// The transcript hoai resumes is keyed by the folder claude runs in, which is
+// LAUNCH_CWD and never process.cwd(): a marketplace install runs this process
+// in the plugin cache (bin/bgos-launch.mjs relocates it), and a transcript
+// looked up from there never exists, so the pin would never be written. Its
+// own name keeps the counted identity literal at six
+// (test/agent-credentials.test.ts), as CHANGES_WORKDIR does.
+const SESSION_PIN_WORKDIR = LAUNCH_CWD
+const sessionPinKeeper = new SessionPinKeeper({
+  home: homedir(),
+  cwd: SESSION_PIN_WORKDIR,
+  // hoai's own rule (CLAUDE_CONFIG_DIR, else ~/.claude), already resolved
+  // against the agent folder hoai runs in: the raw value, relative, named a
+  // dir under the plugin cache this process runs in, where no transcript is.
+  configDir: CLAUDE_CONFIG_DIR,
+  assistantId: ASSISTANT_ID,
+  exists: existsSync,
+  readFile: readTextOrNull,
+  log,
+})
+function checkSessionPin(): void {
+  const holdsChannel = channelArmed && lockHeld
+  sessionPinKeeper.check(
+    {
+      holdsChannel,
+      sessionId: liveSessionId,
+      seenAtMs: liveSessionSeenAtMs,
+      // Read for the holder only: a passive daemon (there can be many on one
+      // host) never pins, so it never pays for the ps walk either.
+      printMode: holdsChannel ? claudePrintMode() : null,
+    },
+    Date.now(),
+  )
 }
 
 // Install method + plugin root, detected once. For a marketplace install the
@@ -10769,7 +11012,6 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
   INSTALL_DETECTION?.method === 'marketplace' ? 'marketplace' : 'clone'
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
-const CLAUDE_CONFIG_DIR = claudeConfigDir({ env: process.env, home: homedir() })
 
 /**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
@@ -10859,6 +11101,14 @@ const updateRpc = new UpdateRpcHandler({
   installMethod: () => INSTALL_METHOD,
   autoUpdateEnabled: () => isAutoUpdateEnabled(process.env.BGOS_AUTO_UPDATE),
   updater: () => selfUpdater,
+  // E5b: a click restarts onto exactly what the heartbeat reports as pending
+  // (a clone moved by git pull included), never the self updater's answer alone.
+  pendingRestartVersion: () => daemonPendingRestartVersion(),
+  // The clone's shared update lock, the one SelfUpdater takes (<root>/.git/AUTO_UPDATE_LOCK_FILE): a
+  // click never restarts onto a checkout another daemon is still installing.
+  updateLockHeld: () =>
+    INSTALL_METHOD !== 'marketplace' &&
+    isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
   // Marketplace installs (design 1.4): observe THIS machine, then plan +
   // execute with agents = [self]. The executor's restart/verify hooks are
   // satisfied by the daemon's own ladder, which runs after the outcome.
@@ -10953,7 +11203,9 @@ const watcherInstallRpc = new WatcherInstallRpcHandler({
       home,
       pluginVersion,
       // The watcher must reconcile the SAME Claude install this daemon runs under.
-      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+      // Resolved (the watcher runs elsewhere, so a relative value would name
+      // another dir), and still null when unset so the default stays implicit.
+      claudeConfigDir: process.env.CLAUDE_CONFIG_DIR?.trim() ? CLAUDE_CONFIG_DIR : null,
     }),
   writeWatcherCredentials: async (creds) => {
     const path = writeWatcherCredentials(homedir(), creds)
@@ -13294,6 +13546,15 @@ function syncSlashCommands(prepared?: PreparedSlashCommands): Promise<void> {
 // supervisor waits behind this session and takes over only when it ends.
 const execFileAsync = promisify(execFile)
 const BGOS_AGENT_BIN = fileURLToPath(new URL('bin/bgos-agent', import.meta.url))
+// The folder the supervisor runs the agent in, which is LAUNCH_CWD and never
+// this process's cwd: a marketplace install runs this process in the plugin
+// cache (bin/bgos-launch.mjs relocates it), so `install --dir <cache>` died
+// with "not a proven paired folder" on every cycle and adoption never gave a
+// marketplace agent its supervisor, and a bespoke job's WorkingDirectory (the
+// agent folder) could never match the G11 probe. Its own name keeps the
+// counted identity literal at six (test/agent-credentials.test.ts), as
+// SESSION_PIN_WORKDIR does.
+const ALWAYS_ON_WORKDIR = LAUNCH_CWD
 let reconcileBusy = false
 // A missing supervisor binary is a HOST-LAYOUT fact, not a transient: no
 // number of retries installs it. Without this latch a host whose install
@@ -13302,6 +13563,19 @@ let reconcileBusy = false
 // forever and buries the one actionable log line in thousands of copies.
 // Log once, loudly, and stand down until the process restarts.
 let reconcileDisabledReason: string | null = null
+// G11: the "another supervisor already keeps this agent alive" line is said
+// once per process. The reconcile re-runs every 15 minutes and on every
+// config event, and the answer does not change while the bespoke job lives.
+let alwaysOnDeferLogged = false
+// F4: so is the "could not read the job list, asking again next cycle" line.
+let alwaysOnWaitLogged = false
+// The G11 reading's exec: systemctl --user with the user bus default
+// bin/bgos-agent uses (lib/always-on-reconcile.ts userBusExecSync).
+const alwaysOnExecSync = userBusExecSync(defaultExecSync, {
+  platform: process.platform,
+  env: process.env,
+  uid: typeof process.getuid === 'function' ? process.getuid() : null,
+})
 
 async function isAlwaysOnInstalled(): Promise<boolean> {
   try {
@@ -13323,15 +13597,18 @@ async function reconcileAlwaysOn(): Promise<void> {
     // on a Windows host with always-on configured retried a spawn that can
     // never succeed (9,852 failures on one daemon in 2.5 days, found by
     // Mark 2026-08-09, who also caught that a quiet latch here would hide
-    // the real state). So: stand down ONCE, and say the true thing, which
-    // is that the flag KC configured is NOT being honored on this host.
-    reconcileDisabledReason = 'always-on is not implemented on Windows'
+    // the real state). So: stand down ONCE, and say the true thing. Since
+    // mission 104 (design G7) the true thing is WHO does it instead: the
+    // per-machine watcher's keep-alive sweep registers this agent's logon
+    // Scheduled Task when Keep agents running is on for this computer, so
+    // the line points there rather than at a Windows port of this script.
+    reconcileDisabledReason = 'the daemon does not install the Windows supervisor'
     log(
-      `always-on reconcile DISABLED: this assistant has always-on configured ` +
-        `in BGOS, but the supervisor only supports macOS (launchd) and Linux ` +
-        `(systemd), so restart-survival is NOT active on this Windows host. ` +
-        `The flag remains visible in BGOS as configured; treat it as ` +
-        `unfulfilled here until Windows support ships. Logged once.`,
+      `always-on reconcile DISABLED on this Windows host: this daemon does not ` +
+        `install a per-agent supervisor here. The per-machine watcher installs ` +
+        `the Windows supervisor (a logon Scheduled Task) when Keep agents ` +
+        `running is on for this computer in HOAI (Settings, Computers). ` +
+        `Logged once.`,
     )
     return
   }
@@ -13362,15 +13639,55 @@ async function reconcileAlwaysOn(): Promise<void> {
     if (typeof a?.alwaysOn !== 'boolean') return
     const desired = a.alwaysOn === true
     const installed = await isAlwaysOnInstalled()
+    // G11 (lib/always-on-reconcile.ts): is-installed sees only the CANONICAL
+    // file, so before installing, ask whether a bespoke job or a live
+    // keepalive already keeps this agent alive. Read only on the install row:
+    // the platform query is not free and no other row needs it. Unreadable is
+    // NOT none (code review F4): it waits for the next cycle, because one
+    // failed listing used to add a second supervisor for good. Anchored on the
+    // agent folder (ALWAYS_ON_WORKDIR), the same folder the install below
+    // names, so a bespoke job whose WorkingDirectory is that folder is found
+    // on a marketplace install too.
+    let supervision: AlwaysOnSupervision | null = null
     if (desired && !installed) {
+      supervision = readAlwaysOnSupervision({ ...supervisionProbe(), cwd: ALWAYS_ON_WORKDIR, execSync: alwaysOnExecSync })
+    }
+    const decision = decideAlwaysOnReconcile({
+      desired,
+      canonicalInstalled: installed,
+      supervision,
+    })
+    if (decision.action === 'defer') {
+      if (!alwaysOnDeferLogged) {
+        alwaysOnDeferLogged = true
+        log(
+          `always-on: enabled in BGOS, and this agent is already kept alive by ` +
+            `${describeOtherSupervisor(decision.other)}; not installing a second ` +
+            `supervisor (two would race to relaunch it). Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'wait') {
+      if (!alwaysOnWaitLogged) {
+        alwaysOnWaitLogged = true
+        log(
+          `always-on: enabled in BGOS, but this host could not say whether another ` +
+            `supervisor already keeps this agent alive (${decision.reason}); not ` +
+            `installing one now, asking again next cycle. Logged once.`,
+        )
+      }
+      return
+    }
+    if (decision.action === 'install') {
       log('always-on: enabled in BGOS, installing supervisor on this host')
       await execFileAsync(
         BGOS_AGENT_BIN,
-        ['install', '--assistant', ASSISTANT_ID, '--dir', process.cwd(), '--always-on', '--no-clone'],
+        ['install', '--assistant', ASSISTANT_ID, '--dir', ALWAYS_ON_WORKDIR, '--always-on', '--no-clone'],
         { timeout: 120_000 },
       )
       log('always-on: supervisor installed (takes over when this session ends)')
-    } else if (!desired && installed) {
+    } else if (decision.action === 'remove') {
       // A supervisor installed moments ago is NOT "switched off": the app records
       // alwaysOn only after it has seen this agent connect. See lib/always-on-grace.ts.
       let stamp: string | null = null
@@ -13565,6 +13882,9 @@ async function main(): Promise<void> {
     log(describeShutdownCause(cause))
     selfUpdater?.markGracefulStop()
     stopHookIntake()
+    // A clean stop takes the published state away (only when it is ours), so
+    // the watcher never reads a dead daemon's "idle" as a live one's.
+    agentStatePublisher.shutdown()
     flushChatCursors()
     // No-op unless this daemon still owns the lock.
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
@@ -13579,6 +13899,7 @@ async function main(): Promise<void> {
   // shutdown() already ran is harmless.
   process.on('exit', () => {
     stopHookIntake()
+    agentStatePublisher.shutdown()
     flushChatCursors()
     releasePairingLock({ lockPath: PAIRING_LOCK_PATH, selfPid: process.pid })
     loginController.dispose()
@@ -13588,6 +13909,13 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => shutdown(signal, signal === 'SIGINT' ? 130 : 143))
   }
+
+  // agent-state.json (design section 7): ticks from here on; it writes only
+  // while this daemon holds the pairing lock, so a passive daemon never does.
+  setInterval(() => agentStatePublisher.tick(), AGENT_STATE_TICK_MS).unref()
+  // The session pin (finding 7): asks only while this daemon holds the channel
+  // and its live session is not pinned yet (lib/session-pin.ts).
+  setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:

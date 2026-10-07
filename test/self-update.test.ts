@@ -19,9 +19,11 @@ import {
   UPDATE_CHECK_INTERVAL_MS,
   UPDATE_HEALTHY_AFTER_MS,
   UPDATE_JITTER_MAX_MS,
+  UPDATE_LOCK_STALE_MS,
   UPDATE_DRAIN_TIMEOUT_MS,
   compareSemver,
   decideDrainWait,
+  isUpdateLockHeld,
   describePendingRestart,
   decideCheckoutAction,
   shouldExitAfterUpdate,
@@ -2251,5 +2253,18 @@ describe('a staged daemon keeps observing what the latest version is', () => {
     expect(updater.latestKnownVersion).toBe('0.27.0')
     expect(updater.pendingRestartVersion()).toBe('0.27.0')
     expect(loadAutoUpdateState(stateFilePath).validationPending).toBe(true)
+  })
+})
+
+describe('isUpdateLockHeld: a click never restarts onto a checkout another daemon is installing', () => {
+  test('a fresh lock is held, a stale one (older than UPDATE_LOCK_STALE_MS) and a missing one are not', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lock-held-'))
+    const lock = join(dir, 'bgos-auto-update.lock')
+    expect(isUpdateLockHeld(lock)).toBe(false)
+    writeFileSync(lock, '{}')
+    const mtime = statSync(lock).mtimeMs
+    expect(isUpdateLockHeld(lock, mtime + 1_000)).toBe(true)
+    expect(isUpdateLockHeld(lock, mtime + UPDATE_LOCK_STALE_MS)).toBe(true)
+    expect(isUpdateLockHeld(lock, mtime + UPDATE_LOCK_STALE_MS + 1)).toBe(false)
   })
 })

@@ -15,6 +15,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  RESTART_EXEC_TIMEOUT_MS,
   hoaiCorePath,
   recipeLaunchCommand,
   restartAgent,
@@ -391,4 +392,281 @@ test('restartAgent: a service row whose handle is not command-line safe runs NO 
   // as a darwin service with no uid does: never a blind or a built command.
   assert.equal(result.how, 'recipe-tmux')
   assert.equal(spawns.length, 1)
+})
+
+// -- the keepalive tier and the Windows agent task (design 5, G7, G11) ----------------------------
+
+const KEEPALIVE = { pid: 33108, claudePid: 33200, tmuxSession: 'agent-912' }
+const BESPOKE = { kind: 'launchd', handle: 'ai.bgos.session.912', via: 'working-directory', file: '/home/kc/Library/LaunchAgents/ai.bgos.session.912.plist' }
+
+function recordingKill(error: NodeJS.ErrnoException | null = null) {
+  const kills: Array<[number, string]> = []
+  const kill = (pid: number, signal: string) => {
+    kills.push([pid, signal])
+    if (error) throw error
+    return true
+  }
+  return { kills, kill }
+}
+
+test('restartAgent: a verified keepalive.json is restarted by SIGTERM to its claudePid ONLY (never a kickstart of the bespoke job, which kills the script and not the session)', async () => {
+  const { kills, kill } = recordingKill()
+  const { calls, exec } = recordingExec()
+  const { spawns, spawnDetached } = recordingSpawn()
+  const fs = memoryFs()
+  const result = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'darwin', fs, exec, spawnDetached, kill })
+  assert.deepEqual(kills, [[33200, 'SIGTERM']])
+  assert.deepEqual(calls, [], 'no launchctl')
+  assert.deepEqual(spawns, [], 'no relaunch of our own')
+  assert.equal(fs.files.size, 0, 'no marker')
+  assert.equal(result.ok, true)
+  assert.equal(result.how, 'keepalive')
+  assert.deepEqual(result.detail, { pid: 33200, keepalivePid: 33108 })
+  // Even with no visible service at all, the keepalive is the authority.
+  const bare = recordingKill()
+  const alone = await restartAgent(agentRow({ supervisor: 'none', keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec, spawnDetached, kill: bare.kill })
+  assert.equal(alone.how, 'keepalive')
+  assert.deepEqual(bare.kills, [[33200, 'SIGTERM']])
+})
+
+test('restartAgent: the ladder order is marker, keepalive, service, recipe', async () => {
+  const { kills, kill } = recordingKill()
+  const fs = memoryFs()
+  const live = await restartAgent(agentRow({ supervisor: 'launcher-live', keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'linux', fs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(live.how, 'marker')
+  assert.deepEqual(kills, [])
+  const svc = recordingExec()
+  const noKeepalive = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: null }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: svc.exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(noKeepalive.how, 'service')
+  assert.deepEqual(svc.calls, [{ file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.session.912'] }])
+})
+
+test('restartAgent: a SIGTERM that fails (the session already gone) is a named keepalive failure, never a fall through to another tier', async () => {
+  const gone = Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+  const { kill } = recordingKill(gone)
+  const { calls, exec } = recordingExec()
+  const result = await restartAgent(agentRow({ supervisor: 'service', service: BESPOKE, keepalive: KEEPALIVE }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached, kill })
+  assert.equal(result.ok, false)
+  assert.equal(result.how, 'keepalive')
+  assert.match(result.message, /ESRCH/)
+  assert.deepEqual(calls, [])
+})
+
+const TASK = { kind: 'schtasks', handle: 'HOAI Agent 912', via: 'canonical-file', file: 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs' }
+const WIN_ROW = { stateDir: 'C:\\Users\\kc\\.bgos-agent\\912', cwd: 'C:\\Users\\kc\\hoai-agents\\ava' }
+
+test('restartAgent win32: the agent task with a LIVE launcher restarts through the marker; a dead launcher is started with schtasks /Run /TN "HOAI Agent <id>"', async () => {
+  const fs = memoryFs()
+  const live = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: true }), { ...BASE_DEPS, platform: 'win32', fs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached })
+  assert.equal(live.how, 'marker')
+  assert.equal(fs.files.get('C:\\Users\\kc\\.bgos-agent\\912\\restart-requested.json'), '{}')
+  const { calls, exec } = recordingExec()
+  const { spawns, spawnDetached } = recordingSpawn()
+  const dead = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached })
+  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+  assert.deepEqual(spawns, [], 'never a cmd /k console beside the task')
+  assert.equal(dead.ok, true)
+  assert.equal(dead.how, 'task')
+  const failing = recordingExec(1, 'ERROR: The system cannot find the file specified.')
+  const bad = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: failing.exec, spawnDetached })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.how, 'task')
+  assert.match(bad.message, /rc 1/)
+})
+
+// systemctl --user restart blocks until the unit has stopped (SIGTERM to the
+// whole cgroup, then up to TimeoutStopSec, 90 s by default) and started; a
+// hung user bus blocks it for ever. nodeExec's default timeout is 0 (none),
+// and the watcher's whole job loop and heartbeat wait on this call.
+test('restartAgent: the service and task commands are BOUNDED (RESTART_EXEC_TIMEOUT_MS); one that times out is a named failure', async () => {
+  const seen: Array<{ file: string; opts: any }> = []
+  const exec = (timedOut: boolean) => async (file: string, _args: readonly string[], opts?: any) => {
+    seen.push({ file, opts })
+    return timedOut ? { code: null, stdout: '', stderr: '', error: 'Command failed: killed', timedOut: true } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const spawnDetached = recordingSpawn().spawnDetached
+  await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(false), spawnDetached })
+  await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.plist' }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(), exec: exec(false), spawnDetached })
+  await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(false), spawnDetached })
+  assert.deepEqual(seen.map((c) => c.file), ['systemctl', 'launchctl', 'schtasks.exe'])
+  for (const call of seen) assert.equal(call.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, call.file)
+  assert.ok(RESTART_EXEC_TIMEOUT_MS > 90_000 && RESTART_EXEC_TIMEOUT_MS <= 5 * 60_000, 'past systemd\'s default 90 s stop, never unbounded')
+  const hung = await restartAgent(agentRow({ supervisor: 'service', serviceFile: '/x.service' }), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: exec(true), spawnDetached })
+  assert.equal(hung.ok, false)
+  assert.equal(hung.how, 'service')
+  assert.match(hung.message, /^systemctl --user restart bgos-agent-912 failed \(rc null, timed out\)/)
+  const task = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec: exec(true), spawnDetached })
+  assert.equal(task.ok, false)
+  assert.match(task.message, /failed \(rc null, timed out\)/)
+})
+
+test('restartAgent win32 (F4): a dead launcher whose agent session is still live (an orphaned claude, a person\'s) is never started beside it: no schtasks /Run, a named refusal', async () => {
+  const NOW = BASE_DEPS.now()
+  const state = JSON.stringify({
+    schemaVersion: 1,
+    assistantId: '912',
+    pid: 4912,
+    claudePid: null,
+    runningVersion: '0.38.2',
+    pendingRestartVersion: null,
+    turnInFlight: false,
+    pendingMessages: 0,
+    pendingPermissions: 0,
+    activeOperations: 0,
+    lastActivityAt: null,
+    sessionId: null,
+    updatedAt: new Date(NOW - 5_000).toISOString(),
+    turnSignal: 'hooks',
+  })
+  const row = agentRow({ ...WIN_ROW, supervisor: 'service', service: TASK, launcherLive: false })
+  const cases: Array<[string, Record<string, string>]> = [
+    ['a fresh agent-state.json from a live daemon', { '/home/kc/.bgos-plugin-state/912/agent-state.json': state }],
+    ['a daemon too old to publish state, holding the pairing lock', { '/home/kc/.bgos-agent/credentials-912.json.lock': JSON.stringify({ pid: 4912, heartbeatAt: NOW - 3_000 }) }],
+  ]
+  for (const [name, files] of cases) {
+    const { calls, exec } = recordingExec()
+    const out = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: memoryFs(files), exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: (pid: number) => pid === 4912 } as any)
+    assert.deepEqual(calls, [], `${name}: no second session`)
+    assert.equal(out.ok, false, name)
+    assert.equal(out.how, 'task', name)
+    assert.match(out.message, /^session_without_launcher/, name)
+  }
+  // The daemon is gone (its pid dead, the lock stale): the task starts as before.
+  const { calls, exec } = recordingExec()
+  const gone = await restartAgent(row, { ...BASE_DEPS, platform: 'win32', fs: memoryFs(Object.assign({}, ...cases.map(([, f]) => f))), exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
+  assert.equal(gone.ok, true)
+  assert.deepEqual(calls, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+})
+
+test('restartAgent posix: a LIVE hoai launcher restarts through the marker even when a canonical service exists (a run.sh waiting behind it would restart nothing)', async () => {
+  const CANONICAL: Record<string, Record<string, string>> = {
+    darwin: { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' },
+    linux: { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' },
+  }
+  for (const platform of ['darwin', 'linux']) {
+    const fs = memoryFs()
+    const { calls, exec } = recordingExec()
+    const { spawns, spawnDetached } = recordingSpawn()
+    const live = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: true, running: true }), { ...BASE_DEPS, platform, fs, exec, spawnDetached })
+    assert.equal(live.ok, true, platform)
+    assert.equal(live.how, 'marker', platform)
+    assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', platform)
+    assert.deepEqual(calls, [], `${platform}: no kickstart -k / systemctl restart`)
+    assert.deepEqual(spawns, [], platform)
+    // A dead launcher leaves the service as the authority, exactly as before.
+    const svc = recordingExec()
+    const dead = await restartAgent(agentRow({ supervisor: 'service', service: CANONICAL[platform], launcherLive: false }), { ...BASE_DEPS, platform, fs: memoryFs(), exec: svc.exec, spawnDetached })
+    assert.equal(dead.how, 'service', platform)
+    assert.equal(svc.calls.length, 1, platform)
+  }
+})
+
+test('restartAgent posix (design): a live hoai that is the canonical v2 service\'s OWN child is restarted through the SERVICE (run.sh resolves the current root, so hoai itself moves onto the installed code); a hand-run hoai keeps the marker', async () => {
+  const LAUNCHD = { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' }
+  const SYSTEMD = { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' }
+  const SUP = '/home/kc/.bgos-agent/912/supervisor.json'
+  const STATUS = '/home/kc/.bgos-agent/912/launch-status'
+  const row = (service: any, extra: Record<string, unknown> = {}) => agentRow({ supervisor: 'service', service, launcherLive: true, running: true, supervisorGeneration: 2, ...extra })
+  const proc = (pid: number, ppid: number, command: string) => ({ pid, ppid, uid: 501, startedAtMs: null, command })
+  const underTmux = [proc(1, 0, '/sbin/launchd'), proc(2900, 1, 'tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c /home/kc/hoai-agents/ava /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')]
+  const underRunSh = [proc(1, 0, '/sbin/launchd'), proc(2800, 1, '/bin/bash /home/kc/.bgos-agent/912/run.sh'), proc(3000, 2800, 'node /x/bin/hoai-core.mjs')]
+  const byHand = [proc(1, 0, '/sbin/launchd'), proc(2700, 1, '-zsh'), proc(3000, 2700, 'node /x/bin/hoai-core.mjs')]
+  // Linux shows a tmux server by the title tmux gives it, which names its socket path.
+  const titled = [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/hoai-912)'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs')]
+  const otherSocket = [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/default)'), proc(3000, 2900, 'node /x/bin/hoai-core.mjs')]
+  const supervisorFile = { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }) }
+  const cases: Array<[string, any, Record<string, string>, any[] | undefined, string]> = [
+    ['darwin: its parent is the agent\'s own tmux server (socket hoai-912)', LAUNCHD, supervisorFile, underTmux, 'service'],
+    ['linux: the same, systemd', SYSTEMD, supervisorFile, underTmux, 'service'],
+    ['linux: its tmux server as Linux titles it (socket hoai-912)', SYSTEMD, supervisorFile, titled, 'service'],
+    ['linux: a person\'s own tmux (the default socket) is not the service', SYSTEMD, supervisorFile, otherSocket, 'marker'],
+    ['no tmux: it runs under the agent\'s run.sh', LAUNCHD, supervisorFile, underRunSh, 'service'],
+    ['supervisor.json says it is supervised', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [], 'service'],
+    ['a person\'s own hoai in a terminal: the marker (a service restart restarts only the waiting run.sh)', LAUNCHD, supervisorFile, byHand, 'marker'],
+    ['no process table at all: the marker (never a guess)', LAUNCHD, supervisorFile, [], 'marker'],
+  ]
+  for (const [name, service, files, processes, how] of cases) {
+    const fs = memoryFs(files)
+    const { calls, exec } = recordingExec()
+    const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
+    assert.equal(out.how, how, name)
+    assert.equal(out.ok, true, name)
+    if (how === 'service') {
+      assert.deepEqual(calls.map((c) => c.file), [platform === 'linux' ? 'systemctl' : 'launchctl'], name)
+      assert.equal(fs.files.has('/home/kc/.bgos-agent/912/restart-requested.json'), false, name)
+    } else {
+      assert.deepEqual(calls, [], name)
+      assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', name)
+    }
+  }
+  // launch-status written by the supervised launch AFTER this launcher armed says so too.
+  const statusFs = memoryFs({ ...supervisorFile, [STATUS]: '2026-10-06 19:00:00 outcome=live answered=[]\n' })
+  statusFs.touch(SUP, 1_000)
+  statusFs.touch(STATUS, 2_000)
+  const viaStatus = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: statusFs, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
+  assert.equal(viaStatus.how, 'service')
+  // A wait behind a hand-run hoai, or an older status than the launcher, is not.
+  for (const [outcome, statusAt] of [['waiting-for-incumbent pids=3100', 2_000], ['live', 500]] as Array<[string, number]>) {
+    const f = memoryFs({ ...supervisorFile, [STATUS]: `2026-10-06 19:00:00 outcome=${outcome}\n` })
+    f.touch(SUP, 1_000)
+    f.touch(STATUS, statusAt)
+    const out = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: f, exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: [] } as any)
+    assert.equal(out.how, 'marker', `${outcome} at ${statusAt}`)
+  }
+  // A generation 1 service runs run.expect, never hoai: a live hoai there is a person's.
+  const gen1 = await restartAgent(row(LAUNCHD, { supervisorGeneration: 1 }), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(supervisorFile), exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, processes: underTmux } as any)
+  assert.equal(gen1.how, 'marker')
+  // With no table handed in, the ladder reads one itself (the owner's Restart now path).
+  const listing = underTmux.map((p) => ` ${p.pid} ${p.ppid} 501 Tue Oct  6 18:00:00 2026 ${p.command}`).join('\n')
+  const self = { calls: [] as any[], exec: async (file: string, args: readonly string[]) => {
+    self.calls.push([file, ...args])
+    return file === 'ps' ? { code: 0, stdout: listing, stderr: '', error: null, timedOut: false } : { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  } }
+  const own = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: memoryFs(supervisorFile), exec: self.exec, spawnDetached: recordingSpawn().spawnDetached } as any)
+  assert.equal(own.how, 'service')
+  assert.deepEqual(self.calls.map((c: any) => c[0]), ['ps', 'launchctl'])
+})
+
+test('restartAgent posix (design): the service\'s own hoai still restarts through the MARKER while its tmux server holds anything else (run.sh\'s trap kills that whole server), or when no process table can be read', async () => {
+  const LAUNCHD = { kind: 'launchd', handle: 'ai.bgos.agent.912', via: 'canonical-file', file: '/home/kc/Library/LaunchAgents/ai.bgos.agent.912.plist' }
+  const SYSTEMD = { kind: 'systemd', handle: 'bgos-agent-912', via: 'canonical-file', file: '/home/kc/.config/systemd/user/bgos-agent-912.service' }
+  const SUP = '/home/kc/.bgos-agent/912/supervisor.json'
+  const row = (service: any) => agentRow({ supervisor: 'service', service, launcherLive: true, running: true, supervisorGeneration: 2 })
+  const proc = (pid: number, ppid: number, command: string) => ({ pid, ppid, uid: 501, startedAtMs: null, command })
+  const server = proc(2900, 1, 'tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c /home/kc/hoai-agents/ava /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs')
+  const hoai = [proc(3000, 2900, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')]
+  const supervisorFile = { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }) }
+  const cases: Array<[string, any, Record<string, string>, any[], string]> = [
+    // The agent's Bash tool ran `tmux new-session -d -s dev 'npm run dev'`: its $TMUX names hoai-912, so the job lands on that server.
+    ['darwin: a job in another session of the agent\'s tmux server', LAUNCHD, supervisorFile, [proc(1, 0, '/sbin/launchd'), server, ...hoai, proc(6100, 2900, 'npm run dev')], 'marker'],
+    ['linux: the same, the server as Linux titles it', SYSTEMD, supervisorFile, [proc(1, 0, '/sbin/init'), proc(2900, 1, 'tmux: server (/tmp/tmux-501/hoai-912)'), ...hoai, proc(6100, 2900, 'python monitor.py')], 'marker'],
+    ['supervisor.json says supervised, but the server holds a person\'s shell too', LAUNCHD, { [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) }, [proc(1, 0, '/sbin/launchd'), server, ...hoai, proc(6200, 2900, '-zsh')], 'marker'],
+    // The pane's own shell (`sh -c` before it execs hoai) is the pane, not another job.
+    ['the pane shell above hoai is the pane itself', LAUNCHD, supervisorFile, [proc(1, 0, '/sbin/launchd'), server, proc(2950, 2900, 'sh -c /usr/bin/env HOAI_SUPERVISED=1 node /x/bin/hoai-core.mjs'), proc(3000, 2950, 'node /x/bin/hoai-core.mjs'), proc(3100, 3000, 'claude --resume x')], 'service'],
+  ]
+  for (const [name, service, files, processes, how] of cases) {
+    const fs = memoryFs(files)
+    const { calls, exec } = recordingExec()
+    const platform = service.kind === 'systemd' ? 'linux' : 'darwin'
+    const out = await restartAgent(row(service), { ...BASE_DEPS, platform, fs, exec, spawnDetached: recordingSpawn().spawnDetached, processes } as any)
+    assert.equal(out.how, how, name)
+    if (how === 'marker') {
+      assert.deepEqual(calls, [], `${name}: no service restart`)
+      assert.equal(fs.files.get('/home/kc/.bgos-agent/912/restart-requested.json'), '{}', name)
+    }
+  }
+  // supervisor.json says supervised, but ps cannot answer: what else the server holds is unknown, so the marker.
+  const blind = memoryFs({ [SUP]: JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x', supervised: true }) })
+  const { calls, exec } = recordingExec(1, 'ps: denied')
+  const out = await restartAgent(row(LAUNCHD), { ...BASE_DEPS, platform: 'darwin', fs: blind, exec, spawnDetached: recordingSpawn().spawnDetached } as any)
+  assert.equal(out.how, 'marker')
+  assert.deepEqual(calls.map((c) => c.file), ['ps'])
+})
+
+test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <digits>" runs nothing', async () => {
+  const { calls, exec } = recordingExec()
+  const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })
+  assert.deepEqual(calls, [])
+  assert.equal(result.ok, false)
 })

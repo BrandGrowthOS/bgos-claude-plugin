@@ -28,7 +28,9 @@ import {
 } from '../lib/watcher-service.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
 
-const POSIX = { home: '/home/kc', nodePath: '/usr/local/bin/node', bundleDir: '/home/kc/.bgos-agent/watcher', uid: 501, username: 'kc' }
+// An explicit EMPTY env: watcherServiceSpec reads process.env when none is passed, and
+// every expectation below is the un-namespaced service (HOAI_SERVICE_NAMESPACE unset).
+const POSIX = { home: '/home/kc', nodePath: '/usr/local/bin/node', bundleDir: '/home/kc/.bgos-agent/watcher', uid: 501, username: 'kc', env: {} }
 const WIN = {
   home: 'C:\\Users\\kc',
   nodePath: 'C:\\Program Files\\nodejs\\node.exe',
@@ -36,6 +38,7 @@ const WIN = {
   uid: null,
   username: 'kc',
   localAppData: 'C:\\Users\\kc\\AppData\\Local',
+  env: {},
 }
 
 /** A recording exec: every call is logged; outcomes come from a script keyed
@@ -61,6 +64,23 @@ test('constants', () => {
 test('watcherCredentialsPath: <watcherHome>/credentials.json', () => {
   assert.equal(watcherCredentialsPath('/home/kc'), '/home/kc/.bgos-agent/watcher/credentials.json')
   assert.equal(watcherCredentialsPath('C:\\Users\\kc'), 'C:\\Users\\kc\\.bgos-agent\\watcher\\credentials.json')
+})
+
+test('the fixtures carry an explicit empty env, so a HOAI_SERVICE_NAMESPACE exported in the shell cannot move the names these tests pin', () => {
+  // watcherServiceSpec reads process.env when no env is passed (the side by side
+  // install, design section 4). Every expectation in this file is the
+  // un-namespaced service, byte for byte, so a developer or a staging proof that
+  // ran `export HOAI_SERVICE_NAMESPACE=...` must not turn the suite red.
+  const before = process.env.HOAI_SERVICE_NAMESPACE
+  try {
+    process.env.HOAI_SERVICE_NAMESPACE = 'stage1'
+    assert.equal(watcherServiceSpec({ platform: 'darwin', ...POSIX }).label, 'ai.bgos.watcher')
+    assert.equal(watcherServiceSpec({ platform: 'linux', ...POSIX }).label, 'bgos-watcher')
+    assert.equal(watcherServiceSpec({ platform: 'win32', ...WIN }).label, 'HOAI Watcher')
+  } finally {
+    if (before === undefined) delete process.env.HOAI_SERVICE_NAMESPACE
+    else process.env.HOAI_SERVICE_NAMESPACE = before
+  }
 })
 
 // -- darwin ---------------------------------------------------------------------------
@@ -108,7 +128,7 @@ test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs
   )
   assert.deepEqual(spec.installCommands, [
     { file: 'launchctl', args: ['bootout', 'gui/501/ai.bgos.watcher'], ignoreFailure: true },
-    { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false },
+    { file: 'launchctl', args: ['bootstrap', 'gui/501', '/home/kc/Library/LaunchAgents/ai.bgos.watcher.plist'], ignoreFailure: false, retry: { attempts: 6, delayMs: 500 } },
   ])
   assert.deepEqual(spec.startCommands, [
     { file: 'launchctl', args: ['kickstart', '-k', 'gui/501/ai.bgos.watcher'], ignoreFailure: false },
@@ -243,8 +263,80 @@ test('win32 spec: a double quote inside a path is refused (it would break the vb
   assert.throws(() => watcherServiceSpec({ platform: 'win32', ...WIN, bundleDir: 'C:\\x"y' }), /quote/)
 })
 
+/** Evaluate a VBScript string expression of "literal" and ChrW(n) parts joined by &. */
+function evalVbs(expr: string) {
+  let out = ''
+  for (const part of expr.split(' & ')) {
+    const chr = /^ChrW\((\d+)\)$/.exec(part)
+    if (chr) out += String.fromCharCode(Number(chr[1]))
+    else if (/^"(?:[^"]|"")*"$/.test(part)) out += part.slice(1, -1).replace(/""/g, '"')
+    else throw new Error(`not a vbs string part: ${part}`)
+  }
+  return out
+}
+
+/** Evaluate a PowerShell expression of 'literal' and [char]0xNNNN parts joined by +, optionally parenthesized. */
+function evalPs(expr: string) {
+  const body = expr.startsWith('(') && expr.endsWith(')') ? expr.slice(1, -1) : expr
+  const parts = body.split(' + ')
+  // A leading [char] would make PowerShell ADD the parts as numbers.
+  assert.equal(parts[0]!.startsWith('[char]'), false, `${expr} starts with a [char]`)
+  let out = ''
+  for (const part of parts) {
+    const chr = /^\[char\]0x([0-9A-F]{4})$/.exec(part)
+    if (chr) out += String.fromCharCode(parseInt(chr[1]!, 16))
+    else if (/^'(?:[^']|'')*'$/.test(part)) out += part.slice(1, -1).replace(/''/g, "'")
+    else throw new Error(`not a ps string part: ${part}`)
+  }
+  return out
+}
+
+test('win32 spec (the agent task F7 twin): a non-ASCII profile is written as pure ASCII (WSH reads a .vbs as ANSI, PowerShell 5.1 a BOM-less .ps1 too), and decodes back to the exact paths', () => {
+  // Read as ANSI, the UTF-8 bytes of these were mojibake: the watcher never
+  // started, so the agent task it installs never existed either.
+  const home = 'C:\\Users\\Jos\u00e9 \u0648\u0643\u064a\u0644'
+  const bundleDir = `${home}\\.bgos-agent\\watcher`
+  const nodePath = `${home}\\nvm\\n\u00f6de \ud83d\ude80\\node.exe`
+  const spec = watcherServiceSpec({ platform: 'win32', ...WIN, home, bundleDir, nodePath })
+  for (const file of spec.files) {
+    const wide = [...file.content].filter((ch) => ch.charCodeAt(0) > 0x7e && ch !== '\r' && ch !== '\n')
+    assert.deepEqual(wide, [], `${file.path} is pure ASCII`)
+  }
+  const vbs = spec.files[0]!.content.split('\r\n')
+  const cd = vbs.find((l) => l.startsWith('shell.CurrentDirectory = '))!
+  assert.equal(evalVbs(cd.slice('shell.CurrentDirectory = '.length)), bundleDir)
+  const run = /^shell\.Run (.*), 0, False$/.exec(vbs.find((l) => l.startsWith('shell.Run '))!)![1]!
+  assert.equal(evalVbs(run), `"${nodePath}" "${bundleDir}\\bin\\hoai-watcher.mjs" run`)
+  const ps1 = spec.files[1]!.content.split('\r\n')
+  const decl = (name: string) => ps1.find((l) => l.startsWith(`$${name} = `))!.slice(`$${name} = `.length)
+  assert.equal(evalPs(decl('vbs')), `${bundleDir}\\run-hidden.vbs`)
+  assert.equal(evalPs(decl('watcherScript')), `${bundleDir}\\bin\\hoai-watcher.mjs`)
+})
+
 test('unsupported platform is refused by name', () => {
   assert.throws(() => watcherServiceSpec({ platform: 'freebsd', ...POSIX }), /freebsd/)
+})
+
+// -- the service PATH carries the tools this install actually found ----------------------------
+
+test('service PATH: the dirs where node, bun, claude, tmux, expect and git were FOUND at install come first; a host with none of them off the defaults is unchanged', () => {
+  // Measured in the M6 end to end run: the watcher's sweep ran `bgos-agent install` and it died
+  // with "bun not found", because the service PATH was a fixed list and bun lived elsewhere.
+  // bin/bgos-agent bakes the dirs of the tools it found into its own service; so does this now.
+  const found = new Set(['/opt/tools/bun/bin/bun', '/opt/tools/claude/bin/claude', '/usr/bin/expect'])
+  const env = { PATH: '/opt/tools/bun/bin:/opt/tools/claude/bin:/usr/bin:/bin' }
+  const exists = (p: string) => found.has(p)
+  const mac = watcherServiceSpec({ ...POSIX, platform: 'darwin', nodePath: '/opt/node-22/bin/node', env, exists })
+  const plist = mac.files[0]!.content
+  const pathLine = plist.split('\n').find((l) => l.includes('<key>PATH</key>'))!
+  assert.match(pathLine, /<string>\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  const linux = watcherServiceSpec({ ...POSIX, platform: 'linux', nodePath: '/opt/node-22/bin/node', env, exists })
+  assert.match(linux.files[0]!.content, /Environment=PATH=\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  // /usr/bin (expect) is already a default: listed once, in its default place.
+  assert.equal(pathLine.split('/usr/bin:').length - 1, 1)
+  // Nothing found off the defaults (the fixture's node is /usr/local/bin/node): byte for byte as before.
+  const plain = watcherServiceSpec({ ...POSIX, platform: 'darwin', env: {}, exists: () => false })
+  assert.equal(plain.files[0]!.content, watcherServiceSpec({ ...POSIX, platform: 'darwin' }).files[0]!.content)
 })
 
 // -- installWatcherService --------------------------------------------------------------------
@@ -275,6 +367,47 @@ test('installWatcherService (darwin): mkdirs logs, writes the plist, runs bootou
       ['kickstart', 0, false],
     ],
   )
+})
+
+test('installWatcherService (darwin): a bootstrap that loses the race with the async bootout (rc 5, Input/output error) is retried, then succeeds', async () => {
+  // Measured in the M6 end to end run: "Set up the watcher" on a computer whose watcher was
+  // running failed at the service step with `Bootstrap failed: 5: Input/output error`, because
+  // launchctl bootout returns before the old job has unloaded. bin/bgos-agent's launchd_reload
+  // already retries for exactly this; the watcher's own installer did not.
+  const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const fs = memoryFs()
+  const calls: string[] = []
+  let bootstraps = 0
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'bootstrap') {
+      bootstraps += 1
+      if (bootstraps <= 2) return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
+    }
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const slept: number[] = []
+  const result = await installWatcherService(spec, { exec, fs, sleep: async (ms: number) => { slept.push(ms) } })
+  assert.equal(result.ok, true, result.message)
+  assert.deepEqual(calls, ['launchctl bootout', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl bootstrap', 'launchctl kickstart'])
+  assert.deepEqual(slept, [500, 500])
+  assert.deepEqual(result.ran.filter((r) => r.args[0] === 'bootstrap').map((r) => r.code), [5, 5, 0])
+})
+
+test('installWatcherService (darwin): a bootstrap that keeps failing is reported by name after its last attempt, and nothing is started', async () => {
+  const spec = watcherServiceSpec({ platform: 'darwin', ...POSIX })
+  const fs = memoryFs()
+  const calls: string[] = []
+  const exec = async (file: string, args: readonly string[]) => {
+    calls.push(`${file} ${args[0]}`)
+    if (args[0] === 'bootstrap') return { code: 5, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error', error: null, timedOut: false }
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const result = await installWatcherService(spec, { exec, fs, sleep: async () => {} })
+  assert.equal(result.ok, false)
+  assert.match(result.message, /bootstrap/)
+  assert.equal(calls.filter((c) => c === 'launchctl bootstrap').length, 6)
+  assert.equal(calls.includes('launchctl kickstart'), false)
 })
 
 test('installWatcherService (linux): a failing START command is reported by name with the stderr line; files stay written', async () => {

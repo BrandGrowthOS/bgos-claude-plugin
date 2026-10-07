@@ -39,7 +39,7 @@ test('the guard fails CLOSED: no stamp, junk, or a stamp from the future is no g
 test('server.ts consults the grace in the UNINSTALL branch, before removing anything, and the installer stamps the same file name', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const server = readFileSync(join(root, 'server.ts'), 'utf8')
-  const branch = server.slice(server.indexOf('} else if (!desired && installed) {'), server.indexOf("log('always-on: supervisor removed')"))
+  const branch = server.slice(server.indexOf("} else if (decision.action === 'remove') {"), server.indexOf("log('always-on: supervisor removed')"))
   assert.ok(branch.length > 0, 'the uninstall branch must exist')
   assert.ok(branch.indexOf('alwaysOnGraceRemainingMs(') > 0, 'the grace must be read in this branch')
   assert.ok(branch.indexOf('alwaysOnGraceRemainingMs(') < branch.indexOf("['uninstall'"), 'and BEFORE the uninstall is spawned')

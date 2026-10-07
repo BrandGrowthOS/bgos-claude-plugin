@@ -218,6 +218,54 @@ test('isSameTranscript compares paths, and basenames when either side is bare', 
   assert.ok(!isSameTranscript('', '/p/a.jsonl'))
 })
 
+// Verifier item b (mission 104 fix round): a CLAUDE_CONFIG_DIR written as
+// ~/./.claude-work/, or relative to the folder claude runs in, is the directory
+// the CLI writes into whatever its spelling. Compared as raw strings, the
+// agent's OWN transcript_path was not "under" the project dir, so every event
+// was refused as foreign-project: no turn signal, no session pin.
+test('isUnderDir compares resolved spellings: dot segments, doubled separators, a relative path', () => {
+  assert.ok(isUnderDir('/Users/a/.claude-work/projects/-x/s.jsonl', '/Users/a/./.claude-work//projects/-x/'))
+  assert.ok(isUnderDir('/Users/a/agent/../.claude-work/projects/-x/s.jsonl', '/Users/a/.claude-work/projects/-x'))
+  assert.ok(isUnderDir('C:\\Users\\a\\.\\.claude\\projects\\-x\\s.jsonl', 'C:\\Users\\a\\.claude\\projects\\-x'))
+  // `..` is resolved, so it is never a way out of the project dir.
+  assert.ok(!isUnderDir('/Users/a/.claude-work/projects/-x/../-y/s.jsonl', '/Users/a/.claude-work/projects/-x'))
+  // A relative path is resolved against the folder the CLI runs in, and only
+  // when that folder is known: no base, no guess.
+  const agent = '/Users/a/agent'
+  assert.ok(isUnderDir('.claude-work/projects/-x/s.jsonl', `${agent}/.claude-work/projects/-x`, agent))
+  assert.ok(isUnderDir(`${agent}/.claude-work/projects/-x/s.jsonl`, './.claude-work/projects/-x', agent))
+  assert.ok(!isUnderDir('.claude-work/projects/-x/s.jsonl', `${agent}/.claude-work/projects/-x`))
+})
+
+test('isSameTranscript resolves both spellings, and a bare name is still a basename compare', () => {
+  assert.ok(isSameTranscript('/p/./q//a.jsonl', '/p/q/a.jsonl'))
+  assert.ok(isSameTranscript('q/a.jsonl', '/p/q/a.jsonl', '/p'))
+  assert.ok(!isSameTranscript('q/a.jsonl', '/p/q/a.jsonl', '/r'))
+  assert.ok(isSameTranscript('a.jsonl', '/p/q/a.jsonl', '/elsewhere'))
+})
+
+test('a relative or non-normalised config dir: the agent SessionStart is admitted, not foreign-project', () => {
+  const agent = '/Users/a/agent'
+  const sid = '8c1f2d3e-4a5b-4c6d-8e7f-901234567890'
+  const transcript = `${agent}/.claude-work/projects/-Users-a-agent/${sid}.jsonl`
+  for (const projectDir of [
+    `${agent}/./.claude-work/projects/-Users-a-agent`,
+    '.claude-work/projects/-Users-a-agent',
+  ]) {
+    assert.deepEqual(
+      decideSessionAdmission({
+        bound: null,
+        incoming: { sessionId: sid, transcriptPath: transcript, event: 'SessionStart' },
+        projectDir,
+        provenTranscript: transcript,
+        baseDir: agent,
+      }),
+      { admit: true, binds: true, proof: 'session-start' },
+      projectDir,
+    )
+  }
+})
+
 // ── The persisted drain cursor ───────────────────────────────────────────────
 
 test('the cursor survives a restart, and junk on disk means start from the top', () => {

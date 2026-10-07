@@ -458,6 +458,12 @@ export interface SupervisionProbe {
    *  the pre-discovery behaviour and is fail-closed. */
   listDir?: (path: string) => string[]
   execSync?: (file: string, args: string[]) => SyncExecResult
+  /** The user id a keepalive.json's script must run as (the watcher's F6
+   *  reuse rule compares it with the ps table's uid). Defaults to this
+   *  process's uid. Supplied so a probe is judged as the machine it describes:
+   *  a Windows host has no process.getuid, which silently dropped the uid
+   *  half of the rule from a simulated macOS or Linux probe. */
+  uid?: number | null
 }
 
 export interface Supervision {
@@ -944,13 +950,24 @@ export function buildDeclaredSupervisorBody(opts: {
   declared: DeclaredSupervisor
   pid: number
   startedAt: string
+  /** The boot clock read with startedAt (lib/agent-inventory.mjs
+   *  readBootClock, Linux only): the watcher proves a declared launcher's pid
+   *  is still this daemon by its start alone, and on Linux that start is read
+   *  on the boot clock, which a wall clock step does not move (review 3 F1). */
+  boot?: BootStamp | null
 }): string {
-  const { declared, pid, startedAt } = opts
+  const { declared, pid, startedAt, boot } = opts
   const capabilities = declared.kind === 'launcher' ? ['relaunch'] : []
   const supervisor: Record<string, unknown> = { kind: declared.kind }
   if (declared.handle) supervisor.handle = declared.handle
   if (declared.restartCommand) supervisor.restartCommand = declared.restartCommand
-  return JSON.stringify({ pid, capabilities, startedAt, supervisor })
+  return JSON.stringify({ pid, capabilities, startedAt, ...(boot ? { boot } : {}), supervisor })
+}
+
+/** A stamp's boot clock: the kernel's boot id and the uptime at the stamp. */
+export interface BootStamp {
+  id: string
+  uptimeMs: number
 }
 
 export type SupervisorWriteDecision =
@@ -978,6 +995,8 @@ export function decideSupervisorWrite(input: {
   existingRaw: string | null
   ownPid: number
   startedAt: string
+  /** The boot clock read with startedAt (buildDeclaredSupervisorBody). */
+  boot?: BootStamp | null
   detection: Supervision
   pidAlive?: (pid: number) => boolean
 }): SupervisorWriteDecision {
@@ -998,7 +1017,7 @@ export function decideSupervisorWrite(input: {
     if (!declared) return { action: 'skip', reason: 'invalid-env' }
     return {
       action: 'write',
-      body: buildDeclaredSupervisorBody({ declared, pid: input.ownPid, startedAt: input.startedAt }),
+      body: buildDeclaredSupervisorBody({ declared, pid: input.ownPid, startedAt: input.startedAt, boot: input.boot }),
       reason: 'env-declared',
     }
   }
@@ -1008,7 +1027,7 @@ export function decideSupervisorWrite(input: {
     const declared: DeclaredSupervisor = { kind: supervised, handle: service.handle, restartCommand: null }
     return {
       action: 'write',
-      body: buildDeclaredSupervisorBody({ declared, pid: input.ownPid, startedAt: input.startedAt }),
+      body: buildDeclaredSupervisorBody({ declared, pid: input.ownPid, startedAt: input.startedAt, boot: input.boot }),
       reason: `detected-${supervised}`,
     }
   }

@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { CLONE_CHANNEL_SPEC, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
+import { CLONE_CHANNEL_SPEC, HOAI_PLUGIN_NAME, MARKETPLACE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 import { assertBashParses, bashOrSkip } from './helpers/posix-bash.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -121,7 +121,7 @@ test('the clone spec literal appears nowhere in the code, only via the variable'
 
 test('every consumer of the channel takes the resolved value, never the constant', () => {
   // cmd_install resolves once, honouring --channel, and both consumers (the
-  // human hint and the generated run.expect) take that resolved value.
+  // human hint and the supervisor) take that resolved value.
   assert.ok(
     /local channel="\$\{CHANNEL:-\$DEFAULT_CHANNEL\}"/.test(code),
     '--channel must still be able to override the default',
@@ -130,17 +130,46 @@ test('every consumer of the channel takes the resolved value, never the constant
     /say_launch_hint "\$workdir" "\$channel"/.test(code),
     'the foreground hint must print the RESOLVED channel',
   )
-  assert.ok(
-    /write_run_expect "\$statedir\/run\.expect" "\$statedir" "\$claude_bin" "\$channel"/.test(code),
-    'the supervisor must spawn with the RESOLVED channel',
+  // Supervisor generation 2 types no channel at all: it runs hoai, which
+  // resolves the folder's channel itself at every launch (workspace .mcp.json
+  // first, then the install it is started from). What the RESOLVED channel
+  // still decides is which plugin root run.sh starts hoai from: a marketplace
+  // channel names its own install record, anything else is this checkout.
+  assert.match(
+    code,
+    /case "\$channel" in\n\s+plugin:\*\) topology="marketplace"; plugin_key="\$\{channel#plugin:\}" ;;\n\s+\*\)\s+topology="clone" ;;\n\s+esac/,
   )
-  // The spawn line itself interpolates the argument, never a literal.
-  assert.ok(
-    /spawn "\$3" \$\{cont\}--dangerously-skip-permissions --dangerously-load-development-channels "\$4"/.test(
-      code,
-    ),
-    'run.expect must spawn with the passed channel argument',
+  assert.match(
+    code,
+    /write_run_sh "\$statedir\/run\.sh" "\$statedir" "\$ASSISTANT_ID" "\$node_bin" "\$topology" "\$plugin_key" "\$PLUGIN_DIR"/,
   )
+  // And no supervisor line spells a channel flag of its own any more.
+  assert.doesNotMatch(code, /spawn .*--dangerously-load-development-channels/)
+  assert.doesNotMatch(code, /^write_run_expect\(\)/m, 'run.expect is no longer generated')
+})
+
+test('generation 2 is stamped on every always-on install, with the grace stamp (fact 3), and run.sh runs hoai under HOAI_SUPERVISED', () => {
+  // `code` has its comment lines stripped, so the section is anchored on its first statement.
+  const section = code.slice(code.indexOf('info "Installing always-on supervisor'), code.indexOf('cmd_link >/dev/null 2>&1 || true'))
+  assert.ok(section.length > 0)
+  // Unconditional: at the function's own indentation, not inside an if.
+  assert.match(section, /^  date \+%s > "\$statedir\/installed-at"$/m)
+  assert.match(section, /^  printf '%s\\n' "\$SUPERVISOR_GENERATION" > "\$statedir\/supervisor-generation"$/m)
+  assert.match(code, /^SUPERVISOR_GENERATION=2$/m)
+  // node is required for an always-on install, before anything is written; tmux only warned about.
+  assert.match(code, /if \[ "\$\{ALWAYS_ON:-\}" = "1" \]; then\n(?:\s*#.*\n)*\s*command -v node >\/dev\/null 2>&1 \\\n\s*\|\| die "supervisor:node-not-found/)
+  assert.match(code, /command -v tmux >\/dev\/null 2>&1 \\\n\s*\|\| warn "tmux not found: the agent will run without it and remote compact will be OFF/)
+  const runSh = code.slice(code.indexOf('write_run_sh() {'), code.indexOf("\nSH\n", code.indexOf('write_run_sh() {')))
+  assert.match(runSh, /HOAI_SUPERVISED=1/)
+  assert.match(runSh, /"\$node_bin" "\$root\/bin\/hoai-core\.mjs"/)
+  assert.match(runSh, /trap on_stop TERM INT HUP/)
+})
+
+test('run.sh\'s pruned-checkout fallback looks for the plugin by the name the install-method reader uses, and never types a marketplace spec', () => {
+  const runSh = code.slice(code.indexOf('write_run_sh() {'), code.indexOf("\nSH\n", code.indexOf('write_run_sh() {')))
+  const names = [...runSh.matchAll(/k\.slice\(0, k\.lastIndexOf\("@"\)\) === "([^"]+)"/g)].map((m) => m[1])
+  assert.deepEqual(names, [HOAI_PLUGIN_NAME])
+  assert.ok(!runSh.includes(MARKETPLACE_CHANNEL_SPEC))
 })
 
 test('the approved-sounding --channels flag is never used', () => {
@@ -247,4 +276,36 @@ test('update re-registers a clone workspace\'s hooks (the floor hook included) b
   // And ensureHookEntries is what writes the floor entry beside the forwarder.
   const writer = sh.slice(sh.indexOf('install_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('install_hook_entries() {')))
   assert.match(writer, /m\.ensureHookEntries\(\{/)
+})
+
+test('the README documents supervisor generation 2, with every supervised exit code hoai really uses, and no longer describes run.expect', async () => {
+  const readme = readFileSync(join(repoRoot, 'README.md'), 'utf8')
+  const start = readme.indexOf('### What the always-on service runs (supervisor generation 2)')
+  assert.ok(start >= 0, 'the section exists')
+  const section = readme.slice(start, readme.indexOf('\n## ', start))
+  for (const needle of ['tmux -L hoai-<id>', 'claude --resume', 'session-id', 'BGOS_TMUX_SESSION=hoai-<id>', 'compact=off reason=no-tmux', 'hoai-agent attach --assistant <id>', '`hoai --keep-alive`', '`HOAI_SERVICE_NAMESPACE`', 'install already in progress', 'supervisor-generation']) {
+    assert.ok(section.includes(needle), `the section says ${needle}`)
+  }
+  // One table row per supervised exit, numbered by hoai's own constants and named by its outcomes.
+  const core = await import('../bin/hoai-core.mjs')
+  const rows: Array<[number, RegExp]> = [
+    [core.EXIT_UNATTENDED_NEEDS_PERSON, /`identity-conflict`/],
+    [core.EXIT_SUPERVISED_IDENTITY_MISMATCH, /`identity-mismatch`/],
+    [core.EXIT_SUPERVISED_NO_EXPECT, /`expect-missing`/],
+    [core.EXIT_SUPERVISED_GATE, /`gate-unrecognised`/],
+    [core.EXIT_SUPERVISED_STARTUP_EXIT, /`exited-during-startup`/],
+    [core.EXIT_SUPERVISED_SIGNED_OUT, /`live-but-not-signed-in`/],
+  ]
+  assert.deepEqual(rows.map(([code]) => code), [6, 7, 8, 9, 10, 11])
+  for (const [code, outcome] of rows) {
+    const row = section.split('\n').find((l) => l.startsWith(`| ${code} |`))
+    assert.ok(row, `a row for exit ${code}`)
+    assert.match(row!, outcome)
+  }
+  // The generation 1 description is gone, from the README and from the gate block's header.
+  assert.doesNotMatch(readme, /auto-accepts the\s+two `--dangerously-\*` prompts/)
+  assert.doesNotMatch(readme, /`run\.expect` behaviour tests/)
+  const gateHeader = readFileSync(join(repoRoot, 'lib', 'gate-block.tcl'), 'utf8').split('\n').filter((l) => l.startsWith('#')).join('\n')
+  assert.doesNotMatch(gateHeader, /copies it into the supervisor's\s*#?\s*run\.expect/)
+  assert.doesNotMatch(gateHeader, /which run\.expect derives/)
 })

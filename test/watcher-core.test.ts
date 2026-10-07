@@ -36,7 +36,7 @@ import {
   runWatcher,
   scrubLine,
 } from '../lib/watcher-core.mjs'
-import { WATCHER_BUNDLE_FILES, bundleFingerprint } from '../lib/watcher-bundle.mjs'
+import { WATCHER_BUNDLE_FILES, bundleFingerprint, installWatcherBundle, readBundleManifest } from '../lib/watcher-bundle.mjs'
 import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
 import { supervisorFileBody } from '../bin/hoai-core.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -266,6 +266,9 @@ function baseDeps(fs: MemoryFs, backend: ReturnType<typeof fakeBackend>, clock: 
       uid: 501,
       username: USER,
       pidAlive: (pid: number) => pid === 4242,
+      // listAgents' sync probes answer nothing: no real systemctl, and no real ps or PowerShell
+      // asking what pid 4242 runs on THIS host (a live non-hoai 4242 flipped launcherLive).
+      execSync: () => ({ code: 1, stdout: '' }),
       hasTmux: true,
       hasScript: true,
       echo: (line: string) => logs.push(line),
@@ -398,13 +401,23 @@ test('runWatcher: an idle cycle posts the heartbeat (exact shape) then long-poll
   const clock = fakeClock()
   const { deps } = baseDeps(fs, backend, clock, { modules: stubModules() })
   assert.equal(await runWatcher(deps as any), 0)
+  // design 5: the keep-alive sweep runs right after the heartbeat and asks the
+  // backend first, with the watcher's own pairing auth. The fake backend has no
+  // such route ({} is not an answer), so the sweep is off and acts on nothing.
   assert.deepEqual(
     backend.calls.map((c) => `${c.method} ${c.path}`),
-    ['POST /api/v1/integrations/heartbeat', 'GET /api/v1/integrations/machine-rpc/pending?wait=25'],
+    ['POST /api/v1/integrations/heartbeat', 'GET /api/v1/integrations/watchers/keep-alive', 'GET /api/v1/integrations/machine-rpc/pending?wait=25'],
   )
+  assert.equal(backend.calls[1]!.headers['X-BGOS-Pairing'], TOKEN)
   assert.deepEqual(backend.calls[0]!.body, {
     daemonVersion: '0.38.3',
-    env: { platform: 'linux', machineId: MACHINE_ID, role: 'watcher', agents: ['7', '912'] },
+    env: {
+      platform: 'linux',
+      machineId: MACHINE_ID,
+      role: 'watcher',
+      agents: ['7', '912'],
+      watcherHealth: { status: 'ok', bootsLastHour: 0, keepAlive: { enabled: false, agents: [] } },
+    },
   })
   const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
   assert.equal(state.lastHeartbeatOk, true)
@@ -443,9 +456,10 @@ test('runWatcher reconcile: ack, job, planning, per-step progress, marker + reci
   assert.equal(await runWatcher(deps as any), 0)
 
   assert.deepEqual(
-    backend.calls.map((c) => `${c.method} ${c.path}`).slice(0, 4),
+    backend.calls.map((c) => `${c.method} ${c.path}`).slice(0, 5),
     [
       'POST /api/v1/integrations/heartbeat',
+      'GET /api/v1/integrations/watchers/keep-alive',
       'GET /api/v1/integrations/machine-rpc/pending?wait=25',
       'POST /api/v1/integrations/machine-rpc/job-1/ack',
       'GET /api/v1/integrations/machine-rpc/job-1',
@@ -991,4 +1005,305 @@ test('a job that succeeded keeps its own outcome even when the watcher cannot re
     'watcher_bundle_source_unknown',
     'a watcher-internal reason must never become the headline of a job with its own outcome',
   )
+})
+
+// -- keep-alive and health (design 5 and 8) -----------------------------------------------------
+
+const STOP = new Error('stop the loop')
+
+/** A backend whose long-poll takes 61 s of fake time (so every iteration is due a
+ *  heartbeat) and whose second poll fails, so the loop backs off into a sleep
+ *  that ends the test. */
+function twoBeatBackend(clock: ReturnType<typeof fakeClock>) {
+  const calls: Call[] = []
+  let polls = 0
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) {
+      polls += 1
+      clock.advance(61_000)
+      if (polls > 1) throw new Error('ECONNRESET')
+      return { ok: true, status: 200, text: async () => JSON.stringify({ frames: [] }) }
+    }
+    return { ok: true, status: 200, text: async () => '{}' }
+  }
+  return { calls, fetch }
+}
+
+test('runWatcher: the keep-alive sweep runs after every heartbeat (not inside jobs) and its result rides the NEXT heartbeat', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const backend = twoBeatBackend(clock)
+  const sweeps: any[] = []
+  const report = { enabled: true, source: 'live', agents: [{ id: '912', state: 'waiting_idle', reason: 'background_job', since: 'x' }] }
+  const { deps } = baseDeps(fs, backend as any, clock, {
+    modules: stubModules(),
+    once: false,
+    sleep: async () => {
+      throw STOP
+    },
+    keepAliveSweep: async (ctx: any) => {
+      sweeps.push(ctx)
+      const res = await ctx.fetchKeepAlive()
+      assert.equal(res.status, 200)
+      return report
+    },
+  })
+  await assert.rejects(() => runWatcher(deps as any), STOP)
+  const beats = backend.calls.filter((c) => c.path.endsWith('/integrations/heartbeat'))
+  assert.equal(beats.length, 2)
+  assert.equal(sweeps.length, 2, 'one sweep per heartbeat')
+  assert.deepEqual(beats[0]!.body.env.watcherHealth.keepAlive, { enabled: false, agents: [] })
+  assert.deepEqual(beats[1]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: report.agents })
+  assert.equal(backend.calls.filter((c) => c.path.endsWith('/watchers/keep-alive')).length, 2)
+  // The sweep is handed the watcher's own effects and identity, scrubbed logging included.
+  const ctx = sweeps[0]
+  assert.equal(ctx.home, HOME)
+  assert.equal(ctx.uid, 501)
+  assert.equal(ctx.nodePath, '/usr/local/bin/node')
+  assert.equal(typeof ctx.kill, 'function')
+  assert.equal(ctx.scrub(`${HOME}/x ${TOKEN}`), '~/x <redacted>')
+})
+
+test('runWatcher: a sweep that throws is logged and the loop goes on polling', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend()
+  const clock = fakeClock()
+  const { deps, logs } = baseDeps(fs, backend, clock, {
+    modules: stubModules(),
+    keepAliveSweep: async () => {
+      throw new Error('boom')
+    },
+  })
+  assert.equal(await runWatcher(deps as any), 0)
+  assert.ok(logs.some((l) => l.includes('keep-alive sweep failed: boom')))
+  assert.ok(backend.calls.some((c) => c.path.includes('/machine-rpc/pending')))
+})
+
+test('runWatcher: a successful poll records lastPollOkAt (the crash-loop rule); a failed one does not; it survives a restart', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const clock = fakeClock()
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.equal(state.lastPollOkAt, new Date(T0).toISOString())
+  clock.advance(60_000)
+  const failing = baseDeps(fs, fakeBackend({ failPending: true }), clock, { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(failing.deps as any)
+  const after = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.equal(after.lastPollOkAt, new Date(T0).toISOString(), 'carried over from the previous process, not erased by the failed poll')
+})
+
+test('runWatcher: the last bundle self repair (bundleRepair) survives a restart, so the one-per-10-minutes bound holds (e2e E4)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const repair = { at: new Date(T0 - 60_000).toISOString(), outcome: 'repaired', files: ['lib/watcher-health.mjs'] }
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/state.json`, JSON.stringify({ bundleRepair: repair, lastJob: 'old' }))
+  const { deps } = baseDeps(fs, fakeBackend(), fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
+  assert.deepEqual(state.bundleRepair, repair)
+  assert.equal(state.lastJob, undefined, 'everything else still starts fresh')
+})
+
+test('runWatcher: the heartbeat carries the recorded boots and the last fatal (design 8)', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/boots.json`, JSON.stringify([{ startedAt: new Date(T0 - 5 * 60_000).toISOString(), pid: 1, version: '0.38.3' }]))
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/crash.json`, JSON.stringify({ at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: false, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth, {
+    status: 'degraded',
+    bootsLastHour: 1,
+    lastFatal: { at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' },
+    keepAlive: { enabled: false, agents: [] },
+  })
+})
+
+test('runWatcher: a reconcile job restart hands the injected kill to the restart ladder (the keepalive tier)', async () => {
+  const fs = machineFs({
+    [`${HOME}/.bgos-agent/7/keepalive.json`]: JSON.stringify({ kind: 'keepalive', pid: 4242, claudePid: 5151, capabilities: ['relaunch'] }),
+  })
+  manifestFor(fs)
+  const backend = fakeBackend({
+    frames: [{ rpcId: 'job-k', op: 'restart_only' }],
+    jobs: { 'job-k': { op: 'restart_only', intent: 'restart_only', targets: [{ pairingId: 2, assistantId: '7' }] } },
+  })
+  const clock = fakeClock()
+  const kills: Array<[number, string]> = []
+  const plan = () => ({ verdict: 'plan', targetVersion: null, steps: [{ id: 's1-restart_agent:7', kind: 'restart_agent', target: '7', via: 'service', onFailure: 'continue', why: 'x' }] })
+  const { deps } = baseDeps(fs, backend, clock, {
+    modules: stubModules({ plan }),
+    pidAlive: (pid: number) => pid === 4242 || pid === 5151,
+    // claude 5151 runs under its keepalive script 4242: provably the script's (F6).
+    execSync: (file: string, args: string[]) =>
+      file === 'ps' && args[1] === 'comm='
+        ? { code: 0, stdout: 'claude\n' }
+        : file === 'ps' && args[0] === '-A'
+          ? { code: 0, stdout: `4242 1 ${process.getuid?.() ?? 0} 01:00:00\n5151 4242 ${process.getuid?.() ?? 0} 10:00\n` }
+          : { code: 1, stdout: '' },
+    kill: (pid: number, signal: string) => void kills.push([pid, signal]),
+    keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+  })
+  await runWatcher(deps as any)
+  assert.deepEqual(kills, [[5151, 'SIGTERM']])
+})
+
+test('runWatcher: the first heartbeat after a restart carries the keep-alive states the previous process persisted', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': { state: 'supervised', reason: 'canonical', since } } }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '912', state: 'supervised', reason: 'canonical', since }] })
+})
+
+/** listAgents' sync probes answer nothing: the heartbeat's inventory never runs a real systemctl or ps. */
+const noOsExec = () => ({ code: 1, stdout: '' })
+
+test('runWatcher (F8): a long keep-alive sweep keeps the watcher online: it heartbeats when due, and an owner job sent meanwhile is acked inside the backend 60 s window and run right after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const backend = fakeBackend({ frames: [{ rpcId: 'job-s', op: 'bogus' }], jobs: { 'job-s': { op: 'bogus' } } })
+  const clock = fakeClock()
+  const during: Call[][] = []
+  const keepAliveSweep = async (c: any) => {
+    // 70 s of install, a touch, 70 s of verify, a touch: past the backend online window without them.
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    clock.advance(70_000)
+    await c.keepOnline()
+    during.push([...backend.calls])
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, backend, clock, { modules: stubModules(), execSync: noOsExec, keepAliveSweep })
+  await runWatcher(deps as any)
+  const inSweep = during[1]!
+  assert.equal(inSweep.filter((c) => c.path.endsWith('/integrations/heartbeat')).length, 3, 'the start heartbeat, then one per due interval inside the sweep')
+  assert.ok(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/ack')), 'the job is acked while the sweep still runs')
+  assert.equal(inSweep.some((c) => c.path.endsWith('/machine-rpc/job-s/progress')), false, 'it runs only after the sweep (single flight)')
+  assert.equal(backend.calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/ack')).length, 1, 'acked once')
+  assert.deepEqual(backend.progress('job-s').map((b: any) => [b.state, b.message]), [['failed', 'unknown_op:bogus']], 'run after the sweep')
+})
+
+test('runWatcher: a keep-alive state file with a null agent record (valid JSON, hand edited) never stops the start; the record is dropped', async () => {
+  // Before: reportEntry read `null.state` at startup, outside any try, so every
+  // start was a fatal and the watcher sat in crash_loop backoff for good (only a
+  // sweep rewrites the file, and no sweep was ever reached).
+  const fs = machineFs()
+  manifestFor(fs)
+  const since = new Date(T0 - 60_000).toISOString()
+  fs.writeFile(`${HOME}/.bgos-agent/watcher/keepalive-state.json`, JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': null, '7': { state: 'supervised', reason: 'canonical', since } } }))
+  const backend = fakeBackend()
+  const { deps } = baseDeps(fs, backend, fakeClock(), { modules: stubModules(), execSync: noOsExec, keepAliveSweep: async () => ({ enabled: true, agents: [] }) })
+  await runWatcher(deps as any)
+  assert.deepEqual(backend.calls[0]!.body.env.watcherHealth.keepAlive, { enabled: true, agents: [{ id: '7', state: 'supervised', reason: 'canonical', since }] })
+})
+
+test('runWatcher (F8): a frame whose ack failed during the sweep comes back on the next touch; it is acked again, and runs ONCE after the sweep', async () => {
+  const fs = machineFs()
+  manifestFor(fs)
+  const calls: Call[] = []
+  let ackLanded = false
+  let acks = 0
+  const respond = (status: number, json: any) => ({ ok: status < 400, status, text: async () => JSON.stringify(json) })
+  // Like the real backend (machine-rpc.service.ts pending): a frame is returned
+  // on EVERY poll until an ack lands, and the first ack here is lost (a 503).
+  const fetch = async (url: string, init: any) => {
+    const u = new URL(url)
+    calls.push({ method: init?.method ?? 'GET', path: u.pathname + u.search, body: init?.body ? JSON.parse(init.body) : undefined, headers: init?.headers ?? {} })
+    if (u.pathname.endsWith('/machine-rpc/pending')) return respond(200, { frames: ackLanded ? [] : [{ rpcId: 'job-s', op: 'bogus' }] })
+    if (u.pathname.endsWith('/machine-rpc/job-s/ack')) {
+      acks += 1
+      if (acks === 1) return respond(503, { error: 'unavailable' })
+      ackLanded = true
+      return respond(200, {})
+    }
+    if (u.pathname.endsWith('/machine-rpc/job-s') && init?.method === 'GET') return respond(200, { op: 'bogus' })
+    return respond(200, {})
+  }
+  const clock = fakeClock()
+  const keepAliveSweep = async (c: any) => {
+    clock.advance(70_000)
+    await c.keepOnline()
+    clock.advance(70_000)
+    await c.keepOnline()
+    return { enabled: true, agents: [] }
+  }
+  const { deps } = baseDeps(fs, fakeBackend(), clock, { fetch, modules: stubModules(), execSync: noOsExec, keepAliveSweep })
+  await runWatcher(deps as any)
+  assert.equal(acks, 2, 'the lost ack is sent again when the frame comes back')
+  const progress = calls.filter((c) => c.path.endsWith('/machine-rpc/job-s/progress')).map((c) => [c.body.state, c.body.message])
+  assert.deepEqual(progress, [['failed', 'unknown_op:bogus']], 'the job runs once, never once per delivery')
+})
+
+// --- e2e E4: the refresh copies the ROOT's closure and never stages a bundle that cannot load ----
+
+function twoRoots() {
+  const fs = memoryFs()
+  const OLD = '/plugins/hoai/0.62.0'
+  const NEW = '/plugins/hoai/0.62.1'
+  for (const rel of WATCHER_BUNDLE_FILES) {
+    fs.writeFile(`${OLD}/${rel}`, `// ${rel} old\n`)
+    fs.writeFile(`${NEW}/${rel}`, `// ${rel} new\n`)
+  }
+  fs.writeFile(`${OLD}/package.json`, '{"version":"0.62.0"}')
+  fs.writeFile(`${NEW}/package.json`, '{"version":"0.62.1"}')
+  // The new release adds a watcher file the list never names.
+  fs.writeFile(`${NEW}/bin/hoai-watcher.mjs`, "export const go = () => import('../lib/watcher-core.mjs')\n")
+  fs.writeFile(`${NEW}/lib/watcher-core.mjs`, "import { thing } from './new-thing.mjs'\nexport { thing }\n")
+  return { fs, OLD, NEW }
+}
+
+function probeRecorder() {
+  const probes: unknown[][] = []
+  const exec = async (...args: unknown[]) => {
+    probes.push(args)
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  return { probes, exec }
+}
+
+test('refreshWatcherIfStale: a root whose closure does not resolve fails BY NAME (bundle_incomplete), is never probed or swapped, the live bundle untouched', async () => {
+  const { fs, OLD, NEW } = twoRoots()
+  await installWatcherBundle({ pluginRoot: OLD, home: HOME, fs })
+  const { probes, exec } = probeRecorder()
+  const logs: string[] = []
+  const result = await refreshWatcherIfStale({ home: HOME, fs, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node', log: (l: string) => void logs.push(l) })
+  assert.deepEqual(
+    { needed: result.needed, ok: result.ok, message: result.message },
+    { needed: true, ok: false, message: 'watcher_refresh_failed:bundle_incomplete:lib/new-thing.mjs (imported by lib/watcher-core.mjs)' },
+  )
+  assert.equal(probes.length, 0, 'never probed')
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/watcher/lib/watcher-core.mjs`), '// lib/watcher-core.mjs old\n', 'the live bundle keeps running')
+  assert.equal(readBundleManifest(HOME, fs)?.pluginRoot, OLD)
+  assert.ok(logs.some((l) => l.includes('incomplete')), logs.join('\n'))
+})
+
+test('refreshWatcherIfStale: a copy that comes out incomplete is cleared from next/ by name; with the root complete the closure-only file goes live', async () => {
+  const { fs, OLD, NEW } = twoRoots()
+  fs.writeFile(`${NEW}/lib/new-thing.mjs`, 'export const thing = 1\n')
+  await installWatcherBundle({ pluginRoot: OLD, home: HOME, fs })
+  const { probes, exec } = probeRecorder()
+  const lossy = { ...fs, copyFile: (from: string, to: string) => (from.endsWith('new-thing.mjs') ? undefined : fs.copyFile(from, to)) }
+  const failed = await refreshWatcherIfStale({ home: HOME, fs: lossy as any, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node' })
+  assert.equal(failed.ok, false)
+  assert.match(failed.message, /^watcher_refresh_failed:bundle_incomplete:lib\/new-thing\.mjs/)
+  assert.equal([...fs.files.keys()].some((k) => k.includes('/watcher/next/')), false, 'the half staged bundle is cleared')
+  assert.equal(probes.length, 0)
+  // The control: the same refresh on an honest filesystem stages, probes, swaps, and new-thing is live.
+  const ok = await refreshWatcherIfStale({ home: HOME, fs, now: () => T0, manifest: readBundleManifest(HOME, fs), pluginRoot: NEW, exec: exec as any, nodePath: '/usr/bin/node' })
+  assert.equal(ok.message, 'watcher_bundle_refreshed:0.62.1')
+  assert.equal(probes.length, 1)
+  assert.equal(fs.files.get(`${HOME}/.bgos-agent/watcher/lib/new-thing.mjs`), 'export const thing = 1\n')
+  assert.ok(readBundleManifest(HOME, fs)?.files.includes('lib/new-thing.mjs'))
 })

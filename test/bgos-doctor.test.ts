@@ -1757,10 +1757,10 @@ test('provePairedTopology: each missing proof is a NAMED refusal, and no channel
   assert.equal((await provePairedTopology({ ...TOPO, ...allGood, workdir: '' })).reason, R.NO_ASSISTANT_ID)
 })
 
-test('provePairedTopology: both verifiers are asked about the SUPERVISED environment, not the installing shell', async () => {
-  // The launchd plist and the systemd unit carry no CLAUDE_CONFIG_DIR. A plugin
-  // installed only under the installing shell's custom config dir is a plugin
-  // the background session never loads: that must read as NOT installed.
+test('provePairedTopology: both verifiers are asked about the SUPERVISED environment, which keeps CLAUDE_CONFIG_DIR and drops the rest', async () => {
+  // Supervisor generation 2 writes CLAUDE_CONFIG_DIR into the launchd plist and the systemd
+  // unit when the installing shell has it (design section 4), so the background session looks
+  // in THAT config dir: the proof must too. The session-scoped variables are still not carried.
   const seen: Array<Record<string, string | undefined>> = []
   const env = { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/custom', CLAUDE_PLUGIN_ROOT: '/custom/plugins/x', BGOS_ASSISTANT_ID: '99', BGOS_CREDENTIALS_PATH: '/elsewhere.json' }
   await provePairedTopology({
@@ -1772,13 +1772,17 @@ test('provePairedTopology: both verifiers are asked about the SUPERVISED environ
   })
   assert.equal(seen.length, 2)
   for (const e of seen) {
-    assert.deepEqual(Object.keys(e), ['PATH'])
+    assert.deepEqual(e, { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/custom' })
   }
-  assert.deepEqual(supervisedEnv(env), { PATH: '/usr/bin' })
-  assert.equal(env.CLAUDE_CONFIG_DIR, '/custom', 'the caller env is not mutated')
-  // And the refusal says so, in words the owner can act on.
+  assert.deepEqual(supervisedEnv(env), { PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '/custom' })
+  assert.equal(env.CLAUDE_PLUGIN_ROOT, '/custom/plugins/x', 'the caller env is not mutated')
+  // An EMPTY CLAUDE_CONFIG_DIR is not written into the service (bin/bgos-agent writes it only
+  // when it is set), so it is not part of the proof either.
+  assert.deepEqual(supervisedEnv({ PATH: '/usr/bin', CLAUDE_CONFIG_DIR: '' }), { PATH: '/usr/bin' })
+  // A refusal names the config dir the service will look in.
   const refused = await provePairedTopology({ ...TOPO, ...allGood, env, route: () => ({ spec: '', source: 'install-method', method: 'unknown', serverName: '', conflict: false, reason: '' }) })
-  assert.match(refused.detail, /CLAUDE_CONFIG_DIR=\/custom, which the background service does not inherit/)
+  assert.match(refused.detail, /not installed where the background agent will look \(\/custom\)/)
+  assert.doesNotMatch(refused.detail, /does not inherit/)
 })
 
 function pairedHome(): { home: string; workspace: string; npxBin: string } {
@@ -1826,15 +1830,29 @@ test('provePairedTopology, with the REAL verifiers: the same folder is refused w
   const otherAgent = pairedHome()
   assert.equal((await provePairedTopology({ workdir: otherAgent.workspace, assistantId: '937', env: {}, home: otherAgent.home, scriptDir: otherAgent.npxBin })).reason, R.PIN_MISMATCH)
 
+  // The plugin only under ~/.claude while the installing shell (and so the service, which
+  // carries CLAUDE_CONFIG_DIR) points at another config dir: the background session would look
+  // there and find nothing. Refused at install, not discovered at launch.
+  const elsewhere = pairedHome()
+  const emptyConfig = join(elsewhere.home, 'custom-claude')
+  mkdirSync(join(emptyConfig, 'plugins'), { recursive: true })
+  const e = await provePairedTopology({ workdir: elsewhere.workspace, assistantId: '936', env: { CLAUDE_CONFIG_DIR: emptyConfig }, home: elsewhere.home, scriptDir: elsewhere.npxBin })
+  assert.equal(e.reason, R.PLUGIN_NOT_INSTALLED, e.detail)
+  assert.match(e.detail, /not installed where the background agent will look \(.*custom-claude\)/)
+})
+
+test('provePairedTopology, with the REAL verifiers: a plugin installed ONLY under the custom CLAUDE_CONFIG_DIR the service will carry is proven', async () => {
+  // Generation 2 writes CLAUDE_CONFIG_DIR into the service, so this is exactly where the
+  // background session will look. The proof used to strip the variable and refuse this folder.
   const customConfig = pairedHome()
-  // the plugin exists ONLY under a custom config dir the installing shell exports
   const custom = join(customConfig.home, 'custom-claude')
-  mkdirSync(join(custom, 'plugins'), { recursive: true })
-  writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath: join(custom, 'plugins/cache/hoai/hoai/0.42.3'), version: '0.42.3' }] } }))
+  const installPath = join(custom, 'plugins/cache/hoai/hoai/0.42.3')
+  mkdirSync(installPath, { recursive: true })
+  writeFileSync(join(custom, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'hoai@hoai': [{ scope: 'user', installPath, version: '0.42.3' }] } }))
+  writeFileSync(join(custom, 'settings.json'), JSON.stringify({ enabledPlugins: { 'hoai@hoai': true } }))
   writeFileSync(join(customConfig.home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }))
   const c = await provePairedTopology({ workdir: customConfig.workspace, assistantId: '936', env: { CLAUDE_CONFIG_DIR: custom }, home: customConfig.home, scriptDir: customConfig.npxBin })
-  assert.equal(c.reason, R.PLUGIN_NOT_INSTALLED, 'installed for the shell, invisible to the background service: that is a deaf agent, so it is a refusal')
-  assert.match(c.detail, /does not inherit/)
+  assert.deepEqual([c.ok, c.channel], [true, MARKETPLACE_CHANNEL_SPEC], c.detail)
 })
 
 test('bgos-doctor --prove-paired-topology: one line, exit 0 or 1, and none of the doctor table machinery runs', async () => {
@@ -1857,11 +1875,10 @@ test('bgos-doctor --prove-paired-topology: one line, exit 0 or 1, and none of th
 })
 
 
-test('provePairedTopology: an installer running from a marketplace install under a CUSTOM config dir is not called a clone', async () => {
-  // Found by review. The supervised environment has no CLAUDE_CONFIG_DIR, so the
-  // script then sits outside the default plugins dir and detection says "clone".
-  // Telling that owner to pass --key and --user would be false: the truth is
-  // that the background service will not see their install.
+test('provePairedTopology: an installer running from a marketplace install under a CUSTOM config dir is proven, because the service carries that config dir', async () => {
+  // Found by review, then fixed at the root: the proof used to strip CLAUDE_CONFIG_DIR, so the
+  // script sat outside the default plugins dir and detection said "clone". The service now
+  // carries the variable, so the proof asks with it and the route is the marketplace one.
   const seenEnvs: Array<Record<string, string | undefined>> = []
   const verdict = await provePairedTopology({
     ...TOPO,
@@ -1874,7 +1891,23 @@ test('provePairedTopology: an installer running from a marketplace install under
         : { spec: CLONE_CHANNEL_SPEC, source: 'install-method', method: 'clone', serverName: '', conflict: false, reason: '' }
     },
   })
+  assert.deepEqual([verdict.ok, verdict.channel], [true, 'plugin:hoai@hoai'], verdict.detail)
+  assert.deepEqual(seenEnvs, [{ CLAUDE_CONFIG_DIR: '/custom' }], 'asked once, as the service will run')
+})
+
+test('provePairedTopology: a route only the installing SHELL sees (a session variable the service does not carry) is named as that, not as a clone', async () => {
+  // CLAUDE_PLUGIN_ROOT is set inside a Claude Code session and never carried into the service.
+  // An installer that is a marketplace install only through it is invisible to the service.
+  const verdict = await provePairedTopology({
+    ...TOPO,
+    ...allGood,
+    env: { CLAUDE_PLUGIN_ROOT: '/h/.claude/plugins/cache/hoai/hoai/0.42.3' },
+    route: (o: { env: Record<string, string | undefined> }) =>
+      o.env.CLAUDE_PLUGIN_ROOT
+        ? { spec: 'plugin:hoai@hoai', source: 'install-method', method: 'marketplace', serverName: '', conflict: false, reason: '' }
+        : { spec: CLONE_CHANNEL_SPEC, source: 'install-method', method: 'clone', serverName: '', conflict: false, reason: '' },
+  })
   assert.equal(verdict.reason, PAIRED_TOPOLOGY_REASONS.PLUGIN_NOT_INSTALLED)
-  assert.match(verdict.detail, /installed for this shell \(\/custom\) but not where the background agent will look/)
-  assert.equal(seenEnvs.length, 2, 'asked once as the service will run, once as the installing shell sees it')
+  assert.match(verdict.detail, /visible to this shell but not to the environment the background service runs with/)
+  assert.doesNotMatch(verdict.detail, /does not inherit CLAUDE_CONFIG_DIR/)
 })
