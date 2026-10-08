@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.62.3 (2026-10-08)
+
+**A tool card a group refuses is refused once, not on every tool call (bug 0cd3eca1).** The backend refuses an agent's tool card posted into a room or channel with 400 "Agent messages into a group must use /send-message", on purpose: a stamped agent row would stop the room's working line keepalive and trip the room loop guard. The hook rail did not know that refusal, so every tool call in a group posted again, got another 400 and logged another line. It is now read as permanent for that chat, the same narrow way as the other two (the 400 and the message whole, or a `group_route_required` code), and the rail stops posting cards there. Mutation proven.
+
 ## 0.62.2 (2026-10-08)
 
 **The a2a route refusal is recognised by the code the backend actually ships.** BGOS #2038 sends the 400 "A2A messages must use /send-message" with `code: a2a_wrong_route`; this plugin had guessed `a2a_route_required`. Both are accepted now, and the message text match still answers for a backend that sends no code. Found by Ares's check of 0.62.1 against #2038.

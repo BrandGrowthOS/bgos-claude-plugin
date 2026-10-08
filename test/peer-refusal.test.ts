@@ -14,6 +14,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  GROUP_ROUTE_REQUIRED,
+  GROUP_ROUTE_REQUIRED_MESSAGE,
+  peerRefusalStatus as statusOf,
   A2A_WRONG_ROUTE_CODE,
   pickPermissionChat,
   createRefusedChats as makeRefused,
@@ -243,4 +246,26 @@ test('the permission card has no chat when every monitored chat refused', () => 
 
 test('with nothing refused the first monitored chat still wins, as before', () => {
   assert.equal(pickPermissionChat(['main-9', 'other'], [makeRefused()]), 'main-9')
+})
+
+// Bug 0cd3eca1: a tool card into a room or channel is refused for good.
+test('the group route 400 is a permanent refusal', () => {
+  const body = JSON.stringify({ statusCode: 400, message: GROUP_ROUTE_REQUIRED_MESSAGE, operation: 'MESSAGE' })
+  assert.equal(classifyPeerRefusal(400, body), GROUP_ROUTE_REQUIRED)
+  assert.equal(statusOf(GROUP_ROUTE_REQUIRED), 400)
+})
+
+test('the group route sentence never counts on a 403', () => {
+  const body = JSON.stringify({ statusCode: 403, message: GROUP_ROUTE_REQUIRED_MESSAGE })
+  assert.equal(classifyPeerRefusal(403, body), null)
+})
+
+test('a longer or different group sentence is not the refusal', () => {
+  const body = JSON.stringify({ statusCode: 400, message: GROUP_ROUTE_REQUIRED_MESSAGE + ' now' })
+  assert.equal(classifyPeerRefusal(400, body), null)
+})
+
+test('the group refusal reaches a thrown HTTP failure', () => {
+  const err = Object.assign(new Error('POST 400'), { peerRefusal: GROUP_ROUTE_REQUIRED })
+  assert.equal(peerRefusalOf(err), GROUP_ROUTE_REQUIRED)
 })
