@@ -44,6 +44,14 @@
 
 export const PEER_NOT_PARTICIPANT = 'peer_not_participant'
 export const A2A_ROUTE_REQUIRED = 'a2a_route_required'
+/**
+ * The code BGOS actually ships for the a2a route refusal (backend
+ * a2a-write-refusals.ts, BGOS #2038, 2026-10-08). This file was written before
+ * the backend chose a name and guessed `a2a_route_required`; both are accepted,
+ * and the message text match below still answers for a backend that sends no
+ * code at all.
+ */
+export const A2A_WRONG_ROUTE_CODE = 'a2a_wrong_route'
 export type PeerRefusal = typeof PEER_NOT_PARTICIPANT | typeof A2A_ROUTE_REQUIRED
 
 /** The backend's own words, byte for byte. */
@@ -83,6 +91,7 @@ export function classifyPeerRefusal(status: number, bodyText: string): PeerRefus
   if (body === null || typeof body !== 'object') return null
   const { code, message } = body as { code?: unknown; message?: unknown }
   if (code === refusal) return refusal
+  if (refusal === A2A_ROUTE_REQUIRED && code === A2A_WRONG_ROUTE_CODE) return refusal
   if (message === reason) return refusal
   return null
 }
@@ -182,4 +191,20 @@ export function a2aRouteRequiredResult(
     ],
     isError: true,
   }
+}
+
+/**
+ * The chat a permission approval card goes to: the first monitored chat that
+ * has not refused this agent's posts for good. The card used to go to
+ * monitoredChatIds[0] unconditionally, so when that chat was a peer
+ * side-thread every approval request posted again, was refused again, and
+ * failed closed again (Ares's check of plugin 0.62.1, 2026-10-08). Undefined
+ * when every monitored chat has refused, and the caller denies, as it does
+ * when there is no chat at all.
+ */
+export function pickPermissionChat(
+  monitored: readonly string[],
+  refused: ReadonlyArray<Pick<RefusedChats, 'has'>>,
+): string | undefined {
+  return monitored.find((chatId) => !refused.some((set) => set.has(chatId)))
 }

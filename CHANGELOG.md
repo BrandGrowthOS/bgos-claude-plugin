@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.62.2 (2026-10-08)
+
+**The a2a route refusal is recognised by the code the backend actually ships.** BGOS #2038 sends the 400 "A2A messages must use /send-message" with `code: a2a_wrong_route`; this plugin had guessed `a2a_route_required`. Both are accepted now, and the message text match still answers for a backend that sends no code. Found by Ares's check of 0.62.1 against #2038.
+
+**A permission approval card no longer posts into a chat that has refused this agent for good.** The card went to the first monitored chat unconditionally, so when that chat was a peer side-thread every approval request posted again, was refused again and failed closed again. It now goes to the first monitored chat that has not refused, a refused card is remembered, and when every monitored chat has refused the request is denied, as it is with no chat at all (`pickPermissionChat`). Both mutation proven.
+
 ## 0.62.1 (2026-10-07)
 
 **A plugin clone on a prerelease version now reports it.** `readOwnVersion` accepted only strict X.Y.Z, so a clone on `0.62.1-local` reported `runningVersion null` and the watcher never restarted it onto a staged update (found by the mission 104 goal 4 proof). It now accepts the same shape the backend heartbeat and the watcher already accept (`X.Y.Z` plus an optional suffix, at most 32 characters). Self-update still compares strict X.Y.Z only, so nothing about published updates changes. Mutation proven.

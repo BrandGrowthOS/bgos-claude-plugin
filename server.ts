@@ -740,6 +740,7 @@ import {
   createRefusedChats,
   peerNotParticipantResult,
   peerRefusalOf,
+  pickPermissionChat,
   peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
@@ -2863,9 +2864,12 @@ function relayPermissionToOwner(
   // Interactive mode: post a real BGOS approval card. The typed yes/no
   // fallback below stays for old clients, or if a button-click event is not
   // materialized in chat history.
-  const chatId = monitoredChatIds[0]
+  // Never a chat that has already refused this agent's posts for good: a
+  // refused card posts again, is refused again and fails closed again, once
+  // per request (lib/peer-refusal.ts pickPermissionChat).
+  const chatId = pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats])
   if (!chatId) {
-    log(`No monitored chat found, auto-denying ${tool_name} [${request_id}]`)
+    log(`No monitored chat that takes this agent's posts, auto-denying ${tool_name} [${request_id}]`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'deny' },
@@ -2981,6 +2985,9 @@ function relayPermissionToOwner(
     })
   } catch (err) {
     pendingPermissions.delete(request_id)
+    // A permanent refusal is remembered, so the next request picks another
+    // chat instead of posting into this one again.
+    refuseHookRailChat(chatId, err)
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
     await mcp.notification({
