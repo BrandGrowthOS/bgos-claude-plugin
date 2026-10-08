@@ -52,7 +52,24 @@ export const A2A_ROUTE_REQUIRED = 'a2a_route_required'
  * code at all.
  */
 export const A2A_WRONG_ROUTE_CODE = 'a2a_wrong_route'
-export type PeerRefusal = typeof PEER_NOT_PARTICIPANT | typeof A2A_ROUTE_REQUIRED
+/**
+ * THE THIRD ONE (2026-10-08, bug 0cd3eca1). A tool card posted into a group
+ * (a room or a channel) is refused on POST /messages with
+ *
+ *   400 {"statusCode":400,"message":"Agent messages into a group must use /send-message",...}
+ *
+ * (BGOS MessageService.assertMayAuthorAgentTurn, authority 'not-on-this-route';
+ * no `code`). It is deliberate and permanent for the chat: the backend keeps it
+ * because a stamped agent row would stop the room's working line keepalive and
+ * trip the room loop guard. The hook rail used to post again on every tool
+ * call, one 400 and one log line each. Read the same narrow way: the 400 and
+ * the message whole, or a `code` of `group_route_required` should one appear.
+ */
+export const GROUP_ROUTE_REQUIRED = 'group_route_required'
+export type PeerRefusal =
+  | typeof PEER_NOT_PARTICIPANT
+  | typeof A2A_ROUTE_REQUIRED
+  | typeof GROUP_ROUTE_REQUIRED
 
 /** The backend's own words, byte for byte. */
 export const PEER_NOT_PARTICIPANT_MESSAGE =
@@ -61,9 +78,12 @@ export const PEER_NOT_PARTICIPANT_MESSAGE =
 /** The backend's own words for the a2a route refusal, byte for byte. */
 export const A2A_ROUTE_REQUIRED_MESSAGE = 'A2A messages must use /send-message'
 
+/** The backend's own words for the group route refusal, byte for byte. */
+export const GROUP_ROUTE_REQUIRED_MESSAGE = 'Agent messages into a group must use /send-message'
+
 /** The status each refusal arrives with, for the log line that names it. */
 export function peerRefusalStatus(refusal: PeerRefusal): 400 | 403 {
-  return refusal === A2A_ROUTE_REQUIRED ? 400 : 403
+  return refusal === PEER_NOT_PARTICIPANT ? 403 : 400
 }
 
 /** How many refused chats one process remembers, the bound closedPeerChats uses. */
@@ -76,12 +96,8 @@ export const REFUSED_CHATS_MAX = 500
  * can cut the JSON short, and then nothing could be read from it.
  */
 export function classifyPeerRefusal(status: number, bodyText: string): PeerRefusal | null {
-  // Each refusal on its own status only: the status picks which one is asked.
-  const refusal =
-    status === 403 ? PEER_NOT_PARTICIPANT : status === 400 ? A2A_ROUTE_REQUIRED : null
-  if (refusal === null) return null
-  const reason =
-    refusal === PEER_NOT_PARTICIPANT ? PEER_NOT_PARTICIPANT_MESSAGE : A2A_ROUTE_REQUIRED_MESSAGE
+  // Each refusal on its own status only: the status picks which are asked.
+  if (status !== 403 && status !== 400) return null
   let body: unknown
   try {
     body = JSON.parse(bodyText)
@@ -90,9 +106,17 @@ export function classifyPeerRefusal(status: number, bodyText: string): PeerRefus
   }
   if (body === null || typeof body !== 'object') return null
   const { code, message } = body as { code?: unknown; message?: unknown }
-  if (code === refusal) return refusal
-  if (refusal === A2A_ROUTE_REQUIRED && code === A2A_WRONG_ROUTE_CODE) return refusal
-  if (message === reason) return refusal
+  if (status === 403) {
+    if (code === PEER_NOT_PARTICIPANT || message === PEER_NOT_PARTICIPANT_MESSAGE) {
+      return PEER_NOT_PARTICIPANT
+    }
+    return null
+  }
+  if (code === A2A_ROUTE_REQUIRED || code === A2A_WRONG_ROUTE_CODE) return A2A_ROUTE_REQUIRED
+  if (message === A2A_ROUTE_REQUIRED_MESSAGE) return A2A_ROUTE_REQUIRED
+  if (code === GROUP_ROUTE_REQUIRED || message === GROUP_ROUTE_REQUIRED_MESSAGE) {
+    return GROUP_ROUTE_REQUIRED
+  }
   return null
 }
 
@@ -100,7 +124,11 @@ export function classifyPeerRefusal(status: number, bodyText: string): PeerRefus
 export function peerRefusalOf(err: unknown): PeerRefusal | null {
   const refusal = (err as { peerRefusal?: unknown } | null)?.peerRefusal
   if (!(err instanceof Error)) return null
-  return refusal === PEER_NOT_PARTICIPANT || refusal === A2A_ROUTE_REQUIRED ? refusal : null
+  return refusal === PEER_NOT_PARTICIPANT ||
+    refusal === A2A_ROUTE_REQUIRED ||
+    refusal === GROUP_ROUTE_REQUIRED
+    ? refusal
+    : null
 }
 
 /** The chats a write was refused in for good. */
