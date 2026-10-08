@@ -14,6 +14,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  A2A_WRONG_ROUTE_CODE,
+  pickPermissionChat,
+  createRefusedChats as makeRefused,
   A2A_ROUTE_REQUIRED,
   A2A_ROUTE_REQUIRED_MESSAGE,
   PEER_NOT_PARTICIPANT,
@@ -205,4 +208,39 @@ test('the model is told plainly for the a2a 400: typed, why, and not to retry', 
   assert.match(text, /reaches the peer agent, not your owner, and reopens a closed conversation/)
   assert.doesNotMatch(text, /say it with reply instead/)
   assert.doesNotMatch(text, /[\u2013\u2014]/, 'no en or em dashes')
+})
+
+// BGOS #2038 ships the a2a route refusal with code a2a_wrong_route.
+test('the backend\'s real code a2a_wrong_route classifies on a 400, with any message', () => {
+  const body = JSON.stringify({ statusCode: 400, code: A2A_WRONG_ROUTE_CODE, message: 'reworded later' })
+  assert.equal(classifyPeerRefusal(400, body), A2A_ROUTE_REQUIRED)
+})
+
+test('a2a_wrong_route never counts on a 403', () => {
+  const body = JSON.stringify({ statusCode: 403, code: A2A_WRONG_ROUTE_CODE, message: 'x' })
+  assert.equal(classifyPeerRefusal(403, body), null)
+})
+
+// The permission card skipped no refused chat and re-posted per request.
+test('the permission card skips a chat that refused this agent for good', () => {
+  const refused = makeRefused()
+  refused.add('side-1')
+  assert.equal(pickPermissionChat(['side-1', 'main-9'], [refused]), 'main-9')
+})
+
+test('the permission card checks every refused set it is given', () => {
+  const rail = makeRefused()
+  const a2a = makeRefused()
+  a2a.add('side-2')
+  assert.equal(pickPermissionChat(['side-2', 'main-9'], [rail, a2a]), 'main-9')
+})
+
+test('the permission card has no chat when every monitored chat refused', () => {
+  const refused = makeRefused()
+  refused.add('side-1')
+  assert.equal(pickPermissionChat(['side-1'], [refused]), undefined)
+})
+
+test('with nothing refused the first monitored chat still wins, as before', () => {
+  assert.equal(pickPermissionChat(['main-9', 'other'], [makeRefused()]), 'main-9')
 })
