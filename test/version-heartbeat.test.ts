@@ -10,6 +10,12 @@ import {
   startVersionHeartbeat,
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from '../lib/version-heartbeat'
+import {
+  SESSION_STATUS_BUSY_MS,
+  SESSION_STATUS_CHANGE_MS,
+  type SessionStatusReport,
+} from '../lib/session-status-contract'
+import { SESSION_STATUS_MIN_GAP_MS, SESSION_STATUS_TICK_MS } from '../lib/session-status'
 
 function dirWithPackage(version: unknown): string {
   const d = mkdtempSync(join(tmpdir(), 'vhb-'))
@@ -504,5 +510,172 @@ describe('declared capabilities on the heartbeat', () => {
     // It has no pairing row to carry a declaration, so the whole loop is
     // skipped. The backend must read "no declaration" as "enforces nothing".
     expect(shouldSendVersionHeartbeat('apikey', '0.41.0')).toBe(false)
+  })
+})
+
+// HOAI board row 9c3d6b2c, session liveness: the session status rides the
+// existing heartbeat. On every full beat, and on its own small beat within a
+// minute of a change and every 2 minutes while work is owed, so the server can
+// tell a long job from a frozen session long before the next 6 hourly beat.
+describe('session status on the heartbeat', () => {
+  const T0 = Date.parse('2026-10-09T12:00:00.000Z')
+  const report = (over: Partial<SessionStatusReport> = {}): SessionStatusReport => ({
+    v: 1,
+    at: new Date(T0).toISOString(),
+    busy: false,
+    lastActivityAt: new Date(T0 - 60_000).toISOString(),
+    taskOpen: false,
+    questionsWaiting: 0,
+    messagesWaiting: 0,
+    oldestMessageAt: null,
+    running: 0,
+    ...over,
+  })
+
+  function arm(opts: {
+    status: () => SessionStatusReport | null
+    clock: { now: number }
+    post?: (path: string, body: Record<string, unknown>) => Promise<unknown>
+  }) {
+    const calls: { path: string; body: Record<string, unknown> }[] = []
+    const handle = startVersionHeartbeat({
+      authMode: 'pairing',
+      rootDir: dirWithPackage('0.64.0'),
+      post:
+        opts.post ??
+        (async (path, body) => {
+          calls.push({ path, body })
+          return {}
+        }),
+      log: () => {},
+      machineId: () => 'm',
+      sessionStatus: opts.status,
+      now: () => opts.clock.now,
+    })
+    expect(handle).not.toBeNull()
+    const stop = () => {
+      clearInterval(handle!.timer)
+      clearInterval(handle!.readinessTimer)
+      clearInterval(handle!.statusTimer)
+    }
+    return { handle: handle!, calls, stop }
+  }
+
+  test('rides the boot beat, and every full beat after it', async () => {
+    const clock = { now: T0 }
+    let current = report()
+    const { handle, calls, stop } = arm({ status: () => current, clock })
+    await new Promise((r) => setImmediate(r))
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.body.sessionStatus).toEqual(current)
+    current = report({ busy: true, taskOpen: true })
+    handle.sendNow()
+    await new Promise((r) => setImmediate(r))
+    expect(calls[1]!.body.sessionStatus).toEqual(current)
+    stop()
+  })
+
+  test('no report (not the pairing lock holder), no key; a throwing provider never drops the beat', async () => {
+    const clock = { now: T0 }
+    const a = arm({ status: () => null, clock })
+    await new Promise((r) => setImmediate(r))
+    expect('sessionStatus' in a.calls[0]!.body).toBe(false)
+    a.stop()
+    const b = arm({
+      status: () => {
+        throw new Error('state exploded')
+      },
+      clock,
+    })
+    await new Promise((r) => setImmediate(r))
+    expect(b.calls[0]!.body.daemonVersion).toBe('0.64.0')
+    expect('sessionStatus' in b.calls[0]!.body).toBe(false)
+    await expect(b.handle.pollSessionStatus()).resolves.toBeUndefined()
+    b.stop()
+  })
+
+  test('a change goes out on its own small beat once the minute gap allows, idle news is not repeated', async () => {
+    const clock = { now: T0 }
+    let current = report()
+    const { handle, calls, stop } = arm({ status: () => current, clock })
+    await new Promise((r) => setImmediate(r))
+    expect(calls).toHaveLength(1)
+    // Idle and unchanged: nothing, for hours.
+    clock.now = T0 + 6 * 60 * 60_000
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(1)
+    // A change right after a send waits for the gap...
+    clock.now = T0 + 6 * 60 * 60_000
+    current = report({ busy: true, taskOpen: true, at: new Date(clock.now).toISOString() })
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(2)
+    // Status only (review finding 9): no daemonVersion, so the backend's
+    // telemetry write has nothing to write and returns before the database.
+    expect(calls[1]!.body).toEqual({ sessionStatus: current })
+    current = report({ busy: true, taskOpen: true, running: 1 })
+    clock.now += SESSION_STATUS_MIN_GAP_MS - 1
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(2)
+    // ...and goes out the moment it does: within a minute of the change.
+    clock.now += 1
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(3)
+    expect((calls[2]!.body.sessionStatus as SessionStatusReport).running).toBe(1)
+    stop()
+  })
+
+  test('while work is owed the report is renewed every 2 minutes, unchanged or not', async () => {
+    const clock = { now: T0 }
+    const current = report({ busy: true, taskOpen: true })
+    const { handle, calls, stop } = arm({ status: () => current, clock })
+    await new Promise((r) => setImmediate(r))
+    expect(calls).toHaveLength(1)
+    clock.now = T0 + SESSION_STATUS_BUSY_MS - 1
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(1)
+    clock.now = T0 + SESSION_STATUS_BUSY_MS
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(2)
+    clock.now = T0 + 2 * SESSION_STATUS_BUSY_MS
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(3)
+    stop()
+  })
+
+  test('a status beat the server never took is tried again after the gap, not on every tick', async () => {
+    const clock = { now: T0 }
+    let fail = true
+    const calls: Record<string, unknown>[] = []
+    const { handle, stop } = arm({
+      status: () => report({ messagesWaiting: 1, oldestMessageAt: new Date(T0).toISOString(), busy: true }),
+      clock,
+      post: async (_path, body) => {
+        calls.push(body)
+        if (fail) throw new Error('offline')
+        return {}
+      },
+    })
+    await new Promise((r) => setImmediate(r))
+    expect(calls).toHaveLength(1)
+    clock.now = T0 + 5_000
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(1)
+    fail = false
+    clock.now = T0 + SESSION_STATUS_MIN_GAP_MS
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(2)
+    clock.now += 5_000
+    await handle.pollSessionStatus()
+    expect(calls).toHaveLength(2)
+    stop()
+  })
+
+  test('the status tick is armed at the contract cadence and never holds the process open', () => {
+    const clock = { now: T0 }
+    const { handle, stop } = arm({ status: () => report(), clock })
+    expect(typeof handle.statusTimer.hasRef).toBe('function')
+    expect(handle.statusTimer.hasRef()).toBe(false)
+    expect(SESSION_STATUS_TICK_MS + SESSION_STATUS_MIN_GAP_MS).toBe(SESSION_STATUS_CHANGE_MS)
+    stop()
   })
 })

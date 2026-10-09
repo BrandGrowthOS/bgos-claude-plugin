@@ -242,14 +242,18 @@ test('the daemon actually SENDS it: heartbeat wired to the live rejection state'
     /heartbeatLastError\(authRejection,\s*now\)/,
     'the auth projection must read the SAME state noteAuthOutcome updates',
   )
+  // Since session liveness (board row 9c3d6b2c) the deaf projection is read in
+  // ONE function, currentUnresponsiveError, by the beat and by the sweep that
+  // sends the verdict at once, so the two cannot disagree. Same latch, same
+  // recency as before; only its place moved.
   assert.match(
     serverSource,
-    /heartbeatUnresponsiveError\(\{[\s\S]{0,200}?escalated: deafEscalationDone,[\s\S]{0,300}?live:\s*channelLiveness\.recentlyLive\(now, REPLY_OVERDUE_MS\)/,
+    /function currentUnresponsiveError\(now: number\)[\s\S]{0,200}?heartbeatUnresponsiveError\(\{[\s\S]{0,40}?escalated: deafEscalationDone,[\s\S]{0,100}?live:\s*channelLiveness\.recentlyLive\(now, REPLY_OVERDUE_MS\)/,
     'the deaf projection must read the SAME latch the escalation sets and the SAME recency the deaf decision reads (0.39.3: the ever-live latch hid a wedged session here)',
   )
   assert.match(
     serverSource,
-    /pickAccountAwareLastError\(\s*heartbeatLastError\(authRejection,\s*now\),[\s\S]{0,200}?currentAccountError\(now\),[\s\S]{0,40}?heartbeatUnresponsiveError\(/,
+    /pickAccountAwareLastError\(\s*heartbeatLastError\(authRejection,\s*now\),[\s\S]{0,200}?currentAccountError\(now\),[\s\S]{0,200}?currentUnresponsiveError\(now\),?\s*\)/,
     'three producers share one field, so the precedence must be explicit: refused credential, Claude account (BGOS board e5d0fb3a), deafness',
   )
   const heartbeatSource = readFileSync(

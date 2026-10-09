@@ -31,3 +31,8 @@ lib/claude-capability-tokens.ts text eol=lf
 # sha256 in test/session-controls-contract.pin.test.ts, so it must not pick up
 # CRLF on a Windows checkout either.
 lib/session-controls-contract.ts text eol=lf
+# The session status contract is a byte-identical copy of the BGOS source of
+# truth (backend/src/integrations/session-status-contract.ts), pinned by sha256
+# in test/session-status-contract.pin.test.ts, so it must not pick up CRLF on a
+# Windows checkout either.
+lib/session-status-contract.ts text eol=lf
