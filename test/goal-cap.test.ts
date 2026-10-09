@@ -13,6 +13,11 @@
  *   - trip the stall at two in a row                 -> the streak test red
  *   - compare the raw reason text                    -> the wording test red
  *   - drop the closed guard                          -> the never stopped test red
+ *
+ * And the uncapped Keep working goal (KC, 2026-09-28: no turn cap by default):
+ *   - gate the stall on the cap again                -> the uncapped stall test red
+ *   - drop the keepWorking guard                     -> the typed goal test red
+ *   - trip the cap on a missing cap                  -> the no turn_cap test red
  */
 
 import { strict as assert } from 'node:assert'
@@ -33,6 +38,7 @@ const armed = (over: Partial<GoalCapInput> = {}): GoalCapInput => ({
   closed: false,
   checks: 0,
   turnCap: 20,
+  keepWorking: true,
   reasons: [],
   ...over,
 })
@@ -97,14 +103,66 @@ test('a goal that is closed, cleared or uncapped is never stopped by this daemon
     null,
     'a cleared goal stops counting',
   )
+  // DECISION RECORD, moved on purpose (KC, 2026-09-28). This used to read
+  // "uncapped is never stopped" with keepWorking implied: a goal with no cap
+  // was a goal a person typed. Keep working now runs with no cap by default,
+  // so "no cap" no longer means "nobody asked". The person's own goal is the
+  // one with NEITHER, and it is still never stopped.
   assert.equal(
-    decideGoalStop(armed({ ...full, turnCap: null })),
+    decideGoalStop(armed({ ...full, turnCap: null, keepWorking: false })),
     null,
     'both stops are the owner Keep working instruction; a goal a person typed in their own terminal has no cap and this daemon never stops it',
   )
   for (const cap of [0, -3, 1.5, Number.NaN]) {
-    assert.equal(decideGoalStop(armed({ ...full, turnCap: cap })), null, `a cap of ${cap} is not a limit`)
+    assert.equal(
+      decideGoalStop(armed({ ...full, turnCap: cap, keepWorking: false })),
+      null,
+      `a cap of ${cap} is not a limit`,
+    )
   }
+})
+
+test('an uncapped Keep working goal still stops when three checks find the same thing', () => {
+  const stalled = decideGoalStop(armed({ checks: 3, turnCap: null, reasons: [REASON, REASON, REASON] }))
+  assert.equal(stalled?.kind, 'no_progress', 'the stall stop is the one protection left without a cap')
+  assert.equal(stalled?.text, 'Stopped after 3 checks with no progress')
+
+  assert.equal(
+    decideGoalStop(armed({ checks: 2, turnCap: null, reasons: [REASON, REASON] })),
+    null,
+    'and two in a row is still not a stall',
+  )
+  for (const cap of [0, -3, 1.5, Number.NaN]) {
+    assert.equal(
+      decideGoalStop(armed({ checks: 3, turnCap: cap, reasons: [REASON, REASON, REASON] }))?.kind,
+      'no_progress',
+      `a cap of ${cap} is no cap, and the stall still runs`,
+    )
+  }
+})
+
+test('an uncapped Keep working goal is never stopped for its turns, however many', () => {
+  const reasons = Array.from({ length: 500 }, (_, i) => `finding ${i}`)
+  assert.equal(
+    decideGoalStop(armed({ checks: 500, turnCap: null, reasons })),
+    null,
+    'no number was chosen, so there is no turn_cap stop; a goal that keeps moving keeps going',
+  )
+})
+
+test('a person typed goal with a stall is left alone only when it has no cap', () => {
+  const stalledReasons = [REASON, REASON, REASON]
+  assert.equal(
+    decideGoalStop(armed({ checks: 3, turnCap: null, keepWorking: false, reasons: stalledReasons })),
+    null,
+    'nobody asked this daemon to hold a goal a person typed',
+  )
+  // A cap is only ever set from the owner's Keep working, so a capped goal
+  // keeps both rules exactly as before this change.
+  assert.equal(
+    decideGoalStop(armed({ checks: 3, turnCap: 20, keepWorking: false, reasons: stalledReasons }))?.kind,
+    'no_progress',
+  )
 })
 
 test('the cap is answered before the stall, because it is the number the owner chose', () => {

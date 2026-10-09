@@ -2549,9 +2549,10 @@ const mcp = new Server(
       'the checks and do not tick a mini goal because a check passed. Tick a mini',
       'goal only when its own done_when is true, exactly as before.',
       '',
-      'Your owner set a turn cap. When it is reached the channel clears the goal and',
-      'tells them you stopped. Stop working the condition at that point and say in',
-      'one short line where you got to.',
+      'Your owner may have set a turn cap; by default there is none. When a cap is',
+      'reached, or three checks in a row find the same thing, the channel clears the',
+      'goal and tells them you stopped. Stop working the condition at that point and',
+      'say in one short line where you got to.',
       '',
       '## Sending Files & Media',
       '',
@@ -10119,6 +10120,10 @@ let goalLane: GoalLaneState = emptyGoalLane()
 let goalMissionId: number | null = null
 /** The owner's turn limit for that mission, null when nobody set one. */
 let goalTurnCap: number | null = null
+/** Did the owner's Keep working arm the goal this lane is counting. The stall
+ *  stop runs on that alone, cap or no cap; a goal a person typed has false
+ *  here and is never stopped (lib/goal-cap.ts). */
+let goalKeepWorking = false
 /** Checks counted for this mission BEFORE the current set sentinel. */
 let goalTurnsBefore = 0
 /** Every check counted for this mission so far, across re arms. */
@@ -10134,7 +10139,12 @@ let goalStopped = false
 let goalSelfClears = 0
 /** What the owner's Keep working asked for, remembered across a pause so
  *  Resume arms the SAME goal rather than a new one. */
-let goalArm: { missionId: number; condition: string; turnCap: number | null } | null = null
+let goalArm: {
+  missionId: number
+  condition: string
+  turnCap: number | null
+  keepWorking: boolean
+} | null = null
 /** The goal this lane is REPORTING on: the mission every check is written
  *  onto and the condition the runtime holds for it, set the moment a goal
  *  attaches to a mission whoever typed it. A goal a person typed in their own
@@ -10223,6 +10233,7 @@ function clearNativeGoal(why: string): void {
 async function armNativeGoal(
   command: Extract<GoalCommand, { kind: 'arm' }>,
   chatId: string | null,
+  keepWorking: boolean,
 ): Promise<void> {
   // Serialised per mission. The pure decision already answers `none` for a
   // frame that lands while this mission's arm is in flight; this is the
@@ -10258,12 +10269,14 @@ async function armNativeGoal(
     missionId: command.missionId,
     condition: command.condition,
     turnCap: command.turnCap,
+    keepWorking,
   }
   // Both identities move together. A frame that lands between this and the
   // set sentinel would otherwise read an attachment to the PREVIOUS mission
   // and clear a goal that is already being replaced.
   goalHeld = { missionId: command.missionId, condition: command.condition }
   goalTurnCap = command.turnCap
+  goalKeepWorking = keepWorking
   goalTurnsBefore = command.turnsBefore
   goalTurnsUsed = command.turnsBefore
   goalReasons = []
@@ -10446,6 +10459,7 @@ async function attachGoalToMission(condition: string): Promise<void> {
   if (goalArm !== null && goalArm.condition === condition) {
     goalMissionId = goalArm.missionId
     goalTurnCap = goalArm.turnCap
+    goalKeepWorking = goalArm.keepWorking
     goalTurnsUsed = goalTurnsBefore
     goalHeld = { missionId: goalArm.missionId, condition }
     log(`goal lane: the goal for mission #${goalArm.missionId} is armed`)
@@ -10454,6 +10468,7 @@ async function attachGoalToMission(condition: string): Promise<void> {
 
   goalArm = null
   goalTurnCap = null
+  goalKeepWorking = false
   goalTurnsBefore = 0
   goalTurnsUsed = 0
   goalMissionId = await resolveGoalMission(condition)
@@ -10475,6 +10490,7 @@ async function resolveGoalMission(condition: string): Promise<number | null> {
       const open = answer?.mission ?? null
       if (open && goalConditionFor(open) === condition) {
         goalTurnCap = open.keepWorking === true ? (open.turnCap ?? null) : null
+        goalKeepWorking = open.keepWorking === true
         log(`goal lane: adopting open mission #${open.id}, which already names this goal`)
         return open.id
       }
@@ -10580,6 +10596,7 @@ async function stopGoalIfDue(): Promise<void> {
     closed: goalLane.closed,
     checks: goalTurnsUsed,
     turnCap: goalTurnCap,
+    keepWorking: goalKeepWorking,
     reasons: goalReasons,
   })
   if (stop === null) return
@@ -10662,7 +10679,10 @@ function applyMissionFrameToGoalLane(
       }
       return
     }
-    void armNativeGoal(command, missionChatId(event.mission))
+    // The switch as this frame carries it: ON for the owner's own arm, OFF for
+    // a Resume putting back a goal a person typed. Only an ON arm runs the
+    // stall stop without a cap.
+    void armNativeGoal(command, missionChatId(event.mission), event.mission.keepWorking === true)
   } catch (err) {
     log(`goal lane: ${event.frame} not applied: ${err}`)
   }

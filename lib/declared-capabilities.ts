@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The fifteen tokens, and what each one PROMISES the owner:
+ * The sixteen tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -41,6 +41,17 @@
  *                       skipSlashCommands, see
  *                       docs/learnings/a-channel-push-cannot-arm-a-native-goal.md)
  *                       and the model has no tool for it.
+ *   mission_goal_uncapped
+ *                       this daemon's goal loop keeps its no progress stop
+ *                       (three checks in a row with the same finding) on a
+ *                       Keep working goal that has NO turn cap, so the
+ *                       backend may leave a Keep working mission uncapped by
+ *                       default instead of filling in 20 (KC, 2026-09-28).
+ *                       Before this a goal with no cap ran with no stop at
+ *                       all (lib/goal-cap.ts), so the backend fills the old
+ *                       default for every daemon that does not say this.
+ *                       Declared exactly where mission_goal_loop is, because
+ *                       there is no goal loop to stop anywhere else.
  *   mission_set_goals   the model has set_mission_goals, which writes the
  *                       mini goals of an open mission that has none yet
  *                       (every /goal mission starts that way). The backend
@@ -236,6 +247,7 @@ export const DECLARED_CAPABILITIES_PAIRING: readonly string[] = Object.freeze([H
 /** Declared only while this daemon can type into its own CLI's composer. */
 export const DECLARED_CAPABILITIES_INJECTOR: readonly string[] = Object.freeze([
   'mission_goal_loop',
+  'mission_goal_uncapped',
   'mission_pause',
   STOP_PAUSES_MISSION,
 ])

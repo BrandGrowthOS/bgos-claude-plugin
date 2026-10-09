@@ -575,3 +575,29 @@ test('the goal set is the ONLY chat derived text this daemon ever types', () => 
   assert.ok(builders > 0, 'the injection argv must come from the builders')
   assert.equal(sends, 0, 'server.ts must never build a send-keys argv of its own')
 })
+
+test('the stall stop hears whether the owner armed the goal, from every place a goal is taken on', () => {
+  // lib/goal-cap.ts runs the no progress stop on an UNCAPPED goal only when
+  // keepWorking is true. If the wiring never sets it, every uncapped Keep
+  // working goal loops forever with the whole pure suite green, which is the
+  // exact defect the flag exists to close (KC, 2026-09-28).
+  const stop = server.slice(server.indexOf('async function stopGoalIfDue'))
+  assert.match(
+    stop.slice(0, stop.indexOf('if (stop === null)')),
+    /keepWorking: goalKeepWorking,/,
+    'decideGoalStop must be handed the lane flag',
+  )
+  assert.match(
+    server,
+    /void armNativeGoal\(command, missionChatId\(event\.mission\), event\.mission\.keepWorking === true\)/,
+    'the owner arm carries the switch as the frame states it',
+  )
+  const arm = server.slice(server.indexOf('async function armNativeGoal'))
+  assert.match(arm.slice(0, arm.indexOf('confirmGoalArmed(')), /goalKeepWorking = keepWorking/)
+  assert.match(server, /goalKeepWorking = goalArm\.keepWorking/, 'the set sentinel restores it from the arm')
+  assert.match(
+    server,
+    /goalKeepWorking = open\.keepWorking === true/,
+    'adopting an open Keep working mission for a typed goal takes its switch too',
+  )
+})

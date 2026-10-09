@@ -748,9 +748,11 @@ this daemon can reach the CLI's own tmux pane, which is Mac and Linux with
 On every other host the switch is absent rather than greyed, and the reading
 half is unaffected.
 
-**Two stops, and they are the daemon's.** The owner chooses a turn cap with the
-switch; the daemon holds it, and holds one more rule of its own: three checks in
-a row that found the same thing. Either one clears the native goal and tells the
+**Two stops, and they are the daemon's.** The owner may choose a turn cap with
+the switch (by default there is none, and the daemon declares
+`mission_goal_uncapped` so the backend leaves it that way); the daemon holds it,
+and holds one more rule of its own that needs no cap: three checks in a row that
+found the same thing. Either one clears the native goal and tells the
 server the loop stopped itself, and the mission turns to Needs you carrying the
 reason with a button that gives it ten more turns and starts the same goal
 again. The turns already spent are carried across that, so the card counts on
