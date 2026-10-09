@@ -2,6 +2,9 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.63.1 (2026-10-09)
+
+**Keep working has no turn cap by default, and the no progress stop still holds without one (board row 20e7ac50).** KC approved 2026-09-28 that the 30 minute Keep working wake alone drives a mission, with no per reply goal check cap unless the owner chose one. `decideGoalStop` used to return early on a missing cap, which also switched off the no progress stop (three checks in a row with the same finding), the one protection against a goal looping forever. The two rules are now gated separately: the turn cap runs only when there is a number, and the stall stop runs whenever the owner's Keep working armed the goal, cap or not. A goal a person typed in their own terminal still has neither and is still left alone. The daemon declares a new token, `mission_goal_uncapped`, wherever it declares `mission_goal_loop`; the backend leaves a Keep working mission uncapped by default only for a daemon declaring it and fills the old 20 for every other one, so this release and the backend change can ship in either order. Mutation proven (six mutations).
 ## 0.63.0 (2026-10-09)
 
 **The daemon tells HOAI when this computer's Claude login has expired or hit its limit (BGOS board e5d0fb3a).** A failed login is written into the session transcript as `error: "authentication_failed"`, and a usage cap as `error: "rate_limit"`. A 30 second sweep reads them, keeps the first failure time, and clears only on real activity or a completed /login. The state goes out on the heartbeat as `lastError` code `claude_login_expired` or `claude_usage_limit`, with a beat sent at once when it changes, plus a non-secret `claudeAccountKey` and the account label. The backend groups these by machine and tells the owner once per outage (BGOS #2107, off by default there). 14 mutations, all caught.

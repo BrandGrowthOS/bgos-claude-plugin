@@ -425,6 +425,7 @@ describe('declared capabilities on the heartbeat', () => {
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
+      'mission_goal_uncapped',
       'mission_pause',
       'stop_pauses_mission',
     ])
