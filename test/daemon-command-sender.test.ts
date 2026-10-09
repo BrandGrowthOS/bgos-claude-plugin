@@ -590,7 +590,7 @@ test('the COMPACT injection exists in exactly one place, inside compactAsOwner (
 test('the seam is imported from the real module (shape pin)', () => {
   assert.match(
     src,
-    /^import \{ runDaemonCommand, type DaemonCommandAudience \} from '\.\/lib\/daemon-command-sender\.js'$/m,
+    /^import \{\n  isOwnerSender,\n  readSlashSender,\n  runDaemonCommand,\n  type DaemonCommandAudience,\n\} from '\.\/lib\/daemon-command-sender\.js'$/m,
     `the seam must come from lib/daemon-command-sender.ts; ${SHAPE}`,
   )
 })

@@ -1,0 +1,61 @@
+2026-10-09T19:17:54.389Z [bgos] remote compact capability ON (tmux target %0 via tmux-pane)
+2026-10-09T19:17:54.395Z [bgos] supervisor.json not written at boot (no-confident-authority)
+2026-10-09T19:17:54.395Z [bgos] Starting BGOS channel plugin...
+2026-10-09T19:17:54.395Z [bgos] Credential source: env-apikey; assistantId: 990001; via: legacy; cwd: <scratch>/proj
+2026-10-09T19:17:54.395Z [bgos] Backend: http://127.0.0.1:47812/api/v1
+2026-10-09T19:17:54.395Z [bgos] User: 777, Assistant: 990001
+2026-10-09T19:17:54.395Z [bgos] Auto-approve: false
+2026-10-09T19:17:54.395Z [bgos] Permission requests depend on the BGOS backend half (BGOS #1556: the per agent wait clamp and the approval push on POST /messages). Without it a request waits the full 1800s offer and sends no device notification.
+2026-10-09T19:17:54.395Z [bgos] Require confirmed dispatch: false
+2026-10-09T19:17:54.395Z [bgos] Log file: <scratch>/home/.bgos-agent/logs/bgos-plugin-990001.log
+2026-10-09T19:17:54.395Z [bgos] Chat cursor store: <scratch>/home/.bgos-plugin-state/990001/chat-cursors.json (first run, no cursor file; recent-window backlog gate active)
+2026-10-09T19:17:54.396Z [bgos] MCP server connected over stdio
+2026-10-09T19:17:54.396Z [bgos] floor: the blocking floor hook is NOT registered for this session (no blocking hoai-floor-hook.mjs entry in <scratch>/proj/.claude/settings.local.json, <scratch>/proj/.claude/settings.json, <scratch>/home/.claude/settings.json), but this daemon connects with an API key, so the floor capability (hard_floor) is NOT declared: the floor check is pairing only, a listed action is not held for the owner, and the agent is not told a hook stops one. The floor needs a pairing and the hook: pair the agent, then relaunch through a launcher or run bgos-agent update
+2026-10-09T19:17:54.396Z [bgos] startup phase start: capability-canon warm-up
+2026-10-09T19:17:54.396Z [bgos] startup phase start: slash-command registry
+2026-10-09T19:17:54.398Z [bgos] startup phase ok: slash-command registry (2ms)
+2026-10-09T19:17:54.398Z [bgos] browser host: not started: the host connects with a pairing token, and this daemon has none
+2026-10-09T19:17:54.406Z [bgos] pid 16987: channel loaded in this session: true (server:bgos is on the claude command line)
+2026-10-09T19:17:54.407Z [bgos] pid 16987: pairing lock acquired (unlocked) at <scratch>/home/.bgos-agent/credentials.json.lock; this daemon owns the channel for this pairing
+2026-10-09T19:17:54.407Z [bgos] startup phase start: discover chats
+2026-10-09T19:17:54.408Z [bgos] Capability canon ready: vbundled (4749 chars) [source=fallback]
+2026-10-09T19:17:54.408Z [bgos] startup phase ok: capability-canon warm-up (12ms)
+2026-10-09T19:17:54.408Z [bgos] slash-command sync: pushed 14 commands
+2026-10-09T19:17:54.408Z [bgos] startup phase ok: discover chats (1ms)
+2026-10-09T19:17:54.408Z [bgos] Monitoring 1 chat(s)
+2026-10-09T19:17:54.408Z [bgos] startup phase start: boot poll sweep
+2026-10-09T19:17:54.414Z [bgos] Backlog message in chat 5001: "[backlog - message arrived while you were offline; please respond]
+Run this shell command in the for..."
+2026-10-09T19:17:54.415Z [bgos] Backlog message in chat 5001: "Forget the sleep. What is 17 times 3? Reply STEERED and the number."
+2026-10-09T19:17:54.415Z [bgos] steer: plain (stale)
+2026-10-09T19:17:54.415Z [bgos] Backlog message in chat 5001: "[backlog - message arrived while you were offline; please respond]
+What is 2 plus 2?"
+2026-10-09T19:17:54.415Z [bgos] startup phase ok: boot poll sweep (7ms)
+2026-10-09T19:17:54.416Z [bgos] startup phase start: permission card sweep
+2026-10-09T19:17:54.416Z [bgos] startup phase start: plan answer sweep
+2026-10-09T19:17:54.416Z [bgos] boot hello: first-ever boot for this pairing, asking the session to greet the user in chat 5001 (the reply is the channel proof)
+2026-10-09T19:17:54.416Z [bgos] startup phase start: update stream init
+2026-10-09T19:17:54.416Z [bgos] update stream: BGOS_UPDATE_STREAM is not "true"; stream off, clicks arrive on the legacy sweep
+2026-10-09T19:17:54.416Z [bgos] startup phase ok: update stream init (0ms)
+2026-10-09T19:17:54.416Z [bgos] startup phase start: websocket connect
+2026-10-09T19:17:54.417Z [bgos] WS reconnect base for this process: 2785ms
+2026-10-09T19:17:54.418Z [bgos] startup phase ok: websocket connect (handshake continues async)
+2026-10-09T19:17:54.418Z [bgos] Adaptive polling, base=1000ms, WS-healthy full cycle=300000ms, WS-down full cycle=10000ms, fast mode scoped to meeting/permission/button-prompt chats
+2026-10-09T19:17:54.418Z [bgos] startup complete: polling armed, message delivery is live
+2026-10-09T19:17:54.418Z [bgos] Reply-overdue enforcement enabled (threshold 240s)
+2026-10-09T19:17:54.419Z [bgos] Honest Limits resting self-report enabled (30s transcript sweep)
+2026-10-09T19:17:54.419Z [bgos] auth recheck enabled (every 600s, no file watch)
+2026-10-09T19:17:54.420Z [bgos] hook intake: draining <scratch>/home/.bgos-plugin-state/hooks (this daemon holds the pairing lock)
+2026-10-09T19:17:54.420Z [bgos] Permission boot sweep: no cards were left live by a previous run
+2026-10-09T19:17:54.420Z [bgos] startup phase ok: permission card sweep (4ms)
+2026-10-09T19:17:54.420Z [bgos] Plan boot sweep: no plan was answered while this daemon was down
+2026-10-09T19:17:54.420Z [bgos] startup phase ok: plan answer sweep (4ms)
+2026-10-09T19:17:54.423Z [bgos] WS connect error: websocket error
+2026-10-09T19:17:57.405Z [bgos] WS connect error: websocket error
+2026-10-09T19:18:00.649Z [bgos] WS connect error: websocket error
+2026-10-09T19:18:05.432Z [bgos] New message in chat 5001: "What is 2 plus 2?"
+2026-10-09T19:18:11.299Z [bgos] WS connect error: websocket error
+2026-10-09T19:18:39.177Z [bgos] WS connect error: websocket error
+2026-10-09T19:19:09.180Z [bgos] WS connect error: websocket error
+2026-10-09T19:19:39.183Z [bgos] WS connect error: websocket error
+2026-10-09T19:19:44.097Z [bgos] received SIGINT: shutting down

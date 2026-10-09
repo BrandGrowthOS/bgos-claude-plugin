@@ -392,8 +392,10 @@ test('every actingUser.noteInbound site notes the turn chat beside it', () => {
   // Plus the two meeting deliveries, which have no acting user at all.
   assert.equal(
     [...server.matchAll(/turnChat\.note\(/g)].length,
-    5,
-    'three inbound sites plus the two meeting delivery sites',
+    6,
+    'three inbound sites, the two meeting delivery sites, and the websocket ' +
+      'steer note (0.64.0: that rail notes the raw text before routing, a steer ' +
+      'delivers its words without /steer, so it notes the delivered text too)',
   )
   assert.match(server, /turnChat\.end\(/, 'the turn chat is cleared when the turn ends')
 })

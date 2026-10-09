@@ -1043,6 +1043,8 @@ function streamRail(controller: LoginController) {
     registeredSlashCommandAliases: new Map(),
     planPolicyMemo: { learn: () => undefined, recall: () => undefined },
     trackMessageOperation: (op: () => Promise<unknown>) => op(),
+    // The steer gate (0.64.0): an ordinary message is delivered at once.
+    deliverInbound: (_steer: unknown, deliver: (interrupted: boolean) => Promise<void>) => deliver(false),
     mcp: {
       notification: async (n: { params: { content: string } }) => {
         notifications.push({ content: n.params.content })
