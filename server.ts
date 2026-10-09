@@ -1985,16 +1985,18 @@ const steerGate = new SteerGate({
   // compactInFlight stays true until the compaction is confirmed: an Escape
   // during a compaction cancels it.
   injectionBusy: () => compactInFlight || goalInjectionsInFlight > 0,
+  targetAlive: () => (compactTarget ? tmuxTargetAlive(compactTarget) : Promise.resolve(false)),
   interrupt: pressSteerEscape,
   sleep: sleepMs,
   log,
 })
 
 /**
- * Deliver an inbound card through the steer gate. A /steer may press Escape
- * first and is told whether it did (the card's `steer` marker); every other
- * message is delivered at once, or behind a steer still in flight so the
- * order holds.
+ * Deliver an inbound card through the steer gate. A /steer is delivered
+ * FIRST and told whether the gate will press Escape right after it (the
+ * card's `steer` marker), so the CLI queues it behind any message it holds;
+ * every other message is delivered at once, or behind a steer still in flight
+ * so the order holds.
  */
 function deliverInbound(
   steer: ArrivingSteer | null,
@@ -2051,6 +2053,10 @@ async function compactAsOwner(chatId: string): Promise<void> {
   compactInFlight = true
   let watcherOwnsFlag = false
   try {
+    // A steer that already decided to press owns the composer until its
+    // Escape: typing /compact first would make the gate skip a press its
+    // marked card already announced, or the Escape would cancel the compaction.
+    await steerGate.pressDone()
     if (!(await tmuxTargetAlive(compactTarget))) {
       await sendDaemonText(
         chatId,
@@ -10321,6 +10327,8 @@ async function runGoalInjection(steps: InjectionStep[], label: string): Promise<
   // Enter (lib/steer.ts SteerGate).
   goalInjectionsInFlight++
   try {
+    // A steer that already decided to press goes first (see handleRemoteCompact).
+    await steerGate.pressDone()
     for (const step of steps) {
       if (step.delayMsBefore > 0) await sleepMs(step.delayMsBefore)
       await execFileAsync(step.argv[0]!, step.argv.slice(1), { timeout: 5_000 })

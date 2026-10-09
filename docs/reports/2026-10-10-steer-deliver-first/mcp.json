@@ -1,0 +1,1 @@
+{"mcpServers":{"bgos":{"command":"bun","args":["<home>/work/plugin-steer/server.ts"],"env":{"HOME":"<scratch>/home","BGOS_BACKEND_URL":"http://127.0.0.1:47813","BGOS_API_KEY":"fake-local-key","BGOS_USER_ID":"777","BGOS_ASSISTANT_ID":"990001","BGOS_LAUNCH_CWD":"<scratch>/proj","BGOS_AUTO_UPDATE":"false","BGOS_BOOT_HELLO":"off","CLAUDE_CONFIG_DIR":"<home>/.claude"}}}}

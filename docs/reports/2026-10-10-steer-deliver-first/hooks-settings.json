@@ -1,0 +1,124 @@
+{
+ "hooks": {
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "PreToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "PostToolUseFailure": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "Stop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "SubagentStop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "PreCompact": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "PostCompact": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ],
+  "SessionEnd": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "HOME=<scratch>/home node <home>/work/plugin-steer/bin/hoai-hook.mjs",
+      "timeout": 5,
+      "async": true
+     }
+    ]
+   }
+  ]
+ }
+}

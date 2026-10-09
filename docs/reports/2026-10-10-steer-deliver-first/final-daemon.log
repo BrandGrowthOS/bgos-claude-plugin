@@ -1,0 +1,92 @@
+2026-10-09T23:02:58.144Z [bgos] remote compact capability ON (tmux target %40 via tmux-pane)
+2026-10-09T23:02:58.149Z [bgos] supervisor.json not written at boot (no-confident-authority)
+2026-10-09T23:02:58.149Z [bgos] Starting BGOS channel plugin...
+2026-10-09T23:02:58.149Z [bgos] Credential source: env-apikey; assistantId: 990001; via: legacy; cwd: <scratch>/proj
+2026-10-09T23:02:58.149Z [bgos] Backend: http://127.0.0.1:47813/api/v1
+2026-10-09T23:02:58.149Z [bgos] User: 777, Assistant: 990001
+2026-10-09T23:02:58.149Z [bgos] Auto-approve: false
+2026-10-09T23:02:58.149Z [bgos] Permission requests depend on the BGOS backend half (BGOS #1556: the per agent wait clamp and the approval push on POST /messages). Without it a request waits the full 1800s offer and sends no device notification.
+2026-10-09T23:02:58.149Z [bgos] Require confirmed dispatch: false
+2026-10-09T23:02:58.149Z [bgos] Log file: <scratch>/home/.bgos-agent/logs/bgos-plugin-990001.log
+2026-10-09T23:02:58.149Z [bgos] Chat cursor store: <scratch>/home/.bgos-plugin-state/990001/chat-cursors.json (loaded 1 cursor(s))
+2026-10-09T23:02:58.150Z [bgos] MCP server connected over stdio
+2026-10-09T23:02:58.150Z [bgos] floor: the blocking floor hook is NOT registered for this session (no blocking hoai-floor-hook.mjs entry in <scratch>/proj/.claude/settings.local.json, <scratch>/proj/.claude/settings.json, <home>/.claude/settings.json), but this daemon connects with an API key, so the floor capability (hard_floor) is NOT declared: the floor check is pairing only, a listed action is not held for the owner, and the agent is not told a hook stops one. The floor needs a pairing and the hook: pair the agent, then relaunch through a launcher or run bgos-agent update
+2026-10-09T23:02:58.150Z [bgos] startup phase start: capability-canon warm-up
+2026-10-09T23:02:58.150Z [bgos] startup phase start: slash-command registry
+2026-10-09T23:02:58.151Z [bgos] startup phase ok: slash-command registry (1ms)
+2026-10-09T23:02:58.152Z [bgos] browser host: not started: the host connects with a pairing token, and this daemon has none
+2026-10-09T23:02:58.158Z [bgos] pid 69908: channel loaded in this session: true (server:bgos is on the claude command line)
+2026-10-09T23:02:58.158Z [bgos] pid 69908: pairing lock acquired (unlocked) at <scratch>/home/.bgos-agent/credentials.json.lock; this daemon owns the channel for this pairing
+2026-10-09T23:02:58.159Z [bgos] startup phase start: discover chats
+2026-10-09T23:02:58.159Z [bgos] Capability canon ready: vbundled (4749 chars) [source=fallback]
+2026-10-09T23:02:58.159Z [bgos] startup phase ok: capability-canon warm-up (9ms)
+2026-10-09T23:02:58.159Z [bgos] slash-command sync: pushed 14 commands
+2026-10-09T23:02:58.160Z [bgos] startup phase ok: discover chats (1ms)
+2026-10-09T23:02:58.160Z [bgos] Monitoring 1 chat(s)
+2026-10-09T23:02:58.160Z [bgos] startup phase start: boot poll sweep
+2026-10-09T23:02:58.164Z [bgos] startup phase ok: boot poll sweep (4ms)
+2026-10-09T23:02:58.164Z [bgos] startup phase start: permission card sweep
+2026-10-09T23:02:58.165Z [bgos] startup phase start: plan answer sweep
+2026-10-09T23:02:58.165Z [bgos] startup phase start: update stream init
+2026-10-09T23:02:58.165Z [bgos] update stream: BGOS_UPDATE_STREAM is not "true"; stream off, clicks arrive on the legacy sweep
+2026-10-09T23:02:58.165Z [bgos] startup phase ok: update stream init (0ms)
+2026-10-09T23:02:58.165Z [bgos] startup phase start: websocket connect
+2026-10-09T23:02:58.165Z [bgos] WS reconnect base for this process: 3102ms
+2026-10-09T23:02:58.167Z [bgos] startup phase ok: websocket connect (handshake continues async)
+2026-10-09T23:02:58.167Z [bgos] Adaptive polling, base=2000ms, WS-healthy full cycle=300000ms, WS-down full cycle=10000ms, fast mode scoped to meeting/permission/button-prompt chats
+2026-10-09T23:02:58.167Z [bgos] startup complete: polling armed, message delivery is live
+2026-10-09T23:02:58.167Z [bgos] Reply-overdue enforcement enabled (threshold 240s)
+2026-10-09T23:02:58.167Z [bgos] Honest Limits resting self-report enabled (30s transcript sweep)
+2026-10-09T23:02:58.168Z [bgos] auth recheck enabled (every 600s, no file watch)
+2026-10-09T23:02:58.172Z [bgos] session binding: 8fa2a527-68e1-4b09-9649-a0bb50875706.jsonl via newest-mtime
+2026-10-09T23:02:58.172Z [bgos] session binding: no positive session signal yet, binding the unambiguous newest-mtime transcript as last resort (upgrades to positive proof on the first reply)
+2026-10-09T23:02:58.173Z [bgos] hook intake: draining <scratch>/home/.bgos-plugin-state/hooks (this daemon holds the pairing lock)
+2026-10-09T23:02:58.174Z [bgos] Permission boot sweep: no cards were left live by a previous run
+2026-10-09T23:02:58.174Z [bgos] startup phase ok: permission card sweep (10ms)
+2026-10-09T23:02:58.174Z [bgos] Plan boot sweep: no plan was answered while this daemon was down
+2026-10-09T23:02:58.174Z [bgos] startup phase ok: plan answer sweep (9ms)
+2026-10-09T23:02:58.176Z [bgos] WS connect error: websocket error
+2026-10-09T23:02:59.897Z [bgos] WS connect error: websocket error
+2026-10-09T23:03:06.018Z [bgos] WS connect error: websocket error
+2026-10-09T23:03:10.181Z [bgos] New message in chat 5001: "Rule for this chat: answer every message from me with the mcp__bgos__reply tool (load it with ToolSe..."
+2026-10-09T23:03:10.286Z [bgos] session binding: 36aa815c-fb6e-4b9b-9b45-b1726163f5bc.jsonl via env
+2026-10-09T23:03:10.286Z [bgos] hook intake: bound to session 36aa815c-fb6e-4b9b-9b45-b1726163f5bc (proof: delivered-prompt)
+2026-10-09T23:03:10.287Z [bgos] session binding: 36aa815c-fb6e-4b9b-9b45-b1726163f5bc.jsonl via hook
+2026-10-09T23:03:13.795Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:03:23.114Z [bgos] WS connect error: websocket error
+2026-10-09T23:03:30.206Z [bgos] New message in chat 5001: "Reply STARTING-F1, then run this shell command in the foreground, not in the background: python3 -c ..."
+2026-10-09T23:03:31.500Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:03:40.218Z [bgos] New message in chat 5001: "Here is the report file for later.
+[Attached document: report-F1.txt - http://127.0.0.1:47813/files/..."
+2026-10-09T23:03:53.118Z [bgos] WS connect error: websocket error
+2026-10-09T23:03:58.288Z [bgos] hook intake: dropping 1 buffered event(s) from session 8fa2a527-68e1-4b09-9649-a0bb50875706: it never proved it is ours within 60s
+2026-10-09T23:04:00.245Z [bgos] New message in chat 5001: "Change of plan: drop the sleep, do not run it again. What is 17 times 3? Reply STEERED-F1 and the nu..."
+2026-10-09T23:04:00.770Z [bgos] steer: interrupted (turn_live)
+2026-10-09T23:04:02.265Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:04:22.349Z [bgos] WS connect error: websocket error
+2026-10-09T23:04:28.160Z [bgos] session pin: recorded the live session 36aa815c-fb6e-4b9b-9b45-b1726163f5bc for this agent (differs); a supervised relaunch now resumes this conversation
+2026-10-09T23:04:40.303Z [bgos] New message in chat 5001: "Reply STARTING-F2, then run this shell command in the foreground, not in the background: python3 -c ..."
+2026-10-09T23:04:41.722Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:04:50.317Z [bgos] New message in chat 5001: "Here is the report file for later.
+[Attached document: report-F2.txt - http://127.0.0.1:47813/files/..."
+2026-10-09T23:04:52.350Z [bgos] WS connect error: websocket error
+2026-10-09T23:05:00.329Z [bgos] New message in chat 5001: "Change of plan: drop the sleep, do not run it again. What is 17 times 3? Reply STEERED-F2 and the nu..."
+2026-10-09T23:05:00.851Z [bgos] steer: interrupted (turn_live)
+2026-10-09T23:05:02.362Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:05:22.354Z [bgos] WS connect error: websocket error
+2026-10-09T23:05:40.378Z [bgos] New message in chat 5001: "Reply STARTING-F3, then run this shell command in the foreground, not in the background: python3 -c ..."
+2026-10-09T23:05:41.833Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:05:52.358Z [bgos] WS connect error: websocket error
+2026-10-09T23:06:00.406Z [bgos] New message in chat 5001: "Here is the report file for later.
+[Attached document: report-F3.txt - http://127.0.0.1:47813/files/..."
+2026-10-09T23:06:10.419Z [bgos] New message in chat 5001: "Change of plan: drop the sleep, do not run it again. What is 17 times 3? Reply STEERED-F3 and the nu..."
+2026-10-09T23:06:10.938Z [bgos] steer: interrupted (turn_live)
+2026-10-09T23:06:12.358Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:06:22.362Z [bgos] WS connect error: websocket error
+2026-10-09T23:06:50.472Z [bgos] New message in chat 5001: "Reply STARTING-S2, then run this shell command in the foreground, not in the background: python3 -c ..."
+2026-10-09T23:06:51.788Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:06:52.366Z [bgos] WS connect error: websocket error
+2026-10-09T23:07:00.487Z [bgos] New message in chat 5001: "Change of plan: drop the sleep. What is 6 times 7? Reply STEERED-S2 and the number."
+2026-10-09T23:07:01.005Z [bgos] steer: interrupted (turn_live)
+2026-10-09T23:07:02.516Z [bgos] reply sent to chat 5001 ()
+2026-10-09T23:07:22.371Z [bgos] WS connect error: websocket error
