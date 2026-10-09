@@ -1,9 +1,10 @@
 /**
- * /steer (0.64.0): interrupt the running turn, then deliver the text.
+ * /steer (0.64.0, order fixed in 0.64.1): deliver the text, then interrupt
+ * the running turn.
  *
- * The two paths the brief names, both driven with spies through the one
- * function server.ts uses (runSteer): a running turn gets ONE Escape and then
- * the text; an idle session gets the text and no key at all. Around them, the
+ * The two paths, both driven with spies through the gate server.ts uses
+ * (SteerGate): a running turn gets the text FIRST, marked, then ONE Escape;
+ * an idle session gets the text and no key at all. Around them, the
  * pieces that decide which path a message takes (planSteer, isFreshSteer,
  * steerTurnState), the router and catalog that make `steer` reachable only
  * where it can interrupt, the fixed Escape argv, the wake card contract for
@@ -21,6 +22,7 @@ import {
   STEER_ESCAPE_COOLDOWN_MS,
   STEER_FRESH_MS,
   STEER_INTERRUPTED_META,
+  STEER_QUEUE_MS,
   SteerGate,
   buildSteerDelivery,
   isFreshSteer,
@@ -64,12 +66,12 @@ test('the floor the app reads is not above this release', () => {
 
 // ── The two paths (SteerGate, driven with spies) ────────────────────────────
 
-function harness(opts: { busy?: boolean; failInterrupt?: boolean } = {}) {
+function harness(opts: { busy?: boolean | (() => boolean); failInterrupt?: boolean } = {}) {
   const calls: string[] = []
   let clock = 1_000_000
   const gate = new SteerGate({
     now: () => clock,
-    injectionBusy: () => opts.busy === true,
+    injectionBusy: () => (typeof opts.busy === 'function' ? opts.busy() : opts.busy === true),
     interrupt: async () => {
       calls.push('interrupt')
       if (opts.failInterrupt) throw new Error('tmux gone')
@@ -78,7 +80,7 @@ function harness(opts: { busy?: boolean; failInterrupt?: boolean } = {}) {
       calls.push(`sleep:${ms}`)
     },
     log: () => {},
-    settleMs: 5,
+    queueMs: 5,
   })
   const deliver = (label: string) => async (interrupted: boolean) => {
     calls.push(`deliver:${label}:${interrupted}`)
@@ -89,11 +91,40 @@ function harness(opts: { busy?: boolean; failInterrupt?: boolean } = {}) {
 const RUNNING: SteerPlan = { interrupt: true, reason: 'turn_live' }
 const IDLE: SteerPlan = { interrupt: false, reason: 'idle' }
 
-test('a running turn: ONE interrupt, a settle beat, then the text, marked interrupted', async () => {
+// 0.64.1 (BGOS #2140): the text is delivered FIRST, while the turn still
+// runs, so the CLI queues it behind a message it holds; then a beat; then ONE
+// Escape. Escape first let the held message open the next turn alone and the
+// steer landed mid turn (refused, ignored, or late).
+test('a running turn: the text first, marked, then a queue beat, then ONE Escape', async () => {
   const h = harness()
   const outcome = await h.gate.steer({ messageId: '1', plan: RUNNING, deliver: h.deliver('s') })
   assert.equal(outcome, 'interrupted')
-  assert.deepEqual(h.calls, ['interrupt', 'sleep:5', 'deliver:s:true'])
+  assert.deepEqual(h.calls, ['deliver:s:true', 'sleep:5', 'interrupt'])
+})
+
+test('the queue beat defaults to STEER_QUEUE_MS, under a second', async () => {
+  const calls: string[] = []
+  const gate = new SteerGate({
+    now: () => 0,
+    injectionBusy: () => false,
+    interrupt: async () => {
+      calls.push('interrupt')
+    },
+    sleep: async (ms) => {
+      calls.push(`sleep:${ms}`)
+    },
+    log: () => {},
+  })
+  await gate.steer({ messageId: '1', plan: RUNNING, deliver: async () => {} })
+  assert.deepEqual(calls, [`sleep:${STEER_QUEUE_MS}`, 'interrupt'])
+  assert.ok(STEER_QUEUE_MS > 0 && STEER_QUEUE_MS < 1_000)
+})
+
+test('a held message delivered just before the steer is followed by the steer, and only then the Escape', async () => {
+  const h = harness()
+  await h.gate.ordinary(() => h.deliver('attachment')(false))
+  await h.gate.steer({ messageId: '2', plan: RUNNING, deliver: h.deliver('steer') })
+  assert.deepEqual(h.calls, ['deliver:attachment:false', 'deliver:steer:true', 'sleep:5', 'interrupt'])
 })
 
 test('an idle session: the text is delivered as a plain message, no key pressed, no marker', async () => {
@@ -103,11 +134,25 @@ test('an idle session: the text is delivered as a plain message, no key pressed,
   assert.deepEqual(h.calls, ['deliver:s:false'])
 })
 
-test('a failed interrupt still delivers the text (never dropped), with no marker', async () => {
+test('a failed interrupt after the text is delivered is reported, and the text is not delivered twice', async () => {
   const h = harness({ failInterrupt: true })
   const outcome = await h.gate.steer({ messageId: '1', plan: RUNNING, deliver: h.deliver('s') })
   assert.equal(outcome, 'interrupt_failed')
-  assert.deepEqual(h.calls, ['interrupt', 'deliver:s:false'])
+  assert.deepEqual(h.calls, ['deliver:s:true', 'sleep:5', 'interrupt'])
+})
+
+test('a failed delivery presses nothing (an Escape with no steer queued is the bug)', async () => {
+  const h = harness()
+  await assert.rejects(
+    h.gate.steer({
+      messageId: '1',
+      plan: RUNNING,
+      deliver: async () => {
+        throw new Error('handoff failed')
+      },
+    }),
+  )
+  assert.deepEqual(h.calls, [])
 })
 
 test('two steers at once press ONE Escape: they run in order and the second is inside the cooldown', async () => {
@@ -115,7 +160,7 @@ test('two steers at once press ONE Escape: they run in order and the second is i
   const a = h.gate.steer({ messageId: '1', plan: RUNNING, deliver: h.deliver('a') })
   const b = h.gate.steer({ messageId: '2', plan: RUNNING, deliver: h.deliver('b') })
   assert.deepEqual(await Promise.all([a, b]), ['interrupted', 'cooldown'])
-  assert.deepEqual(h.calls, ['interrupt', 'sleep:5', 'deliver:a:true', 'deliver:b:false'])
+  assert.deepEqual(h.calls, ['deliver:a:true', 'sleep:5', 'interrupt', 'deliver:b:false'])
 })
 
 test('after the cooldown a new steer presses again', async () => {
@@ -126,34 +171,118 @@ test('after the cooldown a new steer presses again', async () => {
   assert.equal(h.calls.filter((c) => c === 'interrupt').length, 2)
 })
 
-test('no Escape while the daemon is typing /compact or /goal itself', async () => {
+test('no Escape while the daemon is typing /compact or /goal itself, and no marker', async () => {
   const h = harness({ busy: true })
   assert.equal(await h.gate.steer({ messageId: '1', plan: RUNNING, deliver: h.deliver('s') }), 'injection_busy')
   assert.deepEqual(h.calls, ['deliver:s:false'])
 })
 
-test('a retried delivery of the same steer never presses a second time', async () => {
+test('the daemon\'s own typing waits for a decided press: pressDone resolves only after the Escape', async () => {
+  const calls: string[] = []
+  let gate: SteerGate
+  let waited: Promise<void> | null = null
+  gate = new SteerGate({
+    now: () => 0,
+    injectionBusy: () => false,
+    interrupt: async () => {
+      calls.push('interrupt')
+    },
+    sleep: async () => {
+      calls.push('beat')
+      waited = gate.pressDone().then(() => {
+        calls.push('compact may type')
+      })
+    },
+    log: () => {},
+  })
+  await gate.steer({ messageId: '1', plan: RUNNING, deliver: async () => {} })
+  await waited
+  assert.deepEqual(calls, ['beat', 'interrupt', 'compact may type'])
+})
+
+test('a pane that is gone: the text plainly, no marker, no press', async () => {
+  const calls: string[] = []
+  const gate = new SteerGate({
+    now: () => 0,
+    injectionBusy: () => false,
+    targetAlive: async () => false,
+    interrupt: async () => {
+      calls.push('interrupt')
+    },
+    sleep: async () => {},
+    log: () => {},
+  })
+  const outcome = await gate.steer({
+    messageId: '1',
+    plan: RUNNING,
+    deliver: async (marked) => {
+      calls.push(`deliver:${marked}`)
+    },
+  })
+  assert.equal(outcome, 'target_gone')
+  assert.deepEqual(calls, ['deliver:false'])
+})
+
+test('a retry after a failed delivery delivers marked and presses once; a second retry never presses', async () => {
   const h = harness()
-  await h.gate
-    .steer({
+  await assert.rejects(
+    h.gate.steer({
       messageId: '7',
       plan: RUNNING,
       deliver: async () => {
         throw new Error('handoff failed')
       },
-    })
-    .catch(() => {})
+    }),
+  )
+  assert.equal(await h.gate.steer({ messageId: '7', plan: RUNNING, deliver: h.deliver('retry') }), 'interrupted')
+  h.advance(STEER_ESCAPE_COOLDOWN_MS * 10)
+  assert.equal(await h.gate.steer({ messageId: '7', plan: RUNNING, deliver: h.deliver('again') }), 'already_pressed')
+  assert.deepEqual(h.calls, ['deliver:retry:true', 'sleep:5', 'interrupt', 'deliver:again:false'])
+})
+
+test('a message arriving during the queue beat is delivered before the Escape, so it joins the next turn', async () => {
+  const calls: string[] = []
+  let gate: SteerGate
+  let during: Promise<void> | null = null
+  gate = new SteerGate({
+    now: () => 0,
+    injectionBusy: () => false,
+    interrupt: async () => {
+      calls.push('interrupt')
+    },
+    sleep: async () => {
+      during = gate.ordinary(async () => {
+        calls.push('deliver:message')
+      })
+    },
+    log: () => {},
+  })
+  await gate.steer({
+    messageId: '1',
+    plan: RUNNING,
+    deliver: async () => {
+      calls.push('deliver:steer')
+    },
+  })
+  await during
+  assert.deepEqual(calls, ['deliver:steer', 'deliver:message', 'interrupt'])
+})
+
+test('a retried delivery of the same steer never presses a second time', async () => {
+  const h = harness()
+  await h.gate.steer({ messageId: '7', plan: RUNNING, deliver: h.deliver('first') })
   h.advance(STEER_ESCAPE_COOLDOWN_MS * 10)
   assert.equal(await h.gate.steer({ messageId: '7', plan: RUNNING, deliver: h.deliver('retry') }), 'already_pressed')
   assert.equal(h.calls.filter((c) => c === 'interrupt').length, 1)
+  assert.equal(h.calls.at(-1), 'deliver:retry:false')
 })
 
-test('a message arriving behind an in-flight steer is delivered after it, never before', async () => {
+test('a message arriving behind an in-flight steer is delivered after its Escape, never before', async () => {
   const h = harness()
   const s1 = h.gate.steer({ messageId: '1', plan: RUNNING, deliver: h.deliver('steer') })
   const m = h.gate.ordinary(() => h.deliver('message')(false))
   await Promise.all([s1, m])
-  assert.deepEqual(h.calls, ['interrupt', 'sleep:5', 'deliver:steer:true', 'deliver:message:false'])
+  assert.deepEqual(h.calls, ['deliver:steer:true', 'sleep:5', 'interrupt', 'deliver:message:false'])
 })
 
 test('with no steer in flight an ordinary message is delivered at once', async () => {
@@ -329,4 +458,13 @@ test('server.ts routes poll, stream and ws delivery through the steer gate', () 
     /otherChatTurn: turnChat\.live\(\) && \(turnChat\.current\(Date\.now\(\)\)\?\.chatId \?\? input\.chatId\) !== input\.chatId,/,
   )
   assert.match(server, /live: hookTurnLive \|\| hookTurn\.carried\.size > 0,/)
+})
+
+test('server.ts makes /compact and /goal typing wait for a decided steer press', () => {
+  const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+  const compact = src.slice(src.indexOf('async function handleRemoteCompact'))
+  assert.match(compact.slice(0, compact.indexOf('tmuxTargetAlive(compactTarget)')), /await steerGate\.pressDone\(\)/)
+  const goal = src.slice(src.indexOf('async function runGoalInjection'))
+  assert.match(goal.slice(0, goal.indexOf('for (const step of steps)')), /await steerGate\.pressDone\(\)/)
+  assert.match(src, /targetAlive: \(\) => \(compactTarget \? tmuxTargetAlive\(compactTarget\)/)
 })

@@ -13,14 +13,26 @@
 // only where it already has tmux control of the CLI pane, the same supervisor
 // path that powers remote /compact (lib/compact-inject.ts). So:
 //
-//   1. if the steer is due an interrupt (planSteer), press ONE fixed Escape
-//      into the pane (buildInterruptSteps: no chat text ever reaches tmux),
-//      wait a beat for the CLI to settle the interrupted turn;
-//   2. ALWAYS deliver the text as an ordinary channel message, whether or not
-//      the interrupt happened or succeeded. Probed both ways: a channel
-//      message queued before the Escape survives the interrupt and is
-//      answered, and one sent after it starts the next turn at once.
+//   1. decide, before anything is delivered, whether this steer will press
+//      (planSteer, then the gate's cooldown and busy rules), so the card's
+//      `steer` marker is set from that decision;
+//   2. ALWAYS deliver the text as an ordinary channel message FIRST, while
+//      the turn still runs, so the CLI queues it behind anything it already
+//      holds (a plain message sent during a long tool call);
+//   3. wait a short beat so the CLI has the message queued, then press ONE
+//      fixed Escape into the pane (buildInterruptSteps: no chat text ever
+//      reaches tmux). Everything queued then opens the next turn together,
+//      in order, the steer included.
 //
+// Why this order (0.64.1, BGOS #2140, reproduced on a real session in
+// docs/reports/2026-10-10-steer-deliver-first): Escape first, text 800 ms
+// later, let a message the CLI was HOLDING (an attachment sent with Send now)
+// open the next turn alone; the steer text then landed MID turn, where it was
+// refused as "from an external channel", ignored (the model re-ran the task
+// the steer dropped), or answered late. A message queued BEFORE the Escape
+// survives the interrupt (probed 2026-10-09), so queueing the steer first
+// puts it in the same next turn as the held message.
+
 // The fallback rule (the Codex lesson): a /steer with no running turn is
 // delivered as a plain message, never dropped. A failed Escape is the same
 // fallback, never a lost message.
@@ -70,12 +82,13 @@ export function steerContractSha256(): string {
 export const STEER_FRESH_MS = 2 * 60_000
 
 /**
- * How long the daemon waits after the Escape before delivering. The probe saw
- * the CLI print "Interrupted" well inside a second; delivery is safe either
- * way (a message queued before the interrupt survives it), so this only keeps
- * the order tidy in the transcript.
+ * How long the daemon waits between delivering the steer text and pressing
+ * Escape: the channel notification must be QUEUED in the CLI before the
+ * interrupt, or the held message opens the next turn alone and the steer lands
+ * mid turn. The CLI reads a notification within milliseconds; half a second
+ * is generous and still interrupts well inside a second.
  */
-export const STEER_SETTLE_MS = 800
+export const STEER_QUEUE_MS = 500
 
 /** Whether a turn runs, as far as the daemon's hook rail can tell. */
 export type SteerTurnState = 'live' | 'idle' | 'unknown'
@@ -167,10 +180,11 @@ export function steerContent(sourceContent: string | undefined, commandArgs: str
  * The channel card a steer delivers. Its meta is EMPTY on purpose: an ordinary
  * message carries no event_type and no command_name, and a steer is an
  * ordinary message that arrives early. The `steer` marker
- * (STEER_INTERRUPTED_META) is added at delivery time and ONLY when the Escape
- * was really pressed, because the model is told that marker means "your turn
- * was interrupted on purpose", which must never be said of a steer that was
- * not (an idle one, a share recipient's, a stale one, a failed press).
+ * (STEER_INTERRUPTED_META) is added at delivery time and ONLY for a steer the
+ * gate presses Escape for right after delivering it (0.64.1: the text goes
+ * first, see SteerGate), because the model is told that marker means "your
+ * turn was interrupted on purpose", which must never be said of a steer that
+ * is not (an idle one, a share recipient's, a stale one, a pane that is gone).
  */
 export function buildSteerDelivery(input: { sourceContent?: string; commandArgs: string }): {
   content: string
@@ -189,6 +203,7 @@ export type SteerOutcome =
   | 'cooldown'
   | 'injection_busy'
   | 'already_pressed'
+  | 'target_gone'
 
 /**
  * No second Escape within this window. Claude Code fires no Stop hook on an
@@ -206,19 +221,33 @@ const PRESSED_IDS_MAX = 200
  *
  *   - Steers run one at a time, in arrival order (a single chain), so two
  *     steers in one poll batch cannot press two Escapes at once.
- *   - An ordinary message that arrives while a steer is still in flight is
- *     delivered AFTER it, so the model never sees a later message first.
- *     With nothing in flight it is delivered at once, exactly as before.
+ *   - The press is DECIDED before the text is delivered, then the text is
+ *     delivered, then (after the queue beat) the Escape is pressed. `deliver`
+ *     is told the decision, so the card carries the marker only for a steer
+ *     the gate presses for.
+ *   - From the decision to the Escape the press owns the composer: the
+ *     daemon's own /compact and /goal typing waits on `pressDone()` instead
+ *     of racing it, so a decided press is never skipped after its marked
+ *     card is out. The pane is probed (`targetAlive`) before a marked
+ *     delivery; a pane that is gone gets the text plainly. What is left is a
+ *     tmux call that fails after a live probe, logged.
+ *   - An ordinary message is delivered at once unless a message that arrived
+ *     before it is still undelivered; then it waits its turn. One arriving
+ *     during the queue beat is therefore delivered before the Escape and
+ *     opens the next turn with the steer.
  *   - No Escape inside the cooldown, none while the daemon is itself typing
  *     into the composer (/compact, /goal: an Escape there would cancel the
  *     compaction or eat the typed command), and never a second one for the
  *     same message id (a stream retry after a failed handoff).
- *   - Delivery ALWAYS happens, interrupt or not; `deliver` is told whether
- *     the interrupt happened so the card carries the marker only then.
+ *   - Delivery ALWAYS happens, press or not. A failed delivery presses
+ *     nothing: an Escape with the text not queued would let a held message
+ *     open the next turn alone, the very bug this order fixes.
  */
 export class SteerGate {
   private chain: Promise<void> = Promise.resolve()
-  private inFlight = 0
+  /** Messages handed to the gate whose text is not delivered yet. */
+  private undelivered = 0
+  private pressing: Promise<void> | null = null
   private lastEscapeAtMs = Number.NEGATIVE_INFINITY
   private readonly pressed = new Set<string>()
 
@@ -227,66 +256,125 @@ export class SteerGate {
       now: () => number
       /** The daemon is typing into the composer itself (/compact, /goal). */
       injectionBusy: () => boolean
+      /** The CLI pane still answers. Absent: assumed alive. */
+      targetAlive?: () => Promise<boolean>
       interrupt: () => Promise<void>
       sleep: (ms: number) => Promise<void>
       log: (line: string) => void
-      settleMs?: number
+      queueMs?: number
       cooldownMs?: number
     },
   ) {}
 
-  /** Deliver a steer after any steer before it. Rejects only if `deliver` does. */
+  /**
+   * Deliver a steer after anything before it, then press if it was decided.
+   * Rejects only if `deliver` does, and then nothing is pressed.
+   */
   steer(input: {
     messageId: string
     plan: SteerPlan
     deliver: (interrupted: boolean) => Promise<void>
   }): Promise<SteerOutcome> {
+    this.undelivered++
+    let counted = true
+    const deliver = async (marked: boolean): Promise<void> => {
+      try {
+        await input.deliver(marked)
+      } finally {
+        if (counted) this.undelivered--
+        counted = false
+      }
+    }
     return this.enqueue(async () => {
-      const outcome = await this.press(input.messageId, input.plan)
+      const outcome = await this.run(input.messageId, input.plan, deliver)
       this.deps.log(`steer: ${outcome} (${input.plan.reason})`)
-      await input.deliver(outcome === 'interrupted')
       return outcome
     })
   }
 
-  /** Deliver an ordinary message: at once, or behind a steer still in flight. */
+  /** Deliver an ordinary message: at once, or after a message before it. */
   ordinary(deliver: () => Promise<void>): Promise<void> {
-    if (this.inFlight === 0) return deliver()
-    return this.enqueue(deliver)
+    if (this.undelivered === 0) return deliver()
+    this.undelivered++
+    return this.enqueue(async () => {
+      try {
+        await deliver()
+      } finally {
+        this.undelivered--
+      }
+    })
+  }
+
+  /** Resolves once no decided press is pending (the daemon's own typing waits on it). */
+  pressDone(): Promise<void> {
+    return this.pressing ?? Promise.resolve()
   }
 
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
-    this.inFlight++
     const run = this.chain.then(task)
-    const settled = run.then(
+    this.chain = run.then(
       () => {},
       () => {},
     )
-    this.chain = settled.then(() => {
-      this.inFlight--
-    })
     return run
   }
 
-  private async press(messageId: string, plan: SteerPlan): Promise<SteerOutcome> {
+  private async run(
+    messageId: string,
+    plan: SteerPlan,
+    deliver: (marked: boolean) => Promise<void>,
+  ): Promise<SteerOutcome> {
+    const decision = this.decide(messageId, plan)
+    if (decision !== 'press') {
+      await deliver(false)
+      return decision
+    }
+    let release = () => {}
+    this.pressing = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    try {
+      if (!(await this.alive())) {
+        await deliver(false)
+        return 'target_gone'
+      }
+      await deliver(true)
+      // Let the CLI queue the text, then ONE Escape.
+      await this.deps.sleep(this.deps.queueMs ?? STEER_QUEUE_MS)
+      try {
+        await this.deps.interrupt()
+      } catch (err) {
+        this.deps.log(`steer: interrupt failed after the text was delivered: ${err}`)
+        return 'interrupt_failed'
+      }
+      this.lastEscapeAtMs = this.deps.now()
+      this.pressed.add(messageId)
+      if (this.pressed.size > PRESSED_IDS_MAX) {
+        const oldest = this.pressed.values().next().value
+        if (oldest !== undefined) this.pressed.delete(oldest)
+      }
+      return 'interrupted'
+    } finally {
+      this.pressing = null
+      release()
+    }
+  }
+
+  private decide(messageId: string, plan: SteerPlan): SteerOutcome | 'press' {
     if (!plan.interrupt) return 'plain'
     if (this.pressed.has(messageId)) return 'already_pressed'
     if (this.deps.injectionBusy()) return 'injection_busy'
     const cooldown = this.deps.cooldownMs ?? STEER_ESCAPE_COOLDOWN_MS
     if (this.deps.now() - this.lastEscapeAtMs < cooldown) return 'cooldown'
+    return 'press'
+  }
+
+  private async alive(): Promise<boolean> {
+    if (!this.deps.targetAlive) return true
     try {
-      await this.deps.interrupt()
-    } catch (err) {
-      this.deps.log(`steer: interrupt failed, delivering as a plain message: ${err}`)
-      return 'interrupt_failed'
+      return await this.deps.targetAlive()
+    } catch {
+      return false
     }
-    this.lastEscapeAtMs = this.deps.now()
-    this.pressed.add(messageId)
-    if (this.pressed.size > PRESSED_IDS_MAX) {
-      const oldest = this.pressed.values().next().value
-      if (oldest !== undefined) this.pressed.delete(oldest)
-    }
-    await this.deps.sleep(this.deps.settleMs ?? STEER_SETTLE_MS)
-    return 'interrupted'
   }
 }
