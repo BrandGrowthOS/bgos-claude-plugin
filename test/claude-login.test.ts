@@ -158,10 +158,11 @@ test('the account key is stable, 12 hex, and differs per credential store', () =
 })
 
 test('the account file is ~/.claude.json by default and inside CLAUDE_CONFIG_DIR when set', () => {
-  assert.equal(claudeAccountFile({ env: {}, home: '/h', configDir: '/h/.claude' }), '/h/.claude.json')
+  // path.join, not a literal: on Windows the separator is a backslash.
+  assert.equal(claudeAccountFile({ env: {}, home: '/h', configDir: '/h/.claude' }), join('/h', '.claude.json'))
   assert.equal(
     claudeAccountFile({ env: { CLAUDE_CONFIG_DIR: '/h/.w' }, home: '/h', configDir: '/h/.w' }),
-    '/h/.w/.claude.json',
+    join('/h/.w', '.claude.json'),
   )
 })
 
