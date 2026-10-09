@@ -326,10 +326,19 @@ import {
   shouldHeartbeatNow,
   pairingLockPath,
   formatPassiveBanner,
+  formatChannelYieldReason,
+  formatChannelTakeoverLine,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
+import { probeChannelLoaded, type ChannelPresence } from './lib/channel-presence.js'
 import { startBrowserHostSupervisor, type BrowserHostSupervisor } from './lib/browser-host-supervisor.js'
-import { claudeConfigDir, detectInstallMethod, launchCommandFor } from './bin/bgos-install-method.mjs'
+import {
+  CLONE_CHANNEL_SPEC,
+  claudeConfigDir,
+  detectInstallMethod,
+  launchCommandFor,
+  marketplaceChannelSpec,
+} from './bin/bgos-install-method.mjs'
 import { resolveChannelSpec } from './bin/hoai-core.mjs'
 import {
   UpdateStreamConsumer,
@@ -11255,6 +11264,45 @@ const INSTALL_METHOD: 'marketplace' | 'clone' =
 const PLUGIN_ROOT =
   (INSTALL_DETECTION?.pluginRoot ?? '') || (INSTALL_DETECTION?.executionRoot ?? '') || import.meta.dir
 
+// Is this daemon's channel loaded in its session (0.63.2, assistant 873)? Read
+// once, off the claude command line above us (lib/channel-presence.ts says why
+// that is the only real signal), and recorded in the pairing lock so a daemon
+// whose channel is loaded takes the pairing from a live sibling whose channel
+// is not. The spec is how a session would name THIS install: the marketplace
+// plugin by plugin@marketplace, a clone by server:bgos. Not resolveChannelSpec:
+// that answers what a launcher should load in this folder, where a .mcp.json
+// server wins, so in 873's folder it names server:bgos for the plugin daemon
+// too. An unidentified install has no spec, which reads as unknown: the lock
+// then behaves as it always did.
+// Lazy, because it spawns ps; the first lock call pays for it, once.
+let channelPresenceMemo: ChannelPresence | null = null
+function channelPresence(): ChannelPresence {
+  if (channelPresenceMemo) return channelPresenceMemo
+  const ownSpec =
+    INSTALL_DETECTION?.method === 'marketplace'
+      ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace)
+      : INSTALL_DETECTION?.method === 'clone'
+        ? CLONE_CHANNEL_SPEC
+        : ''
+  channelPresenceMemo = probeChannelLoaded({
+    platform: process.platform,
+    ownPid: process.pid,
+    ownSpec,
+    execSync: defaultExecSync,
+  })
+  return channelPresenceMemo
+}
+/** The clause a stand-down or passive line adds when a channel-loaded holder
+ *  is why this daemon yields; '' otherwise. */
+function channelYieldReason(holderChannelLoaded: boolean | undefined): string {
+  const self = channelPresence()
+  return formatChannelYieldReason({
+    holderChannelLoaded,
+    selfChannelLoaded: self.loaded,
+    selfReason: self.reason,
+  })
+}
+
 /**
  * Is the blocking floor hook registered for this session? Looked up ONCE, at
  * boot, because the CLI reads its hooks when it launches, and hard_floor is
@@ -14332,6 +14380,7 @@ async function main(): Promise<void> {
         selfPid: process.pid,
         now: gateNow,
         bootedAt: DAEMON_START_MS,
+        channelLoaded: channelPresence().loaded,
       })
       if (!gateRefresh.held) {
         channelArmed = false
@@ -14341,10 +14390,12 @@ async function main(): Promise<void> {
         stopHookIntake()
         lockIoErrorWarned = false
         standDownIgnoredFrames.clear()
+        const yieldWhy = channelYieldReason(gateRefresh.holderChannelLoaded)
         log(
           `pid ${process.pid}: pairing lock now held by pid ` +
             `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
-            `staying passive and watching for reclaim`,
+            `staying passive and watching for reclaim` +
+            (yieldWhy ? `; ${yieldWhy}` : ''),
         )
         resumeLockRecheck()
         return
@@ -14616,6 +14667,7 @@ async function main(): Promise<void> {
             selfPid: process.pid,
             now: hbNow,
             bootedAt: DAEMON_START_MS,
+            channelLoaded: channelPresence().loaded,
           })
           if (!refreshed.held) {
             channelArmed = false
@@ -14627,11 +14679,13 @@ async function main(): Promise<void> {
             // spell warns again instead of being swallowed by this one's latch.
             standDownIgnoredFrames.clear()
             lockIoErrorWarned = false
+            const yieldWhy = channelYieldReason(refreshed.holderChannelLoaded)
             log(
               `pid ${process.pid}: pairing lock now held by pid ` +
                 `${refreshed.holderPid ?? 'unknown'}; ` +
                 `standing down to passive (this daemon stops polling and forwarding ` +
-                `so it cannot eat the holder's messages) and watching for reclaim`,
+                `so it cannot eat the holder's messages) and watching for reclaim` +
+                (yieldWhy ? `; ${yieldWhy}` : ''),
             )
             resumeLockRecheck()
           } else if (refreshed.ioError) {
@@ -15014,6 +15068,7 @@ async function main(): Promise<void> {
       selfPid: process.pid,
       now: gateNow,
       bootedAt: DAEMON_START_MS,
+      channelLoaded: channelPresence().loaded,
     })
     if (!gateRefresh.held) {
       channelArmed = false
@@ -15022,10 +15077,12 @@ async function main(): Promise<void> {
       stopHookIntake()
       lockIoErrorWarned = false
       standDownIgnoredFrames.clear()
+      const yieldWhy = channelYieldReason(gateRefresh.holderChannelLoaded)
       log(
         `pid ${process.pid}: pairing lock now held by pid ` +
           `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
-          `staying passive and watching for reclaim`,
+          `staying passive and watching for reclaim` +
+          (yieldWhy ? `; ${yieldWhy}` : ''),
       )
       resumeLockRecheck()
       return
@@ -15064,6 +15121,7 @@ async function main(): Promise<void> {
           selfPid: process.pid,
           now: Date.now(),
           bootedAt: DAEMON_START_MS,
+          channelLoaded: channelPresence().loaded,
         })
         if (!res.acquired) return
         if (lockRecheck) clearInterval(lockRecheck)
@@ -15071,10 +15129,17 @@ async function main(): Promise<void> {
         // Same rule as the boot path: we own the lock now, so the heartbeat has
         // to start refreshing it immediately, not when the arm finishes.
         lockHeld = true
-        log(
-          `pid ${process.pid}: pairing lock reclaimed on recheck (${res.reason}); ` +
-            `promoting from passive to active and arming delivery`,
-        )
+        if (res.reason === 'channel-takeover') {
+          log(
+            `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
+              `promoting from passive to active and arming delivery`,
+          )
+        } else {
+          log(
+            `pid ${process.pid}: pairing lock reclaimed on recheck (${res.reason}); ` +
+              `promoting from passive to active and arming delivery`,
+          )
+        }
         void armDelivery().catch((err) => {
           // The arm failed after we took the lock. Without this the daemon
           // would sit holding the pairing lock, deaf (channelArmed never
@@ -15103,11 +15168,17 @@ async function main(): Promise<void> {
     lockRecheck.unref?.()
   }
 
+  const bootPresence = channelPresence()
+  log(
+    `pid ${process.pid}: channel loaded in this session: ` +
+      `${bootPresence.loaded === null ? 'unknown' : String(bootPresence.loaded)} (${bootPresence.reason})`,
+  )
   const lockAtBoot = acquirePairingLock({
     lockPath: PAIRING_LOCK_PATH,
     selfPid: process.pid,
     now: Date.now(),
     bootedAt: DAEMON_START_MS,
+    channelLoaded: bootPresence.loaded,
   })
   if (lockAtBoot.acquired) {
     // Ownership is true from HERE, not from the end of the arm below: the poll
@@ -15115,12 +15186,17 @@ async function main(): Promise<void> {
     // while the (slow) arm runs.
     lockHeld = true
     log(
-      `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
-        `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
+      lockAtBoot.reason === 'channel-takeover'
+        ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +
+            `this daemon owns the channel for this pairing`
+        : `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
+            `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
     )
     await armDelivery()
   } else {
-    log(`pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid)}`)
+    log(
+      `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, channelYieldReason(lockAtBoot.holderChannelLoaded))}`,
+    )
     // Recheck on the heartbeat cadence: if the holder exits (its lock is
     // released, its pid dies, or its heartbeat goes stale) this passive daemon
     // reclaims and arms delivery.

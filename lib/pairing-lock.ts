@@ -41,6 +41,18 @@
  * takeover when a transient exits cleanly-or-not, and staleness is the
  * backstop against a stale record whose pid now points at something else.
  *
+ * CHANNEL TAKEOVER (0.63.2, assistant 873). Two daemons for one pairing can
+ * run in ONE session: a clone loaded as the session's channel and the
+ * marketplace plugin enabled globally, whose channel that session never
+ * registered. Whichever won the lock owned the pairing, and when the plugin
+ * won every inbound message went into a channel Claude Code drops. So each
+ * daemon records whether its channel is loaded (lib/channel-presence.ts,
+ * read off the claude command line), and decideLockAction lets a daemon whose
+ * channel IS loaded take the lock from a live holder that recorded
+ * channelLoaded=false. Never the other way round, and an unknown on either
+ * side (null, or a record from an older daemon without the field) keeps the
+ * rules above exactly as they were.
+ *
  * This module is the PURE core (decideLockAction, the staleness maths, the
  * serialize/parse pair, the heartbeat throttle) plus a thin, fully-injectable
  * effectful shell (acquire / refresh / release / touchBeaconHeartbeat). All
@@ -83,16 +95,26 @@ export interface LockRecord {
   heartbeatAt: number
   /** Epoch ms the holder booted. Informational (log lines, tie-breaks). */
   bootedAt?: number
+  /** Whether the holder's channel is loaded in its session. Absent when it
+   *  could not tell (or predates 0.63.2): absent never invites a takeover. */
+  channelLoaded?: boolean
 }
+
+/** Why a daemon may take the lock. 'channel-takeover': a live holder whose
+ *  channel is not loaded gives way to one whose channel is. */
+export type AcquireReason = 'unlocked' | 'own' | 'holder-dead' | 'stale' | 'channel-takeover'
 
 /**
  * What a booting (or rechecking) daemon should do about the lock it found.
  *   acquire -> this daemon may take the lock and connect its pairing WS.
  *   passive -> another daemon demonstrably holds it; stay off the pairing.
+ * `holderPid` rides on a channel takeover (whom we took it from) and on
+ * passive; `holderChannelLoaded` on passive, so the banner can say why.
  */
 export type LockDecision =
-  | { action: 'acquire'; reason: 'unlocked' | 'own' | 'holder-dead' | 'stale' }
-  | { action: 'passive'; holderPid: number }
+  | { action: 'acquire'; reason: Exclude<AcquireReason, 'channel-takeover'> }
+  | { action: 'acquire'; reason: 'channel-takeover'; holderPid: number }
+  | { action: 'passive'; holderPid: number; holderChannelLoaded?: boolean }
 
 /**
  * Parse a lock file's raw contents into a LockRecord, or null when the file is
@@ -119,6 +141,9 @@ export function parseLockRecord(raw: string | null | undefined): LockRecord | nu
     pid,
     heartbeatAt,
     ...(Number.isFinite(bootedAt) && bootedAt >= 0 ? { bootedAt } : {}),
+    // Only a real boolean counts: a string "false" from a hand edit must not
+    // turn a live holder into a takeover target.
+    ...(typeof obj.channelLoaded === 'boolean' ? { channelLoaded: obj.channelLoaded } : {}),
   }
 }
 
@@ -128,6 +153,7 @@ export function serializeLockRecord(record: LockRecord): string {
     pid: record.pid,
     heartbeatAt: record.heartbeatAt,
     ...(record.bootedAt != null ? { bootedAt: record.bootedAt } : {}),
+    ...(typeof record.channelLoaded === 'boolean' ? { channelLoaded: record.channelLoaded } : {}),
   }
   return `${JSON.stringify(out, null, 2)}\n`
 }
@@ -143,8 +169,19 @@ export function serializeLockRecord(record: LockRecord): string {
  *   - Heartbeat fresh, holder pid
  *     no longer a live process    -> acquire ('holder-dead'); instant takeover
  *                                    when a transient exits.
+ *   - Heartbeat fresh, holder alive,
+ *     holder recorded channelLoaded
+ *     false, and OUR channel is
+ *     loaded (selfChannelLoaded
+ *     true)                       -> acquire ('channel-takeover').
  *   - Heartbeat fresh AND holder
  *     pid alive                   -> passive; a real daemon is on this pairing.
+ *
+ * The takeover needs BOTH sides proven: the holder's false and our true. A
+ * null on our side, or a holder record without the field, is passive exactly
+ * as before, which is the fail open rule. A daemon whose channel is not
+ * loaded never takes over from anyone alive, so a channel-loaded holder (or
+ * one that just took over) keeps the lock.
  *
  * Staleness is checked BEFORE pid-liveness on purpose: a stale record whose
  * pid was recycled by some unrelated process would look "alive" to a pid probe
@@ -157,6 +194,9 @@ export function decideLockAction(input: {
   selfPid: number
   stalenessMs: number
   isHolderAlive: (pid: number) => boolean
+  /** This daemon's channel presence: true / false when proven, null or
+   *  absent when unknown (today's behaviour). */
+  selfChannelLoaded?: boolean | null
 }): LockDecision {
   const { existing, now, selfPid, stalenessMs, isHolderAlive } = input
   if (!existing) return { action: 'acquire', reason: 'unlocked' }
@@ -167,7 +207,14 @@ export function decideLockAction(input: {
   if (!isHolderAlive(existing.pid)) {
     return { action: 'acquire', reason: 'holder-dead' }
   }
-  return { action: 'passive', holderPid: existing.pid }
+  if (input.selfChannelLoaded === true && existing.channelLoaded === false) {
+    return { action: 'acquire', reason: 'channel-takeover', holderPid: existing.pid }
+  }
+  return {
+    action: 'passive',
+    holderPid: existing.pid,
+    ...(typeof existing.channelLoaded === 'boolean' ? { holderChannelLoaded: existing.channelLoaded } : {}),
+  }
 }
 
 /**
@@ -264,9 +311,12 @@ export const defaultLockIo: LockIo = {
 export interface AcquireResult {
   acquired: boolean
   /** The reason we acquired (when acquired), for the boot log line. */
-  reason?: 'unlocked' | 'own' | 'holder-dead' | 'stale'
-  /** The pid we deferred to (when passive), or the pid that beat us in a race. */
+  reason?: AcquireReason
+  /** The pid we deferred to (when passive), the pid that beat us in a race,
+   *  or (on a channel takeover) the pid we took the lock from. */
   holderPid?: number
+  /** What the holder we deferred to recorded about its channel, when it did. */
+  holderChannelLoaded?: boolean
 }
 
 /**
@@ -284,10 +334,27 @@ export function acquirePairingLock(input: {
   now: number
   bootedAt?: number
   stalenessMs?: number
+  /** This daemon's channel presence, recorded in the lock and used for the
+   *  takeover rule. null / absent: unknown, nothing recorded. */
+  channelLoaded?: boolean | null
   io?: LockIo
 }): AcquireResult {
   const io = input.io ?? defaultLockIo
   const stalenessMs = input.stalenessMs ?? lockStalenessMs()
+  const ours = (): string =>
+    serializeLockRecord({
+      pid: input.selfPid,
+      heartbeatAt: input.now,
+      ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
+      ...(typeof input.channelLoaded === 'boolean' ? { channelLoaded: input.channelLoaded } : {}),
+    })
+  // A lost race names the winner AND what it recorded about its channel, so
+  // the passive banner can say why this daemon yields on that path too.
+  const lostTo = (winner: LockRecord | null): AcquireResult => ({
+    acquired: false,
+    holderPid: winner?.pid,
+    ...(typeof winner?.channelLoaded === 'boolean' ? { holderChannelLoaded: winner.channelLoaded } : {}),
+  })
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
     const decision = decideLockAction({
@@ -296,41 +363,44 @@ export function acquirePairingLock(input: {
       selfPid: input.selfPid,
       stalenessMs,
       isHolderAlive: io.isProcessAlive.bind(io),
+      selfChannelLoaded: input.channelLoaded,
     })
     if (decision.action === 'passive') {
-      return { acquired: false, holderPid: decision.holderPid }
+      return {
+        acquired: false,
+        holderPid: decision.holderPid,
+        ...(decision.holderChannelLoaded !== undefined
+          ? { holderChannelLoaded: decision.holderChannelLoaded }
+          : {}),
+      }
     }
     if (decision.reason === 'unlocked') {
       // Nothing on disk: whoever creates the file first owns the pairing.
-      const record = serializeLockRecord({
-        pid: input.selfPid,
-        heartbeatAt: input.now,
-        ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
-      })
+      const record = ours()
       if (io.tryCreateExclusive(input.lockPath, record)) {
         return { acquired: true, reason: decision.reason }
       }
       // A rival created it in the same instant. Yield to whoever won.
-      return { acquired: false, holderPid: parseLockRecord(io.readText(input.lockPath))?.pid }
+      return lostTo(parseLockRecord(io.readText(input.lockPath)))
     }
-    // A reclaim (own / stale / holder-dead) overwrites deliberately: the file
-    // exists and an exclusive create would always fail. The read-back below is
-    // what decides a simultaneous reclaim.
-    io.writeFile(
-      input.lockPath,
-      serializeLockRecord({
-        pid: input.selfPid,
-        heartbeatAt: input.now,
-        ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
-      }),
-    )
+    // A reclaim (own / stale / holder-dead / channel-takeover) overwrites
+    // deliberately: the file exists and an exclusive create would always
+    // fail. The read-back below is what decides a simultaneous reclaim. On a
+    // takeover the old holder learns it on its next refresh, which finds our
+    // pid and stands it down; its recheck then reads our channelLoaded=true
+    // and stays passive.
+    io.writeFile(input.lockPath, ours())
     const readback = parseLockRecord(io.readText(input.lockPath))
     if (readback && readback.pid === input.selfPid) {
-      return { acquired: true, reason: decision.reason }
+      return {
+        acquired: true,
+        reason: decision.reason,
+        ...(decision.reason === 'channel-takeover' ? { holderPid: decision.holderPid } : {}),
+      }
     }
     // Lost the write race: a rival overwrote us in the same instant. Yield to
     // it; our caller's recheck loop reclaims if it proves short-lived.
-    return { acquired: false, holderPid: readback?.pid }
+    return lostTo(readback)
   } catch {
     return { acquired: false }
   }
@@ -344,7 +414,7 @@ export function acquirePairingLock(input: {
  *  three intervals and is reclaimed while still believing it is the holder. */
 export type RefreshOutcome =
   | { held: true; ioError?: string }
-  | { held: false; holderPid: number | undefined }
+  | { held: false; holderPid: number | undefined; holderChannelLoaded?: boolean }
 
 /**
  * Refresh our heartbeat and report what we found.
@@ -367,13 +437,19 @@ export function refreshPairingLockDetailed(input: {
   selfPid: number
   now: number
   bootedAt?: number
+  /** Re-recorded on every refresh, so a takeover rival always reads it. */
+  channelLoaded?: boolean | null
   io?: LockIo
 }): RefreshOutcome {
   const io = input.io ?? defaultLockIo
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
     if (existing && existing.pid !== input.selfPid) {
-      return { held: false, holderPid: existing.pid }
+      return {
+        held: false,
+        holderPid: existing.pid,
+        ...(typeof existing.channelLoaded === 'boolean' ? { holderChannelLoaded: existing.channelLoaded } : {}),
+      }
     }
     io.writeFile(
       input.lockPath,
@@ -381,6 +457,7 @@ export function refreshPairingLockDetailed(input: {
         pid: input.selfPid,
         heartbeatAt: input.now,
         ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
+        ...(typeof input.channelLoaded === 'boolean' ? { channelLoaded: input.channelLoaded } : {}),
       }),
     )
     return { held: true }
@@ -399,6 +476,7 @@ export function refreshPairingLock(input: {
   selfPid: number
   now: number
   bootedAt?: number
+  channelLoaded?: boolean | null
   io?: LockIo
 }): boolean {
   return refreshPairingLockDetailed(input).held
@@ -482,13 +560,50 @@ export function touchBeaconHeartbeat(input: {
   }
 }
 
+/**
+ * The clause that says WHY this daemon yields to a channel-loaded holder, or
+ * '' when that is not the reason (an unknown on either side, or both loaded).
+ * `selfReason` is lib/channel-presence.ts's reason for our own false.
+ */
+export function formatChannelYieldReason(input: {
+  holderChannelLoaded: boolean | undefined
+  selfChannelLoaded: boolean | null | undefined
+  selfReason?: string
+}): string {
+  if (input.holderChannelLoaded !== true || input.selfChannelLoaded !== false) return ''
+  const why = input.selfReason ? ` (${input.selfReason})` : ''
+  return (
+    `yielding the pairing lock: the holder's channel is loaded in its session ` +
+    `and this daemon's channel is not${why}`
+  )
+}
+
+/** The one line a daemon logs when it takes the lock over from a live holder
+ *  whose channel is not loaded. */
+export function formatChannelTakeoverLine(input: {
+  selfPid: number
+  holderPid: number | undefined
+  selfReason?: string
+}): string {
+  const who = input.holderPid && input.holderPid > 0 ? `pid ${input.holderPid}` : 'the holder'
+  const why = input.selfReason ? ` (${input.selfReason})` : ''
+  return (
+    `pid ${input.selfPid}: pairing lock taken over from ${who}: it recorded ` +
+    `channelLoaded=false and this daemon's channel is loaded${why}`
+  )
+}
+
 /** The banner a passive daemon logs so an operator reading the log knows this
- *  session is deliberately off the pairing, and which pid holds it. */
-export function formatPassiveBanner(holderPid: number | undefined): string {
+ *  session is deliberately off the pairing, and which pid holds it. With a
+ *  `yieldReason` (formatChannelYieldReason) it also says why it will NOT take
+ *  over while that holder lives. */
+export function formatPassiveBanner(holderPid: number | undefined, yieldReason = ''): string {
   const who = holderPid && holderPid > 0 ? `pid ${holderPid}` : 'another process'
   return (
     `passive: the pairing is already held by ${who} on this host, so this ` +
     `daemon will NOT connect the pairing channel (its MCP tools stay available). ` +
-    `It will take over automatically if that holder exits.`
+    (yieldReason
+      ? `${yieldReason[0].toUpperCase()}${yieldReason.slice(1)}. It takes over only if that holder exits or stops heartbeating.`
+      : `It will take over automatically if that holder exits.`)
   )
 }
