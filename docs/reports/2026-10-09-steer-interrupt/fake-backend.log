@@ -1,0 +1,40 @@
+2026-10-09T19:44:24.132Z fake up
+2026-10-09T19:44:31.418Z GET /api/v1/integrations/capabilities?channel=claude&daemonVersion=0.64.0&capabilities=mission_events%2Cmission_goal_checks%2Cmission_set_goals%2Cpermission_card%2Cplan_card%2Cmemory_rpc%2Cboards_playbook%2Cboards_playbook_does%2Cboards_runs%2Csessions_library%2Cchanges_rpc 
+2026-10-09T19:44:31.418Z PUT /api/v1/assistants/990001/commands {"commands":[{"command":"help","description":"What this agent can do here","scope":"all"},{"command":"memory","description":"Show or edit this project memory","scope":"all"},{"command":"init","description":"Create a CLAUDE.md for this project","scope":"all"},{"command":"model","description":"Which model this agent runs, and how to change it","scope":"all"},{"command":"mcp","description":"Check the
+2026-10-09T19:44:31.421Z GET /api/v1/peers/inbox 
+2026-10-09T19:44:31.423Z GET /api/v1/chats/5001/messages?userId=777 
+2026-10-09T19:44:31.427Z GET /api/v1/chats/5001/messages?userId=777 
+2026-10-09T19:44:31.427Z GET /api/v1/chats/5001/messages?userId=777 
+2026-10-09T19:44:31.429Z GET /api/v1/assistants/990001 
+2026-10-09T19:44:32.431Z GET /api/v1/peers/inbox 
+2026-10-09T19:44:32.431Z GET /api/v1/chats/5001/messages?userId=777&afterId=100 
+2026-10-09T19:44:32.432Z PATCH /api/v1/assistants/990001/status {"contextPct":5}
+2026-10-09T19:44:41.192Z ADD {"id":101,"chatId":5001,"sender":"user","senderUserId":"777","text":"Rule for this chat: answer every message from me with the mcp__bgos__reply tool (load it with ToolSearch first), never only in the terminal. Reply READY now.","sentDate":"2026-10-09T19:44:41.192Z","messageType":"text"}
+2026-10-09T19:44:42.444Z GET /api/v1/peers/inbox 
+2026-10-09T19:44:42.445Z GET /api/v1/chats/5001/messages?userId=777&afterId=100 
+2026-10-09T19:44:42.448Z GET /api/v1/assistants/990001/missions/active?chatId=5001 
+2026-10-09T19:44:45.974Z POST /api/v1/send-message {"chatId":5001,"assistantId":990001,"text":"READY","sender":"assistant","sentDate":"2026-10-09T19:44:45.973Z","hasAttachment":false,"isMixedAttachments":null,"files":[],"options":[],"usage":{"billingMode":"subscription","source":"claude-code-jsonl","model":"claude-sonnet-5-5","inputTokens":2,"outputTokens":84,"cacheReadTokens":29597,"cacheCreationTokens":2036}}
+2026-10-09T19:44:45.975Z REPLY "READY"
+2026-10-09T19:44:45.976Z PATCH /api/v1/assistants/990001/status {"contextPct":3}
+2026-10-09T19:44:49.328Z ADD {"id":103,"chatId":5001,"sender":"user","senderUserId":"777","text":"/steer What is 6 times 7? Reply IDLESTEER and the number.","sentDate":"2026-10-09T19:44:49.328Z","messageType":"slash_command","commandName":"steer","commandArgs":"What is 6 times 7? Reply IDLESTEER and the number."}
+2026-10-09T19:44:52.460Z GET /api/v1/peers/inbox 
+2026-10-09T19:44:52.461Z GET /api/v1/chats/5001/messages?userId=777&afterId=101 
+2026-10-09T19:44:52.462Z PATCH /api/v1/assistants/990001/status {"contextPct":5}
+2026-10-09T19:44:54.231Z POST /api/v1/send-message {"chatId":5001,"assistantId":990001,"text":"IDLESTEER 42","sender":"assistant","sentDate":"2026-10-09T19:44:54.230Z","hasAttachment":false,"isMixedAttachments":null,"files":[],"options":[],"usage":{"billingMode":"subscription","source":"claude-code-jsonl","model":"claude-sonnet-5-5","inputTokens":4,"outputTokens":92,"cacheReadTokens":83117,"cacheCreationTokens":19991}}
+2026-10-09T19:44:54.231Z REPLY "IDLESTEER 42"
+2026-10-09T19:44:56.461Z ADD {"id":105,"chatId":5001,"sender":"user","senderUserId":"777","text":"Reply STARTING, then run this shell command in the foreground, not in the background: python3 -c 'import time;time.sleep(150)'  and when it finishes reply LONGDONE.","sentDate":"2026-10-09T19:44:56.461Z","messageType":"text"}
+2026-10-09T19:45:02.475Z GET /api/v1/peers/inbox 
+2026-10-09T19:45:02.479Z GET /api/v1/chats/5001/messages?userId=777&afterId=103 
+2026-10-09T19:45:04.221Z POST /api/v1/send-message {"chatId":5001,"assistantId":990001,"text":"STARTING","sender":"assistant","sentDate":"2026-10-09T19:45:04.220Z","hasAttachment":false,"isMixedAttachments":null,"files":[],"options":[],"usage":{"billingMode":"subscription","source":"claude-code-jsonl","model":"claude-sonnet-5-5","inputTokens":6,"outputTokens":108,"cacheReadTokens":103371,"cacheCreationTokens":248}}
+2026-10-09T19:45:04.221Z REPLY "STARTING"
+2026-10-09T19:45:06.437Z POST /api/v1/messages {"chatId":5001,"sender":"assistant","messageType":"tool_progress","text":"Working… · Bash","toolProgress":{"state":"running","tools":[{"icon":"💻","name":"Bash","status":"running","args":"python3 -c 'import time;time.sleep(150)'"}],"startedAt":"2026-10-09T19:45:02.560Z"}}
+2026-10-09T19:45:12.494Z GET /api/v1/peers/inbox 
+2026-10-09T19:45:12.494Z GET /api/v1/chats/5001/messages?userId=777&afterId=105 
+2026-10-09T19:45:15.705Z ADD {"id":107,"chatId":5001,"sender":"user","senderUserId":"777","text":"/steer Change of plan, drop the sleep. What is 17 times 3? Reply STEERED and the number.","sentDate":"2026-10-09T19:45:15.705Z","messageType":"slash_command","commandName":"steer","commandArgs":"Change of plan, drop the sleep. What is 17 times 3? Reply STEERED and the number."}
+2026-10-09T19:45:22.512Z GET /api/v1/peers/inbox 
+2026-10-09T19:45:22.512Z GET /api/v1/chats/5001/messages?userId=777&afterId=106 
+2026-10-09T19:45:23.477Z POST /api/v1/messages {"chatId":5001,"sender":"assistant","messageType":"tool_progress","text":"Used 1 tool · Bash","toolProgress":{"state":"done","tools":[{"icon":"💻","name":"Bash","status":"running","args":"python3 -c 'import time;time.sleep(150)'"}],"startedAt":"2026-10-09T19:45:02.560Z","finishedAt":"2026-10-09T19:45:23.412Z"}}
+2026-10-09T19:45:24.600Z POST /api/v1/send-message {"chatId":5001,"assistantId":990001,"text":"STEERED 51","sender":"assistant","sentDate":"2026-10-09T19:45:24.599Z","hasAttachment":false,"isMixedAttachments":null,"files":[],"options":[],"usage":{"billingMode":"subscription","source":"claude-code-jsonl","model":"claude-sonnet-5-5","inputTokens":6,"outputTokens":202,"cacheReadTokens":103946,"cacheCreationTokens":280}}
+2026-10-09T19:45:24.600Z REPLY "STEERED 51"
+2026-10-09T19:45:32.533Z GET /api/v1/peers/inbox 
+2026-10-09T19:45:32.533Z GET /api/v1/chats/5001/messages?userId=777&afterId=107 

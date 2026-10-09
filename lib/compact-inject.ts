@@ -10,7 +10,10 @@
 //     INJECTABLE_LITERALS map, looked up by a TypeScript-narrowed key;
 //     free strings (chat content, user input, backend payloads) can never
 //     reach send-keys because no parameter accepts them
-//   - the only other key ever sent is the literal 'Enter'
+//   - the only other keys ever sent are the literal key names 'Enter' and,
+//     for /steer, 'Escape' (buildInterruptSteps): fixed key names, never
+//     text, so a steer's words go to the session as a channel message and
+//     never through tmux
 //
 // SAFETY INVARIANT (tested in test/compact-inject.test.ts): EXACTLY ONE
 // parameter carries chat-derived text into a key sequence, it is the owner's
@@ -163,6 +166,24 @@ function typeSteps(t: TmuxTarget, literal: string): InjectionStep[] {
     { argv: [...base, '-l', '--', literal], delayMsBefore: 0 },
     { argv: [...base, 'Enter'], delayMsBefore: 400 },
     { argv: [...base, 'Enter'], delayMsBefore: 400 },
+  ]
+}
+
+/**
+ * Interrupt the running turn: ONE Escape key into the pane, nothing else.
+ *
+ * Fixed, no parameter beyond the target, so it adds nothing to the one chat
+ * derived parameter this file allows. A single Escape, never two: on an idle
+ * CLI a second Escape clears the composer's draft and a double tap opens the
+ * rewind menu, while one Escape on an idle CLI changes nothing (probed on a
+ * real session, lib/steer.ts). No `-l`: here the argument IS a key name.
+ */
+export function buildInterruptSteps(t: TmuxTarget): InjectionStep[] {
+  return [
+    {
+      argv: ['tmux', ...t.socketArgs, 'send-keys', '-t', t.target, 'Escape'],
+      delayMsBefore: 0,
+    },
   ]
 }
 

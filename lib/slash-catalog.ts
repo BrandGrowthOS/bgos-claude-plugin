@@ -27,6 +27,8 @@
 // other host-only command (/new stays unadvertised: no injection path for it
 // yet, documented future work).
 
+import { STEER_COMMAND_NAME, buildSteerDelivery } from './steer.ts'
+
 export interface SlashCommandEntry {
   command: string
   description: string
@@ -84,6 +86,12 @@ export type SlashCommandRoute =
   // their own close button is unavailable. So the daemon answers it, the way it
   // answers /compact and /status, and nothing is forwarded.
   | { kind: 'plan_mode_off'; commandName: string; commandArgs: string }
+  // `/steer {text}` is the app's Send now on a queued follow up. The daemon
+  // interrupts the running turn where it can (lib/steer.ts) and then delivers
+  // the text as an ordinary message, so the delivery here is the TEXT, never a
+  // command directive. Recognised before the registry: a project or user
+  // command called /steer must not turn Send now into a model request.
+  | { kind: 'steer'; commandName: string; commandArgs: string; delivery: SlashCommandDelivery }
   | { kind: 'directive'; delivery: SlashCommandDelivery }
 
 export function slashCommandSyncPath(
@@ -206,6 +214,11 @@ export function isDaemonLoginSlashCommand(raw: unknown): boolean {
 }
 
 /** The plan chip's close. See the `plan_mode_off` arm of SlashCommandRoute. */
+/** The app's steer. See the `steer` arm of SlashCommandRoute. */
+export function isSteerSlashCommand(raw: unknown): boolean {
+  return commandToken(raw).toLowerCase() === STEER_COMMAND_NAME
+}
+
 export function isPlanModeOffSlashCommand(raw: unknown): boolean {
   return commandToken(raw).toLowerCase() === 'code'
 }
@@ -548,6 +561,16 @@ export function routeSlashCommand(input: {
     return { kind: 'plan_mode_off', commandName, commandArgs: resolvedArgs }
   }
 
+  if (isSteerSlashCommand(commandName)) {
+    const steer = buildSteerDelivery({ sourceContent: input.sourceContent, commandArgs: resolvedArgs })
+    return {
+      kind: 'steer',
+      commandName,
+      commandArgs: resolvedArgs,
+      delivery: { content: steer.content, meta: steer.meta, registeredCommand: null },
+    }
+  }
+
   return {
     kind: 'directive',
     delivery: buildSlashCommandDelivery({
@@ -581,7 +604,10 @@ export function mergeSlashCommandCatalog(
   for (const tier of tiers) {
     for (const entry of tier) {
       const name = normalizeCommandName(entry.command)
-      if (!name || isReservedHostSlashCommand(name)) continue
+      // /steer is reserved like /compact: a discovered command of that name
+      // would put `steer` in the catalog on an install that cannot interrupt,
+      // and the app would offer Steer over a mechanism that only queues.
+      if (!name || isReservedHostSlashCommand(name) || isSteerSlashCommand(name)) continue
       byName.set(name, entry)
     }
   }
@@ -730,13 +756,29 @@ export const DAEMON_LOGIN_COMMAND: SlashCommandEntry = {
 export function catalogForCapabilities(opts: {
   remoteCompact: boolean
   daemonLogin?: boolean
+  /** The daemon can press Escape in the CLI pane (a tmux target resolved). */
+  steer?: boolean
 }): SlashCommandEntry[] {
   return [
     ...BUILTIN_COMMANDS,
     DAEMON_STATUS_COMMAND,
     ...(opts.daemonLogin ? [DAEMON_LOGIN_COMMAND] : []),
     ...(opts.remoteCompact ? [REMOTE_COMPACT_COMMAND] : []),
+    ...(opts.steer ? [DAEMON_STEER_COMMAND] : []),
   ]
+}
+
+/**
+ * The app's Send now on a queued follow up (lib/steer.ts). Advertised ONLY
+ * when the daemon can interrupt (`steer` in catalogForCapabilities, true only
+ * with a tmux target): the app offers Steer exactly when this entry is in the
+ * synced catalog, and a steer that cannot interrupt must not be offered as one.
+ * No `prompt`: the text is delivered as an ordinary message.
+ */
+export const DAEMON_STEER_COMMAND: SlashCommandEntry = {
+  command: '/steer',
+  description: 'Interrupt the running turn and send this message now',
+  scope: 'all',
 }
 
 /**

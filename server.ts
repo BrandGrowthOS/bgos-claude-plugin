@@ -115,6 +115,7 @@ import {
   buildProbeArgs,
   buildGoalSetInjectionSteps,
   buildInjectionSteps,
+  buildInterruptSteps,
   type InjectionStep,
   type TmuxTarget,
 } from './lib/compact-inject.js'
@@ -477,7 +478,20 @@ import {
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
 import { buildStatusAnswer } from './lib/slash-status.js'
-import { runDaemonCommand, type DaemonCommandAudience } from './lib/daemon-command-sender.js'
+import {
+  isOwnerSender,
+  readSlashSender,
+  runDaemonCommand,
+  type DaemonCommandAudience,
+} from './lib/daemon-command-sender.js'
+import {
+  STEER_INTERRUPTED_META,
+  SteerGate,
+  isFreshSteer,
+  planSteer,
+  steerTurnState,
+  type SteerPlan,
+} from './lib/steer.js'
 import {
   LoginController,
   buildAuthStatusArgv,
@@ -1536,6 +1550,7 @@ const bootSlashCommands = prepareSlashCommands(
   catalogForCapabilities({
     remoteCompact: compactTarget !== null,
     daemonLogin: CLAUDE_EXECUTABLE !== null,
+    steer: compactTarget !== null,
   }),
 )
 let registeredSlashCommands = bootSlashCommands.registry
@@ -1910,6 +1925,83 @@ function consumedAsLoginCode(input: {
     log(`/login: a ${outcome} code arrived via ${input.via} (chat ${input.chatId}); not forwarded`)
   }
   return mustDropMessage(outcome)
+}
+
+// ── /steer (lib/steer.ts) ───────────────────────────────────────────────────
+// Decided when the message ARRIVES (the turn state then is the one the owner
+// pressed Send now against), carried out when it is delivered: Escape first
+// when the plan says so, then the ordinary channel card, always.
+
+/** An arriving /steer: its id (a retry never presses twice) and its plan. */
+interface ArrivingSteer {
+  messageId: string
+  plan: SteerPlan
+}
+
+/** The plan for one arriving /steer. Pure inputs, read from daemon state. */
+function planSteerFor(input: {
+  chatId: string
+  messageId: unknown
+  payload: unknown
+  sentDate: unknown
+  backlog: boolean
+  text: string
+}): ArrivingSteer {
+  return {
+    messageId: String(input.messageId),
+    plan: planSteer({
+      hasTerminal: compactTarget !== null,
+      isOwner: isOwnerSender(readSlashSender(input.payload), USER_ID),
+      fresh: !input.backlog && isFreshSteer(input.sentDate, Date.now()),
+      text: input.text,
+      turn: steerTurnState({
+        signal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+        live: hookTurnLive || hookTurn.carried.size > 0,
+      }),
+      dialogOpen: pendingPermissions.size > 0,
+      // Only while the hooks report a live turn does the tracker name ITS chat
+      // (turnChat.current returns the turn's record then, whatever was noted
+      // since); otherwise there is no knowing, and nothing is refused for it.
+      otherChatTurn: turnChat.live() && (turnChat.current(Date.now())?.chatId ?? input.chatId) !== input.chatId,
+    }),
+  }
+}
+
+/** One fixed Escape into the CLI pane. Rejects on any failure. */
+async function pressSteerEscape(): Promise<void> {
+  const target = compactTarget
+  if (!target) throw new Error('no tmux target')
+  for (const step of buildInterruptSteps(target)) {
+    if (step.delayMsBefore > 0) await sleepMs(step.delayMsBefore)
+    await execFileAsync(step.argv[0]!, step.argv.slice(1), { timeout: 5_000 })
+  }
+}
+
+/** /goal typing in flight (runGoalInjection): an Escape then would eat it. */
+let goalInjectionsInFlight = 0
+
+const steerGate = new SteerGate({
+  now: Date.now,
+  // compactInFlight stays true until the compaction is confirmed: an Escape
+  // during a compaction cancels it.
+  injectionBusy: () => compactInFlight || goalInjectionsInFlight > 0,
+  interrupt: pressSteerEscape,
+  sleep: sleepMs,
+  log,
+})
+
+/**
+ * Deliver an inbound card through the steer gate. A /steer may press Escape
+ * first and is told whether it did (the card's `steer` marker); every other
+ * message is delivered at once, or behind a steer still in flight so the
+ * order holds.
+ */
+function deliverInbound(
+  steer: ArrivingSteer | null,
+  deliver: (interrupted: boolean) => Promise<void>,
+): Promise<void> {
+  if (!steer) return steerGate.ordinary(() => deliver(false))
+  return steerGate.steer({ messageId: steer.messageId, plan: steer.plan, deliver }).then(() => {})
 }
 
 async function handleRemoteCompact(chatId: string, payload: unknown): Promise<void> {
@@ -2684,6 +2776,10 @@ const mcp = new Server(
       'Exception: `/compact` never reaches you. When this install supports it,',
       'the plugin itself injects real host compaction and confirms in-chat; you',
       'do not need to (and cannot) act on it.',
+      'A message whose meta carries `steer = "true"` is the user pressing Send now',
+      'while you were working: the plugin interrupted your turn on purpose so this',
+      'text reaches you at once. Treat it as the user\'s newest instruction, answer',
+      'it with `reply`, and resume or drop the interrupted work as it says.',
       '',
       '## Receiving Attachments',
       '',
@@ -9824,13 +9920,24 @@ async function pollChat(chatId: string): Promise<void> {
         continue
       }
 
-      const slashDelivery = slashRoute.kind === 'directive'
+      const slashDelivery = slashRoute.kind === 'directive' || slashRoute.kind === 'steer'
         ? slashRoute.delivery
         : null
       noteSlashPlanDelivery(slashDelivery, chatId, msg.message.id)
       const content = slashDelivery?.content ?? originalContent
 
       if (!content) continue
+      // A /steer interrupts the running turn first where it can (lib/steer.ts).
+      const steerPlan = slashRoute.kind === 'steer'
+        ? planSteerFor({
+            chatId,
+            messageId: msg.message.id,
+            payload: msg.message,
+            sentDate: msg.message.sentDate,
+            backlog: isBacklog,
+            text: content,
+          })
+        : null
       // A real owner turn resumes a mission a Stop paused (P6 stage 3).
       noteOwnerMessageForStopPause(chatId, {
         senderType: pollSenderType,
@@ -9876,7 +9983,7 @@ async function pollChat(chatId: string): Promise<void> {
         text: content,
         now: Date.now(),
       })
-      void trackMessageOperation(() => mcp.notification({
+      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
@@ -9884,9 +9991,10 @@ async function pollChat(chatId: string): Promise<void> {
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
             !isSlashCommand ? pollEventMeta : null,
+            interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      })).catch((err) => {
+      }))).catch((err) => {
         log(`Failed to deliver inbound to Claude: ${err}`)
       })
       // Skip overdue tracking for backlog messages: they were forwarded
@@ -10209,6 +10317,9 @@ function goalArmRecord(): GoalArmRecord | null {
 /** Run one injection sequence. Never throws: a tmux that went away is a lane
  *  that stops working, never a daemon that stops. */
 async function runGoalInjection(steps: InjectionStep[], label: string): Promise<boolean> {
+  // Counted so a /steer does not press Escape between the typed text and its
+  // Enter (lib/steer.ts SteerGate).
+  goalInjectionsInFlight++
   try {
     for (const step of steps) {
       if (step.delayMsBefore > 0) await sleepMs(step.delayMsBefore)
@@ -10218,6 +10329,8 @@ async function runGoalInjection(steps: InjectionStep[], label: string): Promise<
   } catch (err) {
     log(`goal lane: could not ${label}: ${err}`)
     return false
+  } finally {
+    goalInjectionsInFlight--
   }
 }
 
@@ -11924,10 +12037,23 @@ async function forwardStreamInbound(
     onPlanModeOff(chatId)
     return
   }
-  const slashDelivery = slashRoute.kind === 'directive' ? slashRoute.delivery : null
+  const slashDelivery =
+    slashRoute.kind === 'directive' || slashRoute.kind === 'steer' ? slashRoute.delivery : null
   noteSlashPlanDelivery(slashDelivery, chatId, view.messageId)
   const content = slashDelivery?.content ?? originalContent
   if (!content) return
+  // A /steer interrupts only while it is fresh: a reconnect's replay of an old
+  // one targets a turn that is long over (lib/steer.ts isFreshSteer).
+  const steerPlan = slashRoute.kind === 'steer'
+    ? planSteerFor({
+        chatId,
+        messageId: view.messageId,
+        payload: view.raw,
+        sentDate: view.sentDate,
+        backlog: false,
+        text: content,
+      })
+    : null
   // A real owner turn resumes a mission a Stop paused (P6 stage 3).
   noteOwnerMessageForStopPause(chatId, {
     senderType: view.agentOrigin ? 'agent' : isSystem ? 'system' : view.senderKind,
@@ -11972,7 +12098,7 @@ async function forwardStreamInbound(
   log(`Stream replay message in chat ${chatId}: "${content.slice(0, 100)}${content.length > 100 ? '...' : ''}"`)
   try {
     await trackMessageOperation(() =>
-      mcp.notification({
+      deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
@@ -11980,9 +12106,10 @@ async function forwardStreamInbound(
             streamChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
             streamEventMeta,
+            interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      }),
+      })),
     )
   } catch (err) {
     // The handoff did NOT resolve. Un-claim the pre-claimed id: the chain
@@ -13010,12 +13137,30 @@ function connectWebsocket(): void {
         if (chatId) onPlanModeOff(chatId)
         return
       }
-      const slashDelivery = slashRoute.kind === 'directive'
+      const slashDelivery = slashRoute.kind === 'directive' || slashRoute.kind === 'steer'
         ? slashRoute.delivery
         : null
       noteSlashPlanDelivery(slashDelivery, chatId, messageId)
       const content = slashDelivery?.content ?? originalContent
       if (!content) return
+      // A /steer interrupts the running turn first where it can (lib/steer.ts).
+      // The socket is a live push: a frame with no sentDate is now.
+      const steerPlan = slashRoute.kind === 'steer'
+        ? planSteerFor({
+            chatId: String(chatId),
+            messageId,
+            payload: payload ?? {},
+            sentDate: payload?.sentDate ?? Date.now(),
+            backlog: false,
+            text: content,
+          })
+        : null
+      // The ws rail notes the RAW text before routing (above), but a steer's
+      // card carries the words without `/steer`, and the session's next prompt
+      // proves itself against what was delivered (lib/hook-intake.ts proof a).
+      if (steerPlan) {
+        turnChat.note({ chatId, messageId: Number(messageId), kind: 'user', text: content, now: Date.now() })
+      }
       // A real owner turn resumes a mission a Stop paused (P6 stage 3).
       noteOwnerMessageForStopPause(chatId, {
         senderType: wsSenderType,
@@ -13033,7 +13178,7 @@ function connectWebsocket(): void {
           | null
           | undefined,
       )
-      void trackMessageOperation(() => mcp.notification({
+      void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
           content,
@@ -13041,9 +13186,10 @@ function connectWebsocket(): void {
             wsChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
             !isWsSlashCommand ? wsEventMeta : null,
+            interrupted ? STEER_INTERRUPTED_META : null,
           ),
         },
-      })).catch((err) => log(`WS forward error: ${err}`))
+      }))).catch((err) => log(`WS forward error: ${err}`))
       // If this inbound carries a peer_conversation_id, remember which
       // side-thread chat hosts it so peer_conversation_closed can clear
       // the overdue tracker without needing chatId in its own payload.
@@ -13768,6 +13914,8 @@ async function discoverSlashCommands(): Promise<SlashCommandEntry[]> {
   const builtinCatalog = catalogForCapabilities({
     remoteCompact: compactTarget !== null,
     daemonLogin: CLAUDE_EXECUTABLE !== null,
+    // The same tmux target presses /steer's Escape (lib/steer.ts).
+    steer: compactTarget !== null,
   })
 
   // Priority from lower to higher is builtin, marketplace, cache, user, then
