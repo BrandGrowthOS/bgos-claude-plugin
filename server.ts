@@ -464,6 +464,13 @@ import {
   startVersionHeartbeat,
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
+import { markConnectionText } from './lib/connection-texts.ts'
+import {
+  buildSessionStatus,
+  countRunningWork,
+  SESSION_STATUS_TICK_MS,
+  type SessionFacts,
+} from './lib/session-status.ts'
 import {
   AUTO_UPDATE_LOCK_FILE,
   AUTO_UPDATE_SAFETY_FILE,
@@ -1614,9 +1621,11 @@ function fmtPct(pct: number | null): string {
   return pct == null ? 'unknown' : `${Math.round(pct)}%`
 }
 
-/** Direct daemon text to a chat (no model involvement, no reply tool). */
+/** Direct daemon text to a chat (no model involvement, no reply tool).
+ *  Marked as the connection's own (lib/connection-texts.ts), so the server's
+ *  stall sweep never reads it as the session answering. */
 async function sendDaemonText(chatId: string, text: string): Promise<void> {
-  await bgosPost('send-message', {
+  await bgosPost('send-message', markConnectionText({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text,
@@ -1624,7 +1633,7 @@ async function sendDaemonText(chatId: string, text: string): Promise<void> {
     sentDate: new Date().toISOString(),
     hasAttachment: false,
     files: [],
-  })
+  }))
 }
 
 async function tmuxTargetAlive(t: TmuxTarget): Promise<boolean> {
@@ -1791,7 +1800,7 @@ async function sendLoginText(
     callbackData: b.callbackData,
     ...(b.style ? { style: b.style } : {}),
   }))
-  const result = await bgosPost('send-message', {
+  const result = await bgosPost('send-message', markConnectionText({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text,
@@ -1801,7 +1810,7 @@ async function sendLoginText(
     files: [],
     options,
     ...(options.length > 0 ? { renderMode: 'inline' } : {}),
-  })
+  }))
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
   // The reply tool's fast-poll scope, for the same reason: without the update
   // stream a tap otherwise reaches this daemon only on the slow chat sweep.
@@ -2405,6 +2414,14 @@ const lastInboundUserByChat = new Map<string, string>()
 
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
+/**
+ * Blocking `ask_user_input` questions waiting on the owner right now. Counted
+ * for the session status (HOAI board row 9c3d6b2c): a session blocked on the
+ * owner's answer has a task open and nothing running, and without this it
+ * would read Not responding after 20 minutes while it was in fact waiting on
+ * the person (lib/session-status.ts).
+ */
+let asksWaiting = 0
 
 // How often the verdict watch looks at the chat now lives in
 // lib/permission-relay.ts (permissionPollIntervalMs), because it is no longer
@@ -5831,54 +5848,62 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const startTime = Date.now()
         const deadline = startTime + timeoutSeconds * 1000
 
-        while (Date.now() < deadline && answers.size < targetIds.size) {
-          await new Promise((r) => setTimeout(r, 1500))
-          try {
-            const rawAsk = await bgosGet(
-              `chats/${askChatId}/messages?userId=${USER_ID}`,
-            )
-            // 304: no message changed, so no answeredAt flipped either.
-            if (isNotModified(rawAsk)) continue
-            const data = rawAsk as {
-              messages: Array<{
-                message: {
-                  id: number
-                  text: string | null
-                  answeredAt: string | null
-                  answerPayload: {
-                    optionId?: number
-                    freeText?: string
-                    skipped?: boolean
-                  } | null
-                }
-                messageOptions: Array<{
-                  id: number
-                  text: string
-                  callbackData: string
+        // Needs you, for as long as the owner has not answered (session
+        // status, board row 9c3d6b2c); the finally holds on any exit.
+        asksWaiting += 1
+        try {
+          while (Date.now() < deadline && answers.size < targetIds.size) {
+            await new Promise((r) => setTimeout(r, 1500))
+            try {
+              const rawAsk = await bgosGet(
+                `chats/${askChatId}/messages?userId=${USER_ID}`,
+              )
+              // 304: no message changed, so no answeredAt flipped either.
+              if (isNotModified(rawAsk)) continue
+              const data = rawAsk as {
+                messages: Array<{
+                  message: {
+                    id: number
+                    text: string | null
+                    answeredAt: string | null
+                    answerPayload: {
+                      optionId?: number
+                      freeText?: string
+                      skipped?: boolean
+                    } | null
+                  }
+                  messageOptions: Array<{
+                    id: number
+                    text: string
+                    callbackData: string
+                  }>
                 }>
-              }>
+              }
+              for (const entry of data.messages ?? []) {
+                if (!targetIds.has(entry.message.id)) continue
+                if (answers.has(entry.message.id)) continue
+                if (!entry.message.answeredAt || !entry.message.answerPayload) continue
+                const payload = entry.message.answerPayload
+                const matched = payload.optionId
+                  ? entry.messageOptions.find((o) => o.id === payload.optionId)
+                  : undefined
+                answers.set(entry.message.id, {
+                  ...(payload.freeText !== undefined && { freeText: payload.freeText }),
+                  ...(payload.skipped === true && { skipped: true }),
+                  ...(matched && {
+                    optionLabel: matched.text,
+                    // Strip the `u:` sentinel so the agent gets its original value.
+                    optionValue: unescapeAgentButtonValue(matched.callbackData),
+                  }),
+                })
+              }
+            } catch (err) {
+              log(`ask_user_input poll error: ${err}`)
             }
-            for (const entry of data.messages ?? []) {
-              if (!targetIds.has(entry.message.id)) continue
-              if (answers.has(entry.message.id)) continue
-              if (!entry.message.answeredAt || !entry.message.answerPayload) continue
-              const payload = entry.message.answerPayload
-              const matched = payload.optionId
-                ? entry.messageOptions.find((o) => o.id === payload.optionId)
-                : undefined
-              answers.set(entry.message.id, {
-                ...(payload.freeText !== undefined && { freeText: payload.freeText }),
-                ...(payload.skipped === true && { skipped: true }),
-                ...(matched && {
-                  optionLabel: matched.text,
-                  // Strip the `u:` sentinel so the agent gets its original value.
-                  optionValue: unescapeAgentButtonValue(matched.callbackData),
-                }),
-              })
-            }
-          } catch (err) {
-            log(`ask_user_input poll error: ${err}`)
           }
+
+        } finally {
+          asksWaiting -= 1
         }
 
         // Timeout fallback: any still-unanswered question is reported as skipped.
@@ -7694,6 +7719,46 @@ let deafEscalatedAt: number | null = null
 // Fix 09: the one-per-boot latch for the first-ever-boot hello (see main()).
 let bootHelloSent = false
 
+/**
+ * The deaf verdict as the heartbeat reports it (lib/channel-liveness.ts
+ * heartbeatUnresponsiveError), read in ONE place for the beat's lastError and
+ * for the sweep below, so the two cannot disagree. Live is the same recency
+ * the deaf decision reads (the ever-live latch hid 900's wedge here too),
+ * plus: a call AFTER the verdict clears it for the boot, since no newer
+ * verdict can exist to re-assert.
+ */
+function currentUnresponsiveError(now: number): { code: string; message: string; at: string } | null {
+  return heartbeatUnresponsiveError({
+    escalated: deafEscalationDone,
+    live: channelLiveness.recentlyLive(now, REPLY_OVERDUE_MS) || channelLiveness.spokeSince(deafEscalatedAt),
+    since: deafEscalatedAt,
+    now,
+  })
+}
+
+/**
+ * Send the not responding verdict AT ONCE when it is reached, and its clearing
+ * the moment the session speaks again (HOAI board row 9c3d6b2c, rollout step
+ * 3). Before this the verdict rode the next 6 hourly beat, unless an update
+ * related beat happened to go first, so it could reach the server hours after
+ * this daemon had already posted its warning into the chat. Called from the
+ * escalation itself and every SESSION_STATUS_TICK_MS; a send only on change.
+ * Never throws.
+ */
+let reportedUnresponsive = false
+function sweepUnresponsiveReport(): void {
+  try {
+    const now = Date.now()
+    const unresponsive = currentUnresponsiveError(now) !== null
+    if (unresponsive === reportedUnresponsive) return
+    reportedUnresponsive = unresponsive
+    log(`session ${unresponsive ? 'not responding' : 'answering again'}; heartbeat sent now`)
+    versionHeartbeat?.sendNow()
+  } catch {
+    /* a status nicety must never break the server */
+  }
+}
+
 function checkReplyOverdue(): void {
   if (updateDrainMode) return
   const now = Date.now()
@@ -7733,6 +7798,7 @@ function checkReplyOverdue(): void {
     } else if (deafAction === 'escalate') {
       deafEscalationDone = true
       deafEscalatedAt = now
+      sweepUnresponsiveReport()
       log(
         `WARN deaf session confirmed: chat ${chatId} message ${p.messageId} unacted, ` +
           `${lastToolCallPhrase(channelLiveness.lastToolCallAt, now)}, and the ` +
@@ -8111,7 +8177,7 @@ function onPlanVerifierExpired(chatId: string): void {
 
 /** Post the daemon's own line when a /plan produced no plan. */
 function postPlanVerifierLine(chatId: string): void {
-  void bgosPost('send-message', {
+  void bgosPost('send-message', markConnectionText({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text: PLAN_VERIFIER_MESSAGE,
@@ -8120,7 +8186,7 @@ function postPlanVerifierLine(chatId: string): void {
     hasAttachment: false,
     files: [],
     options: [],
-  }).catch((err) => log(`plan verifier line failed (chat ${chatId}): ${err}`))
+  })).catch((err) => log(`plan verifier line failed (chat ${chatId}): ${err}`))
 }
 
 /**
@@ -11048,9 +11114,10 @@ const voiceRpc = new VoiceRpcHandler({
     }),
   getIdentity: getVoiceIdentity,
   // stop_turn's short plain confirmation rides the normal outbound send
-  // path (POST send-message), same shape as the permission-prompt sender.
+  // path (POST send-message), same shape as the permission-prompt sender,
+  // marked as the connection's own: "Asked to stop." is not the session's.
   sendChatMessage: (chatId, text) =>
-    bgosPost('send-message', {
+    bgosPost('send-message', markConnectionText({
       chatId: Number(chatId),
       assistantId: Number(ASSISTANT_ID),
       text,
@@ -11058,7 +11125,7 @@ const voiceRpc = new VoiceRpcHandler({
       sentDate: new Date().toISOString(),
       hasAttachment: false,
       files: [],
-    }),
+    })),
   // The armed goal case (P6 stage 3): a stop that reached the model pauses
   // the mission a Keep working loop is on, so its Stop hook cannot re prompt.
   onStopDelivered: (chatId) => pauseArmedGoalOnStop(chatId),
@@ -11284,6 +11351,36 @@ const agentTranscript = memoizeFor(AGENT_TRANSCRIPT_READ_MS, Date.now, () =>
     endedSessionId: hookEndedSessionId,
   }),
 )
+// ── Session status on the heartbeat (HOAI board row 9c3d6b2c) ──────────────
+// What the session is doing, for the server's liveness word (lib/session-
+// status.ts has the rules and the reasons; the server only LOGS the word for
+// two weeks before the app shows anything). The SESSION's facts, never this
+// daemon's: agent-state.json's lastActivityAt counts the boot, the deliveries
+// and the busy edges, and its activeOperations counts this daemon's own polls,
+// and a frozen session's daemon keeps doing all of those. Counts and times
+// only; no text of any kind is read here.
+function sessionStatusFacts(): SessionFacts {
+  let oldest: number | null = null
+  for (const pending of pendingInbounds.values()) {
+    oldest = oldest === null ? pending.ts : Math.min(oldest, pending.ts)
+  }
+  return {
+    turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+    turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+    // A permission card, a blocking question and an unanswered plan card are
+    // all the owner's to answer: Needs you, whatever the clock says.
+    questionsWaiting: pendingPermissions.size + asksWaiting + openPlansByChat.size,
+    messagesWaiting: pendingInbounds.size,
+    oldestMessageAtMs: oldest,
+    // Open rows on the hook rail: a command running, a helper agent working,
+    // also one whose parent's turn already ended.
+    running: countRunningWork(hookTurn),
+    // A hook event, the transcript it writes, a bgos tool call (channel_ack
+    // included): each is the session itself doing something.
+    sessionActivityAtMs: [lastHookEventAtMs, agentTranscript().activityMs, channelLiveness.lastToolCallAt],
+  }
+}
+
 const agentStatePublisher = new AgentStatePublisher({
   path: pathJoin(pathDirname(CURSOR_FILE_PATH), AGENT_STATE_FILE_NAME),
   pid: process.pid,
@@ -15146,17 +15243,9 @@ async function main(): Promise<void> {
           // The Claude login or usage cap, which explains a deaf session and
           // so outranks it (lib/claude-login.ts).
           currentAccountError(now),
-          heartbeatUnresponsiveError({
-            escalated: deafEscalationDone,
-            // The same recency the deaf decision reads (the ever-live latch
-            // hid 900's wedge here too), plus: a call AFTER the verdict clears
-            // it for the boot, since no newer verdict can exist to re-assert.
-            live:
-              channelLiveness.recentlyLive(now, REPLY_OVERDUE_MS) ||
-              channelLiveness.spokeSince(deafEscalatedAt),
-            since: deafEscalatedAt,
-            now,
-          }),
+          // The deaf verdict, read the same way sweepUnresponsiveReport reads
+          // it, so the beat it sends at once carries what it saw.
+          currentUnresponsiveError(now),
         )
       },
       // What this daemon reports it can do, sent on EVERY beat because the
@@ -15185,7 +15274,15 @@ async function main(): Promise<void> {
       // shared by every agent and the watcher on this host.
       machineId: () => ensureMachineId({ home: homedir() }),
       claudeAccount: claudeAccountIdentity,
+      // What the session is doing (HOAI board row 9c3d6b2c): on every beat,
+      // and on its own small beat within a minute of a change and every 2
+      // minutes while work is owed. The lock holder only: a passive daemon's
+      // idle facts would paint over the live session's.
+      sessionStatus: () => (lockHeld ? buildSessionStatus(sessionStatusFacts(), Date.now()) : null),
     })
+    // The not responding verdict and its clearing go out at once, not on the
+    // next 6 hourly beat (sweepUnresponsiveReport).
+    setInterval(sweepUnresponsiveReport, SESSION_STATUS_TICK_MS).unref()
 
     // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow
     // re-resolution (default 10 min + credentials-file watch) WARNs once per

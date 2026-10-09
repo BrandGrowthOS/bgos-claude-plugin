@@ -898,6 +898,54 @@ that does not hold the pairing lock never consumes the spool (that is
 deliberate, it is what stops several daemons on one host posting every row
 twice). `hoai doctor` and the daemon log both name the lock holder.
 
+## What the server hears about the session (session liveness, unreleased)
+
+HOAI could not tell a frozen session from a busy one: the server only ever
+hears from this daemon, and this daemon keeps checking in while the Claude Code
+session behind it is stuck, so a frozen agent read `online` in green. From this
+release the daemon tells the server what its SESSION is doing, on the heartbeat
+it already sends (HOAI board row 9c3d6b2c). The server turns it into one word
+(Working, Needs you, online, Not responding or Offline) and, for now, only
+logs it; the app shows nothing new until two weeks of those logs have been
+checked.
+
+**What is sent: facts, never content.** Under `sessionStatus` on
+`POST integrations/heartbeat`, in the shared contract's shape
+(`lib/session-status-contract.ts`, a byte identical copy of the BGOS file,
+pinned by sha256 on all three sides): `v`, `at`, `busy`, `lastActivityAt`,
+`taskOpen`, `questionsWaiting`, `messagesWaiting`, `oldestMessageAt`,
+`running`. Counts, flags and times; no message text, no file name, no command
+(`test/session-status.test.ts` replays a real hook stream and checks none of
+it leaks). `taskOpen` is `null` when the folder registers no HOAI hooks: the
+daemon cannot tell, and the server then claims no Working from it.
+
+**The session's activity, not the daemon's.** `lastActivityAt` is the newest
+hook event, transcript write or bgos tool call. The daemon's boot, its
+deliveries and its own polls are left out on purpose (agent-state.json keeps
+counting them for the watcher), because a frozen session's daemon keeps doing
+all of them. `running` comes from the hook rail's open rows (a command between
+its start and its result, a helper agent still working, also one that outlived
+its parent's turn), not from the daemon's own operations counter. A blocking
+`ask_user_input`, a permission card and an unanswered plan card count as
+questions waiting.
+
+**When it is sent.** On every heartbeat, and on its own small beat
+(`{ daemonVersion, sessionStatus }`) within a minute of a change and every 2
+minutes while work is owed; never more than about once a minute. Only the
+pairing lock holder reports, so a subagent's or a `claude -p`'s daemon never
+paints its idle state over the live session.
+
+**The not responding verdict goes out at once.** When the daemon's own deaf
+check concludes the session is not answering, the verdict (`lastError` code
+`session_unresponsive`) is sent immediately, and so is its clearing when the
+session speaks again. It used to ride the next 6 hourly beat.
+
+**The daemon's own texts are marked.** Its not answering warning, its /status,
+/login and /compact answers, its goal and plan notices and its "Asked to stop."
+line now carry `postedBy: 'connection'` on `/send-message`, so the server no
+longer reads them as the agent answering (the warning used to reset the hourly
+stall sweep behind a frozen session). The session's own replies never carry it.
+
 ## Agent Update Stream (v0.34.0+, experimental, default OFF)
 
 Set `BGOS_UPDATE_STREAM=true` (pairing mode only) to opt this daemon into the

@@ -14,6 +14,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { MACHINE_ID_RE } from './machine-id.mjs'
+import { SESSION_STATUS_TICK_MS, sessionStatusDue, sessionStatusSignature } from './session-status.ts'
+import type { SessionStatusReport } from './session-status-contract.ts'
 import type { UpdateReadiness } from './update-readiness.js'
 
 /**
@@ -180,22 +182,55 @@ export function startVersionHeartbeat(deps: {
   capabilities?: () => string[]
   /** Test seam for the readiness change poll (default READINESS_POLL_MS). */
   readinessPollMs?: number
+  /**
+   * What the session behind this daemon is doing (lib/session-status.ts,
+   * HOAI board row 9c3d6b2c), or null when this daemon must not report (it is
+   * not the pairing lock holder: a passive daemon's idle state would paint
+   * over the live session's). Rides EVERY full beat, and its own small beat
+   * (`{ daemonVersion, sessionStatus }`) within a minute of a change and
+   * every 2 minutes while work is owed (sessionStatusDue). Guarded like the
+   * providers above: telemetry is never the reason a beat fails.
+   */
+  sessionStatus?: () => SessionStatusReport | null
+  /** Test seam for the status clock (default Date.now). */
+  now?: () => number
 }): {
   timer: ReturnType<typeof setInterval>
   readinessTimer: ReturnType<typeof setInterval>
+  statusTimer: ReturnType<typeof setInterval>
   sendNow: () => void
   pollReadiness: () => Promise<void>
+  pollSessionStatus: () => Promise<void>
 } | null {
   const version = readOwnVersion(deps.rootDir)
   if (!shouldSendVersionHeartbeat(deps.authMode, version)) return null
   // The readiness block as last SENT, so the poll below can tell a change
   // from a repeat without keeping the object itself around.
   let lastSentReadiness: string | null = null
+  // The session status as last TRIED and as last TAKEN by the server: the gap
+  // runs from a try (a down server is not hammered), the news is measured
+  // against what the server took (a failed send is tried again).
+  const clock = deps.now ?? Date.now
+  let lastStatusAttemptAtMs: number | null = null
+  let lastStatusSentSignature: string | null = null
+  const readStatus = (): SessionStatusReport | null => {
+    if (!deps.sessionStatus) return null
+    try {
+      return deps.sessionStatus()
+    } catch {
+      return null
+    }
+  }
   const send = async () => {
     try {
       const body: Record<string, unknown> = {
         daemonVersion: version,
         env: heartbeatEnv(process, { machineId: deps.machineId, claudeAccount: deps.claudeAccount }),
+      }
+      const sessionReport = readStatus()
+      if (sessionReport) {
+        body.sessionStatus = sessionReport
+        lastStatusAttemptAtMs = clock()
       }
       // Guarded per provider: readiness must still ride when the
       // latest-version probe throws, and vice versa. The backend ignores
@@ -222,8 +257,30 @@ export function startVersionHeartbeat(deps: {
         } catch {}
       }
       await deps.post('integrations/heartbeat', body)
+      if (sessionReport) lastStatusSentSignature = sessionStatusSignature(sessionReport)
     } catch {
       // Telemetry only: never let a heartbeat failure surface.
+    }
+  }
+  // The session status's own small beat. Cheap when nothing is due: one
+  // in-memory read and a string compare per tick, no I/O.
+  const pollSessionStatus = async (): Promise<void> => {
+    const status = readStatus()
+    if (!status) return
+    const now = clock()
+    const due = sessionStatusDue({
+      nowMs: now,
+      lastAttemptAtMs: lastStatusAttemptAtMs,
+      lastSentSignature: lastStatusSentSignature,
+      report: status,
+    })
+    if (due === null) return
+    lastStatusAttemptAtMs = now
+    try {
+      await deps.post('integrations/heartbeat', { daemonVersion: version, sessionStatus: status })
+      lastStatusSentSignature = sessionStatusSignature(status)
+    } catch {
+      // Tried again once the gap allows; never surfaces.
     }
   }
   // Change-driven readiness resend: re-read the snapshot cheaply and post
@@ -242,10 +299,15 @@ export function startVersionHeartbeat(deps: {
     await send()
   }
   void send()
-  deps.log(`version heartbeat armed (v${version}, every 6h; readiness re-sent within a minute of a change)`)
+  deps.log(
+    `version heartbeat armed (v${version}, every 6h; readiness re-sent within a minute of a change` +
+      `${deps.sessionStatus ? '; session status within a minute of a change and every 2 min while busy' : ''})`,
+  )
   const timer = setInterval(send, VERSION_HEARTBEAT_INTERVAL_MS)
   timer.unref?.()
   const readinessTimer = setInterval(() => void pollReadiness(), deps.readinessPollMs ?? READINESS_POLL_MS)
   readinessTimer.unref?.()
-  return { timer, readinessTimer, sendNow: () => void send(), pollReadiness }
+  const statusTimer = setInterval(() => void pollSessionStatus(), SESSION_STATUS_TICK_MS)
+  statusTimer.unref?.()
+  return { timer, readinessTimer, statusTimer, sendNow: () => void send(), pollReadiness, pollSessionStatus }
 }
