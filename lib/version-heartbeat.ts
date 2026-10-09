@@ -65,6 +65,16 @@ export interface HeartbeatEnv {
   platform?: string
   machineId?: string
   role: 'agent'
+  /** Non secret fingerprint of the Claude credential store (lib/claude-login.ts). */
+  claudeAccountKey?: string
+  /** The signed in Claude account's email, when the CLI recorded one. */
+  claudeAccountLabel?: string
+}
+
+/** What lib/claude-login.ts knows about this session's Claude login. */
+export interface ClaudeAccountIdentity {
+  key: string
+  label: string | null
 }
 
 export function heartbeatEnv(
@@ -72,7 +82,7 @@ export function heartbeatEnv(
     cwd: () => string;
     platform: string;
   },
-  providers: { machineId?: () => string } = {},
+  providers: { machineId?: () => string; claudeAccount?: () => ClaudeAccountIdentity | null } = {},
 ): HeartbeatEnv {
   const env: HeartbeatEnv = { role: 'agent' }
   try {
@@ -95,6 +105,21 @@ export function heartbeatEnv(
     }
   } catch {
     // An unreadable machine id is omitted; the rest of the env still rides.
+  }
+  // Which Claude login this session shares with the other agents here, so the
+  // backend can say "the login on this computer" once instead of once per
+  // agent. Same shapes the backend accepts (8 to 16 hex, one line of 120);
+  // anything else is omitted rather than sent to be dropped.
+  try {
+    const account = providers.claudeAccount?.()
+    if (account && /^[a-f0-9]{8,16}$/.test(account.key)) {
+      env.claudeAccountKey = account.key
+      if (typeof account.label === 'string' && account.label.length > 0 && account.label.length <= 120) {
+        env.claudeAccountLabel = account.label
+      }
+    }
+  } catch {
+    // An unreadable account is omitted; the rest of the env still rides.
   }
   return env
 }
@@ -134,6 +159,8 @@ export function startVersionHeartbeat(deps: {
   updateStatus?: HeartbeatUpdateStatus
   /** lib/machine-id.mjs ensureMachineId, injected so tests never touch a home dir. */
   machineId?: () => string
+  /** lib/claude-login.ts identity of this session's Claude login, injected likewise. */
+  claudeAccount?: () => ClaudeAccountIdentity | null
   /**
    * Current daemon-level fault, or null when healthy. Sent on EVERY beat: the
    * backend clears the stored columns on an explicit null, so recovery needs no
@@ -168,7 +195,7 @@ export function startVersionHeartbeat(deps: {
     try {
       const body: Record<string, unknown> = {
         daemonVersion: version,
-        env: heartbeatEnv(process, { machineId: deps.machineId }),
+        env: heartbeatEnv(process, { machineId: deps.machineId, claudeAccount: deps.claudeAccount }),
       }
       // Guarded per provider: readiness must still ride when the
       // latest-version probe throws, and vice versa. The backend ignores

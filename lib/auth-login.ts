@@ -746,6 +746,13 @@ export interface LoginDeps {
   setTimer: (fn: () => void, ms: number) => unknown
   clearTimer: (handle: unknown) => void
   log: (line: string) => void
+  /**
+   * Told when a sign-in completes, so the login state the heartbeat reports
+   * (lib/claude-login.ts) clears at once instead of waiting for the session's
+   * next turn, which may be hours away on a quiet agent. Optional: a caller
+   * that does not pass it loses nothing but the early clear.
+   */
+  onSignedIn?: () => void
 }
 
 const MAX_CAPTURE = 64 * 1024
@@ -1065,6 +1072,11 @@ export class LoginController {
         return
       case 'succeeded':
         this.endChild()
+        try {
+          this.deps.onSignedIn?.()
+        } catch {
+          /* a status nicety must never break the sign-in reply */
+        }
         void this.reportSuccess(effect.chatId)
         return
       case 'failed': {
