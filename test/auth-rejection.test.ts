@@ -249,8 +249,8 @@ test('the daemon actually SENDS it: heartbeat wired to the live rejection state'
   )
   assert.match(
     serverSource,
-    /pickHeartbeatLastError\(/,
-    'two producers share one field, so the precedence must be explicit',
+    /pickAccountAwareLastError\(\s*heartbeatLastError\(authRejection,\s*now\),[\s\S]{0,200}?currentAccountError\(now\),[\s\S]{0,40}?heartbeatUnresponsiveError\(/,
+    'three producers share one field, so the precedence must be explicit: refused credential, Claude account (BGOS board e5d0fb3a), deafness',
   )
   const heartbeatSource = readFileSync(
     new URL('../lib/version-heartbeat.ts', import.meta.url),

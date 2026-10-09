@@ -165,6 +165,17 @@ import {
   type RestingSignal,
 } from './lib/resting.js'
 import {
+  ClaudeLoginWatcher,
+  LOGIN_OK,
+  claudeAccountFile,
+  claudeAccountKey,
+  heartbeatClaudeAccountError,
+  pickAccountAwareLastError,
+  readClaudeAccountLabel,
+  reduceLoginState,
+  type ClaudeLoginState,
+} from './lib/claude-login.ts'
+import {
   buildScheduleCreateBody,
   buildScheduleListPath,
   buildScheduleCancelPath,
@@ -281,7 +292,6 @@ import {
   heartbeatUnresponsiveError,
   lastToolCallPhrase,
   unansweredProbe,
-  pickHeartbeatLastError,
   deafSessionChatMessage,
   deafFixCommand,
   inboundOwesReply,
@@ -1434,6 +1444,46 @@ function reportResting(): void {
     })
 }
 
+// Shared Claude login state (BGOS board row e5d0fb3a). The same transcripts the
+// resting sweep reads also carry the CLI's login failures (error
+// 'authentication_failed'); every agent on a machine signs in through one
+// credential store, so when it expires they ALL go silent while their daemons
+// stay connected. This daemon reports its own view on the heartbeat's
+// lastError (claude_login_expired, or claude_usage_limit from the resting
+// episode) and the backend says it once per machine. The heartbeat is sent at
+// once when the reported code changes, because the next regular beat is six
+// hours away.
+const claudeLoginWatcher = new ClaudeLoginWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
+let claudeLoginState: ClaudeLoginState = LOGIN_OK
+let reportedAccountCode: string | null = null
+function currentAccountError(now: number): { code: string; message: string; at: string } | null {
+  return heartbeatClaudeAccountError({ login: claudeLoginState, resting: observedResting, now })
+}
+function sweepClaudeLogin(): void {
+  try {
+    const now = Date.now()
+    claudeLoginState = reduceLoginState(claudeLoginState, claudeLoginWatcher.scan(now))
+    const code = currentAccountError(now)?.code ?? null
+    if (code !== reportedAccountCode) {
+      log(`Claude account state: ${code ?? 'ok'} (was ${reportedAccountCode ?? 'ok'}); heartbeat sent now`)
+      reportedAccountCode = code
+      versionHeartbeat?.sendNow()
+    }
+  } catch {
+    /* a status nicety must never break the server */
+  }
+}
+// Read per beat (cheap: one small file), so a /login into another account is
+// named on the next beat without a restart.
+function claudeAccountIdentity(): { key: string; label: string | null } {
+  return {
+    key: claudeAccountKey(CLAUDE_CONFIG_DIR),
+    label: readClaudeAccountLabel(
+      claudeAccountFile({ env: process.env, home: homedir(), configDir: CLAUDE_CONFIG_DIR }),
+    ),
+  }
+}
+
 // ── Remote /compact (supervisor tmux injection) ──────────────────────────────
 // A /compact tap in the BGOS app arrives as a slash_command channel event.
 // The model cannot run host CLI commands from a channel event (the 0.22.1
@@ -1781,6 +1831,12 @@ const loginController = new LoginController({
   },
   clearTimer: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   log,
+  // A completed sign-in IS the fix the backend's notice asks for: clear the
+  // reported failure now rather than at the session's next turn.
+  onSignedIn: () => {
+    claudeLoginState = LOGIN_OK
+    sweepClaudeLogin()
+  },
 })
 
 /**
@@ -14777,6 +14833,8 @@ async function main(): Promise<void> {
     // so the owner's chat never shows a silently dead agent. Cheap (reads only
     // appended bytes) and deduped per rest episode inside reportResting.
     setInterval(reportResting, 30_000).unref()
+    // Same cadence, same transcripts: the shared Claude login state.
+    setInterval(sweepClaudeLogin, 30_000).unref()
     // The goal lane's belt: a Stop that never reached this process, or a
     // verdict written after its beat, must not be able to strand a closed
     // goal on the owner's card.
@@ -14849,12 +14907,15 @@ async function main(): Promise<void> {
       // The fleet-visible half of the refusal that noteAuthOutcome already
       // detects. Derived from that same state, so the two can never disagree,
       // and null once any call succeeds, which the backend reads as "clear it".
-      // TWO producers, one field. See pickHeartbeatLastError: a refused
+      // THREE producers, one field. See pickAccountAwareLastError: a refused
       // credential wins, because it explains a session that then looks deaf.
       lastError: () => {
         const now = Date.now()
-        return pickHeartbeatLastError(
+        return pickAccountAwareLastError(
           heartbeatLastError(authRejection, now),
+          // The Claude login or usage cap, which explains a deaf session and
+          // so outranks it (lib/claude-login.ts).
+          currentAccountError(now),
           heartbeatUnresponsiveError({
             escalated: deafEscalationDone,
             // The same recency the deaf decision reads (the ever-live latch
@@ -14893,6 +14954,7 @@ async function main(): Promise<void> {
       // Machine identity (design 2.1): ~/.bgos-agent/machine-id, minted once,
       // shared by every agent and the watcher on this host.
       machineId: () => ensureMachineId({ home: homedir() }),
+      claudeAccount: claudeAccountIdentity,
     })
 
     // Step 9.5: auth divergence recheck. AUTH is frozen at boot; this slow

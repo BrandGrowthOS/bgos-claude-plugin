@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.63.0 (2026-10-09)
+
+**The daemon tells HOAI when this computer's Claude login has expired or hit its limit (BGOS board e5d0fb3a).** A failed login is written into the session transcript as `error: "authentication_failed"`, and a usage cap as `error: "rate_limit"`. A 30 second sweep reads them, keeps the first failure time, and clears only on real activity or a completed /login. The state goes out on the heartbeat as `lastError` code `claude_login_expired` or `claude_usage_limit`, with a beat sent at once when it changes, plus a non-secret `claudeAccountKey` and the account label. The backend groups these by machine and tells the owner once per outage (BGOS #2107, off by default there). 14 mutations, all caught.
+
 ## 0.62.3 (2026-10-08)
 
 **A tool card a group refuses is refused once, not on every tool call (bug 0cd3eca1).** The backend refuses an agent's tool card posted into a room or channel with 400 "Agent messages into a group must use /send-message", on purpose: a stamped agent row would stop the room's working line keepalive and trip the room loop guard. The hook rail did not know that refusal, so every tool call in a group posted again, got another 400 and logged another line. It is now read as permanent for that chat, the same narrow way as the other two (the 400 and the message whole, or a `group_route_required` code), and the rail stops posting cards there. Mutation proven.

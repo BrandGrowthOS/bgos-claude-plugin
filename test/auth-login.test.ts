@@ -153,7 +153,7 @@ interface FakeChild {
   killed: boolean
 }
 
-function harness(opts: { status?: AuthStatus | null; executable?: string | null } = {}) {
+function harness(opts: { status?: AuthStatus | null; executable?: string | null; onSignedIn?: () => void } = {}) {
   const clock = new FakeClock()
   const children: FakeChild[] = []
   const sent: Array<{ chatId: string; text: string; buttons?: readonly LoginButton[] }> = []
@@ -189,6 +189,7 @@ function harness(opts: { status?: AuthStatus | null; executable?: string | null 
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
     log: (line) => logs.push(line),
+    ...(opts.onSignedIn ? { onSignedIn: opts.onSignedIn } : {}),
   })
   return {
     clock,
@@ -391,6 +392,36 @@ test('on exit 0 the reply carries the email and the plan from auth status', asyn
   const last = h.sent[h.sent.length - 1]!.text
   assert.match(last, /^Signed in as owner@example\.com \(Claude Max\)\./)
   assert.doesNotMatch(last, /not a Claude subscription/)
+})
+
+test('a completed sign-in tells the login state at once, a failed one does not (board e5d0fb3a)', async () => {
+  let told = 0
+  const ok = harness({ onSignedIn: () => told++ })
+  await toAwaitingCode(ok)
+  ownerCode(ok)
+  ok.child.handlers.onExit(0)
+  await settle()
+  assert.equal(told, 1, 'a sign-in that exits 0 clears the reported login failure')
+
+  let toldOnFail = 0
+  const bad = harness({ onSignedIn: () => toldOnFail++ })
+  await toAwaitingCode(bad)
+  ownerCode(bad)
+  bad.child.handlers.onExit(1)
+  await settle()
+  assert.equal(toldOnFail, 0, 'a failed sign-in leaves the failure standing')
+
+  const throws = harness({
+    onSignedIn: () => {
+      throw new Error('boom')
+    },
+  })
+  await toAwaitingCode(throws)
+  ownerCode(throws)
+  throws.child.handlers.onExit(0)
+  await settle()
+  assert.equal(throws.controller.phase, 'done', 'a throwing listener never breaks the sign-in')
+  assert.match(throws.sent[throws.sent.length - 1]!.text, /sign-in/i, 'the owner still gets the outcome reply')
 })
 
 test('a Console sign-in succeeds but says plainly that HOAI chat needs a subscription', async () => {
