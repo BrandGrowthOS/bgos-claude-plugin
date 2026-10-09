@@ -66,15 +66,19 @@ test('a blocking question to the owner counts as a question for as long as it wa
 
 test('the not responding verdict goes out at once, and so does its clearing', () => {
   // Before: it rode the next 6 hourly beat, so it could reach the server
-  // hours after the daemon knew.
+  // hours after the daemon knew. The decision is lib/verdict-sender.ts
+  // (test/verdict-sender.test.ts); this pins what it is fed.
   const overdue = functionBody('function checkReplyOverdue(): void {')
   const escalate = overdue.slice(overdue.indexOf("} else if (deafAction === 'escalate') {"))
   assert.match(escalate, /deafEscalatedAt = now\s*\n\s*sweepUnresponsiveReport\(\)/)
-  const sweep = functionBody('function sweepUnresponsiveReport(): void {')
-  assert.match(sweep, /currentUnresponsiveError\(now\) !== null/)
-  assert.match(sweep, /versionHeartbeat\?\.sendNow\(\)/)
+  const at = server.indexOf('const sweepUnresponsiveReport = createVerdictSender({')
+  assert.ok(at >= 0, 'the sweep is built from createVerdictSender')
+  const wiring = server.slice(at, server.indexOf('\n})\n', at))
+  assert.match(wiring, /read: \(\) => currentUnresponsiveError\(Date\.now\(\)\) !== null/)
+  assert.match(wiring, /isHolder: \(\) => lockHeld/)
+  assert.match(wiring, /send: \(\) => versionHeartbeat\?\.sendNow\(\)/)
   // One reading for the beat and the sweep, so they cannot disagree.
-  const at = server.indexOf('versionHeartbeat = startVersionHeartbeat({')
-  assert.match(server.slice(at, at + 3000), /currentUnresponsiveError\(now\),\s*\n\s*\)/)
+  const hb = server.indexOf('versionHeartbeat = startVersionHeartbeat({')
+  assert.match(server.slice(hb, hb + 3000), /currentUnresponsiveError\(now\),\s*\n\s*\)/)
   assert.match(server, /setInterval\(sweepUnresponsiveReport, SESSION_STATUS_TICK_MS\)\.unref\(\)/)
 })

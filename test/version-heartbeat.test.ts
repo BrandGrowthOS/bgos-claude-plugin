@@ -609,7 +609,9 @@ describe('session status on the heartbeat', () => {
     current = report({ busy: true, taskOpen: true, at: new Date(clock.now).toISOString() })
     await handle.pollSessionStatus()
     expect(calls).toHaveLength(2)
-    expect(calls[1]!.body).toEqual({ daemonVersion: '0.64.0', sessionStatus: current })
+    // Status only (review finding 9): no daemonVersion, so the backend's
+    // telemetry write has nothing to write and returns before the database.
+    expect(calls[1]!.body).toEqual({ sessionStatus: current })
     current = report({ busy: true, taskOpen: true, running: 1 })
     clock.now += SESSION_STATUS_MIN_GAP_MS - 1
     await handle.pollSessionStatus()
@@ -671,7 +673,8 @@ describe('session status on the heartbeat', () => {
   test('the status tick is armed at the contract cadence and never holds the process open', () => {
     const clock = { now: T0 }
     const { handle, stop } = arm({ status: () => report(), clock })
-    expect(handle.statusTimer).toBeDefined()
+    expect(typeof handle.statusTimer.hasRef).toBe('function')
+    expect(handle.statusTimer.hasRef()).toBe(false)
     expect(SESSION_STATUS_TICK_MS + SESSION_STATUS_MIN_GAP_MS).toBe(SESSION_STATUS_CHANGE_MS)
     stop()
   })

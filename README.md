@@ -930,7 +930,7 @@ its parent's turn), not from the daemon's own operations counter. A blocking
 questions waiting.
 
 **When it is sent.** On every heartbeat, and on its own small beat
-(`{ daemonVersion, sessionStatus }`) within a minute of a change and every 2
+(`{ sessionStatus }`) within a minute of a change and every 2
 minutes while work is owed; never more than about once a minute. Only the
 pairing lock holder reports, so a subagent's or a `claude -p`'s daemon never
 paints its idle state over the live session.
@@ -940,11 +940,17 @@ check concludes the session is not answering, the verdict (`lastError` code
 `session_unresponsive`) is sent immediately, and so is its clearing when the
 session speaks again. It used to ride the next 6 hourly beat.
 
-**The daemon's own texts are marked.** Its not answering warning, its /status,
-/login and /compact answers, its goal and plan notices and its "Asked to stop."
-line now carry `postedBy: 'connection'` on `/send-message`, so the server no
-longer reads them as the agent answering (the warning used to reset the hourly
-stall sweep behind a frozen session). The session's own replies never carry it.
+**The daemon's own unprompted texts are marked.** Its not answering warning
+and its goal and plan notices now carry `postedBy: 'connection'` on
+`/send-message`, so the server no longer reads them as the agent answering (the
+warning used to reset the hourly stall sweep behind a frozen session). Its
+answers to the owner's own commands (/status, /login, /compact, "Asked to
+stop.") stay unmarked: they answer a row the owner wrote. The session's own
+replies never carry it.
+
+**Release order.** The backend that reads these fields ships first. An older
+backend ignores both fields today, but only while its validation stays in its
+current lenient mode.
 
 ## Agent Update Stream (v0.34.0+, experimental, default OFF)
 

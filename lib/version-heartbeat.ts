@@ -187,7 +187,7 @@ export function startVersionHeartbeat(deps: {
    * HOAI board row 9c3d6b2c), or null when this daemon must not report (it is
    * not the pairing lock holder: a passive daemon's idle state would paint
    * over the live session's). Rides EVERY full beat, and its own small beat
-   * (`{ daemonVersion, sessionStatus }`) within a minute of a change and
+   * (`{ sessionStatus }`) within a minute of a change and
    * every 2 minutes while work is owed (sessionStatusDue). Guarded like the
    * providers above: telemetry is never the reason a beat fails.
    */
@@ -277,7 +277,10 @@ export function startVersionHeartbeat(deps: {
     if (due === null) return
     lastStatusAttemptAtMs = now
     try {
-      await deps.post('integrations/heartbeat', { daemonVersion: version, sessionStatus: status })
+      // Status only: no daemonVersion or env, so the backend's telemetry write
+      // has nothing to write and returns before the database (the version
+      // rides the full beats).
+      await deps.post('integrations/heartbeat', { sessionStatus: status })
       lastStatusSentSignature = sessionStatusSignature(status)
     } catch {
       // Tried again once the gap allows; never surfaces.

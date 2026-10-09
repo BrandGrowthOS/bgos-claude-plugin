@@ -465,6 +465,7 @@ import {
   VERSION_HEARTBEAT_INTERVAL_MS,
 } from './lib/version-heartbeat'
 import { markConnectionText } from './lib/connection-texts.ts'
+import { createVerdictSender } from './lib/verdict-sender.ts'
 import {
   buildSessionStatus,
   countRunningWork,
@@ -1621,10 +1622,28 @@ function fmtPct(pct: number | null): string {
   return pct == null ? 'unknown' : `${Math.round(pct)}%`
 }
 
-/** Direct daemon text to a chat (no model involvement, no reply tool).
- *  Marked as the connection's own (lib/connection-texts.ts), so the server's
- *  stall sweep never reads it as the session answering. */
+/** Direct daemon text to a chat (no model involvement, no reply tool). An
+ *  ANSWER to the owner's own command (/status, /login, /compact): unmarked,
+ *  because it answers a row the owner wrote (sendConnectionNotice's note). */
 async function sendDaemonText(chatId: string, text: string): Promise<void> {
+  await bgosPost('send-message', {
+    chatId: Number(chatId),
+    assistantId: Number(ASSISTANT_ID),
+    text,
+    sender: 'assistant',
+    sentDate: new Date().toISOString(),
+    hasAttachment: false,
+    files: [],
+  })
+}
+
+/** A text this daemon posts UNPROMPTED, as itself (the deaf warning, the goal
+ *  notices): marked as the connection's own (lib/connection-texts.ts), so the
+ *  server's stall sweep never reads it as the session answering. An answer
+ *  to the owner's own command goes through sendDaemonText instead: marked, it
+ *  would leave the owner's command row waiting for ever and the sweep would
+ *  flag a healthy agent (board row 9c3d6b2c, review finding 2). */
+async function sendConnectionNotice(chatId: string, text: string): Promise<void> {
   await bgosPost('send-message', markConnectionText({
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
@@ -1800,7 +1819,7 @@ async function sendLoginText(
     callbackData: b.callbackData,
     ...(b.style ? { style: b.style } : {}),
   }))
-  const result = await bgosPost('send-message', markConnectionText({
+  const result = await bgosPost('send-message', {
     chatId: Number(chatId),
     assistantId: Number(ASSISTANT_ID),
     text,
@@ -1810,7 +1829,7 @@ async function sendLoginText(
     files: [],
     options,
     ...(options.length > 0 ? { renderMode: 'inline' } : {}),
-  }))
+  })
   const msgId = (result as { message?: { id?: unknown } } | null)?.message?.id
   // The reply tool's fast-poll scope, for the same reason: without the update
   // stream a tap otherwise reaches this daemon only on the slow chat sweep.
@@ -7736,28 +7755,15 @@ function currentUnresponsiveError(now: number): { code: string; message: string;
   })
 }
 
-/**
- * Send the not responding verdict AT ONCE when it is reached, and its clearing
- * the moment the session speaks again (HOAI board row 9c3d6b2c, rollout step
- * 3). Before this the verdict rode the next 6 hourly beat, unless an update
- * related beat happened to go first, so it could reach the server hours after
- * this daemon had already posted its warning into the chat. Called from the
- * escalation itself and every SESSION_STATUS_TICK_MS; a send only on change.
- * Never throws.
- */
-let reportedUnresponsive = false
-function sweepUnresponsiveReport(): void {
-  try {
-    const now = Date.now()
-    const unresponsive = currentUnresponsiveError(now) !== null
-    if (unresponsive === reportedUnresponsive) return
-    reportedUnresponsive = unresponsive
-    log(`session ${unresponsive ? 'not responding' : 'answering again'}; heartbeat sent now`)
-    versionHeartbeat?.sendNow()
-  } catch {
-    /* a status nicety must never break the server */
-  }
-}
+/** The not responding verdict and its clearing, sent at once and only from
+ *  the lock holder (lib/verdict-sender.ts). Called from the escalation and on
+ *  the status tick. */
+const sweepUnresponsiveReport = createVerdictSender({
+  read: () => currentUnresponsiveError(Date.now()) !== null,
+  isHolder: () => lockHeld,
+  send: () => versionHeartbeat?.sendNow(),
+  log,
+})
 
 function checkReplyOverdue(): void {
   if (updateDrainMode) return
@@ -7835,7 +7841,7 @@ function checkReplyOverdue(): void {
       } catch {
         fixCommand = 'hoai'
       }
-      void sendDaemonText(chatId, deafSessionChatMessage(fixCommand)).catch(
+      void sendConnectionNotice(chatId, deafSessionChatMessage(fixCommand)).catch(
         (err) => log(`Failed to post deaf-session warning: ${err}`),
       )
     }
@@ -10451,7 +10457,7 @@ async function armNativeGoal(
   if (steps === null) {
     log(`goal lane: refused to type the condition for mission #${command.missionId}`)
     if (chatId !== null) {
-      await sendDaemonText(chatId, GOAL_ARM_REFUSED_TEXT).catch((err) =>
+      await sendConnectionNotice(chatId, GOAL_ARM_REFUSED_TEXT).catch((err) =>
         log(`goal lane: refusal notice failed: ${err}`),
       )
     }
@@ -10515,7 +10521,7 @@ async function confirmGoalArmed(
       }
     }
     log(`goal lane: no set sentinel for mission #${missionId} before the timeout`)
-    if (chatId !== null) await sendDaemonText(chatId, GOAL_ARM_UNCONFIRMED_TEXT)
+    if (chatId !== null) await sendConnectionNotice(chatId, GOAL_ARM_UNCONFIRMED_TEXT)
   } catch (err) {
     log(`goal lane: arm confirmation error: ${err}`)
   } finally {
@@ -11114,10 +11120,9 @@ const voiceRpc = new VoiceRpcHandler({
     }),
   getIdentity: getVoiceIdentity,
   // stop_turn's short plain confirmation rides the normal outbound send
-  // path (POST send-message), same shape as the permission-prompt sender,
-  // marked as the connection's own: "Asked to stop." is not the session's.
+  // path (POST send-message), same shape as the permission-prompt sender.
   sendChatMessage: (chatId, text) =>
-    bgosPost('send-message', markConnectionText({
+    bgosPost('send-message', {
       chatId: Number(chatId),
       assistantId: Number(ASSISTANT_ID),
       text,
@@ -11125,7 +11130,7 @@ const voiceRpc = new VoiceRpcHandler({
       sentDate: new Date().toISOString(),
       hasAttachment: false,
       files: [],
-    })),
+    }),
   // The armed goal case (P6 stage 3): a stop that reached the model pauses
   // the mission a Keep working loop is on, so its Stop hook cannot re prompt.
   onStopDelivered: (chatId) => pauseArmedGoalOnStop(chatId),

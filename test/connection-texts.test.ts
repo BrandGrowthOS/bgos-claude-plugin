@@ -1,17 +1,21 @@
 /**
- * This daemon's OWN texts are marked as its own (HOAI board row 9c3d6b2c,
- * session liveness).
+ * The texts this daemon posts UNPROMPTED are marked as its own (HOAI board row
+ * 9c3d6b2c, session liveness).
  *
- * WHY. Some texts this daemon posts AS the agent through /send-message, with
- * sender 'assistant', exactly like the session's replies: the "Heads up ...
- * has not answered a direct check" warning, the /status, /login and /compact
- * answers, the goal and plan notices, the "Asked to stop." line. Everything on
- * the server that asked "did the agent write anything?" read them as the
- * session answering, so the warning that a session was NOT answering reset the
- * hourly stall sweep and hid the agent. Each now carries `postedBy:
- * 'connection'` (lib/session-status-contract.ts), which the server stores and
- * the sweep skips. The session's own replies (the `reply` tool, its questions,
- * its cards) never carry it.
+ * WHY. This daemon posts some texts AS the agent through /send-message, with
+ * sender 'assistant', exactly like the session's replies. Its "Heads up ...
+ * has not answered a direct check" warning was read by the server as the
+ * agent answering, so the warning that a session was NOT answering reset the
+ * hourly stall sweep and hid the agent. That warning, and the other texts the
+ * daemon posts on its own initiative (the goal and plan notices), now carry
+ * `postedBy: 'connection'` (lib/session-status-contract.ts), which the server
+ * stores and the sweep skips.
+ *
+ * WHAT IS NOT MARKED, ON PURPOSE (review finding 2). An answer to the owner's
+ * own command (/status, /login, /compact, a typed /stop's "Asked to stop.")
+ * answers a row the owner wrote. Marked, that row would wait for ever and the
+ * sweep would flag a healthy, idle agent 30 minutes later. And the session's
+ * own replies (the `reply` tool) are exactly what the sweep must keep seeing.
  *
  * Run: npx tsx --test test/connection-texts.test.ts
  */
@@ -35,40 +39,43 @@ const functionBody = (signature: string): string => {
 }
 
 test('the marker is the contract field and word, added beside the body as it was', () => {
-  const body = { chatId: 7, assistantId: 901, text: 'Asked to stop.', sender: 'assistant' }
+  const body = { chatId: 7, assistantId: 901, text: 'Heads up', sender: 'assistant' }
   const marked = markConnectionText(body)
   assert.deepEqual(marked, { ...body, [POSTED_BY_FIELD]: POSTED_BY_CONNECTION })
   assert.equal(marked.postedBy, 'connection')
   assert.equal('postedBy' in body, false, 'the caller body is not mutated')
 })
 
-test('every text the daemon posts as itself is marked', () => {
-  for (const signature of [
-    'async function sendDaemonText(',
-    'async function sendLoginText(',
-    'function postPlanVerifierLine(',
-  ]) {
+test('the texts the daemon posts unprompted are marked', () => {
+  for (const signature of ['async function sendConnectionNotice(', 'function postPlanVerifierLine(']) {
+    assert.match(
+      functionBody(signature),
+      /bgosPost\('send-message', markConnectionText\(\{/,
+      `${signature} is not marked`,
+    )
+  }
+  // The deaf warning and both goal notices go out through the marked sender.
+  assert.match(server, /void sendConnectionNotice\(chatId, deafSessionChatMessage\(fixCommand\)\)/)
+  assert.match(server, /await sendConnectionNotice\(chatId, GOAL_ARM_REFUSED_TEXT\)/)
+  assert.match(server, /await sendConnectionNotice\(chatId, GOAL_ARM_UNCONFIRMED_TEXT\)/)
+  assert.doesNotMatch(server, /sendDaemonText\(chatId, (deafSessionChatMessage|GOAL_ARM_)/)
+})
+
+test('an answer to the owner own command stays unmarked (review finding 2)', () => {
+  for (const signature of ['async function sendDaemonText(', 'async function sendLoginText(']) {
     const body = functionBody(signature)
-    assert.match(body, /bgosPost\('send-message', markConnectionText\(\{/, `${signature} is not marked`)
+    assert.match(body, /bgosPost\('send-message', \{/, `${signature} moved`)
+    assert.doesNotMatch(body, /markConnectionText|postedBy/, `${signature} must not be marked`)
   }
   // The stop confirmation ("Asked to stop.") rides the voice rpc handler's
   // sendChatMessage, which is a property, not a function.
   const at = server.indexOf('sendChatMessage: (chatId, text) =>')
   assert.ok(at >= 0, 'the stop confirmation sender moved')
-  assert.match(server.slice(at, at + 200), /bgosPost\('send-message', markConnectionText\(\{/)
+  assert.doesNotMatch(server.slice(at, at + 300), /markConnectionText|postedBy/)
 })
 
-test('the deaf session warning goes out through the marked sender', () => {
-  assert.match(server, /void sendDaemonText\(chatId, deafSessionChatMessage\(fixCommand\)\)/)
-})
-
-test('nothing else posts to send-message marked, and the session reply is never marked', () => {
-  const marked = server.match(/markConnectionText\(/g) ?? []
-  assert.equal(marked.length, 4, 'exactly the four daemon senders')
-  const sends = server.match(/bgosPost\('send-message'/g) ?? []
-  // The four above plus the reply tool's own send, which is the SESSION's
-  // answer and must stay unmarked or the sweep would never see an agent reply.
-  assert.equal(sends.length, 5)
+test('exactly the two unprompted senders mark, and the session reply never does', () => {
+  assert.equal((server.match(/markConnectionText\(/g) ?? []).length, 2)
   const replyAt = server.indexOf("const result = await bgosPost('send-message', body)")
   assert.ok(replyAt >= 0, 'the reply tool send moved')
   assert.doesNotMatch(server.slice(replyAt - 2000, replyAt + 60), /markConnectionText|postedBy/)

@@ -50,7 +50,7 @@ import {
 } from '../lib/session-status-contract.ts'
 
 /** The digest the BGOS and Codex pins hold too. */
-const SHA256 = 'bdb3ece46b92634d29addf32511e0424d27ed357912f6a25433473b889082f3e'
+const SHA256 = '8cb8e5090e9fb98b04293d0100f01b0db623be18a4f96807eb2d6b5442dce371'
 
 const FILE = fileURLToPath(new URL('../lib/session-status-contract.ts', import.meta.url))
 const GITATTRIBUTES = fileURLToPath(new URL('../.gitattributes', import.meta.url))
