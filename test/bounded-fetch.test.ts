@@ -370,6 +370,17 @@ function daemonSurfaceFiles(): string[] {
   return ['server.ts', ...libFiles]
 }
 
+/**
+ * The one sanctioned exception (0.65.3): the stand-down exit sender's fetch.
+ * It is not the daemon's own call. It runs in a CHILD process the daemon starts
+ * with spawnSync and a `timeout` (lib/stand-down-report.ts sendSync), so the
+ * daemon kills it at the deadline whatever the fetch does, and the child aborts
+ * and exits at the same deadline on its own. It cannot use the helper: the child
+ * is `-e` code. The exception is this one exact line, and the test below checks
+ * that both deadlines are still there, so it cannot quietly grow or rot.
+ */
+const BOUNDED_BY_CHILD_DEADLINE = new Set([`${join('lib', 'stand-down-report.ts')}:  '  fetch(job.url, {',`])
+
 test('no file the daemon runs calls fetch() outside the bounded helper', () => {
   // lib/bounded-fetch.ts is the one place allowed to touch the global: it is
   // what applies the deadline.
@@ -378,6 +389,7 @@ test('no file the daemon runs calls fetch() outside the bounded helper', () => {
     if (rel === join('lib', 'bounded-fetch.ts')) continue
     const source = stripComments(readFileSync(join(repoRoot, rel), 'utf8'))
     source.split('\n').forEach((line, i) => {
+      if (BOUNDED_BY_CHILD_DEADLINE.has(`${rel}:${line.trimEnd()}`)) return
       if (callsBareFetch(line)) {
         offenders.push(`${rel}:${i + 1}: ${line.trim()}`)
       }
@@ -388,6 +400,21 @@ test('no file the daemon runs calls fetch() outside the bounded helper', () => {
     [],
     'an unbounded fetch is back on the daemon surface:\n' + offenders.join('\n'),
   )
+})
+
+test('the one exception, the stand-down exit sender, is the only fetch in its file and is bounded twice over', () => {
+  const rel = join('lib', 'stand-down-report.ts')
+  const source = readFileSync(join(repoRoot, rel), 'utf8').replace(/\r\n/g, '\n')
+  const hits = stripComments(source).split('\n').filter(callsBareFetch)
+  assert.deepEqual(hits.map((l) => `${rel}:${l.trimEnd()}`), [...BOUNDED_BY_CHILD_DEADLINE])
+  const start = source.indexOf('const SYNC_SENDER = [')
+  assert.ok(start >= 0, 'the child script is where the exception says')
+  const sender = source.slice(start, source.indexOf("].join('\\n')", start))
+  // The child's own deadline: abort, then exit, at the report deadline.
+  assert.match(sender, /setTimeout\(\(\) => \{ try \{ ac\.abort\(\) \} catch \{\} process\.exit\(2\) \}, job\.timeoutMs\)/)
+  assert.match(sender, /signal: ac\.signal,/)
+  // The daemon's deadline: spawnSync kills the child at the same deadline.
+  assert.match(source, /run\(deps\.execPath \?\? process\.execPath, \['-e', SYNC_SENDER\], \{\n\s+input: [^\n]+\n\s+timeout: timeoutMs,\n/)
 })
 
 test('the scan can actually see an unbounded fetch (positive control)', () => {

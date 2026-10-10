@@ -74,6 +74,7 @@ import {
   probeCredentials,
   probeHandshake,
 } from '../bin/bgos-doctor.mjs'
+import * as doctorModule from '../bin/bgos-doctor.mjs'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
@@ -106,8 +107,12 @@ function healthyProbes(overrides: Record<string, unknown> = {}) {
   }
 }
 
-/** A row status as buildDoctorRows may emit it: PASS, FAIL, SKIP or UNPROVEN. */
-type RowStatus = boolean | null | typeof UNPROVEN
+/** The WARN status (0.65.3), read off the module so the red run on 0.65.2,
+ *  which has no such export, fails on the verdict rather than on the import. */
+const WARN = ((doctorModule as Record<string, unknown>).WARN ?? 'warn') as string
+
+/** A row status as buildDoctorRows may emit it: PASS, FAIL, SKIP, UNPROVEN or WARN. */
+type RowStatus = boolean | null | typeof UNPROVEN | 'warn'
 
 function rowById(rows: Array<{ id: string }>, id: string) {
   const row = rows.find((r) => r.id === id)
@@ -801,22 +806,61 @@ test('parseDoctorArgs: wait-live flags parse and validate', () => {
 // the deaf route and never said a second one existed. These tests pin the row
 // that names both routes and which one the agent actually launches through.
 
-test('doctor route row: two routes on one host, workspace wins, the other is named as the duplicate', () => {
+// The workspace .mcp.json server carries the agent AND the marketplace install
+// is present (kc-server, agent 867, 0.65.2, Data's rule for 0.65.3). That is a
+// supported shape: the marketplace install is kept on purpose, because it
+// supplies hoai-browser, the hooks and the skills. 0.65.2 FAILed it and its fix
+// line told the owner to remove that install. The row is now WARN, says the
+// shape is supported, and no line of it says to remove the marketplace install.
+test('doctor route row: a workspace .mcp.json server plus the marketplace install is WARN, the supported shape, never "remove the marketplace install"', () => {
   const rows = buildDoctorRows(
     healthyProbes({
-      method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: '/home/alex/.claude/plugins/cache/hoai/hoai/0.38.4' },
+      platform: 'linux',
+      method: { method: 'marketplace', channelSpec: 'plugin:hoai@hoai', pluginRoot: '/home/kc/.claude/plugins/cache/hoai/hoai/0.65.2' },
       route: { spec: 'server:bgos', source: 'workspace', method: 'marketplace', serverName: 'bgos', conflict: false, reason: '' },
+    }),
+  )
+  const r = rows.find((x) => x.id === 'route')
+  assert.ok(r, 'a Channel route row exists')
+  assert.strictEqual(r.ok, WARN, `the row is WARN, got ${String(r.ok)}: ${r.detail}`)
+  assert.match(r.detail, /supported shape/i)
+  // Both routes are still named, and which one carries the agent.
+  assert.match(r.detail, /server:bgos/)
+  assert.match(r.detail, /plugin:hoai@hoai/)
+  assert.match(r.detail, /\.mcp\.json/)
+  assert.match(r.detail, /hoai-browser, the hooks and the skills/)
+  for (const text of [r.detail, r.fix]) {
+    assert.doesNotMatch(text, /remov|uninstall|delete/i, `no line says to remove the marketplace install: ${text}`)
+  }
+  const table = renderDoctorTable(rows)
+  assert.match(table, /^WARN\s+Channel route\s+/m, table)
+  assert.doesNotMatch(table, /Fix \(Channel route\)/, 'a supported shape has nothing to fix')
+  assert.doesNotMatch(table, /remov\w* that marketplace install/i)
+  // A WARN never fails the bootstrap's preflight gate.
+  assert.deepEqual(preflightVerdict(rows), { ok: true, failing: [] })
+})
+
+// Every other duplicate keeps 0.65.2's verdict: a FAIL that names both routes
+// and says which one is the duplicate. Here a folder clone (server:bgos) and a
+// workspace .mcp.json server of another name (server:hoai) both register.
+test('doctor route row: a real duplicate (a clone install beside a workspace server of another name) still FAILs with its fix', () => {
+  const rows = buildDoctorRows(
+    healthyProbes({
+      method: { method: 'clone', channelSpec: 'server:bgos', pluginRoot: '/Users/kc/bgos-claude-plugin' },
+      route: { spec: 'server:hoai', source: 'workspace', method: 'clone', serverName: 'hoai', conflict: false, reason: '' },
     }),
   )
   const r = rows.find((x) => x.id === 'route')
   assert.ok(r, 'a Channel route row exists')
   assert.strictEqual(r.ok, false)
   assert.match(r.detail, /two routes/i)
+  assert.match(r.detail, /server:hoai/)
   assert.match(r.detail, /server:bgos/)
-  assert.match(r.detail, /plugin:hoai@hoai/)
   assert.match(r.detail, /\.mcp\.json/)
   assert.match(r.fix, /\.mcp\.json/)
   assert.match(r.fix, /duplicate/i)
+  assert.match(r.fix, /removing that clone install \(never the \.mcp\.json\)/)
+  assert.deepEqual(preflightVerdict(rows), { ok: false, failing: ['route'] })
 })
 
 test('doctor route row: workspace and a clone install agree on one spec, PASS naming the workspace route', () => {
