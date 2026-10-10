@@ -18,9 +18,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { EXIT_SELF_REFRESH, refreshWatcherIfStale, runWatcher } from '../lib/watcher-core.mjs'
-import { WATCHER_BUNDLE_FILES, installWatcherBundle, readBundleManifest } from '../lib/watcher-bundle.mjs'
+import { SWAPPABLE_ENTRIES, WATCHER_BUNDLE_FILES, installWatcherBundle, nodeExec, nodeFs, readBundleManifest, watcherImportClosure } from '../lib/watcher-bundle.mjs'
 import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
 
@@ -61,7 +65,14 @@ function writeInstalled(fs: MemoryFs, L: Layout, root: string, version: string, 
  * The AlienAres shape: the live bundle was installed from the 0.61.1 cache folder, that
  * folder is still on disk and unchanged, and installed_plugins.json names 0.63.2.
  */
-async function staleMachine(L: Layout, opts: { installed?: string; vbs?: boolean; claudeConfigDir?: string } = {}) {
+/** The watcher's own systemd cgroup (cgroup v2), holding `pids`. */
+const CGROUP = '/user.slice/user-1000.slice/user@1000.service/app.slice/bgos-watcher.service'
+function writeCgroup(fs: MemoryFs, pids: number[]) {
+  fs.writeFile('/proc/self/cgroup', `0::${CGROUP}\n`)
+  fs.writeFile(`/sys/fs/cgroup${CGROUP}/cgroup.procs`, pids.map((p) => `${p}\n`).join(''))
+}
+
+async function staleMachine(L: Layout, opts: { installed?: string; vbs?: boolean; claudeConfigDir?: string; cgroup?: number[] | null } = {}) {
   const fs = memoryFs()
   const config = opts.claudeConfigDir ?? configDir(L)
   const oldRoot = cacheRoot(L, '0.61.1', config)
@@ -69,6 +80,8 @@ async function staleMachine(L: Layout, opts: { installed?: string; vbs?: boolean
   await installWatcherBundle({ pluginRoot: oldRoot, home: L.home, fs, now: () => T0 - 6 * 24 * 60 * MINUTE, claudeConfigDir: opts.claudeConfigDir ?? null })
   fs.writeFile(at(L, watcherDir(L), 'credentials.json'), JSON.stringify({ pairingId: 77, token: TOKEN, backendUrl: 'https://api.example.test', machineId: MACHINE_ID }))
   if (opts.vbs !== false) fs.writeFile(at(L, watcherDir(L), 'run-hidden.vbs'), "' launcher\r\n")
+  // On Linux the service watcher runs alone in its systemd cgroup unless a test says otherwise.
+  if (L.platform === 'linux' && opts.cgroup !== null) writeCgroup(fs, opts.cgroup ?? [process.pid])
   const installed = opts.installed ?? '0.63.2'
   const newRoot = cacheRoot(L, installed, config)
   writeRoot(fs, L, newRoot, installed)
@@ -98,7 +111,7 @@ function fakeBackend(opts: { frames?: any[]; jobs?: Record<string, any> } = {}) 
 }
 
 /** One watcher process over `fs`: the real loop, once, with the lifecycle modules a job would use stubbed. */
-function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeCode?: number; backend?: ReturnType<typeof fakeBackend>; modules?: Record<string, unknown> } = {}) {
+function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeCode?: number; backend?: ReturnType<typeof fakeBackend>; modules?: Record<string, unknown>; spawnPid?: number | null } = {}) {
   let nowMs = opts.now ?? T0
   const execs: Array<{ file: string; args: string[] }> = []
   const spawns: Array<{ file: string; args: string[] }> = []
@@ -117,7 +130,7 @@ function watcherRun(L: Layout, fs: MemoryFs, opts: { now?: number; probeCode?: n
     },
     spawnDetached: (file: string, args: readonly string[]) => {
       spawns.push({ file, args: [...args] })
-      return { pid: 4343 }
+      return { pid: opts.spawnPid === undefined ? 4343 : opts.spawnPid }
     },
     now: () => nowMs,
     sleep: async (ms: number) => {
@@ -345,4 +358,209 @@ test('without a manifest (a checkout running its own entry) nothing is swapped a
   assert.equal(await w.run(), 0)
   assert.deepEqual(probesOf(w.execs), [])
   assert.deepEqual(w.backend.beats()[0]!.env.watcherHealth.bundle, { bundleVersion: null, installedVersion: null, stale: null, reason: 'no_manifest' })
+})
+
+// -- review findings ---------------------------------------------------------------------------
+
+test('a manifest that lost claudeConfigDir (a job swap before 0.65.4 dropped it) still finds its install, and the swap writes the dir back', async () => {
+  const L = POSIX
+  const custom = '/srv/claude-kc'
+  const { fs, newRoot } = await staleMachine(L, { claudeConfigDir: custom })
+  const manifestPath = at(L, watcherDir(L), 'manifest.json')
+  fs.writeFile(manifestPath, JSON.stringify({ ...JSON.parse(fs.readFile(manifestPath)!), claudeConfigDir: null }))
+  const w = watcherRun(L, fs)
+  assert.equal(await w.run(), EXIT_SELF_REFRESH)
+  assert.equal(readBundleManifest(L.home, fs)!.pluginRoot, newRoot)
+  assert.equal(readBundleManifest(L.home, fs)!.claudeConfigDir, custom)
+})
+
+test('a release that no longer ships a file the running code lists is still followed, and then reads current', async () => {
+  const L = POSIX
+  const { fs, newRoot } = await staleMachine(L)
+  fs.rm(at(L, newRoot, 'lib', 'known-good-store.mjs'))
+  assert.equal(await watcherRun(L, fs).run(), EXIT_SELF_REFRESH)
+  assert.equal(fs.readFile(liveEntry(L)), '// bin/hoai-watcher.mjs 0.63.2\n')
+  const successor = watcherRun(L, fs, { now: T0 + 30 * MINUTE })
+  assert.equal(await successor.run(), 0)
+  assert.deepEqual(probesOf(successor.execs), [])
+  assert.equal(successor.backend.beats()[0]!.env.watcherHealth.bundle.stale, false)
+})
+
+test('Linux: no self restart while anything else shares the watcher cgroup (systemd would kill it on exit), nor when the cgroup cannot be read', async () => {
+  for (const [cgroup, outcome] of [
+    [[process.pid, 4242], 'refused:cgroup_shared:1'],
+    [null, 'refused:cgroup_unreadable'],
+  ] as const) {
+    const { fs } = await staleMachine(POSIX, { cgroup: cgroup as number[] | null })
+    const w = watcherRun(POSIX, fs)
+    assert.equal(await w.run(), 0, outcome)
+    assert.equal(fs.readFile(liveEntry(POSIX)), '// bin/hoai-watcher.mjs 0.61.1\n', outcome)
+    assert.deepEqual(probesOf(w.execs), [], outcome)
+    assert.equal(stateOf(POSIX, fs).bundleRefresh?.outcome, outcome)
+  }
+})
+
+test('a target that a swap already reached is never swapped to again, so a swap that leaves the bundle reading stale cannot loop', async () => {
+  const L = POSIX
+  const { fs, newRoot } = await staleMachine(L)
+  // Two things at once make a swap that cannot settle: the release dropped a listed file, so the
+  // manifest's fingerprint is not the checker's, and the new entry imports a file outside bin/ and
+  // lib/, which is staged but never promoted (a swap moves bin/, lib/ and the manifest), so the live
+  // bundle still differs from the install afterwards.
+  fs.rm(at(L, newRoot, 'lib', 'known-good-store.mjs'))
+  fs.writeFile(at(L, newRoot, 'bin', 'hoai-watcher.mjs'), "import '../extra/x.mjs'\n// bin/hoai-watcher.mjs 0.63.2\n")
+  fs.writeFile(at(L, newRoot, 'extra', 'x.mjs'), '// extra\n')
+  assert.equal(await watcherRun(L, fs).run(), EXIT_SELF_REFRESH)
+  for (const after of [11, 120, 24 * 60]) {
+    const again = watcherRun(L, fs, { now: T0 + after * MINUTE })
+    assert.equal(await again.run(), 0, `${after} min`)
+    assert.deepEqual(probesOf(again.execs), [], `${after} min`)
+    assert.equal(again.backend.beats()[0]!.env.watcherHealth.bundle.stale, true, `${after} min: still reported`)
+  }
+})
+
+test('the stale flag is about the code this watcher RUNS: a bundle replaced under it reads stale until it restarts', async () => {
+  const L = POSIX
+  const fs = memoryFs()
+  const oldRoot = cacheRoot(L, '0.61.1')
+  writeRoot(fs, L, oldRoot, '0.61.1')
+  await installWatcherBundle({ pluginRoot: oldRoot, home: L.home, fs, now: () => T0 })
+  writeInstalled(fs, L, oldRoot, '0.61.1')
+  fs.writeFile(at(L, watcherDir(L), 'credentials.json'), JSON.stringify({ pairingId: 77, token: TOKEN, backendUrl: 'https://api.example.test', machineId: MACHINE_ID }))
+  writeCgroup(fs, [process.pid])
+  const newRoot = cacheRoot(L, '0.63.2')
+  const backend = fakeBackend({ frames: [{ rpcId: 'j', op: 'reconcile' }], jobs: { j: { op: 'reconcile', intent: 'reconcile', targets: [] } } })
+  let staleInJob: unknown = null
+  const w = watcherRun(L, fs, {
+    backend,
+    modules: {
+      planMachine: () => ({ verdict: 'plan', targetVersion: '0.63.2', steps: [{ id: 's01-snapshot', kind: 'snapshot', onFailure: 'stop', why: 'x' }] }),
+      executePlan: async (_plan: any, deps: any, report: any) => {
+        // Someone installs the newer bundle over this running watcher's files (a hand run install).
+        writeRoot(fs, L, newRoot, '0.63.2')
+        writeInstalled(fs, L, newRoot, '0.63.2')
+        await installWatcherBundle({ pluginRoot: newRoot, home: L.home, fs, now: () => T0 })
+        await deps.sleep(2 * MINUTE)
+        await report('s01-snapshot', { state: 'ok', message: 'x' })
+        staleInJob = backend.beats().at(-1)?.env?.watcherHealth?.bundle?.stale
+        return { ok: true, verdict: 'done', failedStep: null, rolledBack: false, targetVersion: '0.63.2', installedVersion: '0.63.2', steps: [{ id: 's01-snapshot', kind: 'snapshot', state: 'ok', message: 'x' }] }
+      },
+    },
+  })
+  await w.run()
+  assert.equal(staleInJob, true)
+})
+
+test('refresh outcomes on the heartbeat and in state.json carry no home path', async () => {
+  const L = POSIX
+  const { fs, newRoot } = await staleMachine(L)
+  // A root whose package.json has no version: the installer refuses and names the file.
+  fs.writeFile(at(L, newRoot, 'package.json'), JSON.stringify({ name: 'claude-channel-bgos' }))
+  assert.equal(await watcherRun(L, fs).run(), 0)
+  const outcome = String(stateOf(L, fs).bundleRefresh?.outcome)
+  assert.match(outcome, /^watcher_refresh_failed:/)
+  assert.equal(outcome.includes(L.home), false, outcome)
+  const next = watcherRun(L, fs, { now: T0 + 5 * MINUTE })
+  await next.run()
+  assert.equal(JSON.stringify(next.backend.beats()[0]!.env.watcherHealth.bundle).includes(L.home), false)
+})
+
+test('win32: when the successor did not start, this watcher stays up instead of leaving none', async () => {
+  const { fs } = await staleMachine(WINDOWS)
+  const w = watcherRun(WINDOWS, fs, { spawnPid: null })
+  assert.equal(await w.run(), 0)
+  assert.equal(w.logs.some((l) => l.includes('exiting with')), false)
+  assert.equal(w.backend.calls.some((c) => c.path.includes('/machine-rpc/pending')), true, 'it went on polling')
+})
+
+test('an install the watcher cannot read as current is reported by reason: plugin not installed, install folder gone', async () => {
+  const notInstalled = await staleMachine(POSIX)
+  notInstalled.fs.writeFile(at(POSIX, configDir(POSIX), 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }))
+  const a = watcherRun(POSIX, notInstalled.fs)
+  await a.run()
+  assert.deepEqual(a.backend.beats()[0]!.env.watcherHealth.bundle, { bundleVersion: '0.61.1', installedVersion: null, stale: null, reason: 'not_installed' })
+
+  const gone = await staleMachine(POSIX)
+  gone.fs.rm(gone.newRoot)
+  const b = watcherRun(POSIX, gone.fs)
+  assert.equal(await b.run(), 0)
+  assert.deepEqual(b.backend.beats()[0]!.env.watcherHealth.bundle, { bundleVersion: '0.61.1', installedVersion: null, stale: null, reason: 'plugin_root_missing' })
+  assert.deepEqual(probesOf(b.execs), [])
+})
+
+test('an incomplete install is never staged as the live bundle, and a refresh record from the future does not block for ever', async () => {
+  const L = POSIX
+  const { fs, newRoot } = await staleMachine(L)
+  fs.writeFile(at(L, newRoot, 'bin', 'hoai-watcher.mjs'), "import '../lib/gone.mjs'\n// 0.63.2\n")
+  const statePath = at(L, watcherDir(L), 'state.json')
+  fs.writeFile(statePath, JSON.stringify({ bundleRefresh: { at: new Date(T0 + 3 * 60 * MINUTE).toISOString(), ok: false, fingerprint: 'x', outcome: 'from a clock that ran ahead' } }))
+  const w = watcherRun(L, fs)
+  assert.equal(await w.run(), 0)
+  assert.equal(fs.readFile(liveEntry(L)), '// bin/hoai-watcher.mjs 0.61.1\n')
+  assert.deepEqual(probesOf(w.execs), [], 'an incomplete copy is never probed')
+  assert.match(String(stateOf(L, fs).bundleRefresh?.outcome), /^watcher_refresh_failed:bundle_incomplete:lib\/gone\.mjs/)
+})
+
+test('the real bundle of this checkout is staged, passes the real probe under this node, and is swapped in (real files)', async () => {
+  const repo = dirname(dirname(fileURLToPath(import.meta.url)))
+  const base = mkdtempSync(join(tmpdir(), 'watcher-self-refresh-'))
+  try {
+    const home = join(base, 'home')
+    const live = join(home, '.bgos-agent', 'watcher')
+    const fs = nodeFs()
+    // An old bundle installed from this checkout as a clone: its manifest names the checkout.
+    fs.writeFile(join(live, 'bin', 'hoai-watcher.mjs'), '// an old entry\n')
+    fs.writeFile(join(live, 'manifest.json'), JSON.stringify({ version: '0.61.1', fingerprint: 'old', installedAt: 'x', pluginRoot: repo, files: ['bin/hoai-watcher.mjs'] }))
+    fs.writeFile(join(live, 'credentials.json'), JSON.stringify({ pairingId: 77, token: TOKEN, backendUrl: 'https://api.example.test', machineId: MACHINE_ID }))
+    fs.writeFile(join(live, 'run-hidden.vbs'), "' launcher\r\n")
+    const spawns: string[] = []
+    const execs: string[][] = []
+    const realExec = nodeExec()
+    // Linux is told it is darwin here: the cgroup guard would read this test runner's own cgroup.
+    const platform = process.platform === 'win32' ? 'win32' : 'darwin'
+    const code = await runWatcher({
+      home,
+      env: { USER: 'kc' },
+      platform,
+      fetch: fakeBackend().fetch as any,
+      fs,
+      exec: (file: string, args: readonly string[], opts?: any) => {
+        execs.push([file, ...args])
+        return realExec(file, args, opts)
+      },
+      spawnDetached: (file: string) => {
+        spawns.push(file)
+        return { pid: 4343 }
+      },
+      now: () => T0,
+      sleep: async () => {},
+      once: true,
+      nodePath: process.execPath,
+      uid: 501,
+      username: 'kc',
+      pidAlive: () => false,
+      execSync: () => ({ code: 1, stdout: '' }),
+      hasTmux: false,
+      hasScript: false,
+      keepAliveSweep: async () => ({ enabled: false, agents: [] }),
+      modules: { planMachine: () => ({ verdict: 'nothing_to_do', steps: [] }), executePlan: async () => ({}), observeMarketplaceInstall, runClaudeCli: async () => ({ code: 1 }) },
+    } as any)
+    assert.equal(code, platform === 'win32' ? 0 : EXIT_SELF_REFRESH)
+    assert.deepEqual(execs, [[process.execPath, join(live, 'next', 'bin', 'hoai-watcher.mjs'), 'help']], 'the real probe ran once')
+    assert.equal(readFileSync(join(live, 'bin', 'hoai-watcher.mjs'), 'utf8'), readFileSync(join(repo, 'bin', 'hoai-watcher.mjs'), 'utf8'))
+    assert.equal(readFileSync(join(live, 'lib', 'watcher-core.mjs'), 'utf8'), readFileSync(join(repo, 'lib', 'watcher-core.mjs'), 'utf8'))
+    assert.equal(JSON.parse(readFileSync(join(live, 'manifest.json'), 'utf8')).pluginRoot, repo)
+    assert.deepEqual(spawns, platform === 'win32' ? ['wscript.exe'] : [])
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('every file of the real bundle lives where a swap moves it (bin/ or lib/), so a swapped bundle is the whole bundle', () => {
+  const repo = dirname(dirname(fileURLToPath(import.meta.url)))
+  const walk = watcherImportClosure(repo)
+  assert.equal(walk.ok, true)
+  const dirs = SWAPPABLE_ENTRIES.filter((entry) => entry !== 'manifest.json')
+  assert.deepEqual(dirs, ['bin', 'lib'])
+  for (const rel of [...WATCHER_BUNDLE_FILES, ...walk.files]) assert.equal(dirs.includes(rel.split('/')[0]!), true, rel)
 })
