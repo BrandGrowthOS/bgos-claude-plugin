@@ -2854,9 +2854,25 @@ const mcp = new Server(
       '## Receiving Attachments',
       '',
       'When a user sends files, the channel event includes:',
-      '- Text like "[Attached image: photo.jpg]" in the content.',
-      '- A `files` array in the `meta` object with: `file_name`, `mime_type`,',
-      '  `url` (presigned S3 URL valid ~1 hour), and `type` (image/video/document/audio).',
+      '- One line per file in the content: "[Attached <kind>: <name> - <ref>]",',
+      '  where <ref> is whatever the server sent: a link, a data URI or base64.',
+      '- `meta.files`, a JSON STRING (not an array; parse it with JSON.parse)',
+      '  holding an array with one object per file: `name`, `kind`',
+      '  (image/video/audio/document), `mimeType` (left out when the server sent',
+      '  none), `size` (bytes, left out when the server sent none, which today',
+      '  it never does) and `url` (left out unless the reference is an http(s)',
+      '  link, usually a presigned link valid about 1 hour; the content line',
+      '  always carries any reference). A file the server sent with neither a link nor',
+      '  inline data also has `unavailable` set to "true", and its content line',
+      '  reads "no link, the server could not provide one" in place of <ref>:',
+      '  tell the person you could not open it. Every value inside is a string.',
+      '  `meta.files` is absent when the message has no attachments.',
+      '- A meeting turn card (`meta.meeting_id` set) carries both the same way',
+      '  when its delivery carried the files. One built from the meeting',
+      '  broadcast, which carries no files yet, has neither and instead has',
+      '  `files_unknown = "true"`: there, an absent `meta.files` does NOT mean',
+      '  the person attached nothing; if the turn refers to a file you cannot',
+      '  see, say so and ask them for it.',
       '- You can view images via the URL or fetch documents via WebFetch.',
       '',
       '## SHARED-ASSISTANT CONTEXT (per-sender identity)',
@@ -9905,6 +9921,7 @@ async function pollChat(chatId: string): Promise<void> {
           currentSpeakerId: meetingCtx.currentSpeakerId,
           backlog: isBacklog,
           serverSender: msg.message,
+          files: msg.messageFiles ?? [],
         })
         void trackMessageOperation(() => mcp.notification({
           method: 'notifications/claude/channel',
@@ -13200,6 +13217,7 @@ function connectWebsocket(): void {
           currentSpeakerId: wsMeeting.currentSpeakerId,
           // The twin is an inbound_message: it carries the sender block.
           serverSender: payload,
+          files: wsFiles,
         })
         log(
           `meeting twin rx (meeting=${wsMeeting.meetingId} msg=${messageId} ` +
@@ -13613,6 +13631,10 @@ function connectWebsocket(): void {
         // The broadcast carries no sender block today (its userId is the
         // meeting HOST), so this sets nothing until the backend sends one.
         serverSender: payload,
+        // Nor does it carry files today; read them the day it does, and until
+        // then say on the card that an absent files meta means "not known".
+        files: Array.isArray(payload?.files) ? payload.files : [],
+        filesUnknown: !Array.isArray(payload?.files),
       })
       void trackMessageOperation(() => mcp.notification({
         method: 'notifications/claude/channel',

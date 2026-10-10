@@ -176,9 +176,9 @@ test('inbound: poll file shape produces an attachment line', () => {
   )
 })
 
-test('inbound: WS file with no ref is skipped', () => {
+test('inbound: WS file with no ref is named, not dropped (the backend keeps it so the agent can say so)', () => {
   const content = buildInboundContent('', [{ filename: 'x.png', mime: 'image/png', url: '' }])
-  assert.equal(content, '')
+  assert.equal(content, '[Attached image: x.png - no link, the server could not provide one]')
 })
 
 test('inbound: backlog prefix is prepended when supplied', () => {

@@ -1,5 +1,6 @@
 import {
   buildInboundContent,
+  buildInboundFilesMeta,
   type InboundFileLike,
 } from './message-text.ts'
 
@@ -424,6 +425,7 @@ export function buildInboundChannel(
     : framedText
   const peerConversationId =
     input.peerConversationId ?? input.agentOrigin?.peerConversationId
+  const filesMeta = buildInboundFilesMeta(input.files ?? [])
 
   const meta: Record<string, string> = {
     chat_id: String(input.chatId),
@@ -451,6 +453,7 @@ export function buildInboundChannel(
       ? { turn_state: String(input.turnState) }
       : {}),
     ...(planPolicy ? { plan_policy: planPolicy } : {}),
+    ...(filesMeta ? { files: filesMeta } : {}),
   }
 
   return {

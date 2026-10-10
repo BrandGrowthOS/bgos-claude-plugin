@@ -22,6 +22,11 @@
  */
 
 import { readServerSenderMeta } from './inbound-channel.ts'
+import {
+  buildInboundContent,
+  buildInboundFilesMeta,
+  type InboundFileLike,
+} from './message-text.ts'
 
 export interface MeetingParticipantLike {
   assistantId: number
@@ -116,6 +121,19 @@ export interface MeetingCardInput {
    * and are absent when it carries none, which the broadcast never does.
    */
   serverSender?: unknown
+  /**
+   * The turn's attachments, in either lane's shape (the socket twin's
+   * `files`, the poll row's `messageFiles`). They become the same
+   * `[Attached ...]` lines and `files` meta an ordinary inbound carries. The
+   * meeting_message broadcast carries none today, so its card has neither.
+   */
+  files?: InboundFileLike[]
+  /**
+   * True when this delivery cannot carry files at all (the meeting_message
+   * broadcast today), so an absent `files` meta says nothing about whether
+   * the person attached something. Emitted as `files_unknown: 'true'`.
+   */
+  filesUnknown?: boolean
 }
 
 // A type alias, not an interface: the MCP notification params type carries a
@@ -137,11 +155,14 @@ export function buildMeetingCard(input: MeetingCardInput): MeetingCard {
     .filter((name) => name.length > 0)
     .join(', ')
   const turn = input.yourTurn ? 'YES' : 'NO'
+  const fileLines = buildInboundContent('', input.files ?? [])
+  const filesMeta = buildInboundFilesMeta(input.files ?? [])
   const content =
     (input.backlog ? '[backlog, meeting message arrived while you were offline]\n' : '') +
     `[Meeting #${input.meetingId}, your_turn=${turn}, ` +
     `participants: ${participantList || 'unknown'}]\n` +
-    `${input.senderName}: ${input.text}`
+    `${input.senderName}: ${input.text}` +
+    (fileLines ? `\n${fileLines}` : '')
   return {
     content,
     meta: {
@@ -167,6 +188,8 @@ export function buildMeetingCard(input: MeetingCardInput): MeetingCard {
       transport: String(input.transport),
       ...(input.backlog ? { backlog: 'true' } : {}),
       ...readServerSenderMeta(input.serverSender),
+      ...(filesMeta ? { files: filesMeta } : {}),
+      ...(input.filesUnknown && !filesMeta ? { files_unknown: 'true' } : {}),
     },
   }
 }

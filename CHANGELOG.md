@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.65.1 (2026-10-10)
+
+**Agents now get each attachment's details as the instructions promised (board row 01a1266e).** The session instructions told agents every message may carry a `files` array in `meta`; no lane sent one, and meeting turn cards dropped attachments entirely. `meta.files` is now a JSON string (the harness drops a card whose meta holds a non-string value) with `name`, `kind`, `mimeType` and an http(s) `url`, omitted when a message has none, on the socket, poll and stream lanes alike. Meeting turn cards carry the same lines and meta; one built from the meeting broadcast, which carries no files today, says `files_unknown: "true"` instead of implying there were none. A file the server could not link is named to the agent rather than silently dropped. Guard: `test/inbound-files-meta.test.ts` (62 tests; a raw array in meta turns 20 red).
+
 ## 0.65.0 (2026-10-10)
 
 **A stray Claude Code session can no longer claim an agent's home folder, and the agent takes its channel back from one (board row fc75c7c3, options A and D of the identity race plan).** On a computer with one paired agent every Claude Code session starts a bgos daemon, and one started in a folder with no pin finds the agent by elimination. Up to 0.64.3 such a stray, booting while the agent was down, took the pairing lock (the lock picked whoever came first), answered in the agent's chats, and after 60 s holding the channel wrote its own folder into the agent's credentials file as `homeDir`. From then on every stray in that folder passed the home check and could repoint the agent's resume pin (Ares, 2026-09-19: the BGOS repo recorded as Ares' home, fixed by hand). The race is now a test (`test/identity-race.test.ts`, real temp files, the same lib calls server.ts makes): red on 0.64.3, where the stray writes its folder as the home at 60 s and the pinned agent cannot take the lock back, and green here.
