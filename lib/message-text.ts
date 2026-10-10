@@ -356,10 +356,52 @@ export interface InboundFileLike {
   isAudio?: boolean | null
   fileName?: string | null
   fileData?: string | null
+  fileMimeType?: string | null
   filename?: string | null
   mime?: string | null
   url?: string | null
   dataUri?: string | null
+}
+
+/** One attachment, read the same way off either lane's shape. */
+export interface InboundFileEntry {
+  kind: string
+  name: string
+  mimeType: string
+  ref: string
+}
+
+/**
+ * Read inbound attachments off either payload shape into one list. The socket
+ * sends `{ filename, mime, url?, dataUri? }`; the poll's chat history row sends
+ * `{ isImage/isVideo/isAudio, fileName, fileData, fileMimeType }`. A socket file
+ * with neither a url nor a data uri is skipped, as it always was, so the text
+ * lines and the `files` meta always name the same files.
+ */
+export function normalizeInboundFiles(files: InboundFileLike[] = []): InboundFileEntry[] {
+  const out: InboundFileEntry[] = []
+  for (const f of files) {
+    if (f.mime !== undefined || f.filename !== undefined || f.url !== undefined || f.dataUri !== undefined) {
+      // WS payload shape: { filename, mime, url?, dataUri? }
+      const ref = String(f.url ?? f.dataUri ?? '')
+      if (!ref) continue
+      out.push({
+        kind: getFileCategory(String(f.mime ?? '')) ?? 'document',
+        name: String(f.filename ?? 'file'),
+        mimeType: String(f.mime ?? ''),
+        ref,
+      })
+    } else {
+      // Poll payload shape: { isImage/isVideo/isAudio, fileName, fileData }
+      out.push({
+        kind: f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document',
+        name: String(f.fileName ?? 'file'),
+        mimeType: String(f.fileMimeType ?? ''),
+        ref: String(f.fileData ?? ''),
+      })
+    }
+  }
+  return out
 }
 
 /**
@@ -377,25 +419,34 @@ export function buildInboundContent(
   const parts: string[] = []
   if (opts.backlogPrefix) parts.push(opts.backlogPrefix)
   if (text.trim()) parts.push(text)
-  for (const f of files) {
-    let type: string
-    let name: string
-    let ref: string
-    if (f.mime !== undefined || f.filename !== undefined || f.url !== undefined || f.dataUri !== undefined) {
-      // WS payload shape: { filename, mime, url?, dataUri? }
-      type = getFileCategory(String(f.mime ?? '')) ?? 'document'
-      name = String(f.filename ?? 'file')
-      ref = String(f.url ?? f.dataUri ?? '')
-      if (!ref) continue
-    } else {
-      // Poll payload shape: { isImage/isVideo/isAudio, fileName, fileData }
-      type = f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document'
-      name = String(f.fileName ?? 'file')
-      ref = String(f.fileData ?? '')
-    }
-    parts.push(`[Attached ${type}: ${name} - ${ref}]`)
+  for (const f of normalizeInboundFiles(files)) {
+    parts.push(`[Attached ${f.kind}: ${f.name} - ${f.ref}]`)
   }
   return parts.join('\n')
+}
+
+/**
+ * The `files` meta value: a JSON STRING, never an array. The harness silently
+ * drops a channel card whose meta carries any non-string value (the wake card
+ * contract), so a raw array here would kill every message with an attachment.
+ * Each entry is `{ name, kind, mimeType?, url? }`, every value a string.
+ * `mimeType` is left out when the server sent none. `url` is left out unless
+ * the reference is an http(s) link: an inline file (a data uri or raw base64)
+ * is still carried by the content line, and copying it here would send it
+ * twice. Returns null when there are no attachments, so the caller omits the
+ * key. The server.ts instructions describe this shape; keep them in step.
+ */
+export function buildInboundFilesMeta(files: InboundFileLike[] = []): string | null {
+  const entries = normalizeInboundFiles(files)
+  if (entries.length === 0) return null
+  return JSON.stringify(
+    entries.map((f) => ({
+      name: f.name,
+      kind: f.kind,
+      ...(f.mimeType ? { mimeType: f.mimeType } : {}),
+      ...(/^https?:\/\//i.test(f.ref) ? { url: f.ref } : {}),
+    })),
+  )
 }
 
 // ── Machine-event meta (capability #12) ──────────────────────────────────────
