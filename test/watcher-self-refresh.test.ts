@@ -471,6 +471,9 @@ test('win32: when the successor did not start, this watcher stays up instead of 
   assert.equal(await w.run(), 0)
   assert.equal(w.logs.some((l) => l.includes('exiting with')), false)
   assert.equal(w.backend.calls.some((c) => c.path.includes('/machine-rpc/pending')), true, 'it went on polling')
+  // Recorded as what happened, not as a refresh: the bundle on disk moved, the running code did not.
+  assert.equal(stateOf(WINDOWS, fs).bundleRefresh?.outcome, 'watcher_bundle_refreshed:0.63.2:no_successor')
+  assert.equal(stateOf(WINDOWS, fs).bundleRefresh?.ok, false)
 })
 
 test('an install the watcher cannot read as current is reported by reason: plugin not installed, install folder gone', async () => {
@@ -563,4 +566,20 @@ test('every file of the real bundle lives where a swap moves it (bin/ or lib/), 
   const dirs = SWAPPABLE_ENTRIES.filter((entry) => entry !== 'manifest.json')
   assert.deepEqual(dirs, ['bin', 'lib'])
   for (const rel of [...WATCHER_BUNDLE_FILES, ...walk.files]) assert.equal(dirs.includes(rel.split('/')[0]!), true, rel)
+})
+
+test('the reached-target guard holds only while the watcher runs what that swap installed: a bundle moved away by other means is brought back', async () => {
+  const L = POSIX
+  const { fs, newRoot } = await staleMachine(L)
+  assert.equal(await watcherRun(L, fs).run(), EXIT_SELF_REFRESH)
+  // Something other than this path (a job's swap, a hand run install) puts a different bundle of the
+  // same version in place, from another cache folder; installed_plugins.json still names newRoot.
+  const other = cacheRoot(L, '0.63.2-repair')
+  for (const rel of WATCHER_BUNDLE_FILES) fs.writeFile(at(L, other, ...rel.split('/')), `// ${rel} 0.63.2 repair\n`)
+  fs.writeFile(at(L, other, 'package.json'), JSON.stringify({ version: '0.63.2' }))
+  await installWatcherBundle({ pluginRoot: other, home: L.home, fs, now: () => T0 })
+  const later = watcherRun(L, fs, { now: T0 + 11 * MINUTE })
+  assert.equal(await later.run(), EXIT_SELF_REFRESH)
+  assert.equal(fs.readFile(liveEntry(L)), '// bin/hoai-watcher.mjs 0.63.2\n')
+  assert.equal(readBundleManifest(L.home, fs)!.pluginRoot, newRoot)
 })
