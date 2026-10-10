@@ -28,7 +28,7 @@ test('a POST to messages carries the agent id as X-Caller-Assistant-Id', () => {
       path: 'messages',
       body: { chatId: 4465, sender: 'assistant' },
       assistantId: '916',
-      isMeetingChat: () => false,
+      withholdForChat: () => false,
     }),
     { 'X-Caller-Assistant-Id': '916' },
   )
@@ -40,7 +40,7 @@ test('a leading slash is the same route', () => {
       path: '/messages',
       body: { chatId: 1 },
       assistantId: '7',
-      isMeetingChat: () => false,
+      withholdForChat: () => false,
     }),
     { 'X-Caller-Assistant-Id': '7' },
   )
@@ -59,7 +59,7 @@ test('every other route is untouched, including ones that start with messages', 
         path,
         body: { chatId: 1 },
         assistantId: '7',
-        isMeetingChat: () => false,
+        withholdForChat: () => false,
       }),
       {},
       path,
@@ -74,7 +74,7 @@ test('no header without an assistant id to name', () => {
         path: 'messages',
         body: { chatId: 1 },
         assistantId,
-        isMeetingChat: () => false,
+        withholdForChat: () => false,
       }),
       {},
       String(assistantId),
@@ -89,7 +89,7 @@ test('an id that is not a positive whole number is not sent', () => {
         path: 'messages',
         body: { chatId: 1 },
         assistantId,
-        isMeetingChat: () => false,
+        withholdForChat: () => false,
       }),
       {},
       assistantId,
@@ -97,7 +97,7 @@ test('an id that is not a positive whole number is not sent', () => {
   }
 })
 
-test('a known meeting chat gets no header, so a generic write there stays refused', () => {
+test('a chat the daemon withholds for (a meeting, a side-thread) gets no header', () => {
   // With a caller id the backend would let a seated agent's hook rail card
   // into the meeting transcript; without one it refuses, as it always has.
   assert.deepEqual(
@@ -105,7 +105,7 @@ test('a known meeting chat gets no header, so a generic write there stays refuse
       path: 'messages',
       body: { chatId: 8800 },
       assistantId: '916',
-      isMeetingChat: (id) => id === '8800',
+      withholdForChat: (id) => id === '8800',
     }),
     {},
   )
@@ -114,10 +114,36 @@ test('a known meeting chat gets no header, so a generic write there stays refuse
       path: 'messages',
       body: { chatId: 8801 },
       assistantId: '916',
-      isMeetingChat: (id) => id === '8800',
+      withholdForChat: (id) => id === '8800',
     }),
     { 'X-Caller-Assistant-Id': '916' },
   )
+})
+
+test('the predicate is asked with the chat id as a string, and only for a messages post', () => {
+  const asked: string[] = []
+  const withholdForChat = (id: string) => {
+    asked.push(id)
+    return false
+  }
+  messagesCallerHeaders({ path: 'send-message', body: { chatId: 5 }, assistantId: '7', withholdForChat })
+  messagesCallerHeaders({ path: 'messages', body: { chatId: 8825 }, assistantId: '7', withholdForChat })
+  assert.deepEqual(asked, ['8825'])
+})
+
+test('bgosPost withholds the header from known meetings AND known peer side-threads', () => {
+  // A side-thread is the sharper case (review of this change): with a caller
+  // id, a generic post into a CLOSED side-thread revives the conversation
+  // (ChatParticipationService.reviveClosedPeerConversation reopens the row and
+  // hands the turn to the peer) and only then is refused 400 a2a_wrong_route.
+  // Without one, the revive is skipped and nothing is written. Pairing 123's
+  // pattern was exactly this: conversations closed in 25 ms, then hook cards.
+  const start = serverSource.indexOf('async function bgosPost(')
+  const body = serverSource.slice(start, serverSource.indexOf('\n}\n', start))
+  const call = body.slice(body.indexOf('messagesCallerHeaders('))
+  for (const set of ['meetingChatIds', 'peerConvByChat', 'closedPeerChats', 'a2aRouteRefusedChats']) {
+    assert.match(call.slice(0, call.indexOf('}),')), new RegExp(`${set}\\.has\\(chatId\\)`), set)
+  }
 })
 
 test('bgosPost merges the caller header for messages, before explicit headers', () => {
@@ -126,8 +152,14 @@ test('bgosPost merges the caller header for messages, before explicit headers', 
   const body = serverSource.slice(start, serverSource.indexOf('\n}\n', start))
   assert.match(
     body,
-    /messagesCallerHeaders\(\{\s*path,\s*body,\s*assistantId: ASSISTANT_ID,\s*isMeetingChat: \(chatId\) => meetingChatIds\.has\(chatId\),?\s*\}\)/,
+    /messagesCallerHeaders\(\{\s*path,\s*body,\s*assistantId: ASSISTANT_ID,[\s\S]*?withholdForChat: \(chatId\) =>/,
   )
+  // Inside the request's headers object, not merely somewhere in bgosPost.
+  const headersAt = body.indexOf('headers: {')
+  const bodyAt = body.indexOf('body: JSON.stringify(body)')
+  assert.ok(headersAt >= 0 && bodyAt > headersAt, 'headers object not found')
+  const inHeaders = body.slice(headersAt, bodyAt)
+  assert.ok(inHeaders.includes('...messagesCallerHeaders('), 'the caller header must be spread into headers')
   const callerAt = body.indexOf('messagesCallerHeaders(')
   const explicitAt = body.indexOf('...(opts.headers ?? {})')
   assert.ok(explicitAt > callerAt, 'an explicit header must still win over the default')

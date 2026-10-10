@@ -1384,7 +1384,13 @@ async function bgosPost(
             path,
             body,
             assistantId: ASSISTANT_ID,
-            isMeetingChat: (chatId) => meetingChatIds.has(chatId),
+            // Meetings and known peer side-threads: there a caller id changes
+            // what the backend does (lib/messages-caller-header.ts).
+            withholdForChat: (chatId) =>
+              meetingChatIds.has(chatId) ||
+              peerConvByChat.has(chatId) ||
+              closedPeerChats.has(chatId) ||
+              a2aRouteRefusedChats.has(chatId),
           }),
           ...(opts.headers ?? {}),
         },

@@ -14,10 +14,17 @@
  * its body; `messages/bulk`, `meetings/:id/messages` and the rest are left as
  * they are.
  *
- * Not into a meeting chat this daemon knows. There the backend lets a seated
- * caller's generic write through, so the header would put hook rail cards into
- * a shared meeting transcript that today refuses them; a meeting reply goes
- * through `meetings/:id/messages` anyway.
+ * Not into a chat the caller withholds for, which server.ts makes the meetings
+ * and the peer side-threads this daemon knows. Both are places where a caller
+ * id changes what the backend DOES, not only what it logs:
+ *   - a meeting: the backend lets a seated caller's generic write through, so
+ *     the header would put hook rail cards into a shared meeting transcript
+ *     that today refuses them (a meeting reply uses `meetings/:id/messages`);
+ *   - a side-thread: the write is refused 400 `a2a_wrong_route` either way,
+ *     but with a participant's id the backend first REVIVES a closed
+ *     conversation (ChatParticipationService.reviveClosedPeerConversation:
+ *     reopens the row, hands the turn to the peer) and the reopen survives the
+ *     400. Without an id the revive is skipped and nothing is written.
  *
  * The header changes nothing else for an owner's own chat: the backend checks
  * that the named agent belongs to the authenticated owner, which this
@@ -27,14 +34,15 @@ export function messagesCallerHeaders(input: {
   path: string
   body: Record<string, unknown>
   assistantId: string | null | undefined
-  /** Read only for a messages post with a chat id, so a caller may pass a
-   *  set that is declared later in its module. */
-  isMeetingChat: (chatId: string) => boolean
+  /** True for a chat that must get no caller id. Read only for a messages
+   *  post with a chat id, so a caller may close over sets declared later in
+   *  its module. */
+  withholdForChat: (chatId: string) => boolean
 }): Record<string, string> {
   if (input.path.replace(/^\//, '') !== 'messages') return {}
   const id = (input.assistantId ?? '').trim()
   if (!/^[1-9]\d*$/.test(id)) return {}
   const chatId = input.body?.chatId
-  if (chatId != null && input.isMeetingChat(String(chatId))) return {}
+  if (chatId != null && input.withholdForChat(String(chatId))) return {}
   return { 'X-Caller-Assistant-Id': id }
 }
