@@ -171,3 +171,17 @@ test('the answer carries no null or undefined anywhere', async () => {
   assert.ok(!json.includes('null'))
   assert.deepEqual(Object.keys(h.posts[1]!.body.payload.skills[0]).includes('hiddenBy'), false)
 })
+
+test('a flood of answered frames never evicts a frame still running', async () => {
+  let release!: () => void
+  const gate = new Promise<void>((r) => (release = r))
+  let calls = 0
+  const h = harness({ list: async () => { calls += 1; if (calls === 1) await gate; return { skills: [] } } })
+  const slow = h.handler.handle(frame('list_installed', {}, { rpcId: 'slow' }))
+  for (let i = 0; i < 300; i++) await h.handler.handle(frame('list_installed', {}, { rpcId: `f${i}` }))
+  // the re emit of the running frame is ignored, not run a second time
+  await h.handler.handle(frame('list_installed', {}, { rpcId: 'slow' }))
+  assert.equal(calls, 301)
+  release()
+  await slow
+})

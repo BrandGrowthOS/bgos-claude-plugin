@@ -99,6 +99,8 @@ const SHARE_TEXT_EXTENSIONS = new Set(['.md', '.txt', '.json', '.yaml', '.yml', 
 /** Bounds on the size walk inside one skill folder. */
 const WALK_MAX_ENTRIES = 2000
 const WALK_MAX_DEPTH = 12
+/** At most this many skills are read from one root, so a huge folder cannot stall the daemon. */
+export const SKILLS_ROOT_MAX = 500
 const INSTALLED_PLUGINS_MAX_BYTES = 1024 * 1024
 /** Frontmatter keys that pre-approve tools or run commands (section 4.2). */
 const EXECUTABLE_KEYS = ['allowed-tools', 'hooks', 'shell']
@@ -132,13 +134,87 @@ function realOrNull(path: string): string | null {
   }
 }
 
+/** For a file read: a realpath under a realpath, both spelled by realpathSync. */
 function inside(child: string, parent: string): boolean {
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }
 
-/** Equal, or one inside the other. */
+/** A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. */
+function identOf(path: string, follow = true): string | null {
+  try {
+    const st = follow ? statSync(path) : lstatSync(path)
+    return `${st.dev}:${st.ino}`
+  } catch {
+    return null
+  }
+}
+
+/** The identities of a folder and of every folder above its real location. */
+function chainOf(path: string): string[] {
+  const out: string[] = []
+  let at = realOrNull(path) ?? resolve(path)
+  for (;;) {
+    const id = identOf(at)
+    if (id) out.push(id)
+    const up = dirname(at)
+    if (up === at) return out
+    at = up
+  }
+}
+
+/**
+ * The same folder, or one inside the other, compared by identity and never by
+ * spelling: on APFS and NTFS `/Users/x` and `/users/x` are one folder, and
+ * node's realpathSync keeps whichever spelling it was given.
+ */
 function overlaps(a: string, b: string): boolean {
-  return a === b || inside(a, b) || inside(b, a)
+  const ia = identOf(a)
+  const ib = identOf(b)
+  if (!ia || !ib) return false
+  return chainOf(a).includes(ib) || chainOf(b).includes(ia)
+}
+
+/** `child` is `parent` or inside it, by identity. */
+function under(child: string, parent: string): boolean {
+  const ip = identOf(parent)
+  return !!ip && chainOf(child).includes(ip)
+}
+
+/** The nearest folder at or above `path` that exists. */
+function existingAncestor(path: string): string {
+  let at = resolve(path)
+  while (!existsSync(at)) {
+    const up = dirname(at)
+    if (up === at) break
+    at = up
+  }
+  return at
+}
+
+/**
+ * The folders whose skills are never the agent's: the computer folder under
+ * the config dir, the default ~/.claude/skills (every session without a
+ * CLAUDE_CONFIG_DIR loads it, whatever this one's says), and the managed one.
+ */
+function computerRoots(configDir: string, home: string, managedDir: string | undefined): string[] {
+  return [join(configDir, 'skills'), join(home, '.claude', 'skills'), ...(managedDir ? [managedDir] : [])]
+}
+
+/** `.claude` and `.claude/skills` of the agent are real folders, not links, and resolve where they say. */
+function agentParentsSafe(agentDir: string): boolean {
+  const claudeDir = join(agentDir, '.claude')
+  const skillsDir = join(claudeDir, 'skills')
+  for (const parent of [claudeDir, skillsDir]) {
+    try {
+      const st = lstatSync(parent)
+      if (st.isSymbolicLink() || !st.isDirectory()) return false
+    } catch {
+      return false
+    }
+  }
+  const agentReal = realOrNull(agentDir)
+  const skillsReal = realOrNull(skillsDir)
+  return !!agentReal && !!skillsReal && skillsReal === join(agentReal, '.claude', 'skills')
 }
 
 /** The nearest folder at or above `dir` holding .git, or null. */
@@ -320,6 +396,8 @@ type Root = {
   dir: string
   skip?: string
   plugin?: { name: string; id: string }
+  /** Only an agent root whose parents passed the Remove checks has removable rows. */
+  removable?: boolean
 }
 
 function readSkill(root: Root, entry: string, home: string, seen: Set<string>, log: (m: string) => void): SkillItem | null {
@@ -347,6 +425,11 @@ function readSkill(root: Root, entry: string, home: string, seen: Set<string>, l
     mdStat = statSync(mdReal)
     if (!mdStat.isFile()) return null
   } catch {
+    return null
+  }
+  if (mdStat.nlink > 1) {
+    // a hard link can be a file from anywhere: its realpath cannot tell
+    log(`skills: ${displayPath(lexical, home)} skipped, its SKILL.md is a hard link`)
     return null
   }
   seen.add(skillReal)
@@ -386,7 +469,7 @@ function readSkill(root: Root, entry: string, home: string, seen: Set<string>, l
     name: root.plugin ? `${root.plugin.name}:${rawName}` : rawName,
     description,
     provenance: root.plugin ? 'plugin' : 'local',
-    removable: root.scope === 'agent',
+    removable: root.scope === 'agent' && root.removable === true,
     scope: root.scope,
     path: displayPath(lexical, home),
     files: size.files,
@@ -408,8 +491,11 @@ function listRoot(root: Root, home: string, log: (m: string) => void): SkillItem
   }
   const seen = new Set<string>()
   const out: SkillItem[] = []
-  for (const name of names) {
-    if (name.startsWith('.') || name === root.skip) continue
+  const candidates = names.filter((name) => !name.startsWith('.') && name !== root.skip)
+  if (candidates.length > SKILLS_ROOT_MAX) {
+    log(`skills: ${displayPath(root.dir, home)} holds ${candidates.length} entries, only the first ${SKILLS_ROOT_MAX} are read`)
+  }
+  for (const name of candidates.slice(0, SKILLS_ROOT_MAX)) {
     const row = readSkill(root, name, home, seen, log)
     if (row) out.push(row)
   }
@@ -424,7 +510,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function readJson(path: string): unknown {
   try {
-    if (statSync(path).size > INSTALLED_PLUGINS_MAX_BYTES) return null
+    // a FIFO or device would block readFileSync forever: regular files only
+    const st = statSync(path)
+    if (!st.isFile() || st.size > INSTALLED_PLUGINS_MAX_BYTES) return null
     return JSON.parse(readFileSync(path, 'utf8'))
   } catch {
     return null
@@ -476,7 +564,7 @@ export function listSkills(input: ListSkillsInput): SkillsList {
   const omitted: SkillsOmitted[] = []
 
   // Roots no agent or repo root may resolve into: their rows are not the agent's.
-  const foreign = [realOrNull(computerDir), realOrNull(input.managedDir)].filter((r): r is string => !!r)
+  const foreign = computerRoots(input.configDir, home, input.managedDir).filter((r) => existsSync(r))
 
   const agentRoots: Root[] = []
   if (input.agentDir === null) {
@@ -484,18 +572,17 @@ export function listSkills(input: ListSkillsInput): SkillsList {
   } else {
     const agentDir = resolve(input.agentDir)
     const agentSkills = join(agentDir, '.claude', 'skills')
-    const agentReal = realOrNull(agentSkills)
-    if (agentReal && foreign.some((f) => overlaps(agentReal, f))) {
+    const exists = existsSync(agentSkills)
+    if (exists && foreign.some((f) => overlaps(agentSkills, f))) {
       omitted.push({ scope: 'agent', reason: 'agent_is_computer' })
     } else {
-      agentRoots.push({ scope: 'agent', dir: agentSkills })
-      if (agentReal) foreign.push(agentReal)
+      agentRoots.push({ scope: 'agent', dir: agentSkills, removable: agentParentsSafe(agentDir) })
+      if (exists) foreign.push(agentSkills)
     }
     for (const level of repoLevels(agentDir)) {
       const dir = join(level, '.claude', 'skills')
-      const real = realOrNull(dir)
-      if (!real || foreign.some((f) => overlaps(real, f))) continue
-      foreign.push(real)
+      if (!existsSync(dir) || foreign.some((f) => overlaps(dir, f))) continue
+      foreign.push(dir)
       agentRoots.push({ scope: 'repo', dir })
     }
   }
@@ -536,6 +623,9 @@ export type RemoveSkillInput = {
   now: () => number
   payload: Record<string, unknown>
   managedDir?: string
+  /** The move; renameSync unless a test stands in for it. */
+  rename?: (from: string, to: string) => void
+  log?: (msg: string) => void
 }
 
 function refuse(code: SkillRemoveCode, message: string): SkillRemoveAnswer {
@@ -544,10 +634,34 @@ function refuse(code: SkillRemoveCode, message: string): SkillRemoveAnswer {
 
 const PATH_MAX = 1024
 
+/** The frontmatter name of a real skill folder, read under the list's own rules, or null. */
+function listedNameOf(folder: string): string | null {
+  try {
+    const st = lstatSync(folder)
+    if (st.isSymbolicLink() || !st.isDirectory()) return null
+    const md = join(folder, 'SKILL.md')
+    const mdSt = lstatSync(md)
+    if (!mdSt.isFile() || mdSt.nlink > 1) return null
+    const name = clean(parseFrontmatter(readSkillHead(md))?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX)
+    return name || null
+  } catch {
+    return null
+  }
+}
+
 export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   const { payload, home } = input
+  const log = input.log ?? (() => {})
+  const rename = input.rename ?? renameSync
   if (payload.scope !== 'agent') return refuse('scope_refused', 'only skills in this agent folder can be removed here')
-  if (typeof payload.name !== 'string' || !SKILL_NAME_RE.test(payload.name)) {
+  if (
+    typeof payload.name !== 'string' ||
+    !payload.name ||
+    payload.name.length > SKILL_DISPLAY_NAME_MAX ||
+    /[\\/\u0000-\u001f]/.test(payload.name) ||
+    payload.name === '.' ||
+    payload.name === '..'
+  ) {
     return refuse('bad_request', 'the skill name is not a valid skill name')
   }
   const rawPath = payload.path
@@ -575,24 +689,12 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   }
 
   // No symlinked parent: .claude and .claude/skills must be real folders.
-  for (const parent of [claudeDir, agentSkills]) {
-    let st
-    try {
-      st = lstatSync(parent)
-    } catch {
-      return refuse('not_found', 'this agent has no skills folder')
-    }
-    if (st.isSymbolicLink() || !st.isDirectory()) {
-      return refuse('scope_refused', 'the skills folder of this agent is a link, so nothing in it is removed')
-    }
+  if (!existsSync(agentSkills)) return refuse('not_found', 'this agent has no skills folder')
+  if (!agentParentsSafe(agentDir)) {
+    return refuse('scope_refused', 'the skills folder of this agent is a link, so nothing in it is removed')
   }
-  const agentReal = realOrNull(agentDir)
-  const skillsReal = realOrNull(agentSkills)
-  if (!agentReal || !skillsReal || skillsReal !== join(agentReal, '.claude', 'skills')) {
-    return refuse('scope_refused', 'the skills folder of this agent resolves somewhere else')
-  }
-  const foreign = [realOrNull(join(input.configDir, 'skills')), input.managedDir ? realOrNull(input.managedDir) : null]
-  if (foreign.some((f) => f && overlaps(skillsReal, f))) {
+  const foreign = computerRoots(input.configDir, home, input.managedDir)
+  if (foreign.some((f) => overlaps(agentSkills, f))) {
     return refuse('scope_refused', 'the skills folder of this agent is the computer skills folder')
   }
 
@@ -610,25 +712,65 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
       return refuse('not_found', 'that folder is not a skill')
     }
   }
-
-  const trashDir = resolve(input.trashDir)
-  if (overlaps(trashDir, agentSkills) || overlaps(trashDir, skillsReal)) {
-    return refuse('write_failed', 'the trash folder is inside the skills folder')
+  // The name is the folder's, or the name the list showed for it.
+  if (payload.name !== folder && payload.name !== listedNameOf(target)) {
+    return refuse('bad_request', 'the skill name does not match the folder the path names')
   }
+
+  // The trash is outside every skills root, or Claude Code would load the removed skill again.
+  const trashDir = resolve(input.trashDir)
+  const trashAt = existingAncestor(trashDir)
+  const roots = [agentSkills, ...foreign, ...repoLevels(agentDir).map((l) => join(l, '.claude', 'skills'))]
+  if (roots.some((r) => under(trashAt, r))) {
+    return refuse('write_failed', 'the trash folder is inside a skills folder, so nothing was moved')
+  }
+
   const shown = displayPath(target, home)
+  const targetId = `${st.dev}:${st.ino}`
+  const skillsId = identOf(agentSkills, false)
+  let dest: string
   try {
     mkdirSync(trashDir, { recursive: true })
     const stamp = String(input.now()).padStart(15, '0')
-    let dest = join(trashDir, `${stamp}-${folder}`)
+    dest = join(trashDir, `${stamp}-${folder}`)
     for (let n = 2; existsSync(dest) || existsSync(dest + '.json'); n++) dest = join(trashDir, `${stamp}-${n}-${folder}`)
+  } catch (err) {
+    log(`skills: remove of ${shown} failed preparing the trash: ${displayPath(String((err as Error)?.message ?? err), home)}`)
+    return refuse('write_failed', 'the trash folder could not be prepared, so nothing was moved')
+  }
+
+  // Checked again right before the move, and the moved entry checked after it:
+  // a parent swapped for a link in between would otherwise move a computer skill.
+  if (!agentParentsSafe(agentDir) || identOf(agentSkills, false) !== skillsId) {
+    return refuse('scope_refused', 'the skills folder of this agent changed while removing, so nothing was moved')
+  }
+  try {
     // rename moves a link itself, never what it points at.
-    renameSync(target, dest)
+    rename(target, dest)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code
+    log(`skills: remove of ${shown} failed: ${displayPath(String((err as Error)?.message ?? err), home)}`)
+    if (code === 'EXDEV') {
+      return refuse('write_failed', 'the trash is on another drive than this agent folder, so the skill was not moved')
+    }
+    return refuse('write_failed', 'the skill could not be moved to the trash')
+  }
+  if (identOf(dest, false) !== targetId || !agentParentsSafe(agentDir) || identOf(agentSkills, false) !== skillsId) {
+    try {
+      // put back with the real move, wherever the path now leads: it came from there
+      renameSync(dest, target)
+    } catch (err) {
+      log(`skills: remove of ${shown} moved the wrong entry and could not put it back: ${String((err as Error)?.message ?? err)}`)
+    }
+    return refuse('scope_refused', 'the skills folder of this agent changed while removing, so it was put back')
+  }
+  try {
     writeFileSync(
       dest + '.json',
       JSON.stringify({ name: folder, scope: 'agent', path: shown, removedAt: new Date(input.now()).toISOString() }, null, 1),
     )
-  } catch (err) {
-    return refuse('write_failed', `the skill could not be moved to the trash: ${err instanceof Error ? err.message : String(err)}`)
+  } catch {
+    // the skill is already in the trash; the note beside it is only a label
   }
   return { ok: true, removed: { name: folder, scope: 'agent', path: shown } }
 }

@@ -150,7 +150,7 @@ export class SkillsRpcHandler {
           ? failure('write_failed', MSG.writeFailed, MSG.writeFailed)
           : failure('read_failed', MSG.readFailed, MSG.readFailed)
     }
-    this.seen.set(frame.rpcId, { state: 'done', result })
+    this.remember(frame.rpcId, { state: 'done', result })
     await this.post(frame.rpcId, result)
   }
 
@@ -177,10 +177,18 @@ export class SkillsRpcHandler {
   private remember(rpcId: string, state: Seen): void {
     this.seen.delete(rpcId)
     this.seen.set(rpcId, state)
+    // Answered frames go first: evicting one still running would let its re emit run it twice.
     while (this.seen.size > SKILLS_RPC_SEEN_MAX) {
-      const oldest = this.seen.keys().next().value
-      if (oldest === undefined) break
-      this.seen.delete(oldest)
+      let victim: string | undefined
+      for (const [id, seen] of this.seen) {
+        if (seen.state === 'done') {
+          victim = id
+          break
+        }
+      }
+      victim ??= this.seen.keys().next().value
+      if (victim === undefined) break
+      this.seen.delete(victim)
     }
   }
 

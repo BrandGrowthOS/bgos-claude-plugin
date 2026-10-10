@@ -14,13 +14,16 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -30,6 +33,7 @@ import { join } from 'node:path'
 
 import {
   FRONTMATTER_READ_MAX,
+  SKILLS_ROOT_MAX,
   SKILL_NAME_RE,
   listSkills,
   managedSkillsDir,
@@ -283,17 +287,23 @@ test('the managed folder per platform', () => {
 
 // ── Remove ─────────────────────────────────────────────────────────────────
 
-function remove(f: ReturnType<typeof fixture>, payload: Record<string, unknown>, agentDir: string | null = f.agent) {
-  const trashDir = join(f.home, 'state', 'skills-trash')
+function remove(
+  f: ReturnType<typeof fixture>,
+  payload: Record<string, unknown>,
+  agentDir: string | null = f.agent,
+  extra: { trashDir?: string; configDir?: string; rename?: (from: string, to: string) => void } = {},
+) {
+  const trashDir = extra.trashDir ?? join(f.home, 'state', 'skills-trash')
   return {
     trashDir,
     answer: removeAgentSkill({
       agentDir,
-      configDir: f.config,
+      configDir: extra.configDir ?? f.config,
       home: f.home,
       trashDir,
       now: () => 1_700_000_000_000,
       payload,
+      ...(extra.rename ? { rename: extra.rename } : {}),
     }),
   }
 }
@@ -330,6 +340,12 @@ test('remove refuses any scope but agent, even with a path that exists', () => {
     assert.equal((answer as any).code, 'scope_refused', String(scope))
   }
   assert.ok(existsSync(join(f.config, 'skills', 'computer-skill')))
+  // the scope alone refuses: a valid agent path under another scope is not removed
+  for (const scope of ['computer', 'synced', 'repo']) {
+    const { answer } = remove(f, { name: 'agent-skill', scope, path: '~/repo/agent/.claude/skills/agent-skill' })
+    assert.equal((answer as any).code, 'scope_refused', scope)
+  }
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
 })
 
 test('remove refuses a path with .. that climbs out of the agent scope', () => {
@@ -371,6 +387,14 @@ test('remove refuses when the skills folder of the agent is a symlinked parent',
   const { answer } = remove(f, { name: 'computer-skill', scope: 'agent', path: '~/agent2/.claude/skills/computer-skill' }, agent2)
   assert.equal((answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.config, 'skills', 'computer-skill')))
+  // and a link to a folder that is not the computer's: the link alone refuses
+  skill(join(f.home, 'other-skills', 'victim'), 'description: Not this agent own.')
+  const agent4 = join(f.home, 'agent4')
+  mkdirSync(join(agent4, '.claude'), { recursive: true })
+  symlinkSync(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
+  const other = remove(f, { name: 'victim', scope: 'agent', path: '~/agent4/.claude/skills/victim' }, agent4)
+  assert.equal((other.answer as any).code, 'scope_refused')
+  assert.ok(existsSync(join(f.home, 'other-skills', 'victim', 'SKILL.md')))
 })
 
 test('remove refuses when .claude itself is a symlinked parent', () => {
@@ -381,6 +405,13 @@ test('remove refuses when .claude itself is a symlinked parent', () => {
   const { answer } = remove(f, { name: 'computer-skill', scope: 'agent', path: '~/agent3/.claude/skills/computer-skill' }, agent3)
   assert.equal((answer as any).code, 'scope_refused')
   assert.ok(existsSync(join(f.config, 'skills', 'computer-skill')))
+  skill(join(f.home, 'other-claude', 'skills', 'victim'), 'description: Not this agent own.')
+  const agent5 = join(f.home, 'agent5')
+  mkdirSync(agent5, { recursive: true })
+  symlinkSync(join(f.home, 'other-claude'), join(agent5, '.claude'))
+  const other = remove(f, { name: 'victim', scope: 'agent', path: '~/agent5/.claude/skills/victim' }, agent5)
+  assert.equal((other.answer as any).code, 'scope_refused')
+  assert.ok(existsSync(join(f.home, 'other-claude', 'skills', 'victim', 'SKILL.md')))
 })
 
 test('remove refuses an agent folder whose skills are the computer skills', () => {
@@ -419,6 +450,156 @@ test('remove: a bad name, a missing skill, a file, and no agent folder', () => {
     'unavailable',
   )
   assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+})
+
+// ── Review fixes ───────────────────────────────────────────────────────────
+
+test('~/.claude/skills is the computer folder even when CLAUDE_CONFIG_DIR points elsewhere', () => {
+  const f = fixture()
+  // agent launched in home, config dir moved: ~/.claude/skills is still every session's default
+  const { skills, omitted } = listSkills({ agentDir: f.home, configDir: f.config, home: f.home, managedDir: f.managed })
+  assert.ok(!skills.some((s) => s.scope === 'agent'), JSON.stringify(skills.filter((s) => s.scope === 'agent')))
+  assert.deepEqual(omitted, [{ scope: 'agent', reason: 'agent_is_computer' }])
+  const { answer } = remove(f, { name: 'not-in-config', scope: 'agent', path: '~/.claude/skills/not-in-config' }, f.home)
+  assert.equal((answer as any).code, 'scope_refused')
+  assert.ok(existsSync(join(f.home, '.claude', 'skills', 'not-in-config')))
+})
+
+/** Another spelling of the same folder: the last segment of `dir` in upper case. */
+function upperLast(dir: string): string {
+  const parts = dir.split('/')
+  parts[parts.length - 1] = parts[parts.length - 1]!.toUpperCase()
+  return parts.join('/')
+}
+
+test('the same folder spelled in another case or in NFD is still the computer folder', (t) => {
+  const f = fixture()
+  if (!existsSync(upperLast(f.home)) || upperLast(f.home) === f.home) {
+    t.skip('case sensitive file system')
+    return
+  }
+  const spellings = [upperLast(f.home)]
+  const nfc = join(f.home, 'café')
+  skill(join(nfc, '.claude', 'skills', 'cafe-skill'), 'description: In a folder with an accent.')
+  if (existsSync(join(f.home, 'café'))) spellings.push(join(f.home, 'café'))
+  for (const spelled of spellings) {
+    const real = spelled === upperLast(f.home) ? f.home : nfc
+    const configDir = join(spelled, '.claude')
+    const { skills, omitted } = listSkills({ agentDir: real, configDir, home: f.home, managedDir: f.managed })
+    assert.ok(!skills.some((s) => s.scope === 'agent' && s.removable), spelled)
+    assert.deepEqual(omitted, [{ scope: 'agent', reason: 'agent_is_computer' }], spelled)
+    const name = real === nfc ? 'cafe-skill' : 'not-in-config'
+    const shown = real === nfc ? '~/café/.claude/skills/cafe-skill' : '~/.claude/skills/not-in-config'
+    const { answer } = remove(f, { name, scope: 'agent', path: shown }, real, { configDir })
+    assert.equal((answer as any).code, 'scope_refused', spelled)
+    assert.ok(existsSync(join(real, '.claude', 'skills', name)), spelled)
+  }
+})
+
+test('a FIFO in the config dir never blocks the list', () => {
+  const f = fixture()
+  rmSync(join(f.config, 'plugins', 'installed_plugins.json'))
+  const made = spawnSync('mkfifo', [join(f.config, 'plugins', 'installed_plugins.json'), join(f.config, 'settings.json')])
+  assert.equal(made.status, 0)
+  const script = `import { listSkills } from ${JSON.stringify(new URL('../lib/skills-inventory.ts', import.meta.url).pathname)}
+const r = listSkills(${JSON.stringify({ agentDir: f.agent, configDir: f.config, home: f.home, managedDir: f.managed })})
+console.log(r.skills.length)`
+  const run = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { timeout: 20_000, encoding: 'utf8' })
+  assert.equal(run.signal, null, 'the list hung on a FIFO')
+  assert.equal(run.status, 0, run.stderr)
+  assert.ok(Number(run.stdout.trim()) > 0)
+})
+
+test('a failed remove answers a fixed message with no absolute path in it', () => {
+  const f = fixture()
+  writeFileSync(join(f.home, 'notadir'), 'x')
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' }, f.agent, {
+    trashDir: join(f.home, 'notadir', 'trash'),
+  })
+  assert.equal((answer as any).code, 'write_failed')
+  assert.ok(!(answer as any).message.includes(f.home), (answer as any).message)
+  assert.ok(!(answer as any).message.includes('/'), (answer as any).message)
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+})
+
+test('a trash on another drive refuses with write_failed and moves nothing', () => {
+  const f = fixture()
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' }, f.agent, {
+    rename: () => {
+      throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' })
+    },
+  })
+  assert.equal((answer as any).code, 'write_failed')
+  assert.match((answer as any).message, /another drive/)
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+})
+
+test('a parent swapped for a link between the checks and the move is caught and undone', () => {
+  const f = fixture()
+  skill(join(f.config, 'skills', 'agent-skill'), 'description: The computer copy with the same name.')
+  const skillsDir = join(f.agent, '.claude', 'skills')
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' }, f.agent, {
+    rename: (from, to) => {
+      // the swap: the agent's skills folder becomes a link to the computer's
+      renameSync(skillsDir, skillsDir + '-moved')
+      symlinkSync(join(f.config, 'skills'), skillsDir)
+      renameSync(from, to)
+    },
+  })
+  assert.equal((answer as any).code, 'scope_refused', JSON.stringify(answer))
+  assert.ok(existsSync(join(f.config, 'skills', 'agent-skill', 'SKILL.md')), 'the computer skill is back where it was')
+})
+
+test('a trash folder inside any skills root is refused', () => {
+  const f = fixture()
+  for (const trashDir of [
+    join(f.config, 'skills', 'trash'),
+    join(f.home, '.claude', 'skills', 'trash'),
+    join(f.repo, '.claude', 'skills', 'trash'),
+  ]) {
+    const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' }, f.agent, { trashDir })
+    assert.equal((answer as any).code, 'write_failed', trashDir)
+    assert.ok(!existsSync(trashDir), trashDir)
+  }
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+})
+
+test('the list never marks a row removable that Remove would refuse (a linked skills folder)', () => {
+  const f = fixture()
+  skill(join(f.home, 'other-skills', 'victim'), 'description: Not this agent own.')
+  const agent4 = join(f.home, 'agent4')
+  mkdirSync(join(agent4, '.claude'), { recursive: true })
+  symlinkSync(join(f.home, 'other-skills'), join(agent4, '.claude', 'skills'))
+  const { skills } = listSkills({ agentDir: agent4, configDir: f.config, home: f.home, managedDir: f.managed })
+  const row = byName(skills, 'victim', 'agent')!
+  assert.ok(row)
+  assert.equal(row.removable, false)
+})
+
+test('a hard linked SKILL.md is never read', () => {
+  const f = fixture()
+  const dir = join(f.agent, '.claude', 'skills', 'hardlinked')
+  mkdirSync(dir, { recursive: true })
+  linkSync(join(f.home, 'secret.txt'), join(dir, 'SKILL.md'))
+  const { skills } = list(f)
+  assert.equal(byName(skills, 'hardlinked'), undefined)
+  assert.ok(!JSON.stringify(skills).includes(LEAK))
+})
+
+test('remove needs the name of the folder the path names, or its listed name', () => {
+  const f = fixture()
+  const wrong = remove(f, { name: 'zzz', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' })
+  assert.equal((wrong.answer as any).code, 'bad_request')
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+  skill(join(f.agent, '.claude', 'skills', 'folder-x'), 'name: shown-x\ndescription: listed as shown-x')
+  assert.equal(remove(f, { name: 'shown-x', scope: 'agent', path: '~/repo/agent/.claude/skills/folder-x' }).answer.ok, true)
+})
+
+test('a root lists at most SKILLS_ROOT_MAX skills', () => {
+  const f = fixture()
+  for (let i = 0; i < SKILLS_ROOT_MAX + 5; i++) skill(join(f.config, 'skills', `bulk-${String(i).padStart(4, '0')}`), 'description: bulk')
+  const { skills } = list(f)
+  assert.ok(skills.filter((s) => s.scope === 'computer').length <= SKILLS_ROOT_MAX)
 })
 
 test.after(() => {

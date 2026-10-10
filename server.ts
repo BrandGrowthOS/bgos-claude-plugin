@@ -11959,6 +11959,7 @@ const skillsRpc = new SkillsRpcHandler({
         ),
         now: () => Date.now(),
         payload,
+        log,
       }),
   },
   assistantId: () => String(ASSISTANT_ID ?? ''),
