@@ -416,7 +416,14 @@ test('runWatcher: an idle cycle posts the heartbeat (exact shape) then long-poll
       machineId: MACHINE_ID,
       role: 'watcher',
       agents: ['7', '912'],
-      watcherHealth: { status: 'ok', bootsLastHour: 0, keepAlive: { enabled: false, agents: [] } },
+      watcherHealth: {
+        status: 'ok',
+        bootsLastHour: 0,
+        keepAlive: { enabled: false, agents: [] },
+        // board row 0c659c85: the bundle against the installed plugin (this fixture's root holds no
+        // package.json, so no installed version; its fingerprint is the manifest's, so not stale).
+        bundle: { bundleVersion: '0.38.3', installedVersion: null, stale: false },
+      },
     },
   })
   const state = JSON.parse(fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!)
@@ -1123,6 +1130,7 @@ test('runWatcher: the heartbeat carries the recorded boots and the last fatal (d
     bootsLastHour: 1,
     lastFatal: { at: new Date(T0 - 6 * 60_000).toISOString(), message: 'Cannot find module ~/x.mjs' },
     keepAlive: { enabled: false, agents: [] },
+    bundle: { bundleVersion: '0.38.3', installedVersion: null, stale: false },
   })
 })
 
