@@ -74,6 +74,9 @@ const PAIRING_FRAMES = [
   // Changes (P7 stage 3): the owner's Changes panel reads this agent's
   // uncommitted changes. The same race: only the lock holder answers.
   'changes_rpc',
+  // Skills (skills view row 3): the owner's Abilities screen lists this
+  // agent's skills and removes one. The same race: only the lock holder answers.
+  'skills_rpc',
 ]
 
 // Transport bookkeeping, not work done on the pairing's behalf: a passive

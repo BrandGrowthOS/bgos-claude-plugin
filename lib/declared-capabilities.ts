@@ -217,6 +217,7 @@ export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
   'boards_runs',
   SESSIONS_LIBRARY,
   'changes_rpc',
+  'skills_list',
 ])
 
 /**
