@@ -48,7 +48,7 @@
 
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -61,12 +61,13 @@ import {
   incumbentBlocks,
   relaunchNeedsGateAutoAccept,
   resolveChannelSpec,
+  configuredAssistantId,
   selfAndAncestorPids,
 } from './hoai-core.mjs'
 import { alternateSlashSpelling, claudeConfigFilePath } from '../lib/claude-preseed.mjs'
 import { observeMarketplaceInstall } from '../lib/plugin-cli.mjs'
+import { mcpEnvValues, MCP_CONFIG_FILE_NAME } from '../lib/service-supervision.mjs'
 import {
-  resolveReadCredentialsPath,
   normalizeApiBase,
   FOLDER_PIN_FILE_NAME,
   launchFolderLiveSafe,
@@ -318,7 +319,8 @@ function joinPreservingStyle(dir, name) {
  *   gate?: { needed: boolean, method?: string, helper: 'expect' | 'win32-console', expectPath?: string },
  *   incumbent?: { cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string },
  *   credentials: { path?: string, exists: boolean, assistantId?: string | number, expectedAssistantId?: string,
- *                  homeDir?: string, homeSource?: string, workdir?: string, workdirRefused?: boolean },
+ *                  homeDir?: string, homeSource?: string, workdir?: string, workdirRefused?: boolean,
+ *                  identity?: string, conflict?: string, refusal?: { detail: string, fix: string } },
  *   handshake: { ok: boolean, detail?: string, command?: string } | null,
  *   mcpList: { ok: boolean, state?: string, raw?: string } | null,
  *   backend: { ok: boolean, status?: number, url: string, error?: string },
@@ -602,12 +604,17 @@ export function buildDoctorRows(probes) {
   const creds = p.credentials ?? { exists: false }
   const expected = String(creds.expectedAssistantId ?? '').trim()
   const actual = String(creds.assistantId ?? '').trim()
-  if (!creds.exists) {
+  // Where the identity came from (resolveDoctorIdentity), when the probe knows.
+  const identityNote = String(creds.identity ?? '').trim() ? `; identity: ${String(creds.identity).trim()}` : ''
+  if (creds.refusal) {
+    // The daemon would refuse to start here, so there is no file to look for.
+    row('credentials', 'Pairing credentials', false, String(creds.refusal.detail), String(creds.refusal.fix))
+  } else if (!creds.exists) {
     row(
       'credentials',
       'Pairing credentials',
       false,
-      `no credentials file at ${creds.path ?? 'the default location'}`,
+      `no credentials file at ${creds.path ?? 'the default location'}${identityNote}`,
       'hoai pair <code from the HOAI app>',
     )
   } else if (expected && actual !== expected) {
@@ -615,15 +622,25 @@ export function buildDoctorRows(probes) {
       'credentials',
       'Pairing credentials',
       false,
-      `${creds.path} holds assistant ${actual || 'none'}, expected ${expected}`,
+      `${creds.path} holds assistant ${actual || 'none'}, expected ${expected}${identityNote}`,
       `hoai pair <code from the HOAI app> --assistant-id ${expected}`,
+    )
+  } else if (creds.conflict) {
+    // The daemon would start, but hoai will not launch a folder that names two
+    // agents, so the agent never gets as far as the daemon.
+    row(
+      'credentials',
+      'Pairing credentials',
+      false,
+      `${creds.path}${actual ? ` (assistant ${actual})` : ''}${identityNote}; ${String(creds.conflict)}`,
+      'make the .bgos-agent-id pin and the BGOS_ASSISTANT_ID in .mcp.json name the same agent (hoai will not launch the folder until they do), then run hoai doctor again',
     )
   } else {
     row(
       'credentials',
       'Pairing credentials',
       true,
-      `${creds.path}${actual ? ` (assistant ${actual})` : ''}; ${describeHome(creds)}`,
+      `${creds.path}${actual ? ` (assistant ${actual})` : ''}${identityNote}; ${describeHome(creds)}`,
     )
   }
 
@@ -1457,6 +1474,345 @@ export function probeIncumbent({
   return { cwd: target, hit, blocks: hit ? incumbentBlocks(hit) === true : false }
 }
 
+// -- Identity: which agent is this folder, found the way the daemon finds it ------
+//
+// 0.65.2. `hoai doctor` used to start its handshake child with whatever id it
+// could read from its own flag, its own environment or the folder pin, and to
+// look for the credentials file under that id or else the single
+// credentials.json. kc-server runs seven agents under systemd, each pinned by
+// BGOS_ASSISTANT_ID (or BGOS_CREDENTIALS_PATH) in the env block of its own
+// .mcp.json, which Claude Code hands to the daemon it starts and the doctor
+// never reads. So the doctor's child had no pin, the daemon answered "REFUSING
+// to start: this host has 7 paired agents ... no identity pin", and the
+// credentials row went looking for a credentials.json that does not exist: a
+// healthy agent read as broken. The same blind spot made a host with ONE
+// credentials-<id>.json and no credentials.json read as unpaired.
+//
+// The rule is the daemon's (lib/agent-credentials.ts resolveCredentialsSelection,
+// called from server.ts with the env Claude Code gave it and the folder it was
+// launched from), mirrored here because a .mjs never imports a .ts. The env is
+// the shell's under the agent's .mcp.json env block, the block winning, as it
+// does for the daemon. test/bgos-doctor.identity-resolver.test.ts pins the
+// mirror to the real resolver over every combination of signals.
+
+/** The routes the daemon treats as an explicit pin and never refuses by home
+ *  (lib/agent-credentials.ts EXPLICIT_PIN_ROUTES). */
+const EXPLICIT_VIA = new Set(['env-path', 'env-assistant', 'folder-pin'])
+
+function readTextOrNull(path) {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function listDirOrEmpty(path) {
+  try {
+    return readdirSync(path)
+  } catch {
+    return []
+  }
+}
+
+/** The trimmed assistant id, the unsubstituted placeholder ignored: the rule
+ *  the daemon applies to BGOS_ASSISTANT_ID (hoai-core's copy of it). */
+function configuredId(value) {
+  return configuredAssistantId({ BGOS_ASSISTANT_ID: value })
+}
+
+/**
+ * ${NAME} and ${NAME:-fallback} in an .mcp.json env value, expanded from the
+ * shell the way Claude Code expands them before it starts the daemon. A name
+ * that is neither set nor given a fallback is returned in `missing`, and the
+ * reference is left as written, so a caller never uses a literal ${HOME}.
+ */
+function expandMcpValue(value, env) {
+  const missing = []
+  const text = String(value).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g, (whole, name, fallback) => {
+    const set = env?.[name]
+    if (set != null && String(set) !== '') return String(set)
+    if (fallback != null) return fallback
+    missing.push(name)
+    return whole
+  })
+  return { text, missing }
+}
+
+/**
+ * The distinct, expanded values an .mcp.json gives `key`, an empty value
+ * included (a block that sets the key to nothing still overrides the shell).
+ * `expanded` lists the ones that changed by expansion, with the template as
+ * written, so a caller can refuse a value that came out of the shell without
+ * ever printing it.
+ */
+function mcpBlockValues(raw, key, env) {
+  const values = []
+  const missing = []
+  const expanded = []
+  for (const written of mcpEnvValues(raw, key)) {
+    const result = expandMcpValue(written, env)
+    missing.push(...result.missing)
+    const text = result.text.trim()
+    if (result.missing.length > 0) continue
+    if (text !== written) expanded.push({ written, text })
+    if (!values.includes(text)) values.push(text)
+  }
+  return { values, missing: [...new Set(missing)], expanded }
+}
+
+/**
+ * The daemon's own selection over already-merged signals (mirror of
+ * resolveCredentialsSelection): a credentials path wins outright; else
+ * credentials-<id>.json for the configured id when it exists (a missing file
+ * falls back to the shared one, never a refusal); else the folder pin when its
+ * file exists (a stale pin is ignored); else the sole per-assistant file when
+ * there is no shared one; else several per-assistant files refuse; else the
+ * shared credentials.json.
+ */
+function selectCredentials({ path, id, pin, agentDir, defaultPath, exists, listDir }) {
+  if (path) return { via: 'env-path', path }
+  if (id) {
+    const perAssistant = join(agentDir, `credentials-${id}.json`)
+    if (exists(perAssistant)) return { via: 'env-assistant', path: perAssistant, id }
+    return { via: 'legacy', path: defaultPath, id, fellBackFrom: perAssistant }
+  }
+  let stalePin = ''
+  if (pin) {
+    const pinned = join(agentDir, `credentials-${pin}.json`)
+    if (exists(pinned)) return { via: 'folder-pin', path: pinned, id: pin }
+    stalePin = pin
+  }
+  const ids = listDir(agentDir)
+    .map((name) => /^credentials-(\d+)\.json$/.exec(name)?.[1])
+    .filter(Boolean)
+    .sort((a, b) => Number(a) - Number(b))
+  const hasLegacy = exists(defaultPath)
+  if (ids.length === 1 && !hasLegacy) {
+    return { via: 'sole-per-assistant', path: join(agentDir, `credentials-${ids[0]}.json`), id: ids[0], stalePin }
+  }
+  if (ids.length > 1) return { via: 'refuse', candidateIds: ids, stalePin }
+  return { via: 'legacy', path: defaultPath, stalePin }
+}
+
+/**
+ * @typedef {{
+ *   via: 'env-path' | 'env-assistant' | 'folder-pin' | 'sole-per-assistant' | 'legacy' | 'refuse' | 'unreadable',
+ *   sessionVia: string,
+ *   path: string,
+ *   assistantId: string,
+ *   expectedAssistantId: string,
+ *   env: Record<string, string>,
+ *   source: string,
+ *   candidateIds: string[],
+ *   problem: string,
+ *   fix: string,
+ *   conflict: string,
+ * }} DoctorIdentity
+ */
+
+/**
+ * Which agent is the folder the doctor stands in, found the way the daemon
+ * finds it, and what to hand the handshake child so it finds the same one.
+ * Pure but for the three file reads, which are injectable. Never returns
+ * anything read from the .mcp.json but the two values named below.
+ *
+ * `--assistant-id` (assistantIdFlag) is the operator's own expectation: it is
+ * handed to the child as BGOS_ASSISTANT_ID and the file is checked against it,
+ * but it is not how a session started in the folder resolves (`sessionVia`).
+ *
+ * @param {{ env?: Record<string, string | undefined>, home?: string, folder?: string,
+ *           assistantIdFlag?: string, readFile?: (path: string) => string | null,
+ *           exists?: (path: string) => boolean, listDir?: (path: string) => string[] }} [opts]
+ * @returns {DoctorIdentity}
+ */
+export function resolveDoctorIdentity({
+  env = process.env,
+  home = homedir(),
+  folder = '',
+  assistantIdFlag = '',
+  readFile = readTextOrNull,
+  exists = existsSync,
+  listDir = listDirOrEmpty,
+} = {}) {
+  const dir = String(folder ?? '').trim()
+  const agentDir = join(home, '.bgos-agent')
+  const defaultPath = join(agentDir, 'credentials.json')
+  const mcpFile = dir ? join(dir, MCP_CONFIG_FILE_NAME) : ''
+  const pinFile = dir ? join(dir, FOLDER_PIN_FILE_NAME) : ''
+  const ref = (name) => '$' + '{' + name + '}'
+  const unreadable = (problem) => ({
+    via: 'unreadable',
+    sessionVia: 'unreadable',
+    path: '',
+    assistantId: '',
+    expectedAssistantId: '',
+    env: {},
+    source: '',
+    candidateIds: [],
+    problem,
+    fix: `fix the env block of ${mcpFile}, then run hoai doctor again`,
+    conflict: '',
+  })
+
+  // The env block of the folder's .mcp.json: what Claude Code adds to the
+  // daemon's environment, and the one place the plugin's own writers put a pin.
+  const raw = mcpFile ? readFile(mcpFile) : null
+  let blockId = ''
+  let blockPath = ''
+  let blockSetsId = false
+  let blockSetsPath = false
+  if (raw != null) {
+    const ids = mcpBlockValues(raw, 'BGOS_ASSISTANT_ID', env)
+    const paths = mcpBlockValues(raw, 'BGOS_CREDENTIALS_PATH', env)
+    const missing = [...ids.missing, ...paths.missing]
+    if (missing.length > 0) {
+      return unreadable(
+        `${mcpFile} refers to ${missing.map(ref).join(', ')}, which this shell does not set, so the doctor cannot tell ` +
+          `what the daemon is handed; run hoai doctor where ${missing.length > 1 ? 'they are' : 'it is'} set`,
+      )
+    }
+    // An id that came out of the shell must be a number (as a pin file's is), and
+    // is never printed: a block must not turn the doctor into a printer of env vars.
+    const odd = ids.expanded.find((e) => e.text !== '' && !/^\d+$/.test(e.text))
+    if (odd) {
+      return unreadable(
+        `${mcpFile} sets BGOS_ASSISTANT_ID from ${odd.written}, which does not expand to a numeric assistant id, so the doctor will not use it`,
+      )
+    }
+    const named = [...new Set(ids.values.map(configuredId).filter(Boolean))]
+    if (named.length > 1) {
+      return unreadable(
+        `${mcpFile} names two different assistants (${named.join(', ')}) in its env blocks, so the doctor will not guess which is this folder`,
+      )
+    }
+    const files = paths.values.filter(Boolean)
+    if (files.length > 1) {
+      return unreadable(
+        `${mcpFile} sets BGOS_CREDENTIALS_PATH to two different files (${files.join(', ')}), so the doctor will not guess which one the daemon reads`,
+      )
+    }
+    // Present is present: a block that sets either key to nothing, or the id to
+    // the unsubstituted placeholder, still overrides the shell's value, and the
+    // daemon is handed an empty one.
+    blockSetsId = ids.values.length > 0
+    blockSetsPath = paths.values.length > 0
+    blockId = named[0] ?? ''
+    blockPath = files[0] ?? ''
+  }
+
+  const shellId = configuredId(env?.BGOS_ASSISTANT_ID)
+  const shellPath = String(env?.BGOS_CREDENTIALS_PATH ?? '').trim()
+  const sessionId = blockSetsId ? blockId : shellId
+  const sessionPath = blockSetsPath ? blockPath : shellPath
+  const pinText = pinFile ? String(readFile(pinFile) ?? '').trim() : ''
+  const pin = /^\d+$/.test(pinText) ? pinText : ''
+  const select = (id) => selectCredentials({ path: sessionPath, id, pin, agentDir, defaultPath, exists, listDir })
+
+  const flag = String(assistantIdFlag ?? '').trim()
+  const session = select(sessionId)
+  const chosen = flag ? select(flag) : session
+
+  // What the child is handed: only what Claude Code would add (the block) and
+  // the operator's flag. The shell's own env is already the child's, and a
+  // folder pin is found by the daemon from the folder it is launched in.
+  const childEnv = {}
+  if (flag) childEnv.BGOS_ASSISTANT_ID = flag
+  else if (blockSetsId) childEnv.BGOS_ASSISTANT_ID = blockId
+  if (blockSetsPath) childEnv.BGOS_CREDENTIALS_PATH = blockPath
+
+  const expectedAssistantId = flag || sessionId || (chosen.via === 'folder-pin' ? chosen.id : '')
+  const assistantId = expectedAssistantId || (chosen.via === 'sole-per-assistant' ? chosen.id : '')
+  const base = {
+    via: chosen.via,
+    sessionVia: session.via,
+    path: chosen.path ?? '',
+    assistantId,
+    expectedAssistantId,
+    env: childEnv,
+    source: '',
+    candidateIds: chosen.candidateIds ?? [],
+    problem: '',
+    fix: '',
+    conflict: '',
+  }
+
+  const notes = []
+  if (blockSetsId && !blockId && shellId && !flag) {
+    notes.push(
+      `the env block of ${mcpFile} sets BGOS_ASSISTANT_ID to nothing or to the unsubstituted placeholder, which overrides the shell's ` +
+        `BGOS_ASSISTANT_ID=${shellId}, so the daemon is handed no id`,
+    )
+  }
+  if (chosen.stalePin) {
+    notes.push(`the ${FOLDER_PIN_FILE_NAME} pin here names ${chosen.stalePin}, but credentials-${chosen.stalePin}.json does not exist, so the daemon ignores it`)
+  }
+  if (chosen.via === 'refuse') {
+    return {
+      ...base,
+      problem:
+        `this host has ${chosen.candidateIds.length} paired agents (ids: ${chosen.candidateIds.join(', ')}) in ${agentDir} ` +
+        `and nothing names which one ${dir ? 'this folder' : 'the doctor'} is (no BGOS_ASSISTANT_ID or BGOS_CREDENTIALS_PATH ` +
+        `in the environment or in ${MCP_CONFIG_FILE_NAME}, no usable ${FOLDER_PIN_FILE_NAME} in the folder), so the daemon ` +
+        `REFUSES to start here` +
+        (notes.length > 0 ? `; ${notes.join('; ')}` : '') +
+        `. The doctor looked at its own environment, ${MCP_CONFIG_FILE_NAME} and ${FOLDER_PIN_FILE_NAME} only: a pin set anywhere else ` +
+        `(a systemd Environment= line, the supervisor's HOAI_SUPERVISED_ASSISTANT_ID) is not visible to it, so run hoai doctor in the agent's own environment`,
+      fix:
+        `write the id of the agent this folder is meant to be into ${FOLDER_PIN_FILE_NAME} here (echo <id> > ${FOLDER_PIN_FILE_NAME}), ` +
+        `or set BGOS_ASSISTANT_ID=<id> in the env block of ${MCP_CONFIG_FILE_NAME}, then run hoai doctor again`,
+    }
+  }
+
+  let source
+  if (chosen.via === 'env-path') {
+    source = blockPath
+      ? `BGOS_CREDENTIALS_PATH in the env block of ${mcpFile}`
+      : 'BGOS_CREDENTIALS_PATH in the environment the doctor runs in'
+  } else if (chosen.via === 'env-assistant' || (chosen.via === 'legacy' && chosen.id)) {
+    const where = flag
+      ? '--assistant-id'
+      : blockId
+        ? `the env block of ${mcpFile}`
+        : 'the environment the doctor runs in'
+    source = flag ? `--assistant-id ${chosen.id}` : `BGOS_ASSISTANT_ID=${chosen.id} in ${where}`
+    if (chosen.via === 'legacy') {
+      notes.push(`${chosen.fellBackFrom} does not exist, so the daemon falls back to the shared credentials.json`)
+    }
+  } else if (chosen.via === 'folder-pin') {
+    source = `the ${FOLDER_PIN_FILE_NAME} pin in ${dir} (${chosen.id})`
+  } else if (chosen.via === 'sole-per-assistant') {
+    source = 'the only paired agent on this host, found by elimination (no env pin, no folder pin)'
+  } else {
+    source = 'the shared credentials.json, found by elimination (no env pin, no folder pin)'
+  }
+  if (blockId && shellId && shellId !== blockId && !flag) {
+    notes.push(`the shell's BGOS_ASSISTANT_ID=${shellId} is overridden by the ${MCP_CONFIG_FILE_NAME} block, as it is for the daemon`)
+  }
+  // hoai refuses a folder whose pin and .mcp.json name two agents (hoai-core
+  // buildRunPlan, identity-conflict) while the daemon would answer as the env
+  // pin, so the doctor reports the conflict and still resolves as the daemon.
+  const conflict =
+    pin && blockId && pin !== blockId
+      ? `the ${FOLDER_PIN_FILE_NAME} pin here names ${pin} and the env block of ${mcpFile} names ${blockId}: hoai will not launch a folder that declares two agents ` +
+        `(the daemon would answer as ${blockId}, the env pin outranks the folder pin)`
+      : ''
+  if (!conflict && pin && (chosen.via === 'env-path' || chosen.via === 'env-assistant') && pin !== chosen.id) {
+    notes.push(`the ${FOLDER_PIN_FILE_NAME} pin here names ${pin} and is ignored: an env pin outranks it`)
+  }
+  // With --assistant-id the doctor checks the operator's expectation. Say what a
+  // session started here WITHOUT the flag would do, when that is not that agent.
+  if (flag && session.via === 'refuse') {
+    notes.push(
+      `without --assistant-id a session started in ${dir || 'the doctor\'s folder'} would be refused: this host has ` +
+        `${session.candidateIds.length} paired agents and nothing names which one this folder is`,
+    )
+  } else if (flag && session.id && session.id !== flag) {
+    notes.push(`without --assistant-id a session started here runs as ${session.id}, not ${flag}`)
+  }
+  return { ...base, conflict, source: notes.length > 0 ? `${source}; ${notes.join('; ')}` : source }
+}
+
 /**
  * The home part of the credentials row: the agent's home folder and where it
  * came from (lib/agent-credentials.ts isHomeConfirmed is the rule), plus a
@@ -1497,23 +1853,43 @@ function normalizeHomeForCompare(dir, platform = process.platform) {
 /**
  * The credentials file the daemon would read for this identity, and whether
  * it matches the expected assistant. Path, assistant id, and the home folder
- * with its source; never the token. With `workdir`, also whether a session
- * started there with no folder pin and no env pin would be refused by the
- * daemon's home check (it is checked only on those elimination starts).
+ * with its source; never the token. The identity is found the way the daemon
+ * finds it (resolveDoctorIdentity); main() passes the one it resolved, a caller
+ * without one has it resolved here from `env`, `workdir` and
+ * `expectedAssistantId` (the operator's --assistant-id). When the daemon would
+ * refuse to start (several paired agents, nothing naming this one) there is no
+ * file to read: `refusal` carries the reason and the fix instead. With
+ * `workdir`, also whether a session started there with no folder pin and no
+ * env pin would be refused by the daemon's home check (it is checked only on
+ * those elimination starts).
+ * @param {{ env?: Record<string, string | undefined>, home?: string, expectedAssistantId?: string,
+ *           workdir?: string, identity?: DoctorIdentity | null }} [opts]
  */
-export function probeCredentials({ env = process.env, home = homedir(), expectedAssistantId = '', workdir = '' } = {}) {
-  const expected = String(expectedAssistantId ?? '').trim()
-  const readEnv = { ...env }
-  if (expected) readEnv.BGOS_ASSISTANT_ID = expected
-  const path = resolveReadCredentialsPath({ env: readEnv, home })
-  /** @type {{ path: string, exists: boolean, expectedAssistantId?: string,
+export function probeCredentials({
+  env = process.env,
+  home = homedir(),
+  expectedAssistantId = '',
+  workdir = '',
+  identity = null,
+} = {}) {
+  const found =
+    identity ?? resolveDoctorIdentity({ env, home, folder: workdir, assistantIdFlag: expectedAssistantId })
+  const expected = found.expectedAssistantId
+  /** @type {{ path: string, exists: boolean, expectedAssistantId?: string, identity?: string,
+   *   refusal?: { detail: string, fix: string }, conflict?: string,
    *   assistantId?: string | number, homeDir?: string, homeSource?: string,
    *   workdir?: string, workdirRefused?: boolean }} */
-  const result = { path, exists: existsSync(path) }
+  const result = { path: found.path, exists: found.path !== '' && existsSync(found.path) }
   if (expected) result.expectedAssistantId = expected
+  if (found.path === '') {
+    result.refusal = { detail: found.problem, fix: found.fix }
+    return result
+  }
+  if (found.source) result.identity = found.source
+  if (found.conflict) result.conflict = found.conflict
   if (result.exists) {
     try {
-      const creds = JSON.parse(readFileSync(path, 'utf8'))
+      const creds = JSON.parse(readFileSync(found.path, 'utf8'))
       if (creds && creds.assistantId != null) result.assistantId = creds.assistantId
       if (creds && typeof creds.homeDir === 'string' && creds.homeDir.trim()) {
         result.homeDir = creds.homeDir.trim()
@@ -1526,20 +1902,14 @@ export function probeCredentials({ env = process.env, home = homedir(), expected
   const dir = String(workdir ?? '').trim()
   if (dir) {
     result.workdir = dir
-    // As the daemon reads them (lib/agent-credentials.ts
-    // resolveCredentialsSelection): a pin or an env id is a route only when
-    // that agent's credentials file exists; a stale pin is ignored and an env
-    // id with no file falls back to the legacy file, by elimination.
-    const hasFile = (id) => existsSync(join(home, '.bgos-agent', `credentials-${id}.json`))
-    const envId = String(env.BGOS_ASSISTANT_ID ?? '').trim()
-    const pinId = readFolderPin(dir)
-    const explicit =
-      String(env.BGOS_CREDENTIALS_PATH ?? '').trim() !== '' ||
-      (envId !== '' && envId !== '${user_config.assistant_id}' && hasFile(envId)) ||
-      (pinId !== '' && hasFile(pinId))
+    // As the daemon reads them: a pin or an env id is a route only when that
+    // agent's credentials file exists (a stale pin is ignored, an env id with
+    // no file falls back to the shared file by elimination). `sessionVia`, not
+    // `via`: the operator's --assistant-id is not how a session started in this
+    // folder would resolve.
     result.workdirRefused = Boolean(
       result.homeDir &&
-        !explicit &&
+        !EXPLICIT_VIA.has(found.sessionVia) &&
         normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir),
     )
   }
@@ -1904,8 +2274,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // reply). Everything else is skipped; this mode is called right after the
   // full preflight already ran.
   if (args.waitLiveSince != null) {
-    const markerAssistantId =
-      args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim() || readFolderPin(workdir)
+    const markerAssistantId = resolveDoctorIdentity({
+      env,
+      home,
+      folder: workdir,
+      assistantIdFlag: args.assistantId,
+    }).assistantId
     const markerPath = liveMarkerPathFor({ env, home, assistantId: markerAssistantId, cwd: workdir })
     console.log(
       `[bgos-doctor] waiting up to ${args.waitLiveTimeoutS}s for the agent's first reply ` +
@@ -1947,12 +2321,13 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const gate = probeGateStrategy({ platform, method })
   const incumbent = probeIncumbent({ cwd: workdir, platform })
 
-  // Identity, strongest evidence first: the explicit flag, the env var, the
-  // launch-folder pin. It scopes the credentials row, the handshake env, and
-  // the log path, exactly as the daemon itself would resolve it.
-  const assistantId =
-    args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim() || readFolderPin(workdir)
-  const credentials = probeCredentials({ env, home, expectedAssistantId: assistantId, workdir })
+  // Identity, found exactly the way the daemon finds it: the env pin (the
+  // .mcp.json env block over the shell's environment), then the launch-folder
+  // pin, then the credentials files by elimination (resolveDoctorIdentity),
+  // with the operator's --assistant-id as the expectation. It scopes the
+  // credentials row, the handshake env, and the log path.
+  const identity = resolveDoctorIdentity({ env, home, folder: workdir, assistantIdFlag: args.assistantId })
+  const credentials = probeCredentials({ env, home, workdir, identity })
 
   let handshake = null
   if (!args.skipHandshake) {
@@ -1963,8 +2338,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // when undetermined.
     const handshakeRoot = String(method.pluginRoot ?? '').trim() || String(method.executionRoot ?? '').trim()
     const launchArgv = opts.launchArgv ?? [join(handshakeRoot, 'bin', 'bgos-launch.mjs'), join(handshakeRoot, 'server.ts')]
-    const handshakeEnv = { ...env }
-    if (assistantId) handshakeEnv.BGOS_ASSISTANT_ID = assistantId
+    // The daemon's environment as Claude Code would build it: the shell's, with
+    // the .mcp.json pin on top. A folder pin is not injected, the daemon finds
+    // it from the folder this child is started in, as it does for a real launch.
+    const handshakeEnv = { ...env, ...identity.env }
     handshake = await probeHandshake({ launchArgv, env: handshakeEnv, cwd: workdir })
   }
 
@@ -1973,12 +2350,12 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const logPath = doctorLogPath({
     env,
     home,
-    assistantId: assistantId || String(credentials.assistantId ?? ''),
+    assistantId: identity.assistantId || String(credentials.assistantId ?? ''),
   })
   const markerPath = liveMarkerPathFor({
     env,
     home,
-    assistantId: assistantId || String(credentials.assistantId ?? ''),
+    assistantId: identity.assistantId || String(credentials.assistantId ?? ''),
     cwd: workdir,
   })
   let liveMarker = { exists: false, ageMs: null }
