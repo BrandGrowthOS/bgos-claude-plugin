@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.65.5 (2026-10-11)
+
+**A generic `POST /messages` now names the agent that wrote it (board row 019ff949).** The backend reads the writing agent on that route only from the `X-Caller-Assistant-Id` header, and this daemon never sent it there, so every hook rail card, plan, question carousel, component card and permission card it posted was logged by the backend's `raw_chatid_shadow` line with `callerAssistantId: null`. On 2026-10-10 that was 3,445 of 3,907 lines, and a null line cannot say which agent still addresses chats by raw id, the one question that gates turning `ALLOW_RAW_CHATID` off. `bgosPost` now adds the header for the exact `messages` route (`lib/messages-caller-header.ts`); every other route is unchanged, an explicit header still wins, and a chat this daemon knows is a meeting gets no header, so a generic write into a meeting transcript stays refused as before. For an owner's own chat nothing else changes: the backend checks that the named agent belongs to the authenticated owner. Guard: `test/messages-caller-header.test.ts`.
+
 ## 0.65.4 (2026-10-11)
 
 **The watcher follows the installed plugin by itself, with no job and no reinstall (board row 0c659c85, raised on Data's word).** Before this version the per machine watcher refreshed its own bundle only at the end of a reconcile job, which only the owner's Update or Reconcile sends. Its manifest names the versioned cache folder the bundle was copied from, and a marketplace update leaves that folder on disk unchanged, so nothing on the computer ever read the bundle as stale. On AlienAres (Windows 11) the watcher ran 0.61.1 from 2026-10-05 while the plugin moved to 0.63.2, without the supervisor arm 0.62.0 added for Keep agents running, and its heartbeat only ever said 0.61.1.
