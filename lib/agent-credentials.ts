@@ -575,7 +575,7 @@ export function readFolderPinId(
 }
 
 /**
- * Normalize a folder for comparison: resolve it, drop any trailing separator,
+ * Normalize a folder for comparison: trim it, drop any trailing separator,
  * and case-fold on the platforms whose filesystems are case-insensitive
  * (Windows and macOS). Comparing raw strings would refuse a real agent over a
  * trailing slash or a drive-letter case, which is exactly the kind of false
@@ -596,8 +596,9 @@ export function normalizeHomeDir(
 
 export type HomeBindingDecision =
   /** Start normally; nothing to write. 'no-home' and 'no-cwd' start without
-   *  having passed the home check (see homeCheckPassed). */
-  | { action: 'allow'; reason: 'explicit-pin' | 'match' | 'override' | 'no-cwd' | 'no-home' }
+   *  having passed the home check (see homeCheckPassed). 'env-id': no home to
+   *  check, but BGOS_ASSISTANT_ID names the agent (its file is the legacy one). */
+  | { action: 'allow'; reason: 'explicit-pin' | 'match' | 'override' | 'no-cwd' | 'no-home' | 'env-id' }
   /** Start normally, and confirm this folder as the agent's home (a pinned start). */
   | { action: 'confirm'; homeDir: string }
   /** Do not start: this folder is not this agent's home. */
@@ -657,8 +658,16 @@ export function decideHomeBinding(input: {
     platform: input.platform,
   })
   // Nothing to check against. Today's rule keeps it starting, but it claims
-  // nothing: an elimination start never writes the home.
-  if (!recorded) return { action: 'allow', reason: 'no-home' }
+  // nothing: an elimination start never writes the home. One that the
+  // environment names (BGOS_ASSISTANT_ID with no credentials-<id>.json, so the
+  // resolver fell back to the legacy file: a bgos-claim agent on an API key)
+  // is the agent the way the env route is, and passes the check as it did
+  // before 0.65.0.
+  if (!recorded) {
+    return configuredAssistantId(env)
+      ? { action: 'allow', reason: 'env-id' }
+      : { action: 'allow', reason: 'no-home' }
+  }
   if (recorded === cwd) return { action: 'allow', reason: 'match' }
   return {
     action: 'refuse',
@@ -671,7 +680,8 @@ export function decideHomeBinding(input: {
 
 /**
  * Has this daemon passed the home check? True for an explicit pin, a matching
- * folder, the kill-switch, and a pinned start confirming its folder. False
+ * folder, the kill-switch, a pinned start confirming its folder, and an
+ * env-named agent with no home to check ('env-id'). False
  * when there was no home or no folder to check (it started by elimination and
  * proved nothing) and for a refusal. Gates the resume pin and the owner's
  * Memory and Changes panels.
@@ -679,7 +689,12 @@ export function decideHomeBinding(input: {
 export function homeCheckPassed(decision: HomeBindingDecision): boolean {
   if (decision.action === 'confirm') return true
   if (decision.action !== 'allow') return false
-  return decision.reason === 'explicit-pin' || decision.reason === 'match' || decision.reason === 'override'
+  return (
+    decision.reason === 'explicit-pin' ||
+    decision.reason === 'match' ||
+    decision.reason === 'override' ||
+    decision.reason === 'env-id'
+  )
 }
 
 /**
@@ -725,6 +740,34 @@ export function formatNoHomeWarning(decision: HomeBindingDecision, assistantId: 
     `but it has not passed the home check, so it will not repoint the resume pin or serve the ` +
     `Memory and Changes panels. To confirm the home, start the agent from its pinned folder, ` +
     `or pair it again from its own folder (hoai pair <code>).`
+  )
+}
+
+/**
+ * The WARN for a pinned start that replaced an unconfirmed home with a
+ * DIFFERENT folder, or '' when nothing moved. The folder it replaced is refused
+ * for elimination starts from now on, so an agent that also runs there (a Keep
+ * agents running recipe in an unpinned folder) needs that folder pinned.
+ */
+export function formatHomeMovedWarning(input: {
+  previousHomeDir?: string | null
+  confirmedHomeDir: string | null
+  assistantId: string
+  platform?: string
+}): string {
+  const previous = str(input.previousHomeDir).trim()
+  const confirmed = str(input.confirmedHomeDir).trim()
+  if (!previous || !confirmed) return ''
+  const same =
+    normalizeHomeDir(previous, { platform: input.platform }) ===
+    normalizeHomeDir(confirmed, { platform: input.platform })
+  if (same) return ''
+  const id = str(input.assistantId).trim() || '<id>'
+  return (
+    `this agent's home moved from ${previous} (unconfirmed, recorded by plugin 0.64.3 or ` +
+    `earlier) to ${confirmed} (this daemon's pinned folder). A session started in ${previous} ` +
+    `with no pin is now refused as this agent; if the agent also runs there (a Keep agents ` +
+    `running recipe, a hoai started by hand), pin that folder: \`echo ${id} > ${FOLDER_PIN_FILE}\`.`
   )
 }
 

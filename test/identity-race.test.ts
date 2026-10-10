@@ -97,8 +97,9 @@ function makeHost(opts: { recordedHomeDir?: (h: { ares: string; repo: string }) 
 
 type Host = ReturnType<typeof makeHost>
 
-/** A daemon booting in `cwd`, as server.ts boots one. */
-function bootDaemon(host: Host, cwd: string, pid: number, nowMs: number) {
+/** A daemon booting in `cwd`, as server.ts boots one. `channelLoaded` is
+ *  what lib/channel-presence.ts read off its claude command line. */
+function bootDaemon(host: Host, cwd: string, pid: number, nowMs: number, channelLoaded: boolean | null = null) {
   host.alive.add(pid)
   const selection = credentials.resolveCredentialsSelection({
     env: {},
@@ -130,6 +131,7 @@ function bootDaemon(host: Host, cwd: string, pid: number, nowMs: number) {
     held: false,
     homeDone: false,
     lockReason: undefined as string | undefined,
+    channelLoaded,
   }
   if (binding.action === 'refuse') return daemon
   const lock = acquirePairingLock({
@@ -138,6 +140,7 @@ function bootDaemon(host: Host, cwd: string, pid: number, nowMs: number) {
     now: nowMs,
     bootedAt: nowMs,
     route,
+    channelLoaded,
     io: host.io,
   } as Parameters<typeof acquirePairingLock>[0])
   daemon.held = lock.acquired
@@ -156,6 +159,7 @@ function heldTick(host: Host, daemon: Daemon, nowMs: number): void {
     now: nowMs,
     bootedAt: daemon.bootedAt,
     route: daemon.route,
+    channelLoaded: daemon.channelLoaded,
     io: host.io,
   } as Parameters<typeof refreshPairingLockDetailed>[0])
   if (!refreshed.held) {
@@ -280,6 +284,15 @@ test('the Ares case: a home a stray claimed under 0.64.3 is repaired by the agen
     const stray = bootDaemon(host, host.repo, STRAY_PID, T0)
     assert.equal(stray.binding.action, 'allow')
     assert.equal(stray.held, true)
+    // KEPT ON PURPOSE (Kc's choice 2, "keep today's rule for them, marked
+    // unconfirmed"): a match against an unconfirmed home passes the home
+    // check, so until the agent's next pinned start this stray could still
+    // repoint the resume pin and serve Memory and Changes. Unpinned real
+    // agents whose home 0.64.3 recorded correctly (a Keep agents running
+    // recipe folder, a one-click whose pin bake failed, a legacy file agent)
+    // rely on exactly this. The window closes at the agent's next pinned
+    // start, which also takes the channel back (below).
+    assert.equal(stray.homeConfirmed, true)
 
     const agent = bootDaemon(host, host.ares, ARES_PID, T0 + 10_000)
     assert.equal(agent.held, true, 'the pinned agent takes the channel back')
@@ -291,6 +304,34 @@ test('the Ares case: a home a stray claimed under 0.64.3 is repaired by the agen
 
     const next = bootDaemon(host, host.repo, LATER_STRAY_PID, T0 + 30_000)
     assert.equal(next.binding.action, 'refuse', 'the repo no longer passes as the agent\'s home')
+  } finally {
+    host.cleanup()
+  }
+})
+
+test('paired in its pinned folder, relaunched from an unpinned one: a bare claude in the pinned folder never takes its channel', () => {
+  // The review of fc75c7c3. 0.64.3 recorded the unpinned relaunch folder as
+  // the home. The agent runs there by elimination, matching it, with its
+  // channel loaded (hoai launches it with the channel). The owner opens a bare
+  // `claude` in the pinned folder: pinned, but its channel reads unknown, and
+  // taking the lock would drop every message into a session that never
+  // registered the channel.
+  const host = makeHost({ recordedHomeDir: (h) => h.repo })
+  try {
+    const agentInRepo = bootDaemon(host, host.repo, STRAY_PID, T0, true)
+    assert.equal(agentInRepo.via, 'sole-per-assistant')
+    assert.equal(agentInRepo.held, true)
+    const bare = bootDaemon(host, host.ares, ARES_PID, T0 + 10_000, null)
+    assert.equal(bare.held, false, 'the bare session stays passive')
+    heldTick(host, agentInRepo, T0 + 15_000)
+    assert.equal(agentInRepo.held, true, 'the agent keeps its channel')
+    assert.equal(host.readFile().homeDir, host.repo, 'and its recorded home is left alone')
+    assert.equal(host.readFile().homeSource, undefined)
+    // A start that is proven to deliver (hoai, with the channel on its command
+    // line) is the agent and takes it, as the race fix intends.
+    const launched = bootDaemon(host, host.ares, LATER_STRAY_PID, T0 + 20_000, true)
+    assert.equal(launched.held, true)
+    assert.equal(launched.lockReason, 'route-takeover')
   } finally {
     host.cleanup()
   }

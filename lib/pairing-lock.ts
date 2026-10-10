@@ -223,8 +223,10 @@ export function serializeLockRecord(record: LockRecord): string {
  *   - Heartbeat fresh, holder alive,
  *     holder came by elimination,
  *     we are pinned (pin or env),
- *     and our channel is not
- *     proven unloaded             -> acquire ('route-takeover').
+ *     our channel is not proven
+ *     unloaded, and if the holder
+ *     proved its channel loaded,
+ *     ours is proven loaded too   -> acquire ('route-takeover').
  *   - Heartbeat fresh, holder alive,
  *     holder recorded channelLoaded
  *     false, and OUR channel is
@@ -276,7 +278,17 @@ export function decideLockAction(input: {
     return { action: 'acquire', reason: 'holder-dead' }
   }
   const selfPinned = isPinnedRoute(input.selfRoute)
-  if (selfPinned && existing.route === 'elimination' && input.selfChannelLoaded !== false) {
+  // A holder proven to deliver (channelLoaded true) gives way only to a pinned
+  // daemon proven to deliver too: an agent relaunched from an unpinned folder
+  // must not lose its channel to a bare `claude` in its pinned folder whose
+  // channel reads unknown, which would drop every message (0.63.2's outage).
+  const canDeliverAsWell = existing.channelLoaded !== true || input.selfChannelLoaded === true
+  if (
+    selfPinned &&
+    existing.route === 'elimination' &&
+    input.selfChannelLoaded !== false &&
+    canDeliverAsWell
+  ) {
     return { action: 'acquire', reason: 'route-takeover', holderPid: existing.pid }
   }
   const strayOverPinned = input.selfRoute === 'elimination' && isPinnedRoute(existing.route)

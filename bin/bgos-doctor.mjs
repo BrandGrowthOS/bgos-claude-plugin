@@ -1526,14 +1526,20 @@ export function probeCredentials({ env = process.env, home = homedir(), expected
   const dir = String(workdir ?? '').trim()
   if (dir) {
     result.workdir = dir
+    // As the daemon reads them (lib/agent-credentials.ts
+    // resolveCredentialsSelection): a pin or an env id is a route only when
+    // that agent's credentials file exists; a stale pin is ignored and an env
+    // id with no file falls back to the legacy file, by elimination.
+    const hasFile = (id) => existsSync(join(home, '.bgos-agent', `credentials-${id}.json`))
     const envId = String(env.BGOS_ASSISTANT_ID ?? '').trim()
-    const envPinned =
+    const pinId = readFolderPin(dir)
+    const explicit =
       String(env.BGOS_CREDENTIALS_PATH ?? '').trim() !== '' ||
-      (envId !== '' && envId !== '${user_config.assistant_id}')
+      (envId !== '' && envId !== '${user_config.assistant_id}' && hasFile(envId)) ||
+      (pinId !== '' && hasFile(pinId))
     result.workdirRefused = Boolean(
       result.homeDir &&
-        !envPinned &&
-        !readFolderPin(dir) &&
+        !explicit &&
         normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir),
     )
   }
@@ -1596,7 +1602,22 @@ export function probeHandshake({
         if (!message || message.id !== 1) continue
         if (message.result && message.result.serverInfo) {
           const info = message.result.serverInfo
-          finish({ ok: true, detail: `server ${info.name ?? 'unknown'} ${info.version ?? ''} answered initialize`.replace(/\s+/g, ' ').trim() })
+          const server = `server ${info.name ?? 'unknown'} ${info.version ?? ''}`.replace(/\s+/g, ' ').trim()
+          // Only the real daemon declares the claude/channel capability. A
+          // daemon that is not paired, or that the home check refused for
+          // this folder (0.65.0), answers initialize with a one tool notice
+          // instead, which is diagnosable but is not a channel.
+          if (!message.result.capabilities?.experimental?.['claude/channel']) {
+            finish({
+              ok: false,
+              detail:
+                `${server} answered initialize with a one tool notice, not a channel ` +
+                '(no claude/channel capability): it is not paired, or it refused this folder ' +
+                'as not the agent\'s home; see the credentials row',
+            })
+          } else {
+            finish({ ok: true, detail: `${server} answered initialize` })
+          }
         } else if (message.result) {
           finish({ ok: false, detail: 'initialize result arrived without serverInfo' })
         } else if (message.error) {

@@ -61,7 +61,7 @@ async function within<T>(promise: Promise<T>, ms: number, label: string): Promis
 }
 
 async function connectedClient() {
-  const server = createHomeRefusedServer({ reason: REASON })
+  const server = createHomeRefusedServer({ reason: REASON, assistantId: '1040' })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'probe-client', version: '1.0.0' }, { capabilities: {} })
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)])
@@ -95,7 +95,11 @@ test('it lists EXACTLY one tool with a short description, and the call carries t
     const description = String(listed.tools[0]!.description ?? '')
     assert.ok(description.length < 400, `a quiet description, got ${description.length} characters`)
     assert.match(description, /refused/i)
-    assert.match(description, /Nothing to do unless/)
+    // It names the agent it refused, so a session that IS some other agent
+    // (a bgos-claim agent, a clone in its own folder) can tell this is not
+    // about it (the review of fc75c7c3).
+    assert.match(description, /agent 1040/)
+    assert.match(description, /nothing here concerns it/)
 
     const result = await client.callTool({ name: HOME_REFUSED_TOOL_NAME, arguments: {} })
     const text = String((result.content as Array<{ text?: string }>)[0]!.text ?? '')
@@ -105,6 +109,9 @@ test('it lists EXACTLY one tool with a short description, and the call carries t
     assert.match(text, /\.bgos-agent-id/)
     assert.match(text, /hoai pair/)
     assert.match(text, /nothing to retry/)
+    // A model must never pin a folder on its own: a pin with this agent's id
+    // makes the next session there this agent, never refused.
+    assert.match(text, /Do not create or edit \.bgos-agent-id yourself unless the owner asks/)
   } finally {
     await client.close()
     await server.close()
@@ -131,6 +138,7 @@ test('serveHomeRefused says it is refusing, serves until the host goes, and ends
   await clientTransport.start()
   const serving = serveHomeRefused({
     reason: REASON,
+    assistantId: '1040',
     transport: serverTransport,
     stdin: { once: () => {} },
     log: (line: string) => logs.push(line),
@@ -152,6 +160,7 @@ test('server.ts serves the notice on a home refusal instead of exiting before th
   const body = branch![0]
   assert.match(body, /await serveHomeRefused\(\{/)
   assert.match(body, /reason: formatHomeBindingRefusal\(HOME_BINDING\)/)
+  assert.match(body, /assistantId: HOME_BINDING\.assistantId/)
   // The exit that killed the transport before initialize is gone; the one that
   // remains runs after serving. And nothing past this branch runs for a refused
   // stray: no credentials are used, no lock is taken.

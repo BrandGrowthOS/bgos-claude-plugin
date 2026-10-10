@@ -35,6 +35,7 @@ import {
   confirmHomeDir,
   decideHomeBinding,
   formatHomeBindingRefusal,
+  formatHomeMovedWarning,
   formatNoHomeWarning,
   homeCheckPassed,
   homeStepWhileHolding,
@@ -435,6 +436,42 @@ test('the boot warning names an elimination start with no home, and only that', 
   ] as HomeBindingDecision[]) {
     assert.equal(formatNoHomeWarning(other, '1040'), '', JSON.stringify(other))
   }
+})
+
+test('a pinned start that moves an unconfirmed home says so, naming both folders and the fix', () => {
+  // The agent paired in its pinned folder but also relaunched from an
+  // unpinned one, which 0.64.3 recorded: the pinned start replaces it, and the
+  // other folder is refused from then on. That must not happen silently.
+  const warn = formatHomeMovedWarning({ previousHomeDir: STRAY, confirmedHomeDir: HOME, assistantId: '1040', platform: 'linux' })
+  assert.ok(warn.includes(STRAY), 'names the folder it no longer accepts')
+  assert.ok(warn.includes(HOME), 'names the new home')
+  assert.match(warn, /echo 1040 > \.bgos-agent-id/)
+  // Nothing to say when there was no home, the same folder, or no write.
+  assert.equal(formatHomeMovedWarning({ previousHomeDir: null, confirmedHomeDir: HOME, assistantId: '1040', platform: 'linux' }), '')
+  assert.equal(formatHomeMovedWarning({ previousHomeDir: `${HOME}/`, confirmedHomeDir: HOME, assistantId: '1040', platform: 'linux' }), '')
+  assert.equal(formatHomeMovedWarning({ previousHomeDir: 'C:\\Agents\\Ares', confirmedHomeDir: 'c:\\agents\\ares', assistantId: '1040', platform: 'win32' }), '')
+  assert.equal(formatHomeMovedWarning({ previousHomeDir: STRAY, confirmedHomeDir: null, assistantId: '1040', platform: 'linux' }), '')
+  // server.ts logs it right after the confirm write.
+  const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(server, /formatHomeMovedWarning\(\{\s*previousHomeDir: CREDENTIALS_FILE\?\.homeDir \?\? null,\s*confirmedHomeDir: homeStep\.wrote,/)
+})
+
+test('an env-named agent with no file of its own (bgos-claim) passes the home check, as before 0.65.0', () => {
+  // BGOS_ASSISTANT_ID set but no credentials-<id>.json: the resolver falls
+  // back to the legacy file and labels it 'legacy' (an Agent Pack handoff
+  // agent on an API key). Its identity is named by the environment, so with
+  // no home to check it is the agent, as on the env route: it keeps the
+  // resume pin and the Memory and Changes panels it had under 0.64.3.
+  const d = decideHomeBinding({ via: 'legacy', cwd: STRAY, recordedHomeDir: null, env: { BGOS_ASSISTANT_ID: '1040' }, platform: 'linux' })
+  assert.deepEqual(d, { action: 'allow', reason: 'env-id' })
+  assert.equal(homeCheckPassed(d), true)
+  assert.equal(formatNoHomeWarning(d, '1040'), '', 'not the no-home warning, which says there is no BGOS_ASSISTANT_ID')
+  // The unsubstituted plugin placeholder names nobody.
+  const placeholder = decideHomeBinding({ via: 'legacy', cwd: STRAY, recordedHomeDir: null, env: { BGOS_ASSISTANT_ID: '${user_config.assistant_id}' }, platform: 'linux' })
+  assert.deepEqual(placeholder, { action: 'allow', reason: 'no-home' })
+  // A recorded home is still enforced against it, as before.
+  const away = decideHomeBinding({ via: 'legacy', cwd: STRAY, recordedHomeDir: HOME, env: { BGOS_ASSISTANT_ID: '1040' }, platform: 'linux' })
+  assert.equal(away.action, 'refuse')
 })
 
 test('lockRouteFor names how a daemon found its identity in one word', () => {

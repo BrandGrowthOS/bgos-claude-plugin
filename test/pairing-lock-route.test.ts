@@ -136,6 +136,27 @@ test('a pinned daemon whose channel is proven not loaded never takes a live chan
   assert.equal(unknown.action, 'acquire')
 })
 
+test('a holder proven to deliver keeps the lock unless the pinned daemon is proven to deliver too (the review of fc75c7c3)', () => {
+  // The agent paired in P but relaunched from an unpinned Q holds the lock by
+  // elimination with its channel loaded. A bare `claude` opened in P is
+  // pinned but its channel reads unknown (no arguments to read, or Windows).
+  // Taking the lock would drop every message into a session that never
+  // registered the channel: 0.63.2's outage.
+  const holder: LockRecord = { pid: STRAY, heartbeatAt: NOW, route: 'elimination', channelLoaded: true }
+  for (const selfChannelLoaded of [null, undefined, false] as const) {
+    const d = decideLockAction({ existing: holder, now: NOW, selfPid: AGENT, stalenessMs: STALE, isHolderAlive: () => true, selfRoute: 'pin', selfChannelLoaded })
+    assert.equal(d.action, 'passive', `self channel ${selfChannelLoaded}`)
+  }
+  // A pinned daemon whose channel is proven loaded (hoai launches it with
+  // --channels) still takes it: the race fix holds for a delivering stray.
+  const proven = decideLockAction({ existing: holder, now: NOW, selfPid: AGENT, stalenessMs: STALE, isHolderAlive: () => true, selfRoute: 'pin', selfChannelLoaded: true })
+  assert.deepEqual(proven, { action: 'acquire', reason: 'route-takeover', holderPid: STRAY })
+  // And a stray whose channel reads unknown (the usual bare claude) is still
+  // taken over by a pinned daemon that reads unknown too (Windows).
+  const unknownStray = decideLockAction({ existing: { pid: STRAY, heartbeatAt: NOW, route: 'elimination' }, now: NOW, selfPid: AGENT, stalenessMs: STALE, isHolderAlive: () => true, selfRoute: 'pin', selfChannelLoaded: null })
+  assert.equal(unknownStray.action, 'acquire')
+})
+
 test('a daemon that came by elimination never takes the lock from a pinned holder, not even by the channel rule', () => {
   for (const holderRoute of ['pin', 'env'] as const) {
     const d = decideLockAction({

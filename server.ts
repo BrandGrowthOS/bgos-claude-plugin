@@ -251,6 +251,7 @@ import {
   formatCredentialsRefusal,
   decideHomeBinding,
   formatHomeBindingRefusal,
+  formatHomeMovedWarning,
   formatNoHomeWarning,
   homeCheckPassed,
   homeStepWhileHolding,
@@ -663,10 +664,11 @@ if (HOME_BINDING.action === 'refuse') {
   // Not process.exit(1) before the handshake: Claude Code could show only a
   // failed server (CONNECTION_CLOSED), and the session could not say why. A
   // one tool notice instead, as an unpaired install gets (below). Nothing
-  // past this branch runs for a refused stray: it reads no token, takes no
+  // past this branch runs for a refused stray: it uses no token, takes no
   // lock and writes nothing.
   const served = await serveHomeRefused({
     reason: formatHomeBindingRefusal(HOME_BINDING),
+    assistantId: HOME_BINDING.assistantId,
     log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
   })
   process.exit(served ? 0 : 1)
@@ -15118,6 +15120,12 @@ async function main(): Promise<void> {
                 'else without a pin will now refuse to start as this agent rather ' +
                 'than answer in its name.',
             )
+            const moved = formatHomeMovedWarning({
+              previousHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
+              confirmedHomeDir: homeStep.wrote,
+              assistantId: ASSISTANT_ID,
+            })
+            if (moved) log(`WARN ${moved}`)
           }
         }
       } catch (err) {
