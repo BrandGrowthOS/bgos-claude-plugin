@@ -317,7 +317,8 @@ function joinPreservingStyle(dir, name) {
  *   bypass?: { settingsPath: string, accepted: boolean, reason: string },
  *   gate?: { needed: boolean, method?: string, helper: 'expect' | 'win32-console', expectPath?: string },
  *   incumbent?: { cwd: string, hit: { pid: number, reason: string } | null, blocks: boolean, error?: string },
- *   credentials: { path?: string, exists: boolean, assistantId?: string | number, expectedAssistantId?: string },
+ *   credentials: { path?: string, exists: boolean, assistantId?: string | number, expectedAssistantId?: string,
+ *                  homeDir?: string, homeSource?: string, workdir?: string, workdirRefused?: boolean },
  *   handshake: { ok: boolean, detail?: string, command?: string } | null,
  *   mcpList: { ok: boolean, state?: string, raw?: string } | null,
  *   backend: { ok: boolean, status?: number, url: string, error?: string },
@@ -618,7 +619,12 @@ export function buildDoctorRows(probes) {
       `hoai pair <code from the HOAI app> --assistant-id ${expected}`,
     )
   } else {
-    row('credentials', 'Pairing credentials', true, `${creds.path}${actual ? ` (assistant ${actual})` : ''}`)
+    row(
+      'credentials',
+      'Pairing credentials',
+      true,
+      `${creds.path}${actual ? ` (assistant ${actual})` : ''}; ${describeHome(creds)}`,
+    )
   }
 
   // MCP initialize handshake
@@ -1452,23 +1458,84 @@ export function probeIncumbent({
 }
 
 /**
- * The credentials file the daemon would read for this identity, and whether
- * it matches the expected assistant. Path and assistant id only, no token.
+ * The home part of the credentials row: the agent's home folder and where it
+ * came from (lib/agent-credentials.ts isHomeConfirmed is the rule), plus a
+ * note when a session started in the doctor's folder would be refused.
  */
-export function probeCredentials({ env = process.env, home = homedir(), expectedAssistantId = '' } = {}) {
+function describeHome(creds) {
+  const home = String(creds.homeDir ?? '').trim()
+  let text
+  if (!home) {
+    text =
+      "no home folder recorded yet (pairing, or the agent's next start from its pinned folder, records it)"
+  } else if (creds.homeSource === 'pairing') {
+    text = `home ${home}, set by pairing`
+  } else if (creds.homeSource === 'pin') {
+    text = `home ${home}, confirmed by a start from its pinned folder`
+  } else {
+    text =
+      `home ${home}, unconfirmed: recorded by plugin 0.64.3 or earlier; the agent's next ` +
+      'start from its pinned folder, or a re-pair, confirms or replaces it'
+  }
+  if (creds.workdirRefused === true && creds.workdir) {
+    text += `; a session started in ${creds.workdir} with no pin is refused as this agent`
+  }
+  return text
+}
+
+/** Mirror of lib/agent-credentials.ts normalizeHomeDir (a .mjs never imports
+ *  a .ts here): trailing separators dropped, case folded where the file system
+ *  ignores case. */
+function normalizeHomeForCompare(dir, platform = process.platform) {
+  const raw = String(dir ?? '').trim()
+  if (!raw) return ''
+  let out = raw.replace(/[\\/]+$/, '')
+  if (!out) out = raw.slice(0, 1)
+  return platform === 'win32' || platform === 'darwin' ? out.toLowerCase() : out
+}
+
+/**
+ * The credentials file the daemon would read for this identity, and whether
+ * it matches the expected assistant. Path, assistant id, and the home folder
+ * with its source; never the token. With `workdir`, also whether a session
+ * started there with no folder pin and no env pin would be refused by the
+ * daemon's home check (it is checked only on those elimination starts).
+ */
+export function probeCredentials({ env = process.env, home = homedir(), expectedAssistantId = '', workdir = '' } = {}) {
   const expected = String(expectedAssistantId ?? '').trim()
   const readEnv = { ...env }
   if (expected) readEnv.BGOS_ASSISTANT_ID = expected
   const path = resolveReadCredentialsPath({ env: readEnv, home })
+  /** @type {{ path: string, exists: boolean, expectedAssistantId?: string,
+   *   assistantId?: string | number, homeDir?: string, homeSource?: string,
+   *   workdir?: string, workdirRefused?: boolean }} */
   const result = { path, exists: existsSync(path) }
   if (expected) result.expectedAssistantId = expected
   if (result.exists) {
     try {
       const creds = JSON.parse(readFileSync(path, 'utf8'))
       if (creds && creds.assistantId != null) result.assistantId = creds.assistantId
+      if (creds && typeof creds.homeDir === 'string' && creds.homeDir.trim()) {
+        result.homeDir = creds.homeDir.trim()
+        if (typeof creds.homeSource === 'string') result.homeSource = creds.homeSource
+      }
     } catch {
       // unreadable file still reports exists:true; the handshake will judge it
     }
+  }
+  const dir = String(workdir ?? '').trim()
+  if (dir) {
+    result.workdir = dir
+    const envId = String(env.BGOS_ASSISTANT_ID ?? '').trim()
+    const envPinned =
+      String(env.BGOS_CREDENTIALS_PATH ?? '').trim() !== '' ||
+      (envId !== '' && envId !== '${user_config.assistant_id}')
+    result.workdirRefused = Boolean(
+      result.homeDir &&
+        !envPinned &&
+        !readFolderPin(dir) &&
+        normalizeHomeForCompare(dir) !== normalizeHomeForCompare(result.homeDir),
+    )
   }
   return result
 }
@@ -1859,7 +1926,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   // the log path, exactly as the daemon itself would resolve it.
   const assistantId =
     args.assistantId || String(env.BGOS_ASSISTANT_ID ?? '').trim() || readFolderPin(workdir)
-  const credentials = probeCredentials({ env, home, expectedAssistantId: assistantId })
+  const credentials = probeCredentials({ env, home, expectedAssistantId: assistantId, workdir })
 
   let handshake = null
   if (!args.skipHandshake) {

@@ -59,7 +59,7 @@ import {
 } from '../bin/bgos-pair.mjs'
 import { detectInstallMethod } from '../bin/bgos-install-method.mjs'
 import { runSetup } from '../bin/hoai-core.mjs'
-import { resolveCredentialsSelection } from '../lib/agent-credentials.ts'
+import { decideHomeBinding, loadCredentialsFile, readFolderPinId, resolveCredentialsSelection } from '../lib/agent-credentials.ts'
 
 test('normalizeApiBase always yields a single /api/v1 suffix', () => {
   assert.equal(normalizeApiBase('https://api.brandgrowthos.ai'), 'https://api.brandgrowthos.ai/api/v1')
@@ -276,6 +276,136 @@ test('buildCredentials is the exact durable shape server.ts reads', () => {
     assistantId: 1234,
     pairedAt: '2026-07-11T00:00:00.000Z',
   })
+})
+
+test('buildCredentials carries the home and its source when pairing names the folder (fc75c7c3)', () => {
+  const creds = buildCredentials({
+    backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+    pairingToken: 'pair_secret',
+    pairingId: 42,
+    userId: 'user_abc',
+    assistantId: 1234,
+    nowIso: '2026-07-11T00:00:00.000Z',
+    homeDir: '/Users/kc/hoai-agents/ava',
+  })
+  assert.deepEqual(creds, {
+    backendUrl: 'https://api.brandgrowthos.ai/api/v1',
+    pairingToken: 'pair_secret',
+    pairingId: 42,
+    userId: 'user_abc',
+    assistantId: 1234,
+    pairedAt: '2026-07-11T00:00:00.000Z',
+    homeDir: '/Users/kc/hoai-agents/ava',
+    homeSource: 'pairing',
+  })
+  // A blank folder writes no home at all, never a source without one.
+  const blank = buildCredentials({
+    backendUrl: 'b',
+    pairingToken: 't',
+    pairingId: 1,
+    userId: 'u',
+    assistantId: 1,
+    nowIso: 'n',
+    homeDir: '  ',
+  })
+  assert.equal('homeDir' in blank, false)
+  assert.equal('homeSource' in blank, false)
+})
+
+/** One pairing through main against a temp home: the exchange, then /me
+ *  answering with `assistants`. Returns the exit code. */
+async function pairOnce(opts: { home: string; folder: string; assistants: unknown[]; pairingId: number }) {
+  const originalLog = console.log
+  const originalError = console.error
+  try {
+    const fetchImpl = async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith('/integrations/pair-exchange')) {
+        return Response.json(
+          { pairing_token: `token_${opts.pairingId}`, pairing_id: opts.pairingId, user_id: 'user_kc' },
+          { status: 201 },
+        )
+      }
+      if (url.endsWith('/integrations/me')) return Response.json({ assistants: opts.assistants })
+      return Response.json({})
+    }
+    console.log = () => {}
+    console.error = () => {}
+    return await main(['BGOS-7F3A-2K', '--backend', 'https://pair.test'], {
+      env: {},
+      home: opts.home,
+      cwd: opts.folder,
+      fetchImpl,
+      isInteractive: () => true,
+      installCliImpl: fakeInstallCli(),
+      // Only an unbound pairing skips the bind poll; a bound one must reach it.
+      ...(opts.assistants.length === 0 ? { bindTimeoutMs: 0 } : {}),
+    })
+  } finally {
+    console.log = originalLog
+    console.error = originalError
+  }
+}
+
+test('main: pairing writes the folder it pairs in as the home (homeSource pairing), beside the pin, and a re-pair moves it', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-home-'))
+  const folder = join(home, 'hoai-agents', 'ares')
+  const repo = join(home, 'code', 'bgos-repo')
+  try {
+    await mkdir(folder, { recursive: true })
+    await mkdir(repo, { recursive: true })
+    const ares = [{ assistant_id: 1040, agent_route: 'claude', name: 'Ares' }]
+    assert.equal(await pairOnce({ home, folder, assistants: ares, pairingId: 77 }), PAIR_EXIT_CODES.DONE)
+    const path = join(home, '.bgos-agent', 'credentials-1040.json')
+    const creds = JSON.parse(await readFile(path, 'utf8'))
+    assert.equal(creds.homeDir, folder)
+    assert.equal(creds.homeSource, 'pairing')
+    assert.equal(creds.pairingToken, 'token_77')
+    // The same folder carries the pin.
+    assert.equal(readFolderPinId(folder), '1040')
+
+    // What a daemon then decides from this file. A start in the paired folder
+    // that lost its pin (a failed bake, the one-click case) still finds its
+    // home and passes; a stray in a repo with no pin is refused at once, with
+    // no first boot that could claim anything.
+    const loaded = loadCredentialsFile(path)
+    for (const [cwd, action] of [[folder, 'allow'], [repo, 'refuse']] as const) {
+      const d = decideHomeBinding({
+        via: 'sole-per-assistant',
+        cwd,
+        recordedHomeDir: loaded?.homeDir ?? null,
+        recordedHomeSource: loaded?.homeSource ?? null,
+        assistantId: '1040',
+      })
+      assert.equal(d.action, action, cwd)
+    }
+
+    // A re-pair rewrites the whole file, and the home with it.
+    const moved = join(home, 'hoai-agents', 'ares-2')
+    await mkdir(moved, { recursive: true })
+    assert.equal(await pairOnce({ home, folder: moved, assistants: ares, pairingId: 78 }), PAIR_EXIT_CODES.DONE)
+    const again = JSON.parse(await readFile(path, 'utf8'))
+    assert.equal(again.homeDir, moved)
+    assert.equal(again.homeSource, 'pairing')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('main: a pairing whose agent is not bound yet writes no home, as it bakes no pin', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bgos-pair-home-unbound-'))
+  const folder = join(home, 'hoai-agents', 'ava')
+  try {
+    await mkdir(folder, { recursive: true })
+    assert.equal(await pairOnce({ home, folder, assistants: [], pairingId: 94 }), PAIR_EXIT_CODES.DONE)
+    const creds = JSON.parse(await readFile(join(home, '.bgos-agent', 'credentials.json'), 'utf8'))
+    assert.equal(creds.pairingToken, 'token_94', 'the pairing itself was written')
+    assert.equal('homeDir' in creds, false)
+    assert.equal('homeSource' in creds, false)
+    assert.equal(readFolderPinId(folder), '')
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
 })
 
 /** Compare paths in posix spelling. The path helpers build with node:path

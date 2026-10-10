@@ -384,6 +384,9 @@ test('server.ts reads the presence off the claude command line with its own inst
 
 test('server.ts logs the takeover and the yield reason', () => {
   assert.equal((server.match(/formatChannelTakeoverLine\(/g) ?? []).length, 2)
-  assert.match(server, /formatPassiveBanner\(lockAtBoot\.holderPid, channelYieldReason\(lockAtBoot\.holderChannelLoaded\)\)/)
-  assert.equal((server.match(/channelYieldReason\((?:gateRefresh|refreshed)\.holderChannelLoaded\)/g) ?? []).length, 3)
+  // The yield clause goes through lockYieldReason, which says the route reason
+  // when there is one (0.65.0) and the channel reason otherwise.
+  assert.match(server, /formatPassiveBanner\(lockAtBoot\.holderPid, lockYieldReason\(lockAtBoot\.holderChannelLoaded, lockAtBoot\.holderRoute\)\)/)
+  assert.equal((server.match(/lockYieldReason\((gateRefresh|refreshed)\.holderChannelLoaded, \1\.holderRoute\)/g) ?? []).length, 3)
+  assert.match(server, /\|\| channelYieldReason\(holderChannelLoaded\)/)
 })

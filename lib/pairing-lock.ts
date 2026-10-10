@@ -53,15 +53,45 @@
  * side (null, or a record from an older daemon without the field) keeps the
  * rules above exactly as they were.
  *
+ * ROUTE TAKEOVER (0.65.0, board fc75c7c3). The lock picked whoever came
+ * first, and on a one agent computer whose agent was down that was any Claude
+ * Code session in a folder with no pin: it found the agent by elimination and
+ * kept the channel while the real agent, started from its pinned folder, sat
+ * passive behind it. So each daemon also records its ROUTE, one word: 'pin'
+ * (a folder pin), 'env' (BGOS_ASSISTANT_ID or BGOS_CREDENTIALS_PATH) or
+ * 'elimination' (lib/agent-credentials.ts lockRouteFor). A pinned daemon (pin
+ * or env) takes the lock from a live holder that came by elimination. It never
+ * takes it from a holder pinned to this same agent, so two pinned sessions
+ * never take it from each other (Data's guard), and a daemon that came by
+ * elimination never takes it from a pinned holder, not even through the
+ * channel rule, so the two cannot flap. A record without a route (0.64.x) is
+ * unknown and never taken over by route, and a daemon whose channel is proven
+ * not loaded never takes a live channel, as before. No folder is stored.
+ *
  * This module is the PURE core (decideLockAction, the staleness maths, the
  * serialize/parse pair, the heartbeat throttle) plus a thin, fully-injectable
  * effectful shell (acquire / refresh / release / touchBeaconHeartbeat). All
  * filesystem and process-liveness access is behind LockIo so the logic is
  * testable with no real files and no real processes. It never logs or echoes
- * any credential: the lock records only a pid and timestamps.
+ * any credential: the lock records only a pid, timestamps, the channel flag
+ * and the route word.
  */
 
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+
+import type { IdentityRoute } from './agent-credentials.js'
+
+/** The three route words a lock record may carry; anything else is dropped. */
+const LOCK_ROUTES: ReadonlySet<string> = new Set(['pin', 'env', 'elimination'])
+
+function isLockRoute(value: unknown): value is IdentityRoute {
+  return typeof value === 'string' && LOCK_ROUTES.has(value)
+}
+
+/** Pinned to this agent: a folder pin or an env pin. */
+function isPinnedRoute(route: IdentityRoute | null | undefined): boolean {
+  return route === 'pin' || route === 'env'
+}
 
 /**
  * How often the holder refreshes its heartbeat. Tied to the daemon's existing
@@ -98,11 +128,23 @@ export interface LockRecord {
   /** Whether the holder's channel is loaded in its session. Absent when it
    *  could not tell (or predates 0.63.2): absent never invites a takeover. */
   channelLoaded?: boolean
+  /** How the holder found its identity. Absent on a record written by 0.64.x,
+   *  which is unknown and never taken over by route. */
+  route?: IdentityRoute
 }
 
 /** Why a daemon may take the lock. 'channel-takeover': a live holder whose
- *  channel is not loaded gives way to one whose channel is. */
-export type AcquireReason = 'unlocked' | 'own' | 'holder-dead' | 'stale' | 'channel-takeover'
+ *  channel is not loaded gives way to one whose channel is. 'route-takeover':
+ *  a live holder that came by elimination gives way to a pinned daemon. */
+export type AcquireReason =
+  | 'unlocked'
+  | 'own'
+  | 'holder-dead'
+  | 'stale'
+  | 'channel-takeover'
+  | 'route-takeover'
+
+type TakeoverReason = 'channel-takeover' | 'route-takeover'
 
 /**
  * What a booting (or rechecking) daemon should do about the lock it found.
@@ -112,9 +154,14 @@ export type AcquireReason = 'unlocked' | 'own' | 'holder-dead' | 'stale' | 'chan
  * passive; `holderChannelLoaded` on passive, so the banner can say why.
  */
 export type LockDecision =
-  | { action: 'acquire'; reason: Exclude<AcquireReason, 'channel-takeover'> }
-  | { action: 'acquire'; reason: 'channel-takeover'; holderPid: number }
-  | { action: 'passive'; holderPid: number; holderChannelLoaded?: boolean }
+  | { action: 'acquire'; reason: Exclude<AcquireReason, TakeoverReason> }
+  | { action: 'acquire'; reason: TakeoverReason; holderPid: number }
+  | {
+      action: 'passive'
+      holderPid: number
+      holderChannelLoaded?: boolean
+      holderRoute?: IdentityRoute
+    }
 
 /**
  * Parse a lock file's raw contents into a LockRecord, or null when the file is
@@ -144,6 +191,9 @@ export function parseLockRecord(raw: string | null | undefined): LockRecord | nu
     // Only a real boolean counts: a string "false" from a hand edit must not
     // turn a live holder into a takeover target.
     ...(typeof obj.channelLoaded === 'boolean' ? { channelLoaded: obj.channelLoaded } : {}),
+    // Only the three words count, exactly: anything else reads as unknown,
+    // which is never taken over by route.
+    ...(isLockRoute(obj.route) ? { route: obj.route } : {}),
   }
 }
 
@@ -154,6 +204,7 @@ export function serializeLockRecord(record: LockRecord): string {
     heartbeatAt: record.heartbeatAt,
     ...(record.bootedAt != null ? { bootedAt: record.bootedAt } : {}),
     ...(typeof record.channelLoaded === 'boolean' ? { channelLoaded: record.channelLoaded } : {}),
+    ...(isLockRoute(record.route) ? { route: record.route } : {}),
   }
   return `${JSON.stringify(out, null, 2)}\n`
 }
@@ -170,10 +221,17 @@ export function serializeLockRecord(record: LockRecord): string {
  *     no longer a live process    -> acquire ('holder-dead'); instant takeover
  *                                    when a transient exits.
  *   - Heartbeat fresh, holder alive,
+ *     holder came by elimination,
+ *     we are pinned (pin or env),
+ *     and our channel is not
+ *     proven unloaded             -> acquire ('route-takeover').
+ *   - Heartbeat fresh, holder alive,
  *     holder recorded channelLoaded
  *     false, and OUR channel is
  *     loaded (selfChannelLoaded
- *     true)                       -> acquire ('channel-takeover').
+ *     true), unless we came by
+ *     elimination and the holder
+ *     is pinned                   -> acquire ('channel-takeover').
  *   - Heartbeat fresh AND holder
  *     pid alive                   -> passive; a real daemon is on this pairing.
  *
@@ -182,6 +240,14 @@ export function serializeLockRecord(record: LockRecord): string {
  * as before, which is the fail open rule. A daemon whose channel is not
  * loaded never takes over from anyone alive, so a channel-loaded holder (or
  * one that just took over) keeps the lock.
+ *
+ * The route takeover needs both sides proven too: our route pinned and the
+ * holder's 'elimination'. A holder pinned to this same agent (pin or env) is
+ * never taken over by route, and a holder with no route (0.64.x) is unknown.
+ * Neither takeover can undo the other: a route takeover leaves an elimination
+ * daemon behind, which may not take the lock back from a pinned holder by the
+ * channel rule, and a channel takeover's loser is proven unloaded, which may
+ * not take a live channel by route.
  *
  * Staleness is checked BEFORE pid-liveness on purpose: a stale record whose
  * pid was recycled by some unrelated process would look "alive" to a pid probe
@@ -197,6 +263,8 @@ export function decideLockAction(input: {
   /** This daemon's channel presence: true / false when proven, null or
    *  absent when unknown (today's behaviour). */
   selfChannelLoaded?: boolean | null
+  /** How this daemon found its identity; absent is unknown (no takeover). */
+  selfRoute?: IdentityRoute | null
 }): LockDecision {
   const { existing, now, selfPid, stalenessMs, isHolderAlive } = input
   if (!existing) return { action: 'acquire', reason: 'unlocked' }
@@ -207,13 +275,19 @@ export function decideLockAction(input: {
   if (!isHolderAlive(existing.pid)) {
     return { action: 'acquire', reason: 'holder-dead' }
   }
-  if (input.selfChannelLoaded === true && existing.channelLoaded === false) {
+  const selfPinned = isPinnedRoute(input.selfRoute)
+  if (selfPinned && existing.route === 'elimination' && input.selfChannelLoaded !== false) {
+    return { action: 'acquire', reason: 'route-takeover', holderPid: existing.pid }
+  }
+  const strayOverPinned = input.selfRoute === 'elimination' && isPinnedRoute(existing.route)
+  if (input.selfChannelLoaded === true && existing.channelLoaded === false && !strayOverPinned) {
     return { action: 'acquire', reason: 'channel-takeover', holderPid: existing.pid }
   }
   return {
     action: 'passive',
     holderPid: existing.pid,
     ...(typeof existing.channelLoaded === 'boolean' ? { holderChannelLoaded: existing.channelLoaded } : {}),
+    ...(existing.route ? { holderRoute: existing.route } : {}),
   }
 }
 
@@ -317,6 +391,8 @@ export interface AcquireResult {
   holderPid?: number
   /** What the holder we deferred to recorded about its channel, when it did. */
   holderChannelLoaded?: boolean
+  /** The route the holder we deferred to recorded, when it did. */
+  holderRoute?: IdentityRoute
 }
 
 /**
@@ -337,6 +413,9 @@ export function acquirePairingLock(input: {
   /** This daemon's channel presence, recorded in the lock and used for the
    *  takeover rule. null / absent: unknown, nothing recorded. */
   channelLoaded?: boolean | null
+  /** How this daemon found its identity, recorded in the lock and used for
+   *  the route takeover. null / absent: unknown, nothing recorded. */
+  route?: IdentityRoute | null
   io?: LockIo
 }): AcquireResult {
   const io = input.io ?? defaultLockIo
@@ -347,13 +426,15 @@ export function acquirePairingLock(input: {
       heartbeatAt: input.now,
       ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
       ...(typeof input.channelLoaded === 'boolean' ? { channelLoaded: input.channelLoaded } : {}),
+      ...(isLockRoute(input.route) ? { route: input.route } : {}),
     })
-  // A lost race names the winner AND what it recorded about its channel, so
-  // the passive banner can say why this daemon yields on that path too.
+  // A lost race names the winner AND what it recorded about its channel and
+  // route, so the passive banner can say why this daemon yields on that path too.
   const lostTo = (winner: LockRecord | null): AcquireResult => ({
     acquired: false,
     holderPid: winner?.pid,
     ...(typeof winner?.channelLoaded === 'boolean' ? { holderChannelLoaded: winner.channelLoaded } : {}),
+    ...(winner?.route ? { holderRoute: winner.route } : {}),
   })
   try {
     const existing = parseLockRecord(io.readText(input.lockPath))
@@ -364,6 +445,7 @@ export function acquirePairingLock(input: {
       stalenessMs,
       isHolderAlive: io.isProcessAlive.bind(io),
       selfChannelLoaded: input.channelLoaded,
+      selfRoute: input.route,
     })
     if (decision.action === 'passive') {
       return {
@@ -372,6 +454,7 @@ export function acquirePairingLock(input: {
         ...(decision.holderChannelLoaded !== undefined
           ? { holderChannelLoaded: decision.holderChannelLoaded }
           : {}),
+        ...(decision.holderRoute ? { holderRoute: decision.holderRoute } : {}),
       }
     }
     if (decision.reason === 'unlocked') {
@@ -383,7 +466,7 @@ export function acquirePairingLock(input: {
       // A rival created it in the same instant. Yield to whoever won.
       return lostTo(parseLockRecord(io.readText(input.lockPath)))
     }
-    // A reclaim (own / stale / holder-dead / channel-takeover) overwrites
+    // A reclaim (own / stale / holder-dead / either takeover) overwrites
     // deliberately: the file exists and an exclusive create would always
     // fail. The read-back below is what decides a simultaneous reclaim. On a
     // takeover the old holder learns it on its next refresh, which finds our
@@ -395,7 +478,9 @@ export function acquirePairingLock(input: {
       return {
         acquired: true,
         reason: decision.reason,
-        ...(decision.reason === 'channel-takeover' ? { holderPid: decision.holderPid } : {}),
+        ...(decision.reason === 'channel-takeover' || decision.reason === 'route-takeover'
+          ? { holderPid: decision.holderPid }
+          : {}),
       }
     }
     // Lost the write race: a rival overwrote us in the same instant. Yield to
@@ -414,7 +499,12 @@ export function acquirePairingLock(input: {
  *  three intervals and is reclaimed while still believing it is the holder. */
 export type RefreshOutcome =
   | { held: true; ioError?: string }
-  | { held: false; holderPid: number | undefined; holderChannelLoaded?: boolean }
+  | {
+      held: false
+      holderPid: number | undefined
+      holderChannelLoaded?: boolean
+      holderRoute?: IdentityRoute
+    }
 
 /**
  * Refresh our heartbeat and report what we found.
@@ -439,6 +529,8 @@ export function refreshPairingLockDetailed(input: {
   bootedAt?: number
   /** Re-recorded on every refresh, so a takeover rival always reads it. */
   channelLoaded?: boolean | null
+  /** Re-recorded on every refresh too, for the same reason. */
+  route?: IdentityRoute | null
   io?: LockIo
 }): RefreshOutcome {
   const io = input.io ?? defaultLockIo
@@ -449,6 +541,7 @@ export function refreshPairingLockDetailed(input: {
         held: false,
         holderPid: existing.pid,
         ...(typeof existing.channelLoaded === 'boolean' ? { holderChannelLoaded: existing.channelLoaded } : {}),
+        ...(existing.route ? { holderRoute: existing.route } : {}),
       }
     }
     io.writeFile(
@@ -458,6 +551,7 @@ export function refreshPairingLockDetailed(input: {
         heartbeatAt: input.now,
         ...(input.bootedAt != null ? { bootedAt: input.bootedAt } : {}),
         ...(typeof input.channelLoaded === 'boolean' ? { channelLoaded: input.channelLoaded } : {}),
+        ...(isLockRoute(input.route) ? { route: input.route } : {}),
       }),
     )
     return { held: true }
@@ -477,6 +571,7 @@ export function refreshPairingLock(input: {
   now: number
   bootedAt?: number
   channelLoaded?: boolean | null
+  route?: IdentityRoute | null
   io?: LockIo
 }): boolean {
   return refreshPairingLockDetailed(input).held
@@ -590,6 +685,43 @@ export function formatChannelTakeoverLine(input: {
   return (
     `pid ${input.selfPid}: pairing lock taken over from ${who}: it recorded ` +
     `channelLoaded=false and this daemon's channel is loaded${why}`
+  )
+}
+
+/** How a route reads in a log line. */
+function routePhrase(route: IdentityRoute | null | undefined): string {
+  if (route === 'pin') return 'the folder pin'
+  if (route === 'env') return 'BGOS_ASSISTANT_ID or BGOS_CREDENTIALS_PATH'
+  return 'elimination'
+}
+
+/** The one line a daemon logs when it takes the lock over from a live holder
+ *  that found its identity by elimination. */
+export function formatRouteTakeoverLine(input: {
+  selfPid: number
+  holderPid: number | undefined
+  selfRoute: IdentityRoute | null | undefined
+}): string {
+  const who = input.holderPid && input.holderPid > 0 ? `pid ${input.holderPid}` : 'the holder'
+  return (
+    `pid ${input.selfPid}: pairing lock taken over from ${who}: it found this agent by ` +
+    `elimination and this daemon is pinned to it (${routePhrase(input.selfRoute)})`
+  )
+}
+
+/**
+ * The clause that says WHY this daemon yields to the holder by route, or ''
+ * when that is not the reason: the holder is pinned to this agent and this
+ * daemon came by elimination, so it will not take over while that holder lives.
+ */
+export function formatLockYieldReason(input: {
+  holderRoute: IdentityRoute | null | undefined
+  selfRoute: IdentityRoute | null | undefined
+}): string {
+  if (!isPinnedRoute(input.holderRoute) || input.selfRoute !== 'elimination') return ''
+  return (
+    `yielding the pairing lock: the holder is pinned to this agent ` +
+    `(${routePhrase(input.holderRoute)}) and this daemon found it by elimination`
   )
 }
 

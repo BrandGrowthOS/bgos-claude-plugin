@@ -529,14 +529,14 @@ test('server loads credentials from the folder-scoped selection and refuses the 
     true,
     'the home binding must read the home from the same file auth was resolved from',
   )
-  // The binding refuses and EXITS; a warn-only version would leave the stray
-  // speaking, which is the behaviour it exists to stop.
-  assert.equal(
-    /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?formatHomeBindingRefusal\(HOME_BINDING\)[\s\S]*?process\.exit\(1\)/.test(
-      serverSource,
-    ),
-    true,
-  )
+  // The binding refuses and EXITS once the notice has been served; a warn-only
+  // version would leave the stray speaking, which is the behaviour it exists
+  // to stop. Scoped to the branch itself (test/home-refused-server.test.ts has
+  // the notice): an exit found anywhere later in the file would prove nothing.
+  const refuseBranch = /if \(HOME_BINDING\.action === 'refuse'\) \{[\s\S]*?\n\}/.exec(serverSource)
+  assert.ok(refuseBranch, 'the refusal branch exists')
+  assert.match(refuseBranch![0], /formatHomeBindingRefusal\(HOME_BINDING\)/)
+  assert.match(refuseBranch![0], /\n\s*process\.exit\(served \? 0 : 1\)\n\}$/)
 })
 
 // The auth recheck exists to notice when the credentials on disk stop matching

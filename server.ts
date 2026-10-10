@@ -251,13 +251,18 @@ import {
   formatCredentialsRefusal,
   decideHomeBinding,
   formatHomeBindingRefusal,
-  recordHomeDir,
+  formatNoHomeWarning,
+  homeCheckPassed,
+  homeStepWhileHolding,
+  lockRouteFor,
+  readFolderPinId,
   formatAuthResolution,
   formatPairingRejection,
   authHeaders,
   wsAuthOptions,
   missingCredsMessage,
   loadCredentialsFile,
+  type IdentityRoute,
   type ResolvedAuth,
 } from './lib/agent-credentials.js'
 import {
@@ -329,6 +334,8 @@ import {
   formatPassiveBanner,
   formatChannelYieldReason,
   formatChannelTakeoverLine,
+  formatLockYieldReason,
+  formatRouteTakeoverLine,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
 import { probeChannelLoaded, type ChannelPresence } from './lib/channel-presence.js'
@@ -577,7 +584,7 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
-import { servePairRequired } from './lib/pair-required-server.mjs'
+import { serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
 import { installWatcherBundle } from './lib/watcher-bundle.mjs'
 import {
   drawCatchupDelayMs,
@@ -644,17 +651,36 @@ const HOME_BINDING = decideHomeBinding({
   via: CREDENTIALS_SELECTION.via,
   cwd: LAUNCH_CWD,
   recordedHomeDir: CREDENTIALS_FILE?.homeDir ?? null,
+  recordedHomeSource: CREDENTIALS_FILE?.homeSource ?? null,
+  // The location proof: a pinned start confirms its folder as the home only
+  // when this folder's pin names the agent the file belongs to.
+  folderPinId: readFolderPinId(LAUNCH_CWD),
   assistantId: String(CREDENTIALS_FILE?.assistantId ?? ''),
   env: process.env,
 })
 if (HOME_BINDING.action === 'refuse') {
   process.stderr.write(`[bgos] ${formatHomeBindingRefusal(HOME_BINDING)}\n`)
-  process.exit(1)
+  // Not process.exit(1) before the handshake: Claude Code could show only a
+  // failed server (CONNECTION_CLOSED), and the session could not say why. A
+  // one tool notice instead, as an unpaired install gets (below). Nothing
+  // past this branch runs for a refused stray: it reads no token, takes no
+  // lock and writes nothing.
+  const served = await serveHomeRefused({
+    reason: formatHomeBindingRefusal(HOME_BINDING),
+    log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+  })
+  process.exit(served ? 0 : 1)
 }
-// A folder to claim, claimed LATER (see HOME_BINDING_RECORD_DELAY_MS): a
-// transient stray must not be able to claim a folder just by booting once.
-const HOME_DIR_TO_RECORD =
-  HOME_BINDING.action === 'record' ? HOME_BINDING.homeDir : ''
+// Has this daemon passed the home check (a pin, a matching home, the
+// kill-switch)? An elimination start with no home to check against has not:
+// it runs, but it never repoints the resume pin and never serves the owner's
+// Memory and Changes panels (board fc75c7c3). Fixed for the life of the
+// process, because nothing below can change how this daemon was started.
+const HOME_CONFIRMED = homeCheckPassed(HOME_BINDING)
+// How this daemon found its identity, in the one word the pairing lock
+// records ('pin', 'env' or 'elimination'): a pinned agent takes the channel
+// back from a stray that found it by elimination (lib/pairing-lock.ts).
+const LOCK_ROUTE = lockRouteFor(CREDENTIALS_SELECTION.via)
 
 // Warn when this daemon boots ONLY because an env var is present. See
 // describeEnvOnlyIdentityRisk: the failure it predicts is process.exit(1), not
@@ -7330,17 +7356,10 @@ const whenArmed =
     handle(payload)
   }
 
-/**
- * How long a daemon must hold the channel before it may claim a folder as its
- * agent's home. The residual race in the home binding is a stray session
- * recording a folder that is not its own; a stray is almost always TRANSIENT
- * (a subagent, a one-shot `claude -p`, a stray shell), so requiring a minute of
- * continuous delivery filters it while the real long-lived agent crosses it
- * without noticing. It is not a proof of identity, it is a cheap filter on the
- * one population that would otherwise get the binding wrong.
- */
-const HOME_BINDING_RECORD_DELAY_MS = 60_000
-let homeDirRecorded = false
+// The holder's home step has run (lib/agent-credentials.ts
+// homeStepWhileHolding): a pinned start confirms its folder once; nothing
+// else ever writes the home.
+let homeStepDone = false
 // Beacon heartbeat: a sibling of channel-live.json whose mtime updates on every
 // successful beacon, so an external supervisor can tell a dead channel from a
 // live process (channel-live.json is edge-triggered on connect/boot only and
@@ -11458,6 +11477,7 @@ function checkSessionPin(): void {
   sessionPinKeeper.check(
     {
       holdsChannel,
+      homeConfirmed: HOME_CONFIRMED,
       sessionId: liveSessionId,
       seenAtMs: liveSessionSeenAtMs,
       // Read for the holder only: a passive daemon (there can be many on one
@@ -11524,6 +11544,15 @@ function channelYieldReason(holderChannelLoaded: boolean | undefined): string {
     selfChannelLoaded: self.loaded,
     selfReason: self.reason,
   })
+}
+/** The clause a stand-down or passive line adds: the route reason when this
+ *  daemon came by elimination and the holder is pinned to this agent (it will
+ *  not take over while that holder lives), else the channel reason. */
+function lockYieldReason(
+  holderChannelLoaded: boolean | undefined,
+  holderRoute: IdentityRoute | undefined,
+): string {
+  return formatLockYieldReason({ holderRoute, selfRoute: LOCK_ROUTE }) || channelYieldReason(holderChannelLoaded)
 }
 
 /**
@@ -11873,10 +11902,10 @@ const memoryRpc = new MemoryRpcHandler({
     now: () => Date.now(),
   }),
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  // A binding that needed no record (a pin, a match, an override) is sure of
-  // its home at once; one that must record it is sure only once it has, so a
-  // stray session holding the lock in its first minute edits nothing.
-  homeConfirmed: () => HOME_BINDING.action === 'allow' || homeDirRecorded,
+  // Only a daemon that passed the home check (a pin, a match, an override). A
+  // stray that found the agent by elimination with no home to check against
+  // edits nothing, however long it holds the lock.
+  homeConfirmed: () => HOME_CONFIRMED,
   postAck: (rpcId) =>
     bgosPost(`integrations/memory-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) =>
@@ -11904,9 +11933,8 @@ const changesRpc = new ChangesRpcHandler({
     collectChanges({ workdir, caps, runGit: createNodeRunGit(), fs: nodeChangesFs, now: () => Date.now() }),
   workdir: () => CHANGES_WORKDIR,
   assistantId: () => String(ASSISTANT_ID ?? ''),
-  // The memory lane's rule: sure of its home at once when the binding needed
-  // no record, else only once it has recorded it.
-  homeConfirmed: () => HOME_BINDING.action === 'allow' || homeDirRecorded,
+  // The memory lane's rule: only a daemon that passed the home check.
+  homeConfirmed: () => HOME_CONFIRMED,
   postAck: (rpcId) =>
     bgosPost(`integrations/changes-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
   postResult: (rpcId, body) =>
@@ -14315,6 +14343,8 @@ async function main(): Promise<void> {
     }),
   )
   if (ENV_ONLY_IDENTITY_WARN) log(`WARN ${ENV_ONLY_IDENTITY_WARN}`)
+  const noHomeWarn = formatNoHomeWarning(HOME_BINDING, ASSISTANT_ID)
+  if (noHomeWarn) log(`WARN ${noHomeWarn}`)
   if (PAIRING_REJECTION_WARN) log(`WARN ${PAIRING_REJECTION_WARN}`)
   log(`Backend: ${API_BASE}`)
   log(`User: ${USER_ID}, Assistant: ${ASSISTANT_ID}`)
@@ -14639,6 +14669,7 @@ async function main(): Promise<void> {
         now: gateNow,
         bootedAt: DAEMON_START_MS,
         channelLoaded: channelPresence().loaded,
+        route: LOCK_ROUTE,
       })
       if (!gateRefresh.held) {
         channelArmed = false
@@ -14648,7 +14679,7 @@ async function main(): Promise<void> {
         stopHookIntake()
         lockIoErrorWarned = false
         standDownIgnoredFrames.clear()
-        const yieldWhy = channelYieldReason(gateRefresh.holderChannelLoaded)
+        const yieldWhy = lockYieldReason(gateRefresh.holderChannelLoaded, gateRefresh.holderRoute)
         log(
           `pid ${process.pid}: pairing lock now held by pid ` +
             `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
@@ -14926,6 +14957,7 @@ async function main(): Promise<void> {
             now: hbNow,
             bootedAt: DAEMON_START_MS,
             channelLoaded: channelPresence().loaded,
+            route: LOCK_ROUTE,
           })
           if (!refreshed.held) {
             channelArmed = false
@@ -14937,7 +14969,7 @@ async function main(): Promise<void> {
             // spell warns again instead of being swallowed by this one's latch.
             standDownIgnoredFrames.clear()
             lockIoErrorWarned = false
-            const yieldWhy = channelYieldReason(refreshed.holderChannelLoaded)
+            const yieldWhy = lockYieldReason(refreshed.holderChannelLoaded, refreshed.holderRoute)
             log(
               `pid ${process.pid}: pairing lock now held by pid ` +
                 `${refreshed.holderPid ?? 'unknown'}; ` +
@@ -15070,23 +15102,21 @@ async function main(): Promise<void> {
             pid: process.pid,
           })
         }
-        // Claim the home folder once this daemon has plainly stayed up holding
-        // the channel. Reached only past the `if (!channelArmed) return` above,
-        // so a passive daemon never records, and on the same heartbeat throttle
-        // as the beacon rather than inside it: recording is about how long the
-        // channel has been HELD, not about whether a poll ran this tick.
-        if (
-          heartbeatThisTick &&
-          !homeDirRecorded &&
-          HOME_DIR_TO_RECORD &&
-          hbNow - DAEMON_START_MS >= HOME_BINDING_RECORD_DELAY_MS
-        ) {
-          homeDirRecorded = true
-          if (recordHomeDir({ path: CREDENTIALS_PATH, homeDir: HOME_DIR_TO_RECORD })) {
+        // The home step, once, by the channel holder. Reached only past the
+        // `if (!channelArmed) return` above, so a passive daemon never writes,
+        // and on the same heartbeat throttle as the beacon. A start from the
+        // agent's pinned folder confirms that folder as its home when the file
+        // holds no confirmed one; a daemon that found its identity by
+        // elimination never writes the home, however long it holds the channel.
+        if (heartbeatThisTick && !homeStepDone) {
+          const homeStep = homeStepWhileHolding({ binding: HOME_BINDING, path: CREDENTIALS_PATH })
+          homeStepDone = homeStep.done
+          if (homeStep.wrote) {
             log(
-              `home folder recorded for this agent: ${HOME_DIR_TO_RECORD}. ` +
-                'A session launched from anywhere else will now refuse to start ' +
-                'as this agent rather than answer in its name.',
+              `home folder confirmed for this agent: ${homeStep.wrote} (this daemon ` +
+                'started from its pinned folder). A session launched from anywhere ' +
+                'else without a pin will now refuse to start as this agent rather ' +
+                'than answer in its name.',
             )
           }
         }
@@ -15327,6 +15357,7 @@ async function main(): Promise<void> {
       now: gateNow,
       bootedAt: DAEMON_START_MS,
       channelLoaded: channelPresence().loaded,
+      route: LOCK_ROUTE,
     })
     if (!gateRefresh.held) {
       channelArmed = false
@@ -15335,7 +15366,7 @@ async function main(): Promise<void> {
       stopHookIntake()
       lockIoErrorWarned = false
       standDownIgnoredFrames.clear()
-      const yieldWhy = channelYieldReason(gateRefresh.holderChannelLoaded)
+      const yieldWhy = lockYieldReason(gateRefresh.holderChannelLoaded, gateRefresh.holderRoute)
       log(
         `pid ${process.pid}: pairing lock now held by pid ` +
           `${gateRefresh.holderPid ?? 'unknown'}; the arm finished without it, ` +
@@ -15380,6 +15411,7 @@ async function main(): Promise<void> {
           now: Date.now(),
           bootedAt: DAEMON_START_MS,
           channelLoaded: channelPresence().loaded,
+          route: LOCK_ROUTE,
         })
         if (!res.acquired) return
         if (lockRecheck) clearInterval(lockRecheck)
@@ -15390,6 +15422,11 @@ async function main(): Promise<void> {
         if (res.reason === 'channel-takeover') {
           log(
             `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfReason: channelPresence().reason })}; ` +
+              `promoting from passive to active and arming delivery`,
+          )
+        } else if (res.reason === 'route-takeover') {
+          log(
+            `${formatRouteTakeoverLine({ selfPid: process.pid, holderPid: res.holderPid, selfRoute: LOCK_ROUTE })}; ` +
               `promoting from passive to active and arming delivery`,
           )
         } else {
@@ -15437,6 +15474,7 @@ async function main(): Promise<void> {
     now: Date.now(),
     bootedAt: DAEMON_START_MS,
     channelLoaded: bootPresence.loaded,
+    route: LOCK_ROUTE,
   })
   if (lockAtBoot.acquired) {
     // Ownership is true from HERE, not from the end of the arm below: the poll
@@ -15447,13 +15485,16 @@ async function main(): Promise<void> {
       lockAtBoot.reason === 'channel-takeover'
         ? `${formatChannelTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfReason: bootPresence.reason })}; ` +
             `this daemon owns the channel for this pairing`
-        : `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
-            `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
+        : lockAtBoot.reason === 'route-takeover'
+          ? `${formatRouteTakeoverLine({ selfPid: process.pid, holderPid: lockAtBoot.holderPid, selfRoute: LOCK_ROUTE })}; ` +
+              `this daemon owns the channel for this pairing`
+          : `pid ${process.pid}: pairing lock acquired (${lockAtBoot.reason}) at ` +
+              `${PAIRING_LOCK_PATH}; this daemon owns the channel for this pairing`,
     )
     await armDelivery()
   } else {
     log(
-      `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, channelYieldReason(lockAtBoot.holderChannelLoaded))}`,
+      `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
     )
     // Recheck on the heartbeat cadence: if the holder exits (its lock is
     // released, its pid dies, or its heartbeat goes stale) this passive daemon

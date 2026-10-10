@@ -71,6 +71,7 @@ import {
   probeBypassPrompt,
   probeGateStrategy,
   probeIncumbent,
+  probeCredentials,
 } from '../bin/bgos-doctor.mjs'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
 import { launchCommand, MARKETPLACE_CHANNEL_SPEC, CLONE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
@@ -1910,4 +1911,56 @@ test('provePairedTopology: a route only the installing SHELL sees (a session var
   assert.equal(verdict.reason, PAIRED_TOPOLOGY_REASONS.PLUGIN_NOT_INSTALLED)
   assert.match(verdict.detail, /visible to this shell but not to the environment the background service runs with/)
   assert.doesNotMatch(verdict.detail, /does not inherit CLAUDE_CONFIG_DIR/)
+})
+
+// ── The home and its source (0.65.0, board fc75c7c3) ─────────────────────────
+
+test('doctor: the credentials row prints the home and where it came from, in every state', () => {
+  const path = 'C:\\Users\\x\\.bgos-agent\\credentials-871.json'
+  const home = 'C:\\Users\\x\\.bgos-agent\\871-workspace'
+  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['set by pairing', { homeDir: home, homeSource: 'pairing' }, /home C:\\Users\\x\\\.bgos-agent\\871-workspace, set by pairing/],
+    ['confirmed by a pinned start', { homeDir: home, homeSource: 'pin' }, /confirmed by a start from its pinned folder/],
+    ['written by 0.64.3 or earlier', { homeDir: home }, /unconfirmed: recorded by plugin 0\.64\.3 or earlier/],
+    ['none at all', {}, /no home folder recorded yet/],
+  ]
+  for (const [name, extra, pattern] of cases) {
+    const rows = buildDoctorRows(healthyProbes({ credentials: { path, exists: true, assistantId: 871, ...extra } }))
+    const row = rowById(rows, 'credentials')
+    assert.equal(row.ok, true, `${name}: informational, it never fails the row`)
+    assert.match(row.detail, pattern, name)
+    assert.match(row.detail, /\(assistant 871\)/, `${name}: the old detail is kept`)
+  }
+})
+
+test('doctor: probeCredentials reads the home, its source, and whether this folder would be refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'doctor-home-'))
+  const agentHome = join(root, 'hoai-agents', 'ava')
+  const repo = join(root, 'code', 'repo')
+  mkdirSync(join(root, '.bgos-agent'), { recursive: true })
+  mkdirSync(agentHome, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  writeFileSync(
+    join(root, '.bgos-agent', 'credentials-871.json'),
+    JSON.stringify({ assistantId: 871, pairingToken: 'secret', homeDir: agentHome, homeSource: 'pairing' }),
+  )
+  const atHome = probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: agentHome })
+  assert.equal(atHome.homeDir, agentHome)
+  assert.equal(atHome.homeSource, 'pairing')
+  assert.equal(atHome.workdirRefused, false)
+  assert.equal(JSON.stringify(atHome).includes('secret'), false, 'never the token')
+
+  const away = probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: repo })
+  assert.equal(away.workdirRefused, true)
+  const row = rowById(buildDoctorRows(healthyProbes({ credentials: away })), 'credentials')
+  assert.ok(row.detail.includes(`a session started in ${repo} with no pin is refused as this agent`), row.detail)
+
+  // A pin in the folder, or an env pin, is never refused. (The doctor finds the
+  // file by an explicit id, --assistant-id here, as main passes it.)
+  writeFileSync(join(repo, '.bgos-agent-id'), '871\n')
+  assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: repo }).workdirRefused, false)
+  const bare = join(root, 'code', 'bare')
+  mkdirSync(bare, { recursive: true })
+  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, false)
+  assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, true)
 })
