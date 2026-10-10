@@ -14262,7 +14262,21 @@ async function reconcileAlwaysOn(): Promise<void> {
         `running is on for this computer in HOAI (Settings, Computers). ` +
         `Logged once.`,
     )
-    void reportStandDown('always_on_unsupported')
+    // The stand-down report says so only when Keep agents running is known to
+    // be ON for this agent (Data, PR #203): sent whatever the setting, it came
+    // from every Windows box once per boot. The switch is the row the reconcile
+    // reads below (the computer's switch marks every Claude Code agent on it
+    // always-on first, lib/watcher-keepalive.mjs), which this branch returns
+    // before, so it is read here, once. Off, a row without the flag, another
+    // runtime or a failed read: nothing. The phase is taken before the read,
+    // because the first arm marks delivery armed while the row is on its way.
+    const phase = standDownPhase()
+    void bgosGetCachedOn304(`assistants/${ASSISTANT_ID}`)
+      .then((a) => {
+        const row = a as { code?: string | null; alwaysOn?: boolean } | null
+        if (row?.code === 'claude-code' && row.alwaysOn === true) return reportStandDown('always_on_unsupported', phase)
+      })
+      .catch(() => undefined)
     return
   }
   if (!existsSync(BGOS_AGENT_BIN)) {

@@ -460,15 +460,67 @@ test('site 10, exit_boot_fatal: main() rejecting reports once while the process 
 
 const reconcile = () => one(fnNamed('reconcileAlwaysOn'), 'reconcileAlwaysOn')
 
-// The first reconcile runs inside the first arm (armDelivery step 7), before
-// delivery is armed, and its latch stops every later one: so a boot report.
-test('site 11, always_on_unsupported: the Windows reconcile standing down reports once', async () => {
-  const site = one(ifWith("process.platform === 'win32'"), 'the Windows branch', reconcile())
-  const run = await runSite(text(site), {
+// Site 11 speaks only when Keep agents running is known to be ON for this
+// agent (Data, CI owner, on PR #203): every Windows daemon used to send it once
+// per boot whatever the setting. The switch is the assistant row's alwaysOn
+// (the computer's switch marks every Claude Code agent on it always-on). The
+// whole reconcile runs three times, as a boot, a config event and the 15 min
+// tick would run it. The first reconcile runs inside the first arm
+// (armDelivery step 7), and that arm sets channelEverArmed while the row is
+// still being read, so the report must keep the reconcile's boot phase.
+async function runWindowsReconcile(read: { row?: unknown; fails?: boolean }) {
+  let answer!: () => void
+  const answered = new Promise<void>((resolve) => (answer = resolve))
+  const reads: string[] = []
+  const pending: Promise<unknown>[] = []
+  const run = await runSite(`${text(reconcile())}\nawait reconcileAlwaysOn()\nawait reconcileAlwaysOn()\nawait reconcileAlwaysOn()`, {
     platform: 'win32',
-    scope: { reconcileDisabledReason: null },
+    scope: {
+      reconcileBusy: false,
+      reconcileDisabledReason: null,
+      ASSISTANT_ID: '1040',
+      bgosGetCachedOn304: (path: string) => {
+        reads.push(path)
+        const p = answered.then(() => {
+          if (read.fails) throw new Error(`GET ${path}: HTTP 503`)
+          return read.row
+        })
+        pending.push(p.catch(() => undefined))
+        return p
+      },
+    },
   })
+  run.scope.channelEverArmed = true // the first arm finishes while the row is read
+  answer()
+  await Promise.all(pending)
+  await new Promise((r) => setTimeout(r, 20))
+  return { run, reads }
+}
+
+const WINDOWS_LINE = 'always-on reconcile DISABLED on this Windows host'
+const saidOnce = (run: Run) =>
+  assert.equal(run.logs.filter((l) => l.startsWith(WINDOWS_LINE)).length, 1, 'the local line is logged once, switch or not')
+
+for (const [label, read] of [
+  ['the switch is off', { row: { code: 'claude-code', alwaysOn: false } }],
+  ['the switch is unknown: the row carries no flag', { row: { code: 'claude-code' } }],
+  ['the switch is unknown: the flag is not a boolean', { row: { code: 'claude-code', alwaysOn: 'true' } }],
+  ['the switch is unknown: the row could not be read', { fails: true }],
+  ['the agent is not a Claude Code one (it keeps itself alive)', { row: { code: 'codex', alwaysOn: true } }],
+] as const) {
+  test(`site 11, always_on_unsupported: a Windows reconcile reports nothing when ${label}`, async () => {
+    const { run, reads } = await runWindowsReconcile(read)
+    await assertSilent(run)
+    saidOnce(run)
+    assert.ok(reads.length <= 1, `the row is read at most once per process, read ${reads.length} times`)
+  })
+}
+
+test('site 11, always_on_unsupported: with the switch on, a Windows reconcile reports exactly once per boot, as a boot one', async () => {
+  const { run, reads } = await runWindowsReconcile({ row: { code: 'claude-code', alwaysOn: true } })
   await assertOneReport(run, 'always_on_unsupported', 'boot')
+  saidOnce(run)
+  assert.deepEqual(reads, ['assistants/1040'], "the switch is read once, from this agent's own row")
 })
 
 test('site 12, always_on_supervisor_missing: a missing supervisor binary reports once', async () => {
