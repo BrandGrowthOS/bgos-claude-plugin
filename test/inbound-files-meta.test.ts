@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { buildInboundChannel } from '../lib/inbound-channel.ts'
+import { buildMeetingCard } from '../lib/meeting-card.ts'
 import { buildInboundFilesMeta } from '../lib/message-text.ts'
 
 // The instructions promise agents a `files` meta value on every message that
@@ -139,6 +140,97 @@ test('a non http reference is not offered as a url', () => {
   assert.deepEqual(JSON.parse(meta as string), [{ name: 'a.pdf', kind: 'document', mimeType: 'application/pdf' }])
 })
 
+test('a size the server sends rides as a decimal string; anything else is left out', () => {
+  const meta = buildInboundFilesMeta([
+    { filename: 'a.pdf', mime: 'application/pdf', url: PDF_URL, size: 2048 },
+    { fileName: 'b.png', fileData: PHOTO_URL, isImage: true, fileSize: '17' },
+    { filename: 'c.pdf', mime: 'application/pdf', url: PDF_URL, size: -1 },
+    { filename: 'd.pdf', mime: 'application/pdf', url: PDF_URL, size: 'lots' },
+    { filename: 'e.pdf', mime: 'application/pdf', url: PDF_URL, size: 0 },
+    { filename: 'f.pdf', mime: 'application/pdf', url: PDF_URL, size: '0x10' },
+    { filename: 'g.pdf', mime: 'application/pdf', url: PDF_URL, size: 1.5 },
+    { filename: 'h.pdf', mime: 'application/pdf', url: PDF_URL, size: ' ' },
+    { filename: 'i.pdf', mime: 'application/pdf', url: PDF_URL, size: 'bad', fileSize: 9 },
+  ])
+  const sizes = (JSON.parse(meta as string) as Array<Record<string, string>>).map((e) => e.size)
+  assert.deepEqual(sizes, ['2048', '17', undefined, undefined, '0', undefined, undefined, undefined, '9'])
+})
+
+// Meeting turn cards: the poll site passes the row's messageFiles, the socket
+// twin its files, the broadcast whatever files it carries (none today).
+const MEETING = {
+  meetingId: 77,
+  chatId: '3582',
+  messageId: '47820',
+  userId: 'user_owner',
+  assistantId: '901',
+  timestamp: '2026-10-10T10:00:00.000Z',
+  yourTurn: true,
+  participants: [],
+  senderName: 'User',
+  senderType: 'user' as const,
+  text: 'see attached',
+}
+
+for (const lane of [
+  { transport: 'ws', label: 'meeting twin', files: WS_FILES },
+  { transport: 'poll', label: 'meeting poll', files: POLL_FILES },
+]) {
+  for (const count of [0, 1, 2]) {
+    const card = buildMeetingCard({ ...MEETING, transport: lane.transport, files: lane.files.slice(0, count) as never[] })
+    test(`${lane.label}, ${count} attachment(s): every meta value is a string (contract)`, () => {
+      assertAllStrings(card.meta)
+    })
+    test(`${lane.label}, ${count} attachment(s): files meta present exactly when there are files`, () => {
+      if (count === 0) {
+        assert.equal('files' in card.meta, false)
+      } else {
+        assert.deepEqual(JSON.parse(card.meta.files), EXPECTED.slice(0, count))
+      }
+      assert.equal('files_unknown' in card.meta, false, 'twin and poll deliveries carry files')
+      const lines = card.content.split('\n').filter((l) => l.startsWith('[Attached '))
+      assert.deepEqual(lines, [
+        `[Attached image: photo.jpg - ${PHOTO_URL}]`,
+        `[Attached document: report.pdf - ${PDF_URL}]`,
+      ].slice(0, count))
+    })
+  }
+}
+
+test('a meeting card from a delivery that cannot carry files says so', () => {
+  const card = buildMeetingCard({ ...MEETING, transport: 'ws', files: [], filesUnknown: true })
+  assertAllStrings(card.meta)
+  assert.equal(card.meta.files_unknown, 'true')
+  assert.equal('files' in card.meta, false)
+  // The day the broadcast does carry files, the marker goes away.
+  const withFiles = buildMeetingCard({ ...MEETING, transport: 'ws', files: WS_FILES as never[], filesUnknown: true })
+  assert.equal('files_unknown' in withFiles.meta, false)
+})
+
+test('a meeting card with a sized file keeps every meta value a string', () => {
+  const card = buildMeetingCard({
+    ...MEETING,
+    transport: 'ws',
+    files: [{ filename: 'a.pdf', mime: 'application/pdf', url: PDF_URL, size: 4096 }] as never[],
+  })
+  assertAllStrings(card.meta)
+  assert.equal(JSON.parse(card.meta.files)[0].size, '4096')
+})
+
+test('every meeting card site in server.ts passes the turn files', () => {
+  const sites = SERVER_SOURCE.split('buildMeetingCard({').slice(1).map((rest) => rest.slice(0, rest.indexOf('\n      })') + 1 || 2000))
+  assert.equal(sites.length, 3, 'three meeting card sites')
+  assert.ok(sites.some((x) => x.includes('files: msg.messageFiles ?? [],')), 'poll site')
+  assert.ok(sites.some((x) => x.includes('files: wsFiles,')), 'socket twin site')
+  assert.ok(sites.some((x) => x.includes('filesUnknown: !Array.isArray(payload?.files),')), 'broadcast site')
+})
+
+test('a meeting card with no files is byte identical to one built without the field', () => {
+  const { files: _f, ...rest } = { ...MEETING, transport: 'ws', files: [] }
+  assert.deepEqual(buildMeetingCard({ ...rest, files: [] }), buildMeetingCard(rest))
+  assert.equal(buildMeetingCard(rest).content.endsWith('User: see attached'), true)
+})
+
 test('a socket file with no link is skipped in both the content and the meta', () => {
   assert.equal(buildInboundFilesMeta([{ filename: 'lost.pdf', mime: 'application/pdf' }]), null)
   const delivery = buildInboundChannel({
@@ -154,15 +246,31 @@ test('the instructions describe the files meta exactly as it is sent', () => {
   const start = SERVER_SOURCE.indexOf("'## Receiving Attachments',")
   const end = SERVER_SOURCE.indexOf("'## SHARED-ASSISTANT CONTEXT", start)
   assert.ok(start > 0 && end > start, 'Receiving Attachments section found')
-  const section = SERVER_SOURCE.slice(start, end)
-  assert.match(section, /`meta\.files`, a JSON STRING \(not an array; parse it with JSON\.parse\)/)
-  assert.match(section, /`meta\.files` is absent when the message has no attachments\./)
-  assert.match(section, /"\[Attached <kind>: <name> - <ref>\]"/)
-  assert.match(section, /`mimeType` \(left out when the server sent/)
-  assert.match(section, /`url` \(left out unless the reference is an http\(s\) link,/)
-  assert.match(section, /Every value inside is a string\./)
+  // The prose the agent reads: the section's string literals, joined, with
+  // the source's line wrapping collapsed to single spaces.
+  const section = [...SERVER_SOURCE.slice(start, end).matchAll(/'((?:[^'\\]|\\.)*)',/g)]
+    .map((m) => m[1].replace(/\\'/g, "'"))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+  for (const phrase of [
+    '"[Attached <kind>: <name> - <ref>]"',
+    '`meta.files`, a JSON STRING (not an array; parse it with JSON.parse)',
+    'one object per file: `name`, `kind` (image/video/audio/document)',
+    '`mimeType` (left out when the server sent none)',
+    '`size` (bytes, left out when the server sent none, which today it never does)',
+    '`url` (left out unless the reference is an http(s) link,',
+    'Every value inside is a string.',
+    '`meta.files` is absent when the message has no attachments.',
+    'A meeting turn card (`meta.meeting_id` set) carries both the same way when its delivery carried the files.',
+    'One built from the meeting broadcast, which carries no files yet, has neither and instead has `files_unknown = "true"`',
+    'an absent `meta.files` does NOT mean the person attached nothing',
+  ]) {
+    assert.ok(section.includes(phrase), `instructions say: ${phrase}`)
+  }
   // Every key the builder can emit is named, and no key it never emits.
-  for (const key of Object.keys(EXPECTED[0])) assert.match(section, new RegExp('`' + key + '`'))
+  const full = JSON.parse(buildInboundFilesMeta([{ filename: 'a.pdf', mime: 'application/pdf', url: PDF_URL, size: 1 }]) as string)[0]
+  assert.deepEqual(Object.keys(full).sort(), ['kind', 'mimeType', 'name', 'size', 'url'])
+  for (const key of Object.keys(full)) assert.ok(section.includes('`' + key + '`'), key)
   for (const stale of ['file_name', 'mime_type', '`type`', 'A `files` array']) {
     assert.equal(section.includes(stale), false, `stale shape word ${stale} is gone`)
   }

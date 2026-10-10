@@ -361,6 +361,9 @@ export interface InboundFileLike {
   mime?: string | null
   url?: string | null
   dataUri?: string | null
+  /** Bytes. No server sends one today; read when one does. */
+  size?: number | string | null
+  fileSize?: number | string | null
 }
 
 /** One attachment, read the same way off either lane's shape. */
@@ -369,6 +372,18 @@ export interface InboundFileEntry {
   name: string
   mimeType: string
   ref: string
+  /** Bytes as a decimal string, '' when the server sent no usable size. */
+  size: string
+}
+
+function readFileSize(f: InboundFileLike): string {
+  for (const raw of [f.size, f.fileSize]) {
+    if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) return String(raw)
+    if (typeof raw === 'string' && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw))) {
+      return String(Number(raw))
+    }
+  }
+  return ''
 }
 
 /**
@@ -390,6 +405,7 @@ export function normalizeInboundFiles(files: InboundFileLike[] = []): InboundFil
         name: String(f.filename ?? 'file'),
         mimeType: String(f.mime ?? ''),
         ref,
+        size: readFileSize(f),
       })
     } else {
       // Poll payload shape: { isImage/isVideo/isAudio, fileName, fileData }
@@ -398,6 +414,7 @@ export function normalizeInboundFiles(files: InboundFileLike[] = []): InboundFil
         name: String(f.fileName ?? 'file'),
         mimeType: String(f.fileMimeType ?? ''),
         ref: String(f.fileData ?? ''),
+        size: readFileSize(f),
       })
     }
   }
@@ -429,8 +446,8 @@ export function buildInboundContent(
  * The `files` meta value: a JSON STRING, never an array. The harness silently
  * drops a channel card whose meta carries any non-string value (the wake card
  * contract), so a raw array here would kill every message with an attachment.
- * Each entry is `{ name, kind, mimeType?, url? }`, every value a string.
- * `mimeType` is left out when the server sent none. `url` is left out unless
+ * Each entry is `{ name, kind, mimeType?, size?, url? }`, every value a string.
+ * `mimeType` and `size` are left out when the server sent none. `url` is left out unless
  * the reference is an http(s) link: an inline file (a data uri or raw base64)
  * is still carried by the content line, and copying it here would send it
  * twice. Returns null when there are no attachments, so the caller omits the
@@ -444,6 +461,7 @@ export function buildInboundFilesMeta(files: InboundFileLike[] = []): string | n
       name: f.name,
       kind: f.kind,
       ...(f.mimeType ? { mimeType: f.mimeType } : {}),
+      ...(f.size ? { size: f.size } : {}),
       ...(/^https?:\/\//i.test(f.ref) ? { url: f.ref } : {}),
     })),
   )
