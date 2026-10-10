@@ -957,8 +957,8 @@ export function probeBunAndBunx({ env = process.env, home = homedir(), platform 
 }
 
 /** Where and how this plugin is installed (decides the channel spec). */
-export function probeMethod({ scriptPath = fileURLToPath(import.meta.url), env = process.env } = {}) {
-  return detectInstallMethod({ scriptPath, env })
+export function probeMethod({ scriptPath = fileURLToPath(import.meta.url), env = process.env, home = homedir() } = {}) {
+  return detectInstallMethod({ scriptPath, env, home })
 }
 
 /**
@@ -1849,9 +1849,13 @@ export function parseDoctorArgs(argv) {
  * always 0 in report mode, the preflight verdict under --preflight.
  * @param {string[]} [argv]
  * @param {{ env?: Record<string, string | undefined>, home?: string, platform?: string,
- *           cwd?: string, scriptDir?: string, print?: (line: string) => void }} [opts]
+ *           cwd?: string, scriptDir?: string, print?: (line: string) => void,
+ *           launchArgv?: string[], claude?: object, write?: (text: string) => void }} [opts]
  *   `cwd`, `scriptDir` and `print` are seams for tests: where the doctor stands, where its own
- *   files live (decides the install method), and where the prove-only line goes.
+ *   files live (decides the install method), and where the prove-only line goes. So are
+ *   `launchArgv` (the handshake child's argv after node: a test hands in a stub so it never
+ *   starts the real daemon), `claude` (a probeClaude result: a test hands in { found: false } so
+ *   it never runs the real CLI) and `write` (where the table or the JSON goes).
  */
 export async function main(argv = process.argv.slice(2), opts = {}) {
   const { args, errors } = parseDoctorArgs(argv)
@@ -1868,6 +1872,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
   const env = opts.env ?? process.env
   const home = opts.home ?? homedir()
   const platform = opts.platform ?? process.platform
+  const write = opts.write ?? ((text) => process.stdout.write(text))
 
   // Prove-only mode, for `hoai-agent install`: one line, no table, no network,
   // no claude. Exit 0 when the paired topology is proven, 1 when it is refused.
@@ -1925,14 +1930,14 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     return 1
   }
 
-  const claude = probeClaude({ platform })
+  const claude = opts.claude ?? probeClaude({ platform })
   const auth = claude.found
     ? probeAuth({ claude })
     : { ok: false, error: 'the claude CLI was not found, so auth was not checked' }
   const node = probeNode()
   const { bun, bunx } = probeBunAndBunx({ env, home, platform })
-  const method = probeMethod()
-  const route = probeChannelRoute({ cwd: workdir, env })
+  const method = probeMethod({ env, home })
+  const route = probeChannelRoute({ cwd: workdir, env, home })
 
   // The launch rows: four cheap reads, none of which touches the channel.
   // They run before the handshake because they are the ones that answer "why
@@ -1957,8 +1962,8 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // channel loads; the Install method row is, and it fails loudly on its own
     // when undetermined.
     const handshakeRoot = String(method.pluginRoot ?? '').trim() || String(method.executionRoot ?? '').trim()
-    const launchArgv = [join(handshakeRoot, 'bin', 'bgos-launch.mjs'), join(handshakeRoot, 'server.ts')]
-    const handshakeEnv = { ...process.env }
+    const launchArgv = opts.launchArgv ?? [join(handshakeRoot, 'bin', 'bgos-launch.mjs'), join(handshakeRoot, 'server.ts')]
+    const handshakeEnv = { ...env }
     if (assistantId) handshakeEnv.BGOS_ASSISTANT_ID = assistantId
     handshake = await probeHandshake({ launchArgv, env: handshakeEnv, cwd: workdir })
   }
@@ -2011,9 +2016,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     // three values (true / false / null); UNPROVEN is a fourth, and the two
     // tests that matter, ok === true for green and ok === false for broken,
     // classify it the same way they classified null.
-    process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`)
+    write(`${JSON.stringify(rows, null, 2)}\n`)
   } else {
-    process.stdout.write(`${renderDoctorTable(rows)}\n`)
+    write(`${renderDoctorTable(rows)}\n`)
   }
 
   if (args.preflight) {
