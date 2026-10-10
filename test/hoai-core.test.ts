@@ -325,6 +325,41 @@ test('buildRunPlan: no pin + a single credentials file launches (the daemon self
   assert.match(plan.note, /assistant 871/)
 })
 
+test('buildRunPlan: launching the sole agent from a folder that is not its home says the daemon will refuse there (fc75c7c3)', () => {
+  // Pairing writes the agent's home (0.65.0). A hoai started by hand in some
+  // other unpinned folder still launches, as before, but its daemon is
+  // refused by the home check, so the launcher says so instead of
+  // "self-resolves" and nothing else.
+  const creds = (homeDir: string, homeSource?: string) =>
+    readFileServing(
+      `${POSIX_HOME}/.bgos-agent/credentials-871.json`,
+      JSON.stringify({ assistantId: 871, pairingToken: 'never-printed', homeDir, ...(homeSource ? { homeSource } : {}) }),
+    )
+  const away = buildRunPlan({
+    cwd: '/home/kc/somewhere',
+    env: {},
+    home: POSIX_HOME,
+    readFile: creds('/home/kc/hoai-agents/ava', 'pairing'),
+    listDir: () => ['credentials-871.json'],
+    scriptDir: CLONE_SCRIPT_DIR,
+  })
+  assert.equal(away.ok, true, 'still launches: no new exit code for a supervisor to classify')
+  if (!away.ok) return
+  assert.match(away.note, /not agent 871's home/)
+  assert.ok(away.note.includes('/home/kc/hoai-agents/ava'), away.note)
+  assert.match(away.note, /set by pairing/)
+  assert.match(away.note, /echo 871 > \.bgos-agent-id/)
+  assert.doesNotMatch(away.note, /never-printed/, 'never the token')
+  // A home recorded by 0.64.3 or earlier is enforced too, so it is named too.
+  const old = buildRunPlan({ cwd: '/home/kc/somewhere', env: {}, home: POSIX_HOME, readFile: creds('/home/kc/hoai-agents/ava'), listDir: () => ['credentials-871.json'], scriptDir: CLONE_SCRIPT_DIR })
+  assert.equal(old.ok && /not agent 871's home/.test(old.note) && /unconfirmed/.test(old.note), true)
+  // From the home itself, or with no home recorded, nothing extra is said.
+  const atHome = buildRunPlan({ cwd: '/home/kc/hoai-agents/ava/', env: {}, home: POSIX_HOME, readFile: creds('/home/kc/hoai-agents/ava', 'pairing'), listDir: () => ['credentials-871.json'], scriptDir: CLONE_SCRIPT_DIR })
+  assert.equal(atHome.ok && !/home/.test(atHome.note.split('\n').slice(1).join('\n')), true)
+  const none = buildRunPlan({ cwd: '/home/kc/somewhere', env: {}, home: POSIX_HOME, readFile: noFiles, listDir: () => ['credentials-871.json'], scriptDir: CLONE_SCRIPT_DIR })
+  assert.equal(none.ok && !/not agent/.test(none.note), true)
+})
+
 test('buildRunPlan: no pin + no credentials at all still launches, hinting at pairing', () => {
   const plan = buildRunPlan({
     cwd: '/home/kc/somewhere',

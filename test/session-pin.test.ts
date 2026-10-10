@@ -42,6 +42,7 @@ const OLD = '11111111-2222-4333-8444-555555555555'
 type PinInput = Parameters<typeof decideSessionPin>[0]
 const ready: PinInput = {
   holdsChannel: true,
+  homeConfirmed: true,
   liveSessionId: LIVE,
   liveSessionAgeMs: SESSION_PIN_SETTLE_MS,
   printMode: false,
@@ -54,6 +55,9 @@ test('the pin decision table', () => {
   const rows: Array<[string, Partial<PinInput>, string, string]> = [
     // name, overrides, action, reason
     ['a passive daemon (a claude -p, a subagent) never pins', { holdsChannel: false }, 'skip', 'not-holder'],
+    // fc75c7c3: a stray that found the agent by elimination and holds the
+    // channel while the agent is down must not repoint the agent's pin.
+    ['a holder that has not passed the home check never pins', { homeConfirmed: false }, 'skip', 'home-unconfirmed'],
     ['no live session learned yet', { liveSessionId: null }, 'skip', 'no-live-session'],
     ['a live id that is not a UUID is never written', { liveSessionId: 'abc' }, 'skip', 'live-not-uuid'],
     ['a print-mode claude is a one-shot, never the agent', { printMode: true }, 'skip', 'print-mode'],
@@ -151,8 +155,9 @@ function sandbox() {
   return { home, cwd, keeper, makeTranscript, pinPath, logs, cleanup: () => rmSync(home, { recursive: true, force: true }) }
 }
 
-const live = (over: Partial<{ holdsChannel: boolean; sessionId: string | null; seenAtMs: number; printMode: boolean | null }> = {}) => ({
+const live = (over: Partial<{ holdsChannel: boolean; homeConfirmed: boolean; sessionId: string | null; seenAtMs: number; printMode: boolean | null }> = {}) => ({
   holdsChannel: true,
+  homeConfirmed: true,
   sessionId: LIVE,
   seenAtMs: 0,
   printMode: false,
@@ -217,6 +222,21 @@ test('the keeper does nothing for a passive daemon, a print-mode session or a fr
   }
 })
 
+test('the keeper leaves the pin alone for a holder that has not passed the home check', () => {
+  const s = sandbox()
+  try {
+    mkdirSync(dirname(s.pinPath), { recursive: true })
+    writeFileSync(s.pinPath, OLD)
+    s.makeTranscript(OLD)
+    s.makeTranscript(LIVE)
+    const decision = s.keeper.check(live({ homeConfirmed: false }), SESSION_PIN_SETTLE_MS * 10)
+    assert.deepEqual(decision, { action: 'skip', reason: 'home-unconfirmed' })
+    assert.equal(readFileSync(s.pinPath, 'utf8'), OLD, 'the agent keeps its own conversation')
+  } finally {
+    s.cleanup()
+  }
+})
+
 test('the keeper never throws', () => {
   const keeper = new SessionPinKeeper({
     home: '/nowhere',
@@ -254,6 +274,8 @@ test('server.ts pins from the channel holder, with the session its own hooks nam
   assert.doesNotMatch(wiring, /cwd: process\.cwd\(\)/)
   assert.match(wiring, /const holdsChannel = channelArmed && lockHeld\n/)
   assert.match(wiring, /\n\s*holdsChannel,\n/)
+  // Only a daemon that passed the home check may repoint the resume pin.
+  assert.match(wiring, /\n\s*homeConfirmed: HOME_CONFIRMED,\n/)
   assert.match(wiring, /sessionId: liveSessionId/)
   assert.match(wiring, /seenAtMs: liveSessionSeenAtMs/)
   assert.match(wiring, /printMode: holdsChannel \? claudePrintMode\(\) : null/)

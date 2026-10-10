@@ -75,9 +75,12 @@ test('the memory folder is found from the launch folder and the config dir, neve
   // handler tests inject their own predicate, so this is the only guard on it.
   assert.match(
     built,
-    /\n\s*homeConfirmed: \(\) => HOME_BINDING\.action === 'allow' \|\| homeDirRecorded,\n/,
-    'home check is exactly: allow, or recorded',
+    /\n\s*homeConfirmed: \(\) => HOME_CONFIRMED,\n/,
+    'home check is exactly the boot home check',
   )
+  // And that check is the lib's, over this daemon's own binding (fc75c7c3:
+  // an elimination start with no home to check against has not passed it).
+  assert.match(server, /\nconst HOME_CONFIRMED = homeCheckPassed\(HOME_BINDING\)\n/)
   assert.ok(built.includes('ASSISTANT_ID'))
 })
 

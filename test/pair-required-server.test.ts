@@ -283,7 +283,8 @@ test('server.ts serves the unpaired channel instead of exiting before the handsh
   // remains is the exit AFTER serving, which cannot precede the handshake.
   assert.doesNotMatch(body, /\n\s*process\.exit\(1\)\s*\n/)
   assert.match(body, /process\.exit\(served \? 0 : 1\)/)
-  assert.ok(
-    serverSource.includes("import { servePairRequired } from './lib/pair-required-server.mjs'"),
+  assert.match(
+    serverSource,
+    /import \{ (?:[A-Za-z]+, )*servePairRequired(?:, [A-Za-z]+)* \} from '\.\/lib\/pair-required-server\.mjs'/,
   )
 })

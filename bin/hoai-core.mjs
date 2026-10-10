@@ -331,6 +331,45 @@ export function configuredAssistantId(env) {
   return value && value !== ASSISTANT_ID_PLACEHOLDER ? value : ''
 }
 
+/**
+ * The line hoai adds when it launches the host's sole agent from a folder its
+ * daemon will refuse: the agent's credentials file records a home elsewhere,
+ * and the folder declares no pin, so the daemon's home check (lib/agent-
+ * credentials.ts decideHomeBinding) refuses it and the agent does not answer
+ * (board fc75c7c3). '' when there is no home, it is this folder, or the file
+ * cannot be read. Reads homeDir and homeSource only; never the token. The
+ * comparison mirrors normalizeHomeDir (a .mjs never imports a .ts here).
+ */
+export function soleAgentHomeNote({ home, assistantId, cwd, readFile = defaultReadText, platform = process.platform }) {
+  const id = String(assistantId ?? '').trim()
+  if (!id) return ''
+  let creds = null
+  try {
+    creds = JSON.parse(String(readFile(joinDir(agentDir(home), `credentials-${id}.json`)) ?? ''))
+  } catch {
+    return ''
+  }
+  const homeDir = typeof creds?.homeDir === 'string' ? creds.homeDir.trim() : ''
+  if (!homeDir) return ''
+  const norm = (dir) => {
+    const raw = String(dir ?? '').trim()
+    const out = raw.replace(/[\\/]+$/, '') || raw.slice(0, 1)
+    return platform === 'win32' || platform === 'darwin' ? out.toLowerCase() : out
+  }
+  if (norm(homeDir) === norm(cwd)) return ''
+  const source =
+    creds.homeSource === 'pairing'
+      ? 'set by pairing'
+      : creds.homeSource === 'pin'
+        ? 'confirmed by a start from its pinned folder'
+        : 'unconfirmed, recorded by plugin 0.64.3 or earlier'
+  return (
+    `[hoai] WARNING: this folder is not agent ${id}'s home (${homeDir}, ${source}), and it ` +
+    `has no ${FOLDER_PIN_FILE}, so the agent's daemon will refuse to connect here and the agent ` +
+    `will not answer. Run hoai from ${homeDir}, or pin this folder: echo ${id} > ${FOLDER_PIN_FILE}`
+  )
+}
+
 /** The assistant ids that have a credentials-<id>.json in the agent dir,
  *  ascending (mirror of listPerAssistantIds in lib/agent-credentials.ts). */
 export function listPairedAssistantIds(home, listDir = defaultListDir) {
@@ -810,9 +849,11 @@ export function buildRunPlan({
         `or set BGOS_ASSISTANT_ID=${ids[0]} in this agent's environment.`,
     }
   }
+  const homeNote = ids.length === 1 ? soleAgentHomeNote({ home, assistantId: ids[0], cwd, readFile }) : ''
   const identityLine =
     ids.length === 1
-      ? `[hoai] launching as this host's sole paired agent (assistant ${ids[0]}); the daemon self-resolves.`
+      ? `[hoai] launching as this host's sole paired agent (assistant ${ids[0]}); the daemon self-resolves.` +
+        (homeNote ? `\n${homeNote}` : '')
       : `[hoai] no pairing on this host yet; if the agent cannot connect, run: hoai pair <CODE> (code from the HOAI app).`
   return {
     ok: true,

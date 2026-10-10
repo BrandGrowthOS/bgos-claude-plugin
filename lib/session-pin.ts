@@ -22,6 +22,12 @@
  *     never become the agent's identity. The hook intake is holder-only and
  *     admits only the session it positively bound (lib/hook-intake.ts), so
  *     the id itself is already this agent's own.
+ *   - Only a daemon that PASSED THE HOME CHECK (lib/agent-credentials.ts
+ *     homeCheckPassed): a pin, a matching home, or the kill-switch. A stray
+ *     that found the agent by elimination while the agent was down holds the
+ *     channel legitimately, but it has proven nothing about being the agent,
+ *     and repointing the pin to its session would make the next supervised
+ *     relaunch open the stray's conversation (board fc75c7c3).
  *   - Never a print-mode claude (`-p` / `--print` on the claude ancestor's
  *     command line): a one-shot run that took the lock while the agent was
  *     down is not the agent. Unknown (no ps, e.g. Windows) does not veto.
@@ -29,8 +35,8 @@
  *     hoai's own health window: hoai commits a fresh fallback session to the
  *     pin only after it survived RELAUNCH_HEALTHY_MS (zaid, 2026-09-02, a
  *     fast-dying fresh session must not burn the pin), and pinning earlier
- *     would undo that rule. It is also the same transient filter the home
- *     binding uses (server.ts HOME_BINDING_RECORD_DELAY_MS).
+ *     would undo that rule. It is also the one-minute transient filter the
+ *     home binding used up to 0.64.3.
  *   - The live session's transcript must exist where hoai looks for it
  *     (<config>/projects/<munged cwd>/<id>.jsonl, the exact hoai-core
  *     functions, imported, never re-derived): a pin hoai cannot resume would
@@ -59,8 +65,7 @@ import { type AgentStateFs, writeTextAtomic } from './agent-state.js'
 import { agentStateDir } from './update-readiness.js'
 
 /** How long a live session must have been seen before it may be pinned.
- *  At least hoai's RELAUNCH_HEALTHY_MS (pinned by test), and the home
- *  binding's one-minute transient filter. */
+ *  At least hoai's RELAUNCH_HEALTHY_MS (pinned by test), and one minute. */
 export const SESSION_PIN_SETTLE_MS = Math.max(60_000, RELAUNCH_HEALTHY_MS)
 /** How often server.ts asks while the live session is not pinned yet. */
 export const SESSION_PIN_CHECK_MS = 30_000
@@ -71,6 +76,7 @@ export type SessionPinDecision =
       action: 'skip'
       reason:
         | 'not-holder'
+        | 'home-unconfirmed'
         | 'no-live-session'
         | 'live-not-uuid'
         | 'print-mode'
@@ -79,17 +85,25 @@ export type SessionPinDecision =
         | 'pinned'
     }
 
-type LiveGuardReason = 'not-holder' | 'no-live-session' | 'live-not-uuid' | 'print-mode' | 'settling'
+type LiveGuardReason =
+  | 'not-holder'
+  | 'home-unconfirmed'
+  | 'no-live-session'
+  | 'live-not-uuid'
+  | 'print-mode'
+  | 'settling'
 
 /** The guards that need no file read: who is asking, and about which
  *  session. Null when the live session may be considered at all. */
 export function liveSessionGuard(input: {
   holdsChannel: boolean
+  homeConfirmed: boolean
   liveSessionId: string | null
   liveSessionAgeMs: number
   printMode: boolean | null
 }): LiveGuardReason | null {
   if (!input.holdsChannel) return 'not-holder'
+  if (input.homeConfirmed !== true) return 'home-unconfirmed'
   const live = String(input.liveSessionId ?? '').trim()
   if (!live) return 'no-live-session'
   if (!isSessionIdLike(live)) return 'live-not-uuid'
@@ -101,6 +115,7 @@ export function liveSessionGuard(input: {
 /** The pure decision. `printMode` null means unknown, which does not veto. */
 export function decideSessionPin(input: {
   holdsChannel: boolean
+  homeConfirmed: boolean
   liveSessionId: string | null
   liveSessionAgeMs: number
   printMode: boolean | null
@@ -192,7 +207,14 @@ export class SessionPinKeeper {
   }
 
   check(
-    live: { holdsChannel: boolean; sessionId: string | null; seenAtMs: number; printMode: boolean | null },
+    live: {
+      holdsChannel: boolean
+      /** Passed the home check (lib/agent-credentials.ts homeCheckPassed). */
+      homeConfirmed: boolean
+      sessionId: string | null
+      seenAtMs: number
+      printMode: boolean | null
+    },
     nowMs: number,
   ): SessionPinCheck {
     try {
@@ -207,6 +229,7 @@ export class SessionPinKeeper {
       // Cheap guards first: nothing is read for a passive or unsettled daemon.
       const blocked = liveSessionGuard({
         holdsChannel: live.holdsChannel,
+        homeConfirmed: live.homeConfirmed,
         liveSessionId: liveId,
         liveSessionAgeMs: nowMs - live.seenAtMs,
         printMode: live.printMode,
@@ -222,6 +245,7 @@ export class SessionPinKeeper {
       const pin = String(pinRaw ?? '').trim()
       const decision = decideSessionPin({
         holdsChannel: live.holdsChannel,
+        homeConfirmed: live.homeConfirmed,
         liveSessionId: liveId,
         liveSessionAgeMs: nowMs - live.seenAtMs,
         printMode: live.printMode,

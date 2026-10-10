@@ -41,6 +41,12 @@ export interface CredentialsFile {
    * apart from a stray session that resolved to the same file by elimination.
    */
   homeDir?: string
+  /**
+   * Where homeDir came from: 'pairing' (bgos-pair wrote the folder it paired
+   * in) or 'pin' (a start from the agent's pinned folder confirmed it). Absent
+   * on every home written up to 0.64.3, which counts as unconfirmed.
+   */
+  homeSource?: string
 }
 
 export interface PairingFileRejection {
@@ -136,7 +142,7 @@ function defaultListDir(path: string): string[] {
 }
 
 /** The numeric id in a <cwd>/.bgos-agent-id pin, or '' when absent or junk. */
-function readFolderPinId(cwd: string, readText: (path: string) => string | null): string {
+function readFolderPinIdWith(cwd: string, readText: (path: string) => string | null): string {
   if (!cwd) return ''
   const raw = readText(join(cwd, FOLDER_PIN_FILE))
   if (raw == null) return ''
@@ -196,7 +202,7 @@ export function resolveCredentialsSelection(opts: {
   }
 
   // No env pin from here: the folder is the only per-process anchor.
-  const folderId = readFolderPinId(cwd, readText)
+  const folderId = readFolderPinIdWith(cwd, readText)
   if (folderId) {
     const pinned = join(agentDir, `credentials-${folderId}.json`)
     if (exists(pinned)) return { kind: 'ok', path: pinned, via: 'folder-pin' }
@@ -491,35 +497,44 @@ export function loadCredentialsFile(path: string): CredentialsFile | null {
 // the stray session is indistinguishable from the real one at the credential
 // layer, because identity was never a property of the session.
 //
-// The 0.38.6 pairing lock does NOT close this. The lock guarantees exactly one
-// daemon per pairing; it says nothing about WHICH one. When the real agent is
-// between restarts, a stray acquires the lock legitimately and becomes the
-// agent. Mutual exclusion without identity just picks a winner.
+// The 0.38.6 pairing lock does NOT close this on its own. The lock guarantees
+// exactly one daemon per pairing; it says nothing about WHICH one. When the
+// real agent is between restarts, a stray acquires the lock legitimately and
+// becomes the agent. Mutual exclusion without identity just picks a winner
+// (lib/pairing-lock.ts now also records HOW each holder found its identity, so
+// a pinned agent takes the channel back from a stray: see lockRouteFor).
 //
-// THE BINDING. An agent's real home folder is recorded once, in its own
-// credentials file, and afterwards a session resolving by ELIMINATION from a
-// different folder refuses to start rather than answering as someone else.
+// THE BINDING. An agent's real home folder is kept in its own credentials file
+// as homeDir, and a session resolving by ELIMINATION from a different folder
+// refuses to start rather than answering as someone else.
 //
-// Three properties make it safe to roll to a live fleet:
+// WHO MAY WRITE THE HOME (0.65.0, board fc75c7c3). Up to 0.64.3 pairing never
+// wrote homeDir and pinned agents never recorded one, so the first daemon to
+// hold the channel for 60 s by elimination recorded ITS folder. On a one agent
+// computer whose agent was down, that was any stray: Ares' file recorded the
+// BGOS repo on 2026-09-19, and every stray started there was then waved
+// through. So the home now has a source (homeSource):
+//   'pairing' bgos-pair writes the folder it pairs in, the same folder it bakes
+//             the folder pin into;
+//   'pin'     a daemon started from a folder whose .bgos-agent-id names this
+//             agent confirms that folder, when the file holds no confirmed home.
+// A home with no source (every one written up to 0.64.3) is UNCONFIRMED: it is
+// still enforced against elimination starts, as before, and the agent's next
+// start from its pinned folder, or a re-pair, replaces it. A daemon that found
+// its identity by elimination never writes the home at all, and one with no
+// home to check against has not passed the check: it starts, but it neither
+// repoints the resume pin nor serves the Memory and Changes panels.
+//
+// Three properties keep it safe on a live fleet:
 //   1. It only constrains the ELIMINATION routes ('sole-per-assistant' and
 //      'legacy'). An explicit per-process pin (BGOS_CREDENTIALS_PATH,
 //      BGOS_ASSISTANT_ID, a folder pin) is already a positive identity signal
-//      and is never second-guessed, so the 12-agent env-pinned Windows hosts
-//      keep booting from wherever they like.
-//   2. It SELF-MIGRATES. An agent with nothing recorded yet records its folder
-//      and proceeds, so no operator has to do anything and no existing agent
-//      stops working on upgrade.
+//      and is never refused, so the 12-agent env-pinned Windows hosts keep
+//      booting from wherever they like.
+//   2. Nothing has to be edited by hand. An agent with no home keeps starting;
+//      a pinned start or a re-pair confirms one.
 //   3. There is an env kill-switch (BGOS_ALLOW_ANY_FOLDER=1) so a wedge is one
 //      variable away from cleared, without editing a credentials file.
-//
-// THE ONE RESIDUAL RACE, stated plainly rather than buried: if a stray session
-// is the FIRST to boot after the upgrade on a host whose agent is down, the
-// stray records ITS folder and the real agent then refuses. That is a worse
-// day than today only if it goes unnoticed, and it cannot: the refusal names
-// the recorded folder and the fix is one line. Today's failure mode is silent
-// and produces confident wrong answers in the user's chat, which is worse.
-// Recording is therefore also deliberately driven from a SUCCESSFUL connect
-// (see server.ts), not merely from resolution, to shrink that window.
 
 /** Kill-switch: set to '1'/'true' to skip the binding entirely for one boot. */
 export const ALLOW_ANY_FOLDER_ENV = 'BGOS_ALLOW_ANY_FOLDER'
@@ -527,8 +542,40 @@ export const ALLOW_ANY_FOLDER_ENV = 'BGOS_ALLOW_ANY_FOLDER'
 /** Routes that carry a per-process identity signal and are never constrained. */
 const EXPLICIT_PIN_ROUTES = new Set(['env-path', 'env-assistant', 'folder-pin'])
 
+/** Where a confirmed home came from. Anything else, or nothing, is unconfirmed. */
+export type HomeSource = 'pairing' | 'pin'
+
+/** Is the file's home confirmed: a folder, written by pairing or by a pinned start? */
+export function isHomeConfirmed(
+  creds: { homeDir?: unknown; homeSource?: unknown } | null | undefined,
+): boolean {
+  if (!creds || !str(creds.homeDir).trim()) return false
+  return creds.homeSource === 'pairing' || creds.homeSource === 'pin'
+}
+
 /**
- * Normalize a folder for comparison: resolve it, drop any trailing separator,
+ * How a daemon found its identity, in the one word the pairing lock records:
+ * 'pin' (a folder pin), 'env' (BGOS_ASSISTANT_ID or BGOS_CREDENTIALS_PATH), or
+ * 'elimination' (the only agent on this host, or the legacy shared file).
+ */
+export type IdentityRoute = 'pin' | 'env' | 'elimination'
+
+export function lockRouteFor(via: CredentialsVia): IdentityRoute {
+  if (via === 'folder-pin') return 'pin'
+  if (via === 'env-path' || via === 'env-assistant') return 'env'
+  return 'elimination'
+}
+
+/** The digits in <folder>/.bgos-agent-id, or '' when there is no usable pin. */
+export function readFolderPinId(
+  cwd: string,
+  readText: (path: string) => string | null = defaultReadText,
+): string {
+  return readFolderPinIdWith(str(cwd).trim(), readText)
+}
+
+/**
+ * Normalize a folder for comparison: trim it, drop any trailing separator,
  * and case-fold on the platforms whose filesystems are case-insensitive
  * (Windows and macOS). Comparing raw strings would refuse a real agent over a
  * trailing slash or a drive-letter case, which is exactly the kind of false
@@ -548,22 +595,35 @@ export function normalizeHomeDir(
 }
 
 export type HomeBindingDecision =
-  /** Start normally; nothing to write. */
-  | { action: 'allow'; reason: 'explicit-pin' | 'match' | 'override' | 'no-cwd' }
-  /** Start normally, and record this folder as the agent's home. */
-  | { action: 'record'; homeDir: string }
+  /** Start normally; nothing to write. 'no-home' and 'no-cwd' start without
+   *  having passed the home check (see homeCheckPassed). 'env-id': no home to
+   *  check, but BGOS_ASSISTANT_ID names the agent (its file is the legacy one). */
+  | { action: 'allow'; reason: 'explicit-pin' | 'match' | 'override' | 'no-cwd' | 'no-home' | 'env-id' }
+  /** Start normally, and confirm this folder as the agent's home (a pinned start). */
+  | { action: 'confirm'; homeDir: string }
   /** Do not start: this folder is not this agent's home. */
-  | { action: 'refuse'; recordedHomeDir: string; cwd: string; assistantId: string }
+  | {
+      action: 'refuse'
+      recordedHomeDir: string
+      /** 'pairing' or 'pin', or '' for an unconfirmed home. */
+      recordedHomeSource: HomeSource | ''
+      cwd: string
+      assistantId: string
+    }
 
 /**
  * THE PURE DECISION. Given how the credentials file was chosen, where this
- * process was launched, and what home folder (if any) the file records,
- * decide whether this daemon is the agent it resolved to.
+ * process was launched, the folder pin there, and what home (and source) the
+ * file records, decide whether this daemon is the agent it resolved to, and
+ * whether it should confirm its folder as that agent's home.
  */
 export function decideHomeBinding(input: {
   via: CredentialsVia
   cwd: string
   recordedHomeDir?: string | null
+  recordedHomeSource?: unknown
+  /** The digits in <cwd>/.bgos-agent-id ('' when none): the location proof. */
+  folderPinId?: string
   assistantId?: string
   env?: Env
   platform?: string
@@ -573,7 +633,20 @@ export function decideHomeBinding(input: {
   if (override === '1' || override === 'true') {
     return { action: 'allow', reason: 'override' }
   }
+  const confirmed = isHomeConfirmed({
+    homeDir: input.recordedHomeDir,
+    homeSource: input.recordedHomeSource,
+  })
   if (EXPLICIT_PIN_ROUTES.has(input.via)) {
+    // Never refused. It confirms a home only when its OWN folder carries the
+    // pin for this same agent: the folder pin is the only signal that says
+    // where an agent lives. An env var says which agent, but every child
+    // process inherits it in whatever folder it runs, so on its own it can
+    // never name a home.
+    const pin = str(input.folderPinId).trim()
+    const self = str(input.assistantId).trim()
+    const cwd = str(input.cwd).trim()
+    if (!confirmed && cwd && pin && pin === self) return { action: 'confirm', homeDir: cwd }
     return { action: 'allow', reason: 'explicit-pin' }
   }
   const cwd = normalizeHomeDir(input.cwd, { platform: input.platform })
@@ -584,53 +657,162 @@ export function decideHomeBinding(input: {
   const recorded = normalizeHomeDir(str(input.recordedHomeDir), {
     platform: input.platform,
   })
-  if (!recorded) return { action: 'record', homeDir: str(input.cwd).trim() }
+  // Nothing to check against. Today's rule keeps it starting, but it claims
+  // nothing: an elimination start never writes the home. One that the
+  // environment names (BGOS_ASSISTANT_ID with no credentials-<id>.json, so the
+  // resolver fell back to the legacy file: a bgos-claim agent on an API key)
+  // is the agent the way the env route is, and passes the check as it did
+  // before 0.65.0.
+  if (!recorded) {
+    return configuredAssistantId(env)
+      ? { action: 'allow', reason: 'env-id' }
+      : { action: 'allow', reason: 'no-home' }
+  }
   if (recorded === cwd) return { action: 'allow', reason: 'match' }
   return {
     action: 'refuse',
     recordedHomeDir: str(input.recordedHomeDir).trim(),
+    recordedHomeSource: confirmed ? (input.recordedHomeSource as HomeSource) : '',
     cwd: str(input.cwd).trim(),
     assistantId: str(input.assistantId),
   }
 }
 
 /**
- * The refusal banner. Names the agent, both folders, and BOTH escapes (move to
- * the home folder, or pin this one explicitly) so an operator can clear it
- * without reading this source. Secret-free: folders and an assistant id only.
+ * Has this daemon passed the home check? True for an explicit pin, a matching
+ * folder, the kill-switch, a pinned start confirming its folder, and an
+ * env-named agent with no home to check ('env-id'). False
+ * when there was no home or no folder to check (it started by elimination and
+ * proved nothing) and for a refusal. Gates the resume pin and the owner's
+ * Memory and Changes panels.
  */
-export function formatHomeBindingRefusal(decision: HomeBindingDecision): string {
-  if (decision.action !== 'refuse') return ''
-  const who = decision.assistantId ? `agent ${decision.assistantId}` : 'this agent'
+export function homeCheckPassed(decision: HomeBindingDecision): boolean {
+  if (decision.action === 'confirm') return true
+  if (decision.action !== 'allow') return false
   return (
-    `REFUSING to start: this folder is not ${who}'s home. That agent is bound to ` +
-    `${decision.recordedHomeDir}, and this session was launched from ${decision.cwd}. ` +
-    `A session started outside an agent's own folder used to resolve to it anyway and ` +
-    `answer in its name, which is the impostor bug this check exists to stop. ` +
-    `If this folder IS meant to be that agent, clear the binding by editing homeDir in ` +
-    `its credentials file. If this session is meant to be a DIFFERENT agent, pin it with ` +
-    `\`echo <id> > ${FOLDER_PIN_FILE}\` here or set BGOS_ASSISTANT_ID. To bypass this ` +
-    `check for one boot, set ${ALLOW_ANY_FOLDER_ENV}=1.`
+    decision.reason === 'explicit-pin' ||
+    decision.reason === 'match' ||
+    decision.reason === 'override' ||
+    decision.reason === 'env-id'
   )
 }
 
 /**
- * Record this folder as the agent's home, in place, preserving every other
- * field. Read-modify-write on the file we already resolved, so the token is
- * carried through untouched and never passes through a log line.
+ * The refusal banner. Names the agent, both folders, where the home came
+ * from, and the escapes (start it from its folder, pin this one, pair again
+ * here, or the one-boot override) so an operator can clear it without reading
+ * this source or editing a file. Secret-free: folders and an assistant id only.
+ */
+export function formatHomeBindingRefusal(decision: HomeBindingDecision): string {
+  if (decision.action !== 'refuse') return ''
+  const who = decision.assistantId ? `agent ${decision.assistantId}` : 'this agent'
+  const id = decision.assistantId || '<id>'
+  const source =
+    decision.recordedHomeSource === 'pairing'
+      ? 'the folder it was paired in'
+      : decision.recordedHomeSource === 'pin'
+        ? 'confirmed by a start from its pinned folder'
+        : 'unconfirmed, recorded by plugin 0.64.3 or earlier'
+  return (
+    `REFUSING to start: this folder is not ${who}'s home. That agent's home is ` +
+    `${decision.recordedHomeDir} (${source}), and this session was launched from ` +
+    `${decision.cwd}. A session started outside an agent's own folder used to resolve ` +
+    `to it anyway and answer in its name, which is the impostor bug this check exists ` +
+    `to stop. If this session is meant to be that agent, start it from its home, or ` +
+    `pin this folder with \`echo ${id} > ${FOLDER_PIN_FILE}\` here, or pair it again ` +
+    `from here (hoai pair <code>). If it is meant to be a DIFFERENT agent, pin it with ` +
+    `that agent's id or set BGOS_ASSISTANT_ID. To bypass this check for one boot, set ` +
+    `${ALLOW_ANY_FOLDER_ENV}=1.`
+  )
+}
+
+/**
+ * The boot WARN for an elimination start with no home to check against, or ''
+ * for every other decision. It runs as the agent, so it has to say why the
+ * resume pin and the owner's panels stay off, and how to confirm the home.
+ */
+export function formatNoHomeWarning(decision: HomeBindingDecision, assistantId: string): string {
+  if (decision.action !== 'allow' || decision.reason !== 'no-home') return ''
+  const who = str(assistantId).trim() ? `agent ${str(assistantId).trim()}` : 'this agent'
+  return (
+    `no home folder is recorded for ${who}, and this daemon found it by elimination ` +
+    `(no ${FOLDER_PIN_FILE} in this folder and no BGOS_ASSISTANT_ID): it answers as that agent, ` +
+    `but it has not passed the home check, so it will not repoint the resume pin or serve the ` +
+    `Memory and Changes panels. To confirm the home, start the agent from its pinned folder, ` +
+    `or pair it again from its own folder (hoai pair <code>).`
+  )
+}
+
+/**
+ * The WARN for a pinned start that replaced an unconfirmed home with a
+ * DIFFERENT folder, or '' when nothing moved. The folder it replaced is refused
+ * for elimination starts from now on, so an agent that also runs there (a Keep
+ * agents running recipe in an unpinned folder) needs that folder pinned.
+ */
+export function formatHomeMovedWarning(input: {
+  previousHomeDir?: string | null
+  confirmedHomeDir: string | null
+  assistantId: string
+  platform?: string
+}): string {
+  const previous = str(input.previousHomeDir).trim()
+  const confirmed = str(input.confirmedHomeDir).trim()
+  if (!previous || !confirmed) return ''
+  const same =
+    normalizeHomeDir(previous, { platform: input.platform }) ===
+    normalizeHomeDir(confirmed, { platform: input.platform })
+  if (same) return ''
+  const id = str(input.assistantId).trim() || '<id>'
+  return (
+    `this agent's home moved from ${previous} (unconfirmed, recorded by plugin 0.64.3 or ` +
+    `earlier) to ${confirmed} (this daemon's pinned folder). A session started in ${previous} ` +
+    `with no pin is now refused as this agent; if the agent also runs there (a Keep agents ` +
+    `running recipe, a hoai started by hand), pin that folder: \`echo ${id} > ${FOLDER_PIN_FILE}\`.`
+  )
+}
+
+type HomeFileIo = { readText(path: string): string | null; writeFile(path: string, data: string): void }
+
+/**
+ * The home step of the poll tick, run once by the channel holder (server.ts
+ * reaches it past the stand-down return). A pinned start confirms its folder
+ * at once: the pin is the proof, so there is no waiting filter. Every other
+ * decision writes nothing, however long the daemon holds the channel: an
+ * elimination start never writes the home (up to 0.64.3 it claimed one after
+ * 60 s, which is the race of board fc75c7c3). `done` is true once there is
+ * nothing left for this process to do; `wrote` names the folder written.
+ */
+export function homeStepWhileHolding(input: {
+  binding: HomeBindingDecision
+  path: string
+  io?: HomeFileIo
+}): { done: boolean; wrote: string | null } {
+  if (input.binding.action !== 'confirm') return { done: true, wrote: null }
+  const homeDir = input.binding.homeDir
+  return {
+    done: true,
+    wrote: confirmHomeDir({ path: input.path, homeDir, io: input.io }) ? homeDir : null,
+  }
+}
+
+/**
+ * Confirm this folder as the agent's home (homeSource 'pin'), in place,
+ * preserving every other field. Read-modify-write on the file we already
+ * resolved, so the token is carried through untouched and never passes
+ * through a log line.
  *
- * Deliberately a NO-OP when the file already records a home: recording is a
- * one-time migration, not something a later boot can quietly move. Returns
- * true only when a home was actually written.
+ * Deliberately a NO-OP when the file, read fresh, already holds a confirmed
+ * home: a re-pair that landed after boot wins, and a confirmed home is never
+ * moved by a later boot. Returns true only when a home was actually written.
  *
  * Never throws. A read-only credentials file (or any other IO failure) leaves
- * the agent exactly as it is today, unbound and working, which is the correct
- * degradation for a guard: failing to write must not fail the boot.
+ * the agent exactly as it is, working, which is the correct degradation for a
+ * guard: failing to write must not fail the boot.
  */
-export function recordHomeDir(input: {
+export function confirmHomeDir(input: {
   path: string
   homeDir: string
-  io?: { readText(path: string): string | null; writeFile(path: string, data: string): void }
+  io?: HomeFileIo
 }): boolean {
   const readText =
     input.io?.readText ?? ((p: string) => defaultReadText(p))
@@ -644,8 +826,9 @@ export function recordHomeDir(input: {
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return false
     const creds = parsed as CredentialsFile
-    if (str(creds.homeDir).trim()) return false
+    if (isHomeConfirmed(creds)) return false
     creds.homeDir = home
+    creds.homeSource = 'pin'
     writeFile(input.path, `${JSON.stringify(creds, null, 2)}\n`)
     return true
   } catch {

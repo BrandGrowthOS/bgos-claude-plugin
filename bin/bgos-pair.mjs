@@ -49,7 +49,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, writeFile, chmod, rm } from 'node:fs/promises'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
-import { join, dirname, win32 as win32Path } from 'node:path'
+import { join, dirname, resolve as resolvePath, win32 as win32Path } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 import {
@@ -305,7 +305,17 @@ export function selectAssistantBinding(meResponse, requestedId = '') {
   }
 }
 
-/** The exact durable credentials shape server.ts reads. */
+/**
+ * The exact durable credentials shape server.ts reads.
+ *
+ * `homeDir` is the folder this pairing names as the agent's home: the folder
+ * it pairs in, the same one bakeLaunchPin writes the folder pin into. It goes
+ * in with homeSource 'pairing', which a daemon reads as a CONFIRMED home
+ * (lib/agent-credentials.ts isHomeConfirmed). Before 0.65.0 pairing wrote no
+ * home, so the first daemon to hold the channel for a minute by elimination
+ * recorded its own folder, and on a one agent computer whose agent was down
+ * that was any stray session (board fc75c7c3). Blank: no home is written.
+ */
 export function buildCredentials({
   backendUrl,
   pairingToken,
@@ -313,7 +323,9 @@ export function buildCredentials({
   userId,
   assistantId,
   nowIso,
+  homeDir = '',
 }) {
+  const home = String(homeDir ?? '').trim()
   return {
     backendUrl: String(backendUrl),
     pairingToken: String(pairingToken),
@@ -321,6 +333,7 @@ export function buildCredentials({
     userId: String(userId),
     assistantId,
     pairedAt: nowIso,
+    ...(home ? { homeDir: home, homeSource: 'pairing' } : {}),
   }
 }
 
@@ -1580,6 +1593,10 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     userId,
     assistantId,
     nowIso: new Date().toISOString(),
+    // The home is the folder the pin is baked into below, and only when there
+    // IS a pin to bake: a pairing with no agent bound yet names no agent, so
+    // it names no home either.
+    homeDir: assistantId == null ? '' : resolvePath(String(pairCwd ?? '').trim() || process.cwd()),
   })
   // Write per-assistant, dedupe the legacy single-slot file (delete junk or
   // this same agent's stale copy, never another agent's live pairing), then

@@ -71,7 +71,11 @@ import {
   probeBypassPrompt,
   probeGateStrategy,
   probeIncumbent,
+  probeCredentials,
+  probeHandshake,
 } from '../bin/bgos-doctor.mjs'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { bunInstallHint } from '../bin/bgos-launch.mjs'
 import { launchCommand, MARKETPLACE_CHANNEL_SPEC, CLONE_CHANNEL_SPEC } from '../bin/bgos-install-method.mjs'
 
@@ -1910,4 +1914,113 @@ test('provePairedTopology: a route only the installing SHELL sees (a session var
   assert.equal(verdict.reason, PAIRED_TOPOLOGY_REASONS.PLUGIN_NOT_INSTALLED)
   assert.match(verdict.detail, /visible to this shell but not to the environment the background service runs with/)
   assert.doesNotMatch(verdict.detail, /does not inherit CLAUDE_CONFIG_DIR/)
+})
+
+// ── The home and its source (0.65.0, board fc75c7c3) ─────────────────────────
+
+test('doctor: the credentials row prints the home and where it came from, in every state', () => {
+  const path = 'C:\\Users\\x\\.bgos-agent\\credentials-871.json'
+  const home = 'C:\\Users\\x\\.bgos-agent\\871-workspace'
+  const cases: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['set by pairing', { homeDir: home, homeSource: 'pairing' }, /home C:\\Users\\x\\\.bgos-agent\\871-workspace, set by pairing/],
+    ['confirmed by a pinned start', { homeDir: home, homeSource: 'pin' }, /confirmed by a start from its pinned folder/],
+    ['written by 0.64.3 or earlier', { homeDir: home }, /unconfirmed: recorded by plugin 0\.64\.3 or earlier/],
+    ['none at all', {}, /no home folder recorded yet/],
+  ]
+  for (const [name, extra, pattern] of cases) {
+    const rows = buildDoctorRows(healthyProbes({ credentials: { path, exists: true, assistantId: 871, ...extra } }))
+    const row = rowById(rows, 'credentials')
+    assert.equal(row.ok, true, `${name}: informational, it never fails the row`)
+    assert.match(row.detail, pattern, name)
+    assert.match(row.detail, /\(assistant 871\)/, `${name}: the old detail is kept`)
+  }
+})
+
+test('doctor: probeCredentials reads the home, its source, and whether this folder would be refused', () => {
+  const root = mkdtempSync(join(tmpdir(), 'doctor-home-'))
+  const agentHome = join(root, 'hoai-agents', 'ava')
+  const repo = join(root, 'code', 'repo')
+  mkdirSync(join(root, '.bgos-agent'), { recursive: true })
+  mkdirSync(agentHome, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  writeFileSync(
+    join(root, '.bgos-agent', 'credentials-871.json'),
+    JSON.stringify({ assistantId: 871, pairingToken: 'secret', homeDir: agentHome, homeSource: 'pairing' }),
+  )
+  const atHome = probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: agentHome })
+  assert.equal(atHome.homeDir, agentHome)
+  assert.equal(atHome.homeSource, 'pairing')
+  assert.equal(atHome.workdirRefused, false)
+  assert.equal(JSON.stringify(atHome).includes('secret'), false, 'never the token')
+
+  const away = probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: repo })
+  assert.equal(away.workdirRefused, true)
+  const row = rowById(buildDoctorRows(healthyProbes({ credentials: away })), 'credentials')
+  assert.ok(row.detail.includes(`a session started in ${repo} with no pin is refused as this agent`), row.detail)
+
+  // A pin in the folder, or an env pin, is never refused. (The doctor finds the
+  // file by an explicit id, --assistant-id here, as main passes it.)
+  writeFileSync(join(repo, '.bgos-agent-id'), '871\n')
+  assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: repo }).workdirRefused, false)
+  const bare = join(root, 'code', 'bare')
+  mkdirSync(bare, { recursive: true })
+  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '871' }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, false)
+  assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, true)
+  // As the daemon reads them: a pin or an env id counts only when that
+  // agent's credentials file exists (the daemon ignores a stale pin, and an
+  // env id with no file falls back to elimination).
+  const stale = join(root, 'code', 'stale-pin')
+  mkdirSync(stale, { recursive: true })
+  writeFileSync(join(stale, '.bgos-agent-id'), '999\n')
+  assert.equal(probeCredentials({ env: {}, home: root, expectedAssistantId: '871', workdir: stale }).workdirRefused, true, 'a pin naming no file')
+  assert.equal(probeCredentials({ env: { BGOS_ASSISTANT_ID: '999' }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, true, 'an env id naming no file')
+  assert.equal(probeCredentials({ env: { BGOS_CREDENTIALS_PATH: join(root, 'x.json') }, home: root, expectedAssistantId: '871', workdir: bare }).workdirRefused, false, 'an explicit file path')
+})
+
+/** A fake server child that answers initialize with `result`. */
+function fakeServer(result: Record<string, unknown>) {
+  return () => {
+    const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; kill: () => void }
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.stdin = new PassThrough()
+    child.kill = () => {}
+    child.stdin.once('data', () => {
+      child.stdout.write(encodeJsonRpcMessage({ jsonrpc: '2.0', id: 1, result }))
+    })
+    return child
+  }
+}
+
+test('doctor: the handshake passes a real channel and fails a one tool notice (a refused or unpaired daemon)', async () => {
+  const real = await probeHandshake({
+    launchArgv: ['launch.mjs', 'server.ts'],
+    spawnImpl: fakeServer({
+      protocolVersion: '2024-11-05',
+      serverInfo: { name: 'bgos', version: '0.19.0' },
+      capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } },
+    }) as never,
+    timeoutMs: 2000,
+  })
+  assert.equal(real.ok, true, real.detail)
+
+  // 0.65.0 serves a notice instead of exiting when the home check refuses
+  // this folder, and an unpaired install already did: both answer
+  // initialize, and neither is a channel. Before this check the doctor read
+  // that as a passed handshake, green for a session that never connects.
+  const notice = await probeHandshake({
+    launchArgv: ['launch.mjs', 'server.ts'],
+    spawnImpl: fakeServer({
+      protocolVersion: '2024-11-05',
+      serverInfo: { name: 'bgos', version: '0.19.0' },
+      capabilities: { tools: {} },
+    }) as never,
+    timeoutMs: 2000,
+  })
+  assert.equal(notice.ok, false)
+  assert.match(notice.detail, /not a channel/)
+  assert.match(notice.detail, /credentials row/)
+  const row = rowById(buildDoctorRows(healthyProbes({ handshake: notice })), 'handshake')
+  assert.equal(row.ok, false)
+  assert.equal(preflightVerdict(buildDoctorRows(healthyProbes({ handshake: notice }))).ok, false)
 })
