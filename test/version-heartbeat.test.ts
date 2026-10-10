@@ -428,6 +428,7 @@ describe('declared capabilities on the heartbeat', () => {
       'boards_runs',
       'sessions_library',
       'changes_rpc',
+      'skills_list',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -447,6 +448,7 @@ describe('declared capabilities on the heartbeat', () => {
       'boards_runs',
       'sessions_library',
       'changes_rpc',
+      'skills_list',
       'hard_floor',
       'hard_floor_rules_2',
     ])

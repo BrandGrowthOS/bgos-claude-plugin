@@ -69,6 +69,8 @@ import {
 } from './lib/voice-rpc.js'
 import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './lib/memory.js'
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
+import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
+import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
@@ -11935,6 +11937,61 @@ const memoryRpc = new MemoryRpcHandler({
   log,
 })
 
+// ── Skills (skills_rpc, skills view row 3) ────────────────────────────────────
+// The owner's Abilities screen lists the skills this agent loads and removes
+// one of its own. lib/skills-inventory.ts walks the roots the CLI reads and
+// does the one Remove; lib/skills-rpc.ts is the wire contract around it. The
+// agent folder is the launcher-supplied BGOS_LAUNCH_CWD and NOTHING without
+// it: LAUNCH_CWD falls back to process.cwd(), the plugin cache on a
+// marketplace install, where a Remove would delete the plugin's own skills and
+// a list would show them as the agent's. The config dir is the one this
+// daemon resolved (it REPLACES ~/.claude/skills). The trash lives in this
+// agent's plugin state folder, outside every skills tree.
+const SKILLS_AGENT_DIR: string | null = process.env.BGOS_LAUNCH_CWD?.trim() ? LAUNCH_CWD : null
+const SKILLS_MANAGED_DIR = managedSkillsDir(process.platform, process.env)
+const skillsRpc = new SkillsRpcHandler({
+  inventory: {
+    list: () =>
+      listSkills({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        log,
+      }),
+    remove: (payload) =>
+      removeAgentSkill({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        trashDir: pathJoin(
+          pluginStateDirFor({
+            env: process.env,
+            home: homedir(),
+            assistantId: String(ASSISTANT_ID ?? ''),
+            cwd: MEMORY_AGENT_DIR,
+          }),
+          'skills-trash',
+        ),
+        now: () => Date.now(),
+        payload,
+        log,
+      }),
+  },
+  assistantId: () => String(ASSISTANT_ID ?? ''),
+  // Only a daemon that passed the home check reads or removes anything.
+  homeConfirmed: () => HOME_CONFIRMED,
+  postAck: (rpcId) =>
+    bgosPost(`integrations/skills-rpc/${encodeURIComponent(rpcId)}/ack`, {}),
+  postResult: (rpcId, body) =>
+    bgosPost(
+      `integrations/skills-rpc/${encodeURIComponent(rpcId)}/result`,
+      body as unknown as Record<string, unknown>,
+    ),
+  log,
+})
+
 // ── Changes (changes_rpc, P7 stage 3) ─────────────────────────────────────────
 // The owner's Changes panel reads this agent's uncommitted changes.
 // lib/git-changes.ts runs read only Git in the agent's folder and sends the
@@ -12948,6 +13005,25 @@ function connectWebsocket(): void {
       })
     } catch (err) {
       log(`changes_rpc handler error: ${err}`)
+    }
+  }))
+
+  // Skills (skills view row 3): the owner's Abilities screen lists this
+  // agent's skills and removes one of its own. A frame without an rpcId
+  // drops; anything with one is answered, and a re sent frame is answered
+  // again from memory, never run twice (lib/skills-rpc.ts). Only the lock
+  // holder answers (whenArmed).
+  realtimeSocket.on('skills_rpc', whenArmed('skills_rpc', (payload: any) => {
+    if (updateDrainMode) return
+    try {
+      const frame = normalizeSkillsRpc(payload)
+      if (!frame) return
+      log(`skills_rpc received (op=${frame.op}, rpc=${frame.rpcId})`)
+      void trackMessageOperation(() => skillsRpc.handle(frame)).catch((err) => {
+        log(`skills_rpc handler error: ${err}`)
+      })
+    } catch (err) {
+      log(`skills_rpc handler error: ${err}`)
     }
   }))
 

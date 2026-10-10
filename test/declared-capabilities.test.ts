@@ -101,7 +101,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'skills_list', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -136,6 +136,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'boards_runs',
       'sessions_library',
       'changes_rpc',
+      'skills_list',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -234,6 +235,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'boards_runs',
       'sessions_library',
       'changes_rpc',
+      'skills_list',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -304,6 +306,33 @@ test('changes_rpc is declared on every host: every host can read its own folder 
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('changes_rpc'))
+})
+
+/**
+ * skills_list (skills view design, section 7 row 3, the owner's Abilities
+ * screen).
+ *
+ * The backend lists a Claude Code agent's skills only while its pairing
+ * declares this token (section 3.1: a token, not a version floor), and shows
+ * the greyed card otherwise. The skills_rpc handler reads the agent's own
+ * folders on disk, which needs no tmux and no pairing only route, so it is in
+ * the base: every host, every connection, once.
+ */
+test('skills_list is declared on every host: every host can read its own skills folders', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = declaredCapabilities({ canInjectGoal, floorHook, authMode })
+        assert.equal(
+          declared.filter((t) => t === 'skills_list').length,
+          1,
+          `once on ${authMode}, canInjectGoal ${canInjectGoal}, floorHook ${floorHook}`,
+        )
+      }
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_list'))
+  assert.ok(!declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' }).includes('skills_receive'), 'receive is row 6, not declared before its handler exists')
 })
 
 /**
@@ -585,6 +614,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'boards_runs',
       'sessions_library',
       'changes_rpc',
+      'skills_list',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
