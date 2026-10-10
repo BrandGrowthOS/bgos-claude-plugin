@@ -267,6 +267,14 @@ import {
   type ResolvedAuth,
 } from './lib/agent-credentials.js'
 import {
+  createStandDownReporter,
+  pairingCredential,
+  reportedIdentityRoute,
+  settleWithin,
+  type StandDownPhase,
+  type StandDownReason,
+} from './lib/stand-down-report.js'
+import {
   NOT_MODIFIED,
   isNotModified,
   EtagCache,
@@ -563,7 +571,7 @@ import { hostname as osHostname, userInfo as osUserInfo } from 'node:os'
 // Zero-terminal connector lifecycle (design 1.4 / 7.2 / 7.6): machine
 // identity, marketplace one-click updates, the watcher installer, and the
 // P3 failure-signature intake. Plain .mjs modules shared with the watcher.
-import { ensureMachineId } from './lib/machine-id.mjs'
+import { ensureMachineId, machineIdPath, normalizeMachineId } from './lib/machine-id.mjs'
 import {
   SERVICE_RECORD_FILE_NAME,
   buildServiceRecord,
@@ -643,6 +651,27 @@ if (CREDENTIALS_SELECTION.kind === 'refuse') {
 const CREDENTIALS_PATH = CREDENTIALS_SELECTION.path
 const CREDENTIALS_FILE = loadCredentialsFile(CREDENTIALS_PATH)
 
+// Stand-down reports (identity race plan step 3, board fc75c7c3): a refusal, a
+// passive spell, a lost lock, a fatal exit or a duty switched off tells the
+// backend one line of tokens (lib/stand-down-report.ts). The route is the FINE
+// one the resolver chose (folder-pin, sole-per-assistant, ...), never
+// LOCK_ROUTE's three words, because the backend counts the two elimination
+// routes apart. Declared here because the home refusal below is the first
+// site. Fire and forget, 2 s at most, once per reason and phase, under the
+// pairing token the heartbeat sends (resolved from this same file, as AUTH is
+// below); an API key install or a missing token sends nothing. The machine id
+// is READ, never minted here (the heartbeat mints it), so a refused stray
+// writes nothing and cannot race a first boot's mint; the version is read
+// once, now, so a clone updated in place reports the code that is running.
+const IDENTITY_ROUTE = reportedIdentityRoute(CREDENTIALS_SELECTION.via)
+const standDownReporter = createStandDownReporter({
+  credentials: () => pairingCredential(resolveAuth({ env: process.env, creds: CREDENTIALS_FILE })),
+  route: IDENTITY_ROUTE,
+  machineId: () => normalizeMachineId(readFileSync(machineIdPath(homedir()), 'utf8')) ?? '',
+  pluginVersion: () => readOwnVersion(import.meta.dir),
+  log: (line: string) => log(line),
+})
+
 // Home-folder identity binding (see decideHomeBinding). The resolver above
 // answered "which agent is on this HOST"; this answers "is this session that
 // agent". Without it, any session started anywhere on a single-agent host
@@ -664,13 +693,17 @@ if (HOME_BINDING.action === 'refuse') {
   // Not process.exit(1) before the handshake: Claude Code could show only a
   // failed server (CONNECTION_CLOSED), and the session could not say why. A
   // one tool notice instead, as an unpaired install gets (below). Nothing
-  // past this branch runs for a refused stray: it uses no token, takes no
-  // lock and writes nothing.
+  // past this branch runs for a refused stray: it takes no lock and writes no
+  // agent state. Its one use of the token is the stand-down report, started
+  // before the notice so it never delays it, and waited for (2 s at most)
+  // only once the host has gone.
+  const standDownReport = standDownReporter.report('refuse_home_mismatch', 'boot')
   const served = await serveHomeRefused({
     reason: formatHomeBindingRefusal(HOME_BINDING),
     assistantId: HOME_BINDING.assistantId,
     log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
   })
+  await settleWithin(standDownReport)
   process.exit(served ? 0 : 1)
 }
 // Has this daemon passed the home check (a pin, a matching home, the
@@ -7331,6 +7364,24 @@ const PAIRING_LOCK_PATH = pairingLockPath(CREDENTIALS_PATH)
 // forward a message have to read it: the poll tick inside main, and the
 // WebSocket inbound chokepoint in connectWebsocket.
 let channelArmed = false
+// Whether delivery has EVER been armed in this process: a stand-down before
+// the first arm is reported as a boot one, after it as a run one.
+let channelEverArmed = false
+function standDownPhase(): StandDownPhase {
+  return channelEverArmed ? 'run' : 'boot'
+}
+/** One stand-down report: fire and forget, never throws, settles within 2 s
+ *  (lib/stand-down-report.ts). At most one per reason and phase per process,
+ *  so a lock that flaps all day reports lock_lost once per phase. */
+function reportStandDown(reason: StandDownReason, phase: StandDownPhase = standDownPhase()): Promise<void> {
+  return standDownReporter.report(reason, phase)
+}
+/** The same report for an exit site, sent while this process BLOCKS on it (a
+ *  child does the send, 2 s at most): nothing else in this daemon runs between
+ *  the fault and the exit that follows. Never throws. */
+function reportStandDownBeforeExit(reason: StandDownReason): void {
+  standDownReporter.reportSync(reason, standDownPhase())
+}
 // True while this daemon OWNS the pairing lock, which is a different question
 // from whether it may deliver yet. Set the instant the lock is acquired (boot,
 // or a promotion on recheck), cleared when a refresh finds a rival holding it
@@ -14211,6 +14262,7 @@ async function reconcileAlwaysOn(): Promise<void> {
         `running is on for this computer in HOAI (Settings, Computers). ` +
         `Logged once.`,
     )
+    void reportStandDown('always_on_unsupported')
     return
   }
   if (!existsSync(BGOS_AGENT_BIN)) {
@@ -14221,6 +14273,7 @@ async function reconcileAlwaysOn(): Promise<void> {
         `plugin install is repaired (re-run the installer or restore bin/bgos-agent). ` +
         `This is logged once; no further attempts will be made.`,
     )
+    void reportStandDown('always_on_supervisor_missing')
     return
   }
   reconcileBusy = true
@@ -14593,6 +14646,14 @@ async function main(): Promise<void> {
     try {
       flushChatCursors()
     } catch {}
+    // Reported while this process stands still (2 s at most), so nothing runs
+    // between the fault and the exit, as before (test/stand-down-bun.test.ts
+    // proves it on bun). Delivery goes off first anyway, and shuttingDown keeps
+    // a racing stdin close from turning exit 1 into exit 0, should a runtime
+    // ever turn the event loop during the send.
+    channelArmed = false
+    shuttingDown = true
+    reportStandDownBeforeExit('exit_uncaught')
     process.exit(1)
   })
 
@@ -14710,6 +14771,7 @@ async function main(): Promise<void> {
             `staying passive and watching for reclaim` +
             (yieldWhy ? `; ${yieldWhy}` : ''),
         )
+        void reportStandDown('lock_lost')
         resumeLockRecheck()
         return
       }
@@ -14722,6 +14784,7 @@ async function main(): Promise<void> {
       // us properly on its next pass (it will read that record as our own).
       if (!lockHeld) {
         log('re-arm finished without the pairing lock; staying passive (see the arm-end note)')
+        void reportStandDown('lock_lost')
         return
       }
       // Fresh spell in the other direction too: the next stand-down gets to
@@ -14736,6 +14799,7 @@ async function main(): Promise<void> {
       // a reconnect to chase it would cost the cheap re-arm this design is
       // built on.
       channelArmed = true
+      channelEverArmed = true
       startHookIntakeIfHolder()
       log(
         `delivery re-armed after reclaiming the pairing lock; ` +
@@ -15001,6 +15065,7 @@ async function main(): Promise<void> {
                 `so it cannot eat the holder's messages) and watching for reclaim` +
                 (yieldWhy ? `; ${yieldWhy}` : ''),
             )
+            void reportStandDown('lock_lost')
             resumeLockRecheck()
           } else if (refreshed.ioError) {
             // We keep the channel (a write hiccup is not proof of reclaim) but
@@ -15339,6 +15404,10 @@ async function main(): Promise<void> {
       // shared by every agent and the watcher on this host.
       machineId: () => ensureMachineId({ home: homedir() }),
       claudeAccount: claudeAccountIdentity,
+      // How this daemon found its identity, the fine route (never LOCK_ROUTE),
+      // and whether it passed the home check (identity race plan step 3).
+      identityRoute: IDENTITY_ROUTE,
+      homeConfirmed: HOME_CONFIRMED,
       // What the session is doing (HOAI board row 9c3d6b2c): on every beat,
       // and on its own small beat within a minute of a change and every 2
       // minutes while work is owed. The lock holder only: a passive daemon's
@@ -15403,6 +15472,7 @@ async function main(): Promise<void> {
           `staying passive and watching for reclaim` +
           (yieldWhy ? `; ${yieldWhy}` : ''),
       )
+      void reportStandDown('lock_lost')
       resumeLockRecheck()
       return
     }
@@ -15414,9 +15484,11 @@ async function main(): Promise<void> {
         'arm finished but the pairing lock was lost while it ran; staying passive ' +
           'and waiting for the recheck loop to reclaim',
       )
+      void reportStandDown('lock_lost')
       return
     }
     channelArmed = true
+    channelEverArmed = true
     // Last, with the lock proven ours one line above: start draining this
     // session's hook spool. Only the holder consumes (see the guard inside).
     startHookIntakeIfHolder()
@@ -15482,6 +15554,7 @@ async function main(): Promise<void> {
           if (!pollLoopKicked) deliveryLoopsStarted = false
           resumeLockRecheck()
           log(`delivery arm after promotion failed: ${err}; released and back to passive`)
+          void reportStandDown('arm_failed')
         })
       } catch (err) {
         // A lock operation must never kill the daemon: an unreadable or
@@ -15526,6 +15599,8 @@ async function main(): Promise<void> {
     log(
       `pid ${process.pid}: ${formatPassiveBanner(lockAtBoot.holderPid, lockYieldReason(lockAtBoot.holderChannelLoaded, lockAtBoot.holderRoute))}`,
     )
+    // Not awaited: a report never delays a boot.
+    void reportStandDown('passive_at_boot', 'boot')
     // Recheck on the heartbeat cadence: if the holder exits (its lock is
     // released, its pid dies, or its heartbeat goes stale) this passive daemon
     // reclaims and arms delivery.
@@ -15535,5 +15610,9 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   log(`Fatal error: ${err}`)
+  // Delivery off, then the report sent while this process stands still (2 s
+  // at most), as in the uncaught exception handler.
+  channelArmed = false
+  reportStandDownBeforeExit('exit_boot_fatal')
   process.exit(1)
 })

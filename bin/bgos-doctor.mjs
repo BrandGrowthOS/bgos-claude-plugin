@@ -96,6 +96,18 @@ export const HANDSHAKE_TIMEOUT_MS = 60_000
  */
 export const UNPROVEN = 'unproven'
 
+/**
+ * The fifth row status (0.65.3): the check passed on a shape that is supported
+ * and still worth a line, because something on this host looks like a fault
+ * and is not one. First user: the Channel route row on a host where the
+ * workspace .mcp.json server carries the agent and the marketplace install is
+ * also present (kc-server, agent 867), kept on purpose for hoai-browser, the
+ * hooks and the skills. Like UNPROVEN it is neither a pass nor a failure to
+ * preflightVerdict, so a WARN row can never fail the bootstrap gate, and it
+ * prints no Fix line: there is nothing to fix.
+ */
+export const WARN = 'warn'
+
 // -- Pure layer ---------------------------------------------------------------
 
 /** The platform install one-liner for the claude CLI, from claude.ai. */
@@ -300,7 +312,8 @@ function joinPreservingStyle(dir, name) {
 /**
  * Turn raw probe results into the ordered diagnostic rows. Pure: everything
  * it needs rides in `probes`. ok:true renders PASS, ok:false FAIL, the string
- * UNPROVEN renders UNPROVEN (the check applies and has no evidence yet), and
+ * UNPROVEN renders UNPROVEN (the check applies and has no evidence yet), the
+ * string WARN renders WARN (a supported shape worth a line), and
  * ok:null means the probe did not run or does not apply (rendered SKIP); every
  * ok:false row carries the single fix command for that failure. The four
  * launch probes (trust, bypass, gate, incumbent) and liveMarker are optional:
@@ -326,7 +339,7 @@ function joinPreservingStyle(dir, name) {
  *   backend: { ok: boolean, status?: number, url: string, error?: string },
  *   logPath: string,
  * }} probes
- * @returns {Array<{ id: string, label: string, ok: boolean | null | 'unproven', detail: string, fix: string }>}
+ * @returns {Array<{ id: string, label: string, ok: boolean | null | 'unproven' | 'warn', detail: string, fix: string }>}
  */
 export function buildDoctorRows(probes) {
   const p = probes ?? {}
@@ -448,6 +461,16 @@ export function buildDoctorRows(probes) {
       row('route', 'Channel route', true, `${ws} is the route; the install method is undetermined, so no second route is known`)
     } else if (installSpec === route.spec) {
       row('route', 'Channel route', true, `${ws}; the ${method.method} install publishes the same route`)
+    } else if (method.method === 'marketplace') {
+      // Supported, so WARN and never a fix that removes the marketplace install
+      // (Data, 0.65.3): the .mcp.json server carries the agent, and the
+      // marketplace install stays on purpose for what only it supplies.
+      row(
+        'route',
+        'Channel route',
+        WARN,
+        `the agent launches through the ${ws}; the marketplace install (${installSpec}) is also present and kept on purpose, because it supplies hoai-browser, the hooks and the skills. This is a supported shape. Its ${installSpec} channel carries no traffic for this agent, so a failing ${installSpec} line in claude mcp list is not this agent`,
+      )
     } else {
       row(
         'route',
@@ -771,13 +794,14 @@ function oneLine(text) {
  * one Fix line per failing row, in order. Plain spaces and dashes only: no
  * box-drawing characters, which mangle in some Windows terminals.
  *
- * Four statuses. PASS, FAIL and SKIP mean exactly what they always meant;
+ * Five statuses. PASS, FAIL and SKIP mean exactly what they always meant;
  * UNPROVEN is the row that applies and has no evidence yet (see UNPROVEN),
- * which used to print as SKIP and was read as "not applicable".
+ * which used to print as SKIP and was read as "not applicable"; WARN is a
+ * supported shape worth a line (see WARN), and like PASS it has no Fix line.
  */
 export function renderDoctorTable(rows) {
   const statusOf = (ok) =>
-    ok === true ? 'PASS' : ok === false ? 'FAIL' : ok === UNPROVEN ? 'UNPROVEN' : 'SKIP'
+    ok === true ? 'PASS' : ok === false ? 'FAIL' : ok === UNPROVEN ? 'UNPROVEN' : ok === WARN ? 'WARN' : 'SKIP'
   const data = (rows ?? []).map((r) => ({
     status: statusOf(r.ok),
     check: String(r.label ?? r.id ?? ''),
@@ -838,8 +862,9 @@ export function renderDoctorTable(rows) {
  * UNPROVEN is not a failure here, by construction: only ok:false fails a
  * non-required row and only ok:true satisfies a required one, so an unproven
  * row gates exactly as ok:null always did. Changing that would turn a machine
- * that has simply not launched yet into a failed bootstrap.
- * @param {Array<{ id: string, ok: boolean | null | 'unproven' }>} rows
+ * that has simply not launched yet into a failed bootstrap. WARN gates the
+ * same way: a supported shape never fails the bootstrap.
+ * @param {Array<{ id: string, ok: boolean | null | 'unproven' | 'warn' }>} rows
  * @returns {{ ok: boolean, failing: string[] }}
  */
 export const ADVISORY_ROW_IDS = Object.freeze(['gate', 'incumbent'])
@@ -2390,9 +2415,9 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
 
   if (args.json) {
     // The rows verbatim, ok included. A JSON consumer already had to handle
-    // three values (true / false / null); UNPROVEN is a fourth, and the two
-    // tests that matter, ok === true for green and ok === false for broken,
-    // classify it the same way they classified null.
+    // three values (true / false / null); UNPROVEN is a fourth and WARN a
+    // fifth, and the two tests that matter, ok === true for green and
+    // ok === false for broken, classify both the same way they classified null.
     write(`${JSON.stringify(rows, null, 2)}\n`)
   } else {
     write(`${renderDoctorTable(rows)}\n`)

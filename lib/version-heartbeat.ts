@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { MACHINE_ID_RE } from './machine-id.mjs'
+import { IDENTITY_ROUTES, type ReportedIdentityRoute } from './stand-down-report.ts'
 import { SESSION_STATUS_TICK_MS, sessionStatusDue, sessionStatusSignature } from './session-status.ts'
 import type { SessionStatusReport } from './session-status-contract.ts'
 import type { UpdateReadiness } from './update-readiness.js'
@@ -59,6 +60,13 @@ export function readOwnVersion(rootDir: string): string | null {
  * guessed, when the provider throws or yields a shape the backend rejects.
  * `role` is always 'agent' here: the watcher sends its own heartbeat.
  *
+ * `identityRoute` and `homeConfirmed` (0.65.3, identity race plan) say HOW this
+ * daemon found its identity, as the resolver's fine route (env-path,
+ * env-assistant, folder-pin, sole-per-assistant, legacy, unknown; never the
+ * pairing lock's pin, env or elimination), and whether it passed the home
+ * check. They are what let the backend count the agents still answering by
+ * elimination. Only a listed route and a real boolean are sent.
+ *
  * Pure and total: it reads process state and cannot throw, so the telemetry
  * rule above still holds.
  */
@@ -71,6 +79,10 @@ export interface HeartbeatEnv {
   claudeAccountKey?: string
   /** The signed in Claude account's email, when the CLI recorded one. */
   claudeAccountLabel?: string
+  /** How this daemon found its identity (lib/stand-down-report.ts IDENTITY_ROUTES). */
+  identityRoute?: ReportedIdentityRoute
+  /** Whether this daemon passed the home check (server.ts HOME_CONFIRMED). */
+  homeConfirmed?: boolean
 }
 
 /** What lib/claude-login.ts knows about this session's Claude login. */
@@ -84,7 +96,12 @@ export function heartbeatEnv(
     cwd: () => string;
     platform: string;
   },
-  providers: { machineId?: () => string; claudeAccount?: () => ClaudeAccountIdentity | null } = {},
+  providers: {
+    machineId?: () => string
+    claudeAccount?: () => ClaudeAccountIdentity | null
+    identityRoute?: string
+    homeConfirmed?: boolean
+  } = {},
 ): HeartbeatEnv {
   const env: HeartbeatEnv = { role: 'agent' }
   try {
@@ -123,6 +140,10 @@ export function heartbeatEnv(
   } catch {
     // An unreadable account is omitted; the rest of the env still rides.
   }
+  if ((IDENTITY_ROUTES as readonly unknown[]).includes(providers.identityRoute)) {
+    env.identityRoute = providers.identityRoute as ReportedIdentityRoute
+  }
+  if (typeof providers.homeConfirmed === 'boolean') env.homeConfirmed = providers.homeConfirmed
   return env
 }
 
@@ -163,6 +184,10 @@ export function startVersionHeartbeat(deps: {
   machineId?: () => string
   /** lib/claude-login.ts identity of this session's Claude login, injected likewise. */
   claudeAccount?: () => ClaudeAccountIdentity | null
+  /** The fine identity route (server.ts IDENTITY_ROUTE), fixed for the process. */
+  identityRoute?: string
+  /** Whether this daemon passed the home check (server.ts HOME_CONFIRMED). */
+  homeConfirmed?: boolean
   /**
    * Current daemon-level fault, or null when healthy. Sent on EVERY beat: the
    * backend clears the stored columns on an explicit null, so recovery needs no
@@ -225,7 +250,12 @@ export function startVersionHeartbeat(deps: {
     try {
       const body: Record<string, unknown> = {
         daemonVersion: version,
-        env: heartbeatEnv(process, { machineId: deps.machineId, claudeAccount: deps.claudeAccount }),
+        env: heartbeatEnv(process, {
+          machineId: deps.machineId,
+          claudeAccount: deps.claudeAccount,
+          identityRoute: deps.identityRoute,
+          homeConfirmed: deps.homeConfirmed,
+        }),
       }
       const sessionReport = readStatus()
       if (sessionReport) {
