@@ -357,6 +357,7 @@ export interface InboundFileLike {
   fileName?: string | null
   fileData?: string | null
   fileMimeType?: string | null
+  isDocument?: boolean | null
   filename?: string | null
   mime?: string | null
   url?: string | null
@@ -387,33 +388,66 @@ function readFileSize(f: InboundFileLike): string {
 }
 
 /**
+ * The ref text for a file the server sent with no link and no inline data (a
+ * presign that failed, or an empty poll row). The backend keeps such a file in
+ * the payload on purpose: an agent told "there was an attachment I could not
+ * open" can say so, an agent told nothing cannot.
+ */
+export const UNAVAILABLE_FILE_REF = 'no link, the server could not provide one'
+
+/**
+ * The first reference that is not blank, trimmed, or ''. An empty `url: ''`
+ * beside a real `dataUri` must not hide the data, and a reference of only
+ * spaces is no reference at all.
+ */
+function firstRef(...refs: Array<string | null | undefined>): string {
+  for (const r of refs) {
+    const t = r == null ? '' : String(r).trim()
+    if (t) return t
+  }
+  return ''
+}
+
+/**
  * Read inbound attachments off either payload shape into one list. The socket
  * sends `{ filename, mime, url?, dataUri? }`; the poll's chat history row sends
- * `{ isImage/isVideo/isAudio, fileName, fileData, fileMimeType }`. A socket file
- * with neither a url nor a data uri is skipped, as it always was, so the text
- * lines and the `files` meta always name the same files.
+ * `{ isImage/isVideo/isAudio/isDocument, fileName, fileData, fileMimeType }`.
+ * A key counts toward the socket shape only when it is not null, so a poll row
+ * that ever carries `url: null` is still read as a poll row. The content lines
+ * and the `files` meta are both built from this list, so they always name the
+ * same files.
  */
 export function normalizeInboundFiles(files: InboundFileLike[] = []): InboundFileEntry[] {
   const out: InboundFileEntry[] = []
   for (const f of files) {
-    if (f.mime !== undefined || f.filename !== undefined || f.url !== undefined || f.dataUri !== undefined) {
+    if (f.mime != null || f.filename != null || f.url != null || f.dataUri != null) {
       // WS payload shape: { filename, mime, url?, dataUri? }
-      const ref = String(f.url ?? f.dataUri ?? '')
-      if (!ref) continue
       out.push({
         kind: getFileCategory(String(f.mime ?? '')) ?? 'document',
         name: String(f.filename ?? 'file'),
         mimeType: String(f.mime ?? ''),
-        ref,
+        ref: firstRef(f.url, f.dataUri),
         size: readFileSize(f),
       })
     } else {
-      // Poll payload shape: { isImage/isVideo/isAudio, fileName, fileData }
+      // Poll payload shape. The media flags win when one is set; a row whose
+      // flags are all unset falls back to its mime type, the rule the socket
+      // lane uses, so one file never reads as an image on one lane and a
+      // document on the other.
+      const mimeType = String(f.fileMimeType ?? '')
       out.push({
-        kind: f.isImage ? 'image' : f.isVideo ? 'video' : f.isAudio ? 'audio' : 'document',
+        kind: f.isImage
+          ? 'image'
+          : f.isVideo
+            ? 'video'
+            : f.isAudio
+              ? 'audio'
+              : f.isDocument
+                ? 'document'
+                : (getFileCategory(mimeType) ?? 'document'),
         name: String(f.fileName ?? 'file'),
-        mimeType: String(f.fileMimeType ?? ''),
-        ref: String(f.fileData ?? ''),
+        mimeType,
+        ref: firstRef(f.fileData),
         size: readFileSize(f),
       })
     }
@@ -437,7 +471,7 @@ export function buildInboundContent(
   if (opts.backlogPrefix) parts.push(opts.backlogPrefix)
   if (text.trim()) parts.push(text)
   for (const f of normalizeInboundFiles(files)) {
-    parts.push(`[Attached ${f.kind}: ${f.name} - ${f.ref}]`)
+    parts.push(`[Attached ${f.kind}: ${f.name} - ${f.ref || UNAVAILABLE_FILE_REF}]`)
   }
   return parts.join('\n')
 }
@@ -446,8 +480,10 @@ export function buildInboundContent(
  * The `files` meta value: a JSON STRING, never an array. The harness silently
  * drops a channel card whose meta carries any non-string value (the wake card
  * contract), so a raw array here would kill every message with an attachment.
- * Each entry is `{ name, kind, mimeType?, size?, url? }`, every value a string.
- * `mimeType` and `size` are left out when the server sent none. `url` is left out unless
+ * Each entry is `{ name, kind, mimeType?, size?, url?, unavailable? }`, every
+ * value a string. `mimeType` and `size` are left out when the server sent
+ * none. `unavailable: 'true'` marks a file the server sent with no link and
+ * no inline data, and only that file. `url` is left out unless
  * the reference is an http(s) link: an inline file (a data uri or raw base64)
  * is still carried by the content line, and copying it here would send it
  * twice. Returns null when there are no attachments, so the caller omits the
@@ -463,6 +499,7 @@ export function buildInboundFilesMeta(files: InboundFileLike[] = []): string | n
       ...(f.mimeType ? { mimeType: f.mimeType } : {}),
       ...(f.size ? { size: f.size } : {}),
       ...(/^https?:\/\//i.test(f.ref) ? { url: f.ref } : {}),
+      ...(f.ref ? {} : { unavailable: 'true' }),
     })),
   )
 }
