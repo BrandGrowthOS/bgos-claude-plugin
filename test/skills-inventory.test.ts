@@ -602,6 +602,31 @@ test('a root lists at most SKILLS_ROOT_MAX skills', () => {
   assert.ok(skills.filter((s) => s.scope === 'computer').length <= SKILLS_ROOT_MAX)
 })
 
+test('a trash folder under a computer skills root that does not exist yet is refused', () => {
+  const f = fixture()
+  const fresh = join(f.home, '.claude-new')
+  mkdirSync(fresh, { recursive: true })
+  const trashDir = join(fresh, 'skills', 'trash')
+  const { answer } = remove(f, { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' }, f.agent, {
+    trashDir,
+    configDir: fresh,
+  })
+  assert.equal((answer as any).code, 'write_failed')
+  assert.ok(!existsSync(join(fresh, 'skills')), 'nothing created where Claude Code would load it')
+  assert.ok(existsSync(join(f.agent, '.claude', 'skills', 'agent-skill')))
+})
+
+test('a linked skill can be removed by the name the list showed, and its target stays', () => {
+  const f = fixture()
+  skill(join(f.home, 'elsewhere', 'pretty'), 'name: pretty-name\ndescription: linked with its own name')
+  symlinkSync(join(f.home, 'elsewhere', 'pretty'), join(f.agent, '.claude', 'skills', 'pretty-link'))
+  const row = byName(list(f).skills, 'pretty-name', 'agent')!
+  assert.equal(row.removable, true)
+  const { answer } = remove(f, { name: row.name, scope: 'agent', path: row.path })
+  assert.equal(answer.ok, true, JSON.stringify(answer))
+  assert.ok(existsSync(join(f.home, 'elsewhere', 'pretty', 'SKILL.md')))
+})
+
 test.after(() => {
   for (const name of readdirSync(tmpdir())) {
     if (name.startsWith('skills-inv-')) rmSync(join(tmpdir(), name), { recursive: true, force: true })

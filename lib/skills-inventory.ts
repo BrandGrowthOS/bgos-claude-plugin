@@ -53,7 +53,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { scanText } from './secret-scan.ts'
 
@@ -178,6 +178,25 @@ function overlaps(a: string, b: string): boolean {
 function under(child: string, parent: string): boolean {
   const ip = identOf(parent)
   return !!ip && chainOf(child).includes(ip)
+}
+
+/**
+ * `child` is or would be inside `root`, for paths that may not exist yet: the
+ * nearest existing folder above each is compared by identity, then the part
+ * still missing by its spelling, case and NFC folded so a folding file system
+ * cannot hide it (on a case sensitive one this only refuses more).
+ */
+function wouldBeUnder(child: string, root: string): boolean {
+  const childAt = existingAncestor(child)
+  if (existsSync(root)) return under(childAt, root)
+  const rootAt = existingAncestor(root)
+  if (!under(childAt, rootAt)) return false
+  const fold = (p: string) => p.normalize('NFC').toLowerCase()
+  const childReal = join(realOrNull(childAt) ?? childAt, relative(childAt, resolve(child)))
+  const rootReal = join(realOrNull(rootAt) ?? rootAt, relative(rootAt, resolve(root)))
+  const c = fold(childReal)
+  const r = fold(rootReal)
+  return c === r || c.startsWith(r.endsWith(sep) ? r : r + sep)
 }
 
 /** The nearest folder at or above `path` that exists. */
@@ -634,13 +653,18 @@ function refuse(code: SkillRemoveCode, message: string): SkillRemoveAnswer {
 
 const PATH_MAX = 1024
 
-/** The frontmatter name of a real skill folder, read under the list's own rules, or null. */
+/**
+ * The frontmatter name of a skill folder (a link followed, as the list does),
+ * read under the list's own rules: a SKILL.md inside the folder, a regular
+ * file, not hard linked. Null otherwise.
+ */
 function listedNameOf(folder: string): string | null {
   try {
-    const st = lstatSync(folder)
-    if (st.isSymbolicLink() || !st.isDirectory()) return null
-    const md = join(folder, 'SKILL.md')
-    const mdSt = lstatSync(md)
+    const real = realOrNull(folder)
+    if (!real || !statSync(real).isDirectory()) return null
+    const md = realOrNull(join(real, 'SKILL.md'))
+    if (!md || !inside(md, real)) return null
+    const mdSt = statSync(md)
     if (!mdSt.isFile() || mdSt.nlink > 1) return null
     const name = clean(parseFrontmatter(readSkillHead(md))?.fields.name ?? '', SKILL_DISPLAY_NAME_MAX)
     return name || null
@@ -719,9 +743,8 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
 
   // The trash is outside every skills root, or Claude Code would load the removed skill again.
   const trashDir = resolve(input.trashDir)
-  const trashAt = existingAncestor(trashDir)
   const roots = [agentSkills, ...foreign, ...repoLevels(agentDir).map((l) => join(l, '.claude', 'skills'))]
-  if (roots.some((r) => under(trashAt, r))) {
+  if (roots.some((r) => wouldBeUnder(trashDir, r))) {
     return refuse('write_failed', 'the trash folder is inside a skills folder, so nothing was moved')
   }
 
