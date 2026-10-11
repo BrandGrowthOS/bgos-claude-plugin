@@ -119,10 +119,17 @@ export function managedSkillsDir(platform: NodeJS.Platform, env: Record<string, 
   return '/etc/claude-code/.claude/skills'
 }
 
-/** A path for the app: the home folder as `~`, never a raw username. */
-export function displayPath(path: string, home: string): string {
+/**
+ * A path for the app: the home folder as `~`, never a raw username. Under the
+ * home it is `~/a/b` on every OS (Windows separators turned to `/`), the form
+ * the contract shows and remove takes back.
+ */
+export function displayPath(path: string, home: string, pathSep: string = sep): string {
   if (home && path === home) return '~'
-  if (home && path.startsWith(home + sep)) return '~' + path.slice(home.length)
+  if (home && path.startsWith(home + pathSep)) {
+    const rest = path.slice(home.length)
+    return '~' + (pathSep === '/' ? rest : rest.split(pathSep).join('/'))
+  }
   return path
 }
 

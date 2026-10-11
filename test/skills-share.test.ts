@@ -25,7 +25,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 
 import { bundleSha256, sha256Hex } from '../lib/skill-share-content-rules.ts'
@@ -83,7 +84,8 @@ function inst(
     home: w.home,
     managedDir: w.managed,
     trashDir: w.trash,
-    platform: opts.platform ?? 'darwin',
+    // the host's own, as server.ts passes it: a win32 host takes the win32 branch
+    platform: opts.platform ?? process.platform,
     now: () => 1_700_000_000_000,
     payload,
     progress: (s) => {
@@ -210,7 +212,7 @@ test('files left behind as not text do not use up the read budget, and a folder 
   if (!tooMany.ok) assert.equal(tooMany.message, 'this skill cannot be shared (too_large)')
 })
 
-test('a file that cannot be read refuses the export rather than leave it out silently', { skip: process.getuid?.() === 0 }, () => {
+test('a file that cannot be read refuses the export rather than leave it out silently (chmod, not on Windows: mode bits do not gate reads there)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'reference.md': 'Ref.\n' })
   chmodSync(join(dir, 'reference.md'), 0o000)
@@ -288,12 +290,49 @@ test('a secret shaped name the walk leaves behind is never listed, the export is
   }
 })
 
-test('a subfolder that cannot be listed refuses the export rather than leave its files out', { skip: process.getuid?.() === 0 }, () => {
+test('a subfolder that cannot be listed refuses the export rather than leave its files out (chmod, not on Windows: mode bits do not gate reads there)', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'sub/c.md': 'C\n' })
   chmodSync(join(dir, 'sub'), 0o000)
   const answer = exp(w, { name: 'notes', scope: 'agent', dryRun: true })
   chmodSync(join(dir, 'sub'), 0o755)
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.equal(answer.code, 'read_failed')
+})
+
+/** Windows: deny this user a right on a path with an ACL, the way Windows makes a file unreadable. */
+function denyAcl(path: string, right: string): () => void {
+  const who = userInfo().username
+  execFileSync('icacls', [path, '/deny', `${who}:(${right})`], { stdio: 'ignore' })
+  return () => execFileSync('icacls', [path, '/remove:d', who], { stdio: 'ignore' })
+}
+
+test('Windows: a file its ACL denies reading refuses the export rather than leave it out silently', { skip: process.platform !== 'win32' }, () => {
+  const w = world()
+  const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'reference.md': 'Ref.\n' })
+  const undo = denyAcl(join(dir, 'reference.md'), 'R')
+  let answer
+  try {
+    assert.throws(() => readFileSync(join(dir, 'reference.md')), 'the ACL really denies the read')
+    answer = exp(w, { name: 'notes', scope: 'agent', dryRun: true })
+  } finally {
+    undo()
+  }
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.equal(answer.code, 'read_failed')
+})
+
+test('Windows: a subfolder its ACL denies listing refuses the export rather than leave its files out', { skip: process.platform !== 'win32' }, () => {
+  const w = world()
+  const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'sub/c.md': 'C\n' })
+  const undo = denyAcl(join(dir, 'sub'), 'RD')
+  let answer
+  try {
+    assert.throws(() => readdirSync(join(dir, 'sub')), 'the ACL really denies the listing')
+    answer = exp(w, { name: 'notes', scope: 'agent', dryRun: true })
+  } finally {
+    undo()
+  }
   assert.equal(answer.ok, false)
   if (!answer.ok) assert.equal(answer.code, 'read_failed')
 })
@@ -593,16 +632,23 @@ test('a bundle the rules refuse is not installed, even with every hash right', a
   assert.ok(!existsSync(join(w.agent, '.claude')))
 })
 
-test('a Windows reserved name is refused on Windows only', async () => {
+test('a Windows reserved name is refused on Windows, and inside a bundle everywhere', async () => {
   const w = world()
   const { answer } = await inst(w, bundle(FILES, { name: 'con' }), { platform: 'win32' })
   assert.equal(answer.ok, false)
   if (!answer.ok) assert.equal(answer.code, 'scope_refused')
-  const mac = await inst(w, bundle(FILES, { name: 'con' }))
+  assert.deepEqual(tree(join(w.agent, '.claude', 'skills')), [])
+  // a reserved name inside the bundle is refused on every platform
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const nested = await inst(w, bundle([...FILES, { path: 'reference/aux.md', content: 'x\n' }], { name: 'other' }), { platform })
+    assert.equal(nested.answer.ok, false, platform)
+  }
+})
+
+test('a Windows reserved name installs off Windows (not on a Windows host: its file system cannot make a folder named con)', { skip: process.platform === 'win32' }, async () => {
+  const w = world()
+  const mac = await inst(w, bundle(FILES, { name: 'con' }), { platform: 'darwin' })
   assert.equal(mac.answer.ok, true)
-  // and a reserved name inside the bundle is refused everywhere
-  const nested = await inst(w, bundle([...FILES, { path: 'reference/aux.md', content: 'x\n' }], { name: 'other' }))
-  assert.equal(nested.answer.ok, false)
 })
 
 test('a malformed bundle is refused without a throw', async () => {

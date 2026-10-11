@@ -35,6 +35,7 @@ import {
   FRONTMATTER_READ_MAX,
   SKILLS_ROOT_MAX,
   SKILL_NAME_RE,
+  displayPath,
   listSkills,
   managedSkillsDir,
   parseFrontmatter,
@@ -189,6 +190,15 @@ test('a row carries the contract fields: display path, provenance, removable onl
     assert.equal(row.shareable, false, scope)
     assert.equal(row.shareBlock, 'scope', scope)
   }
+})
+
+test('a display path is ~/a/b on every OS: Windows separators under the home become /', () => {
+  const home = 'C:\\Users\\kc'
+  assert.equal(displayPath('C:\\Users\\kc\\repo\\agent\\.claude\\skills\\x', home, '\\'), '~/repo/agent/.claude/skills/x')
+  assert.equal(displayPath(home, home, '\\'), '~')
+  assert.equal(displayPath('C:\\Users\\kcx\\skills', home, '\\'), 'C:\\Users\\kcx\\skills', 'a sibling of the home is not under it')
+  assert.equal(displayPath('/home/kc/repo/.claude/skills/x', '/home/kc', '/'), '~/repo/.claude/skills/x')
+  assert.equal(displayPath('/opt/skills/x', '/home/kc', '/'), '/opt/skills/x')
 })
 
 test('a symlinked skill folder is followed; a SKILL.md that leaves its folder is never read', () => {
