@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import {
   claudeCandidates,
   descendantsOf,
+  findAgentClaudePids,
   findClaudePidsByCwd,
   nearestClaudeAncestor,
   parseCgroupProcs,
@@ -274,4 +275,62 @@ test('the unit cgroup (F5): systemctl show and cgroup.procs parse strictly; a me
   const processes = [proc(900, 1), proc(1000, 900), proc(1100, 1000), proc(2900, 900), proc(3000, 2900), proc(7000, 900)]
   assert.deepEqual(strayCgroupMembers({ members: [1000, 1100, 2900, 3000, 7000, 8000], processes, roots: [1000, 2900] }), [7000], '8000 has exited (not listed)')
   assert.deepEqual(strayCgroupMembers({ members: [1000, 7000], processes, roots: [1000, 7000] }), [])
+})
+
+// Board row 69337efa: win32 has no cwd lookup, so when a Windows agent's
+// launcher is found dead the sweep asks the listing itself whether a claude of
+// that agent still runs. It finds one by what a Windows listing DOES carry:
+// the command line and the start time.
+test('findAgentClaudePids (board row 69337efa): a claude of the agent by its pinned session id or its folder on the command line, or a process of record still alive', () => {
+  const PIN = '8c1f0000-0000-4000-8000-000000000912'
+  const T = Date.parse('2026-10-11T07:54:15.000Z')
+  const win = (rows: Array<[number, number, number | null, string]>) =>
+    parseWin32ProcessJson(JSON.stringify(rows.map(([ProcessId, ParentProcessId, CreationDate, CommandLine]) => ({ ProcessId, ParentProcessId, CreationDate, CommandLine }))))!
+  const base: Array<[number, number, number | null, string]> = [
+    [4100, 1, T - 600_000, 'C:\\Windows\\System32\\cmd.exe'],
+    [8100, 4100, T - 600_000, `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000077`],
+    [8200, 8100, T - 600_000, 'bun C:\\x\\server.ts'],
+  ]
+  const look = (rows: Array<[number, number, number | null, string]>, extra: Record<string, unknown> = {}) =>
+    findAgentClaudePids({ processes: win([...base, ...rows]), sessionIds: [PIN], cwd: 'C:\\Users\\kc\\hoai-agents\\ava', ...extra } as any)
+  const find = (rows: Array<[number, number, number | null, string]>, extra: Record<string, unknown> = {}) => look(rows, extra).pids
+
+  assert.deepEqual(find([]), [], 'another agent\'s claude (its own pin) is not this agent\'s')
+  // hoai-core starts claude with --resume <pin> or --session-id <pin> (bin/hoai-core.mjs sessionArgsFor).
+  assert.deepEqual(find([[5912, 4100, T, `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai`]]), [5912])
+  assert.deepEqual(find([[5912, 4100, T, `claude.exe --session-id ${PIN.toUpperCase()}`]]), [5912], 'case-insensitive')
+  assert.deepEqual(find([[5912, 4100, T, `node C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js --resume=${PIN}`]]), [5912], 'the npm install, --flag=value')
+  assert.deepEqual(find([[6100, 4100, T, `notepad.exe C:\\Users\\kc\\.claude\\projects\\x\\${PIN}.jsonl`]]), [], 'only a claude counts')
+  assert.deepEqual(find([[5912, 4100, T, `claude.exe --resume ${PIN}`]], { sessionIds: [null, '', 'not-a-session', '8c1f'] }), [], 'only a real session id is looked for (a short one would match anything)')
+  // Its folder on the command line, either slash, any case, as a whole path.
+  assert.deepEqual(find([[5913, 4100, T, '"C:\\Users\\kc\\.local\\bin\\claude.exe" --add-dir "c:/users/kc/hoai-agents/ava"']]), [5913])
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe --add-dir=C:\\Users\\kc\\hoai-agents\\ava\\']]), [5913])
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe --add-dir "C:\\Users\\kc\\hoai-agents\\ava\\\\"']]), [5913], 'trailing slashes, then the quote')
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe --add-dir C:\\Users\\kc\\hoai-agents\\ava2']]), [], 'another folder that only starts the same')
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe --add-dir C:\\Users\\kc\\hoai-agents\\ava\\notes']]), [], 'a folder below it is another folder')
+  // Review: an agent whose folder holds a claude install (a home folder agent, the pairing default
+  // before 2026-09-21) is not "run" by every claude under it: only a whole argument names the folder.
+  assert.deepEqual(find([], { cwd: 'C:\\Users\\kc' }), [], 'claude.exe installed under C:\\Users\\kc is not a claude run in it')
+  assert.deepEqual(find([[5916, 4100, T, 'node C:\\Users\\kc\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js']], { cwd: 'C:\\Users\\kc' }), [])
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe --add-dir D:\\backup\\C:\\Users\\kc\\hoai-agents\\ava']]), [], 'nor one that only ends the same')
+  assert.deepEqual(find([[5913, 4100, T, 'claude.exe C:\\']], { cwd: 'C:\\' }), [], 'a drive root names no agent folder')
+  // A process of record (its last state's claudePid or daemon, its lock holder) that still runs:
+  // the claude itself, or the claude above the daemon.
+  const hung: Array<[number, number, number | null, string]> = [
+    [5914, 4100, T - 120_000, 'claude.exe --dangerously-skip-permissions'],
+    [6000, 5914, T - 110_000, 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts'],
+    [4912, 6000, T - 100_000, 'bun C:\\x\\server.ts'],
+  ]
+  assert.deepEqual(find(hung, { known: [{ pid: 4912, atMs: T - 50_000 }] }), [5914], 'the daemon that stamped its lock still runs, under its claude')
+  assert.deepEqual(find(hung, { known: [{ pid: 5914, atMs: T - 50_000 }] }), [5914], 'the claudePid its state named')
+  assert.deepEqual(find(hung, { known: [{ pid: 4912, atMs: T - 105_000 }] }), [], 'started after it was last known: a reused pid, not the agent\'s')
+  assert.deepEqual(find(hung, { known: [{ pid: 4999, atMs: T }, { pid: null, atMs: T }, { pid: 1, atMs: T }] }), [], 'not listed, none, init')
+  // A process of record that still runs as itself with no claude visible above it (an orphaned or hung
+  // daemon, or a claude this watcher cannot read): no claude found, and no session ruled out either.
+  const orphan = look([[4912, 4100, T - 100_000, 'bun C:\\x\\server.ts']], { known: [{ pid: 4912, atMs: T }] })
+  assert.deepEqual(orphan, { pids: [], unsure: true }, 'the lock holder lives: the caller keeps the quiet window')
+  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 50_000 }] }), { pids: [5914], unsure: false })
+  assert.deepEqual(look(hung, { known: [{ pid: 4912, atMs: T - 105_000 }] }), { pids: [], unsure: false }, 'a reused pid is neither')
+  assert.deepEqual(look([], { known: [{ pid: 4999, atMs: T }] }), { pids: [], unsure: false }, 'gone is gone')
+  assert.deepEqual(look([], { sessionIds: undefined, cwd: undefined, known: undefined }), { pids: [], unsure: false }, 'nothing to look for')
 })
