@@ -35,10 +35,10 @@
 
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile, chmod, readdir } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
@@ -866,9 +866,18 @@ export async function main(argv = process.argv.slice(2)) {
   return 0
 }
 
-const isDirectRun =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+// REAL paths on both sides: node resolves the module URL through symlinks but
+// leaves argv[1] as the caller wrote it, so a launch through an aliased home
+// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
+function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (typeof argv1 !== 'string' || !argv1) return false
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1)
+  } catch {
+    return moduleUrl === pathToFileURL(argv1).href
+  }
+}
+const isDirectRun = isRunAsMain()
 if (isDirectRun) {
   main()
     .then((code) => {

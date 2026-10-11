@@ -609,7 +609,9 @@ test('the forwarder is import safe: importing it writes nothing and exits nothin
   // top level side effect is caught here rather than in production.
   const source = readSource()
   assert.match(source, /const invokedDirectly =/)
-  assert.match(source, /import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href/)
+  // Real paths on both sides, so a launch through a symlinked or aliased path
+  // still runs main() (test/entry-guard.symlink.test.ts runs it end to end).
+  assert.match(source, /realpathSync\(fileURLToPath\(moduleUrl\)\) === realpathSync\(argv1\)/)
   assert.ok(!/^\s*void main\(\)/m.test(source.replace(/if \(invokedDirectly\) \{[\s\S]*?\}/, '')),
     'main() runs only behind the argv guard')
 })

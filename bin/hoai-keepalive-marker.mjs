@@ -49,7 +49,7 @@ import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 
 import { readBootClock } from '../lib/agent-inventory.mjs'
-import { KEEPALIVE_MARKER_FILE_NAME, joinDir, keepaliveMarkerBody } from './hoai-core.mjs'
+import { KEEPALIVE_MARKER_FILE_NAME, isRunAsMain, joinDir, keepaliveMarkerBody } from './hoai-core.mjs'
 
 /**
  * `--flag value` and `--flag=value`, nothing else. Unknown flags are ignored
@@ -141,6 +141,9 @@ export function main(argv) {
   return 0
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// REAL paths on both sides: the launcher calls this through an aliased home
+// (/Users/fitecho is /Users/bgos), and a plain URL compare silently skipped
+// main(), leaving keepalive.json stale (board bbbf3438).
+if (isRunAsMain(process.argv[1], import.meta.url)) {
   process.exit(main(process.argv.slice(2)))
 }
