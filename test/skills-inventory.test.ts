@@ -315,8 +315,11 @@ test('remove moves an agent skill to the state trash, never a sibling in the ski
   assert.deepEqual(answer, {
     ok: true,
     removed: { name: 'agent-skill', scope: 'agent', path: '~/repo/agent/.claude/skills/agent-skill' },
+    trashedTo: (answer as { trashedTo?: string }).trashedTo,
   })
   assert.ok(!existsSync(target))
+  // where it went, for an install's Replace to put it back
+  assert.ok(existsSync(join((answer as { trashedTo: string }).trashedTo, 'SKILL.md')))
   const trashed = readdirSync(trashDir)
   assert.ok(trashed.some((n) => n.endsWith('-agent-skill')), trashed.join(','))
   assert.deepEqual(

@@ -59,7 +59,26 @@ test('the agent folder is BGOS_LAUNCH_CWD or nothing, the config dir the resolve
   assert.ok(built.includes('configDir: CLAUDE_CONFIG_DIR'))
   assert.ok(!built.includes('process.cwd()'))
   assert.ok(!built.includes("'.claude'"))
-  assert.match(built, /pluginStateDirFor\(/)
-  assert.ok(built.includes("'skills-trash'"))
+  assert.match(built, /trashDir: skillsTrashDir\(\)/)
+  const trash = server.slice(server.indexOf('const skillsTrashDir = '), server.indexOf('const skillsRpc = new SkillsRpcHandler('))
+  assert.match(trash, /pluginStateDirFor\(/)
+  assert.ok(trash.includes("'skills-trash'"))
   assert.match(built, /\n\s*homeConfirmed: \(\) => HOME_CONFIRMED,\n/)
+})
+
+test('the share ops (row 6) get the same agent folder and post progress on the skills lane', () => {
+  const built = constructionSlice()
+  for (const op of ['exportSkill: (payload) =>', 'installBundle: (payload, progress) =>']) {
+    const at = built.indexOf(op)
+    assert.ok(at > 0, `${op} is not wired`)
+    const slice = built.slice(at, built.indexOf('}),', at))
+    assert.ok(slice.includes('agentDir: SKILLS_AGENT_DIR'), op)
+    assert.ok(slice.includes('configDir: CLAUDE_CONFIG_DIR'), op)
+    assert.ok(slice.includes('managedDir: SKILLS_MANAGED_DIR'), op)
+  }
+  const install = built.slice(built.indexOf('installBundle: (payload, progress) =>'))
+  assert.ok(install.includes('trashDir: skillsTrashDir()'))
+  assert.ok(install.includes('platform: process.platform'))
+  assert.ok(install.includes('progress,'))
+  assert.match(built, /postProgress: \(rpcId, body\) =>\n\s*bgosPost\(`integrations\/skills-rpc\/\$\{encodeURIComponent\(rpcId\)\}\/progress`, body\)/)
 })

@@ -20,11 +20,18 @@
  *  5. Until this agent's home folder is on record, nothing is read or removed.
  *  6. list_installed answers `{ skills, omitted? }`; remove answers
  *     `{ removed }`. The Store ops (install, catalog) are not Claude Code's
- *     and answer unsupported, as do the share ops until row 6 ships them.
+ *     and answer unsupported.
  *  7. A result is ALWAYS posted. A throw answers read_failed or write_failed.
+ *  8. Share (row 6, lib/skills-share.ts): export_skill answers the bundle,
+ *     install_bundle writes one into this agent's own skills folder and posts
+ *     progress stages to /progress. install_bundle is deduped on `offerId`,
+ *     which a re emit or a second Install tap carries under a NEW rpcId: a
+ *     run in flight is joined, never started twice, and an installed offer
+ *     is answered again from memory (after a restart, from disk).
  */
 
 import type { SkillRemoveAnswer, SkillsList } from './skills-inventory.ts'
+import type { ExportAnswer, InstallAnswer } from './skills-share.ts'
 
 export type SkillsRpcFrame = {
   rpcId: string
@@ -40,6 +47,11 @@ export type SkillsRpcResult =
 export type SkillsRpcInventory = {
   list: () => SkillsList | Promise<SkillsList>
   remove: (payload: Record<string, unknown>) => SkillRemoveAnswer | Promise<SkillRemoveAnswer>
+  exportSkill?: (payload: Record<string, unknown>) => ExportAnswer | Promise<ExportAnswer>
+  installBundle?: (
+    payload: Record<string, unknown>,
+    progress: (stage: 'verifying' | 'writing') => Promise<void>,
+  ) => InstallAnswer | Promise<InstallAnswer>
 }
 
 export type SkillsRpcDeps = {
@@ -49,6 +61,7 @@ export type SkillsRpcDeps = {
   homeConfirmed: () => boolean
   postAck: (rpcId: string) => Promise<unknown>
   postResult: (rpcId: string, body: SkillsRpcResult) => Promise<unknown>
+  postProgress?: (rpcId: string, body: { stage: string }) => Promise<unknown>
   log: (msg: string) => void
 }
 
@@ -62,7 +75,10 @@ const MSG = {
   unsupported: 'this skills operation is not supported on a Claude Code agent',
   readFailed: 'the skills could not be read on the agent host',
   writeFailed: 'the skill could not be removed on the agent host',
+  installFailed: 'the skill could not be installed on the agent host',
 } as const
+
+const OPS = new Set(['list_installed', 'remove', 'export_skill', 'install_bundle'])
 
 export function normalizeSkillsRpc(raw: unknown): SkillsRpcFrame | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
@@ -107,6 +123,8 @@ type Seen = { state: 'running' } | { state: 'done'; result: SkillsRpcResult }
 export class SkillsRpcHandler {
   private readonly deps: SkillsRpcDeps
   private readonly seen = new Map<string, Seen>()
+  /** install_bundle by offerId: the run in flight, or the answer of one that installed. */
+  private readonly offers = new Map<string, Promise<SkillsRpcResult> | SkillsRpcResult>()
 
   constructor(deps: SkillsRpcDeps) {
     this.deps = deps
@@ -148,7 +166,9 @@ export class SkillsRpcHandler {
       result =
         frame.op === 'remove'
           ? failure('write_failed', MSG.writeFailed, MSG.writeFailed)
-          : failure('read_failed', MSG.readFailed, MSG.readFailed)
+          : frame.op === 'install_bundle'
+            ? failure('write_failed', MSG.installFailed, MSG.installFailed)
+            : failure('read_failed', MSG.readFailed, MSG.readFailed)
     }
     this.remember(frame.rpcId, { state: 'done', result })
     await this.post(frame.rpcId, result)
@@ -156,10 +176,21 @@ export class SkillsRpcHandler {
 
   private async run(frame: SkillsRpcFrame): Promise<SkillsRpcResult> {
     const { inventory } = this.deps
-    if (frame.op !== 'list_installed' && frame.op !== 'remove') {
-      return failure('unsupported', MSG.unsupported, MSG.unsupported)
+    if (!OPS.has(frame.op)) return failure('unsupported', MSG.unsupported, MSG.unsupported)
+    if (frame.op === 'export_skill' && !inventory.exportSkill) return failure('unsupported', MSG.unsupported, MSG.unsupported)
+    if (frame.op === 'install_bundle' && !inventory.installBundle) {
+      return failure('not_supported', MSG.unsupported, MSG.unsupported)
     }
     if (!this.deps.homeConfirmed()) return failure('unavailable', MSG.notConfirmed, MSG.notConfirmed)
+    if (frame.op === 'export_skill') {
+      const answer = await inventory.exportSkill!(frame.payload)
+      if (answer && answer.ok === true) {
+        return { ok: true, payload: { assistantId: String(frame.assistantId), ...answer.payload } }
+      }
+      if (answer && answer.ok === false) return failure(answer.code, answer.message, MSG.readFailed)
+      return failure('read_failed', MSG.readFailed, MSG.readFailed)
+    }
+    if (frame.op === 'install_bundle') return this.install(frame)
     if (frame.op === 'list_installed') {
       const listed = await inventory.list()
       const skills = (listed?.skills ?? []).map((s) => present(s))
@@ -172,6 +203,57 @@ export class SkillsRpcHandler {
     if (answer && answer.ok === true) return { ok: true, payload: { removed: answer.removed } }
     if (answer && answer.ok === false) return failure(answer.code, answer.message, MSG.writeFailed)
     return failure('write_failed', MSG.writeFailed, MSG.writeFailed)
+  }
+
+  private async install(frame: SkillsRpcFrame): Promise<SkillsRpcResult> {
+    const offerId = typeof frame.payload.offerId === 'string' ? frame.payload.offerId : ''
+    const earlier = offerId ? this.offers.get(offerId) : undefined
+    if (earlier) {
+      this.deps.log(`skills_rpc install_bundle for offer ${offerId} answered from the earlier run (rpc=${frame.rpcId})`)
+      return earlier
+    }
+    const progress = async (stage: 'verifying' | 'writing') => {
+      try {
+        await this.deps.postProgress?.(frame.rpcId, { stage })
+      } catch (err) {
+        this.deps.log(`skills_rpc progress failed (non-fatal, rpc=${frame.rpcId}): ${errorText(err)}`)
+      }
+    }
+    const run = (async (): Promise<SkillsRpcResult> => {
+      const answer = await this.deps.inventory.installBundle!(frame.payload, progress)
+      if (answer && answer.ok === true) return { ok: true, payload: present(answer.payload) }
+      if (answer && answer.ok === false) return failure(answer.code, answer.message, MSG.installFailed)
+      return failure('write_failed', MSG.installFailed, MSG.installFailed)
+    })()
+    if (!offerId) return run
+    this.offers.set(offerId, run)
+    let result: SkillsRpcResult
+    try {
+      result = await run
+    } catch (err) {
+      this.offers.delete(offerId)
+      throw err
+    }
+    // Only an install is final: a failed offer may be retried by Install.
+    if (result.ok) this.rememberOffer(offerId, result)
+    else this.offers.delete(offerId)
+    return result
+  }
+
+  private rememberOffer(offerId: string, result: SkillsRpcResult): void {
+    this.offers.delete(offerId)
+    this.offers.set(offerId, result)
+    while (this.offers.size > SKILLS_RPC_SEEN_MAX) {
+      let victim: string | undefined
+      for (const [id, entry] of this.offers) {
+        if (!(entry instanceof Promise)) {
+          victim = id
+          break
+        }
+      }
+      if (victim === undefined) break
+      this.offers.delete(victim)
+    }
   }
 
   private remember(rpcId: string, state: Seen): void {

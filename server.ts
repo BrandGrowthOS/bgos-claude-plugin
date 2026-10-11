@@ -71,6 +71,7 @@ import { createClaudeMemoryStore, nodeMemoryFs, resolveMemoryFolder } from './li
 import { MemoryRpcHandler, normalizeMemoryRpc } from './lib/memory-rpc.js'
 import { SkillsRpcHandler, normalizeSkillsRpc } from './lib/skills-rpc.js'
 import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inventory.js'
+import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
@@ -11930,8 +11931,22 @@ const memoryRpc = new MemoryRpcHandler({
 // a list would show them as the agent's. The config dir is the one this
 // daemon resolved (it REPLACES ~/.claude/skills). The trash lives in this
 // agent's plugin state folder, outside every skills tree.
+// Share (row 6, lib/skills-share.ts): export_skill reads one agent or
+// computer skill for the owner's Share sheet; install_bundle writes an
+// approved bundle into <agent folder>/.claude/skills/<name> and nowhere else,
+// so it too needs BGOS_LAUNCH_CWD and refuses without it.
 const SKILLS_AGENT_DIR: string | null = process.env.BGOS_LAUNCH_CWD?.trim() ? LAUNCH_CWD : null
 const SKILLS_MANAGED_DIR = managedSkillsDir(process.platform, process.env)
+const skillsTrashDir = (): string =>
+  pathJoin(
+    pluginStateDirFor({
+      env: process.env,
+      home: homedir(),
+      assistantId: String(ASSISTANT_ID ?? ''),
+      cwd: MEMORY_AGENT_DIR,
+    }),
+    'skills-trash',
+  )
 const skillsRpc = new SkillsRpcHandler({
   inventory: {
     list: () =>
@@ -11948,17 +11963,31 @@ const skillsRpc = new SkillsRpcHandler({
         configDir: CLAUDE_CONFIG_DIR,
         home: homedir(),
         managedDir: SKILLS_MANAGED_DIR,
-        trashDir: pathJoin(
-          pluginStateDirFor({
-            env: process.env,
-            home: homedir(),
-            assistantId: String(ASSISTANT_ID ?? ''),
-            cwd: MEMORY_AGENT_DIR,
-          }),
-          'skills-trash',
-        ),
+        trashDir: skillsTrashDir(),
         now: () => Date.now(),
         payload,
+        log,
+      }),
+    exportSkill: (payload) =>
+      exportSkill({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        payload,
+        log,
+      }),
+    installBundle: (payload, progress) =>
+      installBundle({
+        agentDir: SKILLS_AGENT_DIR,
+        configDir: CLAUDE_CONFIG_DIR,
+        home: homedir(),
+        managedDir: SKILLS_MANAGED_DIR,
+        trashDir: skillsTrashDir(),
+        platform: process.platform,
+        now: () => Date.now(),
+        payload,
+        progress,
         log,
       }),
   },
@@ -11972,6 +12001,8 @@ const skillsRpc = new SkillsRpcHandler({
       `integrations/skills-rpc/${encodeURIComponent(rpcId)}/result`,
       body as unknown as Record<string, unknown>,
     ),
+  postProgress: (rpcId, body) =>
+    bgosPost(`integrations/skills-rpc/${encodeURIComponent(rpcId)}/progress`, body),
   log,
 })
 

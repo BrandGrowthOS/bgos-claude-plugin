@@ -101,7 +101,7 @@ test('a host that cannot type declares the READ half only', () => {
   // the honest answer, and still sees every Last check.
   assert.deepEqual(
     [...declaredCapabilities({ canInjectGoal: false, floorHook: true, authMode: 'pairing' })],
-    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'skills_list', 'hard_floor', 'hard_floor_rules_2'],
+    ['mission_events', 'mission_goal_checks', 'mission_set_goals', 'permission_card', 'plan_card', 'memory_rpc', 'boards_playbook', 'boards_playbook_does', 'boards_runs', 'sessions_library', 'changes_rpc', 'skills_list', 'skills_receive', 'hard_floor', 'hard_floor_rules_2'],
   )
 })
 
@@ -137,6 +137,7 @@ test('boards_playbook is declared on every host, because the tool is typed and h
       'sessions_library',
       'changes_rpc',
       'skills_list',
+      'skills_receive',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -236,6 +237,7 @@ test('permission_card is declared on every host, because the relay has no platfo
       'sessions_library',
       'changes_rpc',
       'skills_list',
+      'skills_receive',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -332,7 +334,27 @@ test('skills_list is declared on every host: every host can read its own skills 
     }
   }
   assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_list'))
-  assert.ok(!declaredCapabilities({ canInjectGoal: true, floorHook: true, authMode: 'pairing' }).includes('skills_receive'), 'receive is row 6, not declared before its handler exists')
+})
+
+/**
+ * skills_receive (skills view design, section 7 row 6): the backend sends a
+ * shared skill to a Claude Code agent only while its pairing declares this
+ * token, and offers the "Ask the agent to add it" fallback otherwise. The
+ * export_skill and install_bundle handlers write only into the agent's own
+ * folder on disk, with no tmux and no pairing only route, so the token is in
+ * the base: every host, every connection, once, right after skills_list.
+ */
+test('skills_receive is declared on every host, once, beside skills_list', () => {
+  for (const canInjectGoal of SHAPES) {
+    for (const authMode of ['pairing', 'apikey'] as const) {
+      for (const floorHook of [true, false]) {
+        const declared = [...declaredCapabilities({ canInjectGoal, floorHook, authMode })]
+        assert.equal(declared.filter((t) => t === 'skills_receive').length, 1)
+        assert.equal(declared.indexOf('skills_receive'), declared.indexOf('skills_list') + 1)
+      }
+    }
+  }
+  assert.ok(DECLARED_CAPABILITIES_BASE.includes('skills_receive'))
 })
 
 /**
@@ -615,6 +637,7 @@ test('the stop pause token rides with mission_pause and nothing else, the gate t
       'sessions_library',
       'changes_rpc',
       'skills_list',
+      'skills_receive',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',

@@ -82,7 +82,7 @@ export type SkillsList = { skills: SkillItem[]; omitted?: SkillsOmitted[] }
 
 export type SkillRemoveCode = 'bad_request' | 'scope_refused' | 'not_found' | 'unavailable' | 'write_failed'
 export type SkillRemoveAnswer =
-  | { ok: true; removed: { name: string; scope: 'agent'; path: string } }
+  | { ok: true; removed: { name: string; scope: 'agent'; path: string }; trashedTo?: string }
   | { ok: false; code: SkillRemoveCode; message: string }
 
 /** Claude Code's own rule for a skill name, and the design's for every new DTO. */
@@ -126,7 +126,7 @@ export function displayPath(path: string, home: string): string {
   return path
 }
 
-function realOrNull(path: string): string | null {
+export function realOrNull(path: string): string | null {
   try {
     return realpathSync(path)
   } catch {
@@ -135,12 +135,12 @@ function realOrNull(path: string): string | null {
 }
 
 /** For a file read: a realpath under a realpath, both spelled by realpathSync. */
-function inside(child: string, parent: string): boolean {
+export function inside(child: string, parent: string): boolean {
   return child.startsWith(parent.endsWith(sep) ? parent : parent + sep)
 }
 
 /** A folder's identity on disk, so no spelling (case, NFD, a link) can hide it. */
-function identOf(path: string, follow = true): string | null {
+export function identOf(path: string, follow = true): string | null {
   try {
     const st = follow ? statSync(path) : lstatSync(path)
     return `${st.dev}:${st.ino}`
@@ -167,7 +167,7 @@ function chainOf(path: string): string[] {
  * spelling: on APFS and NTFS `/Users/x` and `/users/x` are one folder, and
  * node's realpathSync keeps whichever spelling it was given.
  */
-function overlaps(a: string, b: string): boolean {
+export function overlaps(a: string, b: string): boolean {
   const ia = identOf(a)
   const ib = identOf(b)
   if (!ia || !ib) return false
@@ -186,7 +186,7 @@ function under(child: string, parent: string): boolean {
  * still missing by its spelling, case and NFC folded so a folding file system
  * cannot hide it (on a case sensitive one this only refuses more).
  */
-function wouldBeUnder(child: string, root: string): boolean {
+export function wouldBeUnder(child: string, root: string): boolean {
   const childAt = existingAncestor(child)
   if (existsSync(root)) return under(childAt, root)
   const rootAt = existingAncestor(root)
@@ -215,12 +215,12 @@ function existingAncestor(path: string): string {
  * the config dir, the default ~/.claude/skills (every session without a
  * CLAUDE_CONFIG_DIR loads it, whatever this one's says), and the managed one.
  */
-function computerRoots(configDir: string, home: string, managedDir: string | undefined): string[] {
+export function computerRoots(configDir: string, home: string, managedDir: string | undefined): string[] {
   return [join(configDir, 'skills'), join(home, '.claude', 'skills'), ...(managedDir ? [managedDir] : [])]
 }
 
 /** `.claude` and `.claude/skills` of the agent are real folders, not links, and resolve where they say. */
-function agentParentsSafe(agentDir: string): boolean {
+export function agentParentsSafe(agentDir: string): boolean {
   const claudeDir = join(agentDir, '.claude')
   const skillsDir = join(claudeDir, 'skills')
   for (const parent of [claudeDir, skillsDir]) {
@@ -248,7 +248,7 @@ export function findRepoRoot(dir: string): string | null {
 }
 
 /** The parents of the agent folder up to the repo root, nearest first. */
-function repoLevels(agentDir: string): string[] {
+export function repoLevels(agentDir: string): string[] {
   const root = findRepoRoot(agentDir)
   const start = resolve(agentDir)
   if (!root || root === start) return []
@@ -572,7 +572,7 @@ export type ListSkillsInput = {
   log?: (msg: string) => void
 }
 
-function nameKey(name: string): string {
+export function nameKey(name: string): string {
   return name.normalize('NFC').toLowerCase()
 }
 
@@ -658,7 +658,7 @@ const PATH_MAX = 1024
  * read under the list's own rules: a SKILL.md inside the folder, a regular
  * file, not hard linked. Null otherwise.
  */
-function listedNameOf(folder: string): string | null {
+export function listedNameOf(folder: string): string | null {
   try {
     const real = realOrNull(folder)
     if (!real || !statSync(real).isDirectory()) return null
@@ -795,5 +795,5 @@ export function removeAgentSkill(input: RemoveSkillInput): SkillRemoveAnswer {
   } catch {
     // the skill is already in the trash; the note beside it is only a label
   }
-  return { ok: true, removed: { name: folder, scope: 'agent', path: shown } }
+  return { ok: true, removed: { name: folder, scope: 'agent', path: shown }, trashedTo: dest }
 }
