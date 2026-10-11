@@ -69,6 +69,9 @@ export const SPOOL_ROTATED_NAME = 'events.1.jsonl'
 export const SPOOL_MAX_BYTES = 2 * 1024 * 1024
 /** Over this, the payload is reduced to the fields the mapper reads. */
 export const PAYLOAD_MAX_BYTES = 256 * 1024
+
+/** The private turn token lib/private-turn.mjs appends to a delivered card. */
+const PRIVATE_TURN_TOKEN = /<hoai-private-turn id="[a-f0-9-]{36}"\/>/g
 /** Per field clip inside a reduced tool_input. */
 export const REDUCED_FIELD_MAX = 200
 
@@ -300,6 +303,13 @@ export function clipPayload(payload, maxBytes = PAYLOAD_MAX_BYTES) {
       }
       return out
     })
+  }
+  if (payload.hook_event_name === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
+    // The private turn needs only its opaque delivery token(s) and the full
+    // prompt's hash, never the prompt text. Two tokens are kept so an
+    // ambiguous prompt stays ambiguous.
+    reduced.prompt = (payload.prompt.match(PRIVATE_TURN_TOKEN) ?? []).slice(0, 2).join('\n')
+    reduced.prompt_sha256 = createHash('sha256').update(payload.prompt).digest('hex')
   }
   reduced.hoai_clipped = true
   return reduced

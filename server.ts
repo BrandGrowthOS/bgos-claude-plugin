@@ -9186,7 +9186,8 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   }
   if (event.name === 'SessionEnd') privateTurns.end()
   if (event.name === 'UserPromptSubmit') {
-    privateTurns.begin({ prompt: payload.prompt, sessionId: hookSessionId })
+    // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
+    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with

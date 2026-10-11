@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path'
 import { createPrivateTurnTracker, privateActor, privateContextPath, privateMarkerPath, publishPrivateContext, readPrivateJson, requirePrivateTurn, writePrivateJson } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
+import { clipPayload } from '../bin/hoai-hook.mjs'
 import { ensureHookEntries } from '../lib/claude-preseed.mjs'
 import { managedLaunchRequired, relayEnvFromResolution } from '../bin/hoai-browser-launch.mjs'
 
@@ -248,4 +249,31 @@ test('a failed Stop or SessionEnd boundary never blocks stopping and still close
   writeFileSync(join(f.root, 'private-turn'), 'a file blocks the marker directory')
   const blocked = spawnSync(process.execPath, ['bin/hoai-private-turn-hook.mjs'], { env: f.env, input: JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }), encoding: 'utf8' })
   assert.equal(blocked.status, 0)
+})
+
+test('a prompt past the forwarder clip still admits its verified sender without spooling the prompt text', (t) => {
+  const f = fixture(t)
+  const secret = 'pasted document '.repeat(20_000)
+  const prompt = f.tracker.deliver({ content: secret, actingUserId: 'user_alice', chatId: '21' })
+  const payload = { hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: f.cwd, prompt }
+  recordPrivateBoundary(payload, f.env)
+  const clipped: any = clipPayload(payload)
+  assert.equal(clipped.hoai_clipped, true)
+  assert.ok(!JSON.stringify(clipped).includes('pasted document'), 'the prompt text is not kept')
+  // The daemon's intake hands exactly these fields to begin().
+  f.tracker.begin({ prompt: clipped.prompt, promptHash: clipped.hoai_clipped === true ? clipped.prompt_sha256 : undefined, sessionId: clipped.session_id })
+  assert.equal(requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner').actingUserId, 'user_alice')
+  // Two tokens stay ambiguous after the clip.
+  const other = f.tracker.deliver({ content: 'b', actingUserId: 'user_bob', chatId: '22' })
+  const both = { ...payload, prompt: f.tracker.deliver({ content: secret, actingUserId: 'user_alice', chatId: '21' }) + other }
+  recordPrivateBoundary(both, f.env)
+  const clippedBoth: any = clipPayload(both)
+  f.tracker.begin({ prompt: clippedBoth.prompt, promptHash: clippedBoth.prompt_sha256, sessionId: 's' })
+  assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
+  // A forged hash that does not match the marker admits nobody.
+  const again = { ...payload, prompt: f.tracker.deliver({ content: secret, actingUserId: 'user_alice', chatId: '21' }) }
+  recordPrivateBoundary(again, f.env)
+  const clippedAgain: any = clipPayload(again)
+  f.tracker.begin({ prompt: clippedAgain.prompt, promptHash: '0'.repeat(64), sessionId: 's' })
+  assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
 })
