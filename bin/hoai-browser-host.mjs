@@ -75,7 +75,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { io as socketIoClient } from 'socket.io-client'
 
 import { chromeEnv } from '../lib/browser-env.mjs'
-import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
+import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_ATTACH_MS, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
 import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
 import { OWNER_CONTROL_MESSAGE, runAgentBrowserWork } from '../lib/remote-input.mjs'
 
@@ -168,6 +168,10 @@ export const STOP_ON_STDIN_EOF_ENV = 'HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF'
 
 /** The longest a closing browser waits for its downloads to settle (their grace is 5 s), inside STOP_DEADLINE_MS. */
 export const DOWNLOAD_DRAIN_MS = 8_000
+/** A host stop settles every session's downloads within this, then tells owners within 2.5 s. */
+export const DOWNLOAD_GRACE_STOP_MS = 6_500
+/** What a call keeps for its own ask after waiting behind a download ask. */
+export const DOWNLOAD_WAIT_MARGIN_MS = 20_000
 /** How often owners nobody could tell are told again, and kept files checked. */
 export const DOWNLOAD_TICK_MS = 60_000
 /** The 7 day sweep runs at start and then hourly. */
@@ -328,7 +332,7 @@ export function servedBrowserTools(playwrightTools) {
  * It overrides anything the general Agent Browser text says about downloads
  * (HOAI board row 67562770). Pinned by test/hoai-browser-host.downloads.test.ts.
  */
-export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists every download under Downloads with its state. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
+export const DOWNLOAD_SENTENCE = `Downloads: a file the page starts downloading is asked for as its own card, for ${DOWNLOAD_ASK_WAIT_S} seconds whatever wait_seconds your action carried, and it does not hold your call; while that card is open your next gated action waits for it. Allowed, the file is saved in your browser folder and hoai_browser_status gives you its path. Denied, it is deleted. Not answered, it is kept for the owner on this machine (when it fits the keep limits; otherwise it is deleted) and you are not given it. hoai_browser_status lists your latest downloads and every file still kept for the owner under Downloads, each with its state. Do not download a kept file again, because a site may serve a file only once: ask the owner what to do with it.`
 
 /** What this host tells an agent at initialize. Dash free, like the canon. */
 export function hostInstructions(deviceLabel) {
@@ -1517,6 +1521,7 @@ export class BrowserHostCore {
       log: this._log,
     })
     slot.downloads = downloads
+    downloads.watch()
     engine.downloadGuard = store.guard
     engine.downloadsReady = store.ready
     engine.onDownload = (download) => downloads.onDownload(download)
@@ -1553,7 +1558,7 @@ export class BrowserHostCore {
     const started = slot?.downloads?.since?.(seqBefore) ?? []
     if (!started.length || !result || !Array.isArray(result.content)) return result
     const lines = started.map((d) => {
-      if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them and you are not given it. Do not start it again; hoai_browser_status shows its state.`
+      if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
       if (d.state === 'kept') return `- ${d.fileName} (${d.handle}): kept for your owner; you are not given it.`
       return `- ${d.fileName} (${d.handle}): not saved; hoai_browser_status says why.`
@@ -1633,8 +1638,12 @@ export class BrowserHostCore {
     const wait = waitSecondsFrom(waitSeconds)
     const summary = policy.summarizeToolCall(name, engineArgs)
     // A download ask the page raised is not the agent's: its action waits for
-    // it (at most its 60 s) rather than being told the browser is busy.
+    // it (at most its 60 s) rather than being told the browser is busy. The
+    // wait comes out of this call's own budget: the relay cuts a call at
+    // 120 s, and an Allow landing after that cut would run unseen.
+    const queuedAt = Date.now()
     await this._behindDownloadAsk(ctx)
+    const attachMs = Math.max(0, GATE_ATTACH_MS - (Date.now() - queuedAt))
     const raised = await this.gates.raise({
       key: this.pool.slotKey(ctx),
       assistantId: ctx.assistantId,
@@ -1650,6 +1659,7 @@ export class BrowserHostCore {
       // The gate HOLDS the action and is the only thing that runs it, so a
       // call that parks and a wait_gate that re-attaches share one run.
       action: run,
+      attachMs,
     })
     if (raised.parked) return raised
     if (!raised.allowed) return { allowed: false, message: deniedMessage(raised.reason, wait) }
@@ -1657,13 +1667,22 @@ export class BrowserHostCore {
     return { allowed: true, ran: raised.ran }
   }
 
-  /** Waits while the open gate on this browser is a download ask, bounded by that ask's own wait. */
+  /**
+   * Waits while the open gate on this browser is a download ask, never longer
+   * than this call's own budget (GATE_ATTACH_MS) less a margin: past that the
+   * raise answers busy with the download's gate id, and wait_gate on it tells
+   * the agent its own action can go ahead.
+   */
   async _behindDownloadAsk(ctx) {
     const key = this.pool.slotKey(ctx)
+    const until = Date.now() + GATE_ATTACH_MS - DOWNLOAD_WAIT_MARGIN_MS
     for (let i = 0; i < 3; i++) {
       const open = this.gates.pending(key)
-      if (!open || !this._downloadForGate(ctx, open.gateId)) return
-      await Promise.race([this.gates.whenIdle(key), new Promise((r) => setTimeout(r, (DOWNLOAD_ASK_WAIT_S + 30) * 1000).unref?.())])
+      const left = until - Date.now()
+      if (!open || left <= 0 || !this._downloadForGate(ctx, open.gateId)) return
+      let timer
+      await Promise.race([this.gates.whenIdle(key), new Promise((r) => (timer = setTimeout(r, left)))])
+      clearTimeout(timer)
     }
   }
 
@@ -2374,11 +2393,16 @@ export class BrowserHost {
 
   /** Settle every session's downloads and tell their owners, bounded, before a stop closes anything. */
   async _drainDownloads() {
-    const bounded = (work, ms) => Promise.race([work, new Promise((r) => setTimeout(r, ms).unref?.())])
+    // Bounded well inside STOP_DEADLINE_MS: the browsers still have to save
+    // their encrypted state and quit after this.
+    const bounded = (work, ms) => {
+      let timer
+      return Promise.race([work, new Promise((r) => (timer = setTimeout(r, ms)))]).finally(() => clearTimeout(timer))
+    }
     try {
-      await bounded(Promise.all(this.pool.downloadSlots().map((slot) => slot.downloads.drain('session_closed').catch(() => {}))), DOWNLOAD_DRAIN_MS)
-      for (const store of this.downloadStores.values()) await bounded(Promise.resolve(store.ready).then(() => store.tellOwners()), 2_000)
-      await bounded(Promise.all([...this.downloadStores.values()].map((store) => store.flushTells())), 3_000)
+      await bounded(Promise.all(this.pool.downloadSlots().map((slot) => slot.downloads.drain('session_closed').catch(() => {}))), DOWNLOAD_GRACE_STOP_MS)
+      const stores = [...this.downloadStores.values()]
+      await bounded(Promise.all(stores.map((store) => Promise.resolve(store.ready).then(() => store.tellOwners()).then(() => store.flushTells()).catch(() => {}))), 2_500)
     } catch {}
     for (const store of this.downloadStores.values()) store.stop()
   }

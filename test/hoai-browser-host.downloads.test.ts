@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { BrowserHostCore, BrowserPool, DOWNLOAD_SENTENCE, hostInstructions, loadPlaywright } from '../bin/hoai-browser-host.mjs'
-import { GateKeeper } from '../lib/browser-gate.mjs'
+import { GATE_ATTACH_MS, GateKeeper } from '../lib/browser-gate.mjs'
 import { DownloadStore } from '../lib/browser-downloads.mjs'
 
 type Card = Record<string, any>
@@ -152,6 +152,12 @@ test("a gated action of the agent WAITS behind the page's download ask instead o
     await until(() => s.srv.cards.some((c) => c.kind === 'download'), () => 'download asked')
     s.engines[0].downloadOnClick = null
     const ask = s.srv.cards.find((c) => c.kind === 'download')!
+    const budgets: number[] = []
+    const raise = s.gates.raise.bind(s.gates)
+    s.gates.raise = (o: any) => {
+      if (o.kind === 'navigate') budgets.push(o.attachMs)
+      return raise(o)
+    }
     let done = false
     const navigating = s.call('browser_navigate', { url: 'https://other.example.org/' }).then((r) => {
       done = true
@@ -164,6 +170,10 @@ test("a gated action of the agent WAITS behind the page's download ask instead o
     assert.equal(nav.isError, false, nav.text)
     assert.doesNotMatch(nav.text, /gate_parked|busy/)
     assert.ok(s.srv.cards.some((c) => c.kind === 'navigate' && c.origin === 'https://other.example.org'), 'its own ask came after')
+    // The relay cuts a call at 120 s: the time spent behind the download comes
+    // out of the call's own budget, or an Allow could land after the cut.
+    assert.equal(budgets.length, 1)
+    assert.ok(Number.isFinite(budgets[0]) && budgets[0]! <= GATE_ATTACH_MS - 50, `the call's budget after waiting: ${budgets[0]}`)
   } finally {
     s.done()
   }

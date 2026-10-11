@@ -17,6 +17,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
+import * as fsMod from 'node:fs'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
@@ -138,6 +139,7 @@ function setup(over: Record<string, any> = {}) {
     now: () => t,
     noticePollMs: 5,
     log: (l: string) => logs.push(l),
+    ...(over.fsImpl ? { fsImpl: over.fsImpl } : {}),
   })
   const remembered: Array<{ origin: string | null; choice: string }> = []
   let verdict: any = over.verdict ?? { verdict: 'ask', gate: 'download' }
@@ -154,8 +156,9 @@ function setup(over: Record<string, any> = {}) {
     choices: DOWNLOAD_CHOICES,
     graceMs: 60,
     heldPollMs: 10,
-    unclaimedAfterMs: 40,
+    unclaimedAfterMs: over.unclaimedAfterMs ?? 40,
     log: (l: string) => logs.push(l),
+    ...(over.fsImpl ? { fsImpl: over.fsImpl } : {}),
   })
   const paths = downloadPaths({ agentRoot, assistantId: 900, key: 'owner' })
   const outputDir = join(agentRoot, '900', 'browser-output', 'owner')
@@ -495,7 +498,8 @@ test('after a crash: a held download that had finished comes back kept and its o
 })
 
 test('a file Chrome wrote that no download event claimed is never left silent: it is kept and its owner told', async () => {
-  const s = setup()
+  // Adopted by the close itself: the watcher would wait a minute for its event.
+  const s = setup({ unclaimedAfterMs: 60_000 })
   try {
     s.slot.onDownload(fakeDownload(s.paths.held, { name: 'claimed.p8', finished: false }))
     writeFileSync(join(s.paths.held, randomUUID()), 'a download Playwright could not name')
@@ -669,6 +673,111 @@ test('every file the rules write stays inside the agent folder', async () => {
     await until(() => filesUnder(s.paths.kept).length === 1, () => 'kept')
     const agentDir = join(s.agentRoot, '900') + sep
     for (const p of filesUnder(s.home)) assert.ok(p.startsWith(agentDir), `outside the agent folder: ${p}`)
+  } finally {
+    s.done()
+  }
+})
+
+// ── Review fixes (the one delegated review of this change) ────────────────────
+
+test('after a crash, recovery with the REAL folder guard keeps a finished held download (the guard is prepared first)', async () => {
+  const s = setup()
+  try {
+    s.srv.refuse()
+    s.slot.onDownload(fakeDownload(s.paths.held, { name: 'once.p8', finished: false }))
+    await until(() => JSON.parse(readFileSync(s.paths.index, 'utf8')).records.length === 1, () => 'held record written')
+    s.slot.stop() // killed mid ask: the file finishes, nothing settles it
+    const d = s.slot.records[0]!.download as ReturnType<typeof fakeDownload>
+    d.finish()
+    s.store.stop()
+    const env = { ...process.env, OneDrive: undefined, OneDriveConsumer: undefined, OneDriveCommercial: undefined }
+    const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, env, now: s.now, noticePollMs: 5 })
+    try {
+      await fresh.sweep({ atStart: true })
+      assert.equal(filesUnder(s.paths.kept).length, 1, `kept, not deleted: guard ${fresh.guard.reason}`)
+      assert.deepEqual(filesUnder(s.paths.held), [])
+    } finally {
+      fresh.stop()
+    }
+  } finally {
+    s.done()
+  }
+})
+
+test('a session closing while a no answer keep is still waiting on the lock keeps the file ONCE and reads it as kept', async () => {
+  const s = setup()
+  try {
+    const d = fakeDownload(s.paths.held, { name: 'race.p8', finished: false })
+    s.slot.onDownload(d)
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    s.srv.answer(String(s.downloadCards()[0]!.gateId), null, 'expired')
+    await until(() => /race\.p8.*kept for your owner \(no answer\), still arriving/.test(status(s)), () => status(s))
+    let release!: () => void
+    void s.store.withLock(() => new Promise<void>((r) => (release = r)))
+    const draining = s.slot.drain('session_closed')
+    d.finish()
+    await new Promise((r) => setTimeout(r, 30))
+    release()
+    await draining
+    await until(() => filesUnder(s.paths.kept).length === 1, () => 'kept once')
+    await new Promise((r) => setTimeout(r, 40))
+    assert.match(status(s), /race\.p8, 257 B, kept for your owner/, status(s))
+    assert.doesNotMatch(status(s), /not kept|deleted/)
+  } finally {
+    s.done()
+  }
+})
+
+test('a Deny whose delete Windows refuses for a moment is retried, and a file that cannot be deleted is never picked up as kept', async () => {
+  for (const mode of ['brief', 'stuck'] as const) {
+    let target = ''
+    let refusals = 0
+    const fsWrap: any = { ...fsMod, rmSync: (p: string, o: any) => {
+      if (target && p === target && (mode === 'stuck' || refusals < 2)) {
+        refusals++
+        throw Object.assign(new Error('busy'), { code: 'EBUSY' })
+      }
+      return fsMod.rmSync(p, o)
+    } }
+    const s = setup({ fsImpl: fsWrap })
+    try {
+      const d = fakeDownload(s.paths.held, { name: `${mode}.p8` })
+      target = d.final
+      s.slot.onDownload(d)
+      await until(() => s.downloadCards().length === 1, () => 'asked')
+      s.srv.answer(String(s.downloadCards()[0]!.gateId), 'deny')
+      await until(() => /your owner said no/.test(status(s)), () => status(s))
+      if (mode === 'brief') {
+        await until(() => !existsSync(d.final), () => 'deleted after the retry')
+      } else {
+        await s.slot.drain('session_closed')
+        assert.equal(filesUnder(s.paths.kept).length, 0, 'a file the owner denied is never kept')
+        assert.equal(s.downloadCards().length, 1, `nor announced as kept: only the ask was posted, ${JSON.stringify(s.downloadCards().map((c) => c.summary))}`)
+        target = ''
+        const fresh = new DownloadStore({ agentRoot: s.agentRoot, assistantId: 900, gates: s.gates, deviceLabel: 'box-1', home: s.home, guard: readyGuard, now: s.now, noticePollMs: 5 })
+        try {
+          await fresh.sweep({ atStart: true })
+          assert.equal(filesUnder(s.paths.kept).length, 0, 'nor at the next start')
+          assert.ok(!existsSync(d.final), 'the next start deletes it')
+        } finally {
+          fresh.stop()
+        }
+      }
+    } finally {
+      s.done()
+    }
+  }
+})
+
+test('while the session runs, the held folder watcher adopts a file no download event claimed (kept, owner told)', async () => {
+  const s = setup()
+  try {
+    mkdirSync(s.paths.held, { recursive: true })
+    s.slot.watch()
+    writeFileSync(join(s.paths.held, randomUUID()), 'a download Playwright could not name')
+    await until(() => filesUnder(s.paths.kept).length === 1, () => 'adopted by the watcher')
+    await until(() => s.downloadCards().some((c) => /without naming it, so it is kept for you/.test(c.summary)), () => JSON.stringify(s.downloadCards().map((c) => c.summary)))
+    assert.deepEqual(filesUnder(s.paths.held), [])
   } finally {
     s.done()
   }
