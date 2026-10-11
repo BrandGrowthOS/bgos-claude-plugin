@@ -11,9 +11,11 @@
  * the body is HttpExceptionAdvicer's, which forwards no `code` for a 403). It
  * is not a hiccup: the same write into the same conversation is refused every
  * time. POST /messages is the sharp case. It reads the caller assistant only
- * from an X-Caller-Assistant-Id header this daemon never sends on that route,
- * so every hook rail card into a peer side-thread with an open conversation
- * is refused, and a refused card used to be posted again on every 600 ms
+ * from an X-Caller-Assistant-Id header this daemon did not send on that route
+ * until 0.65.3 (lib/messages-caller-header.ts), so every hook rail card into a
+ * peer side-thread with an open conversation was refused as a stranger's;
+ * since the backend's route-first check it is the 400 below either way, and a
+ * refused card used to be posted again on every 600 ms
  * flush: 378 refusals in one hour from one agent on 2026-10-07 (board row
  * a80d3683).
  *

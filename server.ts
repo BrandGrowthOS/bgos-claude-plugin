@@ -846,6 +846,7 @@ import {
   peerRefusalStatus,
   type PeerRefusal,
 } from './lib/peer-refusal.js'
+import { messagesCallerHeaders } from './lib/messages-caller-header.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -1374,7 +1375,25 @@ async function bgosPost(
       url,
       init: {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH), ...(opts.headers ?? {}) },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(AUTH),
+          // Names this agent on a generic POST /messages, so the backend's
+          // raw_chatid_shadow line says who wrote it (board row 019ff949).
+          ...messagesCallerHeaders({
+            path,
+            body,
+            assistantId: ASSISTANT_ID,
+            // Meetings and known peer side-threads: there a caller id changes
+            // what the backend does (lib/messages-caller-header.ts).
+            withholdForChat: (chatId) =>
+              meetingChatIds.has(chatId) ||
+              peerConvByChat.has(chatId) ||
+              closedPeerChats.has(chatId) ||
+              a2aRouteRefusedChats.has(chatId),
+          }),
+          ...(opts.headers ?? {}),
+        },
         body: JSON.stringify(body),
       },
       timeoutMs: HTTP_TIMEOUT_MS,
