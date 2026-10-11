@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.0 (2026-10-11)
+
+Remote browser control returns to the agent ten seconds after the owner's last accepted page click. Typing, scrolling and navigation do not extend that deadline. Physical input still drains before agent work resumes. A request refused during owner control is clearly reported as not started and safe to retry after handback. The bundled browser skill explains the behavior. Protected credential entry and encrypted per-agent profiles retain their separate rules.
+
 ## 0.66.1 (2026-10-11)
 
 **A Windows agent that crashes is started again in the same sweep, not 30 minutes later (board row 69337efa).** On AlienAres (watcher and plugin 0.66.0, Keep agents running on), the sweep had installed the task `HOAI Agent 1078` for test agent 1078. Ares killed only its claude at 07:54:15Z; the plain hoai launcher exited with it, and nothing started the task for 30 minutes while the heartbeat said `supervised canonical` and no task start was counted. The cause: on Windows the sweep started a dead launcher's task only after 30 minutes with no activity (`decideTaskStart` refused on `recentActivity`, `LEGACY_QUIET_WINDOW_MS`), because Windows has no cwd lookup and recent activity was its only stand in for "maybe a session this watcher cannot see". After a crash that activity is the dead session's own last writes: its state, its transcript, its hook spool.
