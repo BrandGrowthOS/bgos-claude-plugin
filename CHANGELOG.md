@@ -6,6 +6,8 @@ Notable changes to the HOAI Claude Code plugin.
 
 **A connector update no longer calls an agent deaf when it never restarted it (board row bbbf3438).** The keepalive launcher calls `bin/hoai-keepalive-marker.mjs` through an aliased home path, and the script compared its resolved module URL with that alias, so `main()` never ran: exit 0, nothing written, `keepalive.json` left naming dead pids. The update then had no live session to restart, reported "restarted", and verification failed on the unchanged boot time. The script now compares real paths on both sides, as `hoai-core.mjs` already does.
 
+Four more scripts decided "am I the entry point?" the same way and would also have done nothing when launched through an aliased path: `hoai-hook.mjs`, `bgos-claim.mjs`, `bgos-daemon-wrapper.mjs` and `hoai-private-turn-hook.mjs`. All now compare real paths. When the private turn hook was skipped, private tools were refused (the server finds no marker for the prompt), so the failure was a refusal, not an exposure.
+
 ## 0.67.0 (2026-10-11)
 
 Remote browser control returns to the agent ten seconds after the owner's last accepted page click. Typing, scrolling and navigation do not extend that deadline. Physical input still drains before agent work resumes. A request refused during owner control is clearly reported as not started and safe to retry after handback. The bundled browser skill explains the behavior. Protected credential entry and encrypted per-agent profiles retain their separate rules.

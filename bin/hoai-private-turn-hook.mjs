@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // A synchronous boundary for private tools. The existing telemetry hook stays async.
 import { randomUUID } from 'node:crypto'
-import { rmSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { realpathSync, rmSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findAttachedKey, floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
 import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privatePromptHash, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
@@ -143,4 +143,15 @@ export async function main() {
     process.exitCode = 2
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main()
+// REAL paths on both sides: node resolves the module URL through symlinks but
+// leaves argv[1] as the caller wrote it, so a launch through an aliased home
+// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
+function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (typeof argv1 !== 'string' || !argv1) return false
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1)
+  } catch {
+    return moduleUrl === pathToFileURL(argv1).href
+  }
+}
+if (isRunAsMain()) await main()

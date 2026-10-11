@@ -54,13 +54,14 @@ import { createHash, randomBytes } from 'node:crypto'
 import {
   appendFileSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** Mirrors lib/hook-intake.ts. A drift test pins the two together. */
 export const SPOOL_DIR_NAME = 'hooks'
@@ -450,9 +451,18 @@ export async function main(opts = {}) {
   process.exitCode = 0
 }
 
-const invokedDirectly =
-  typeof process.argv[1] === 'string' &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+// REAL paths on both sides: node resolves the module URL through symlinks but
+// leaves argv[1] as the caller wrote it, so a launch through an aliased home
+// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
+function isRunAsMain(argv1 = process.argv[1], moduleUrl = import.meta.url) {
+  if (typeof argv1 !== 'string' || !argv1) return false
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argv1)
+  } catch {
+    return moduleUrl === pathToFileURL(argv1).href
+  }
+}
+const invokedDirectly = isRunAsMain()
 if (invokedDirectly) {
   void main()
 }

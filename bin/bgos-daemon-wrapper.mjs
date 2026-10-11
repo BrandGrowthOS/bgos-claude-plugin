@@ -17,6 +17,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -902,10 +903,13 @@ export async function main(argv = process.argv.slice(2)) {
   })
 }
 
+// REAL paths on both sides: node resolves the module URL through symlinks but
+// leaves argv[1] as the caller wrote it, so a launch through an aliased home
+// (/Users/fitecho is /Users/bgos) skipped main() silently (board bbbf3438).
 function isRunAsMain() {
   if (!process.argv[1]) return false
   try {
-    return pathToFileURL(resolve(process.argv[1])).href === import.meta.url
+    return realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
   } catch {
     return false
   }
