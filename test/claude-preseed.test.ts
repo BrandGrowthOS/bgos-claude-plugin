@@ -761,6 +761,7 @@ test('a truthy non-boolean autoUpdate is not read as enrolment', () => {
 
 const FORWARDER = '/home/kc/bgos-claude-plugin/bin/hoai-hook.mjs'
 const FLOOR_HOOK = '/home/kc/bgos-claude-plugin/bin/hoai-floor-hook.mjs'
+const PRIVATE_HOOK = '/home/kc/bgos-claude-plugin/bin/hoai-private-turn-hook.mjs'
 const settingsOf = (fs: ReturnType<typeof memFs>) =>
   JSON.parse(fs.files.get('/agent/.claude/settings.local.json') ?? '{}')
 
@@ -776,8 +777,8 @@ test('ensureHookEntries registers every event, in the exec form, pointed at the 
   const hooks = settingsOf(fs).hooks
   assert.deepEqual(
     Object.keys(hooks).sort(),
-    [...HOOK_EVENT_NAMES].sort(),
-    'the clone entries register the same events as hooks/hooks.json',
+    [...HOOK_EVENT_NAMES, 'SubagentStart'].sort(),
+    'the clone entries register the same events as hooks/hooks.json (SubagentStart is the private hook alone)',
   )
   for (const name of HOOK_EVENT_NAMES) {
     const entry = hooks[name].flatMap((group: any) => group.hooks).find((h: any) => h.args?.[0] === FORWARDER)
@@ -807,9 +808,11 @@ test('a moved checkout replaces our old entry instead of stacking a dead one bes
   ensureHookEntries({ settingsPath, forwarderPath: '/old/place/bin/hoai-hook.mjs', fs })
   ensureHookEntries({ settingsPath, forwarderPath: FORWARDER, fs })
   const entries = settingsOf(fs).hooks.PreToolUse.flatMap((m: any) => m.hooks)
-  assert.equal(entries.length, 2, 'exactly one HOAI forwarder and one floor hook, the live ones')
+  assert.equal(entries.length, 3, 'exactly one HOAI forwarder, one floor hook and one private helper guard, the live ones')
   assert.deepEqual(entries[0].args, [FORWARDER])
   assert.deepEqual(entries[1].args, [FLOOR_HOOK])
+  assert.deepEqual(entries[2].args, [PRIVATE_HOOK])
+  assert.deepEqual(settingsOf(fs).hooks.SubagentStart.flatMap((m: any) => m.hooks).map((h: any) => h.args), [[PRIVATE_HOOK]])
   assert.equal(JSON.stringify(settingsOf(fs)).includes('/old/place/'), false, 'nothing of the old checkout is left')
 })
 
@@ -824,7 +827,7 @@ test('the clone rail registers the floor hook exactly as hooks/hooks.json does, 
   const fs = memFs()
   ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs })
   const pre = settingsOf(fs).hooks.PreToolUse
-  assert.equal(pre.length, 2)
+  assert.equal(pre.length, 3, 'the forwarder, the floor, the private helper guard')
   const manifest = JSON.parse(
     readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8'),
   )
@@ -863,7 +866,7 @@ test('the clone rail registers the floor hook exactly as hooks/hooks.json does, 
   // A caller can name the script, or opt out of it.
   const none = memFs()
   ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, floorHookPath: null, fs: none })
-  assert.equal(settingsOf(none).hooks.PreToolUse.length, 1)
+  assert.equal(settingsOf(none).hooks.PreToolUse.length, 2, 'the forwarder and the private helper guard')
   assert.equal(floorHookBesideForwarder('C:\\p\\bin\\hoai-hook.mjs'), 'C:\\p\\bin\\hoai-floor-hook.mjs')
   assert.equal(floorHookBesideForwarder('/p/bin/other.mjs'), '')
 })
@@ -939,12 +942,27 @@ test('the clone entry list and hooks/hooks.json register the same events', () =>
   const manifest = JSON.parse(
     readFileSync(fileURLToPath(new URL('../hooks/hooks.json', import.meta.url)), 'utf8'),
   )
+  const fs = memFs()
+  ensureHookEntries({ settingsPath: '/agent/.claude/settings.local.json', forwarderPath: FORWARDER, fs })
   assert.deepEqual(
     Object.keys(manifest.hooks).sort(),
-    [...HOOK_EVENT_NAMES].sort(),
+    Object.keys(settingsOf(fs).hooks).sort(),
     'a marketplace install and a clone install must see the same events, or the mapper ' +
       'is fed differently on two halves of the fleet',
   )
+})
+
+test('a clone folder written before the helper guard is not already done', () => {
+  const fs = memFs()
+  const settingsPath = '/agent/.claude/settings.local.json'
+  ensureHookEntries({ settingsPath, forwarderPath: FORWARDER, fs })
+  const settings = settingsOf(fs)
+  delete settings.hooks.SubagentStart
+  settings.hooks.PreToolUse = settings.hooks.PreToolUse.slice(0, 2)
+  fs.files.set(settingsPath, JSON.stringify(settings))
+  assert.deepEqual(ensureHookEntries({ settingsPath, forwarderPath: FORWARDER, fs }), { changed: true, reason: 'set' })
+  assert.deepEqual(settingsOf(fs).hooks.SubagentStart.flatMap((m: any) => m.hooks).map((h: any) => h.args), [[PRIVATE_HOOK]])
+  assert.equal(settingsOf(fs).hooks.PreToolUse.length, 3)
 })
 
 // ── Every launcher reaches the settings writer ───────────────────────────────

@@ -6,7 +6,7 @@ import { startHookIntake } from '../lib/hook-intake.js'
 import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createPrivateTurnTracker, privateActor, privateContextPath, privateMarkerPath, publishPrivateContext, readPrivateJson, requirePrivateTurn, writePrivateJson } from '../lib/private-turn.mjs'
+import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, privateActor, privateContextPath, privateMarkerPath, publishPrivateContext, readPrivateJson, requirePrivateTurn, writePrivateJson } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
 import { clipPayload } from '../bin/hoai-hook.mjs'
@@ -117,6 +117,12 @@ test('fresh clone and marketplace register sync private hook without changing as
       assert.equal(hooks.find((entry: any) => entry.args[0].endsWith('hoai-private-turn-hook.mjs')).async, false)
       assert.equal(hooks.find((entry: any) => entry.args[0].endsWith('/hoai-hook.mjs') || entry.args[0].endsWith('\\hoai-hook.mjs')).async, true)
     }
+    // Helpers are bound to the turn that started them, before any private tool runs.
+    const start = config.hooks.SubagentStart.flatMap((entry: any) => entry.hooks)
+    assert.equal(start.find((entry: any) => entry.args[0].endsWith('hoai-private-turn-hook.mjs')).async, false)
+    const guard = config.hooks.PreToolUse.find((entry: any) => entry.hooks.some((h: any) => h.args[0].endsWith('hoai-private-turn-hook.mjs')))
+    assert.equal(guard.matcher, PRIVATE_TOOL_MATCHER)
+    assert.equal(guard.hooks[0].async, false)
   }
 })
 
@@ -276,4 +282,33 @@ test('a prompt past the forwarder clip still admits its verified sender without 
   const clippedAgain: any = clipPayload(again)
   f.tracker.begin({ prompt: clippedAgain.prompt, promptHash: '0'.repeat(64), sessionId: 's' })
   assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
+})
+
+test('a subagent may use private tools only inside the turn that started it', (t) => {
+  const f = fixture(t)
+  const hook = (payload: any) => spawnSync(process.execPath, ['bin/hoai-private-turn-hook.mjs'], { env: f.env, input: JSON.stringify({ session_id: 's', cwd: f.cwd, ...payload }), encoding: 'utf8' })
+  const call = (tool: string, agentId?: string) => hook({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: {}, ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}) })
+  const browser = 'mcp__plugin_hoai_hoai-browser__browser_snapshot'
+  f.start('user_alice', 'research and fill the form', 's')
+  assert.equal(hook({ hook_event_name: 'SubagentStart', agent_id: 'agent-a', agent_type: 'general-purpose' }).status, 0)
+  // Inside the turn that started it, the helper works like the main agent.
+  for (const tool of [browser, 'mcp__bgos__schedule', 'mcp__plugin_hoai_bgos__boards_list']) assert.equal(call(tool, 'agent-a').status, 0, tool)
+  // A helper whose start was never recorded is refused.
+  assert.equal(call(browser, 'agent-unknown').status, 2)
+  // Bob's turn begins while the background helper from Alice's turn still runs.
+  f.start('user_bob', 'open my bank', 's')
+  for (const tool of [browser, 'mcp__hoai-browser__browser_click', 'mcp__bgos__schedule', 'mcp__plugin_hoai_bgos__list_schedules', 'mcp__bgos__cancel_schedule', 'mcp__bgos__boards_update']) {
+    const refused = call(tool, 'agent-a')
+    assert.equal(refused.status, 2, `${tool} from a helper of an earlier turn must be refused`)
+    assert.match(refused.stderr, /earlier turn|started/)
+  }
+  // The main agent and non-private tools are never touched by this guard.
+  assert.equal(call(browser).status, 0)
+  assert.equal(call('mcp__plugin_hoai_bgos__reply', 'agent-a').status, 0)
+  assert.equal(call('Bash', 'agent-a').status, 0)
+  // After the turn stops, no helper may act either.
+  assert.equal(hook({ hook_event_name: 'SubagentStart', agent_id: 'agent-b' }).status, 0)
+  assert.equal(call(browser, 'agent-b').status, 0)
+  recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }, f.env)
+  assert.equal(call(browser, 'agent-b').status, 2)
 })

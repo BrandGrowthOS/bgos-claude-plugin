@@ -48,6 +48,10 @@ const FORWARDER = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-hook.mjs'
 const FLOOR = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-floor-hook.mjs'
 const PRIVATE = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs'
 const PRIVATE_EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd']
+/** Registered for the private hook alone: it records which turn started each helper. */
+const PRIVATE_ONLY_EVENTS = ['SubagentStart']
+/** The private hook's PreToolUse guard: a helper's private call outside its own turn is refused. */
+const PRIVATE_TOOL_MATCHER = '^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+))$'
 /** Anchored: the CLI tests a matcher that is not a plain word list as a
  *  regex, so an unanchored `Write` would also fire for `TodoWrite`. */
 const FLOOR_MATCHER = '^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
@@ -87,7 +91,7 @@ test('the manifest parses and carries a one line description', () => {
 })
 
 test('the declared event set is exactly the set the mapper handles', () => {
-  assert.deepEqual(Object.keys(manifest.hooks).sort(), [...HOOK_EVENT_NAMES].sort())
+  assert.deepEqual(Object.keys(manifest.hooks).sort(), [...HOOK_EVENT_NAMES, ...PRIVATE_ONLY_EVENTS].sort())
 })
 
 test('the registered set is deliberate: no event fires that nothing reads', () => {
@@ -101,10 +105,15 @@ test('the registered set is deliberate: no event fires that nothing reads', () =
   // carries no description, so it can name nothing, and no tool_use_id, so it
   // can be joined to nothing; it also fires BEFORE the launch response that
   // first says which agent id belongs to which row, so it cannot even seed the
-  // index. Registering it would cost one process per child launch to read a
-  // payload nothing can use.
+  // index. Registering it for the FORWARDER would cost one process per child
+  // launch to read a payload nothing can use.
+  //
+  // The private turn hook is the one reader of SubagentStart: its agent_id is
+  // all it needs to record which turn started a helper, so a background helper
+  // cannot later act as the sender of a different turn.
   assert.ok('SubagentStop' in manifest.hooks, 'a helper row closes on this event')
-  for (const unregistered of ['PermissionRequest', 'Notification', 'SubagentStart',
+  assert.deepEqual(manifest.hooks.SubagentStart, [{ hooks: [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false }] }])
+  for (const unregistered of ['PermissionRequest', 'Notification',
     'PostToolBatch', 'StopFailure', 'TaskCreated', 'TaskCompleted']) {
     assert.ok(
       !(unregistered in manifest.hooks),
@@ -132,7 +141,7 @@ test('every FORWARDER entry is the exec form, async, with the plugin root placeh
     assert.equal('asyncRewake' in entry, false, 'waking the model is not this lane job')
   }
   // Private turn boundaries are separate synchronous handlers.
-  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 4, 'forwarders, one floor, three private boundaries')
+  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 6, 'forwarders, one floor, three private boundaries, one helper start, one helper guard')
 })
 
 test('the floor hook remains a separate blocking entry', () => {
@@ -166,13 +175,16 @@ test('only the floor and private turn boundaries add a matcher', () => {
   // match, which is the reversal the header explains.
   for (const [event, matchers] of Object.entries(manifest.hooks)) {
     if (event === 'PreToolUse') {
-      assert.equal(matchers.length, 2, 'the forwarder, then the floor')
+      assert.equal(matchers.length, 3, 'the forwarder, then the floor, then the private helper guard')
       assert.equal('matcher' in matchers[0]!, false, 'the forwarder is never narrowed by tool name')
       assert.deepEqual(matchers[0]!.hooks?.map((h) => h.args), [[FORWARDER]])
       assert.equal(matchers[1]!.matcher, FLOOR_MATCHER)
       assert.deepEqual(matchers[1]!.hooks?.map((h) => h.args), [[FLOOR]])
+      assert.equal(matchers[2]!.matcher, PRIVATE_TOOL_MATCHER)
+      assert.deepEqual(matchers[2]!.hooks, [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false }])
       continue
     }
+    if (PRIVATE_ONLY_EVENTS.includes(event)) continue
     if (PRIVATE_EVENTS.includes(event)) {
       assert.equal(matchers.length, 2)
       const entry = matchers.flatMap(m => m.hooks ?? []).find(h => h.args?.[0] === PRIVATE)
