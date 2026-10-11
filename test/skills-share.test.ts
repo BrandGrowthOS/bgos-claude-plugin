@@ -307,13 +307,25 @@ function denyAcl(path: string, right: string): () => void {
   return () => execFileSync('icacls', [path, '/remove:d', who], { stdio: 'ignore' })
 }
 
-test('Windows: a file its ACL denies reading refuses the export rather than leave it out silently', { skip: process.platform !== 'win32' }, () => {
+function throwsNow(fn: () => unknown): boolean {
+  try {
+    fn()
+    return false
+  } catch {
+    return true
+  }
+}
+
+test('Windows: a file its ACL denies reading refuses the export rather than leave it out silently (skips where an elevated runner reads through the deny)', { skip: process.platform !== 'win32' }, (t) => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'reference.md': 'Ref.\n' })
   const undo = denyAcl(join(dir, 'reference.md'), 'R')
   let answer
   try {
-    assert.throws(() => readFileSync(join(dir, 'reference.md')), 'the ACL really denies the read')
+    if (!throwsNow(() => readFileSync(join(dir, 'reference.md')))) {
+      t.skip('this account reads through a deny ACL (an elevated runner), so nothing here is unreadable')
+      return
+    }
     answer = exp(w, { name: 'notes', scope: 'agent', dryRun: true })
   } finally {
     undo()
@@ -322,13 +334,16 @@ test('Windows: a file its ACL denies reading refuses the export rather than leav
   if (!answer.ok) assert.equal(answer.code, 'read_failed')
 })
 
-test('Windows: a subfolder its ACL denies listing refuses the export rather than leave its files out', { skip: process.platform !== 'win32' }, () => {
+test('Windows: a subfolder its ACL denies listing refuses the export rather than leave its files out (skips where an elevated runner lists through the deny)', { skip: process.platform !== 'win32' }, (t) => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, 'sub/c.md': 'C\n' })
   const undo = denyAcl(join(dir, 'sub'), 'RD')
   let answer
   try {
-    assert.throws(() => readdirSync(join(dir, 'sub')), 'the ACL really denies the listing')
+    if (!throwsNow(() => readdirSync(join(dir, 'sub')))) {
+      t.skip('this account lists through a deny ACL (an elevated runner), so nothing here is unlistable')
+      return
+    }
     answer = exp(w, { name: 'notes', scope: 'agent', dryRun: true })
   } finally {
     undo()
