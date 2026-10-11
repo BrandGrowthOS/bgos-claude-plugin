@@ -220,9 +220,9 @@ describe('server.ts wiring', () => {
     'utf8',
   )
 
-  test('the boards transports compose the acting user header', () => {
+  test('the boards transports use the frozen private request header', () => {
     expect(src).toContain(
-      'headers: () => ({ ...authHeaders(AUTH), ...actingUser.headers() })',
+      'headers: () => ({ ...authHeaders(AUTH), ...privateHeaders })',
     )
   })
 

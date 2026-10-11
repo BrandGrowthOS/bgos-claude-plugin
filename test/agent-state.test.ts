@@ -368,7 +368,7 @@ test('memoizeUntilFound keeps an answer forever and retries a miss only after th
 
 test('server.ts publishes the real daemon state, from the lock holder, and removes it on shutdown', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
   assert.ok(at > 0, 'the publisher is wired')
   const wiring = server.slice(at, server.indexOf('\n})\n', at))
@@ -387,7 +387,26 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   assert.match(wiring, /runningVersion: RUNNING_VERSION/)
   assert.match(wiring, /pendingRestartVersion: agentStatePendingRestart\(\)/)
   assert.match(server, /const agentStatePendingRestart = memoizeFor\([\s\S]{0,200}daemonPendingRestartVersion\(\)/)
-  assert.match(server, /setInterval\(\(\) => agentStatePublisher\.tick\(\), AGENT_STATE_TICK_MS\)\.unref\(\)/)
+  const intervalSource = server.split('\n').find(line => line.includes('setInterval(') && line.includes('AGENT_STATE_TICK_MS'))
+  assert.ok(intervalSource, 'the state publication interval is wired')
+  const published: string[] = []
+  let callback: (() => void) | undefined
+  let unrefCount = 0
+  new Function('setInterval', 'agentStatePublisher', 'publishBrowserPrivateTurn', 'AGENT_STATE_TICK_MS', intervalSource)(
+    (tick: () => void, delay: number) => {
+      assert.equal(delay, 1000)
+      callback = tick
+      return { unref: () => { unrefCount += 1 } }
+    },
+    { tick: () => published.push('state') },
+    () => published.push('private-turn'),
+    1000,
+  )
+  assert.equal(unrefCount, 1, 'the heartbeat does not keep the daemon alive')
+  assert.ok(callback)
+  callback()
+  callback()
+  assert.deepEqual(published, ['state', 'private-turn', 'state', 'private-turn'])
   // The live session id is learned from the daemon's OWN admitted hook events,
   // and every hook event pokes a publish (a turn start is news at once).
   const hookAt = server.indexOf('function onHookPayload(')
@@ -396,7 +415,7 @@ test('server.ts publishes the real daemon state, from the lock holder, and remov
   // A NEW session restarts the clock the pin's settle window is measured on.
   assert.match(hookBody, /liveSessionId = hookSessionId\n\s*liveSessionSeenAtMs = Date\.now\(\)/)
   assert.match(hookBody, /lastHookEventAtMs = Date\.now\(\)/)
-  assert.match(hookBody, /agentStatePublisher\.tick\(\)\s*$/)
+  assert.match(hookBody, /agentStatePublisher\.tick\(\)\s*publishBrowserPrivateTurn\(\)\s*$/)
   // Both exit paths take the state away (removeAgentStateIfOurs inside).
   const shutdownAt = server.indexOf('const shutdown = (cause: ShutdownCause | string, code: number): void => {')
   const shutdownBody = server.slice(shutdownAt, server.indexOf('process.exit(code)', shutdownAt))
@@ -632,7 +651,7 @@ test('F2: after the bound session ends, turnSignal is none and the new transcrip
 
 test('server.ts drops the hook turn signal at a consumed SessionEnd and takes it back at the next admitted event', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.ok(server.includes('let hookEndedSessionId: string | null = null'), 'process scoped')
   const at = server.indexOf('function onHookPayload(')
   const body = server.slice(at, server.indexOf('\n}\n', at))
@@ -650,7 +669,7 @@ test('server.ts drops the hook turn signal at a consumed SessionEnd and takes it
 
 test('server.ts publishes turnSignal, the transcript activity and the proven session', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   const at = server.indexOf('const agentStatePublisher = new AgentStatePublisher(')
   const wiring = server.slice(at, server.indexOf('\n})\n', at))
   // 'hooks' while this daemon follows a live session of its own (the intake
@@ -771,7 +790,7 @@ test('findClaudeAncestor walks with PowerShell on win32 and with ps elsewhere', 
 
 test('server.ts finds the claude ancestor through the platform aware walk', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const server = readFileSync(join(root, 'server.ts'), 'utf8')
+  const server = readFileSync(join(root, 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(
     server,
     /const agentClaudePid = memoizeUntilFound\(CLAUDE_ANCESTOR_RETRY_MS, Date\.now, \(\) =>\s*findClaudeAncestor\(\{ platform: process\.platform, ownPid: process\.pid, execSync: defaultExecSync \}\),?\s*\)/,

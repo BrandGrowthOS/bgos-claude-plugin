@@ -18,6 +18,8 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { floorStateRoot } from '../lib/floor-state.mjs'
+import { privateContextPath } from '../lib/private-turn.mjs'
 
 import { loadCredentialsFile, resolveAuth, resolveCredentialsSelection } from '../lib/agent-credentials.js'
 
@@ -27,7 +29,7 @@ const defaultPath = join(homedir(), '.bgos-agent', 'credentials.json')
 // about; bin/bgos-launch.mjs passes it through as BGOS_LAUNCH_CWD.
 const cwd = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
 
-const empty = { backendUrl: '', pairingToken: '', apiKey: '', assistantId: '', mode: 'apikey', complete: false }
+const empty = { backendUrl: '', pairingToken: '', apiKey: '', assistantId: '', ownerUserId: '', contextFile: '', mode: 'apikey', complete: false }
 
 function resolve(): typeof empty {
   try {
@@ -43,6 +45,8 @@ function resolve(): typeof empty {
       pairingToken: auth.pairingToken,
       apiKey: auth.apiKey,
       assistantId: auth.assistantId,
+      ownerUserId: auth.userId,
+      contextFile: privateContextPath(floorStateRoot(process.env), auth.assistantId),
       mode: auth.mode,
       complete: auth.complete,
     }

@@ -496,6 +496,8 @@ test(
       pairingToken: 'pair-from-file',
       apiKey: '',
       assistantId: '77',
+      ownerUserId: 'user_abc',
+      contextFile: join(process.env.BGOS_PLUGIN_STATE_DIR || join(homedir(), '.bgos-plugin-state'), '77', 'browser-turn.json'),
       mode: 'pairing',
       complete: true,
     })
@@ -504,6 +506,9 @@ test(
       HOAI_RELAY_BACKEND_URL: 'https://api.brandgrowthos.ai',
       HOAI_RELAY_PAIRING_TOKEN: 'pair-from-file',
       HOAI_RELAY_ASSISTANT_ID: '77',
+      HOAI_RELAY_CONTEXT_FILE: parsed.contextFile,
+      HOAI_RELAY_OWNER_USER_ID: 'user_abc',
+      HOAI_RELAY_CLIENT_PID: String(process.ppid),
     })
   },
 )

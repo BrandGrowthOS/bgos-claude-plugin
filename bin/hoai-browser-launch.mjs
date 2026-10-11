@@ -18,12 +18,11 @@
  * script under bun (bin/hoai-browser-creds.ts, the same runtime the MCP server
  * uses) and reads one JSON line from its stdout.
  *
- * NOTHING HERE IS FATAL. A missing bun, a resolver that fails, an agent that is
- * not paired yet: each ends with the shim spawned WITHOUT relay env, which is
- * exactly today's behaviour (local mode still drives a desktop app running on
- * this machine), plus one plain stderr line saying the relay is off and why. A
- * pre-set HOAI_RELAY_* env is an operator override and is passed through
- * untouched. No credential is ever logged.
+ * Standalone manual launches retain local fallback. Managed plugin launches
+ * always require a signed private turn, including before the daemon attaches.
+ * An operator override may select relay credentials but cannot remove that
+ * context requirement. Missing or invalid context refuses private browser work.
+ * No credential is ever logged.
  *
  * Self-contained plain JavaScript: node >= 18 builtins only, plus the pure
  * helpers of bin/bgos-launch.mjs (bun probing, exit-code mapping). Import-safe:
@@ -36,6 +35,9 @@ import { existsSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { findAttachedKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
+import { privateContextPath } from '../lib/private-turn.mjs'
 
 import { exitCodeForChild, resolveBunPath, SIGNAL_EXIT_CODES } from './bgos-launch.mjs'
 
@@ -76,6 +78,11 @@ export function hasOperatorRelayEnv(env = {}) {
   return Boolean(str(env.HOAI_RELAY_BACKEND_URL).trim())
 }
 
+export function managedLaunchRequired(env = process.env, cwd = process.cwd(), exists = existsSync) {
+  return env.HOAI_RELAY_MANAGED === '1' || Boolean(str(env.BGOS_ASSISTANT_ID).trim() || str(env.BGOS_CREDENTIALS_PATH).trim()) ||
+    sessionFolders({ cwd }, env).some(folder => exists(join(folder, '.bgos-agent-id')))
+}
+
 /**
  * Map one resolver result to the shim's relay env.
  *
@@ -88,7 +95,7 @@ export function hasOperatorRelayEnv(env = {}) {
  * and never reaches the desktop app. resolveAuth only reports complete when an
  * assistant id is present, so a complete result always carries one; when it
  * somehow does not, the relay stays off rather than relaying into a 400.
- * @param {{ backendUrl?: string, pairingToken?: string, apiKey?: string, assistantId?: string, mode?: string, complete?: boolean } | null} resolution
+ * @param {{ backendUrl?: string, pairingToken?: string, apiKey?: string, assistantId?: string, ownerUserId?: string, contextFile?: string, mode?: string, complete?: boolean } | null} resolution
  * @returns {{ env: Record<string, string> | null, reason: string | null }}
  */
 export function relayEnvFromResolution(resolution) {
@@ -102,6 +109,7 @@ export function relayEnvFromResolution(resolution) {
       reason: 'this agent has no complete HOAI credentials on this machine yet (pair it with hoai-pair)',
     }
   }
+  const managed = resolution.contextFile ? { HOAI_RELAY_CONTEXT_FILE: str(resolution.contextFile), HOAI_RELAY_OWNER_USER_ID: str(resolution.ownerUserId), HOAI_RELAY_CLIENT_PID: String(process.ppid) } : {}
   const mode = str(resolution.mode).trim()
   if (mode === 'pairing') {
     const pairingToken = str(resolution.pairingToken).trim()
@@ -112,6 +120,7 @@ export function relayEnvFromResolution(resolution) {
     }
     return {
       env: {
+        ...managed,
         HOAI_RELAY_BACKEND_URL: backendUrl,
         HOAI_RELAY_PAIRING_TOKEN: pairingToken,
         HOAI_RELAY_ASSISTANT_ID: pairingAssistantId,
@@ -126,7 +135,7 @@ export function relayEnvFromResolution(resolution) {
       return { env: null, reason: 'the resolved api-key credentials are missing the key or the assistant id' }
     }
     return {
-      env: { HOAI_RELAY_BACKEND_URL: backendUrl, HOAI_RELAY_API_KEY: apiKey, HOAI_RELAY_ASSISTANT_ID: assistantId },
+      env: { ...managed, HOAI_RELAY_BACKEND_URL: backendUrl, HOAI_RELAY_API_KEY: apiKey, HOAI_RELAY_ASSISTANT_ID: assistantId },
       reason: null,
     }
   }
@@ -158,9 +167,9 @@ export function parseResolverOutput(stdout) {
 /**
  * Resolve the relay env for the shim.
  *
- * Order: an operator override wins and nothing is resolved; otherwise bun is
- * probed the way bin/bgos-launch.mjs probes it, the sibling resolver runs under
- * it with a hard timeout, and its one JSON line is mapped to HOAI_RELAY_*.
+ * An operator override retains its credentials. Managed launches still resolve
+ * context metadata. Bun is probed the way bin/bgos-launch.mjs probes it, the
+ * sibling resolver runs with a hard timeout, and its JSON maps to HOAI_RELAY_*.
  * Every failure is a reason string, never a throw.
  * @param {{
  *   env?: Record<string, string | undefined>,
@@ -182,7 +191,13 @@ export function resolveRelayEnv({
   spawnSyncImpl = spawnSync,
   timeoutMs = CREDS_TIMEOUT_MS,
 } = {}) {
-  if (hasOperatorRelayEnv(env)) return { env: {}, reason: null, via: 'operator' }
+  if (hasOperatorRelayEnv(env)) {
+    if (!managedLaunchRequired(env)) return { env: {}, reason: null, via: 'operator' }
+    // Operator auth may override the transport, never the managed turn boundary.
+    const resolved = resolveRelayEnv({ env: { ...env, HOAI_RELAY_BACKEND_URL: '' }, home, platform, exists, dir, spawnSyncImpl, timeoutMs })
+    const metadata = Object.fromEntries(Object.entries(resolved.env || {}).filter(([key]) => ['HOAI_RELAY_CONTEXT_FILE', 'HOAI_RELAY_OWNER_USER_ID', 'HOAI_RELAY_CLIENT_PID'].includes(key)))
+    return { env: metadata, reason: resolved.reason, via: 'operator-managed' }
+  }
   const bun = resolveBunPath({ env, home, platform, exists })
   if (!bun) {
     return {
@@ -271,8 +286,15 @@ export function main(argv = process.argv.slice(2), opts = {}) {
       spawnSyncImpl: opts.spawnSyncImpl,
       timeoutMs: opts.timeoutMs,
     })
-    if (relay.reason) writeErr(`${relayOffMessage(relay.reason)}\n`)
+    const managed = managedLaunchRequired(env) || findAttachedKey({ root: floorStateRoot(env), folders: sessionFolders({ cwd: process.cwd() }, env) })
+    if (relay.reason) writeErr(`${managed ? `${LOG_PREFIX} private browser context unavailable (${relay.reason}); browser work requires a valid managed turn.` : relayOffMessage(relay.reason)}\n`)
     const childEnv = { ...env, ...(relay.env ?? {}) }
+    // Resolver failure in a managed folder must not select a local owner's browser.
+    if (managed) {
+      childEnv.HOAI_RELAY_CONTEXT_FILE = childEnv.HOAI_RELAY_CONTEXT_FILE || privateContextPath(floorStateRoot(env), childEnv.HOAI_RELAY_ASSISTANT_ID || 'unavailable')
+      childEnv.HOAI_RELAY_OWNER_USER_ID = childEnv.HOAI_RELAY_OWNER_USER_ID || childEnv.BGOS_USER_ID || ''
+      childEnv.HOAI_RELAY_CLIENT_PID = String(process.ppid)
+    }
     const child = spawnImpl(nodePath, [shimPath(dir), ...argv], { stdio: 'inherit', env: childEnv })
     const forward = (signal) => {
       try {

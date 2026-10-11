@@ -220,8 +220,13 @@ test('parseHookEvent returns null for junk instead of throwing', () => {
 test('the declared event set is the set the manifest registers', () => {
   const manifest = JSON.parse(
     readFileSync(new URL('../hooks/hooks.json', import.meta.url), 'utf8'),
-  ) as { hooks: Record<string, unknown> }
-  assert.deepEqual([...HOOK_EVENT_NAMES].sort(), Object.keys(manifest.hooks).sort())
+  ) as { hooks: Record<string, { hooks?: { args?: string[] }[] }[]> }
+  // The events the FORWARDER is registered on. SubagentStart is the private
+  // turn hook's alone and never reaches this mapper.
+  const forwarded = Object.keys(manifest.hooks).filter((event) =>
+    manifest.hooks[event]!.some((m) => (m.hooks ?? []).some((h) => (h.args ?? []).some((a) => a.endsWith('/bin/hoai-hook.mjs')))))
+  assert.deepEqual([...HOOK_EVENT_NAMES].sort(), forwarded.sort())
+  assert.deepEqual(Object.keys(manifest.hooks).filter((event) => !forwarded.includes(event)), ['SubagentStart'])
 })
 
 // ── Tool rows ────────────────────────────────────────────────────────────────

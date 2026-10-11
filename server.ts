@@ -137,6 +137,7 @@ import {
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
+import { createPrivateTurnTracker, privateActor, privateSenderUserId, privateContextPath, privateMarkerPath, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -1245,9 +1246,9 @@ const actingUser = createActingUserTracker({
 // response.json() unconditionally (which turns a 204 on a landed write into a
 // tool failure the model would retry). The shared helpers stay exactly as they
 // are for every other tool; boards gets its own, in lib/boards-tools.ts.
-const boardsTransports = createBoardsTransports({
+const boardsTransports = (privateHeaders: Record<string, string>) => createBoardsTransports({
   apiBase: API_BASE,
-  headers: () => ({ ...authHeaders(AUTH), ...actingUser.headers() }),
+  headers: () => ({ ...authHeaders(AUTH), ...privateHeaders }),
   maxBytes: BOARDS_FETCH_MAX_BYTES,
   // Boards keeps its own error/204 semantics but not its own hang: the
   // deadline is applied inside lib/boards-tools.ts around the whole call so
@@ -2293,7 +2294,7 @@ async function bgosPut(path: string, body: Record<string, unknown>): Promise<unk
 // The plugin already reads ASSISTANT_ID from env (BGOS_ASSISTANT_ID), that
 // is exactly what this header needs.
 
-async function bgosPeerGet(path: string): Promise<unknown> {
+async function bgosPeerGet(path: string, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
@@ -2302,6 +2303,7 @@ async function bgosPeerGet(path: string): Promise<unknown> {
         headers: {
           ...authHeaders(AUTH),
           'X-Caller-Assistant-Id': ASSISTANT_ID,
+          ...privateHeaders,
         },
       },
       timeoutMs: HTTP_TIMEOUT_MS,
@@ -2317,7 +2319,7 @@ async function bgosPeerGet(path: string): Promise<unknown> {
   )
 }
 
-async function bgosPeerPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function bgosPeerPost(path: string, body: Record<string, unknown>, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
@@ -2328,6 +2330,7 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>): Promis
           'Content-Type': 'application/json',
           ...authHeaders(AUTH),
           'X-Caller-Assistant-Id': ASSISTANT_ID,
+          ...privateHeaders,
         },
         body: JSON.stringify(body),
       },
@@ -2348,7 +2351,7 @@ async function bgosPeerPost(path: string, body: Record<string, unknown>): Promis
   )
 }
 
-async function bgosPeerDelete(path: string): Promise<unknown> {
+async function bgosPeerDelete(path: string, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
@@ -2358,6 +2361,7 @@ async function bgosPeerDelete(path: string): Promise<unknown> {
         headers: {
           ...authHeaders(AUTH),
           'X-Caller-Assistant-Id': ASSISTANT_ID,
+          ...privateHeaders,
         },
       },
       timeoutMs: HTTP_TIMEOUT_MS,
@@ -5300,6 +5304,15 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       isError: true,
     })
   }
+  // Freeze private authority at request admission, before any awaited work.
+  let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
+  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+    try {
+      if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
+      privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
+    }
+    catch (err) { return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true }) }
+  }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
 
@@ -5313,7 +5326,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // instead of a board.
   if (req.params.name.startsWith('boards_')) {
     return handleBoardsTool(req.params.name, rawArgs, {
-      ...boardsTransports,
+      ...boardsTransports(privateCall!.headers),
       assistantId: ASSISTANT_ID,
     })
   }
@@ -6558,12 +6571,10 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     }
 
     case 'schedule': {
-      const chatIdArg = rawArgs.chat_id as string | undefined
+      const chatIdArg = (rawArgs.chat_id as string | undefined) || privateCall!.chatId
 
-      // Same membership rule as call_owner: a chat the agent names must pass
-      // the authorization check. When omitted we send NO chatId at all; the
-      // agent-scoped scheduled-tasks contract has the backend default to the
-      // agent's main chat (unlike call_owner, which falls back client-side).
+      // Omitted chat means this verified turn's private chat. The backend
+      // separately checks recipient ownership even for an explicit chat.
       let resolvedChatId: number | undefined
       if (chatIdArg) {
         const schedAuth = resolveAuthorizedChat(chatIdArg)
@@ -6593,6 +6604,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const result = await bgosPeerPost(
           'scheduled-tasks/agent',
           built.body as unknown as Record<string, unknown>,
+          privateCall!.headers,
         )
         const mode = built.body.recurrence
           ? `recurrence freq=${built.body.recurrence.freq}`
@@ -6628,7 +6640,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       }
 
       try {
-        const result = await bgosPeerGet(builtPath.path)
+        const result = await bgosPeerGet(builtPath.path, privateCall!.headers)
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         }
@@ -6653,7 +6665,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       try {
         // Soft cancel: the backend returns 200 with the task view (status
         // 'cancelled'), and repeating the call is idempotent.
-        const result = await bgosPeerDelete(built.path)
+        const result = await bgosPeerDelete(built.path, privateCall!.headers)
         log(`cancel_schedule: cancelled ${built.path}`)
         return {
           content: [
@@ -8525,6 +8537,20 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 /** The chat a hook event belongs to: the last thing delivered to this session,
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
+// A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
+const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn() })
+const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
+function publishBrowserPrivateTurn(): void {
+  if (!lockHeld) return
+  try {
+    publishPrivateContext({
+      path: privateContextPath(FLOOR_STATE_ROOT, ASSISTANT_ID),
+      secret: AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey,
+      assistantId: ASSISTANT_ID, ownerUserId: USER_ID, claudePid: agentClaudePid(),
+      turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
+    })
+  } catch { /* An absent or expired context refuses private tools. */ }
+}
 
 let hookTurn: TurnState = emptyTurn()
 let hookTurnLive = false
@@ -9055,6 +9081,8 @@ function endHookTurn(keepCard: boolean): void {
   hookStepsTurnId = null
   stopHookStepsHeartbeat()
   turnChat.end(Date.now())
+  privateTurns.end()
+  publishBrowserPrivateTurn()
 }
 
 function runHookEffects(effects: Effect[]): void {
@@ -9156,7 +9184,10 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     liveSessionId = hookSessionId
     liveSessionSeenAtMs = Date.now()
   }
+  if (event.name === 'SessionEnd') privateTurns.end()
   if (event.name === 'UserPromptSubmit') {
+    // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
+    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
@@ -9171,6 +9202,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   // A turn starting or ending is exactly what the watcher's safe moment reads,
   // so it is published now rather than on the next tick.
   agentStatePublisher.tick()
+  publishBrowserPrivateTurn()
 }
 
 /**
@@ -10175,7 +10207,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content,
+          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -12416,7 +12448,7 @@ async function forwardStreamInbound(
       deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content,
+          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
           meta: finalInboundMeta(
             streamChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -13516,7 +13548,7 @@ function connectWebsocket(): void {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content,
+          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -14708,7 +14740,7 @@ async function main(): Promise<void> {
 
   // agent-state.json (design section 7): ticks from here on; it writes only
   // while this daemon holds the pairing lock, so a passive daemon never does.
-  setInterval(() => agentStatePublisher.tick(), AGENT_STATE_TICK_MS).unref()
+  setInterval(() => { agentStatePublisher.tick(); publishBrowserPrivateTurn() }, AGENT_STATE_TICK_MS).unref()
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()

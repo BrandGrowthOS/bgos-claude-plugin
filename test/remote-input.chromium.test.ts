@@ -6,6 +6,7 @@ import { join, resolve, sep } from 'node:path'
 import { BrowserPool, ChromiumEngine } from '../bin/hoai-browser-host.mjs'
 import { RemoteBrowserViews } from '../lib/remote-view.mjs'
 import { runAgentBrowserWork } from '../lib/remote-input.mjs'
+import { setTimeout as delay } from 'node:timers/promises'
 
 test('B real Chromium receives owner input, refuses credential changes and iframe focus, and revokes on navigation',
   { skip: !process.env.HOAI_BROWSER_EXECUTABLE, timeout: 45000 }, async () => {
@@ -59,6 +60,67 @@ test('B real Chromium receives owner input, refuses credential changes and ifram
       await pool.stopAll()
       const absoluteRoot = resolve(root)
       assert.ok(absoluteRoot.startsWith(resolve(tmpdir()) + sep + 'hoai-remote-input-test-'))
+      rmSync(absoluteRoot, { recursive: true, force: true })
+    }
+  })
+
+test('handover real Chromium expires after ten click-idle seconds and accepts the next agent action once',
+  { skip: !process.env.HOAI_BROWSER_EXECUTABLE, timeout: 45000 }, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hoai-remote-handover-test-'))
+    const pool = new BrowserPool({ agentRoot: root, createEngine: (args: any) => new ChromiumEngine({ ...args,
+      executable: process.env.HOAI_BROWSER_EXECUTABLE, headless: true }) })
+    const views = new RemoteBrowserViews({ pool })
+    const frames: any[] = []
+    try {
+      const context = { assistantId: 901, principal: 'user-fixture' }
+      const slot = await pool.acquire(context)
+      const page = slot.engine.pages()[0]
+      await page.setContent('<html><body><input id="ordinary"></body></html>')
+      await views.open({ viewId: 'handover-view', ...context }, {
+        connectionId: 'handover-socket', sendFrame: (message: any) => { frames.push(message); return true }, sendClose: () => {},
+      })
+      const ready = frames[0].frame.params
+      let id = 0
+      const command = async (method: string, params: any) => {
+        const request = ++id
+        await views.command({ viewId: 'handover-view', frame: { id: request, method, params,
+          sessionId: ready.sessionId, tabId: ready.tabId } }, 'handover-socket')
+        return frames.find(message => message.frame.id === request).frame
+      }
+      const { leaseId } = (await command('hoai.input.acquire', {})).result
+      const box = await page.locator('#ordinary').boundingBox()
+      assert.ok(box)
+      const point = { leaseId, x: box.x + 5, y: box.y + 5, button: 'left' }
+      const clickedAt = Date.now()
+      const down = await command('hoai.input.pointer', { ...point, type: 'down' })
+      assert.deepEqual(down.result, {})
+      await command('hoai.input.pointer', { ...point, type: 'up' })
+      let agentRuns = 0
+      const nextAgentAction = () => runAgentBrowserWork(slot, async () => {
+        agentRuns++
+        await page.locator('#ordinary').fill('agent resumed')
+      })
+      assert.throws(nextAgentAction, /did not start and is safe to retry/)
+      assert.equal(agentRuns, 0)
+      await delay(6500)
+      await command('hoai.input.pointer', { ...point, type: 'move' })
+      await command('hoai.input.pointer', { ...point, type: 'wheel', deltaY: 4 })
+      const focus = await command('hoai.input.focus', { leaseId })
+      assert.deepEqual((await command('hoai.input.key', { leaseId, focusToken: focus.result.focusToken, key: 'K' })).result, {})
+      assert.equal(await page.locator('#ordinary').inputValue(), 'K')
+      assert.throws(nextAgentAction, /owner currently controls/)
+      while (slot.ownerInputLease && Date.now() - clickedAt < 14000) await delay(25)
+      assert.ok(Date.now() - clickedAt >= 10000, 'never hand control back before ten click-idle seconds')
+      assert.equal(slot.ownerInputLease, null, 'non-click input must not extend the timer')
+      assert.ok(frames.some(message => message.frame.method === 'hoai.input.revoked'))
+      await nextAgentAction()
+      assert.equal(agentRuns, 1)
+      assert.equal(await page.locator('#ordinary').inputValue(), 'agent resumed')
+    } finally {
+      await views.stop()
+      await pool.stopAll()
+      const absoluteRoot = resolve(root)
+      assert.ok(absoluteRoot.startsWith(resolve(tmpdir()) + sep + 'hoai-remote-handover-test-'))
       rmSync(absoluteRoot, { recursive: true, force: true })
     }
   })

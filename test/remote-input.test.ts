@@ -19,8 +19,9 @@ function fixture() {
 
 test('B reserves owner control before awaiting physical agent work and gates late held actions', async () => {
   const f = fixture()
+  let started = 0
   let finish!: () => void
-  const physical = runAgentBrowserWork(f.slot, () => new Promise<void>(resolve => { finish = resolve }))
+  const physical = runAgentBrowserWork(f.slot, () => { started++; return new Promise<void>(resolve => { finish = resolve }) })
   await tick()
   const acquiring = f.input.acquire(f.view)
   assert.throws(() => runAgentBrowserWork(f.slot, () => {}), /owner currently controls/)
@@ -34,6 +35,72 @@ test('B reserves owner control before awaiting physical agent work and gates lat
   assert.throws(() => runAgentBrowserWork(f.slot, () => {}), /owner currently controls/)
   f.input.release(f.view, lease.leaseId)
   assert.equal(await runAgentBrowserWork(f.slot, () => 'agent resumes'), 'agent resumes')
+  assert.equal(started, 1, 'taking and returning control never replays the completed action')
+})
+
+test('handover releases after ten click-idle seconds even when keys, focus, wheel and movement continue', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture()
+  const advance = (ms: number) => { f.advance(ms); t.mock.timers.tick(ms) }
+  const { leaseId } = await f.input.acquire(f.view)
+  await f.input.pointer(f.view, { leaseId, type: 'down', x: 12, y: 24 })
+  assert.equal(f.view.ownerLease.expiresAt, 11000)
+  advance(6000)
+  await f.input.pointer(f.view, { leaseId, type: 'up', x: 12, y: 24 })
+  await f.input.pointer(f.view, { leaseId, type: 'move', x: 15, y: 24 })
+  await f.input.pointer(f.view, { leaseId, type: 'wheel', x: 15, y: 24, deltaY: 4 })
+  const focus = await f.input.focus(f.view, { leaseId })
+  await f.input.key(f.view, { leaseId, focusToken: focus.focusToken, key: 'K' })
+  await f.input.controlled(f.view, leaseId, async () => {})
+  assert.equal(f.view.ownerLease.expiresAt, 11000)
+  advance(3999)
+  let started = 0
+  assert.throws(() => runAgentBrowserWork(f.slot, () => { started++ }), /did not start and is safe to retry after control returns/)
+  assert.equal(started, 0)
+  assert.equal(f.revoked.length, 0, 'never return control before ten click-idle seconds')
+  advance(1)
+  assert.equal(f.revoked.length, 1)
+  assert.equal(f.slot.ownerInputLease, null)
+  await runAgentBrowserWork(f.slot, () => { started++ })
+  assert.equal(started, 1, 'the explicitly retried request runs once after handback')
+})
+
+test('handover restarts the ten second deadline only for an accepted click', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture()
+  const advance = (ms: number) => { f.advance(ms); t.mock.timers.tick(ms) }
+  const { leaseId } = await f.input.acquire(f.view)
+  advance(9000)
+  await f.input.pointer(f.view, { leaseId, type: 'down', x: 12, y: 24 })
+  assert.equal(f.view.ownerLease.expiresAt, 20000)
+  await f.input.pointer(f.view, { leaseId, type: 'up', x: 12, y: 24 })
+  advance(5000)
+  await assert.rejects(f.input.pointer(f.view, { leaseId, type: 'down', x: -1, y: 24 }), /Invalid pointer/)
+  f.policy({ allowed: false, credential: true, editable: true })
+  await assert.rejects(f.input.pointer(f.view, { leaseId, type: 'down', x: 12, y: 24 }), /credential fields/)
+  assert.equal(f.view.ownerLease.expiresAt, 20000)
+  advance(4999)
+  assert.throws(() => runAgentBrowserWork(f.slot, () => {}), /owner currently controls/)
+  advance(1)
+  assert.equal(await runAgentBrowserWork(f.slot, () => 'resumed'), 'resumed')
+})
+
+test('handover expiry drains held mouse buttons before allowing the next agent request', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture()
+  const { leaseId } = await f.input.acquire(f.view)
+  await f.input.pointer(f.view, { leaseId, type: 'down', x: 12, y: 24 })
+  let released!: () => void
+  f.view.cdp.send = async (method: string, params: any) => {
+    f.sent.push({ method, params })
+    await new Promise<void>(resolve => { released = resolve })
+  }
+  f.advance(10000); t.mock.timers.tick(10000)
+  assert.equal(f.view.ownerLease, null)
+  assert.equal(f.sent.at(-1).params.type, 'mouseReleased')
+  assert.throws(() => runAgentBrowserWork(f.slot, () => {}), /owner currently controls/)
+  released(); await tick()
+  assert.equal(await runAgentBrowserWork(f.slot, () => 'resumed'), 'resumed')
 })
 
 test('B dispatches a safe key once and refuses token replay, stale focus, and credential changes', async () => {
@@ -136,8 +203,8 @@ test('B host status exposes owner control and refuses agent tools or close befor
   await f.input.acquire(f.view)
   const text = (result: any) => result.content.map((item: any) => item.text || '').join('')
   assert.match(text(await core.callTool({}, 'hoai_browser_status', {})), /human_control/)
-  assert.match(text(await core.callTool({}, 'browser_navigate', { url: 'https://example.com' })), /owner_control/)
-  assert.match(text(await core.callTool({}, 'hoai_browser_close_session', {})), /owner_control/)
+  assert.match(text(await core.callTool({}, 'browser_navigate', { url: 'https://example.com' })), /did not start and is safe to retry after control returns/)
+  assert.match(text(await core.callTool({}, 'hoai_browser_close_session', {})), /did not start and is safe to retry after control returns/)
   f.input.release(f.view)
   assert.match(text(await core.callTool({}, 'hoai_browser_status', {})), /agent_driving/)
 })

@@ -60,6 +60,7 @@ import { RESERVED_VALUE_PREFIXES, escapeAgentButtonValue } from '../lib/message-
 import * as inboundChannel from '../lib/inbound-channel.ts'
 import * as slashCatalog from '../lib/slash-catalog.ts'
 import * as authLogin from '../lib/auth-login.ts'
+import { createPrivateTurnTracker, privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
 import ts from 'typescript'
 
 const OWNER = 'user_2owner000000000000000000000'
@@ -939,7 +940,7 @@ test('no claude executable: /login says so instead of pretending', async () => {
 // `loginController`, and anything that depends on runtime values. The
 // behaviour above is what runs; this is where it is plugged in.
 
-const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
+const src = readFileSync(new URL('../server.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 const SHAPE = 'pins SHAPE only: the source text, not that this code runs'
 
 test('the code is offered to the sign-in flow on every rail that forwards human text, before anything logs or forwards it (shape pin)', () => {
@@ -1023,6 +1024,8 @@ function streamRail(controller: LoginController) {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   const notifications: Array<{ content: string }> = []
+  const privateDeliveries: Array<{ content: string, actingUserId: string | null, chatId: string }> = []
+  const tracker = createPrivateTurnTracker()
   const logs: string[] = []
   const recorder: unknown = new Proxy(function () {}, {
     get: (_t, key) => (key === Symbol.toPrimitive ? () => '' : recorder),
@@ -1032,6 +1035,14 @@ function streamRail(controller: LoginController) {
     ...inboundChannel,
     ...slashCatalog,
     ...authLogin,
+    privateActor,
+    privateSenderUserId,
+    privateTurns: {
+      deliver: (delivery: { content: string, actingUserId: string | null, chatId: string }) => {
+        privateDeliveries.push(delivery)
+        return tracker.deliver(delivery)
+      },
+    },
     loginController: controller,
     log: (line: string) => logs.push(line),
     USER_ID: OWNER,
@@ -1065,7 +1076,7 @@ function streamRail(controller: LoginController) {
   // eslint-disable-next-line no-new-func
   const factory = new Function('scope', `with (scope) {\n${js}\nreturn forwardStreamInbound\n}`)
   const forward = factory(scope) as (view: Record<string, unknown>, isSystem: boolean) => Promise<void>
-  return { forward, notifications, logs }
+  return { forward, notifications, privateDeliveries, logs }
 }
 
 function streamView(text: string, messageId: number, sender: Record<string, unknown> = {}) {
@@ -1093,6 +1104,8 @@ test('the stream rail, run: the owner code goes to the sign-in child and is NOT 
   await railIdle.forward(streamView('hello there', 300), false)
   assert.equal(railIdle.notifications.length, 1, 'the harness sees an ordinary forward')
   assert.match(railIdle.notifications[0]!.content, /hello there/)
+  assert.equal(railIdle.privateDeliveries[0]!.actingUserId, OWNER)
+  assert.match(railIdle.notifications[0]!.content, /<hoai-private-turn id="[a-f0-9-]{36}"\/>/)
 
   // The code, while awaiting it.
   const h = harness()
@@ -1100,6 +1113,7 @@ test('the stream rail, run: the owner code goes to the sign-in child and is NOT 
   const rail = streamRail(h.controller)
   await rail.forward(streamView(CODE, 301), false)
   assert.equal(rail.notifications.length, 0, 'the code must not reach the model')
+  assert.equal(rail.privateDeliveries.length, 0, 'the code must not create a model delivery')
   assert.deepEqual(h.child.writes, [`${CODE}\n`], 'it went to the child instead')
   assertNoSecrets(rail.logs, 'stream rail logs')
 
@@ -1107,6 +1121,8 @@ test('the stream rail, run: the owner code goes to the sign-in child and is NOT 
   await rail.forward(streamView('from someone else', 302, { sender_user_id: RECIPIENT, sender_relationship: 'shared_recipient' }), false)
   assert.equal(rail.notifications.length, 1)
   assert.match(rail.notifications[0]!.content, /from someone else/)
+  assert.equal(rail.privateDeliveries.length, 1)
+  assert.equal(rail.privateDeliveries[0]!.actingUserId, RECIPIENT)
 
   // The bad code fails; the owner pastes it again. Withheld, not forwarded.
   h.child.handlers.onStderr('Login failed: Request failed with status code 400\n')
@@ -1114,5 +1130,6 @@ test('the stream rail, run: the owner code goes to the sign-in child and is NOT 
   await settle()
   await rail.forward(streamView(CODE, 303), false)
   assert.equal(rail.notifications.length, 1, 'the re-pasted code must not reach the model')
+  assert.equal(rail.privateDeliveries.length, 1, 'the re-pasted code must not create a model delivery')
   assertNoSecrets(rail.logs, 'stream rail logs after the re-paste')
 })
