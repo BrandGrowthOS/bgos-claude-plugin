@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // A synchronous boundary for private tools. The existing telemetry hook stays async.
 import { randomUUID } from 'node:crypto'
+import { rmSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { findAttachedKey, floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
 import { privateMarkerPath, privatePromptHash, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
@@ -23,7 +24,24 @@ export function recordPrivateBoundary(payload, env = process.env) {
   return { path, marker }
 }
 
+/** Best effort: turn every existing marker for this session's folders non-live. */
+export function invalidatePrivateBoundary(payload, env = process.env) {
+  try {
+    const root = floorStateRoot(env)
+    for (const key of new Set(sessionFolders(payload, env).map(floorKey))) {
+      const path = privateMarkerPath(root, key)
+      if (!readPrivateJson(path, 2048)) continue
+      try {
+        writePrivateJson(path, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+      } catch {
+        try { rmSync(path, { force: true }) } catch { /* Nothing more can be done from a hook. */ }
+      }
+    }
+  } catch { /* An unreadable payload has no folders to close. */ }
+}
+
 export async function main() {
+  let payload = null
   try {
     const chunks = []
     let size = 0
@@ -32,7 +50,7 @@ export async function main() {
       if (size > 2 * 1024 * 1024) throw new Error('Private tool turn payload is too large.')
       chunks.push(chunk)
     }
-    const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     const recorded = recordPrivateBoundary(payload)
     if (recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-private-turn id="')) {
       // Claude runs matching hooks in parallel. Give the existing async
@@ -45,6 +63,14 @@ export async function main() {
       }
     }
   } catch {
+    const event = payload?.hook_event_name
+    if (event === 'Stop' || event === 'SessionEnd') {
+      // Exit 2 on Stop would block stopping and loop. Close the marker instead,
+      // so private tools refuse until the next prompt, and let the turn end.
+      invalidatePrivateBoundary(payload)
+      process.stderr.write('HOAI could not record the end of the private tool turn. Private tools stay refused until the next prompt.\n')
+      return
+    }
     // Letting the next prompt run with the old marker would expose another person's profile.
     process.stderr.write('HOAI could not establish the private tool turn. Check the local agent state directory, then retry the prompt.\n')
     process.exitCode = 2

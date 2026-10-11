@@ -230,3 +230,22 @@ test('a mid-turn delivery from another person or an unattributed sender revokes 
     assert.throws(() => requirePrivateTurn(tracker, f.markerPaths, 'user_owner'), /did not start/)
   }
 })
+
+test('a failed Stop or SessionEnd boundary never blocks stopping and still closes the live marker', (t) => {
+  const f = fixture(t)
+  for (const event of ['Stop', 'SessionEnd']) {
+    f.start('user_alice')
+    assert.equal(readPrivateJson(f.markerPaths[0]).live, true)
+    // No session identity makes the boundary write throw.
+    const result = spawnSync(process.execPath, ['bin/hoai-private-turn-hook.mjs'], { env: f.env, input: JSON.stringify({ hook_event_name: event, cwd: f.cwd }), encoding: 'utf8' })
+    assert.equal(result.status, 0, `${event} exit 2 would block stopping: ${result.stderr}`)
+    assert.match(result.stderr, /HOAI/)
+    assert.notEqual(readPrivateJson(f.markerPaths[0])?.live, true, `${event} leaves no live marker behind`)
+    assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
+  }
+  // An unwritable state folder at Stop is reported, not a block.
+  rmSync(join(f.root, 'private-turn'), { recursive: true, force: true })
+  writeFileSync(join(f.root, 'private-turn'), 'a file blocks the marker directory')
+  const blocked = spawnSync(process.execPath, ['bin/hoai-private-turn-hook.mjs'], { env: f.env, input: JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }), encoding: 'utf8' })
+  assert.equal(blocked.status, 0)
+})
