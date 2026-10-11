@@ -76,7 +76,7 @@ import { io as socketIoClient } from 'socket.io-client'
 import { chromeEnv } from '../lib/browser-env.mjs'
 import { GateKeeper, deniedMessage, waitSecondsFrom, GATE_WAIT_MAX_S } from '../lib/browser-gate.mjs'
 import { RemoteBrowserViews, REMOTE_BROWSER_TAB_MAX } from '../lib/remote-view.mjs'
-import { runAgentBrowserWork } from '../lib/remote-input.mjs'
+import { OWNER_CONTROL_MESSAGE, runAgentBrowserWork } from '../lib/remote-input.mjs'
 
 /**
  * The permission rules, byte-identical copies of the desktop Agent Browser's
@@ -1545,7 +1545,7 @@ export class BrowserHostCore {
       return text(lines.join(' '))
     }
     if (name === 'hoai_browser_close_session') {
-      if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', 'The owner currently controls this browser.')
+      if (this.pool.peek(ctx)?.ownerInputLease) return errorResult('owner_control', OWNER_CONTROL_MESSAGE)
       const closed = await this.pool.release(ctx)
       return text(closed ? 'Session closed. Any unlocked login state was saved encrypted; the vault is now locked.' : 'No session was open.')
     }
@@ -1591,7 +1591,7 @@ export class BrowserHostCore {
     // wait_seconds is the gate's, never the engine's (host.js callTool).
     const { wait_seconds: waitSeconds, ...engineArgs } = args
     const slot = await this.pool.acquire(ctx)
-    if (slot.ownerInputLease) throw new HostError('owner_control', 'The owner currently controls this browser.')
+    if (slot.ownerInputLease) throw new HostError('owner_control', OWNER_CONTROL_MESSAGE)
     if (!slot.purpose) slot.purpose = typeof engineArgs.url === 'string' ? `Browsing ${engineArgs.url}` : 'Browsing on request'
     const verdict = await this._permit(ctx, slot, name, engineArgs, waitSeconds, signal)
     if (verdict.parked) return this._parkedResult(verdict)
