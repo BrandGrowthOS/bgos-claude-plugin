@@ -21,6 +21,8 @@ The install can request sudo privileges. Never run it or apt automatically. Run 
 
 The owner can view and control the page through the HOAI browser pane from another desktop. All traffic goes through the HOAI server. Do not expose a browser debugging port or make a direct desktop-to-agent connection.
 
+For a shared agent, the browser belongs to the person whose verified current message started the work. Each recipient and the original owner have separate browser sessions, cookies, encrypted login files and schedules. Here, browser owner means that person, including an authorized share recipient. Do not select a person from tool arguments, copy another person's profile, or fall back to the original owner's browser. If private turn verification refuses an action, it did not start: ask the person to send a new message in their own HOAI chat. Do not retry with another identity or local browser. Existing recipient-consented activity summaries keep their current consent rules.
+
 The pane provides address navigation, Back, Forward, Reload, Stop, and New, Select and Close tab controls for this agent's actual browser. Owner actions require taking control and pause agent browser tools while the physical action settles. Switching a tab or navigating releases stale input and login offers. Opened links can create a tab in the same agent browser. Never open a local owner-desktop tab as a substitute.
 
 An owner click inside the browser pane takes control. Pointer movement, keys, scrolling and activity in other apps do not take control or extend the click timer. Ordinary input returns control automatically after at least ten seconds without another accepted pane click, once any physical input cleanup finishes. The owner can also use **Hand back to agent**. Protected login entry has its own reservation until the owner finishes, cancels the native window, or its offer expires. Never close the browser to work around temporary owner control: this would interrupt the owner's session.
@@ -46,3 +48,5 @@ An existing native Chrome profile can contain unencrypted login material. Never 
 Encryption protects saved files. The destination page and this agent machine receive plaintext during use, and a compromised agent account can inspect live browser state. Do not describe this as protection from the agent machine or as protection against an actively malicious HOAI server substituting cryptographic offers.
 
 Close the browser session when finished. An unlocked vault drains its last encrypted snapshot, then locks. No secrets should appear in the task summary.
+
+The pane's collapse arrows hide the view and keep the exact agent browser session running. The X control ends that person's session and saves unlocked encrypted state before confirming closure. An unconfirmed close is not proof of shutdown. Reconnect only restores the view; it never repeats the close request.

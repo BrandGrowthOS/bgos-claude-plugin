@@ -46,6 +46,8 @@ import { HOOK_EVENT_NAMES } from '../lib/hook-events.ts'
 
 const FORWARDER = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-hook.mjs'
 const FLOOR = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-floor-hook.mjs'
+const PRIVATE = '${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs'
+const PRIVATE_EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd']
 /** Anchored: the CLI tests a matcher that is not a plain word list as a
  *  regex, so an unanchored `Write` would also fire for `TodoWrite`. */
 const FLOOR_MATCHER = '^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
@@ -112,7 +114,7 @@ test('the registered set is deliberate: no event fires that nothing reads', () =
 })
 
 test('every FORWARDER entry is the exec form, async, with the plugin root placeholder', () => {
-  const forwarders = entries().filter((entry) => !isFloorEntry(entry))
+  const forwarders = entries().filter((entry) => (entry.args ?? []).includes(FORWARDER))
   assert.equal(
     forwarders.length,
     HOOK_EVENT_NAMES.length,
@@ -129,11 +131,11 @@ test('every FORWARDER entry is the exec form, async, with the plugin root placeh
     assert.equal(entry.async, true, 'a telemetry hook that blocks a tool call is a defect')
     assert.equal('asyncRewake' in entry, false, 'waking the model is not this lane job')
   }
-  // Nothing else: every entry is either the forwarder or the floor hook.
-  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 1, 'the forwarder per event, plus the one floor entry')
+  // Private turn boundaries are separate synchronous handlers.
+  assert.equal(entries().length, HOOK_EVENT_NAMES.length + 4, 'forwarders, one floor, three private boundaries')
 })
 
-test('the floor hook is the ONE blocking entry, and the reason is written here', () => {
+test('the floor hook remains a separate blocking entry', () => {
   // Reversed on purpose in 0.53.0 (see the header): the owner's "Always ask
   // before risky actions" needs a hook that STOPS a listed call under full
   // access, and the probe proved nothing else does (map part 24, run D1). It
@@ -157,7 +159,7 @@ test('the floor hook is the ONE blocking entry, and the reason is written here',
   assert.equal(entries().filter((entry) => (entry.args ?? []).includes(FORWARDER)).length, HOOK_EVENT_NAMES.length)
 })
 
-test('one matcher object per event, except PreToolUse, whose second is the floor', () => {
+test('only the floor and private turn boundaries add a matcher', () => {
   // Two matchers on one event double the processes, so the forwarder still
   // declares exactly one, un-narrowed, everywhere. PreToolUse carries the
   // floor's own matcher object beside it, narrowed to the tools the floor can
@@ -169,6 +171,12 @@ test('one matcher object per event, except PreToolUse, whose second is the floor
       assert.deepEqual(matchers[0]!.hooks?.map((h) => h.args), [[FORWARDER]])
       assert.equal(matchers[1]!.matcher, FLOOR_MATCHER)
       assert.deepEqual(matchers[1]!.hooks?.map((h) => h.args), [[FLOOR]])
+      continue
+    }
+    if (PRIVATE_EVENTS.includes(event)) {
+      assert.equal(matchers.length, 2)
+      const entry = matchers.flatMap(m => m.hooks ?? []).find(h => h.args?.[0] === PRIVATE)
+      assert.deepEqual(entry, { type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false })
       continue
     }
     assert.equal(matchers.length, 1, `${event} must declare one matcher object`)

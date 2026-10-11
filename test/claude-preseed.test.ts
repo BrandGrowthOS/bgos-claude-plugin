@@ -780,7 +780,7 @@ test('ensureHookEntries registers every event, in the exec form, pointed at the 
     'the clone entries register the same events as hooks/hooks.json',
   )
   for (const name of HOOK_EVENT_NAMES) {
-    const entry = hooks[name][0].hooks[0]
+    const entry = hooks[name].flatMap((group: any) => group.hooks).find((h: any) => h.args?.[0] === FORWARDER)
     assert.equal(entry.type, 'command')
     assert.equal(entry.command, 'node')
     assert.deepEqual(entry.args, [FORWARDER], 'an absolute path: the placeholder is plugin-only')
@@ -899,7 +899,7 @@ test('a corrupt settings file is replaced rather than failing the install', () =
     fs,
   })
   assert.equal(result.reason, 'set')
-  assert.equal(settingsOf(fs).hooks.Stop.length, 1)
+  assert.equal(settingsOf(fs).hooks.Stop.length, 2)
 })
 
 test('no forwarder path means no entries, never a half written hooks block', () => {

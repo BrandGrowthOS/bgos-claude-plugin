@@ -1232,10 +1232,10 @@ export class BrowserPool {
   }
 
   /** Stops this agent and principal's browser. True when one was running. */
-  async release(ctx) {
+  async release(ctx, { expectedEngine, beforeStop } = {}) {
     const slot = this._slots.get(this.slotKey(ctx))
-    if (!slot) return false
-    return this._stopSlot(slot)
+    if (!slot || (expectedEngine && (slot.engine !== expectedEngine || slot.stopping))) return false
+    return this._stopSlot(slot, beforeStop)
   }
 
   async stopAll() {
@@ -1247,9 +1247,14 @@ export class BrowserPool {
     return [...this._slots.values()].filter((s) => s.engine && s.engine.alive !== false).map((s) => s.paths.profileDir)
   }
 
-  _stopSlot(slot) {
+  _stopSlot(slot, beforeStop) {
     if (slot.stopping) return slot.stopping
-    const stopping = Promise.resolve().then(() => this._finishStopSlot(slot))
+    // Reserve synchronously, before draining input. Agent admission cannot
+    // slip between the last owner event and the encrypted profile snapshot.
+    const stopping = Promise.resolve().then(async () => {
+      await beforeStop?.()
+      return this._finishStopSlot(slot)
+    })
     slot.stopping = stopping.finally(() => { slot.stopping = null })
     return slot.stopping
   }
