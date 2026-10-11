@@ -1496,7 +1496,6 @@ test('F4 (win32): a daemon too old to publish state but holding the pairing lock
   assert.equal(JSON.parse(installed.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 0)
 })
 
-
 // -- Board row 69337efa: a crashed Windows agent is started at once ---------------------------------------
 
 const PIN = '8c1f0000-0000-4000-8000-000000000912'
@@ -1612,6 +1611,38 @@ test('board row 69337efa (win32): an update for an agent whose launcher died wai
   assert.deepEqual(starts(rec), [], 'the task tier would start a second session on the pin beside it')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0, 'no attempt spent')
+})
+
+// Review: an agent whose folder is the home folder (the pairing default before 2026-09-21) holds
+// every claude installed under it on a command line; none of them is a session run in it.
+test('board row 69337efa (win32): an agent whose folder holds the claude install (a home folder agent) is still started at once', async () => {
+  const fs = crashedMachine({}, { cwd: WHOME })
+  const rec = recorder({ win32Ps: listed() })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
+  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'C:\\Users\\kc\\.local\\bin\\claude.exe is not a claude run in C:\\Users\\kc')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
+})
+
+// Review: "the pairing lock holder pid is dead (or no lock)". A holder that still runs as itself (started
+// before its last heartbeat) with no claude visible above it (an orphaned or hung daemon, or a claude this
+// watcher cannot read) is not a dead one: the session is not ruled out, so the quiet window holds.
+test('board row 69337efa (win32): a lock holder that still runs as itself with no claude above it keeps the quiet window (never an immediate start)', async () => {
+  const daemon = [{ ProcessId: 4912, ParentProcessId: 4100, CreationDate: T0 - 60 * MIN, CommandLine: 'bun C:\\x\\server.ts' }]
+  const stale = (at: number) => ({
+    [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', at + 10_000, { lastActivityAt: new Date(at).toISOString(), sessionId: PIN, claudePid: null, runningVersion: '0.62.1' }),
+    [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: at }),
+  })
+  // Its heartbeat 10 minutes old, the transcript written a minute ago.
+  const fs = crashedMachine(stale(T0 - 10 * MIN))
+  const rec = recorder({ win32Ps: listed(daemon) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(daemon) }) as any)
+  assert.deepEqual(starts(rec), [])
+  assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'quiet_window', since: new Date(T0).toISOString(), restartAt: new Date(T0 + 29 * MIN).toISOString() }])
+  // Quiet for 40 minutes: the legacy rule starts it, as before.
+  const quiet = crashedMachine(stale(T0 - 40 * MIN), { activityAt: T0 - 40 * MIN })
+  const quietRec = recorder({ win32Ps: listed(daemon) })
+  await runKeepAliveSweep(windowsCtx(quiet, quietRec, { pidAlive: aliveIn(daemon) }) as any)
+  assert.deepEqual(starts(quietRec), ['/Run /TN HOAI Agent 912'])
 })
 
 test('board row 69337efa (win32): a process table that cannot be read keeps the 30 min quiet window, reported as waiting_idle quiet_window with restartAt', async () => {
