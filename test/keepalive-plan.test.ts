@@ -49,6 +49,7 @@ import {
   decideSupervise,
   decideTaskStart,
   decideTaskStartGate,
+  taskStartWait,
   isAgentStateFresh,
   isBackgroundJobCommand,
   isConsentRefusal,
@@ -403,6 +404,39 @@ test('decideTaskStart: a Windows agent task is started only when its launcher is
   assert.equal(decideTaskStart({ ...base, recentActivity: true }), false, 'recent activity may be a session we cannot see')
 })
 
+// Board row 69337efa: agent 1078 on AlienAres. Its claude was killed, its plain
+// hoai launcher exited with it, and nothing started the task for 30 minutes:
+// the agent's OWN last writes (state, transcript) were the recent activity that
+// was read as "maybe a session this watcher cannot see". On win32 the process
+// table can answer that (findAgentClaudePids), so only a table that cannot be
+// read keeps the quiet window.
+test('board row 69337efa: decideTaskStart: a table that rules out a session of the agent starts it now; one that lists it never; an unreadable one keeps the 30 min quiet window', () => {
+  const crash = { platform: 'win32', canonicalTask: true, launcherLive: false, running: false, recentActivity: true }
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false }), true, 'the crash: its own last writes are not a session')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: true }), false, 'a claude of the agent is listed')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: true, recentActivity: false }), false, 'quiet or not, never a second session on its pin')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: null }), false, 'unreadable table: the quiet window holds')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: null, recentActivity: false }), true, 'unreadable table, quiet 30 min: as before')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false, running: true }), false, 'a live daemon (fresh state, held lock) outranks the table')
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false, running: null }), false)
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false, launcherLive: true }), false)
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false, canonicalTask: false }), false)
+  assert.equal(decideTaskStart({ ...crash, sessionSeen: false, platform: 'linux' }), false)
+})
+
+test('board row 69337efa: taskStartWait: a start that waits says why, and when it can run (restartAtMs), never supervised', () => {
+  const at = (patch: Record<string, unknown>) => taskStartWait({ running: false, sessionSeen: null, activityMs: [], now: NOW, ...patch } as any)
+  const session = { state: 'waiting_idle', reason: 'session_without_launcher', restartAtMs: null }
+  assert.deepEqual(at({ running: true }), session, 'a live daemon: when that session ends, a time nobody knows')
+  assert.deepEqual(at({ sessionSeen: true, activityMs: [NOW - 60 * MIN] }), session, 'a listed claude of the agent')
+  assert.deepEqual(at({ running: null }), session, 'unknown is not "not running"')
+  assert.deepEqual(at({ activityMs: [NOW - 1 * MIN, null, NOW - 5 * MIN, Number.NaN] }), { state: 'waiting_idle', reason: 'quiet_window', restartAtMs: NOW - 1 * MIN + LEGACY_QUIET_WINDOW_MS }, 'unreadable table: 30 min after the newest stamp')
+  assert.deepEqual(at({ activityMs: [NOW + 10 * MIN] }), { state: 'waiting_idle', reason: 'quiet_window', restartAtMs: NOW + 40 * MIN }, 'a stamp in the future (clock skew) still waits its window')
+  assert.equal(at({ activityMs: [NOW - 30 * MIN] }), null, 'quiet 30 min: nothing to wait for')
+  assert.equal(at({ activityMs: [] }), null)
+  assert.equal(at({ sessionSeen: false, activityMs: [NOW - 1 * MIN] }), null, 'a table that rules the session out: no quiet window')
+})
+
 test('decideTaskStartGate: the restart limits for a dead launcher (1 start per 30 min, 3 per death episode, then failed task_start_failed)', () => {
   assert.equal(TASK_START_MIN_INTERVAL_MS, 30 * MIN)
   assert.equal(MAX_TASK_STARTS_PER_EPISODE, 3)
@@ -412,9 +446,13 @@ test('decideTaskStartGate: the restart limits for a dead launcher (1 start per 3
     ['third start still allowed', { taskStarts: 2, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
     ['three starts spent: visible, never a fourth', { taskStarts: 3, lastTaskStartAtMs: NOW - 120 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
     ['spent outranks the interval', { taskStarts: 3, lastTaskStartAtMs: NOW - 1 * MIN }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
-    ['started 29 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+    ['started 29 min ago: a wait, with when', { taskStarts: 1, lastTaskStartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'waiting_idle', reason: 'task_start_rate_limited', restartAtMs: NOW + 1 * MIN }],
     ['started 31 min ago', { taskStarts: 1, lastTaskStartAtMs: NOW - 31 * MIN }, { allowed: true, state: 'supervised', reason: null }],
-    ['the interval holds across an episode reset', { taskStarts: 0, lastTaskStartAtMs: NOW - 11 * MIN }, { allowed: false, state: 'supervised', reason: 'task_start_rate_limited' }],
+    ['the interval holds across an episode reset', { taskStarts: 0, lastTaskStartAtMs: NOW - 11 * MIN }, { allowed: false, state: 'waiting_idle', reason: 'task_start_rate_limited', restartAtMs: NOW + 19 * MIN }],
+    // A task start IS this platform's restart, so it shares the fleet's one per sweep (design 5).
+    ['another agent restarted or started this sweep', { restartsThisSweep: 1 }, { allowed: false, state: 'waiting_idle', reason: 'one_restart_per_sweep', restartAtMs: null }],
+    ['its own limits first', { restartsThisSweep: 1, taskStarts: 1, lastTaskStartAtMs: NOW - 29 * MIN }, { allowed: false, state: 'waiting_idle', reason: 'task_start_rate_limited', restartAtMs: NOW + 1 * MIN }],
+    ['spent outranks the sweep', { restartsThisSweep: 1, taskStarts: 3 }, { allowed: false, state: 'failed', reason: 'task_start_failed' }],
   ]
   for (const [name, patch, expected] of rows) {
     assert.deepEqual(decideTaskStartGate({ ...base, ...patch } as any), expected, name)
@@ -564,6 +602,36 @@ test('advanceAgentRecord: since is kept while the state holds and reset when it 
   const moved = advanceAgentRecord({ ...later, attempts: 2 }, { state: 'restarted', reason: null }, NOW + 61 * MIN)
   assert.equal(moved.since, new Date(NOW + 61 * MIN).toISOString())
   assert.equal(moved.attempts, 2, 'other bookkeeping rides along')
+})
+
+test('board row 69337efa: advanceAgentRecord: restartAt belongs to the wait that set it, never to the next state', () => {
+  const waiting = advanceAgentRecord({ taskStarts: 1 }, { state: 'waiting_idle', reason: 'quiet_window', restartAtMs: NOW + 29 * MIN }, NOW)
+  assert.deepEqual(waiting, { taskStarts: 1, state: 'waiting_idle', reason: 'quiet_window', since: new Date(NOW).toISOString(), restartAt: new Date(NOW + 29 * MIN).toISOString() })
+  const unknown = advanceAgentRecord(waiting, { state: 'waiting_idle', reason: 'session_without_launcher', restartAtMs: null }, NOW + MIN)
+  assert.equal('restartAt' in unknown, false, 'a wait with no known end clears the old time')
+  assert.equal(unknown.since, waiting.since)
+  const started = advanceAgentRecord(waiting, { state: 'supervised', reason: 'task_started' }, NOW + 29 * MIN)
+  assert.equal('restartAt' in started, false)
+  assert.equal(started.taskStarts, 1)
+  assert.equal('restartAt' in advanceAgentRecord(waiting, { state: 'waiting_idle', reason: 'quiet_window', restartAtMs: Number.NaN }, NOW), false)
+})
+
+test('board row 69337efa: reportEntry: a waiting entry carries restartAt (an ISO time, bounded, no path, no free text); no other state does, and a task start wait offers no Restart now', () => {
+  const since = new Date(NOW).toISOString()
+  const restartAt = new Date(NOW + 29 * MIN).toISOString()
+  assert.deepEqual(reportEntry('1078', { state: 'waiting_idle', reason: 'quiet_window', since, restartAt, target: '0.62.1' } as any, NOW), {
+    id: '1078',
+    state: 'waiting_idle',
+    reason: 'quiet_window',
+    since,
+    restartAt,
+  })
+  assert.match(restartAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, 'the backend ISO_TIME_REGEX shape')
+  assert.equal('restartAt' in reportEntry('1078', { state: 'supervised', reason: 'task_started', since, restartAt } as any, NOW), false, 'a stray time on another state is not sent')
+  assert.equal('restartAt' in reportEntry('1078', { state: 'waiting_idle', reason: 'quiet_window', since, restartAt: 'C:\\Users\\kc soon' } as any, NOW), false, 'only a real time is sent')
+  for (const reason of ['quiet_window', 'task_start_rate_limited', 'one_restart_per_sweep', 'session_without_launcher']) {
+    assert.equal(pendingKindOf({ state: 'waiting_idle', reason, target: '0.62.1' }), null, reason)
+  }
 })
 
 test('reportEntry: waitingSince appears only after 24 h of waiting_idle; strings are bounded to 120 characters', () => {

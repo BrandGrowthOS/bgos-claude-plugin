@@ -39,6 +39,7 @@ import {
   supervisorInstallCommand,
 } from '../lib/watcher-keepalive.mjs'
 import { buildLaunchRecipe } from '../lib/agent-inventory.mjs'
+import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
@@ -1302,7 +1303,8 @@ test('win32: a dead launcher gets the restart limits (1 task start per 30 min, 3
   assert.deepEqual(await sweep(), [['supervised', 'task_started']])
   assert.equal(starts(), 1)
   clock.advance(1 * MIN)
-  assert.deepEqual(await sweep(), [['supervised', 'task_start_rate_limited']])
+  // Board row 69337efa: a start that waits is a wait (with when), never `supervised`.
+  assert.deepEqual(await sweep(), [['waiting_idle', 'task_start_rate_limited']])
   assert.equal(starts(), 1, 'not a schtasks /Run every sweep')
   clock.advance(30 * MIN)
   await sweep()
@@ -1492,6 +1494,189 @@ test('F4 (win32): a daemon too old to publish state but holding the pairing lock
   // install landed, so it is an update waiting for the session to end.
   assert.deepEqual(later.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
   assert.equal(JSON.parse(installed.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 0)
+})
+
+
+// -- Board row 69337efa: a crashed Windows agent is started at once ---------------------------------------
+
+const PIN = '8c1f0000-0000-4000-8000-000000000912'
+const OTHER_PIN = '8c1f0000-0000-4000-8000-000000000077'
+const WPLUGIN_STATE = 'C:\\Users\\kc\\.bgos-plugin-state\\912'
+const WLOCK = 'C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock'
+const WNODE = 'C:\\Program Files\\nodejs\\node.exe'
+
+/**
+ * Agent 1078 on AlienAres, 2026-10-11 07:54:15Z, as agent 912 here: its task is installed (and its
+ * launcher file current), its launcher (a plain hoai, pid 777) exited with claude, and the daemon
+ * (pid 4912) died with them. Its last state, its pairing lock and its transcript were all written a
+ * minute ago, so by the activity stamps it "was active a minute ago".
+ */
+function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?: number; id?: string; cwd?: string; pin?: string } = {}) {
+  const id = opts.id ?? '912'
+  const cwd = opts.cwd ?? WCWD
+  const pin = opts.pin ?? PIN
+  const state = `C:\\Users\\kc\\.bgos-agent\\${id}`
+  const activityAt = opts.activityAt ?? T0 - 1 * MIN
+  const spec = agentTaskSpec({ assistantId: id, home: WHOME, nodePath: WNODE, pluginRoot: WROOT, cwd })
+  const fs = windowsMachine({
+    [`${WHOME}\\.bgos-agent\\credentials-${id}.json`]: '{}',
+    [`${state}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: id, cwd, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: 'x', pid: null })),
+    [`${cwd}\\.bgos-agent-id`]: `${id}\n`,
+    [spec.files[0].path]: spec.files[0].content,
+    [`${state}\\supervisor-generation`]: '2\n',
+    [`${state}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    [`${state}\\session-id`]: `${pin}\n`,
+    [`C:\\Users\\kc\\.bgos-plugin-state\\${id}\\agent-state.json`]: stateBody(id, activityAt + 10_000, { lastActivityAt: new Date(activityAt).toISOString(), sessionId: pin, claudePid: null, runningVersion: '0.62.1' }),
+    [`${WHOME}\\.bgos-agent\\credentials-${id}.json.lock`]: JSON.stringify({ pid: Number(`4${id}`), heartbeatAt: activityAt + 5_000 }),
+    ...extra,
+  })
+  fs.dirs.add(cwd)
+  const transcript = transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd, sessionId: pin })
+  fs.writeFile(transcript, '{"type":"assistant"}\n')
+  fs.touch(transcript, activityAt)
+  return fs
+}
+
+/** What runs on the computer after the crash: the watcher, and another agent's claude on its own pin. */
+const AFTER_CRASH: Array<Record<string, unknown>> = [
+  { ProcessId: 4, ParentProcessId: 0, CreationDate: null, CommandLine: null },
+  { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 600 * MIN, CommandLine: 'C:\\Windows\\explorer.exe' },
+  { ProcessId: 3100, ParentProcessId: 4100, CreationDate: T0 - 300 * MIN, CommandLine: `"${WNODE}" C:\\Users\\kc\\.bgos-agent\\watcher\\bundle\\watcher.mjs` },
+  { ProcessId: 8100, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${OTHER_PIN}` },
+  { ProcessId: 8200, ParentProcessId: 8100, CreationDate: T0 - 120 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
+]
+const listed = (extra: Array<Record<string, unknown>> = []) => JSON.stringify([...AFTER_CRASH, ...extra])
+const aliveIn = (extra: Array<Record<string, unknown>> = []) => (pid: number) => [...AFTER_CRASH, ...extra].some((p) => p.ProcessId === pid && pid !== 4)
+const starts = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => c.file === 'schtasks.exe').map((c) => c.args.join(' '))
+
+test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder dead, no claude of its own listed, activity a minute ago) is started in the SAME sweep', async () => {
+  const fs = crashedMachine()
+  const before = new Map(fs.files)
+  const rec = recorder({ win32Ps: listed() })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
+  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'started now, not 30 minutes after its own last writes')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 1, 'the start is counted')
+  // Nothing outside the watcher's own folder is written.
+  const changed = [...fs.files.keys()].filter((p) => before.get(p) !== fs.files.get(p))
+  assert.deepEqual(changed.filter((p) => !p.startsWith(`${WHOME}\\.bgos-agent\\watcher\\`)), [])
+})
+
+test('board row 69337efa (win32): a live claude carrying the agent\'s pinned session id still blocks the start (its daemon dead, recent activity or none)', async () => {
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: `"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume ${PIN} --dangerously-load-development-channels server:hoai` }]
+  for (const activityAt of [T0 - 1 * MIN, T0 - 40 * MIN]) {
+    const fs = crashedMachine({}, { activityAt })
+    const rec = recorder({ win32Ps: listed(own) })
+    const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(own) }) as any)
+    assert.deepEqual(starts(rec), [], `never a second session on its pin (activity ${(T0 - activityAt) / MIN} min ago)`)
+    assert.deepEqual(report.agents, [{ id: '912', state: 'waiting_idle', reason: 'session_without_launcher', since: new Date(T0).toISOString() }], 'no time: it waits for that session to end')
+  }
+})
+
+test('board row 69337efa (win32): a live pairing lock holder still blocks the start (F4), and so does a hung one whose claude still runs; a reused pid does not', async () => {
+  // A plain claude (no pin on its command line) whose daemon holds the lock: a person's own session.
+  const session = [
+    { ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 30 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe"' },
+    { ProcessId: 6000, ParentProcessId: 5912, CreationDate: T0 - 29 * MIN, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
+    { ProcessId: 4912, ParentProcessId: 6000, CreationDate: T0 - 29 * MIN, CommandLine: 'bun C:\\x\\server.ts' },
+  ]
+  // The daemon's last state is 10 minutes old (not fresh), so the LOCK is what says it lives;
+  // the transcript, written a minute ago, is the recent activity.
+  const oldState = { [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', T0 - 10 * MIN + 10_000, { lastActivityAt: new Date(T0 - 10 * MIN).toISOString(), sessionId: PIN, claudePid: null, runningVersion: '0.62.1' }) }
+  const live = crashedMachine({ ...oldState, [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) })
+  const liveRec = recorder({ win32Ps: listed(session) })
+  const liveReport = await runKeepAliveSweep(windowsCtx(live, liveRec, { pidAlive: aliveIn(session) }) as any)
+  assert.deepEqual(starts(liveRec), [])
+  assert.deepEqual(liveReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  // Its heartbeat stale (a hung daemon), the same process still under its claude: still a session.
+  const hung = crashedMachine({ ...oldState, [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }) })
+  const hungRec = recorder({ win32Ps: listed(session) })
+  const hungReport = await runKeepAliveSweep(windowsCtx(hung, hungRec, { pidAlive: aliveIn(session) }) as any)
+  assert.deepEqual(starts(hungRec), [])
+  assert.deepEqual(hungReport.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  // Its pid now names a process started after the last heartbeat (another agent's daemon): not this agent.
+  const reused = [{ ProcessId: 4912, ParentProcessId: 8100, CreationDate: T0 - 2 * MIN, CommandLine: 'bun C:\\x\\server.ts' }]
+  const gone = crashedMachine({ ...oldState, [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }) })
+  const goneRec = recorder({ win32Ps: listed(reused) })
+  await runKeepAliveSweep(windowsCtx(gone, goneRec, { pidAlive: aliveIn(reused) }) as any)
+  assert.deepEqual(starts(goneRec), ['/Run /TN HOAI Agent 912'])
+})
+
+test('board row 69337efa (win32): an update for an agent whose launcher died waits (session_without_launcher) for a claude its last state named, though its daemon is gone: never a schtasks /Run beside it', async () => {
+  // The daemon died (pid 4912 gone) but claude 5912, which its last state named, still runs: started before
+  // the installed version landed, so an update is pending, and the agent has been quiet for 40 minutes.
+  const own = [{ ProcessId: 5912, ParentProcessId: 4100, CreationDate: T0 - 120 * MIN, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe"' }]
+  const fs = crashedMachine({ [`${WPLUGIN_STATE}\\agent-state.json`]: stateBody('912', T0 - 40 * MIN + 10_000, { lastActivityAt: new Date(T0 - 40 * MIN).toISOString(), sessionId: PIN, claudePid: 5912, runningVersion: '0.62.0' }) }, { activityAt: T0 - 40 * MIN })
+  const rec = recorder({ win32Ps: listed(own) })
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn(own) }) as any)
+  assert.deepEqual(starts(rec), [], 'the task tier would start a second session on the pin beside it')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'session_without_launcher']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].attempts, 0, 'no attempt spent')
+})
+
+test('board row 69337efa (win32): a process table that cannot be read keeps the 30 min quiet window, reported as waiting_idle quiet_window with restartAt', async () => {
+  const fs = crashedMachine()
+  const clock = fakeClock()
+  const rec = recorder() // powershell answers nothing parseable: the table is unreadable
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: aliveIn() })
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(starts(rec), [], 'a session it cannot see is not ruled out')
+  const restartAt = new Date(T0 - 1 * MIN + 30 * MIN).toISOString()
+  assert.deepEqual(first.agents, [{ id: '912', state: 'waiting_idle', reason: 'quiet_window', since: new Date(T0).toISOString(), restartAt }])
+  assert.deepEqual(readKeepAliveReport({ home: WHOME, fs, now: clock.now() }).agents, first.agents, 'the heartbeat carries the same entry')
+  clock.advance(28 * MIN)
+  assert.deepEqual((await runKeepAliveSweep(ctx as any)).agents.map((a: any) => [a.state, a.reason, a.restartAt]), [['waiting_idle', 'quiet_window', restartAt]])
+  assert.deepEqual(starts(rec), [])
+  clock.advance(1 * MIN)
+  const started = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'started when the window it named ends')
+  assert.deepEqual(started.agents, [{ id: '912', state: 'supervised', reason: 'task_started', since: new Date(clock.now()).toISOString() }], 'no stale restartAt')
+})
+
+test('board row 69337efa (win32): the gates still bound a crash loop (1 start per 30 min, 3 per death episode, then failed), and each wait says when', async () => {
+  const fs = crashedMachine()
+  const clock = fakeClock()
+  const rec = recorder({ win32Ps: listed() })
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: aliveIn() })
+  // Every session the task starts crashes within the minute: its stamps are always a minute old.
+  const crashAgain = () => {
+    const at = clock.now() - 1 * MIN
+    fs.writeFile(`${WPLUGIN_STATE}\\agent-state.json`, stateBody('912', at + 10_000, { lastActivityAt: new Date(at).toISOString(), sessionId: PIN, claudePid: null, runningVersion: '0.62.1' }))
+  }
+  const sweep = async () => {
+    crashAgain()
+    return (await runKeepAliveSweep(ctx as any)).agents.map((a: any) => [a.state, a.reason, a.restartAt ?? null])
+  }
+  assert.deepEqual(await sweep(), [['supervised', 'task_started', null]])
+  clock.advance(1 * MIN)
+  assert.deepEqual(await sweep(), [['waiting_idle', 'task_start_rate_limited', new Date(T0 + 30 * MIN).toISOString()]])
+  clock.advance(30 * MIN)
+  assert.deepEqual(await sweep(), [['supervised', 'task_started', null]])
+  clock.advance(31 * MIN)
+  assert.deepEqual(await sweep(), [['supervised', 'task_started', null]])
+  clock.advance(31 * MIN)
+  assert.deepEqual(await sweep(), [['failed', 'task_start_failed', null]])
+  clock.advance(120 * MIN)
+  assert.deepEqual(await sweep(), [['failed', 'task_start_failed', null]])
+  assert.equal(starts(rec).length, 3, 'never a fourth start in one death episode')
+})
+
+test('board row 69337efa (win32): one start per sweep: two agents that crashed together are started one sweep apart', async () => {
+  const fs = crashedMachine()
+  const second = crashedMachine({}, { id: '913', cwd: 'C:\\Users\\kc\\hoai-agents\\guru', pin: '8c1f0000-0000-4000-8000-000000000913' })
+  for (const [path, text] of second.files) if (!fs.files.has(path)) fs.writeFile(path, text)
+  fs.touch(transcriptPathFor({ configDir: `${WHOME}\\.claude`, cwd: 'C:\\Users\\kc\\hoai-agents\\guru', sessionId: '8c1f0000-0000-4000-8000-000000000913' }), T0 - 1 * MIN)
+  fs.dirs.add('C:\\Users\\kc\\hoai-agents\\guru')
+  const clock = fakeClock()
+  const rec = recorder({ win32Ps: listed() })
+  const fetchKeepAlive = consent({ enabled: true, enabledAt: 'e', assistantIds: [912, 913] }).fetchKeepAlive
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: aliveIn(), fetchKeepAlive })
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'])
+  assert.deepEqual(first.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'supervised', 'task_started'], ['913', 'waiting_idle', 'one_restart_per_sweep']])
+  clock.advance(1 * MIN)
+  await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912', '/Run /TN HOAI Agent 913'])
 })
 
 // -- the report --------------------------------------------------------------------------------------
