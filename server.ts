@@ -8537,7 +8537,8 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 /** The chat a hook event belongs to: the last thing delivered to this session,
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
-const privateTurns = createPrivateTurnTracker()
+// A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
+const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn() })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return

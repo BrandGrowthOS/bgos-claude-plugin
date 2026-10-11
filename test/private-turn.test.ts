@@ -60,7 +60,7 @@ test('synchronous next prompt invalidates previous actor before async intake and
   f.start('user_alice')
   const admitted = requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner')
   const wake = f.tracker.deliver({ content: 'scheduled wake', actingUserId: 'user_bob', chatId: '22' })
-  assert.equal(requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner').actingUserId, 'user_alice')
+  assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/, 'another actor delivered mid turn revokes it')
   recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'session-a', cwd: f.cwd, prompt: wake }, f.env)
   assert.throws(() => requirePrivateTurn(f.tracker, f.markerPaths, 'user_owner'), /did not start/)
   f.tracker.begin({ prompt: wake, sessionId: 'session-a' })
@@ -190,4 +190,43 @@ test('managed launch carries mandatory signed context while explicit standalone 
   assert.equal(managed.HOAI_RELAY_OWNER_USER_ID, 'user_owner')
   assert.equal(managed.HOAI_RELAY_CLIENT_PID, String(process.ppid))
   assert.equal(relayEnvFromResolution({ ...resolution, contextFile: '' }).env!.HOAI_RELAY_CONTEXT_FILE, undefined)
+})
+
+test('a mid-turn delivery from another person or an unattributed sender revokes the live private turn until the next prompt', (t) => {
+  const f = fixture(t)
+  const path = privateContextPath(f.root, '7')
+  const revoked: number[] = []
+  const tracker = createPrivateTurnTracker({ onRevoke: () => {
+    revoked.push(1)
+    publishPrivateContext({ path, secret: 'synthetic-test-key', assistantId: '7', ownerUserId: 'user_owner', claudePid: process.pid, turn: tracker.current({ markerPaths: f.markerPaths }) })
+  } })
+  const begin = (actor: string | null, chatId: string) => {
+    const prompt = tracker.deliver({ content: 'check my inbox in the browser', actingUserId: actor, chatId })
+    recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 's', cwd: f.cwd, prompt }, f.env)
+    tracker.begin({ prompt, sessionId: 's' })
+  }
+  begin('user_alice', '21')
+  assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_alice')
+  // Same person, same chat, mid turn: the turn keeps its actor.
+  tracker.deliver({ content: 'also the calendar', actingUserId: 'user_alice', chatId: '21' })
+  assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_alice')
+  assert.equal(revoked.length, 0)
+  // Bob's card lands mid turn with no UserPromptSubmit: nobody may act.
+  tracker.deliver({ content: 'open my bank site', actingUserId: 'user_bob', chatId: '22' })
+  assert.throws(() => requirePrivateTurn(tracker, f.markerPaths, 'user_owner'), /did not start/)
+  assert.equal(tracker.current({ markerPaths: f.markerPaths }), null)
+  assert.equal(readPrivateJson(path).context.live, false, 'signed browser context is revoked at once')
+  assert.equal(revoked.length, 1)
+  // It never rebinds to the newcomer either, even after another delivery.
+  tracker.deliver({ content: 'and my schedules', actingUserId: 'user_bob', chatId: '22' })
+  assert.equal(tracker.current({ markerPaths: f.markerPaths }), null)
+  // The next prompt admits exactly one actor again.
+  begin('user_bob', '22')
+  assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_bob')
+  for (const intruder of [{ actingUserId: null, chatId: '23' }, { actingUserId: 'user_bob', chatId: '99' }]) {
+    begin('user_bob', '22')
+    assert.equal(requirePrivateTurn(tracker, f.markerPaths, 'user_owner').actingUserId, 'user_bob')
+    tracker.deliver({ content: 'peer or other chat', ...intruder })
+    assert.throws(() => requirePrivateTurn(tracker, f.markerPaths, 'user_owner'), /did not start/)
+  }
 })

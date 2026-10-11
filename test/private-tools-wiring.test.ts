@@ -57,6 +57,8 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /senderUserId: privateSenderUserId\(view\.raw\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
   assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, sessionId: hookSessionId \}\)/)
+  // A mid-turn delivery that revokes the turn republishes the signed browser context right away.
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(\) => publishBrowserPrivateTurn\(\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 
