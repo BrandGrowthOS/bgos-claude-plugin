@@ -1575,6 +1575,7 @@ export class BrowserHostCore {
       if (d.state === 'asking') return `- ${d.fileName} (${d.handle}): your owner is asked before it is saved; if they do not answer it is kept for them when it fits the keep limits (otherwise deleted), and you are not given it. Do not start it again; hoai_browser_status shows its state.`
       if (d.state === 'saving' || d.state === 'saved') return `- ${d.fileName} (${d.handle}): allowed by your owner's rules; it is saved in your browser folder when it finishes, and hoai_browser_status gives its path.`
       if (d.state === 'kept') return `- ${d.fileName} (${d.handle}): kept for your owner; you are not given it.`
+      if (d.state === 'held') return `- ${d.fileName} (${d.handle}): held on this machine for your owner until the browser host next starts; you are not given it.`
       return `- ${d.fileName} (${d.handle}): not saved; hoai_browser_status says why.`
     })
     return { ...result, content: [...result.content, { type: 'text', text: `### Download\n${lines.join('\n')}` }] }

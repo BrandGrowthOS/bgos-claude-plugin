@@ -938,3 +938,8 @@ test('the folder guard under a service account: its alias (SY) is the user, neve
   assert.equal(await guard.prepare(), true, `${guard.reason} ${guard.readBack}`)
   assert.ok(!runs.some((r) => r.includes('/remove:g')), 'nothing removed: the one entry is the user')
 })
+
+test('a held download reads truthfully: it waits for the next start of the browser host on this machine', () => {
+  const [line] = downloadLines([{ handle: 'dl_aa11', fileName: 'held.p8', bytes: 5, state: 'held' }])
+  assert.equal(line, "Downloads: dl_aa11 held.p8, 5 B, held on this machine for your owner, because its private folder could not be checked; it is settled when this machine's browser host next starts. You are not given it.")
+})

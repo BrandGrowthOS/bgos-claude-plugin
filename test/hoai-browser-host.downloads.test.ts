@@ -272,3 +272,9 @@ test('a browser that fails to start leaves no download watcher behind; the next 
     s.done()
   }
 })
+
+test("the reply of a call whose download is held says held, not 'not saved'", () => {
+  const core: any = new BrowserHostCore({ pool: {} as any, browserTools: [], deviceLabel: 'box-1' })
+  const result = core._withDownloads({ downloads: { since: () => [{ fileName: 'x.p8', handle: 'dl_ab', state: 'held' }] } }, 0, { content: [] })
+  assert.match(result.content[0].text, /^### Download\n- x\.p8 \(dl_ab\): held on this machine for your owner until the browser host next starts; you are not given it\.$/)
+})
