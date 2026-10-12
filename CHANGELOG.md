@@ -2,6 +2,17 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.3 (2026-10-13)
+
+**An always-on install no longer bakes a claude that cannot start the agent (board row 84296679, kc-server, 2026-10-12).** A keep-alive reinstall ran under the watcher's service PATH, which led with `/usr/local/bin`; a stale `/usr/local/bin/claude` 2.1.22 sat ahead of the user's own `~/.local/bin/claude`, `command -v claude` returned it, and five agents were baked with it. That CLI answers `error: unknown option '--dangerously-load-development-channels'` and exits 1, so each launch died at once, about 420 times, with nothing in any log.
+
+- **Which claude is chosen by what it can do, never by PATH order** (`lib/claude-binary.mjs`, `bin/hoai-select-claude.mjs`, `bin/bgos-agent install`). The launch flag is hidden from `--help`, but a bare use of it answers `argument missing` on a CLI that knows it and `unknown option` on one that does not. Candidates are `~/.local/bin/claude` first, then every `claude` on PATH; the first that is not `unsupported` is baked, the ones skipped are named, and an install is refused by name (`claude:none-supports-flag`, before anything is written) only when every one of them is. No version floor is guessed, and a CLI whose wording is unreadable is accepted, so a change of wording can never lock an install out.
+- **The service PATH leads with the user's own directories** (`servicePath`): `~/.local/bin` and `~/.bun/bin` come before `/usr/local/bin`. The baked agent PATH leads with the chosen claude's directory and lists each directory once.
+- **`run.sh` writes which claude the launch found and its version** into `agent.log` at every launch.
+- **A claude that exits during startup leaves its own words.** The expect launcher takes what claude printed and its exit code into `launch-status` (`screen=` and `rc=`) and into `hoai.err`, which `run.sh` already prints back, instead of letting them vanish with the pane.
+- **`hoai-agent status` names a crash loop.** A loaded unit with an `exited-during-startup` (or any other failed) last launch, or three or more consecutive fast fails, now says `NOT RUNNING HEALTHY` before the generic last-launch line.
+- **`hoai doctor --assistant <id>` is `--assistant-id <id>`, and `--all-agents` checks every paired agent in turn**, each under its own id; it is also the default when the doctor is run from the home folder with no agent named and more than one paired agent. From any other folder an unnamed agent keeps its documented refusal.
+
 ## 0.68.2 (2026-10-12)
 
 **An email reaches the agent as a stranger's words, never as the owner (agent email, HOAI board row 2dd04488, piece P2: the plugin).** The backend delivers an email to an agent as a row of the agent's email chat: sender `user`, no sender user id, `fromAgent {name: 'Email', type: 'external_email'}`, and `senderType: 'external_email'` on the socket and the history route. This plugin knew no such sender: every lane delivered it as a plain user turn, with `user="User"` and the owner's id as `user_id` (the owner fallback); an email stamped `slash_command` ran `/status` on the socket lane, and a `yes <code>` email was swallowed as a permission answer on the poll and stream lanes.

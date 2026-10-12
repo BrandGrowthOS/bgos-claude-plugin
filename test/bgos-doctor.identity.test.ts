@@ -502,3 +502,72 @@ test('the doctor never prints a token and never writes a pin or credentials file
     'the doctor added or removed a credentials file',
   )
 })
+
+// ── board row 84296679, fix 6: no agent named, not in an agent folder, several paired agents ──
+
+test('kc-server: --all-agents checks every paired agent in turn, each as itself, wherever it is run from', SLOW, async () => {
+  const fx = fixture()
+  pairAll(fx, [863, 871, 874])
+  const outside = join(fx.root, 'elsewhere')
+  mkdirSync(outside, { recursive: true })
+  const written: string[] = []
+  const code = await doctorMain(['--backend', 'http://127.0.0.1:9', '--json', '--all-agents'], {
+    env: baseEnv(fx),
+    home: fx.home,
+    cwd: outside,
+    launchArgv: [fx.stub],
+    claude: { found: false },
+    write: (text: string) => written.push(text),
+  })
+  assert.equal(code, 0)
+  const combined = JSON.parse(written.join('')) as Array<{ assistantId: string; rows: Row[] }>
+  assert.deepEqual(combined.map((entry) => entry.assistantId), ['863', '871', '874'])
+  for (const entry of combined) {
+    const credentials = entry.rows.find((r) => r.id === 'credentials')
+    assert.ok(credentials, `agent ${entry.assistantId} has a credentials row`)
+    assert.match(credentials.detail, new RegExp(`assistant ${entry.assistantId}\\b`), 'each row describes its own agent, not a guess')
+  }
+})
+
+test('--assistant is the same as --assistant-id, and an agent named is checked alone, never expanded', SLOW, async () => {
+  const fx = fixture()
+  pairAll(fx, [863, 871, 874])
+  const written: string[] = []
+  const code = await doctorMain(['--backend', 'http://127.0.0.1:9', '--json', '--assistant', '871'], {
+    env: baseEnv(fx),
+    home: fx.home,
+    cwd: join(fx.root, 'elsewhere'),
+    launchArgv: [fx.stub],
+    claude: { found: false },
+    write: (text: string) => written.push(text),
+  })
+  assert.equal(code, 0)
+  const rows = JSON.parse(written.join('')) as Row[]
+  assert.ok(Array.isArray(rows) && rows.every((r) => typeof r.id === 'string'), 'a flat row list, not one entry per agent')
+  const credentials = rows.find((r) => r.id === 'credentials')
+  assert.match(credentials?.detail ?? '', /assistant 871\b/)
+})
+
+test('run from the HOME folder with no agent named and several paired agents, every one is checked; from any other folder an unnamed agent keeps its refusal', SLOW, async () => {
+  const fx = fixture()
+  pairAll(fx, [863, 871])
+  const run = async (cwd: string) => {
+    const written: string[] = []
+    const code = await doctorMain(['--backend', 'http://127.0.0.1:9', '--json'], {
+      env: baseEnv(fx),
+      home: fx.home,
+      cwd,
+      launchArgv: [fx.stub],
+      claude: { found: false },
+      write: (text: string) => written.push(text),
+    })
+    return { code, parsed: JSON.parse(written.join('')) as unknown }
+  }
+  const fromHome = await run(fx.home)
+  assert.ok(Array.isArray(fromHome.parsed) && (fromHome.parsed as Array<{ assistantId?: string }>).map((e) => e.assistantId).join() === '863,871')
+  const elsewhere = join(fx.root, 'some-folder')
+  mkdirSync(elsewhere, { recursive: true })
+  const other = await run(elsewhere)
+  const rows = other.parsed as Row[]
+  assert.ok(rows.every((r) => typeof r.id === 'string'), 'a flat row list: the folder is checked as before, no expansion')
+})

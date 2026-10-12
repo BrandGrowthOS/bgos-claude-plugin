@@ -2123,7 +2123,12 @@ Options:
                          green (the setup success gate)
   --assistant-id <n>     the HOAI assistant this machine should serve; checked
                          against the credentials file and pinned into the
-                         handshake environment
+                         handshake environment (--assistant <n> is the same)
+  --all-agents           check every paired agent on this computer in turn, each
+                         under its own --assistant-id. Also the default when no
+                         agent is named and the doctor is run from the home
+                         folder (never an agent folder) with more than one
+                         paired agent.
   --workdir <dir>        working directory for claude mcp list and the
                          launch-folder identity pin (default: cwd)
   --prove-paired-topology  with --workdir and --assistant-id: print ONE line saying whether a
@@ -2205,6 +2210,7 @@ export function parseDoctorArgs(argv) {
     waitLiveSince: null,
     waitLiveTimeoutS: 120,
     provePairedTopology: false,
+    allAgents: false,
   }
   const errors = []
   for (let i = 0; i < (argv ?? []).length; i++) {
@@ -2212,9 +2218,10 @@ export function parseDoctorArgs(argv) {
     if (arg === '--help' || arg === '-h') args.help = true
     else if (arg === '--preflight') args.preflight = true
     else if (arg === '--json') args.json = true
+    else if (arg === '--all-agents') args.allAgents = true
     else if (arg === '--skip-handshake') args.skipHandshake = true
     else if (arg === '--prove-paired-topology') args.provePairedTopology = true
-    else if (arg === '--assistant-id') {
+    else if (arg === '--assistant-id' || arg === '--assistant') {
       const value = argv[++i]
       if (!value) errors.push(`${arg} needs a value`)
       else args.assistantId = String(value).trim()
@@ -2237,6 +2244,24 @@ export function parseDoctorArgs(argv) {
     } else errors.push(`unknown flag: ${arg}`)
   }
   return { args, errors }
+}
+
+/**
+ * The assistant ids this computer holds credentials for (credentials-<id>.json under
+ * ~/.bgos-agent), numerically sorted. Empty when the folder is unreadable.
+ * @param {string} home
+ * @param {(path: string) => string[]} [listDir]
+ * @returns {string[]}
+ */
+export function listPairedAssistantIds(home, listDir = (path) => readdirSync(path)) {
+  try {
+    return listDir(join(home, '.bgos-agent'))
+      .map((name) => /^credentials-(\d+)\.json$/.exec(String(name))?.[1])
+      .filter((id) => typeof id === 'string')
+      .sort((a, b) => Number(a) - Number(b))
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -2281,6 +2306,51 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
     })
     ;(opts.print ?? console.log)(pairedTopologyLine(verdict))
     return verdict.ok ? 0 : 1
+  }
+
+  // Every paired agent in turn (board row 84296679, fix 6). On kc-server the doctor described
+  // the one folder it happened to stand in and said nothing about the five agents that were
+  // crash looping. Asked for with --all-agents, and the default only where no agent folder is
+  // possible: the home folder itself, with no agent named. Anywhere else an unnamed agent keeps
+  // its documented refusal (it names both remedies), so no run changes meaning.
+  const standingIn = opts.cwd ?? process.cwd()
+  const fromHome = String(standingIn).replace(/[\\/]+$/, '') === String(home).replace(/[\\/]+$/, '')
+  if (
+    !args.assistantId &&
+    !args.workdir &&
+    args.waitLiveSince == null &&
+    opts.expandAgents !== false &&
+    (args.allAgents || (fromHome && !String(env.BGOS_ASSISTANT_ID ?? '').trim()))
+  ) {
+    const ids = listPairedAssistantIds(home)
+    if (ids.length > 1 || (args.allAgents && ids.length === 1)) {
+      let worst = 0
+      const combined = []
+      for (const id of ids) {
+        let captured = ''
+        const code = await main([...argv.filter((a) => a !== '--all-agents'), '--assistant-id', id], {
+          ...opts,
+          expandAgents: false,
+          write: (text) => {
+            captured += text
+          },
+        })
+        worst = Math.max(worst, code)
+        if (args.json) {
+          let rows = null
+          try {
+            rows = JSON.parse(captured)
+          } catch {
+            rows = null
+          }
+          combined.push({ assistantId: id, exitCode: code, rows })
+        } else {
+          write(`\n== agent ${id} ==\n${captured}`)
+        }
+      }
+      if (args.json) write(`${JSON.stringify(combined, null, 2)}\n`)
+      return worst
+    }
   }
 
   // The folder the launch rows describe. It used to be `--workdir || cwd`, which
