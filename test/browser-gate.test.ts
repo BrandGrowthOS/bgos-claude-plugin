@@ -396,3 +396,106 @@ test('every refusal reason has its own sentence, so an agent is never told "deni
   for (const s of said) assert.ok(s.length > 20 && /did not run|denied this action/.test(s), s)
   assert.match(deniedMessage('gate_timeout', 90), /90 seconds/)
 })
+
+// ── What the download ask needs from the gate (HOAI board row 67562770) ──────
+//
+// A download is asked for OUTSIDE any agent call: the page starts it, the host
+// waits until no other ask is open on that browser, then raises one. These pin
+// the gate behaviour that makes that safe.
+
+test('two asks raised AT ONCE on one browser post ONE card; the other is told busy with its id', async () => {
+  // The browser key used to be reserved only after the card POST returned, so
+  // two raises inside that window both saw the browser idle and both asked.
+  const srv = server()
+  const slowPost = async (card: Card) => {
+    await new Promise((r) => setTimeout(r, 30))
+    return srv.postCard(card)
+  }
+  let n = 0
+  const g = keeper(srv, { postCard: slowPost, randomBytes: (k: number) => Buffer.alloc(k, ++n) })
+  const [a, b] = await Promise.all([
+    g.raise({ ...ASK, waitSeconds: 600, attachMs: 20 }),
+    g.raise({ ...ASK, summary: 'download x.p8', waitSeconds: 600, attachMs: 20 }),
+  ])
+  assert.equal(srv.cards.length, 1, `one decision, one card; posted ${srv.cards.length}`)
+  const busy = [a, b].filter((r: any) => r.busy)
+  assert.equal(busy.length, 1, 'the second raise is told the browser is busy')
+  assert.equal(busy[0]!.gateId, srv.cards[0]!.gateId, 'and pointed at the card that is open')
+})
+
+test('a card that could not be posted frees the browser at once for the next ask', async () => {
+  let accept = false
+  const srv = server()
+  const g = keeper(srv, { postCard: (card: Card) => (accept ? srv.postCard(card) : Promise.resolve(false)) })
+  const out = await g.raise({ ...ASK, waitSeconds: 600, attachMs: 20 })
+  assert.equal(out.reason, 'card_unreachable')
+  assert.equal(g.pending(ASK.key), null, 'nothing is open after a refused post')
+  accept = true
+  const next = await g.raise({ ...ASK, waitSeconds: 600, attachMs: 20 })
+  assert.equal(next.parked, true)
+  assert.equal(next.busy, undefined)
+})
+
+test('whenIdle waits for the open ask to end and never runs the action it holds', async () => {
+  const srv = server()
+  const g = keeper(srv)
+  assert.equal(await g.whenIdle(ASK.key), undefined, 'nothing open: resolves at once')
+  let ran = 0
+  const parked = await g.raise({ ...ASK, waitSeconds: 600, attachMs: 20, action: () => Promise.resolve(++ran) })
+  let idle = false
+  const waiting = g.whenIdle(ASK.key).then(() => (idle = true))
+  await aPollLater()
+  assert.equal(idle, false, 'still open')
+  srv.answer(String(parked.gateId), 'allow_once')
+  await waiting
+  assert.equal(g.pending(ASK.key), null)
+  await aPollLater()
+  assert.equal(ran, 0, "a waiter behind a parked click must never fire it: only the agent's own wait_gate does")
+})
+
+test('end() settles one gate locally; the owner answering later changes nothing', async () => {
+  const srv = server()
+  const g = keeper(srv)
+  const raised = g.raise({ ...ASK, kind: 'download', waitSeconds: 600, attachMs: Infinity })
+  await aPollLater()
+  const gateId = String(srv.cards[0]!.gateId)
+  assert.equal(g.end(gateId, { allowed: false, reason: 'download_ended' }), true)
+  const out = await raised
+  assert.deepEqual(out, { allowed: false, reason: 'download_ended' })
+  assert.equal(g.pending(ASK.key), null)
+  srv.answer(gateId, 'allow_once')
+  await aPollLater()
+  assert.deepEqual(await g.attach(gateId), { allowed: false, reason: 'download_ended' })
+  assert.equal(g.end(gateId, { allowed: true, choice: 'allow_once' }), false, 'a gate ends once')
+})
+
+test('after closeAll the keeper posts nothing more: a stopping host asks nobody', async () => {
+  const srv = server()
+  const g = keeper(srv)
+  g.closeAll()
+  const out = await g.raise({ ...ASK, waitSeconds: 600, attachMs: 20 })
+  assert.deepEqual(out, { allowed: false, reason: 'session_closed' })
+  assert.equal(srv.cards.length, 0)
+})
+
+test("the park is counted from the moment the card exists, so an Allow inside the backend's own deadline is not read as a timeout", async () => {
+  // The backend times a card from when it wrote it (created_at plus
+  // park_seconds). The host used to time it from before its POST, so a slow
+  // POST left a window where the owner's tap was valid on the card and the
+  // host had already concluded nobody answered.
+  let t = 0
+  const srv = server()
+  const g = keeper(srv, {
+    now: () => t,
+    postCard: async (card: Card) => {
+      t += 1500 // a slow POST
+      return srv.postCard(card)
+    },
+    readGate: async (gateId: string) => (t >= 3000 ? { state: 'answered', choice: 'allow_once' } : srv.readGate(gateId)),
+    backgroundSleep: async () => {
+      t += 1000
+    },
+  })
+  const out = await g.raise({ ...ASK, waitSeconds: 2, attachMs: Infinity })
+  assert.equal(out.allowed, true, `the Allow at 3.0 s, inside the card's 1.5 + 2 s, must count: ${JSON.stringify(out)}`)
+})

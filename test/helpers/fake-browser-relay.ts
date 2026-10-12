@@ -77,6 +77,12 @@ export async function startFakeRelay(opts: FakeRelayOptions) {
    * `answerGate` is the owner tapping a button.
    */
   let autoAnswerWith: string | null = null
+  /**
+   * The owner answering each card by what it asks, the moment it is posted:
+   * a case that allows its navigations and clicks but answers a download in a
+   * particular way. Returns the state the card starts in, or null for open.
+   */
+  let answerBy: ((card: Record<string, any>) => { state: string; choice: string | null } | null) | null = null
   const gateCards: Array<Record<string, any>> = []
   const gateState = new Map<string, { assistantId: number; state: string; choice: string | null }>()
   const gateKey = (gateId: string, assistantId: number) => `${assistantId}:${gateId}`
@@ -126,10 +132,11 @@ export async function startFakeRelay(opts: FakeRelayOptions) {
           return
         }
         gateCards.push(body)
+        const by = answerBy ? answerBy(body) : null
         gateState.set(gateKey(body.gateId, body.assistantId), {
           assistantId: body.assistantId,
-          state: autoAnswerWith ? 'answered' : 'open',
-          choice: autoAnswerWith,
+          state: by ? by.state : autoAnswerWith ? 'answered' : 'open',
+          choice: by ? by.choice : autoAnswerWith,
         })
         json(200, { ok: true })
       })
@@ -239,6 +246,11 @@ export async function startFakeRelay(opts: FakeRelayOptions) {
      */
     autoAnswer(choice = 'allow_session') {
       autoAnswerWith = choice
+    },
+
+    /** Answer each card by its content as it is posted (null leaves it open). */
+    answerCardsBy(fn: ((card: Record<string, any>) => { state: string; choice: string | null } | null) | null) {
+      answerBy = fn
     },
 
     /** The next admitted host socket (or one already connected). */
