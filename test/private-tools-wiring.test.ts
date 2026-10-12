@@ -56,9 +56,13 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /senderUserId: privateSenderUserId\(msg\.message\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(view\.raw\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
-  assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId \}\)/)
+  assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload\.prompt_id \}\)/)
+  // The turn ends where the rail's turn ends: a Stop's turn_end reaches endHookTurn, which closes the private turn.
+  assert.match(source, /function endHookTurn\(keepCard: boolean\): void \{[\s\S]*?privateTurns\.end\(\)[\s\S]*?\n\}/)
+  assert.match(source, /case 'turn_end': \{\n\s*void finishHookTurn\(effect\.keepCard\)/)
   // A mid-turn delivery that revokes the turn republishes the signed browser context right away.
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(\) => publishBrowserPrivateTurn\(\) \}\)/)
+  // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(\) => publishBrowserPrivateTurn\(\), onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 

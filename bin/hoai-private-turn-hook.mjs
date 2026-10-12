@@ -21,9 +21,13 @@ export function recordPrivateBoundary(payload, env = process.env) {
   if (!['UserPromptSubmit', 'Stop', 'SessionEnd'].includes(event)) return false
   const sessionId = String(payload?.session_id ?? '').trim()
   if (!sessionId) throw new Error('Private tool turn has no session identity.')
+  // promptId: the CLI's prompt_id, shared by every hook of one submission, so the daemon can tell a second hook
+  // source re-stamping this marker from the same words submitted again (lib/private-turn.mjs current).
+  const promptId = typeof payload?.prompt_id === 'string' ? payload.prompt_id.trim().slice(0, 128) : ''
   const marker = {
     schemaVersion: 1, turnId: randomUUID(), sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
+    ...(promptId ? { promptId } : {}),
   }
   writePrivateJson(path, marker)
   return { path, marker }

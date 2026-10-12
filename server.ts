@@ -140,7 +140,7 @@ import {
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
-import { createPrivateTurnTracker, privateActor, privateSenderUserId, privateContextPath, privateMarkerPath, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, privateActor, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -8601,7 +8601,8 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
-const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn() })
+// A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
+const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn(), onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
@@ -9250,7 +9251,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event.name === 'SessionEnd') privateTurns.end()
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
-    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId })
+    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
