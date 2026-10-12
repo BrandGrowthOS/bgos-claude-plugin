@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.4 (2026-10-12)
+
+**A clone agent no longer loses boards, schedule and browser after a self-update or a watcher update (board bbbf3438 follow-up).** 0.67.2 registered the private turn hook only through `bgos-agent update`. The daemon's own auto-update (`lib/self-update.ts`) and the watcher's update never ran it, so any clone install updating that way restarted onto 0.67.x with no hook in its workspace and every private tool call refused (15 agents of one user on a MacBook Air and 4 on kc-server were one restart away).
+
+Now the self-updater runs the NEW checkout's `bin/hoai-register-hooks.mjs` for the daemon's workspace folders after the pull and BEFORE it asks for a restart (the CLI reads hooks once, at launch), and the daemon registers them at boot when the private turn hook is missing so the next launch has it. Only a workspace whose `.mcp.json` names this checkout's `server.ts` is touched, a marketplace install never is, and a folder that never carried the activity rail gets the rail and the private turn hook but not the blocking floor hook. The hook helper is `lib/clone-hooks.mjs`.
+
 ## 0.67.2 (2026-10-12)
 
 **Boards, schedule and browser tools no longer refuse every call on a clone agent that never had the private turn hook (board row bbbf3438 follow-up).** 0.67.0 runs a private tool only inside a turn whose marker `hoai-private-turn-hook.mjs` wrote. A clone workspace gets that hook only from its own `.claude/settings.local.json`, and `bgos-agent update` refreshed only a folder that already named `hoai-hook.mjs`. Nine agents on KC's Mac had no entry, so after a restart onto 0.67.x every private call answered "its current sender could not be verified", on scheduler wakes and every other turn.

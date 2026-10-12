@@ -926,6 +926,16 @@ export interface SelfUpdaterOptions {
    * ahead of the wiring.
    */
   requestRestart?: (targetVersion: string | null) => Promise<boolean>
+  /**
+   * The agent workspace folders this daemon serves (server.ts FLOOR_FOLDERS).
+   * After an update lands and BEFORE any restart is requested, the hooks of a
+   * clone workspace among them are registered by the NEW checkout's own script
+   * (bin/hoai-register-hooks.mjs). The CLI reads hooks once, at launch, and
+   * the private turn hook is what lets boards, schedule and browser tools run
+   * (board bbbf3438 follow-up: the update path never wrote it, so the restart
+   * after a nightly update left every private call refused). Best effort.
+   */
+  workspaceDirs?: readonly string[]
 }
 
 export class SelfUpdater {
@@ -1549,6 +1559,7 @@ export class SelfUpdater {
       } else {
         this.opts.log('Auto-update was already installed by another daemon.')
       }
+      await this.registerWorkspaceHooks()
       if (mode === 'triggered') {
         // The rpc caller decides between a real restart (drain stays on
         // until the process dies) and 'staged' (the caller un-drains). Never
@@ -1568,6 +1579,27 @@ export class SelfUpdater {
       )
     } finally {
       lock.release()
+    }
+  }
+
+  /**
+   * Run the NEW checkout's hook registration for this daemon's workspace
+   * folders. A child process on purpose: this process still holds the OLD
+   * code in memory, and it is the new code that knows which hooks the new
+   * version needs. Never throws and never blocks the update on a failure: a
+   * folder that is not a clone workspace is left alone by the script itself.
+   */
+  private async registerWorkspaceHooks(): Promise<void> {
+    const dirs = [...new Set((this.opts.workspaceDirs ?? []).filter(Boolean))]
+    if (dirs.length === 0) return
+    try {
+      const script = join(this.opts.rootDir, 'bin', 'hoai-register-hooks.mjs')
+      if (!existsSync(script)) return
+      const args = [script, '--plugin-dir', this.opts.rootDir, ...dirs.flatMap((dir) => ['--workdir', dir])]
+      await this.runner('node', args, { cwd: this.opts.rootDir, timeoutMs: 30_000 })
+      this.opts.log('Auto-update registered the agent hooks for this workspace before the restart.')
+    } catch (error) {
+      this.opts.log(`Auto-update could not register the agent hooks: ${errorText(error)}`)
     }
   }
 
