@@ -20,6 +20,7 @@
  */
 
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -303,6 +304,37 @@ test('a rotated file is drained from the top rather than skipped', () => {
   assert.equal(decision.reset, true, 'the file shrank under the cursor')
   assert.equal(decision.fresh.length, 1)
   assert.equal(decision.next.lines, 1)
+})
+
+test('a spool recreated after the idle sweep is drained from the top even when it is LARGER than the old one', () => {
+  // Vera, Windows, 0.67.5: her session spooled only its SessionStart, sat idle past the sweep, and the 17:30 wake's
+  // prompt recreated events.jsonl as one line three times as long. A cursor that only compared sizes read it as
+  // the same file and skipped that line, so privateTurns.begin() never ran (test/private-turn-shared-spool.test.ts).
+  const before = decideDrain({ cursor: { lines: 0, bytes: 0 }, text: '{"id":"s-1","event":"SessionStart","payload":{}}\n' }).next
+  const wake = `{"id":"w-1","event":"UserPromptSubmit","payload":{"prompt":"${'x'.repeat(1200)}"}}\n`
+  const decision = decideDrain({ cursor: before, text: wake })
+  assert.equal(decision.reset, true, 'another file is under the cursor, whatever its size')
+  assert.deepEqual(decision.fresh.map((l) => JSON.parse(l).id), ['w-1'], 'the wake is applied, not skipped')
+})
+
+test('a cursor without a head (a file with no complete line yet) still drains only what is new', () => {
+  const text = '{"id":"a-1","payload":{}}\n{"id":"a-2","payload":{}}\n'
+  const held = { lines: 2, bytes: Buffer.byteLength(text, 'utf8') }
+  const decision = decideDrain({ cursor: held, text: `${text}{"id":"a-3","payload":{}}\n` })
+  assert.equal(decision.reset, false, 'the same file, grown')
+  assert.deepEqual(decision.fresh.map((l) => JSON.parse(l).id), ['a-3'])
+})
+
+test('the cursor that comes back from disk still knows which file it counted', () => {
+  const text = '{"id":"s-1","payload":{}}\n{"id":"s-2","payload":{}}\n'
+  const held = parseCursor(serializeCursor(decideDrain({ cursor: { lines: 0, bytes: 0 }, text }).next))
+  assert.deepEqual(decideDrain({ cursor: held, text }).fresh, [], 'the same file after a restart applies nothing twice')
+  const recreated = `{"id":"n-1","payload":{"prompt":"${'y'.repeat(400)}"}}\n{"id":"n-2","payload":{}}\n{"id":"n-3","payload":{}}\n`
+  assert.deepEqual(
+    decideDrain({ cursor: held, text: recreated }).fresh.map((l) => JSON.parse(l).id),
+    ['n-1', 'n-2', 'n-3'],
+    'a new file under a restored cursor is drained from the top',
+  )
 })
 
 test('parseSpoolLine tolerates a half written tail, and an older forwarder\u2019s line', () => {
@@ -676,7 +708,9 @@ test('the cursor is on DISK, so a restart does not replay the session', () => {
   const first = h.start()
   assert.equal(h.events.length, 2)
   const cursorPath = join(ROOT, 'sess-ours', CURSOR_FILE_NAME)
-  assert.deepEqual(parseCursor(h.files.get(cursorPath) ?? null), { lines: 2, bytes: expectedBytes(h) })
+  const firstLine = (h.files.get(join(ROOT, 'sess-ours', SPOOL_FILE_NAME)) ?? '').split('\n')[0]!
+  const head = createHash('sha256').update(firstLine).digest('hex').slice(0, 16)
+  assert.deepEqual(parseCursor(h.files.get(cursorPath) ?? null), { lines: 2, bytes: expectedBytes(h), head }, 'and it names the file it counted')
   first.stop()
 
   // A brand new intake over the same directory: a restart, or the other daemon
@@ -687,6 +721,60 @@ test('the cursor is on DISK, so a restart does not replay the session', () => {
   second.pump()
   assert.equal(h.events.length, 3, 'and the next real line still lands')
   second.stop()
+})
+
+test('a daemon writes the cursor only for a session that is or may be its own, never for one it refused', () => {
+  // Every agent of one OS user drains every spool under one root. A neighbour that refused Vera's session still wrote
+  // that session's cursor.json, and Vera's daemon, coming back to the directory, started after lines it never applied.
+  const cursorOf = (h: Harness, key: string) => h.files.has(join(ROOT, key, CURSOR_FILE_NAME))
+  const unbound = harness()
+  unbound.write('sess-stranger', [spooled(strangerPayload())])
+  unbound.write('sess-theirs', [spooled({ session_id: 'sess-theirs', transcript_path: THEIRS, hook_event_name: 'UserPromptSubmit', prompt: 'p' })])
+  const waiting = unbound.start({ provenTranscript: () => null })
+  assert.equal(waiting.bound(), null)
+  assert.ok(cursorOf(unbound, 'sess-stranger'), 'a session in its own project, still unproven, may be its own')
+  assert.equal(cursorOf(unbound, 'sess-theirs'), false, 'another agent\u2019s session (foreign-project) keeps no cursor of ours')
+  waiting.stop()
+
+  const bound = harness()
+  bound.write('sess-ours', [spooled(ourPayload())])
+  const intake = bound.start()
+  assert.equal(intake.bound(), 'sess-ours')
+  bound.write('sess-stranger', [spooled(strangerPayload())])
+  intake.pump()
+  assert.ok(cursorOf(bound, 'sess-ours'), 'its own session is resumable after a restart')
+  assert.equal(cursorOf(bound, 'sess-stranger'), false, 'another session once bound (foreign-session) keeps no cursor of ours')
+  intake.stop()
+})
+
+test('a restart does not apply late the lines an unproven session spooled before it', () => {
+  // Those lines had their buffer window and were dropped; the daemon's own cursor keeps them dropped across a restart.
+  let now = 1_000_000
+  const h = harness(() => now)
+  h.write('sess-ours', [spooled(ourPayload({ hook_event_name: 'SessionStart', tool_use_id: undefined }))])
+  const first = h.start({ provenTranscript: () => null })
+  now += UNBOUND_BUFFER_MS + 1
+  first.pump()
+  first.stop()
+  const second = h.start({ provenTranscript: () => OURS })
+  h.write('sess-ours', [spooled(ourPayload({ tool_use_id: 'tu-new' }))])
+  second.pump()
+  assert.deepEqual(h.events.map((e) => e.tool_use_id ?? e.hook_event_name), ['tu-new'], 'only the line after the restart')
+  second.stop()
+})
+
+test('a cursor.json an older daemon wrote beside a session is never loaded', () => {
+  // Before 0.68.4 every daemon that drained a folder wrote cursor.json, sessions it refused included, and with no head.
+  // On a computer where some agents still run an older plugin, a neighbour writes it for the recreated spool after
+  // the idle sweep, and loading it skipped the wake. The session's own daemon keeps its cursor under another name.
+  const h = harness()
+  const line = spooled(ourPayload({ hook_event_name: 'UserPromptSubmit', prompt: 'the 17:30 wake', tool_use_id: undefined }))
+  h.write('sess-ours', [line])
+  h.files.set(join(ROOT, 'sess-ours', 'cursor.json'), serializeCursor({ lines: 1, bytes: Buffer.byteLength(`${line}\n`, 'utf8') }))
+  const intake = h.start()
+  assert.deepEqual(h.events.map((e) => e.hook_event_name), ['UserPromptSubmit'], 'the wake is applied')
+  assert.notEqual(CURSOR_FILE_NAME, 'cursor.json')
+  intake.stop()
 })
 
 function expectedBytes(h: Harness): number {
