@@ -1995,7 +1995,46 @@ test('a restart marker already on disk (a person\'s, or one the takeover still o
     ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
     [`${WSTATE}\\restart-requested.json`]: mark,
   })
+  // Written 20 s ago: a pending request the launcher or the takeover is about to act on.
+  fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 20_000)
   const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
   assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), mark, 'byte for byte')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'restart_already_requested']])
+})
+
+test('a marker stranded longer than anyone takes to act on it does not block the restart: the sweep rewrites it', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    [`${WSTATE}\\restart-requested.json`]: '{"left":"by an exhausted launcher"}',
+  })
+  fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 10 * MIN)
+  const clock = fakeClock()
+  clock.onSleep((_ms, at) => {
+    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+  })
+  const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
+  assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), '{}')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+})
+
+test('off the marker tier a marker on disk never blocks the restart (a canonical service restarts through the service)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  fs.writeFile(`${HOME}/.bgos-agent/912/restart-requested.json`, '{"left":"by an exhausted launcher"}')
+  const ps = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(2900, 1, `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ].join('\n')
+  const rec = recorder({ ps })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })

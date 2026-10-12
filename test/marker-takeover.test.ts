@@ -256,6 +256,8 @@ test('decideMarkerTakeover: off Windows nothing, and no candidate nothing', () =
 
 test('decideMarkerTakeover: a passive daemon (a second copy of the agent) never acts', () => {
   assert.deepEqual(m().decideMarkerTakeover(facts({ active: false })), { action: 'refuse', reason: 'passive', kind: 'stranded' })
+  // A daemon still young may only be on its way to the lock: it waits instead of refusing for good.
+  assert.equal(m().decideMarkerTakeover(facts({ active: false, now: BOOT + 30_000 })).action, 'wait')
 })
 
 test('decideMarkerTakeover: a session up less than MIN_SESSION_UP_MS waits (and keeps the candidate), then acts', () => {

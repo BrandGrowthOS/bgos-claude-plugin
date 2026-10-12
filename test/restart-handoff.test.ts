@@ -57,7 +57,7 @@ const HELPER = 90001
 type Proc = { pid: number; ppid: number; startedAtMs: number; command: string }
 
 /** One agent, its launcher, claude and daemon, on a Windows machine. */
-function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wrapper?: boolean; launcherCommand?: string } = {}) {
+function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wrapper?: boolean; launcherCommand?: string; abrupt?: boolean; launcherLingers?: boolean } = {}) {
   const clock = { now: T0 }
   const files = new Map<string, { text: string; mtimeMs: number }>()
   const put = (p: string, text: string, mtimeMs = clock.now) => files.set(p, { text, mtimeMs })
@@ -90,8 +90,11 @@ function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wr
   // What the launcher does when its claude is ended from outside.
   const onClaudeEnded = () => {
     remove(DAEMON)
-    files.delete(`${CREDS}.lock`)
-    files.delete(AGENT_STATE)
+    // A daemon killed with claude's job never runs its graceful release: its lock and state stay on disk.
+    if (!opts.abrupt) {
+      files.delete(`${CREDS}.lock`)
+      files.delete(AGENT_STATE)
+    }
     if (opts.keepAlive) {
       // decideKeepAliveBackoff, then supervisor.json is re-stamped and claude relaunched with --resume <pin>.
       later(5_000, () => {
@@ -101,7 +104,7 @@ function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wr
     } else {
       later(300, () => {
         files.delete(SUPERVISOR)
-        remove(LAUNCHER)
+        if (!opts.launcherLingers) remove(LAUNCHER)
       })
     }
   }
@@ -458,4 +461,50 @@ test('sessionChain, planHandoffRoute and decideLauncherStep are exported for rev
   assert.equal(sameFolder('C:\\agents\\vera', 'C:\\hoai-agents\\vera'), false)
   assert.equal(taskFolderIs(`x\r\nshell.CurrentDirectory = "${CWD}"\r\n`, 'c:\\agents\\vera\\'), true)
   assert.equal(taskFolderIs('shell.CurrentDirectory = "C:\\other"', CWD), false)
+})
+
+test('the old daemon\'s pid reused during the settle (an abrupt end left its lock and state on disk) does not stop the restart', async () => {
+  const w = world({ abrupt: true })
+  w.later(2_000, () => w.procs.push({ pid: DAEMON, ppid: 4000, startedAtMs: w.clock.now, command: 'C:\\Windows\\System32\\svchost.exe -k netsvcs' }))
+  const out = await run(w)
+  assert.equal(out.outcome, 'restarted', w.logs.join('\n'))
+  assert.equal(w.restarts[0].deps.pidAlive(DAEMON), false, 'the ladder is told the ended daemon is dead, whatever reuses its pid')
+})
+
+test('a launcher still running after its supervisor.json vanished is not released: nothing starts beside it', async () => {
+  const w = world({ launcherLingers: true })
+  const out = await run(w)
+  assert.equal(out.outcome, 'launcher_held', w.logs.join('\n'))
+  assert.equal(w.restarts.length, 0)
+})
+
+test('a refusal at the last check before the kill spends no ledger slot and leaves the stranded marker where it was', async () => {
+  const w = world()
+  w.put(`${CREDS}.lock`, JSON.stringify({ pid: 12345, heartbeatAt: T0 }))
+  assert.equal((await run(w)).outcome, 'daemon_lost_pairing_lock')
+  assert.equal(w.files.has(LEDGER), false)
+  assert.equal(w.files.get(MARKER)?.text, MARKER_TEXT)
+})
+
+test('a claude carrying the pin that appears during the settle (started by hand) means nothing is started', async () => {
+  const w = world()
+  w.later(5_000, () => w.procs.push({ pid: 77001, ppid: 4000, startedAtMs: w.clock.now, command: `claude --resume ${PIN}` }))
+  const out = await run(w)
+  assert.equal(out.outcome, 'already_running', w.logs.join('\n'))
+  assert.equal(w.restarts.length, 0)
+})
+
+test('two helpers racing for a stale lock: the one whose pid is not in the lock after taking it stands down', async () => {
+  const w = world()
+  const open = w.deps.fs.openExclusive
+  w.deps.fs.openExclusive = (p: string, text: string) => {
+    const r = open(p, text)
+    // Another helper replaced the lock right after us.
+    if (p === LOCK && r === 'ok') w.put(LOCK, JSON.stringify({ pid: 88888, at: new Date(T0).toISOString() }))
+    return r
+  }
+  w.procs.push({ pid: 88888, ppid: 4000, startedAtMs: T0 - 2000, command: 'node hoai-restart-handoff.mjs' })
+  const out = await run(w)
+  assert.equal(out.outcome, 'another_handoff_running')
+  assert.deepEqual(w.kills, [])
 })

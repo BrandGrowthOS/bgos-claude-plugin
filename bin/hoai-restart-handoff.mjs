@@ -24,7 +24,18 @@ import { nodeExec, nodeFs, nodeSpawnDetached } from '../lib/watcher-bundle.mjs'
 /** @param {string[]} argv */
 export async function main(argv) {
   const params = parseHandoffArgv(argv)
-  if (!params || process.platform !== 'win32') return 0
+  if (!params) {
+    // Say so where the daemon's ACT line went, when that path is usable at all.
+    const at = argv.indexOf('--log')
+    const logPath = at >= 0 ? String(argv[at + 1] ?? '') : ''
+    if (/^[A-Za-z]:[\\/]/.test(logPath)) {
+      try {
+        appendFileSync(logPath, `${new Date().toISOString()} [bgos] restart takeover helper (pid ${process.pid}): NOT started: its arguments did not parse; nothing was changed\n`)
+      } catch {}
+    }
+    return 0
+  }
+  if (process.platform !== 'win32') return 0
   const log = (text) => {
     try {
       appendFileSync(params.logPath, `${new Date().toISOString()} [bgos] restart takeover helper (pid ${process.pid}): ${text}\n`)
