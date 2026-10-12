@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.3 (2026-10-12)
+
+**`bgos-agent update` finishes with the script it just pulled.** The pull is a `git reset --hard`, which replaces the very file the shell is running, so everything after it (hook registration, the restart) ran the OLD function bodies. The first update to 0.67.2 therefore registered no private turn hook and a second run was needed. The update now hands over to the new file right after the pull (`HOAI_UPDATE_REEXEC` stops a second pull and carries the starting version), so a fix shipped in an update applies on the first update.
+
 ## 0.67.2 (2026-10-12)
 
 **Boards, schedule and browser tools no longer refuse every call on a clone agent that never had the private turn hook (board row bbbf3438 follow-up).** 0.67.0 runs a private tool only inside a turn whose marker `hoai-private-turn-hook.mjs` wrote. A clone workspace gets that hook only from its own `.claude/settings.local.json`, and `bgos-agent update` refreshed only a folder that already named `hoai-hook.mjs`. Nine agents on KC's Mac had no entry, so after a restart onto 0.67.x every private call answered "its current sender could not be verified", on scheduler wakes and every other turn.

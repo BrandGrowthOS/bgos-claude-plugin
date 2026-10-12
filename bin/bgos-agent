@@ -1232,6 +1232,9 @@ cmd_update() {
     process.stdout.write(pkg.version);
   ' "$PLUGIN_DIR/package.json")" \
     || die "could not read plugin version from $PLUGIN_DIR/package.json"
+  # The re-executed script reads the already updated package.json, so the
+  # version the update started from rides in the environment.
+  BEFORE="${HOAI_UPDATE_FROM_VERSION:-$BEFORE}"
 
   dirty="$(git -C "$PLUGIN_DIR" status --porcelain)" \
     || die "could not inspect the plugin checkout at $PLUGIN_DIR"
@@ -1242,11 +1245,26 @@ cmd_update() {
     || die "could not determine the plugin checkout branch"
   if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then branch="main"; fi
 
-  info "Fetching origin/$branch"
-  git -C "$PLUGIN_DIR" fetch --depth 1 origin "$branch" \
-    || die "could not fetch origin/$branch; the plugin checkout was not changed"
-  git -C "$PLUGIN_DIR" reset --hard "origin/$branch" \
-    || die "could not update the plugin checkout to origin/$branch"
+  if [ "${HOAI_UPDATE_REEXEC:-}" != "1" ]; then
+    info "Fetching origin/$branch"
+    git -C "$PLUGIN_DIR" fetch --depth 1 origin "$branch" \
+      || die "could not fetch origin/$branch; the plugin checkout was not changed"
+    git -C "$PLUGIN_DIR" reset --hard "origin/$branch" \
+      || die "could not update the plugin checkout to origin/$branch"
+    # THE RESET JUST REPLACED THIS SCRIPT. The rest of this function is the OLD
+    # code the shell already read, so everything below (the hook registration
+    # that 0.67.2 added, the restart) would run as it was before the pull and a
+    # fix shipped in the update would take a second update to apply (seen on
+    # KC's Mac, 2026-10-12: the first `bgos-agent update` to 0.67.2 registered
+    # nothing). Hand over to the new file for the rest of the update; the
+    # environment says the pull is done so it does not fetch again.
+    if [ -f "$SELF" ]; then
+      local reexec=(update)
+      [ -n "${ASSISTANT_ID:-}" ] && reexec+=(--assistant "$ASSISTANT_ID")
+      info "Continuing with the updated script"
+      HOAI_UPDATE_REEXEC=1 HOAI_UPDATE_FROM_VERSION="$BEFORE" exec "$SELF" "${reexec[@]}"
+    fi
+  fi
 
   info "Installing plugin deps (bun install)"
   ( cd "$PLUGIN_DIR" && bun install --no-summary >/dev/null 2>&1 ) \
