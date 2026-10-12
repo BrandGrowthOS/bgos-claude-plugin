@@ -66,6 +66,12 @@ import * as privateTurnModule from '../lib/private-turn.mjs'
 // the tests fail on the behaviour they pin, not on an import.
 const privateRepeatLine: (repeat: Record<string, unknown>) => string =
   (privateTurnModule as any).privateRepeatLine ?? ((repeat) => `(no repeat line: ${JSON.stringify(repeat)})`)
+const privateBeginLineOf: (outcome: string, sessionId: string) => string =
+  (privateTurnModule as any).privateBeginLine ?? ((outcome) => `(no begin line: ${outcome})`)
+const privateRevokeLineOf: (info: Record<string, unknown>) => string =
+  (privateTurnModule as any).privateRevokeLine ?? ((info) => `(no revoke line: ${JSON.stringify(info)})`)
+const explainOf = (tracker: any, markerPaths: string[]): string =>
+  typeof tracker.explain === 'function' ? tracker.explain({ markerPaths }) : '(no explain)'
 
 const OWNER = 'user_owner909'
 const SYSTEM_MARKER =
@@ -588,4 +594,187 @@ test('the repeat lines name what happened and stay one line each', () => {
   for (const line of [privateRepeatLine({ kind: 'prompt', sessionId: 's' }), privateRepeatLine({ kind: 'restamp', from: 'a', to: 'b' })]) {
     assert.ok(!line.includes('\n') && !/[\u2013\u2014]/.test(line))
   }
+})
+
+// ── Vera, 18:45 (Mark's facts via Data, 2026-10-12 22:15Z): the ids, the next turn, and what the daemon says ──
+
+test('the delivered token and the marker turnId are minted apart and never compared: the wake opens its turn', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const prompt = vera.deliver(wakeFrame(vera.chatId))
+  vera.pump()
+  // The daemon minted the token at delivery (lib/private-turn.mjs deliver); the hook minted the turnId (recordPrivateBoundary).
+  const token = /<hoai-private-turn id="([a-f0-9-]{36})"\/>/.exec(prompt)![1]
+  const marker = vera.liveMarker()
+  assert.notEqual(marker.turnId, token, 'two different ids, as on the PC (db0acead and 19a3c691)')
+  assertOwnerTurn(vera, 'mismatched ids')
+})
+
+test('begin() says what it decided for every prompt', () => {
+  let clock = 1_000
+  const tracker = createPrivateTurnTracker({ now: () => clock })
+  const begin = (prompt: string, promptId: string = randomUUID()) => tracker.begin({ prompt, sessionId: 's', promptId })
+  const owner = tracker.deliver({ content: 'a', actingUserId: OWNER, chatId: '1' })
+  assert.equal(begin(owner, 'p1'), 'opened')
+  assert.equal(begin(owner, 'p1'), 'repeat')
+  assert.equal(begin('typed at the terminal'), 'no-token')
+  assert.equal(begin(owner, 'p2'), 'unknown-token', 'its token is spent')
+  assert.equal(begin(`${tracker.deliver({ content: 'b', actingUserId: OWNER, chatId: '1' })}\n${tracker.deliver({ content: 'c', actingUserId: OWNER, chatId: '1' })}`), 'ambiguous')
+  assert.equal(begin(tracker.deliver({ content: 'd', actingUserId: null, chatId: '1', peerSourceAssistantId: 1040 })), 'peer')
+  assert.equal(begin(tracker.deliver({ content: 'e', actingUserId: null, chatId: '1' })), 'no-actor')
+  const old = tracker.deliver({ content: 'f', actingUserId: OWNER, chatId: '1' })
+  clock += 16 * 60_000
+  assert.equal(begin(old), 'expired')
+  for (const outcome of ['opened', 'ambiguous', 'unknown-token', 'expired', 'peer', 'no-actor']) {
+    const line = privateBeginLineOf(outcome, 's')
+    assert.match(line, /^private turn: /)
+    assert.ok(!line.includes('\n') && !/[\u2013\u2014]/.test(line), line)
+  }
+})
+
+test('a refused private call says which check failed, marker by marker', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const explain = () => explainOf(vera.tracker, vera.markerPaths)
+  assert.match(explain(), /no private turn is open/)
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  // The hook wrote the next prompt's marker where this daemon does not read (Vera's shape if the key moved).
+  const elsewhere = privateMarkerPath(vera.root, floorKey(join(host.base, 'agents')))
+  const live = vera.liveMarker()
+  writePrivateJson(elsewhere, { ...live, turnId: randomUUID() })
+  for (const p of vera.markerPaths) writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: vera.session, promptHash: 'e'.repeat(64), live: false })
+  assert.equal(vera.privateCall(), null)
+  const text = explain()
+  assert.match(text, /admitted user_owner909/)
+  assert.match(text, /live=false session=same prompt=eeeeeeeeeeee/)
+  assert.ok(!text.includes(elsewhere.split(/[\\/]/).pop()!), 'it reads only its own keys, and says which')
+  // Another session's marker at the daemon's key is named as such.
+  for (const p of vera.markerPaths) writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: 'another-session-0001', promptHash: live.promptHash, live: true })
+  assert.match(explain(), /live=true session=another-sess prompt=same/)
+})
+
+test('the next turn: a hook killed before its write, an invalidated Stop record, a deleted marker beside a stale live one', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // 11:06: the private turn hook times out before it writes: this turn has no marker of its own and is refused...
+  vera.deliver(ownerFrame(vera.chatId, 'Please list the boards again (a slow hook).'), { privateRuns: 0, forwarderRuns: 1 })
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'the turn whose hook never wrote is refused')
+  vera.hook('Stop', { stop_hook_active: false }, { privateRuns: 0 })
+  vera.pump()
+  // ...and leaves nothing behind: the next one opens.
+  vera.deliver(ownerFrame(vera.chatId, 'Please list the boards (after the timeout).'))
+  vera.pump()
+  assertOwnerTurn(vera, 'after a timed out hook')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // 18:45:29: a Stop the hook could not record turns the marker empty (invalidatePrivateBoundary): the next turn opens.
+  for (const p of vera.markerPaths) if (readPrivateJson(p, 2048)) writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+  vera.deliver(ownerFrame(vera.chatId, 'Please list the boards (after an empty Stop record).'))
+  vera.pump()
+  assertOwnerTurn(vera, 'after an invalidated Stop record')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // The marker deleted (the invalidation's own fallback) while a stale live one of this session sits at an ancestor key.
+  for (const p of vera.markerPaths) rmSync(p, { force: true })
+  host.plantStaleMarker(vera.session, join(host.base, 'agents'))
+  vera.deliver(ownerFrame(vera.chatId, 'Please list the boards (marker deleted, stale one beside).'))
+  vera.pump()
+  assertOwnerTurn(vera, 'after a deleted marker beside a stale live one')
+})
+
+// ── Review of the diagnostics: an adopted turn, a revoked turn, and words that cannot mislead ──
+
+test('a refused call after adoption names the adopted marker and what changed in it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dup-explain-'))
+  try {
+    const tracker = createPrivateTurnTracker()
+    const pA = privateMarkerPath(root, 'a'.repeat(32))
+    const pB = privateMarkerPath(root, 'b'.repeat(32))
+    const prompt = tracker.deliver({ content: 'list the boards', actingUserId: OWNER, chatId: '1' })
+    const hash = privatePromptHash(prompt)
+    const stamp = (p: string, fields: Record<string, unknown>) =>
+      writePrivateJson(p, { schemaVersion: 1, turnId: randomUUID(), sessionId: 's', promptHash: hash, live: true, promptId: 'p1', ...fields })
+    stamp(pA, {})
+    tracker.begin({ prompt, sessionId: 's', promptId: 'p1' })
+    const adopted = tracker.current({ markerPaths: [pA, pB] })!
+    assert.equal(adopted.actingUserId, OWNER)
+    // Stamped again by a private turn hook that names another submission (an older copy writes none).
+    stamp(pA, { promptId: 'p2' })
+    assert.equal(tracker.current({ markerPaths: [pA, pB] }), null)
+    let text = explainOf(tracker, [pA, pB])
+    assert.match(text, new RegExp(`adopted ${'a'.repeat(32)}\\.json as turn ${adopted.turnId.slice(0, 8)}`))
+    assert.match(text, /turn=other promptId=p2/)
+    assert.match(text, /other files are not read again once a turn is adopted/)
+    // The adopted file closed while another file is live for the same prompt: still refused, and said so.
+    stamp(pA, { live: false, promptId: 'p1' })
+    stamp(pB, {})
+    assert.equal(tracker.current({ markerPaths: [pA, pB] }), null)
+    text = explainOf(tracker, [pA, pB])
+    assert.match(text, /live=false/)
+    assert.ok(!text.includes('b'.repeat(32)), 'only the adopted file is named once a turn is adopted')
+    // Before adoption: a schemaVersion other than 1 is named, and a field cannot break the line.
+    const t2 = createPrivateTurnTracker()
+    const p2 = t2.deliver({ content: 'again', actingUserId: OWNER, chatId: '1' })
+    writePrivateJson(pA, { schemaVersion: 2, turnId: 'x', sessionId: 's\nforged line', promptHash: privatePromptHash(p2), live: true })
+    t2.begin({ prompt: p2, sessionId: 's', promptId: 'p3' })
+    assert.equal(t2.current({ markerPaths: [pA] }), null)
+    text = explainOf(t2, [pA])
+    assert.match(text, /schema=2/)
+    assert.ok(!/[\r\n]/.test(text), 'a marker field never splits the log line')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a revoked turn and an ended turn are told apart, and the revoke is reported', () => {
+  const revokes: any[] = []
+  const tracker = createPrivateTurnTracker({ onRevoke: (info: any) => revokes.push(info) })
+  const open = (chatId = '1') => {
+    tracker.begin({ prompt: tracker.deliver({ content: 'go', actingUserId: OWNER, chatId }), sessionId: 's', promptId: randomUUID() })
+  }
+  open()
+  tracker.deliver({ content: 'from a peer', actingUserId: null, chatId: '1', peerSourceAssistantId: 1040 })
+  assert.deepEqual(revokes.at(-1), { chatId: '1', why: 'a peer agent' })
+  assert.match(explainOf(tracker, []), /revoked by a delivery from a peer agent \(chat 1\)/)
+  open()
+  tracker.deliver({ content: 'system', actingUserId: null, chatId: '1' })
+  assert.deepEqual(revokes.at(-1), { chatId: '1', why: 'no verified sender' })
+  open()
+  tracker.deliver({ content: 'hi', actingUserId: 'user_other7', chatId: '1' })
+  assert.deepEqual(revokes.at(-1), { chatId: '1', why: 'another person' })
+  open()
+  tracker.deliver({ content: 'hi', actingUserId: OWNER, chatId: '2' })
+  assert.deepEqual(revokes.at(-1), { chatId: '2', why: 'another chat' })
+  open()
+  tracker.end()
+  assert.match(explainOf(tracker, []), /ended \(Stop or SessionEnd\)/)
+  open()
+  assert.match(explainOf(tracker, []), /admitted/)
+  tracker.end()
+  tracker.begin({ prompt: 'a plain prompt', sessionId: 's', promptId: randomUUID() })
+  assert.doesNotMatch(explainOf(tracker, []), /ended|revoked/, 'a new prompt forgets how the last turn closed')
+  assert.deepEqual(revokes.map((info) => privateRevokeLineOf(info).replace(/ ended the private turn.*/, '')), [
+    'private turn: a delivery from a peer agent (chat 1)',
+    'private turn: a delivery with no verified sender (chat 1)',
+    'private turn: a delivery from another person (chat 1)',
+    'private turn: a delivery from the same person in another chat (chat 2)',
+  ])
+  for (const info of revokes) {
+    const line = privateRevokeLineOf(info)
+    assert.match(line, /^private turn: .* ended the private turn; nobody may act until the next prompt$/)
+    assert.ok(!/[\r\n\u2013\u2014]/.test(line), line)
+  }
+})
+
+test('the begin line says admitted, not usable, and a missing token has words', () => {
+  assert.match(privateBeginLineOf('opened', 's'), /admitted its sender; the turn is usable once its marker matches/)
+  assert.match(privateBeginLineOf('no-token', 's'), /opens no private turn: it carries no delivery token/)
 })

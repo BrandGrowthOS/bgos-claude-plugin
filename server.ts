@@ -140,7 +140,7 @@ import {
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
-import { createPrivateTurnTracker, privateActor, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -5371,7 +5371,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const peer = (privateTurns as { peerTurn?: () => { sourceAssistantId: string } | null }).peerTurn?.()
         if (peer) log(recordPeerRefusal({ dir: pathDirname(CURSOR_FILE_PATH), tool: req.params.name, delegate: peer.sourceAssistantId, target: ASSISTANT_ID }).line)
       } catch { /* counting is best effort */ }
-      // Still refused. With no hook registered the sender is not the problem, so say that.
+      // Still refused. With no hook registered the sender is not the problem, so say that. Either way the log names
+      // the check that failed, marker by marker (the refusal text the model sees stays the same).
+      try {
+        if (lockHeld) log(`private turn: refused ${req.params.name}: ${privateTurns.explain({ markerPaths: PRIVATE_MARKER_PATHS })}`)
+      } catch { /* A diagnostic line never changes the refusal. */ }
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
     }
@@ -8602,7 +8606,7 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
-const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn(), onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
+const privateTurns = createPrivateTurnTracker({ onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
@@ -9251,13 +9255,16 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event.name === 'SessionEnd') privateTurns.end()
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
-    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
     // no match (a cron wake the agent started itself) the last delivery stands.
     // Either way a peer message or a meeting arriving mid turn moves nothing.
     const matched = turnChat.matchDelivered(payload.prompt)
+    // One line per prompt that carried a delivery token, or that carries a delivered message without one: what
+    // the private turn decided. Without it a wake that opened no turn left nothing in the log (Vera, 2026-10-12).
+    if (began !== 'repeat' && (began !== 'no-token' || matched !== null)) log(privateBeginLine(began, hookSessionId))
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)

@@ -57,12 +57,16 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /senderUserId: privateSenderUserId\(view\.raw\)/)
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
   assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload\.prompt_id \}\)/)
+  // What begin() decided is logged for every prompt that carried a token, and a refused call names the failed check.
+  assert.match(source, /if \(began !== 'repeat' && \(began !== 'no-token' \|\| matched !== null\)\) log\(privateBeginLine\(began, hookSessionId\)\)/)
+  assert.match(source, /onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}/)
+  assert.match(source, /if \(lockHeld\) log\(`private turn: refused \$\{req\.params\.name\}: \$\{privateTurns\.explain\(\{ markerPaths: PRIVATE_MARKER_PATHS \}\)\}`\)/)
   // The turn ends where the rail's turn ends: a Stop's turn_end reaches endHookTurn, which closes the private turn.
   assert.match(source, /function endHookTurn\(keepCard: boolean\): void \{[\s\S]*?privateTurns\.end\(\)[\s\S]*?\n\}/)
   assert.match(source, /case 'turn_end': \{\n\s*void finishHookTurn\(effect\.keepCard\)/)
   // A mid-turn delivery that revokes the turn republishes the signed browser context right away.
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(\) => publishBrowserPrivateTurn\(\), onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\) \}\)/)
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 
@@ -100,7 +104,7 @@ test('a refused private call on a peer turn is counted with the tool name and th
   const run = (peer: { sourceAssistantId: string } | null) =>
     execute(admissionSource + '\nreturn privateCall;', {
       req: { params: { name: 'boards_query' } }, lockHeld: true, USER_ID: 'user_owner', PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
-      privateTurns: { peerTurn: () => peer },
+      privateTurns: { peerTurn: () => peer, explain: () => 'no private turn is open (stub)' },
       requirePrivateTurn: () => { throw new Error('private action did not start') },
       recordPeerRefusal: (input: Record<string, unknown>) => { recorded.push(input); return { line: 'peer private call refused' } },
       log: (line: string) => logs.push(line),
@@ -110,7 +114,7 @@ test('a refused private call on a peer turn is counted with the tool name and th
   assert.equal(refused.isError, true)
   assert.match(refused.content[0].text, /did not start/)
   assert.deepEqual(recorded, [{ dir: '/state/1050', tool: 'boards_query', delegate: '888', target: 1050 }])
-  assert.deepEqual(logs, ['peer private call refused'])
+  assert.deepEqual(logs, ['peer private call refused', 'private turn: refused boards_query: no private turn is open (stub)'])
 
   // A human turn that is refused is not a peer refusal: nothing is counted.
   recorded.length = 0
