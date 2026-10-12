@@ -318,6 +318,9 @@ function memDeps(world: World, script: CliScript, over: Partial<Deps> = {}) {
       return { ok: true, evidence: 'channel-live.json newer than restart' }
     },
     log: () => {},
+    // Injected by DEFAULT so no test in this file spawns the real registrar (the production default runs
+    // the new checkout's bin/hoai-register-hooks.mjs as a child process).
+    registerAgentHooks: async () => undefined,
     // Recorded, and injected by DEFAULT, so no test in this file can reach the real ~/.claude. The
     // production default is the real ensureMarketplaceAutoUpdate, which writes settings.json.
     ensureAutoUpdate: (params: { configDir: string; marketplace: string }) => {
@@ -1958,4 +1961,96 @@ test('a failed add does NOT re-enrol, because there is no entry to enrol', async
   })
   await executePlan(freshMachine(world), deps)
   assert.deepEqual(enrolments, [], 'writing a key for a marketplace that was never added is a lie')
+})
+
+// -- Clone installs: the agent workspace's hooks are written before its restart ------------------------------------
+// Board bbbf3438 follow-up: 0.67.0 made the private turn hook the gate for boards, schedule and browser tools, and
+// the watcher's connector update (git_fast_forward, then restart_agent) never wrote it, so a clone agent updated
+// that way restarted with every private call refused. The hook is read once, at launch, so the write has to come
+// after the new checkout is on disk and before the restart.
+
+test('clone: the workspace hooks are registered once per folder, after the fast-forward and before the restart', async () => {
+  const c = cloneWorld()
+  const plan = planMachine(c.state)
+  const order: string[] = []
+  const registrations: Array<{ cwd: unknown; pluginRoot: string; mergesSeen: number }> = []
+  const { deps } = memDeps(c.world, {}, {
+    git: c.git,
+    pluginRoot: c.pluginRoot,
+    clone: { targetCommit: 'b'.repeat(40) },
+    registerAgentHooks: async (agent: { cwd?: string | null }, opts: { pluginRoot: string }) => {
+      order.push('register')
+      registrations.push({ cwd: agent.cwd, pluginRoot: opts.pluginRoot, mergesSeen: c.gitCalls.filter((a) => a[0] === 'merge').length })
+    },
+    restartAgent: async () => {
+      order.push('restart')
+      return { ok: true, how: 'marker' }
+    },
+  })
+  const result = await executePlan(plan, deps)
+  assert.equal(result.verdict, 'done', stepView(result.steps).join(' | '))
+  assert.deepEqual(order, ['register', 'restart'])
+  assert.deepEqual(registrations, [{ cwd: '/home/kc/hoai-agents/912', pluginRoot: c.pluginRoot, mergesSeen: 1 }])
+})
+
+test('clone: a registration that throws or hangs never fails the restart', async () => {
+  for (const mode of ['throws', 'hangs'] as const) {
+    const c = cloneWorld()
+    const plan = planMachine(c.state)
+    const restarted: string[] = []
+    const { deps } = memDeps(c.world, {}, {
+      git: c.git,
+      pluginRoot: c.pluginRoot,
+      clone: { targetCommit: 'b'.repeat(40) },
+      registerAgentHooks: async () => {
+        if (mode === 'throws') throw new Error('settings file is read only')
+        await new Promise(() => undefined)
+      },
+      restartAgent: async (agent: { assistantId: string }) => {
+        restarted.push(agent.assistantId)
+        return { ok: true, how: 'marker' }
+      },
+      timers: { setTimeout: (fn: () => void) => { setImmediate(fn); return 0 }, clearTimeout: () => undefined },
+    })
+    const result = await executePlan(plan, deps)
+    assert.equal(result.verdict, 'done', `${mode}: ${stepView(result.steps).join(' | ')}`)
+    assert.deepEqual(restarted, ['912'], mode)
+  }
+})
+
+test('marketplace installs never run the registrar (their hooks come from the plugin hooks.json)', async () => {
+  const world = memWorld()
+  world.seedMarketplace('0.38.3')
+  world.seedInstalled('0.38.1')
+  const plan = planMachine(updateState(world, { agents: [agentState('912')] }))
+  let registered = 0
+  // A plugin root is supplied on purpose: the marketplace guard, not a missing path, is what is under test.
+  const { deps } = memDeps(world, realisticScript(world, '0.38.3'), { pluginRoot: '/home/kc/bgos-claude-plugin', registerAgentHooks: async () => { registered += 1 } })
+  const result = await executePlan(plan, deps)
+  assert.equal(result.verdict, 'done', stepView(result.steps).join(' | '))
+  assert.equal(registered, 0)
+})
+
+test('clone: with no registrar injected, the default runs the NEW checkout\'s bin/hoai-register-hooks.mjs and the workspace hooks land on disk', async () => {
+  const { mkdtempSync, realpathSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'executor-hooks-ws-')))
+  writeFileSync(join(workspace, '.mcp.json'), JSON.stringify({ mcpServers: { bgos: { command: 'bun', args: [join(root, 'server.ts')] } } }))
+  const c = cloneWorld()
+  const pkg = joinLike(root, 'package.json')
+  c.world.files.set(pkg, JSON.stringify({ name: 'claude-channel-bgos', version: '0.38.1' }))
+  const head = 'a'.repeat(40)
+  const git = async (args: string[]) => {
+    if (args[0] === 'merge') c.world.files.set(pkg, JSON.stringify({ name: 'claude-channel-bgos', version: '0.38.3' }))
+    if (args[0] === 'rev-parse') return { code: 0, stdout: `${head}\n`, stderr: '' }
+    return { code: 0, stdout: '', stderr: '' }
+  }
+  const { deps } = memDeps(c.world, {}, { git, pluginRoot: root, clone: { targetCommit: 'b'.repeat(40) }, agents: [{ assistantId: '912', cwd: workspace }] })
+  delete (deps as { registerAgentHooks?: unknown }).registerAgentHooks
+  const result = await executePlan(planMachine(c.state), deps)
+  assert.equal(result.verdict, 'done', stepView(result.steps).join(' | '))
+  const settings = JSON.parse(readFileSync(join(workspace, '.claude', 'settings.local.json'), 'utf8'))
+  assert.match(JSON.stringify(settings.hooks.UserPromptSubmit), /hoai-private-turn-hook\.mjs/)
+  assert.doesNotMatch(JSON.stringify(settings.hooks), /hoai-floor-hook\.mjs/)
 })
