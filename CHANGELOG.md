@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.1 (2026-10-12)
+
+**A refused private call on a peer agent's turn is now counted.** A request that arrives from another agent is never a verified sender, so boards, schedule and browser calls on such a turn refuse (since 0.67.0, and correctly). KC asked to see the impact before deciding whether an owner-set delegation should let a trusted agent's request through (`docs/proposals/peer-delegation-private-tools.md`). Each such refusal now logs one line (`peer private call refused: tool=... delegate=... target=... today=N`) and adds to a per-day file `peer-private-refusals.json` beside the daemon's state, per delegate and tool, 30 days kept. Ids and the tool's name only; no message text, no arguments, no board or chat names. The refusal itself is unchanged: the turn tracker remembers the peer behind a turn apart from the actor, and that never satisfies the gate.
+
 ## 0.68.0 (2026-10-12)
 
 **Agents run in the background on every computer, and a window is only a viewer beside one (HOAI board row d133ddb2, piece 1 of 4: the plugin).** "Create a new agent here" on Windows started the agent with `cmd /c start ... cmd /k node hoai-core.mjs`, a visible console that stayed open, empty, after the agent ended (AlienAres), and the Windows agent task ran its launcher minimized in the taskbar.

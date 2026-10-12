@@ -226,6 +226,7 @@ import {
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { registerCloneHooks } from './lib/clone-hooks.mjs'
+import { recordPeerRefusal } from './lib/peer-refusal-counter.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -5324,6 +5325,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
     }
     catch (err) {
+      // A refused call on a PEER agent's turn is counted (ids and the tool's name only, no content), so the
+      // question of letting a trusted agent's request run private tools is decided on numbers
+      // (docs/proposals/peer-delegation-private-tools.md). It never changes the refusal.
+      try {
+        const peer = (privateTurns as { peerTurn?: () => { sourceAssistantId: string } | null }).peerTurn?.()
+        if (peer) log(recordPeerRefusal({ dir: pathDirname(CURSOR_FILE_PATH), tool: req.params.name, delegate: peer.sourceAssistantId, target: ASSISTANT_ID }).line)
+      } catch { /* counting is best effort */ }
       // Still refused. With no hook registered the sender is not the problem, so say that.
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
@@ -10223,7 +10231,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -12488,7 +12496,7 @@ async function forwardStreamInbound(
       deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
           meta: finalInboundMeta(
             streamChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -13588,7 +13596,7 @@ function connectWebsocket(): void {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
