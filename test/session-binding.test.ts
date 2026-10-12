@@ -537,7 +537,9 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   const at = server.indexOf('const sessionBinder = new SessionTranscriptBinder(')
   assert.ok(at > 0, 'the binder is built at module scope')
   const call = server.slice(at, server.indexOf('\n})\n', at))
-  assert.match(call, /^const sessionBinder = new SessionTranscriptBinder\(LAUNCH_CWD, \{/)
+  // The agent folder as the CLI resolves it (a Windows junction kept its
+  // spelling in LAUNCH_CWD, test/private-turn-linked-folder.test.ts).
+  assert.match(call, /^const sessionBinder = new SessionTranscriptBinder\(CLAUDE_PROJECT_CWD, \{/)
   assert.match(call, /\n\s*claudeHome: CLAUDE_CONFIG_DIR,\n/)
   assert.doesNotMatch(call, /process\.cwd\(\)/)
   // A const read before its declaration throws at module load (the temporal
@@ -548,6 +550,9 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   assert.ok(decl > 0, 'one config dir rule, the installer helper')
   assert.ok(decl < at, 'declared before the binder reads it')
   assert.equal(server.split('\nconst CLAUDE_CONFIG_DIR = ').length, 2, 'declared once')
+  const folder = server.indexOf('\nconst CLAUDE_PROJECT_CWD = claudeProjectCwd(LAUNCH_CWD)\n')
+  assert.ok(folder > server.indexOf('\nconst LAUNCH_CWD = ') && folder < at, 'the resolved folder is declared after its base and before the binder')
+  assert.equal(server.split('\nconst CLAUDE_PROJECT_CWD = ').length, 2, 'declared once')
   // Every consumer of the binder's project dir reads the binder itself, so
   // the hook intake gate and the Sessions sheet follow the fix.
   assert.match(server, /startHookIntake\(\{\s*stateRoot: root,\s*projectDir: sessionBinder\.projectDirectory,/)
@@ -569,13 +574,15 @@ test('server.ts builds the usage tracker and the resting watcher from the agent 
   const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'server.ts'), 'utf8')
   const usage = /\nconst usageTracker = new UsageTracker\(([^\n]*)\)\n/.exec(server)
   assert.ok(usage, 'the usage tracker is built at module scope')
-  assert.equal(usage[1], 'LAUNCH_CWD, CLAUDE_CONFIG_DIR')
+  assert.equal(usage[1], 'CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR')
   const resting = /\nconst restingWatcher = new RestingWatcher\(([^\n]*)\)\n/.exec(server)
   assert.ok(resting, 'the resting watcher is built at module scope')
-  assert.equal(resting[1], 'LAUNCH_CWD, CLAUDE_CONFIG_DIR')
-  // Both read the config dir at module load, so it must be declared first.
-  const decl = server.indexOf('\nconst CLAUDE_CONFIG_DIR = ')
-  assert.ok(decl > 0 && decl < usage.index && decl < resting.index, 'declared before both readers')
+  assert.equal(resting[1], 'CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR')
+  // Both read the config dir and the resolved folder at module load, so they must be declared first.
+  for (const name of ['CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_CWD']) {
+    const decl = server.indexOf(`\nconst ${name} = `)
+    assert.ok(decl > 0 && decl < usage.index && decl < resting.index, `${name} is declared before both readers`)
+  }
 })
 
 test('the usage tracker finds the agent transcript under a custom config dir, and not from the plugin cache', () => {
