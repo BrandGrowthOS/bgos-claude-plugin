@@ -9,11 +9,14 @@
 #                         when the agent's launcher leaves the console.
 #   -Mode hide            hide the agent console's own window (SW_HIDE) and exit: a console a
 #                         supervisor left on screen before agents ran hidden (the old minimized task
-#                         launcher, the old cmd /k create launch). Hiding never closes anything.
+#                         launcher, the old cmd /k create launch). Hiding never closes anything. A
+#                         console Windows Terminal hosts cannot be hidden this way (exit 4, untouched):
+#                         it shows until the agent's next start, which is hidden.
 #
 # Started by the watcher (lib/agent-windows.mjs) through hoai-agent-viewer.vbs, with window style 0
 # so no console flashes; every argument is digits; the agent's name arrives in HOAI_VIEWER_NAME.
-# Exit codes: 0 done, 2 the agent console could not be attached, 5 the helper did not compile.
+# Exit codes: 0 done, 2 the agent console could not be attached, 4 hosted by a terminal application
+# (hide mode), 5 the helper did not compile.
 param(
   [Parameter(Mandatory = $true)][ValidatePattern('^\d+$')][string]$ConsolePid,
   [Parameter(Mandatory = $true)][ValidatePattern('^\d+$')][string]$AssistantId,
@@ -34,6 +37,15 @@ public static class HoaiAgentConsole {
   [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr window, StringBuilder name, int size);
+
+  // A console a terminal application hosts (Windows Terminal) has only a pseudo window: hiding that
+  // hides nothing on screen, and the terminal's own window is not ours to touch.
+  public static bool HostedByTerminal(IntPtr window) {
+    StringBuilder name = new StringBuilder(64);
+    GetClassNameW(window, name, name.Capacity);
+    return name.ToString() == "PseudoConsoleWindow";
+  }
   [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint GetConsoleProcessList([Out] uint[] list, uint count);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -179,6 +191,10 @@ if ($Mode -eq 'hide') {
   [HoaiAgentConsole]::FreeConsole() | Out-Null
   if (-not [HoaiAgentConsole]::AttachConsole($target)) { exit 2 }
   $console = [HoaiAgentConsole]::GetConsoleWindow()
+  if ($console -ne [IntPtr]::Zero -and [HoaiAgentConsole]::HostedByTerminal($console)) {
+    [HoaiAgentConsole]::FreeConsole() | Out-Null
+    exit 4
+  }
   if ($console -ne [IntPtr]::Zero -and [HoaiAgentConsole]::IsWindowVisible($console)) {
     [HoaiAgentConsole]::ShowWindow($console, 0) | Out-Null
   }

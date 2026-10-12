@@ -88,6 +88,12 @@ test('viewer ps1 hide mode: hides the agent console window (SW_HIDE) only when a
   const calls = [...ps1Code.matchAll(/ShowWindow\(\$console, (\d+)\)/g)].map((m) => m[1])
   assert.deepEqual(calls, ['0'])
   assert.equal(/DestroyWindow|CloseWindow|WM_CLOSE/.test(ps1Code), false)
+  // A console Windows Terminal hosts (measured on the PC: the old cmd /k console went to Windows
+  // Terminal, and hiding its pseudo window left the terminal window on screen) is left untouched.
+  assert.match(ps1Code, /"PseudoConsoleWindow"/)
+  const hostedAt = hide.indexOf('HostedByTerminal($console)')
+  assert.ok(hostedAt >= 0 && hostedAt < hide.indexOf('ShowWindow($console, 0)'), 'checked before any ShowWindow')
+  assert.match(hide.slice(hostedAt, hide.indexOf('ShowWindow($console, 0)')), /exit 4/)
 })
 
 test('viewer vbs: runs the ps1 beside it with window style 0 and does not wait; it forwards its (digits only) arguments and adds nothing else', () => {

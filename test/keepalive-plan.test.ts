@@ -566,7 +566,7 @@ test('parseKeepAliveResponse: the owner setting and the computer switch arrive a
 })
 
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
-  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true }
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
   const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 23 * 60 * MIN))
   assert.deepEqual(decideKeepAliveConsent({ live, cache: null, now: NOW }), { ...live, source: 'live' })
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW }), { ...live, source: 'cache' })
@@ -578,7 +578,7 @@ test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache 
 })
 
 test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF even with a fresh cache; an outage, a 5xx or a 404 is not a refusal', () => {
-  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on', showAgentWindows: true }
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
   const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 60 * MIN))
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, source: 'refused' })
   for (const status of [401, 403]) assert.equal(isConsentRefusal(status), true, String(status))

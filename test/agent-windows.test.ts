@@ -347,6 +347,23 @@ test('runWindowsPass win32: a console a supervisor left on screen (the old minim
   assert.deepEqual(again.execs.filter((c) => c.args.includes('hide')), [])
 })
 
+test('runWindowsPass win32: a console Windows Terminal hosts is left as it is (the helper answers 4), said once in the log, never asked again', async () => {
+  const fs = winMachine({ '2': 202 })
+  const rows = [winRow('2', 'C:\\a\\recipe')]
+  const table = [proc(22, 1, 'cmd  /k ""C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs""'), proc(202, 22, '"C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs"')]
+  const fx = winEffects(table)
+  const exec = fx.exec
+  fx.exec = async (file: string, args: readonly string[]) => (args.includes('hide') ? (fx.execs.push({ file, args: [...args] }), { code: 4, stdout: '', stderr: '', error: null, timedOut: false }) : exec(file, args))
+  const logs: string[] = []
+  const out = await runWindowsPass({ ...winCtx(fx, fs, rows, false), log: (l: string) => logs.push(l) } as any)
+  assert.equal(fx.execs.filter((c) => c.args.includes('hide')).length, 1)
+  assert.ok(logs.some((l) => l.includes('not hidden: Windows Terminal hosts it')), logs.join('\n'))
+  assertAgentUntouched(fx, [202])
+  const again = winEffects(table)
+  await runWindowsPass(winCtx(again, fs, rows, false, out.memory) as any)
+  assert.deepEqual(again.execs, [])
+})
+
 test('runWindowsPass win32: an unreadable process table opens nothing (a second viewer could not be ruled out) and is said as open_failed', async () => {
   const fs = winMachine({ '912': 4242 })
   const fx = winEffects([])
