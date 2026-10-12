@@ -126,6 +126,20 @@ test('on windows the system folders pass, matched whatever their case', () => {
   assert.deepEqual(Object.keys(out).sort(), ['LOCALAPPDATA', 'Path', 'ProgramFiles(x86)', 'SystemRoot', 'USERPROFILE'])
 })
 
+test('the OneDrive folders reach the host, whose kept downloads guard refuses them, and never Chrome', () => {
+  // HOAI board row 67562770: a kept download must never sit in a synced
+  // folder, and only these variables say where OneDrive is (a business
+  // folder is "OneDrive - <Org>", which no fixed path under the home finds).
+  const win = { Path: 'C:\\Windows', USERPROFILE: 'C:\\Users\\kc', OneDrive: 'C:\\Users\\kc\\OneDrive', OneDriveConsumer: 'C:\\Users\\kc\\OneDrive', OneDriveCommercial: 'D:\\OneDrive - Org', GH_PAT: 'marker' }
+  const host = hostEnv(win, { platform: 'win32' })
+  for (const name of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']) {
+    assert.equal(host[name], (win as Record<string, string>)[name], `the host gets ${name}`)
+    assert.ok(!(name in chromeEnv(win, { platform: 'win32' })), `Chrome never gets ${name}`)
+    assert.ok(!(name in chromeEnv(host, { platform: 'win32' })), `nor through the host, ${name}`)
+  }
+  assert.ok(!('GH_PAT' in host))
+})
+
 test('the locale family is exactly LC_ followed by letters: every near miss stays out, the real categories pass', () => {
   const mustPass = ['LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_TIME', 'LC_NUMERIC', 'LC_COLLATE', 'LC_MONETARY', 'LC_PAPER']
   const mustNot = ['LD_PRELOAD', 'LD_LIBRARY_PATH', 'LD_AUDIT', 'LC_', 'LC', 'LCALL', 'LC_1', 'LC_ALL1', 'LC__ALL', 'LC_ALL_X', 'XLC_ALL', 'L_ALL', 'LANG_OVERRIDE', 'LOGNAMEX', 'LESSOPEN', 'LDFLAGS']
