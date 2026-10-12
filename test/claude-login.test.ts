@@ -222,7 +222,7 @@ test('server.ts wires it: a 30s sweep, an immediate beat on a change, the env pr
     /function sweepClaudeLogin\(\)[\s\S]{0,600}?if \(code !== reportedAccountCode\)[\s\S]{0,300}?versionHeartbeat\?\.sendNow\(\)/,
     'a changed code must be sent at once: the next regular beat is six hours away',
   )
-  assert.match(src, /new ClaudeLoginWatcher\(LAUNCH_CWD, CLAUDE_CONFIG_DIR\)/, 'the same folder and config dir as the resting watcher')
+  assert.match(src, /new ClaudeLoginWatcher\(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR\)/, 'the same folder and config dir as the resting watcher')
   assert.match(src, /resting: observedResting/, 'the usage cap is the resting episode, never classified twice')
   assert.match(src, /claudeAccount: claudeAccountIdentity,/)
   assert.match(src, /onSignedIn: \(\) => \{\s*claudeLoginState = LOGIN_OK\s*sweepClaudeLogin\(\)/)
