@@ -1,8 +1,8 @@
 /**
  * DOWNLOADS IN THE AGENT'S OWN BROWSER, END TO END (HOAI board row 67562770).
  *
- * The host process is started with what the daemon's supervisor hands it
- * (node bin/hoai-browser-host.mjs, the pairing env, stdin as the stop),
+ * The host process is started as node bin/hoai-browser-host.mjs with the
+ * supervisor's pairing variables and stdin as the stop,
  * against a fake backend, with a real Chrome, and an agent clicks links on a
  * 127.0.0.1 page that answer with Content-Disposition: attachment. It keeps
  * the full environment, as the host end to end case in hoai-browser-host.test.ts

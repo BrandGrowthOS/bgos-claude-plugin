@@ -858,3 +858,83 @@ test('while the session runs, the held folder watcher adopts a file no download 
     s.done()
   }
 })
+
+// ── Second review pass ────────────────────────────────────────────────────────
+
+test("one session's watcher never takes another session's download, nor a file owed a delete", async () => {
+  const s = setup()
+  try {
+    // B is the live session: a finished download its owner is still deciding.
+    const d = fakeDownload(s.paths.held, { name: 'live.p8' })
+    s.slot.onDownload(d)
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    // A is a stale session on the same folder (a browser that failed to start).
+    const stale = new SlotDownloads({ store: s.store, key: 'owner', gates: s.gates, gateKey: 'stale', decide: () => ({ verdict: 'ask' }), choices: DOWNLOAD_CHOICES, heldPollMs: 10, unclaimedAfterMs: 20 })
+    stale.watch()
+    await new Promise((r) => setTimeout(r, 150))
+    stale.stop()
+    assert.ok(existsSync(d.final), 'the live download is still where its ask left it')
+    assert.equal(filesUnder(s.paths.kept).length, 0, 'not taken as an unnamed kept file')
+  } finally {
+    s.done()
+  }
+})
+
+test('the watcher never adopts, and never deletes, a held file while the folder guard does not hold', async () => {
+  let ok = true
+  const flaky = { ready: true, reason: null, prepare: async () => true, verify: () => ok }
+  const s = setup({ guard: flaky })
+  try {
+    mkdirSync(s.paths.held, { recursive: true })
+    const left = join(s.paths.held, randomUUID())
+    writeFileSync(left, 'left by a crash')
+    ok = false
+    s.slot.watch()
+    await new Promise((r) => setTimeout(r, 150))
+    assert.ok(existsSync(left), 'an unsafe folder never deletes a held file')
+    assert.equal(s.downloadCards().length, 0)
+  } finally {
+    s.done()
+  }
+})
+
+test('a Deny is written down as owed a delete BEFORE the transfer is cancelled', async () => {
+  const s = setup()
+  try {
+    const d = fakeDownload(s.paths.held, { name: 'slowcancel.p8' })
+    const cancel = d.cancel
+    d.cancel = async () => {
+      await new Promise((r) => setTimeout(r, 400))
+      return cancel()
+    }
+    s.slot.onDownload(d)
+    await until(() => s.downloadCards().length === 1, () => 'asked')
+    s.srv.answer(String(s.downloadCards()[0]!.gateId), 'deny')
+    await until(() => /your owner said no/.test(status(s)), () => status(s))
+    const index = JSON.parse(readFileSync(s.paths.index, 'utf8'))
+    assert.equal(index.records.find((r: any) => r.fileName === 'slowcancel.p8')?.state, 'doomed', 'a crash during the cancel still deletes it at the next start')
+  } finally {
+    s.done()
+  }
+})
+
+test('the folder guard under a service account: its alias (SY) is the user, never removed', async () => {
+  const runs: string[][] = []
+  const files = new Map<string, Buffer>()
+  const guard = new KeptFolderGuard({
+    dir: 'C:\\Windows\\System32\\config\\systemprofile\\.bgos-agent\\900\\browser-downloads',
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    home: 'C:\\Windows\\System32\\config\\systemprofile',
+    run: async (file: string, args: string[]) => {
+      runs.push([file.split('\\').pop()!, ...args])
+      if (/whoami/i.test(file)) return { stdout: '"nt authority\\\\system","S-1-5-18"\r\n' }
+      if (/reg\.exe/i.test(file)) throw new Error('value not found')
+      if (args.includes('/save')) files.set(args[2]!, Buffer.from('\uFEFFbrowser-downloads\r\nD:PAI(A;OICI;FA;;;SY)\r\n', 'utf16le'))
+      return { stdout: '' }
+    },
+    fsImpl: { mkdirSync: () => {}, lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false, dev: 1, ino: 2 }), realpathSync: { native: (p: string) => p }, readFileSync: (p: string) => files.get(p)!, unlinkSync: () => {} } as any,
+  })
+  assert.equal(await guard.prepare(), true, `${guard.reason} ${guard.readBack}`)
+  assert.ok(!runs.some((r) => r.includes('/remove:g')), 'nothing removed: the one entry is the user')
+})

@@ -1327,7 +1327,17 @@ export class BrowserPool {
             void this._stopSlot(slot).catch(() => {})
             this._log(`the browser on ${paths.profileDir} went away; the next call reopens it`)
           }
-          await engine.start()
+          try {
+            await engine.start()
+          } catch (err) {
+            try {
+              engine.onStartFailed?.()
+            } catch {}
+            throw err
+          }
+          try {
+            engine.onStarted?.()
+          } catch {}
           slot.engine = engine
           slot.openedAt = new Date().toISOString()
           return engine
@@ -1520,8 +1530,12 @@ export class BrowserHostCore {
       originOf: (url) => policy.originOf(url),
       log: this._log,
     })
+    // A session replaced (a browser that failed to start, or one gone) never
+    // watches again; the new one watches only once its browser has started.
+    slot.downloads?.stop()
     slot.downloads = downloads
-    downloads.watch()
+    engine.onStarted = () => downloads.watch()
+    engine.onStartFailed = () => downloads.stop()
     engine.downloadGuard = store.guard
     engine.downloadsReady = store.ready
     engine.onDownload = (download) => downloads.onDownload(download)
@@ -1642,8 +1656,8 @@ export class BrowserHostCore {
     // wait comes out of this call's own budget: the relay cuts a call at
     // 120 s, and an Allow landing after that cut would run unseen.
     const queuedAt = Date.now()
-    await this._behindDownloadAsk(ctx)
-    const attachMs = Math.max(0, GATE_ATTACH_MS - (Date.now() - queuedAt))
+    const waited = await this._behindDownloadAsk(ctx)
+    const attachMs = waited ? Math.max(0, GATE_ATTACH_MS - (Date.now() - queuedAt)) : GATE_ATTACH_MS
     const raised = await this.gates.raise({
       key: this.pool.slotKey(ctx),
       assistantId: ctx.assistantId,
@@ -1676,14 +1690,17 @@ export class BrowserHostCore {
   async _behindDownloadAsk(ctx) {
     const key = this.pool.slotKey(ctx)
     const until = Date.now() + GATE_ATTACH_MS - DOWNLOAD_WAIT_MARGIN_MS
+    let waited = false
     for (let i = 0; i < 3; i++) {
       const open = this.gates.pending(key)
       const left = until - Date.now()
-      if (!open || left <= 0 || !this._downloadForGate(ctx, open.gateId)) return
+      if (!open || left <= 0 || !this._downloadForGate(ctx, open.gateId)) return waited
+      waited = true
       let timer
       await Promise.race([this.gates.whenIdle(key), new Promise((r) => (timer = setTimeout(r, left)))])
       clearTimeout(timer)
     }
+    return waited
   }
 
   /** This browser's grants, seeded once from the saved settings: the tool gates and the download ask read the same. */

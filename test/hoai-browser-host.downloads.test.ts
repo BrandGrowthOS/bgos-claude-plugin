@@ -243,3 +243,32 @@ test('a site the owner trusts covers its downloads from the first one, before an
     s.done()
   }
 })
+
+test('a browser that fails to start leaves no download watcher behind; the next start gets its own', async () => {
+  const s = setup()
+  try {
+    let fail = true
+    const create = (s.pool as any)._createEngine
+    ;(s.pool as any)._createEngine = async (o: any) => {
+      const engine = await create(o)
+      const start = engine.start.bind(engine)
+      engine.start = async () => {
+        if (fail) throw new Error('chrome did not start')
+        return start()
+      }
+      return engine
+    }
+    await assert.rejects(s.call('hoai_browser_open_session', { purpose: 'x' }).then((r) => { if (r.isError) throw new Error(r.text) }))
+    const slot = (s.pool as any)._slots.values().next().value
+    const first = slot.downloads
+    assert.ok(first, 'the first session had its downloads bound')
+    assert.equal(first._timer, null, 'its watcher is not running after the failed start')
+    fail = false
+    await s.call('hoai_browser_open_session', { purpose: 'x' })
+    assert.notEqual(slot.downloads, first)
+    assert.equal(first._timer, null, 'and the replaced one never starts')
+    assert.notEqual(slot.downloads._timer, null, 'the live session watches its folder')
+  } finally {
+    s.done()
+  }
+})
