@@ -55,6 +55,7 @@ import {
   readSync,
   closeSync,
   fstatSync,
+  realpathSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -195,6 +196,34 @@ export function resolveBinding(args: {
     return { name: recent[0]!.name, source: 'newest-mtime' }
   }
   return null
+}
+
+/**
+ * The folder Claude Code names this session's project by.
+ *
+ * The CLI takes `fs.realpathSync(process.cwd())` when it starts (its
+ * originalCwd) and names everything about the session from it: the transcript
+ * under <config dir>/projects/<that folder, munged>, a hook payload's cwd and
+ * transcript_path, and the CLAUDE_PROJECT_DIR it hands this server. This
+ * process gets the CLI's cwd as SPELLED: bin/bgos-launch.mjs passes its own
+ * process.cwd() on as BGOS_LAUNCH_CWD. On macOS and Linux getcwd() is already
+ * the real folder. On Windows it is not: a folder reached through a junction
+ * or a symlink keeps that spelling, the munged name named a projects folder
+ * the CLI never writes, and the hook intake refused every event of the
+ * agent's own session as foreign-project, so no private turn was ever adopted
+ * (Windows, 0.67.2: boards, schedule and browser refused on every call).
+ *
+ * The same call as the CLI, never `.native`: the CLI's realpathSync keeps an
+ * 8.3 short name and the drive letter's case as spelled, and a name that
+ * differs from its own is the bug. A folder that cannot be resolved is used as
+ * given, which is what the CLI does too.
+ */
+export function claudeProjectCwd(launchCwd: string): string {
+  try {
+    return realpathSync(launchCwd)
+  } catch {
+    return launchCwd
+  }
 }
 
 /** Reply markers kept for scanning (newest first). */

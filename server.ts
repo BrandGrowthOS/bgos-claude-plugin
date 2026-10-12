@@ -111,7 +111,7 @@ import {
   normalizeExportPackManifest,
 } from './lib/export-pack.js'
 import { UsageTracker } from './lib/usage-report.js'
-import { SessionTranscriptBinder } from './lib/session-binding.js'
+import { SessionTranscriptBinder, claudeProjectCwd } from './lib/session-binding.js'
 import { AgentSessionLibrary } from './lib/session-library.js'
 import {
   resolveTmuxTarget,
@@ -644,6 +644,13 @@ const LAUNCH_CWD = process.env.BGOS_LAUNCH_CWD?.trim() || process.cwd()
 // spelling, and the hook intake refused the agent's OWN events as
 // foreign-project (lib/hook-intake.ts isUnderDir).
 const CLAUDE_CONFIG_DIR = pathResolve(LAUNCH_CWD, claudeConfigDir({ env: process.env, home: homedir() }))
+// The folder the CLI names its transcripts and hook payloads by: its own
+// realpath of the folder it runs in. On Windows LAUNCH_CWD keeps a junction's
+// or a symlink's spelling, and a projects folder built from that is one the
+// CLI never writes (lib/session-binding.ts claudeProjectCwd). The readers that
+// follow the CLI's transcripts use it; the agent folder is still LAUNCH_CWD
+// (and so, for now, are the memory folder and the session pin keeper).
+const CLAUDE_PROJECT_CWD = claudeProjectCwd(LAUNCH_CWD)
 
 const CREDENTIALS_SELECTION = resolveCredentialsSelection({
   env: process.env,
@@ -1205,11 +1212,12 @@ async function bgosGetCachedOn304(path: string): Promise<unknown> {
 // BGOS_USAGE_BILLING_MODE=api for API-key-billed sessions (default:
 // subscription, the Claude Max plan: tokens only, never dollars).
 // The transcripts are the binder's (sessionBinder below explains): the folder
-// claude runs in, LAUNCH_CWD, under the CLI config dir. Built from
+// claude runs in, resolved as the CLI resolves it (CLAUDE_PROJECT_CWD), under
+// the CLI config dir. Built from
 // process.cwd() under a fixed ~/.claude, a marketplace install (cwd is the
 // plugin cache) or a custom CLAUDE_CONFIG_DIR read an empty project dir and
 // no reply ever carried a token count.
-const usageTracker = new UsageTracker(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
+const usageTracker = new UsageTracker(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR)
 
 // ── Capability bootstrap (served canon) ──────────────────────────────────────
 // Fetched once at connect and cached; exposed to the agent via the
@@ -1472,13 +1480,15 @@ async function bgosDelete(path: string): Promise<unknown> {
 //
 // The transcripts live where the CLI writes them: <config dir>/projects/
 // <munged folder claude runs in>. That folder is LAUNCH_CWD, never this
-// process's cwd (a marketplace install runs it in the plugin cache), and the
+// process's cwd (a marketplace install runs it in the plugin cache), resolved
+// the way the CLI resolves it (CLAUDE_PROJECT_CWD: a Windows junction kept its
+// spelling in LAUNCH_CWD and every event was refused, 0.67.5), and the
 // config dir moves with CLAUDE_CONFIG_DIR. Built from the cwd under a fixed
 // ~/.claude, the binder named a project dir no transcript of this agent lives
 // in, so the hook intake refused the agent's OWN events as foreign-project:
 // hookTurnLive never set, agent-state.json reported no turn in flight (design
 // section 6) and the session pin was never written (section 4).
-const sessionBinder = new SessionTranscriptBinder(LAUNCH_CWD, {
+const sessionBinder = new SessionTranscriptBinder(CLAUDE_PROJECT_CWD, {
   claudeHome: CLAUDE_CONFIG_DIR,
   envSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null,
   log,
@@ -1518,7 +1528,7 @@ function reportContextPct(): void {
 // Same transcripts, same folder and config dir as the binder above: from the
 // relocated cwd a usage cap the agent hit was never seen, so it was never
 // reported as resting.
-const restingWatcher = new RestingWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
+const restingWatcher = new RestingWatcher(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR)
 let observedResting: RestingEpisode | null = null
 let emittedResting: RestingEpisode | null = null
 // Single-flight: a hung PATCH (no fetch timeout) must not let later 30s
@@ -1570,7 +1580,7 @@ function reportResting(): void {
 // episode) and the backend says it once per machine. The heartbeat is sent at
 // once when the reported code changes, because the next regular beat is six
 // hours away.
-const claudeLoginWatcher = new ClaudeLoginWatcher(LAUNCH_CWD, CLAUDE_CONFIG_DIR)
+const claudeLoginWatcher = new ClaudeLoginWatcher(CLAUDE_PROJECT_CWD, CLAUDE_CONFIG_DIR)
 let claudeLoginState: ClaudeLoginState = LOGIN_OK
 let reportedAccountCode: string | null = null
 function currentAccountError(now: number): { code: string; message: string; at: string } | null {
