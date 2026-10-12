@@ -506,9 +506,11 @@ import {
   isAutoUpdateEnabled,
   isUpdateLockHeld,
   loadAutoUpdateState,
+  decideToolAdmission,
   loadSharedUpdateSafety,
   MessageActivityTracker,
   resolveAutoUpdateStatePath,
+  UPDATE_STALE_WORK_MS,
   type SelfUpdater,
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
@@ -5345,7 +5347,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
     return Promise.resolve({ content: [{ type: 'text' as const, text: 'ok' }] })
   }
-  if (updateDrainMode) {
+  // A pending update only DEFERS the restart (HOAI product board row a741d98b,
+  // Pylon 929, 2026-10-11: a staged update refused every tool for as long as it
+  // waited for work to finish, and that work was waiting on a send). A call is
+  // admitted while the daemon is merely waiting for in-flight work; it is
+  // refused only once the daemon is drained and the restart is committed.
+  if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {
     return Promise.resolve({
       content: [
         {
@@ -11855,9 +11862,18 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 // request held every inbound message for up to the whole wait while the owner
 // pressed a button that did nothing.
 function updateDrainSnapshot() {
+  // Only work that is not wedged or abandoned counts (UPDATE_STALE_WORK_MS): a
+  // queued wake delivery nobody read, or a reply owed to a conversation that
+  // moved on, must not hold an update off for ever. The agent state the
+  // watcher reads keeps the raw counts (it publishes them separately).
+  const nowMs = Date.now()
+  let freshInbounds = 0
+  for (const pending of pendingInbounds.values()) {
+    if (nowMs - pending.ts < UPDATE_STALE_WORK_MS) freshInbounds += 1
+  }
   return {
-    activeOperations: messageActivity.activeOperations,
-    pendingMessages: pendingInbounds.size,
+    activeOperations: messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS),
+    pendingMessages: freshInbounds,
     pendingPermissions: pendingPermissions.size,
   }
 }
@@ -14673,11 +14689,7 @@ async function main(): Promise<void> {
     env: process.env,
     runningVersion: readOwnVersion(import.meta.dir),
     log,
-    drainSnapshot: () => ({
-      activeOperations: messageActivity.activeOperations,
-      pendingMessages: pendingInbounds.size,
-      pendingPermissions: pendingPermissions.size,
-    }),
+    drainSnapshot: updateDrainSnapshot,
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
     // The nightly update asks the SAME ladder the clicked one uses (KC,

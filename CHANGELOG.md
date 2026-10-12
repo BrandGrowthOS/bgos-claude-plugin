@@ -2,6 +2,15 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.4 (2026-10-13)
+
+**A staged auto-update no longer blocks sends and can no longer wait for ever (HOAI product board row a741d98b, Pylon 929, 2026-10-11).** On 0.68.2 a scheduled update closed intake and then refused every tool call with "restarting for an update" for as long as it waited for in-flight work to finish, and that wait was unbounded: with one operation wedged (a wake delivery nobody read), the daemon sat muted until it was killed.
+
+- **A pending update only defers the restart.** The scheduled path now waits for a quiet moment WITHOUT closing intake or refusing a tool call. Intake closes only once nothing is in flight, and if a message lands in that instant the update yields (bounded by the triggered path's 45 s) and intake reopens.
+- **A ceiling on the scheduled wait** (`UPDATE_SCHEDULED_QUIET_CEILING_MS`, 15 min). A daemon that never goes quiet keeps serving and retries in 30 minutes (`UPDATE_BUSY_RETRY_MS`) instead of at the next daily check.
+- **A tool call is admitted while the update is only waiting** (`decideToolAdmission`): a send is exactly the in-flight work finishing. It is refused only once the daemon is drained and the restart is committed.
+- **Stale work is not work.** An in-flight operation or an unanswered inbound older than 30 minutes (`UPDATE_STALE_WORK_MS`) no longer holds a drain open; the agent state the watcher reads still carries the raw counts.
+
 ## 0.68.2 (2026-10-12)
 
 **An email reaches the agent as a stranger's words, never as the owner (agent email, HOAI board row 2dd04488, piece P2: the plugin).** The backend delivers an email to an agent as a row of the agent's email chat: sender `user`, no sender user id, `fromAgent {name: 'Email', type: 'external_email'}`, and `senderType: 'external_email'` on the socket and the history route. This plugin knew no such sender: every lane delivered it as a plain user turn, with `user="User"` and the owner's id as `user_id` (the owner fallback); an email stamped `slash_command` ran `/status` on the socket lane, and a `yes <code>` email was swallowed as a permission answer on the poll and stream lanes.

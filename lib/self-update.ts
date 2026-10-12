@@ -29,6 +29,22 @@ export const UPDATE_LOCK_STALE_MS = 10 * 60 * 1000
  *  marketplace installs proceed (lib/update-rpc.ts), because the install
  *  lands in a different directory and the running code is in memory. */
 export const UPDATE_DRAIN_TIMEOUT_MS = 45_000
+/** How long a SCHEDULED update waits for a quiet moment before it gives up for
+ *  now. It used to wait for ever (HOAI product board row a741d98b, Pylon 929,
+ *  2026-10-11: a staged update waited on a wedged operation, with intake closed
+ *  and every send refused, for as long as the daemon lived). The wait does NOT
+ *  close intake or refuse a tool call: a pending update only defers the
+ *  restart. Longer than a person's longest approval wait (30 min is the card
+ *  expiry) would be the old outage again; 15 min covers the ordinary turn. */
+export const UPDATE_SCHEDULED_QUIET_CEILING_MS = 15 * 60 * 1000
+/** After a scheduled update gave up because the daemon never went quiet, the
+ *  next attempt is this soon, not at the next daily check. */
+export const UPDATE_BUSY_RETRY_MS = 30 * 60 * 1000
+/** An in-flight operation, or an unanswered inbound, older than this is not
+ *  work a drain should wait for: it is wedged or abandoned (a queued wake
+ *  delivery nobody read, a reply owed to a conversation that moved on). The
+ *  longest legitimate wait is an owner's approval card, 30 min. */
+export const UPDATE_STALE_WORK_MS = 30 * 60 * 1000
 
 const REMOTE_REF = 'refs/remotes/origin/main'
 const SHA_RE = /^[0-9a-f]{40}$/i
@@ -211,6 +227,20 @@ export function decideDrain(snapshot: DrainSnapshot): 'ready' | 'wait' {
     : 'wait'
 }
 
+/**
+ * May a tool call run right now? A pending update only DEFERS the restart, so
+ * a call is admitted while the daemon is merely waiting for work to finish (a
+ * send IS that work finishing). It is refused only once the daemon is drained
+ * and the restart is committed: drain mode on and nothing left in flight.
+ */
+export function decideToolAdmission(input: {
+  drainMode: boolean
+  snapshot: DrainSnapshot
+}): 'admit' | 'refuse' {
+  if (!input.drainMode) return 'admit'
+  return decideDrain(input.snapshot) === 'ready' ? 'refuse' : 'admit'
+}
+
 export type DrainWaitDecision = 'ready' | 'wait' | 'timeout'
 
 /** The bounded drain decision, table-testable: ready beats everything (a
@@ -231,16 +261,30 @@ export function decideDrainWait(input: {
 
 export class MessageActivityTracker {
   private activeCount = 0
+  private readonly startedAt = new Map<symbol, number>()
 
   get activeOperations(): number {
     return this.activeCount
   }
 
+  /** The in-flight operations that started within `staleAfterMs` of `nowMs`.
+   *  An older one is wedged or abandoned and is not work a drain waits for. */
+  freshOperations(nowMs: number, staleAfterMs: number): number {
+    let fresh = 0
+    for (const started of this.startedAt.values()) {
+      if (nowMs - started < staleAfterMs) fresh += 1
+    }
+    return fresh
+  }
+
   async track<T>(operation: () => Promise<T>): Promise<T> {
     this.activeCount += 1
+    const key = Symbol('operation')
+    this.startedAt.set(key, Date.now())
     try {
       return await operation()
     } finally {
+      this.startedAt.delete(key)
       this.activeCount -= 1
     }
   }
@@ -897,6 +941,7 @@ type ApplyUpdateOutcome =
   | 'skipped-dirty'
   | 'skipped-not-ff'
   | 'skipped-target-mismatch'
+  | 'skipped-busy'
   | 'failed-latched'
 
 export interface SelfUpdaterOptions {
@@ -953,6 +998,9 @@ export class SelfUpdater {
   private started = false
   private healthyTimer: ReturnType<typeof setTimeout> | null = null
   private lastInspectedVersion: string | null = null
+  /** Set by a scheduled update that gave up because the daemon never went quiet,
+   *  so the next check is soon and not at the daily interval. Cleared on use. */
+  private nextCheckDelayOverrideMs: number | null = null
 
   constructor(
     private readonly opts: SelfUpdaterOptions,
@@ -1034,7 +1082,8 @@ export class SelfUpdater {
 
   private scheduleNext(): void {
     if (this.exiting) return
-    const delayMs = nextUpdateCheckDelayMs(this.random())
+    const delayMs = this.nextCheckDelayOverrideMs ?? nextUpdateCheckDelayMs(this.random())
+    this.nextCheckDelayOverrideMs = null
     const timer = this.schedule(() => void this.checkNow(), delayMs)
     timer.unref?.()
   }
@@ -1127,7 +1176,8 @@ export class SelfUpdater {
         this.opts.log('Auto-update skipped because the checkout cannot fast-forward to origin/main.')
         return
       }
-      await this.applyUpdate(inspection)
+      const applied = await this.applyUpdate(inspection)
+      if (applied === 'skipped-busy') this.nextCheckDelayOverrideMs = UPDATE_BUSY_RETRY_MS
     } catch (error) {
       this.opts.log(`Auto-update check failed and the daemon will continue: ${errorText(error)}`)
       this.opts.setDrainMode(false)
@@ -1249,6 +1299,40 @@ export class SelfUpdater {
     }
   }
 
+  /**
+   * The SCHEDULED path's wait: for a moment with nothing in flight, WITHOUT
+   * closing intake or refusing a send while it waits (a pending update only
+   * defers the restart). Bounded by `ceilingMs`. At a quiet moment intake is
+   * closed and the snapshot is read once more, with the triggered path's own
+   * short bound, because a message can land in the instant between the two:
+   * if it does, the update yields and intake reopens.
+   * @returns 'ready' with intake closed, or 'timeout' with intake open.
+   */
+  private async waitForQuietMoment(ceilingMs: number): Promise<'ready' | 'timeout'> {
+    const startedAt = this.now()
+    let logged = false
+    while (true) {
+      const decision = decideDrainWait({
+        startedAt,
+        now: this.now(),
+        timeoutMs: ceilingMs,
+        snapshot: this.opts.drainSnapshot(),
+      })
+      if (decision === 'timeout') return 'timeout'
+      if (decision === 'ready') break
+      if (!logged) {
+        this.opts.log('Auto-update is waiting for a quiet moment; messages and tool calls keep flowing meanwhile.')
+        logged = true
+      }
+      await this.delay(UPDATE_DRAIN_POLL_MS)
+    }
+    if ((await this.waitForDrain(UPDATE_DRAIN_TIMEOUT_MS)) === 'timeout') {
+      this.opts.setDrainMode(false)
+      return 'timeout'
+    }
+    return 'ready'
+  }
+
   private recordInstalled(targetCommit: string, targetVersion: string): void {
     const transition = transitionRollbackState(this.state, {
       kind: 'update-installed',
@@ -1343,7 +1427,21 @@ export class SelfUpdater {
     inspection: Extract<GitUpdateInspection, { kind: 'checked' }>,
     mode: 'scheduled' | 'triggered' = 'scheduled',
   ): Promise<ApplyUpdateOutcome> {
-    await this.waitForDrain()
+    if (mode === 'scheduled') {
+      // Bounded, and open while it waits: a daemon that never goes quiet keeps
+      // serving and tries again soon, instead of sitting muted for good.
+      if ((await this.waitForQuietMoment(UPDATE_SCHEDULED_QUIET_CEILING_MS)) === 'timeout') {
+        this.opts.log(
+          'Auto-update: this daemon was not quiet within ' +
+            `${Math.round(UPDATE_SCHEDULED_QUIET_CEILING_MS / 60_000)} minutes; ` +
+            `it keeps serving and will retry in ${Math.round(UPDATE_BUSY_RETRY_MS / 60_000)} minutes.`,
+        )
+        return 'skipped-busy'
+      }
+    } else {
+      // Triggered: the caller already drained (waitForDrain with its own bound).
+      await this.waitForDrain()
+    }
     const lock = tryAcquireUpdateLock(this.lockPath, this.now())
     if (lock.kind === 'held') {
       this.opts.log('Auto-update is being applied by another daemon. Waiting for it to finish.')

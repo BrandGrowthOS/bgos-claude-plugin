@@ -91,7 +91,9 @@ test('the channel_ack handler marks liveness, records the marker, answers ok, an
   assert.ok(body.includes('channelLiveness.markToolCall()'), body)
   assert.ok(body.includes('recordLiveMarker(LIVE_MARKER_PATH'), body)
   assert.ok(body.includes("text: 'ok'"), body)
-  const drainGate = callTool.indexOf('if (updateDrainMode) {')
+  // The drain gate is decideToolAdmission now (a pending update only defers the restart), but the
+  // ack must still answer before it, even while an update drains intake.
+  const drainGate = callTool.indexOf('decideToolAdmission({')
   assert.ok(drainGate !== -1 && ack < drainGate, 'the ack must answer even while an update drains intake')
   const tracked = callTool.indexOf('return trackMessageOperation(')
   assert.ok(tracked !== -1 && ack < tracked, 'the ack is not a tracked message operation (it must never block a drain)')
