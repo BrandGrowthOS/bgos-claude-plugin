@@ -6,6 +6,7 @@ import { startHookIntake } from '../lib/hook-intake.js'
 import { mkdtempSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { privatePromptHash } from '../lib/private-turn.mjs'
 import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, privateActor, privateContextPath, privateMarkerPath, publishPrivateContext, readPrivateJson, requirePrivateTurn, writePrivateJson } from '../lib/private-turn.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
@@ -311,4 +312,39 @@ test('a subagent may use private tools only inside the turn that started it', (t
   assert.equal(call(browser, 'agent-b').status, 0)
   recordPrivateBoundary({ hook_event_name: 'Stop', session_id: 's', cwd: f.cwd }, f.env)
   assert.equal(call(browser, 'agent-b').status, 2)
+})
+
+// KC 2026-10-12: a peer agent's request is never a verified sender, and the refusal is COUNTED so the delegation
+// question can be decided on numbers (docs/proposals/peer-delegation-private-tools.md). The tracker remembers which
+// peer behind the turn, apart from the actor, and never lets it satisfy the gate.
+test('a peer turn is remembered for counting and still has no actor: the gate stays closed', () => {
+  let n = 0
+  const tracker = createPrivateTurnTracker({ randomId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}` })
+  const content = tracker.deliver({ content: 'please add a card', actingUserId: null, chatId: '5', peerSourceAssistantId: 888 })
+  const token = /id="([^"]+)"/.exec(content)![1]
+  tracker.begin({ prompt: content, sessionId: 's1' })
+  assert.deepEqual(tracker.peerTurn(), { sourceAssistantId: '888', chatId: '5' })
+  // Even with a live marker the hook wrote for exactly this prompt and session, a peer turn is no verified sender.
+  const root = mkdtempSync(join(tmpdir(), 'peer-turn-'))
+  const markerPath = privateMarkerPath(root, 'k')
+  writePrivateJson(markerPath, { schemaVersion: 1, turnId: 't1', sessionId: 's1', promptHash: privatePromptHash(content), live: true })
+  assert.equal(tracker.current({ markerPaths: [markerPath] }), null)
+  assert.throws(() => requirePrivateTurn(tracker, [markerPath], 'user_owner'), /could not be verified/)
+  assert.ok(token)
+  tracker.end()
+  assert.equal(tracker.peerTurn(), null)
+})
+
+test('a human turn, a scheduler card and the next prompt are not peer turns', () => {
+  let n = 0
+  const tracker = createPrivateTurnTracker({ randomId: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}` })
+  const human = tracker.deliver({ content: 'hello', actingUserId: 'user_owner', chatId: '1' })
+  tracker.begin({ prompt: human, sessionId: 's1' })
+  assert.equal(tracker.peerTurn(), null)
+  const peer = tracker.deliver({ content: 'from a peer', actingUserId: null, chatId: '2', peerSourceAssistantId: 910 })
+  tracker.begin({ prompt: peer, sessionId: 's1' })
+  assert.equal(tracker.peerTurn()?.sourceAssistantId, '910')
+  const next = tracker.deliver({ content: 'back to the owner', actingUserId: 'user_owner', chatId: '1' })
+  tracker.begin({ prompt: next, sessionId: 's1' })
+  assert.equal(tracker.peerTurn(), null, 'the next prompt clears it')
 })

@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.6 (2026-10-12)
+
+**A refused private call on a peer agent's turn is now counted.** A request that arrives from another agent is never a verified sender, so boards, schedule and browser calls on such a turn refuse (since 0.67.0, and correctly). KC asked to see the impact before deciding whether an owner-set delegation should let a trusted agent's request through (`docs/proposals/peer-delegation-private-tools.md`). Each such refusal now logs one line (`peer private call refused: tool=... delegate=... target=... today=N`) and adds to a per-day file `peer-private-refusals.json` beside the daemon's state, per delegate and tool, 30 days kept. Ids and the tool's name only; no message text, no arguments, no board or chat names. The refusal itself is unchanged: the turn tracker remembers the peer behind a turn apart from the actor, and that never satisfies the gate.
+
 ## 0.67.5 (2026-10-12)
 
 **Boards, schedule and browser tools no longer refuse every call on a Windows agent whose folder is reached through a link.** Claude Code names a session by `fs.realpathSync(process.cwd())`: the transcript under `<config dir>/projects/<folder>`, the hook payload's `cwd` and `transcript_path`, and the `CLAUDE_PROJECT_DIR` it hands its MCP servers. The daemon gets the CLI's cwd as spelled (`bin/bgos-launch.mjs` passes its `process.cwd()` on as `BGOS_LAUNCH_CWD`). On macOS and Linux `getcwd()` already returns the real folder. On Windows a junction or a symlink keeps its spelling, so the daemon looked for the session under a projects folder the CLI never writes, the hook intake refused every event of the agent's own session (`hook intake: ignoring session <id> (foreign-project)` in the daemon log), `privateTurns.begin()` never ran, no `.ready` receipt was written and `browser-turn.json` kept `turnId: null`. The private turn hook still wrote its marker, because it also finds the folder through `CLAUDE_PROJECT_DIR`. Reproduced on Windows with the real daemon, the real hooks and a fake backend; the same layout behind a symlink adopts on Linux.

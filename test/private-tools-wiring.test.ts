@@ -89,3 +89,28 @@ test('with no private turn hook registered the call is still refused, and says w
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /hook missing/)
 })
+
+test('a refused private call on a peer turn is counted with the tool name and the peer id, and is still refused', async () => {
+  const recorded: Array<Record<string, unknown>> = []
+  const logs: string[] = []
+  const run = (peer: { sourceAssistantId: string } | null) =>
+    execute(admissionSource + '\nreturn privateCall;', {
+      req: { params: { name: 'boards_query' } }, lockHeld: true, USER_ID: 'user_owner', PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
+      privateTurns: { peerTurn: () => peer },
+      requirePrivateTurn: () => { throw new Error('private action did not start') },
+      recordPeerRefusal: (input: Record<string, unknown>) => { recorded.push(input); return { line: 'peer private call refused' } },
+      log: (line: string) => logs.push(line),
+      pathDirname: () => '/state/1050', CURSOR_FILE_PATH: '/state/1050/cursor.json', ASSISTANT_ID: 1050,
+    })
+  const refused = await run({ sourceAssistantId: '888' })
+  assert.equal(refused.isError, true)
+  assert.match(refused.content[0].text, /did not start/)
+  assert.deepEqual(recorded, [{ dir: '/state/1050', tool: 'boards_query', delegate: '888', target: 1050 }])
+  assert.deepEqual(logs, ['peer private call refused'])
+
+  // A human turn that is refused is not a peer refusal: nothing is counted.
+  recorded.length = 0
+  const human = await run(null)
+  assert.equal(human.isError, true)
+  assert.deepEqual(recorded, [])
+})
