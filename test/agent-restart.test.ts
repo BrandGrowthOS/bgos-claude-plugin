@@ -2,8 +2,10 @@
  * lib/agent-restart.mjs: restart one agent through the strongest authority
  * it has (design 1.5 / 7.4): a live hoai supervisor -> the restart marker; a
  * per-agent service -> launchctl kickstart -k / systemctl --user restart; a
- * validated launch recipe -> relaunch hoai-core in the recipe cwd under a pty
- * (tmux, script) or a visible terminal / console; nothing -> named as manual.
+ * validated launch recipe -> relaunch hoai-core in the recipe cwd, HIDDEN: under a
+ * pty (tmux, script) on posix, in a style 0 console started by wscript on win32,
+ * never a visible terminal or console (board row d133ddb2); nothing -> named as
+ * manual.
  * Every argv is pinned per platform and mechanism, and NO mechanism ever
  * passes --resume / --continue / --session-id or a session id (hoai-core
  * resumes the agent's OWN pinned session by itself; landmine 3).
@@ -15,7 +17,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  HIDDEN_LAUNCHER_FILE_NAME,
   RESTART_EXEC_TIMEOUT_MS,
+  hiddenLauncherVbs,
   hoaiCorePath,
   recipeLaunchCommand,
   restartAgent,
@@ -91,7 +95,6 @@ const BASE_DEPS = {
   env: {},
   now: () => 1_700_000_000_000,
   uid: 501,
-  comspec: 'C:\\Windows\\System32\\cmd.exe',
 }
 
 // -- pure builders --------------------------------------------------------------------
@@ -148,63 +151,75 @@ test('recipeLaunchCommand linux: script -qc "<node> <core>" /dev/null when no tm
   })
 })
 
-test('recipeLaunchCommand posix terminal fallback: osascript Terminal (darwin) / the first terminal emulator on PATH (linux), else null', () => {
-  const mac = recipeLaunchCommand({ platform: 'darwin', assistantId: '912', cwd: '/Users/kc/ava', nodePath: '/usr/local/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: () => false })
-  assert.deepEqual(mac, {
-    how: 'recipe-terminal',
-    file: 'osascript',
-    args: ['-e', `tell application "Terminal" to do script "cd '/Users/kc/ava' && '/usr/local/bin/node' '${ROOT}/bin/hoai-core.mjs'"`],
-    spawnOpts: { cwd: '/Users/kc/ava', windowsHide: true },
-  })
-  const gnome = recipeLaunchCommand({ platform: 'linux', assistantId: '912', cwd: '/home/kc/ava', nodePath: '/usr/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: (n: string) => n === 'gnome-terminal' })
-  assert.deepEqual(gnome, {
-    how: 'recipe-terminal',
-    file: 'gnome-terminal',
-    args: ['--', 'bash', '-c', `'/usr/bin/node' '${ROOT}/bin/hoai-core.mjs'; exec bash`],
-    spawnOpts: { cwd: '/home/kc/ava', windowsHide: true },
-  })
-  const xterm = recipeLaunchCommand({ platform: 'linux', assistantId: '912', cwd: '/home/kc/ava', nodePath: '/usr/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: (n: string) => n === 'xterm' })
-  assert.deepEqual(xterm?.file, 'xterm')
-  assert.deepEqual(xterm?.args, ['-e', 'bash', '-c', `'/usr/bin/node' '${ROOT}/bin/hoai-core.mjs'; exec bash`])
-  // x-terminal-emulator outranks the others, mirroring open_terminal_with.
-  const xte = recipeLaunchCommand({ platform: 'linux', assistantId: '912', cwd: '/home/kc/ava', nodePath: '/usr/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: () => true })
-  assert.equal(xte?.file, 'x-terminal-emulator')
-  assert.equal(
-    recipeLaunchCommand({ platform: 'linux', assistantId: '912', cwd: '/home/kc/ava', nodePath: '/usr/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: () => false }),
-    null,
-  )
+test('recipeLaunchCommand posix: no tmux and no script is null, never a visible Terminal or terminal emulator (every agent starts hidden)', () => {
+  for (const platform of ['darwin', 'linux']) {
+    assert.equal(
+      recipeLaunchCommand({ platform, assistantId: '912', cwd: '/home/kc/ava', nodePath: '/usr/bin/node', pluginRoot: ROOT, hasTmux: false, hasScript: false, hasCommand: () => true } as any),
+      null,
+      platform,
+    )
+  }
 })
 
-test('recipeLaunchCommand win32: cmd.exe /c start "HOAI agent <id>" /D "<cwd>" cmd /k "<node> <core>", verbatim args, visible window', () => {
+const WIN_STATE = 'C:\\Users\\kc\\.bgos-agent\\912'
+
+test('recipeLaunchCommand win32: wscript //B <statedir>\\launch-hidden.vbs starts node <core> once in a HIDDEN console (style 0, no wait), unattended as this agent; never cmd /k', () => {
   const cmd = recipeLaunchCommand({
     platform: 'win32',
     assistantId: '912',
     cwd: 'C:\\Users\\kc\\hoai-agents\\ava',
     nodePath: 'C:\\Program Files\\nodejs\\node.exe',
     pluginRoot: WIN_ROOT,
-    comspec: 'C:\\Windows\\System32\\cmd.exe',
-  })
+    stateDir: WIN_STATE,
+  } as any)
+  const launcher = `${WIN_STATE}\\${HIDDEN_LAUNCHER_FILE_NAME}`
+  assert.equal(HIDDEN_LAUNCHER_FILE_NAME, 'launch-hidden.vbs')
   assert.deepEqual(cmd, {
-    how: 'recipe-console',
-    file: 'C:\\Windows\\System32\\cmd.exe',
-    args: [
-      '/c',
-      'start',
-      '"HOAI agent 912"',
-      '/D',
-      '"C:\\Users\\kc\\hoai-agents\\ava"',
-      'cmd',
-      '/k',
-      `""C:\\Program Files\\nodejs\\node.exe" "${WIN_ROOT}\\bin\\hoai-core.mjs""`,
+    how: 'recipe-hidden',
+    file: 'wscript.exe',
+    args: ['//B', launcher],
+    spawnOpts: { cwd: 'C:\\Users\\kc\\hoai-agents\\ava', windowsHide: true },
+    files: [
+      {
+        path: launcher,
+        content: hiddenLauncherVbs({ assistantId: '912', cwd: 'C:\\Users\\kc\\hoai-agents\\ava', nodePath: 'C:\\Program Files\\nodejs\\node.exe', corePath: `${WIN_ROOT}\\bin\\hoai-core.mjs` }),
+      },
     ],
-    spawnOpts: { cwd: 'C:\\Users\\kc\\hoai-agents\\ava', windowsVerbatimArguments: true, windowsHide: false },
   })
   assertNoSessionArgs(cmd!.args)
-  // A double quote in a path cannot be represented on that command line.
+  // The one launch file, exact: window style 0 (hidden), and nothing waits on it.
   assert.equal(
-    recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\x"y', nodePath: 'node', pluginRoot: WIN_ROOT, comspec: 'cmd.exe' }),
-    null,
+    cmd!.files![0]!.content,
+    [
+      "' HOAI agent 912: start this agent's hoai launcher once, in a hidden console (no window).",
+      "' Generated by lib/agent-restart.mjs for an agent with no supervisor; wscript runs it with //B and nothing waits on it.",
+      'Set shell = CreateObject("WScript.Shell")',
+      "' Unattended, and for this agent only (bin/hoai-core.mjs SUPERVISED_ENV): nobody can answer a prompt in a hidden console.",
+      'Set env = shell.Environment("PROCESS")',
+      'env("HOAI_SUPERVISED") = "1"',
+      'env("HOAI_SUPERVISED_ASSISTANT_ID") = "912"',
+      'shell.CurrentDirectory = "C:\\Users\\kc\\hoai-agents\\ava"',
+      `shell.Run """C:\\Program Files\\nodejs\\node.exe"" ""${WIN_ROOT}\\bin\\hoai-core.mjs""", 0, False`,
+      '',
+    ].join('\r\n'),
   )
+  for (const visible of ['cmd', '/k', 'start']) assert.equal(cmd!.args.includes(visible), false, `no ${visible}`)
+  // A double quote cannot be embedded in the launch line; a percent sign in it would be expanded by WshShell.Run.
+  for (const bad of [{ cwd: 'C:\\x"y' }, { nodePath: 'C:\\x"y\\node.exe' }, { nodePath: 'C:\\%TEMP%\\node.exe' }, { pluginRoot: 'C:\\a%b' }]) {
+    assert.equal(
+      recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\ava', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE, ...bad } as any),
+      null,
+      JSON.stringify(bad),
+    )
+  }
+  // No state dir to hold the launch file: no launch.
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\ava', nodePath: 'node', pluginRoot: WIN_ROOT } as any), null)
+})
+
+test('hiddenLauncherVbs: a non-ASCII folder or plugin root is written as pure ASCII (WSH reads a .vbs as ANSI)', () => {
+  const vbs = hiddenLauncherVbs({ assistantId: '912', cwd: 'C:\\Users\\Jos\u00e9\\\u0648\u0643\u064a\u0644', nodePath: 'C:\\Program Files\\nodejs\\node.exe', corePath: 'C:\\Users\\Jos\u00e9\\root\\bin\\hoai-core.mjs' })
+  assert.deepEqual([...vbs].filter((ch) => ch.charCodeAt(0) > 0x7e), [])
+  assert.match(vbs, /ChrW\(233\)/)
 })
 
 // -- restartAgent --------------------------------------------------------------------
@@ -269,29 +284,37 @@ test('restartAgent: recipe-only on linux launches node <CURRENT pluginRoot>/bin/
   assertNoSessionArgs(spawns[0]!.args)
 })
 
-test('restartAgent: recipe-only on win32 opens a visible cmd /k console in the recipe cwd', async () => {
+test('restartAgent: recipe-only on win32 writes the hidden launcher into the agent state dir and starts it with wscript //B, hidden; no console window, no cmd.exe', async () => {
   const { spawns, spawnDetached } = recordingSpawn()
+  const fs = memoryFs()
   const agent = agentRow({
     cwd: 'C:\\Users\\kc\\hoai-agents\\ava',
     recipe: { ...agentRow().recipe, cwd: 'C:\\Users\\kc\\hoai-agents\\ava', pluginRoot: WIN_ROOT, node: 'C:\\Program Files\\nodejs\\node.exe' },
-    stateDir: 'C:\\Users\\kc\\.bgos-agent\\912',
+    stateDir: WIN_STATE,
   })
-  const result = await restartAgent(agent, { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', fs: memoryFs(), exec: recordingExec().exec, spawnDetached })
-  assert.equal(result.ok, true)
-  assert.equal(result.how, 'recipe-console')
-  assert.equal(spawns[0]!.file, 'C:\\Windows\\System32\\cmd.exe')
-  assert.deepEqual(spawns[0]!.args, [
-    '/c',
-    'start',
-    '"HOAI agent 912"',
-    '/D',
-    '"C:\\Users\\kc\\hoai-agents\\ava"',
-    'cmd',
-    '/k',
-    `""C:\\Program Files\\nodejs\\node.exe" "${WIN_ROOT}\\bin\\hoai-core.mjs""`,
-  ])
-  assert.deepEqual(spawns[0]!.opts, { cwd: 'C:\\Users\\kc\\hoai-agents\\ava', windowsVerbatimArguments: true, windowsHide: false, env: {} })
+  const deps = { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', exec: recordingExec().exec }
+  const result = await restartAgent(agent, { ...deps, fs, spawnDetached })
+  assert.equal(result.ok, true, result.message)
+  assert.equal(result.how, 'recipe-hidden')
+  assert.equal(spawns.length, 1)
+  assert.equal(spawns[0]!.file, 'wscript.exe')
+  assert.deepEqual(spawns[0]!.args, ['//B', `${WIN_STATE}\\launch-hidden.vbs`])
+  assert.deepEqual(spawns[0]!.opts, { cwd: 'C:\\Users\\kc\\hoai-agents\\ava', windowsHide: true, env: {} })
+  const vbs = fs.files.get(`${WIN_STATE}\\launch-hidden.vbs`)!
+  const code = vbs.split('\r\n').filter((l) => !l.startsWith("'"))
+  assert.equal(code.at(-2), `shell.Run """C:\\Program Files\\nodejs\\node.exe"" ""${WIN_ROOT}\\bin\\hoai-core.mjs""", 0, False`, 'style 0, no wait')
   assertNoSessionArgs(spawns[0]!.args)
+  // The launcher could not be written: a named failure, nothing started.
+  const ro = memoryFs()
+  ro.writeFile = () => {
+    throw new Error('EACCES')
+  }
+  const blocked = recordingSpawn()
+  const failed = await restartAgent(agent, { ...deps, fs: ro, spawnDetached: blocked.spawnDetached })
+  assert.equal(failed.ok, false)
+  assert.equal(failed.how, 'recipe-hidden')
+  assert.match(failed.message, /EACCES/)
+  assert.equal(blocked.spawns.length, 0)
 })
 
 test('restartAgent: recipe-only falls back to the recipe node/pluginRoot when deps carry none', async () => {
@@ -310,7 +333,7 @@ test('restartAgent: a spawn failure is a named failure; no pty or terminal is a 
   assert.equal(failed.how, 'recipe-tmux')
   assert.match(failed.message, /spawn tmux ENOENT/)
   const nothing = await restartAgent(agentRow(), { ...BASE_DEPS, platform: 'linux', fs: memoryFs(), exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, hasTmux: false, hasScript: false, hasCommand: () => false })
-  assert.deepEqual(nothing, { ok: false, how: 'recipe-terminal', message: 'no_pty_or_terminal_available: install tmux (preferred) or script, or start the agent by hand: cd /home/kc/hoai-agents/ava && hoai' })
+  assert.deepEqual(nothing, { ok: false, how: 'none', message: 'no_pty_available: install tmux (preferred) or script, or start the agent by hand: cd /home/kc/hoai-agents/ava && hoai' })
 })
 
 test('restartAgent: no supervisor and no usable recipe is manual_restart_required, nothing spawned', async () => {
@@ -335,11 +358,11 @@ test("restartAgent: a recipe relaunch runs under the recipe's CLAUDE_CONFIG_DIR,
   assert.equal(spawns[0]!.opts.env.PATH, '/usr/bin')
 })
 
-test('recipeLaunchCommand win32: a cmd.exe metacharacter anywhere in the embedded paths refuses the verbatim line (null), not only a quote', () => {
-  for (const cwd of ['C:\\Users\\kc\\R&D Agent', 'C:\\Users\\kc\\%TEMP%', 'C:\\Users\\kc\\a|b', 'C:\\Users\\kc\\a"b', 'C:\\Users\\kc\\a^b']) {
-    assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT }), null, cwd)
+test('recipeLaunchCommand win32: no cmd.exe is involved any more, so & | ^ % and parentheses in a FOLDER launch; a quote anywhere is refused (null)', () => {
+  for (const cwd of ['C:\\Users\\kc\\R&D Agent', 'C:\\Users\\kc\\a|b', 'C:\\Users\\kc\\a^b', 'C:\\Users\\kc\\hoai agents (2)', 'C:\\Users\\kc\\100%']) {
+    assert.notEqual(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null, cwd)
   }
-  assert.notEqual(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\hoai agents (2)', nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT }), null)
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '912', cwd: 'C:\\Users\\kc\\a"b', nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
 })
 
 test('restartAgent: a DISCOVERED supervisor is kickstarted by ITS label, never the canonical one', async () => {
@@ -669,4 +692,30 @@ test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <d
   const result = await restartAgent(agentRow({ ...WIN_ROW, supervisor: 'service', service: { ...TASK, handle: 'HOAI Agent 912 & calc' }, launcherLive: false, recipe: null }), { ...BASE_DEPS, platform: 'win32', fs: memoryFs(), exec, spawnDetached: recordingSpawn().spawnDetached })
   assert.deepEqual(calls, [])
   assert.equal(result.ok, false)
+})
+
+test('restartAgent win32 (review, F4 for the one shot): a session this agent still runs with no launcher is never joined by a hidden one shot: no launcher file, no wscript, a named refusal', async () => {
+  const NOW = BASE_DEPS.now()
+  const lock = JSON.stringify({ pid: 4912, heartbeatAt: NOW - 3_000 })
+  const agent = agentRow({
+    cwd: 'C:\\Users\\kc\\hoai-agents\\ava',
+    recipe: { ...agentRow().recipe, cwd: 'C:\\Users\\kc\\hoai-agents\\ava', pluginRoot: WIN_ROOT, node: 'C:\\Program Files\\nodejs\\node.exe' },
+    stateDir: WIN_STATE,
+  })
+  const fs = memoryFs({ '/home/kc/.bgos-agent/credentials-912.json.lock': lock })
+  const { spawns, spawnDetached } = recordingSpawn()
+  const out = await restartAgent(agent, { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', fs, exec: recordingExec().exec, spawnDetached, pidAlive: (pid: number) => pid === 4912 } as any)
+  assert.equal(out.ok, false)
+  assert.equal(out.how, 'recipe-hidden')
+  assert.match(out.message, /^session_without_launcher: agent 912 still runs \(daemon pid 4912\)/)
+  assert.deepEqual(spawns, [])
+  assert.equal(fs.files.has(`${WIN_STATE}\\launch-hidden.vbs`), false)
+  // The same agent with no live daemon starts, hidden.
+  const free = await restartAgent(agent, { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', fs: memoryFs(), exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
+  assert.equal(free.ok, true, free.message)
+})
+
+test('recipeLaunchCommand win32: an id that is not digits is never written into the launcher (null)', () => {
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '9"12', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
 })
