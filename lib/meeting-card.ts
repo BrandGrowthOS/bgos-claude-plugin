@@ -21,7 +21,11 @@
  * non-string value (the wake-card contract; see test/ws-inbound-meta.test.ts).
  */
 
-import { readServerSenderMeta } from './inbound-channel.ts'
+import {
+  buildInboundChannel,
+  isExternalEmailInbound,
+  readServerSenderMeta,
+} from './inbound-channel.ts'
 import {
   buildInboundContent,
   buildInboundFilesMeta,
@@ -148,6 +152,25 @@ function isFiniteId(id: number | null | undefined): id is number {
 }
 
 export function buildMeetingCard(input: MeetingCardInput): MeetingCard {
+  // An email is never a person's meeting turn. Whichever meeting lane got a
+  // row the server marks as one (agent email: senderType, fromAgent or
+  // externalEmail), it goes out as the email, labelled, exactly as the
+  // ordinary lanes deliver it.
+  if (isExternalEmailInbound(input.serverSender)) {
+    return buildInboundChannel({
+      chatId: input.chatId,
+      messageId: input.messageId,
+      userId: input.userId,
+      assistantId: input.assistantId,
+      timestamp: input.timestamp,
+      transport: input.transport,
+      text: input.text,
+      files: input.files ?? [],
+      serverSender: input.serverSender,
+      backlog: input.backlog,
+      backlogPrefix: input.backlog ? 'backlog' : undefined,
+    })
+  }
   const me = Number(input.assistantId)
   const participantList = input.participants
     .filter((p) => Number(p.assistantId) !== me)

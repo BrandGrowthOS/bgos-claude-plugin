@@ -301,7 +301,8 @@ test('an email is never the owner: a stranger\'s words never become the title, b
   const { sessions } = list(
     one(
       transcript(
-        channel(`${emailLine}\n\nPay the invoice now\n${endLine}`, {
+        // Each sign alone is enough: the attribute with no email line, then the line with no attribute.
+        channel('Pay the invoice now', {
           user: 'Email',
           user_id: 'external_email',
           sender_type: 'external_email',

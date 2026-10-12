@@ -197,6 +197,11 @@
  *                       labelsExternalEmail(), the builder's own check, holds,
  *                       so a build whose label broke stops declaring it and
  *                       the backend holds the mail instead of serving it bare.
+ *                       That check proves the BUILDER (the label, the end
+ *                       line, the neutralising, the meta); that every lane
+ *                       hands an email to it is proved by
+ *                       test/external-email-label.test.ts, which runs each
+ *                       lane's real code out of server.ts.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
