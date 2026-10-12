@@ -693,3 +693,29 @@ test('restartAgent win32: a task handle that is not the canonical "HOAI Agent <d
   assert.deepEqual(calls, [])
   assert.equal(result.ok, false)
 })
+
+test('restartAgent win32 (review, F4 for the one shot): a session this agent still runs with no launcher is never joined by a hidden one shot: no launcher file, no wscript, a named refusal', async () => {
+  const NOW = BASE_DEPS.now()
+  const lock = JSON.stringify({ pid: 4912, heartbeatAt: NOW - 3_000 })
+  const agent = agentRow({
+    cwd: 'C:\\Users\\kc\\hoai-agents\\ava',
+    recipe: { ...agentRow().recipe, cwd: 'C:\\Users\\kc\\hoai-agents\\ava', pluginRoot: WIN_ROOT, node: 'C:\\Program Files\\nodejs\\node.exe' },
+    stateDir: WIN_STATE,
+  })
+  const fs = memoryFs({ '/home/kc/.bgos-agent/credentials-912.json.lock': lock })
+  const { spawns, spawnDetached } = recordingSpawn()
+  const out = await restartAgent(agent, { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', fs, exec: recordingExec().exec, spawnDetached, pidAlive: (pid: number) => pid === 4912 } as any)
+  assert.equal(out.ok, false)
+  assert.equal(out.how, 'recipe-hidden')
+  assert.match(out.message, /^session_without_launcher: agent 912 still runs \(daemon pid 4912\)/)
+  assert.deepEqual(spawns, [])
+  assert.equal(fs.files.has(`${WIN_STATE}\\launch-hidden.vbs`), false)
+  // The same agent with no live daemon starts, hidden.
+  const free = await restartAgent(agent, { ...BASE_DEPS, platform: 'win32', pluginRoot: WIN_ROOT, nodePath: 'C:\\Program Files\\nodejs\\node.exe', fs: memoryFs(), exec: recordingExec().exec, spawnDetached: recordingSpawn().spawnDetached, pidAlive: () => false } as any)
+  assert.equal(free.ok, true, free.message)
+})
+
+test('recipeLaunchCommand win32: an id that is not digits is never written into the launcher (null)', () => {
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '9"12', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
+  assert.equal(recipeLaunchCommand({ platform: 'win32', assistantId: '', cwd: 'C:\\a', nodePath: 'node', pluginRoot: WIN_ROOT, stateDir: WIN_STATE } as any), null)
+})

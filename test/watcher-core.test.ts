@@ -800,10 +800,17 @@ test('runWatcher create_agent: a folder pinned to another agent fails at folder;
  * supervisor marker (bgos-agent) and the --keep-alive launcher (hoai-core), so either platform's
  * supervisor can be installed from it. `execCode` answers every non-pair command by its first words.
  */
-async function createAgentRun(opts: { platform: 'win32' | 'linux' | 'darwin'; keepAlive?: Record<string, unknown>; execCode?: (file: string, args: string[]) => number }) {
+async function createAgentRun(opts: {
+  platform: 'win32' | 'linux' | 'darwin'
+  keepAlive?: Record<string, unknown>
+  execCode?: (file: string, args: string[]) => number
+  extraFs?: Record<string, string>
+  onExec?: (file: string, args: string[], fs: MemoryFs) => void
+}) {
   const fs = machineFs({
     [`${ROOT}/bin/bgos-agent`]: '#!/usr/bin/env bash\n# writes supervisor-generation\n',
     [`${ROOT}/bin/hoai-core.mjs`]: "const RUN_KEEP_ALIVE_FLAGS = ['--keep-alive']\n",
+    ...(opts.extraFs ?? {}),
   })
   manifestFor(fs)
   const backend = fakeBackend({ frames: [{ rpcId: 'c1', op: 'create_agent' }], jobs: { c1: { op: 'create_agent', pairCode: PAIR_CODE, folderName: 'wolf', assistantId: '55' } }, keepAlive: opts.keepAlive })
@@ -819,6 +826,7 @@ async function createAgentRun(opts: { platform: 'win32' | 'linux' | 'darwin'; ke
       fs.writeFile(`${execOpts.cwd}/.bgos-agent-id`, '55\n')
       return { code: 3, stdout: '[bgos-pair] paired\n', stderr: '', error: null, timedOut: false }
     }
+    opts.onExec?.(file, [...args], fs)
     const code = opts.execCode ? opts.execCode(file, [...args]) : 0
     return { code, stdout: '', stderr: code === 0 ? '' : 'Access is denied.', error: null, timedOut: false }
   }
@@ -891,6 +899,61 @@ test('create_agent win32, the task cannot be registered: the files it wrote are 
   assert.match(run.terminal.steps[3]!.message, /^launched via recipe-hidden \(keep agents running: switch_on; supervisor not installed: /)
 })
 
+test('create_agent win32 (review), re-creating an agent that already runs with the switch on: the task is registered but NOT started beside it, and the running session restarts in place (its launcher marker), as before', async () => {
+  const run = await createAgentRun({
+    platform: 'win32',
+    keepAlive: { enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'on' },
+    extraFs: {
+      [`${HOME}/.bgos-agent/credentials-55.json`]: JSON.stringify({ pairingToken: 'agent-secret-55' }),
+      [`${HOME}/.bgos-agent/55/supervisor.json`]: supervisorFileBody(4242, 'x'),
+      [`${HOME}/hoai-agents/wolf/.bgos-agent-id`]: '55\n',
+    },
+  })
+  assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  assert.deepEqual(run.launches.map((c) => [c.file, c.args.at(-1)]), [['powershell.exe', 'install']], 'registered, never /Run beside the live session')
+  assert.deepEqual(run.spawns, [], 'no one shot beside it')
+  assert.equal(run.fs.files.get(`${HOME}/.bgos-agent/55/restart-requested.json`), '{}', 'restarted in place through its live launcher')
+  assert.equal(run.terminal.steps[3]!.message, 'launched via task, restarted via marker (keep agents running: switch_on)')
+})
+
+test('create_agent win32 (review): the task registered but its start refused: the task files stay (it IS registered), and the agent starts once, hidden; never a second start', async () => {
+  const run = await createAgentRun({
+    platform: 'win32',
+    keepAlive: { enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'on' },
+    execCode: (file) => (file === 'schtasks.exe' ? 1 : 0),
+  })
+  assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), true)
+  assert.deepEqual(run.launches.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
+  assert.deepEqual(run.spawns.map((s) => s.args[1]), [`${HOME}/.bgos-agent/55/launch-hidden.vbs`])
+})
+
+test('create_agent win32 (review): a failed registration removes only the task files IT wrote; files an earlier install left are kept', async () => {
+  const run = await createAgentRun({
+    platform: 'win32',
+    keepAlive: { enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'on' },
+    extraFs: { [`${HOME}/.bgos-agent/55/install-agent-task.ps1`]: '# an earlier install\n' },
+    execCode: (file, args) => (file === 'powershell.exe' && args.at(-1) === 'install' ? 1 : 0),
+  })
+  assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/install-agent-task.ps1`), true, 'kept')
+  assert.equal(run.fs.files.has(`${HOME}/.bgos-agent/55/run-agent.vbs`), false, 'removed: this attempt wrote it')
+})
+
+test('create_agent linux (review): bgos-agent install that fails AFTER installing the service counts as the launch: no one shot beside the service', async () => {
+  const run = await createAgentRun({
+    platform: 'linux',
+    keepAlive: { enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'on' },
+    onExec: (file, _args, fs) => {
+      if (file === 'bash') fs.writeFile(`${HOME}/.config/systemd/user/bgos-agent-55.service`, '[Service]\nExecStart=/home/kc/.bgos-agent/55/run.sh\n')
+    },
+    execCode: (file) => (file === 'bash' ? 1 : 0),
+  })
+  assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
+  assert.deepEqual(run.spawns, [], 'the service is the launch')
+  assert.equal(run.terminal.steps[3]!.message, 'launched via service (keep agents running: switch_on)')
+})
+
 test('create_agent linux, Keep agents running on: bgos-agent install --always-on starts the supervised service (tmux on its own socket); no recipe launch beside it', async () => {
   const run = await createAgentRun({ platform: 'linux', keepAlive: { enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'on' } })
   assert.equal(run.terminal.state, 'done', JSON.stringify(run.terminal))
@@ -910,8 +973,8 @@ test('create_agent linux, Keep agents running off: the hidden tmux one shot as b
 // -- Show agent windows: the windows pass after the sweep, and what the heartbeat says (board row d133ddb2) --
 
 /** Run the loop twice (two heartbeats), then stop it from inside sleep. */
-async function twoCycles(opts: { platform: 'win32' | 'linux'; keepAlive?: Record<string, unknown>; exec?: any; env?: Record<string, string> }) {
-  const fs = machineFs()
+async function twoCycles(opts: { platform: 'win32' | 'linux'; keepAlive?: Record<string, unknown>; exec?: any; env?: Record<string, string>; fs?: MemoryFs }) {
+  const fs = opts.fs ?? machineFs()
   manifestFor(fs)
   const backend = fakeBackend({ keepAlive: opts.keepAlive })
   let polls = 0
@@ -971,6 +1034,16 @@ test('runWatcher win32: with Show agent windows OFF (or a backend without the fi
     assert.deepEqual(run.spawns, [], JSON.stringify(keepAlive ?? 'no route'))
     assert.deepEqual(run.beats[1]!.windows, { mode: 'viewer', reason: 'setting_off' }, JSON.stringify(keepAlive ?? 'no route'))
   }
+})
+
+test('runWatcher win32 (review): a viewer the owner closed stays closed across a watcher restart (the memory rides state.json)', async () => {
+  const keepAlive = { enabled: false, enabledAt: null, assistantIds: [], showAgentWindows: true }
+  const first = await twoCycles({ platform: 'win32', keepAlive })
+  assert.equal(first.spawns.length, 1, 'opened, then gone from the table: closed by the owner')
+  const saved = JSON.parse(first.fs.files.get(`${HOME}/.bgos-agent/watcher/state.json`)!).viewers
+  assert.deepEqual(saved.closed, { '912': 'pid:4242' })
+  const again = await twoCycles({ platform: 'win32', keepAlive, fs: first.fs })
+  assert.deepEqual(again.spawns, [], 'the restarted watcher does not reopen it')
 })
 
 test('runWatcher linux: no screen for the watcher means no window at all, said as none/no_screen; with a screen and tmux it is tmux', async () => {

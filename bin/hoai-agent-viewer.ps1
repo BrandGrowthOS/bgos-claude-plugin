@@ -34,6 +34,7 @@ public static class HoaiAgentConsole {
   [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool SetConsoleCtrlHandler(IntPtr handler, bool add);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint GetConsoleProcessList([Out] uint[] list, uint count);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
   static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
@@ -137,8 +138,9 @@ public class HoaiAgentViewerForm : Form {
   protected override bool ShowWithoutActivation { get { return true; } }
 
   void Loaded(object sender, EventArgs e) {
-    // This process starts with window style 0 (so its own console never shows), and the first
-    // ShowWindow of a process takes that style: the form shows itself explicitly, without activation.
+    // This process starts with window style 0 (so its own console never shows), and a first
+    // ShowWindow that asks for the default style would take that one: the form asks for
+    // SW_SHOWNOACTIVATE (4) explicitly, so it shows, without taking the keyboard.
     HoaiAgentConsole.ShowWindow(Handle, 4);
     Tick(sender, e);
     timer.Start();
@@ -193,6 +195,8 @@ $footer = "Watching $name on $computer. Close this window any time: $name keeps 
 
 [HoaiAgentConsole]::FreeConsole() | Out-Null
 if (-not [HoaiAgentConsole]::AttachConsole($target)) { exit 2 }
+# A Ctrl+C the agent's console raises (hoai stopping claude, say) is not this window's to act on.
+[HoaiAgentConsole]::SetConsoleCtrlHandler([IntPtr]::Zero, $true) | Out-Null
 try {
   [HoaiAgentViewer]::Run($target, $title, $footer)
 } finally {

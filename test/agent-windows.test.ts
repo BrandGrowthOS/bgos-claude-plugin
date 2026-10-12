@@ -26,10 +26,13 @@ import assert from 'node:assert/strict'
 
 import {
   VIEWER_OPENS_PER_MINUTE,
+  VIEWER_REOPEN_MIN_MS,
   WINDOW_MODES,
   WINDOW_REASONS,
   emptyViewerMemory,
   planViewers,
+  viewerMemoryForState,
+  viewerMemoryFromState,
   windowsCapability,
   windowsHealth,
 } from '../lib/agent-windows-plan.mjs'
@@ -138,6 +141,37 @@ test('planViewers: an open viewer is adopted (never a second one for the same ag
   assert.deepEqual(twice.close.map((v: any) => v.handle), [2])
 })
 
+test('planViewers (review): a viewer left on a session that ended is closed and never counts for the new one, which gets its own viewer', () => {
+  const memory = { ...emptyViewerMemory(), lastShow: true, opened: { '7': 'pid:70' } }
+  const out = planViewers({ show: true, agents: [agent('7', 'pid:71', T0)], viewers: [{ id: '7', session: 'pid:70', handle: 70 }], memory, now: T0 + 10 * MIN })
+  assert.deepEqual(out.close.map((v: any) => v.handle), [70])
+  assert.deepEqual(out.open.map((a: any) => a.session), ['pid:71'])
+  assert.deepEqual(out.memory.closed, {}, 'the new session is not marked closed by the owner')
+  // A viewer of an agent that is not running any more is closed too.
+  const gone = planViewers({ show: true, agents: [], viewers: [{ id: '8', session: 'pid:80', handle: 80 }], memory, now: T0 })
+  assert.deepEqual(gone.close.map((v: any) => v.handle), [80])
+})
+
+test('planViewers (review): an agent that restarts in a loop gets a new viewer at most once every 5 minutes, not every pass', () => {
+  assert.equal(VIEWER_REOPEN_MIN_MS, 5 * MIN)
+  const first = planViewers({ show: true, agents: [agent('7', 'pid:70', T0)], viewers: [], memory: emptyViewerMemory(), now: T0 })
+  assert.equal(first.open.length, 1)
+  const lap = planViewers({ show: true, agents: [agent('7', 'pid:71', T0 + MIN)], viewers: [], memory: first.memory, now: T0 + MIN })
+  assert.deepEqual(lap.open, [], 'a new session one minute later waits')
+  const later = planViewers({ show: true, agents: [agent('7', 'pid:72', T0 + 5 * MIN)], viewers: [], memory: lap.memory, now: T0 + 5 * MIN })
+  assert.deepEqual(later.open.map((a: any) => a.session), ['pid:72'])
+})
+
+test('viewerMemoryForState / viewerMemoryFromState: opened, closed, the cool-down and the last setting survive a watcher restart; junk does not', () => {
+  const memory = { ...emptyViewerMemory(), opened: { '7': 'pid:70' }, closed: { '8': 'pid:80' }, lastOpenAt: { '7': T0 }, lastShow: true, opens: [T0], scanned: true }
+  const saved = JSON.parse(JSON.stringify(viewerMemoryForState(memory)))
+  assert.deepEqual(saved, { opened: { '7': 'pid:70' }, closed: { '8': 'pid:80' }, lastOpenAt: { '7': T0 }, lastShow: true })
+  const back = viewerMemoryFromState(saved)
+  assert.deepEqual({ opened: back.opened, closed: back.closed, lastOpenAt: back.lastOpenAt, lastShow: back.lastShow, scanned: back.scanned }, { opened: { '7': 'pid:70' }, closed: { '8': 'pid:80' }, lastOpenAt: { '7': T0 }, lastShow: true, scanned: false })
+  assert.deepEqual(viewerMemoryFromState({ opened: { x: 'a', '9': 5 }, closed: [], lastOpenAt: { '9': 'soon' }, lastShow: 'yes' }), emptyViewerMemory())
+  assert.deepEqual(viewerMemoryFromState(null), emptyViewerMemory())
+})
+
 // -- runWindowsPass, Windows ---------------------------------------------------------------------
 
 const HOME = 'C:\\Users\\kc'
@@ -184,8 +218,8 @@ function winEffects(table: any[]) {
   }
 }
 
-function winCtx(fx: ReturnType<typeof winEffects>, fs: any, rows: any[], show: boolean, memory = emptyViewerMemory()) {
-  return { platform: 'win32', home: HOME, env: { PATH: 'C:\\Windows' }, fs, exec: fx.exec, spawnDetached: fx.spawnDetached, kill: fx.kill, now: () => T0, log: () => {}, pidAlive: () => true, listAgents: () => rows, viewerDir: VIEWER_DIR, show, memory }
+function winCtx(fx: ReturnType<typeof winEffects>, fs: any, rows: any[], show: boolean, memory = emptyViewerMemory(), at = T0) {
+  return { platform: 'win32', home: HOME, env: { PATH: 'C:\\Windows' }, fs, exec: fx.exec, spawnDetached: fx.spawnDetached, kill: fx.kill, now: () => at, log: () => {}, pidAlive: () => true, listAgents: () => rows, viewerDir: VIEWER_DIR, show, memory }
 }
 
 /** Never anything that restarts, starts or stops an agent: no schtasks, no wscript of an agent launcher, no hoai, no kill of a launcher. */
@@ -247,6 +281,18 @@ test('runWindowsPass win32: the setting off and already handled is a no-op (no p
   assert.equal(out.memory.scanned, true)
 })
 
+test('runWindowsPass win32 (review): a supervisor.json whose pid now belongs to something else is looked at once; with the setting off nothing is listed again', async () => {
+  const fs = winMachine({ '912': 4242 })
+  // The row says no live launcher (pid 4242 was reused by another program).
+  const rows = [winRow('912', 'C:\\a\\Wolf', { launcherLive: false, supervisor: 'none' })]
+  const first = winEffects([proc(4242, 1, 'notepad.exe')])
+  const out = await runWindowsPass(winCtx(first, fs, rows, false) as any)
+  assert.equal(first.execs.length, 1, 'the first pass lists once')
+  const second = winEffects([proc(4242, 1, 'notepad.exe')])
+  await runWindowsPass(winCtx(second, fs, rows, false, out.memory) as any)
+  assert.deepEqual(second.execs, [], 'nothing listed again for the same pid')
+})
+
 test('runWindowsPass win32: a viewer the owner closed restarts nothing, kills nothing, opens nothing for the rest of that agent session', async () => {
   const fs = winMachine({ '912': 4242 })
   const rows = [winRow('912', 'C:\\Users\\kc\\hoai-agents\\Wolf')]
@@ -260,17 +306,22 @@ test('runWindowsPass win32: a viewer the owner closed restarts nothing, kills no
   assert.deepEqual(after.kills, [], 'nothing killed')
   assertAgentUntouched(after, [4242])
   assert.deepEqual(second.report, { mode: 'viewer', reason: 'showing' })
-  // The agent's next start (new launcher pid): its viewer comes back.
+  // The agent's next start (new launcher pid), past the per agent cool-down: its viewer comes back.
   const fs2 = winMachine({ '912': 4999 })
   const restarted = winEffects([proc(4999, 1, 'node hoai-core.mjs')])
-  await runWindowsPass(winCtx(restarted, fs2, rows, true, second.memory) as any)
+  await runWindowsPass(winCtx(restarted, fs2, rows, true, second.memory, T0 + 6 * MIN) as any)
   assert.deepEqual(restarted.spawns.map((s) => s.args.slice(2)), [['-ConsolePid', '4999', '-AssistantId', '912']])
 })
 
 test('runWindowsPass win32: a console a supervisor left on screen (the old minimized task launcher, the old cmd /k create launch) is hidden in place ONCE; a person\'s own console never is', async () => {
-  const fs = winMachine({ '1': 101, '2': 202, '3': 303 })
-  const rows = [winRow('1', 'C:\\a\\task'), winRow('2', 'C:\\a\\recipe'), winRow('3', 'C:\\a\\person')]
+  const fs = winMachine({ '1': 101, '2': 202, '3': 303, '4': 404 })
+  // Agent 4's task launcher was started from a style 0 run-agent.vbs already on disk: never shown, nothing to hide.
+  fs.writeFile(`${HOME}\\.bgos-agent\\4\\run-agent.vbs`, 'WScript.Quit shell.Run("x", 0, True)\r\n')
+  fs.touch(`${HOME}\\.bgos-agent\\4\\run-agent.vbs`, T0 - 10 * MIN)
+  const rows = [winRow('1', 'C:\\a\\task'), winRow('2', 'C:\\a\\recipe'), winRow('3', 'C:\\a\\person'), winRow('4', 'C:\\a\\hidden-task')]
   const table = [
+    proc(44, 1, `"C:\\Windows\\System32\\wscript.exe" //B "${HOME}\\.bgos-agent\\4\\run-agent.vbs"`),
+    proc(404, 44, '"C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs" --keep-alive'),
     proc(11, 1, `"C:\\Windows\\System32\\wscript.exe" //B "${HOME}\\.bgos-agent\\1\\run-agent.vbs"`),
     proc(101, 11, '"C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs" --keep-alive'),
     proc(22, 1, 'cmd  /k ""C:\\node.exe" "C:\\root\\bin\\hoai-core.mjs""'),
@@ -288,7 +339,7 @@ test('runWindowsPass win32: a console a supervisor left on screen (the old minim
       ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', PS1, '-ConsolePid', '202', '-AssistantId', '2', '-Mode', 'hide'],
     ],
   )
-  assertAgentUntouched(fx, [101, 202, 303])
+  assertAgentUntouched(fx, [101, 202, 303, 404])
   assert.deepEqual(fx.spawns, [])
   // Once: the next pass does not ask again.
   const again = winEffects(table)
