@@ -1890,3 +1890,47 @@ test('an upgrade with no known folder is reported, and spends neither an attempt
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'upgrade_pending', 'no_known_folder'], ['912', 'restarted', 'service']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['7'].attempts, undefined)
 })
+
+// -- a failed agent stays failed until something proves it is up (board row 84296679, fix 4) ----------------------
+
+const NO_CLAUDE_PS = [psLine(1, 0, '/sbin/launchd')].join('\n')
+
+function seedFailed(fs: MemoryFs, id: string, reasonText: string) {
+  fs.writeFile(
+    keepAliveStatePath(HOME),
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      consentSource: 'live',
+      agents: { [id]: { state: 'failed', reason: reasonText, since: new Date(T0 - 60_000).toISOString(), attempts: 1, lastRestartAt: new Date(T0 - 60_000).toISOString() } },
+    }),
+  )
+}
+
+test('fix 4 (kc-server 871, 10:42:33 failed then 10:42:59 supervised): the sweep AFTER a failed verify keeps the agent failed while nothing runs', async () => {
+  // Up to date (nothing pending), its unit file present, its launch crash looping: the old code
+  // classified it by the unit file alone and wrote `supervised canonical`.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { installedVersion: '0.62.0' })
+  seedFailed(fs, '912', 'agent_deaf_after_restart')
+  const rec = recorder({ ps: NO_CLAUDE_PS })
+  const clock = fakeClock()
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'failed', 'agent_deaf_after_restart']])
+})
+
+test('fix 4: a launch that is itself failing is failed with no earlier record, and a live daemon ends the hold', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { installedVersion: '0.62.0' })
+  const statusPath = `${HOME}/.bgos-agent/912/launch-status`
+  fs.writeFile(statusPath, "2026-10-12 10:41:03 outcome=exited-during-startup answered=[] screen=\"error: unknown option\" rc=1\n")
+  fs.writeFile(`${HOME}/.bgos-agent/912/failcount`, '9\n')
+  const clock = fakeClock()
+  fs.touch(statusPath, clock.now() - 20_000)
+  const looping = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: NO_CLAUDE_PS }), clock).ctx as any)
+  assert.deepEqual(looping.agents.map((a: any) => [a.state, a.reason]), [['failed', 'launch_failing:exited-during-startup']])
+
+  // The daemon comes up and publishes a fresh state: proof, so it is supervised again.
+  clock.advance(60_000)
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { runningVersion: '0.62.1' }))
+  const up = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: IDLE_PS }), clock).ctx as any)
+  assert.deepEqual(up.agents.map((a: any) => a.state), ['supervised'])
+})

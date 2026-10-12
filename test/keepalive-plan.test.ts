@@ -66,6 +66,7 @@ import {
   parsePairingLock,
   pendingKindOf,
   reportEntry,
+  decideHeldFailure,
 } from '../lib/keepalive-plan.mjs'
 
 const NOW = Date.parse('2026-10-06T19:00:00.000Z')
@@ -753,4 +754,56 @@ test('review 3 F3: reportEntry: a wait a plain restart cannot end (manual_sessio
     assert.equal(reportEntry('912', { ...record, reason }, NOW).pending, 'update', reason)
   }
   assert.equal(reportEntry('912', { ...record, reason: 'background_job', target: UPGRADE_TARGET }, NOW).pending, 'upgrade')
+})
+
+// -- a failed agent stays failed until something proves it is up (board row 84296679, fix 4) --------------
+
+test('decideHeldFailure: after a failed verify the next quiet sweep does NOT read supervised while nothing runs (kc-server 10:42:33 failed, 10:42:59 supervised)', () => {
+  const held = decideHeldFailure({
+    prevState: 'failed',
+    prevReason: 'agent_deaf_after_restart',
+    fresh: false,
+    claudeRunning: false,
+    launchOutcome: null,
+    failCount: 0,
+    statusAgeMs: null,
+  })
+  assert.deepEqual(held, { state: 'failed', reason: 'agent_deaf_after_restart' })
+})
+
+test('decideHeldFailure: a live daemon (fresh state) or a running claude of this agent ends the hold', () => {
+  const base = { prevState: 'failed', prevReason: 'agent_deaf_after_restart', launchOutcome: null, failCount: 0, statusAgeMs: null }
+  assert.equal(decideHeldFailure({ ...base, fresh: true, claudeRunning: false }), null)
+  assert.equal(decideHeldFailure({ ...base, fresh: false, claudeRunning: true }), null)
+})
+
+test('decideHeldFailure: a crash loop is failed even with no failed record yet, and an unknown tree is not read as a loop', () => {
+  const loop = decideHeldFailure({
+    prevState: 'supervised',
+    prevReason: 'canonical',
+    fresh: false,
+    claudeRunning: false,
+    launchOutcome: 'exited-during-startup',
+    failCount: 12,
+    statusAgeMs: 30_000,
+  })
+  assert.deepEqual(loop, { state: 'failed', reason: 'launch_failing:exited-during-startup' })
+  const fastFails = decideHeldFailure({ prevState: null, prevReason: null, fresh: false, claudeRunning: false, launchOutcome: 'starting', failCount: 5, statusAgeMs: 10_000 })
+  assert.deepEqual(fastFails, { state: 'failed', reason: 'launch_failing:fast_fails' })
+  // The process table could not be read: running is null, not false. Judged by the launch evidence only.
+  assert.equal(
+    decideHeldFailure({ prevState: 'supervised', prevReason: 'canonical', fresh: false, claudeRunning: null, launchOutcome: 'live', failCount: 0, statusAgeMs: 1000 }),
+    null,
+  )
+})
+
+test('decideHeldFailure: an old launch-status is not a loop in progress, and a healthy agent is untouched', () => {
+  assert.equal(
+    decideHeldFailure({ prevState: 'supervised', prevReason: 'canonical', fresh: false, claudeRunning: false, launchOutcome: 'exited-during-startup', failCount: 12, statusAgeMs: 3 * 60 * 60_000 }),
+    null,
+  )
+  assert.equal(
+    decideHeldFailure({ prevState: 'supervised', prevReason: 'canonical', fresh: true, claudeRunning: true, launchOutcome: 'live', failCount: 0, statusAgeMs: 1000 }),
+    null,
+  )
 })
