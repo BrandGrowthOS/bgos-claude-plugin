@@ -79,6 +79,7 @@ import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
+import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -14777,11 +14778,14 @@ async function main(): Promise<void> {
   log(privateHookBootLine(PRIVATE_HOOK))
   // A clone workspace that lost or never had the hook gets it written now, so the NEXT
   // launch of this agent has it. It does not reach this session: the CLI read its hooks
-  // at launch. Marketplace installs and folders that are not this checkout's are left alone.
+  // at launch, so a registration made here asks for ONE restart below (lib/hook-restart.mjs).
+  // Marketplace installs and folders that are not this checkout's are left alone.
+  const hookOutcomes: string[] = []
   if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {
     for (const folder of new Set(FLOOR_FOLDERS)) {
       const result = registerCloneHooks({ workdir: folder, pluginDir: import.meta.dir })
-      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; restart this agent to load them`)
+      hookOutcomes.push(result.outcome)
+      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; they load at this agent's next launch`)
       else if (result.outcome === 'failed') log(`private turn: could not register the agent hooks in ${folder}: ${result.detail ?? 'unknown'}`)
     }
   }
@@ -14938,6 +14942,36 @@ async function main(): Promise<void> {
       })
       markerTakeover.start()
     }
+  }
+
+  // The ONE restart after this boot registered the private turn hook itself
+  // (lib/hook-restart.mjs): otherwise every private call keeps refusing until a
+  // person restarts the agent. Only a registration made by this boot arms it,
+  // never a fresh start that found the hook; a record in the agent's state
+  // folder makes it single use across the restart it causes. The daemon's own
+  // ladder does the restart, the one a scheduled update asks. Only the pairing
+  // lock holder asks, never once shutdown has begun (active), so the shutdown
+  // path needs nothing from it; its poll is unref'd.
+  const hookRestartDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (hookRestartDir) {
+    const hookRestart = createHookRestart({
+      outcomes: hookOutcomes,
+      folders: [...new Set(FLOOR_FOLDERS)],
+      recordPath: pathJoin(hookRestartDir, HOOK_RESTART_FILE_NAME),
+      fs: nodeHookRestartFs(),
+      bootAtMs: DAEMON_START_MS,
+      now: Date.now,
+      ownPid: process.pid,
+      active: () => lockHeld && !shuttingDown,
+      drainSnapshot: updateDrainSnapshot,
+      draining: () => updateDrainMode,
+      drain: setUpdateDrainMode,
+      requestRestart: () => updateRpc.restartAfterHookRegistration(),
+      log,
+      setInterval,
+      clearInterval,
+    })
+    hookRestart.start()
   }
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
