@@ -341,6 +341,18 @@ test('two daemons racing on one agent: only the one that created the record asks
   await a.pass(60_000)
   await b.pass(60_000)
   assert.equal(a.requests.length + b.requests.length, 1)
+  const loser = a.requests.length ? b : a
+  assert.ok(loser.logs.some((l) => l.includes('another daemon already asked')), loser.logs.join('\n'))
+})
+
+test('any answer but ok from the record write means no restart: a record it cannot prove is no single use', async () => {
+  for (const answer of [undefined, 'busy', null]) {
+    const fs = memFs()
+    const r = rig({ outcomes: ['registered'], fs: { ...fs, createExclusive: () => answer as any } })
+    await r.pass(60 * 60_000)
+    assert.equal(r.requests.length, 0, `answer ${String(answer)}`)
+    assert.deepEqual(r.drains, [])
+  }
 })
 
 test('a record that cannot be written means no restart: one restart could not be guaranteed', async () => {
