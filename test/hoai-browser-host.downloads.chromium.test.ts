@@ -27,7 +27,7 @@ import { join, relative, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
-import { browserHostLogPath, browserHostPairingKey, startBrowserHostSupervisor } from '../lib/browser-host-supervisor.ts'
+import { browserHostLogPath, browserHostPairingKey, hostEnv, startBrowserHostSupervisor } from '../lib/browser-host-supervisor.ts'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
 
 const HOST_BIN = join(import.meta.dirname, '..', 'bin', 'hoai-browser-host.mjs')
@@ -115,7 +115,7 @@ test(
       }
       await relay.rpc(sock, { assistantId: 900, clientId: 'shim-dl', message: { jsonrpc: '2.0', id: ++id, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'hoai-browser-mcp', version: '0' } } } })
       const nav = await call('browser_navigate', { url: `${site.url}/` })
-      assert.equal(nav.isError, false, nav.text)
+      assert.equal(nav.isError, false, `${nav.text}\n${nav.isError ? vaultProbe(home, env) : ''}\n--- host log ---\n${hostLog()}`)
       const status = async () => (await call('hoai_browser_status')).text
       const click = async (key: CaseKey) => {
         const snap = await call('browser_snapshot')
@@ -210,6 +210,24 @@ test(
     } catch {}
   },
 )
+
+/**
+ * When the host refuses its profile folder (unsafe_profile), say why: the
+ * vault's own Windows ACL step (lib/agent-browser-vault.mjs), run once with
+ * the environment the daemon gives the host and once with the full one.
+ */
+function vaultProbe(home: string, env: Record<string, string | undefined>): string {
+  if (process.platform !== 'win32') return ''
+  const script = (dir: string) => `$ErrorActionPreference = 'Stop'\n$target = '${dir.replaceAll("'", "''")}'\n$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()\n$acl = New-Object System.Security.AccessControl.DirectorySecurity\n$acl.SetOwner($identity.User)\n$acl.SetAccessRuleProtection($true, $false)\n$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity.User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')\n$acl.AddAccessRule($rule)\n[System.IO.Directory]::SetAccessControl($target, $acl)\n`
+  const out: string[] = []
+  for (const [label, e] of [['daemon env', hostEnv(env as Record<string, string>, { platform: 'win32' })], ['full env', env]] as const) {
+    const dir = join(home, `probe-${label.replace(' ', '-')}`)
+    mkdirSync(dir, { recursive: true })
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '-'], { input: script(dir), env: e as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 30_000, windowsHide: true })
+    out.push(`vault ACL step with the ${label}: status ${r.status} ${r.error ? `error ${r.error.message}` : ''} ${String(r.stderr || '').trim().slice(0, 600)}`)
+  }
+  return out.join('\n')
+}
 
 /** Owner only, read from the real file system: 0600 in a 0700 folder off Windows; on Windows an ACL of the user's SID alone with no inherited entry above the kept folder. */
 function assertOwnerOnly(file: string) {

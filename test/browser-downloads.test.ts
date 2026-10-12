@@ -606,7 +606,7 @@ test('the folder guard on the REAL file system: owner only, read back, nothing a
   try {
     const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
     const guard = new KeptFolderGuard({ dir, home, env: { ...process.env, OneDrive: undefined, OneDriveConsumer: undefined, OneDriveCommercial: undefined } })
-    assert.equal(await guard.prepare(), true, `guard: ${guard.reason}`)
+    assert.equal(await guard.prepare(), true, `guard: ${guard.reason}; ACL read back: ${guard.readBack}`)
     assert.equal(guard.verify(), true)
     if (process.platform === 'win32') {
       const sid = /"(S-1-[0-9-]+)"\s*$/.exec(spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim())![1]
@@ -617,8 +617,9 @@ test('the folder guard on the REAL file system: owner only, read back, nothing a
     } else {
       assert.equal(statSync(dir).mode & 0o777, 0o700)
     }
-    // Swapped for something else: no longer trusted.
-    rmSync(dir, { recursive: true, force: true })
+    // Swapped for another folder: no longer trusted. Renamed away rather than
+    // deleted, so the new folder cannot reuse the old inode (Linux does).
+    renameSync(dir, `${dir}.old`)
     mkdirSync(dir)
     assert.equal(guard.verify(), false)
   } finally {
