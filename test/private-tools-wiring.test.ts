@@ -17,7 +17,7 @@ function execute(body: string, bindings: Record<string, unknown>) {
 test('actual tool admission refuses unresolved sender and passive daemon before private work', async () => {
   for (const name of ['schedule', 'list_schedules', 'cancel_schedule', 'boards_list']) {
     let called = 0
-    const bindings = { req: { params: { name } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], USER_ID: 'user_owner',
+    const bindings = { req: { params: { name } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner',
       requirePrivateTurn: () => { called++; throw new Error('private action did not start') } }
     const result = await execute(admissionSource + '\nreturn privateCall;', bindings)
     assert.equal(called, 1)
@@ -32,7 +32,7 @@ test('actual tool admission refuses unresolved sender and passive daemon before 
 test('actual schedule create/list/cancel carry frozen recipient header; omitted chat is recipient chat', async () => {
   const calls: any[] = []
   let current = { actingUserId: 'user_recipient', chatId: '200', headers: { 'X-BGOS-Acting-User': 'user_recipient' } }
-  const privateCall = execute(admissionSource + '\nreturn privateCall;', { req: { params: { name: 'schedule' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], USER_ID: 'user_owner', requirePrivateTurn: () => structuredClone(current) })
+  const privateCall = execute(admissionSource + '\nreturn privateCall;', { req: { params: { name: 'schedule' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', requirePrivateTurn: () => structuredClone(current) })
   current = { actingUserId: 'user_other', chatId: '300', headers: { 'X-BGOS-Acting-User': 'user_other' } }
   const bindings = {
     privateCall, buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath, log: () => {},
@@ -76,4 +76,16 @@ test('actual delivery actor expressions refuse legacy owner userId and user_id i
       assert.equal(execute('return ' + match[1], { ...bindings, msg: { message: { ...payload, senderUserId: 'user_recipient' } }, view: { raw: { ...payload, senderUserId: 'user_recipient' }, senderKind: 'user' }, payload: { ...payload, senderUserId: 'user_recipient' } }), 'user_recipient')
     }
   }
+})
+
+test('with no private turn hook registered the call is still refused, and says why', async () => {
+  let called = 0
+  const result = await execute(admissionSource + '\nreturn privateCall;', {
+    req: { params: { name: 'boards_query' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [], USER_ID: 'user_owner',
+    PRIVATE_HOOK: { registered: false }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing',
+    requirePrivateTurn: () => { called++; throw new Error('private action did not start') },
+  })
+  assert.equal(called, 1, 'the gate still runs: a missing hook is not a fallback')
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /hook missing/)
 })

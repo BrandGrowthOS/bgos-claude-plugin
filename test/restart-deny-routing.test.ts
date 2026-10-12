@@ -37,6 +37,11 @@ function runRefresh(t: TestContext, workdir: string): string | null {
   const bash = bashOrSkip(t)
   if (!bash) return null
   const src = readFileSync(AGENT, 'utf8')
+  const cut = (name: string) => {
+    const found = src.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?^\\}`, 'm'))
+    assert.ok(found, `${name} not found in bin/bgos-agent`)
+    return found[0]
+  }
   const body = src.match(/^refresh_hook_entries\(\) \{[\s\S]*?^\}/m)
   assert.ok(body, 'refresh_hook_entries not found in bin/bgos-agent')
   const harness = [
@@ -45,10 +50,16 @@ function runRefresh(t: TestContext, workdir: string): string | null {
     'plist_for() { echo "/stub/missing.plist"; }',
     'unitfile_for() { echo "/stub/missing.service"; }',
     `default_workdir_for() { printf '%s\\n' ${shq(bashPath(workdir))}; }`,
+    'plugin_cache_key() { :; }',
     'install_hook_entries() { echo "RAN:hooks"; }',
     'install_denied_tools() { echo "RAN:deny"; }',
     'warn() { :; }',
     'ok() { :; }',
+    // The clone check (0.67.2): a folder with no hoai entry still gets the private turn
+    // hook when its .mcp.json names this checkout. These folders have no .mcp.json, so the
+    // real check runs and finds a workspace that gets its hooks elsewhere.
+    cut('workdir_names_this_clone'),
+    cut('register_hooks_for_clone_workdir'),
     body[0],
     'refresh_hook_entries 900',
   ].join('\n')

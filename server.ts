@@ -224,6 +224,7 @@ import {
   type StopGoalView,
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
+import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -5311,7 +5312,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
     }
-    catch (err) { return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true }) }
+    catch (err) {
+      // Still refused. With no hook registered the sender is not the problem, so say that.
+      const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
+      return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
+    }
   }
   return trackMessageOperation(async () => {
   const rawArgs = req.params.arguments as Record<string, unknown>
@@ -11703,6 +11708,30 @@ const FLOOR_HOOK: FloorHookPresence = (() => {
   }
 })()
 
+/**
+ * Is the private turn hook registered for this session? Looked up ONCE, at boot,
+ * for the same reason as FLOOR_HOOK (the CLI reads its hooks at launch). Without
+ * it no turn marker is ever written and every private call refuses; this only
+ * lets the daemon say so, once at boot and in the refusal text. It never opens
+ * the gate (lib/private-hook-presence.ts).
+ */
+const PRIVATE_HOOK: PrivateHookPresence = (() => {
+  try {
+    return privateHookPresence({
+      installMethod: INSTALL_METHOD,
+      pluginRoot: PLUGIN_ROOT,
+      folders: FLOOR_FOLDERS,
+      configDir: CLAUDE_CONFIG_DIR,
+      env: process.env,
+      readFile: (path) => readFileSync(path, 'utf8'),
+      exists: (path) => existsSync(path),
+      join: pathJoin,
+    })
+  } catch (err) {
+    return { registered: false, where: `could not look (${err})` }
+  }
+})()
+
 function safeUsername(): string {
   try {
     return osUserInfo().username
@@ -14657,6 +14686,7 @@ async function main(): Promise<void> {
   // What the declaration REALLY carries, which needs a pairing as well as the
   // hook (lib/floor-hook-presence.ts floorBootLine).
   log(floorBootLine(FLOOR_HOOK, AUTH.mode))
+  log(privateHookBootLine(PRIVATE_HOOK))
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.
