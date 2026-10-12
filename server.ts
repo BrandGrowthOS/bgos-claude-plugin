@@ -225,6 +225,7 @@ import {
 } from './lib/stop-pause.js'
 import { floorBootLine, floorHookPresence, type FloorHookPresence } from './lib/floor-hook-presence.js'
 import { PRIVATE_HOOK_MISSING_REFUSAL, privateHookBootLine, privateHookPresence, type PrivateHookPresence } from './lib/private-hook-presence.js'
+import { registerCloneHooks } from './lib/clone-hooks.mjs'
 import { pinChannelProtocolRevision } from './lib/channel-transport.js'
 import {
   applyGoalRecords,
@@ -14605,6 +14606,9 @@ async function main(): Promise<void> {
     // already watching for, and it stages rather than acting on an authority
     // it cannot prove.
     requestRestart: (targetVersion) => updateRpc.restartAfterScheduledUpdate(targetVersion),
+    // The hooks of this daemon's clone workspace are registered before the restart
+    // (board bbbf3438 follow-up): the CLI reads them once, at launch.
+    workspaceDirs: FLOOR_FOLDERS,
   })
   }
 
@@ -14687,6 +14691,16 @@ async function main(): Promise<void> {
   // hook (lib/floor-hook-presence.ts floorBootLine).
   log(floorBootLine(FLOOR_HOOK, AUTH.mode))
   log(privateHookBootLine(PRIVATE_HOOK))
+  // A clone workspace that lost or never had the hook gets it written now, so the NEXT
+  // launch of this agent has it. It does not reach this session: the CLI read its hooks
+  // at launch. Marketplace installs and folders that are not this checkout's are left alone.
+  if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {
+    for (const folder of new Set(FLOOR_FOLDERS)) {
+      const result = registerCloneHooks({ workdir: folder, pluginDir: import.meta.dir })
+      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; restart this agent to load them`)
+      else if (result.outcome === 'failed') log(`private turn: could not register the agent hooks in ${folder}: ${result.detail ?? 'unknown'}`)
+    }
+  }
   void phase('capability-canon warm-up', () => loadServedCapabilities()).catch(
     // loadServedCapabilities does not throw (it falls back), but a background
     // phase must never become an unhandled rejection if that ever changes.

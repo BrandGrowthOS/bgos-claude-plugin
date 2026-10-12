@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.4 (2026-10-12)
+
+**A clone agent no longer loses boards, schedule and browser after a self-update or a watcher update (board bbbf3438 follow-up).** 0.67.2 registered the private turn hook only through `bgos-agent update`. The daemon's own auto-update (`lib/self-update.ts`) and the watcher's update never ran it, so any clone install updating that way restarted onto 0.67.x with no hook in its workspace and every private tool call refused (15 agents of one user on a MacBook Air and 4 on kc-server were one restart away).
+
+Now the self-updater runs the NEW checkout's `bin/hoai-register-hooks.mjs` for the daemon's workspace folders after the pull and BEFORE it asks for a restart (the CLI reads hooks once, at launch), and the daemon registers them at boot when the private turn hook is missing so the next launch has it. Only a workspace whose `.mcp.json` names this checkout's `server.ts` is touched, a marketplace install never is, and a folder that never carried the activity rail gets the rail and the private turn hook but not the blocking floor hook. The hook helper is `lib/clone-hooks.mjs`. The watcher's connector update (`lib/update-executor.mjs`) does the same for each clone agent, once per workspace folder, after the fast-forward and right before that agent's restart (best effort, 30 s budget, never changes the step's outcome).
+
 ## 0.67.3 (2026-10-12)
 
 **`bgos-agent update` finishes with the script it just pulled.** The pull is a `git reset --hard`, which replaces the very file the shell is running, so everything after it (hook registration, the restart) ran the OLD function bodies. The first update to 0.67.2 therefore registered no private turn hook and a second run was needed. The update now hands over to the new file right after the pull (`HOAI_UPDATE_REEXEC` stops a second pull and carries the starting version), so a fix shipped in an update applies on the first update.

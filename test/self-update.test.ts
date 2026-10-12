@@ -2268,3 +2268,116 @@ describe('isUpdateLockHeld: a click never restarts onto a checkout another daemo
     expect(isUpdateLockHeld(lock, mtime + UPDATE_LOCK_STALE_MS + 1)).toBe(false)
   })
 })
+
+// Board bbbf3438 follow-up: 0.67.0 made the private turn hook the gate for boards, schedule and browser tools, and
+// only `bgos-agent update` wrote it. A daemon that updates ITSELF restarted onto the new version with no hook in its
+// clone workspace, so every private call refused. The updater now registers the workspace hooks, with the NEW
+// checkout's own script, after the pull and before any restart.
+describe('self-update registers the clone workspace hooks before the restart', () => {
+  function setup() {
+    const rootDir = tempDir('self-update-hooks-root-')
+    mkdirSync(join(rootDir, '.git'))
+    mkdirSync(join(rootDir, 'bin'))
+    writeFileSync(join(rootDir, 'bin', 'hoai-register-hooks.mjs'), '// the new checkout\'s registrar\n')
+    const stateFilePath = join(tempDir('self-update-hooks-state-'), 'auto-update.json')
+    const events: string[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    return { rootDir, stateFilePath, events, calls }
+  }
+  const common = {
+    runningVersion: '0.26.0',
+    log: () => {},
+    drainSnapshot: () => ({ activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }),
+    setDrainMode: () => {},
+    schedule: () => setTimeout(() => {}, 60_000),
+  }
+
+  test('after the merge and before the exit, as a child of the new checkout, for the daemon\'s workspace', async () => {
+    const { rootDir, stateFilePath, events, calls } = setup()
+    const base = gitRunner({ calls })
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'node') {
+        events.push('register')
+        calls.push({ file, args: [...args] })
+        return { stdout: 'registered /work/agent\n', stderr: '' }
+      }
+      if (args[0] === 'merge') events.push('merge')
+      return base(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      ...common,
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      exit: () => events.push('exit'),
+      runner,
+      workspaceDirs: ['/work/agent', '/work/agent'],
+    })
+    await updater!.checkNow()
+    expect(events).toEqual(['merge', 'register', 'exit'])
+    const register = calls.find((call) => call.file === 'node')!
+    expect(register.args[0]).toBe(join(rootDir, 'bin', 'hoai-register-hooks.mjs'))
+    expect(register.args.slice(1)).toEqual(['--plugin-dir', rootDir, '--workdir', '/work/agent'])
+  })
+
+  test('a registration that fails never blocks the update or the restart', async () => {
+    const { rootDir, stateFilePath, events } = setup()
+    const base = gitRunner()
+    const logs: string[] = []
+    const runner: CommandRunner = async (file, args, opts) => {
+      if (file === 'node') throw new Error('settings file is read only')
+      return base(file, args, opts)
+    }
+    const updater = await initializeSelfUpdater({
+      ...common,
+      log: (line) => logs.push(line),
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      exit: () => events.push('exit'),
+      runner,
+      workspaceDirs: ['/work/agent'],
+    })
+    await updater!.checkNow()
+    expect(events).toEqual(['exit'])
+    expect(logs.some((line) => /could not register the agent hooks/.test(line))).toBe(true)
+  })
+
+  test('a daemon with no workspace folders, or an update that did not land, runs no registration', async () => {
+    const none = setup()
+    const noneCalls: string[] = []
+    const baseNone = gitRunner()
+    const updaterNone = await initializeSelfUpdater({
+      ...common,
+      rootDir: none.rootDir,
+      stateFilePath: none.stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      exit: () => {},
+      runner: async (file, args, opts) => {
+        if (file === 'node') noneCalls.push('node')
+        return baseNone(file, args, opts)
+      },
+    })
+    await updaterNone!.checkNow()
+    expect(noneCalls).toEqual([])
+
+    const failed = setup()
+    const failCalls: string[] = []
+    const baseFail = gitRunner()
+    const updaterFail = await initializeSelfUpdater({
+      ...common,
+      rootDir: failed.rootDir,
+      stateFilePath: failed.stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on', BGOS_EXIT_AFTER_UPDATE: '1' },
+      exit: () => {},
+      runner: async (file, args, opts) => {
+        if (file === 'node') failCalls.push('node')
+        if (args[0] === 'merge') throw new Error('not possible to fast-forward')
+        return baseFail(file, args, opts)
+      },
+      workspaceDirs: ['/work/agent'],
+    })
+    await updaterFail!.checkNow().catch(() => undefined)
+    expect(failCalls).toEqual([])
+  })
+})
