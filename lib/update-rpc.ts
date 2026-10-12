@@ -642,8 +642,11 @@ export class UpdateRpcHandler {
   private async restartDidNotArrive(rpcId: string): Promise<void> {
     this.deps.log(
       `update_rpc: RESTART DID NOT ARRIVE within ${RESTART_WATCHDOG_MS / 1000}s of 'restarting' (rpc=${rpcId}); ` +
-        'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
-        'the update stays on disk as pendingRestartVersion until something really restarts this process',
+        (rpcId === HOOK_RESTART_RPC
+          ? 'Un-draining so the daemon is not left deaf; the hook restart is single use, so ' +
+            'restart this agent by hand to load the private turn hook'
+          : 'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
+            'the update stays on disk as pendingRestartVersion until something really restarts this process'),
     )
     this.deps.setDrainMode(false)
     await this.progress(rpcId, { stage: 'error', message: RESTART_DID_NOT_ARRIVE })

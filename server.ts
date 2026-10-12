@@ -607,7 +607,8 @@ import {
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
 import { serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
-import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
+import { listProcesses } from './lib/process-tree.mjs'
 import {
   drawCatchupDelayMs,
   drawReconnectBaseDelayMs,
@@ -14949,9 +14950,11 @@ async function main(): Promise<void> {
   // person restarts the agent. Only a registration made by this boot arms it,
   // never a fresh start that found the hook; a record in the agent's state
   // folder makes it single use across the restart it causes. The daemon's own
-  // ladder does the restart, the one a scheduled update asks. Only the pairing
-  // lock holder asks, never once shutdown has begun (active), so the shutdown
-  // path needs nothing from it; its poll is unref'd.
+  // ladder does the restart, the one a scheduled update asks, at the safe
+  // moment the watcher waits for: the same facts agent-state.json publishes,
+  // claude's process tree, and no update in flight. Only the pairing lock
+  // holder asks, never once shutdown has begun (active), so the shutdown path
+  // needs nothing from it; its poll is unref'd.
   const hookRestartDir = agentStateDir(homedir(), ASSISTANT_ID)
   if (hookRestartDir) {
     const hookRestart = createHookRestart({
@@ -14963,8 +14966,17 @@ async function main(): Promise<void> {
       now: Date.now,
       ownPid: process.pid,
       active: () => lockHeld && !shuttingDown,
-      drainSnapshot: updateDrainSnapshot,
       draining: () => updateDrainMode,
+      updateLockHeld: () =>
+        INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
+      safeState: () => ({
+        turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+        turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+        ...updateDrainSnapshot(),
+      }),
+      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+      claudePid: () => agentClaudePid(),
+      listProcesses: () => listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env }),
       drain: setUpdateDrainMode,
       requestRestart: () => updateRpc.restartAfterHookRegistration(),
       log,

@@ -51,11 +51,26 @@ test('ONE restart through the daemon\'s own ladder, asked by the pairing lock ho
   assert.match(b, /recordPath: pathJoin\(hookRestartDir, HOOK_RESTART_FILE_NAME\)/)
   assert.match(b, /active: \(\) => lockHeld && !shuttingDown/)
   assert.match(b, /bootAtMs: DAEMON_START_MS/)
-  assert.match(b, /drainSnapshot: updateDrainSnapshot/)
   assert.match(b, /draining: \(\) => updateDrainMode/)
   assert.match(b, /drain: setUpdateDrainMode/)
   assert.match(b, /requestRestart: \(\) => updateRpc\.restartAfterHookRegistration\(\)/)
   assert.match(b, /fs: nodeHookRestartFs\(\)/)
+})
+
+test('it waits for the safe moment the watcher waits for: the facts agent-state.json publishes, claude\'s process tree, and no update in flight', () => {
+  const b = block()
+  assert.match(b, /turnInFlight: hookTurnLive \|\| hookTurn\.carried\.size > 0/)
+  assert.match(b, /turnSignal: hookTurnSignal\(\{ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId \}\)/)
+  assert.match(b, /\.\.\.updateDrainSnapshot\(\)/)
+  assert.match(b, /activityMs: \(\) => \[DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript\(\)\.activityMs\]/)
+  assert.match(b, /claudePid: \(\) => agentClaudePid\(\)/)
+  assert.match(b, /listProcesses\(\{ platform: process\.platform, exec: nodeExec\(\), env: process\.env \}\)/)
+  assert.match(b, /updateLockHeld: \(\) =>\s*INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld\(joinPath\(import\.meta\.dir, '\.git', AUTO_UPDATE_LOCK_FILE\)\)/)
+})
+
+test('it runs on every platform: the block sits at the top level of main(), outside the Windows takeover gate', () => {
+  block()
+  assert.match(server, /\n  const hookRestartDir = agentStateDir\(homedir\(\), ASSISTANT_ID\)\n  if \(hookRestartDir\) \{\n    const hookRestart = createHookRestart\(\{/)
 })
 
 test('the shutdown path never names the hook restart: it is inert once shutdown begins (active)', () => {

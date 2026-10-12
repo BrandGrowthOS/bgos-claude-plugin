@@ -27,7 +27,11 @@ import { registerCloneHooks } from '../lib/clone-hooks.mjs'
 import { privateHookPresence } from '../lib/private-hook-presence'
 import { UpdateRpcHandler } from '../lib/update-rpc'
 
-const hookRestart: any = await import('../lib/hook-restart.mjs').catch(() => null)
+// Only a missing module reads as missing; a module that does not load is a failure of its own.
+const hookRestart: any = await import('../lib/hook-restart.mjs').catch((err) => {
+  if (err?.code === 'ERR_MODULE_NOT_FOUND') return null
+  throw err
+})
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const T0 = 1_800_000_000_000
@@ -78,7 +82,7 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
   put(`${STATE}\\session-id`, `${PIN}\n`)
   put(sessionTranscriptPath(HOME, CWD, PIN), '{"type":"summary"}\n')
 
-  type Gen = { claude: number; daemon: number; child: FakeClaude; dead: boolean; controller: any; registeredAtBoot: boolean; outcomes: string[] }
+  type Gen = { claude: number; daemon: number; child: FakeClaude; dead: boolean; controller: any; registeredAtBoot: boolean; outcomes: string[]; bootAtMs: number }
   const gens: Gen[] = []
   const logs: string[] = []
   const prints: string[] = []
@@ -133,9 +137,11 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
       exists: (p) => existsSync(p),
       join,
     })
+    g.bootAtMs = clock.now
     g.registeredAtBoot = presence.registered
     g.outcomes = presence.registered ? [] : [registerCloneHooks({ workdir: ws, pluginDir: repoRoot }).outcome]
-    const forced = forceOutcomes?.(gens.length)
+    // This daemon's index: 0 for the first, 1 for the one the restart brings up.
+    const forced = forceOutcomes?.(gens.length - 1)
     if (forced) g.outcomes = forced
     g.controller =
       hookRestart?.createHookRestart({
@@ -143,12 +149,23 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
         folders: [ws],
         recordPath: RECORD,
         fs: recordFs,
-        bootAtMs: clock.now,
+        bootAtMs: g.bootAtMs,
         now: () => clock.now,
         ownPid: g.daemon,
         active: () => !g.dead,
-        drainSnapshot: () => IDLE,
         draining: () => false,
+        updateLockHeld: () => false,
+        // The workspace never had the hook rail, so no turn signal: the 30 minute rule.
+        safeState: () => ({ turnInFlight: false, turnSignal: 'none', ...IDLE }),
+        activityMs: () => [g.bootAtMs],
+        claudePid: () => g.claude,
+        listProcesses: async () => ({
+          ok: true,
+          processes: live().flatMap((x) => [
+            { pid: x.claude, ppid: 4000, command: `claude ${x.child.args.join(' ')}` },
+            { pid: x.daemon, ppid: x.claude, command: 'bun C:\\plugins\\bgos-claude-plugin\\server.ts' },
+          ]),
+        }),
         drain: () => {},
         requestRestart: () => ladderFor(g).restartAfterHookRegistration(),
         log: (l: string) => logs.push(`daemon ${g.daemon}: ${l}`),
@@ -176,7 +193,7 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
       removeFile: (p: string) => files.delete(p),
       spawnImpl: ((_file: string, args: readonly string[]) => {
         const child = new FakeClaude(args)
-        const g: Gen = { claude: nextPid++, daemon: nextPid++, child, dead: false, controller: null, registeredAtBoot: false, outcomes: [] }
+        const g: Gen = { claude: nextPid++, daemon: nextPid++, child, dead: false, controller: null, registeredAtBoot: false, outcomes: [], bootAtMs: clock.now }
         child.on('exit', () => {
           g.dead = true
         })
@@ -207,7 +224,7 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
   const pass = async (ms: number) => {
     const end = clock.now + ms
     while (clock.now < end) {
-      clock.now += 5_000
+      clock.now += 30_000
       await current()?.controller?.tick()
       await tick()
     }
@@ -222,10 +239,12 @@ test('a daemon that registered the hook itself gets ONE restart: the 0.67.x laun
   const first = h.gens[0]
   assert.equal(first.registeredAtBoot, false, 'the workspace starts without the private turn hook')
   assert.deepEqual(first.outcomes, ['registered'], 'the first daemon registered it in the real workspace')
+  await h.pass(29 * 60_000)
+  assert.equal(h.gens.length, 1, 'nothing before 30 minutes of quiet: without the hook turn signal a turn may be running unseen')
   await h.pass(2 * 60_000)
   if (!hookRestart) {
     assert.fail(
-      `the daemon registered the private turn hook in ${h.ws} and asked for no restart: claude ${first.claude} still runs 2 minutes later, ` +
+      `the daemon registered the private turn hook in ${h.ws} and asked for no restart: claude ${first.claude} still runs 31 minutes later, ` +
         'so the hook never loads (server.ts:14783 at main only logs "restart this agent to load them")',
     )
   }
@@ -250,7 +269,7 @@ test('the restarted daemon writes the hook AGAIN (its detection disagreed): the 
   const h = harness({ forceOutcomes: (boot) => (boot >= 1 ? ['registered'] : null) })
   const run = h.launch()
   await until(() => h.gens.length === 1, 'the first claude')
-  await h.pass(2 * 60_000)
+  await h.pass(31 * 60_000)
   if (!hookRestart) assert.fail('the daemon registered the private turn hook and asked for no restart (server.ts:14783 at main)')
   await until(() => h.gens.length === 2, 'the launcher relaunch')
   assert.deepEqual(h.gens[1].outcomes, ['registered'])
