@@ -199,6 +199,12 @@ const ATTACHED_LINE = /^\[Attached (?:image|video|audio|document): .*\]$/
 
 /** The markers lib/inbound-channel.ts puts on a message that is NOT the owner. */
 const NOT_OWNER_MARKER = /^\[(?:Peer message from agent|System message from BGOS)/
+/**
+ * The email line (lib/inbound-channel.ts EXTERNAL_EMAIL_ORIGIN_MARKER), on any
+ * line: a backlog or plan level line can sit above it, and a stranger's words
+ * must never become the owner's session title.
+ */
+const EMAIL_MARKER_LINE = /^\[Email from outside HOAI/m
 
 /** Claude Code's own lines, recorded as user entries but typed by nobody. */
 const HARNESS_TAG =
@@ -217,6 +223,7 @@ function channelOwnerBody(text: string): string | null {
     attrs.event_type !== undefined ||
     attrs.sender_type === 'agent' ||
     attrs.sender_type === 'system' ||
+    attrs.sender_type === 'external_email' ||
     attrs.system === 'true'
   ) {
     return null
@@ -224,7 +231,7 @@ function channelOwnerBody(text: string): string | null {
   let body = text.slice(open[0].length)
   const close = body.lastIndexOf('</channel>')
   if (close >= 0) body = body.slice(0, close)
-  if (NOT_OWNER_MARKER.test(body.trimStart())) return null
+  if (NOT_OWNER_MARKER.test(body.trimStart()) || EMAIL_MARKER_LINE.test(body)) return null
   const kept = body
     .split('\n')
     .filter((line) => !BACKLOG_LINE.test(line.trim()) && !ATTACHED_LINE.test(line.trim()))
