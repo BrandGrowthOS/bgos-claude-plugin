@@ -227,6 +227,34 @@ test('a background job under claude holds it, and so does a process table it can
   assert.equal(r.requests.length, 1)
 })
 
+test('a job that stays under claude is looked at again only every few minutes, not on every poll', async () => {
+  const m = need()
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: true, processes: [...TABLE, JOB] }
+  await r.pass(40 * 60_000)
+  assert.equal(r.requests.length, 0)
+  // Quiet from +10 min to +40 min: at most one listing per backoff, never one per 30 s poll.
+  const most = Math.ceil((30 * 60_000) / m.HOOK_RESTART_LIST_BACKOFF_MS) + 1
+  assert.ok(r.state.listings >= 2 && r.state.listings <= most, `${r.state.listings} listings in 30 minutes`)
+  assert.ok(m.HOOK_RESTART_LIST_BACKOFF_MS >= 5 * 60_000)
+  r.state.listing = { ok: true, processes: [...TABLE] }
+  await r.pass(m.HOOK_RESTART_LIST_BACKOFF_MS + m.HOOK_RESTART_POLL_MS)
+  assert.equal(r.requests.length, 1, 'the job ended: it asks at the next look')
+})
+
+test('it says why it waits, once per reason, so a restart that cannot happen is visible', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.turn = { turnInFlight: true, turnSignal: 'hooks' }
+  await r.pass(15 * 60_000)
+  r.state.turn = { turnInFlight: false, turnSignal: 'hooks' }
+  r.state.claudePid = null
+  await r.pass(15 * 60_000)
+  const waits = r.logs.filter((l) => l.startsWith('hook restart: waiting'))
+  assert.equal(waits.filter((l) => l.includes('turn_in_flight')).length, 1, r.logs.join('\n'))
+  assert.equal(waits.filter((l) => l.includes('process_tree_unreadable')).length, 1, r.logs.join('\n'))
+  assert.equal(waits.filter((l) => l.includes('young')).length, 0, 'the first minute is not news')
+})
+
 test('an update in flight holds it: the shared checkout\'s update lock, or an update drain', async () => {
   const r = rig({ outcomes: ['registered'] })
   r.state.updateLock = true
