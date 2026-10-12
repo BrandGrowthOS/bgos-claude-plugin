@@ -32,6 +32,8 @@ import {
   buildButtonClickedMeta,
   buildInboundChannel,
   type AgentOriginLike,
+  EXTERNAL_EMAIL_SENDER_TYPE,
+  isExternalEmailInbound,
   isSelfAuthoredAgentOrigin,
   readTapperUserId,
 } from './inbound-channel.ts'
@@ -75,7 +77,7 @@ export interface StreamMessageView {
   messageId: number
   text: string
   files: unknown[]
-  senderKind: 'user' | 'assistant' | 'system' | 'agent' | 'unknown'
+  senderKind: 'user' | 'assistant' | 'system' | 'agent' | 'external_email' | 'unknown'
   agentOrigin?: AgentOriginLike
   peerConversationId?: string
   turnState?: string
@@ -161,18 +163,24 @@ export function viewStreamMessage(
   const isSelfAuthoredAgent =
     recipientAssistantId != null &&
     isSelfAuthoredAgentOrigin(agentOrigin, recipientAssistantId)
-  const senderKind =
+  // An email (agent email, P1): any of the backend's signs on the row or the
+  // flat push. It outranks everything but the agent's own reply, so it can
+  // never read as the owner ('user'), a peer or a system wake.
+  const isEmail = isExternalEmailInbound(source) || isExternalEmailInbound(payload)
+  const senderKind: StreamMessageView['senderKind'] =
     persistedSenderKind === 'assistant' || isSelfAuthoredAgent
       ? 'assistant'
-      : agentOrigin
-        ? 'agent'
-        : declaredSenderType != null
-          ? senderKindOf(declaredSenderType)
-          : persistedSenderKind !== 'unknown'
-            ? persistedSenderKind
-            : isRow
-              ? 'unknown'
-              : 'user'
+      : isEmail
+        ? EXTERNAL_EMAIL_SENDER_TYPE
+        : agentOrigin
+          ? 'agent'
+          : declaredSenderType != null
+            ? senderKindOf(declaredSenderType)
+            : persistedSenderKind !== 'unknown'
+              ? persistedSenderKind
+              : isRow
+                ? 'unknown'
+                : 'user'
 
   const files = isRow
     ? Array.isArray(payload.messageFiles)
@@ -185,10 +193,13 @@ export function viewStreamMessage(
   const nestedSender = (isRow ? undefined : payload.sender) as
     | { userId?: unknown }
     | undefined
-  const senderUserId =
-    str(nestedSender && typeof nestedSender === 'object' ? nestedSender.userId : undefined) ??
-    str(source.senderUserId ?? source.sender_user_id) ??
-    str(isRow ? undefined : (payload.userId ?? payload.user_id))
+  // An email has no sender on this account. The flat push's `userId` is the
+  // transport owner, so reading it here would name the owner as its author.
+  const senderUserId = isEmail
+    ? undefined
+    : str(nestedSender && typeof nestedSender === 'object' ? nestedSender.userId : undefined) ??
+      str(source.senderUserId ?? source.sender_user_id) ??
+      str(isRow ? undefined : (payload.userId ?? payload.user_id))
   const peerConversationIdRaw =
     source.peerConversationId ??
     source.peer_conversation_id ??
@@ -275,7 +286,7 @@ export function decideMessageFinalized(
     if (isEmptyBody(view)) return { action: 'hold_empty' }
     return {
       action: 'forward',
-      isSystem: view.senderKind !== 'user' && view.senderKind !== 'agent',
+      isSystem: isSystemFinalize(view),
     }
   }
   if (view.messageId <= opts.lastSeenInChat) {
@@ -291,8 +302,17 @@ export function decideMessageFinalized(
   // daemon only now catches up): the finalize IS the delivery.
   return {
     action: 'forward',
-    isSystem: view.senderKind !== 'user' && view.senderKind !== 'agent',
+    isSystem: isSystemFinalize(view),
   }
+}
+
+/**
+ * A finalize that is not a person's or a peer's is the system wake it fills,
+ * which is how an `unknown` row has always been delivered. An email is never
+ * one: the system marker is weaker than the email label.
+ */
+function isSystemFinalize(view: StreamMessageView): boolean {
+  return view.senderKind !== 'user' && view.senderKind !== 'agent' && view.senderKind !== EXTERNAL_EMAIL_SENDER_TYPE
 }
 
 // ── buttons_answered (single-announce contract) ──────────────────────────────

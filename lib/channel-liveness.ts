@@ -357,10 +357,17 @@ export function deafFixCommand(input: {
  * is still delivered, still read, still acted on. If a wake's instructions do
  * call for a reply, the agent replies because the wake said so, which is the
  * only reason it ever should have.
+ *
+ * AN EMAIL OWES NONE EITHER (sender type external_email, agent email). It is
+ * a stranger's words in the owner's email chat, and the nudge ("call the
+ * `reply` tool now") pushes an agent to answer the stranger when its job is
+ * to tell the owner and let them decide. Unanswered spam would also count as
+ * a message waiting and feed the deaf verdict. The email is still delivered.
  */
 export function inboundOwesReply(senderKind: string | null | undefined): boolean {
   if (senderKind == null) return true
-  return String(senderKind).trim().toLowerCase() !== 'system'
+  const kind = String(senderKind).trim().toLowerCase()
+  return kind !== 'system' && kind !== 'external_email'
 }
 
 /**

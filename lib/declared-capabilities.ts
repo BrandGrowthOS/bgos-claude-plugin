@@ -20,7 +20,7 @@
  * process. A channel-level constant would have been wrong on half the fleet
  * the day it shipped.
  *
- * The sixteen tokens, and what each one PROMISES the owner:
+ * The tokens, and what each one PROMISES the owner:
  *
  *   mission_events      this daemon listens for the owner's own mission
  *                       decisions (Set aside, Mark done, Pause, Resume,
@@ -184,6 +184,24 @@
  *                       so in the answer. The backend sends a changes frame to
  *                       a Claude Code pairing only while this is declared, and
  *                       only while the owner's switch is on (P7 stage 3).
+ *   email_label         this daemon labels an email (senderType
+ *                       external_email) as a stranger's words on every lane:
+ *                       a fixed first line and end line around everything the
+ *                       sender wrote, its file lines included, and meta that
+ *                       names no person (lib/inbound-channel.ts, agent email,
+ *                       HOAI board row 2dd04488). The backend writes no email
+ *                       into an agent's chat and serves none on any lane until
+ *                       the agent's active pairing declares it, so an older
+ *                       plugin never receives one. Every host and connection:
+ *                       labelling is plain code. Declared only while
+ *                       labelsExternalEmail(), the builder's own check, holds,
+ *                       so a build whose label broke stops declaring it and
+ *                       the backend holds the mail instead of serving it bare.
+ *                       That check proves the BUILDER (the label, the end
+ *                       line, the neutralising, the meta); that every lane
+ *                       hands an email to it is proved by
+ *                       test/external-email-label.test.ts, which runs each
+ *                       lane's real code out of server.ts.
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -203,6 +221,7 @@
 
 import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
+import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -282,6 +301,7 @@ export function declaredCapabilities(input: {
 }): readonly string[] {
   return [
     ...DECLARED_CAPABILITIES_BASE,
+    ...(labelsExternalEmail() ? [EMAIL_LABEL] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
   ]

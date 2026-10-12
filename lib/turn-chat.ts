@@ -33,7 +33,7 @@
  * Pure: no clock of its own, no I/O. The caller passes `now`.
  */
 
-export type TurnChatKind = 'user' | 'peer' | 'system' | 'meeting'
+export type TurnChatKind = 'user' | 'peer' | 'system' | 'meeting' | 'email'
 
 export interface TurnChatRecord {
   chatId: string
