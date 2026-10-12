@@ -754,3 +754,19 @@ test('review 3 F3: reportEntry: a wait a plain restart cannot end (manual_sessio
   }
   assert.equal(reportEntry('912', { ...record, reason: 'background_job', target: UPGRADE_TARGET }, NOW).pending, 'upgrade')
 })
+
+test('decideFreshStart: a restart is written only onto the session it was judged on, and never onto a fresh start', async () => {
+  const plan: any = await import('../lib/keepalive-plan.mjs')
+  assert.equal(typeof plan.decideFreshStart, 'function', 'keepalive-plan has no fresh-start guard: a sweep judged before a relaunch writes its marker onto the new session (2026-10-12 17:17:10)')
+  const now = Date.parse('2026-10-12T13:17:10.486Z')
+  const base = { now, windowMs: 30 * 60_000, judgedDaemonPid: 4912, liveDaemonPid: 4912, launchStartedAtMs: now - 3_600_000, newestClaudeStartedAtMs: now - 3_600_000, markerOnDisk: false }
+  assert.deepEqual(plan.decideFreshStart(base), { proceed: true })
+  assert.deepEqual(plan.decideFreshStart({ ...base, markerOnDisk: true }), { proceed: false, reason: 'restart_already_requested' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, liveDaemonPid: 4913 }), { proceed: false, reason: 'fresh_start' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, launchStartedAtMs: now - 9_328 }), { proceed: false, reason: 'fresh_start' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, newestClaudeStartedAtMs: now - 15 * 60_000 }), { proceed: false, reason: 'fresh_start' }, 'inside the 30 min window')
+  assert.deepEqual(plan.decideFreshStart({ ...base, windowMs: 10 * 60_000, newestClaudeStartedAtMs: now - 15 * 60_000 }), { proceed: true }, 'past the 10 min window')
+  assert.deepEqual(plan.decideFreshStart({ ...base, launchStartedAtMs: now + 60_000 }), { proceed: false, reason: 'fresh_start' }, 'a stamp in the future reads as recent')
+  // Unknown pids or stamps prove nothing either way.
+  assert.deepEqual(plan.decideFreshStart({ ...base, judgedDaemonPid: null, liveDaemonPid: 4913, launchStartedAtMs: null, newestClaudeStartedAtMs: null }), { proceed: true })
+})

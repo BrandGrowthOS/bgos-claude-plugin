@@ -77,7 +77,8 @@ import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inv
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -14831,10 +14832,14 @@ async function main(): Promise<void> {
   // instantly instead of waiting out the staleness window. Idempotent because
   // stdin fires 'end' and then 'close', and both mean the same thing.
   let shuttingDown = false
+  // The restart-marker takeover (Windows), started further down; declared here
+  // because a parent that dies during startup calls shutdown() before that.
+  let markerTakeover: ReturnType<typeof createMarkerTakeover> | null = null
   const shutdown = (cause: ShutdownCause | string, code: number): void => {
     if (shuttingDown) return
     shuttingDown = true
     log(describeShutdownCause(cause))
+    markerTakeover?.stop()
     selfUpdater?.markGracefulStop()
     stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
@@ -14871,6 +14876,71 @@ async function main(): Promise<void> {
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
+
+  // The restart-marker takeover (lib/marker-takeover.mjs, Windows only). The
+  // hoai launcher allows 3 marker relaunches per hour per process and then
+  // ignores every marker for good (bin/hoai-core.mjs:2228, :2293, :2295-2299);
+  // launchers already running in the field cannot be changed. This daemon
+  // watches its own marker and, when the launcher provably left a fresh one
+  // unanswered, starts ONE detached hidden helper (bin/hoai-restart-handoff.mjs)
+  // that proves this session, ends claude and brings the agent back on its
+  // pinned session. Only the pairing lock holder acts.
+  if (process.platform === 'win32' && String(process.env.HOAI_MARKER_TAKEOVER ?? '').trim().toLowerCase() !== 'off') {
+    const takeoverDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (takeoverDir) {
+      markerTakeover = createMarkerTakeover({
+        platform: process.platform,
+        assistantId: String(ASSISTANT_ID),
+        stateDir: takeoverDir,
+        bootAtMs: DAEMON_START_MS,
+        now: Date.now,
+        ownPid: process.pid,
+        active: () => lockHeld && !shuttingDown,
+        claudePid: () => agentClaudePid(),
+        fs: nodeTakeoverFs(),
+        pidAlive: defaultPidAlive,
+        setInterval,
+        clearInterval,
+        setTimeout,
+        watch,
+        helperParams: () => ({
+          home: homedir(),
+          launchCwd: LAUNCH_CWD,
+          logPath: LOG_FILE,
+          pluginStateDir: pathDirname(CURSOR_FILE_PATH),
+          credentialsPath: CREDENTIALS_PATH,
+          pluginRoot: currentPluginRootFor({
+            installMethod: INSTALL_METHOD,
+            pluginRoot: PLUGIN_ROOT,
+            installedPluginsRaw: readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+            exists: existsSync,
+          }),
+        }),
+        helperEnv: () =>
+          handoffEnv(process.env, {
+            platform: process.platform,
+            extraKeys: mcpEnvKeys(
+              readTextOrNull(pathJoin(RUNNING_ROOT, '.claude-plugin', 'plugin.json')),
+              readTextOrNull(pathJoin(LAUNCH_CWD, '.mcp.json')),
+            ),
+          }),
+        spawnHelper: (argv: string[], env: Record<string, string>) => {
+          const child = spawnProcess(process.execPath, [pathJoin(RUNNING_ROOT, 'bin', 'hoai-restart-handoff.mjs'), ...argv], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+            cwd: takeoverDir,
+            env,
+          })
+          child.on('error', () => {})
+          child.unref()
+          return { pid: child.pid ?? null }
+        },
+        log,
+      })
+      markerTakeover.start()
+    }
+  }
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:
