@@ -238,14 +238,12 @@ function assertOwnerOnly(file: string) {
     assert.equal(statSync(dir).mode & 0o077, 0, `${dir} is owner only`)
     return
   }
-  const who = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim()
-  const sid = /"(S-1-[0-9-]+)"\s*$/.exec(who)?.[1]
-  assert.ok(sid, 'the current user SID')
+  const me = currentUser()
   for (const target of [file, dir]) {
     const sddl = sddlOf(target)
     const aces = [...sddl.matchAll(/\(([^)]*)\)/g)].map((m) => m[1]!)
     assert.ok(aces.length > 0, `${target} has an ACL: ${sddl}`)
-    for (const ace of aces) assert.ok(ace.endsWith(`;;;${sid}`) && ace.startsWith('A;'), `${target}: only the user may open it, found ${ace} in ${sddl}`)
+    for (const ace of aces) assert.ok(ace.startsWith('A;') && me.isMe(ace.split(';')[5]!), `${target}: only the user may open it, found ${ace} in ${sddl}`)
   }
   // The guarded folder itself does not inherit from above it.
   let guarded = dir
@@ -253,10 +251,25 @@ function assertOwnerOnly(file: string) {
   assert.match(sddlOf(guarded), /^D:P/, `${guarded} is protected from inheritance`)
 }
 
+/**
+ * Windows' own tools by their System32 path: under Git Bash (the CI shell) a
+ * bare whoami.exe is GNU whoami, which ignores /user /fo csv.
+ */
+function system32(exe: string): string {
+  return join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', exe)
+}
+
+/** The user's SID, and whether an SDDL trustee is that user (RID 500 reads back as LA, as the guard allows). */
+function currentUser() {
+  const sid = /"(S-1-[0-9-]+)"\s*$/.exec(spawnSync(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim())?.[1]
+  assert.ok(sid, 'the current user SID')
+  return { sid, isMe: (trustee: string) => trustee === sid || (trustee === 'LA' && /^S-1-5-21-[0-9-]+-500$/.test(sid)) }
+}
+
 function sddlOf(target: string): string {
   const saved = join(tmpdir(), `acl-${randomBytes(6).toString('hex')}.txt`)
   try {
-    const r = spawnSync('icacls.exe', [target, '/save', saved], { encoding: 'utf8' })
+    const r = spawnSync(system32('icacls.exe'), [target, '/save', saved], { encoding: 'utf8' })
     assert.equal(r.status, 0, `icacls /save ${target}: ${r.stdout} ${r.stderr}`)
     const lines = readFileSync(saved).toString('utf16le').replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim())
     return (lines[1] || '').trim()

@@ -648,7 +648,7 @@ test('the folder guard on the REAL file system makes a folder owner only even wh
     const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
     mkdirSync(dir, { recursive: true })
     // What the runner's folders look like: no inheritance, the entries explicit.
-    const d = spawnSync('icacls.exe', [dir, '/inheritance:d'], { encoding: 'utf8' })
+    const d = spawnSync(system32('icacls.exe'), [dir, '/inheritance:d'], { encoding: 'utf8' })
     assert.equal(d.status, 0, d.stdout + d.stderr)
     const guard = new KeptFolderGuard({ dir, home, env: { ...process.env, OneDrive: undefined, OneDriveConsumer: undefined, OneDriveCommercial: undefined } })
     assert.equal(await guard.prepare(), true, `guard: ${guard.reason}; ACL read back: ${guard.readBack}`)
@@ -657,7 +657,7 @@ test('the folder guard on the REAL file system makes a folder owner only even wh
   }
 })
 
-test('the folder guard on the REAL file system: owner only, read back, nothing above it trusted', { skip: process.platform === 'win32' && !spawnSync('icacls.exe', ['/?']).stdout ? 'no icacls' : false }, async () => {
+test('the folder guard on the REAL file system: owner only, read back, nothing above it trusted', { skip: process.platform === 'win32' && !spawnSync(system32('icacls.exe'), ['/?']).stdout ? 'no icacls' : false }, async () => {
   const home = mkdtempSync(join(tmpdir(), 'dl-guard-'))
   try {
     const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
@@ -665,11 +665,15 @@ test('the folder guard on the REAL file system: owner only, read back, nothing a
     assert.equal(await guard.prepare(), true, `guard: ${guard.reason}; ACL read back: ${guard.readBack}`)
     assert.equal(guard.verify(), true)
     if (process.platform === 'win32') {
-      const sid = /"(S-1-[0-9-]+)"\s*$/.exec(spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim())![1]
+      const me = currentUser()
       const saved = join(home, 'acl.txt')
-      spawnSync('icacls.exe', [dir, '/save', saved])
+      spawnSync(system32('icacls.exe'), [dir, '/save', saved])
       const sddl = readFileSync(saved).toString('utf16le').replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.trim())[1]!.trim()
-      assert.match(sddl, new RegExp(`^D:P(?:AI)?\\(A;OICI;FA;;;${sid}\\)$`), sddl)
+      const aces = [...sddl.matchAll(/\(([^)]*)\)/g)].map((m) => m[1]!.split(';'))
+      assert.match(sddl, /^D:P/, sddl)
+      assert.equal(aces.length, 1, sddl)
+      assert.deepEqual([aces[0]![0], aces[0]![1], aces[0]![2]], ['A', 'OICI', 'FA'], sddl)
+      assert.ok(me.isMe(aces[0]![5]!), `the one entry is the user's: ${sddl}`)
     } else {
       assert.equal(statSync(dir).mode & 0o777, 0o700)
     }
@@ -682,6 +686,21 @@ test('the folder guard on the REAL file system: owner only, read back, nothing a
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+/**
+ * Windows' own tools by their System32 path: under Git Bash (the CI shell) a
+ * bare whoami.exe is GNU whoami, which ignores /user /fo csv.
+ */
+function system32(exe: string): string {
+  return join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', exe)
+}
+
+/** The user's SID, and whether an SDDL trustee is that user (RID 500 reads back as LA, as the guard allows). */
+function currentUser() {
+  const sid = /"(S-1-[0-9-]+)"\s*$/.exec(spawnSync(system32('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8' }).stdout.trim())?.[1]
+  assert.ok(sid, 'the current user SID')
+  return { sid, isMe: (trustee: string) => trustee === sid || (trustee === 'LA' && /^S-1-5-21-[0-9-]+-500$/.test(sid)) }
+}
 
 // ── Words ─────────────────────────────────────────────────────────────────────
 
