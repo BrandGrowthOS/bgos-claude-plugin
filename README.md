@@ -151,6 +151,13 @@ launchd / systemd --user
 - **Watch it with `hoai-agent attach --assistant <id>`**, which attaches to that
   session. Detach with Ctrl-b then d. Typing `/exit` there ends the agent, and
   the service starts it again.
+- **Show agent windows.** Every agent runs hidden, on every platform. When the
+  owner turns on Show agent windows (Settings, Advanced), each computer's
+  watcher opens a viewer beside every running agent within a minute: a read only
+  Terminal on its tmux session on a Mac or Linux desktop, a watch only window on
+  Windows that mirrors the agent's hidden console and cannot type into it.
+  Closing a viewer, or turning the setting off, closes only the viewer; nothing
+  restarts. A closed viewer stays closed until the agent's next start.
 - **The installed plugin, at every launch.** `run.sh` resolves the plugin root
   each time it starts hoai: a marketplace agent reads its install record
   (`<config dir>/plugins/installed_plugins.json`, honouring `CLAUDE_CONFIG_DIR`),

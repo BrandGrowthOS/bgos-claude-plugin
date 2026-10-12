@@ -30,6 +30,7 @@ import {
   INSTALL_TIMEOUT_MS,
   KEEP_ONLINE_TICK_MS,
   hookSpoolPathFor,
+  installProductSupervisor,
   keepAliveCachePath,
   mungeCwd,
   transcriptPathFor,
@@ -263,7 +264,7 @@ test('disabled: the switch off means NO effect at all (no exec, no kill, no spaw
   const clock = fakeClock()
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: consent({ enabled: false, enabledAt: null, assistantIds: [912] }).fetchKeepAlive })
   const report = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(report, { enabled: false, source: 'live', agents: [] })
+  assert.deepEqual(report, { enabled: false, source: 'live', agents: [], showAgentWindows: false })
   assert.deepEqual(rec.calls, [])
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(rec.spawns, [])
@@ -276,7 +277,7 @@ test('consent: a failed fetch with no cache is OFF; with a cache younger than 24
   const clock = fakeClock()
   const down = consent(null, false, 0)
   const { ctx } = ctxFor(fs, rec, clock, { fetchKeepAlive: down.fetchKeepAlive })
-  assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [] })
+  assert.deepEqual(await runKeepAliveSweep(ctx as any), { enabled: false, source: 'none', agents: [], showAgentWindows: false })
   assert.equal(rec.calls.length, 0)
   // A 404 (backend not deployed yet) is the same: off, unless a fresh cache exists.
   fs.writeFile(keepAliveCachePath(HOME), buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['912'] }, T0 - 23 * 60 * MIN))
@@ -296,7 +297,7 @@ test('consent: a 401 or 403 (the pairing was revoked) is a definitive OFF, never
     const clock = fakeClock()
     const refused = consent({ message: 'Invalid pairing token' }, false, status)
     const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { fetchKeepAlive: refused.fetchKeepAlive }).ctx as any)
-    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [] }, String(status))
+    assert.deepEqual(report, { enabled: false, source: 'refused', agents: [], showAgentWindows: false }, String(status))
     assert.deepEqual(rec.calls, [], `${status}: no install, no restart, no task start`)
     assert.equal(JSON.parse(fs.files.get(keepAliveCachePath(HOME))!).enabled, false, `${status}: the ON cache is gone`)
     // The network then goes down: the cache bridges the outage as OFF.
@@ -317,11 +318,50 @@ test('consent: a live answer is cached in ~/.bgos-agent/watcher/keepalive.json (
     enabled: true,
     enabledAt: 'e',
     assistantIds: ['7', '912'],
+    switchState: 'on',
+    showAgentWindows: false,
     fetchedAt: new Date(T0).toISOString(),
   })
 })
 
+test('consent: the owner Show agent windows setting rides the sweep report whether the switch is on or off (board row d133ddb2), and an answer without it reads as off', async () => {
+  for (const enabled of [true, false]) {
+    const fs = machine([])
+    const on = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [], showAgentWindows: true })
+    const report = await runKeepAliveSweep(ctxFor(fs, recorder(), fakeClock(), { fetchKeepAlive: on.fetchKeepAlive }).ctx as any)
+    assert.equal(report.showAgentWindows, true, `switch ${enabled}`)
+    const older = consent({ enabled, enabledAt: enabled ? 'e' : null, assistantIds: [] })
+    const plain = await runKeepAliveSweep(ctxFor(machine([]), recorder(), fakeClock(), { fetchKeepAlive: older.fetchKeepAlive }).ctx as any)
+    assert.equal(plain.showAgentWindows, false, `switch ${enabled}, older backend`)
+  }
+})
+
 // -- supervise -----------------------------------------------------------------------------------
+
+test('installProductSupervisor (shared by the sweep and create_agent): win32 registers the agent task (hidden launcher) and starts it only when asked; posix runs bgos-agent install --always-on from the given root, node dirs first on PATH; no root is a named failure', async () => {
+  const calls: Array<{ file: string; args: string[]; opts: any }> = []
+  const exec = async (file: string, args: readonly string[], opts: any) => {
+    calls.push({ file, args: [...args], opts })
+    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+  }
+  const fs = memoryFs()
+  const base = { assistantId: '55', home: 'C:\\Users\\kc', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\kc\\hoai-agents\\wolf' }
+  const started = await installProductSupervisor({ ...base, platform: 'win32', start: true } as any)
+  assert.equal(started.ok, true, started.message)
+  assert.deepEqual(calls.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
+  assert.match(fs.files.get('C:\\Users\\kc\\.bgos-agent\\55\\run-agent.vbs')!, /--keep-alive", 0, True\)\r\n$/)
+  calls.length = 0
+  const registered = await installProductSupervisor({ ...base, platform: 'win32', start: false } as any)
+  assert.equal(registered.ok, true)
+  assert.deepEqual(calls.map((c) => c.file), ['powershell.exe'], 'registered, not started')
+  calls.length = 0
+  const posix = await installProductSupervisor({ ...base, platform: 'darwin', home: '/Users/kc', env: { PATH: '/usr/bin' }, nodePath: '/opt/homebrew/bin/node', pluginRoot: '/root', cwd: '/Users/kc/hoai-agents/wolf' } as any)
+  assert.deepEqual(posix, { ok: true, message: 'installed' })
+  assert.deepEqual(calls.map((c) => [c.file, ...c.args]), [['bash', '/root/bin/bgos-agent', 'install', '--assistant', '55', '--dir', '/Users/kc/hoai-agents/wolf', '--always-on', '--no-clone']])
+  assert.equal(calls[0]!.opts.env.PATH, '/opt/homebrew/bin:/usr/bin')
+  assert.equal(calls[0]!.opts.timeoutMs, INSTALL_TIMEOUT_MS)
+  assert.deepEqual(await installProductSupervisor({ ...base, platform: 'linux', pluginRoot: null } as any), { ok: false, message: 'plugin_root_unknown' })
+})
 
 test('supervise: a cleared agent with no supervisor gets exactly ONE bgos-agent install from the CURRENT plugin root', async () => {
   const fs = machine([{ id: '912', cwd: AVA, service: 'none' }, { id: '300', cwd: GURU, service: 'none' }])

@@ -78,6 +78,12 @@ test('WATCHER_BUNDLE_FILES is exactly the design 7.5 list (order and names)', ()
     'lib/agent-task-win32.mjs',
     // The shared ASCII-only vbs/ps1 strings (the watcher's own service files and the agent task).
     'lib/win32-script-text.mjs',
+    // Show agent windows (board row d133ddb2): the windows pass, its pure rules, and the Windows
+    // watch only viewer it starts (a .vbs that runs the .ps1 beside it with no console window).
+    'lib/agent-windows.mjs',
+    'lib/agent-windows-plan.mjs',
+    'bin/hoai-agent-viewer.vbs',
+    'bin/hoai-agent-viewer.ps1',
   ])
   assert.equal(Object.isFrozen(WATCHER_BUNDLE_FILES), true)
 })

@@ -10,7 +10,9 @@
  *   decidePendingRestart                  upgrade_pending / update_pending / the legacy time rule
  *   decideSupervise / decideTaskStart     who gets a supervisor, and when a Windows task is started
  *   decideRestartGate / decideInstallGate the rate limits (30 min, 3 attempts, 1 per sweep, 1 h retry)
- *   parseKeepAliveResponse / decideKeepAliveConsent   the backend list and its 24 h cache
+ *   parseKeepAliveResponse / decideKeepAliveConsent   the backend list and its 24 h cache, the computer's
+ *                                         switch and the owner's Show agent windows (fixed values)
+ *   decideCreateLaunch                    a new agent: supervised (on, never set) or a hidden one shot
  *   parseInstalledPluginRecord            the installed version and when it landed
  *   advanceAgentRecord / reportEntry      since, waitingSince after 24 h, pending (update or upgrade), the 120 char bound
  *
@@ -22,6 +24,8 @@ import assert from 'node:assert/strict'
 
 import {
   AGENT_STATE_FRESH_MS,
+  CREATE_LAUNCH_REASONS,
+  KEEPALIVE_SWITCH_STATES,
   INSTALL_RETRY_MS,
   KEEPALIVE_CACHE_MAX_AGE_MS,
   LAUNCHER_STABLE_MS,
@@ -39,6 +43,7 @@ import {
   advanceAgentRecord,
   advanceLauncherEpisode,
   buildKeepAliveCache,
+  decideCreateLaunch,
   decideInstallGate,
   decideKeepAliveConsent,
   decideManualSession,
@@ -529,39 +534,87 @@ test('parseKeepAliveResponse: {enabled, enabledAt, assistantIds:number[]}; ids b
     enabled: true,
     enabledAt: '2026-10-06T18:00:00.000Z',
     assistantIds: ['7', '42', '912'],
+    switchState: 'on',
+    showAgentWindows: false,
   })
-  assert.deepEqual(parseKeepAliveResponse({ enabled: false, enabledAt: null, assistantIds: [] }), { enabled: false, enabledAt: null, assistantIds: [] })
+  assert.deepEqual(parseKeepAliveResponse({ enabled: false, enabledAt: null, assistantIds: [] }), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false })
   for (const junk of [null, [], {}, { enabled: 'yes', assistantIds: [] }, { enabled: true }, { enabled: true, assistantIds: 'all' }]) {
     assert.equal(parseKeepAliveResponse(junk), null, JSON.stringify(junk))
   }
 })
 
+test('parseKeepAliveResponse: the owner setting and the computer switch arrive as fixed values (board row d133ddb2); an older backend, or any other value, reads as today: windows off, the switch from enabled', () => {
+  assert.deepEqual(KEEPALIVE_SWITCH_STATES, ['on', 'off', 'never_set'])
+  const base = { enabled: false, enabledAt: null, assistantIds: [] }
+  const rows: Array<[string, Record<string, unknown>, { switchState: string; showAgentWindows: boolean }]> = [
+    ['older backend: no new field', {}, { switchState: 'off', showAgentWindows: false }],
+    ['owner turned windows on', { showAgentWindows: true }, { switchState: 'off', showAgentWindows: true }],
+    ['windows off', { showAgentWindows: false }, { switchState: 'off', showAgentWindows: false }],
+    ['a string is not true', { showAgentWindows: 'true' }, { switchState: 'off', showAgentWindows: false }],
+    ['1 is not true', { showAgentWindows: 1 }, { switchState: 'off', showAgentWindows: false }],
+    ['a computer never set (choice 1)', { switchState: 'never_set' }, { switchState: 'never_set', showAgentWindows: false }],
+    ['a computer the owner turned off', { switchState: 'off' }, { switchState: 'off', showAgentWindows: false }],
+    ['free text is not a state', { switchState: 'Never Set' }, { switchState: 'off', showAgentWindows: false }],
+    ['on without enabled is not on', { switchState: 'on' }, { switchState: 'off', showAgentWindows: false }],
+  ]
+  for (const [name, extra, expected] of rows) {
+    const parsed = parseKeepAliveResponse({ ...base, ...extra })!
+    assert.deepEqual({ switchState: parsed.switchState, showAgentWindows: parsed.showAgentWindows }, expected, name)
+  }
+  // enabled is what the sweep acts on, so it decides: enabled true is on whatever switchState says.
+  assert.equal(parseKeepAliveResponse({ enabled: true, enabledAt: 'x', assistantIds: [], switchState: 'never_set' })!.switchState, 'on')
+})
+
 test('decideKeepAliveConsent: live answer wins; a failure falls back to a cache younger than 24 h; otherwise OFF', () => {
-  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'] }
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
   const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 23 * 60 * MIN))
   assert.deepEqual(decideKeepAliveConsent({ live, cache: null, now: NOW }), { ...live, source: 'live' })
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW }), { ...live, source: 'cache' })
   const old = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 25 * 60 * MIN))
-  assert.deepEqual(decideKeepAliveConsent({ live: null, cache: old, now: NOW }), { enabled: false, enabledAt: null, assistantIds: [], source: 'none' })
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache: old, now: NOW }), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, source: 'none' })
   const future = parseKeepAliveCache(buildKeepAliveCache(live, NOW + 10 * MIN))
   assert.equal(decideKeepAliveConsent({ live: null, cache: future, now: NOW }).enabled, false, 'a cache from the future is not consent')
   assert.deepEqual(decideKeepAliveConsent({ live: null, cache: null, now: NOW }).source, 'none')
 })
 
 test('decideKeepAliveConsent: a refusal of the watcher pairing (401, 403) is OFF even with a fresh cache; an outage, a 5xx or a 404 is not a refusal', () => {
-  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'] }
+  const live = { enabled: true, enabledAt: 'x', assistantIds: ['912'], switchState: 'on' as const, showAgentWindows: true }
   const cache = parseKeepAliveCache(buildKeepAliveCache(live, NOW - 60 * MIN))
-  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), { enabled: false, enabledAt: null, assistantIds: [], source: 'refused' })
+  assert.deepEqual(decideKeepAliveConsent({ live: null, cache, now: NOW, refused: true }), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, source: 'refused' })
   for (const status of [401, 403]) assert.equal(isConsentRefusal(status), true, String(status))
   for (const status of [0, null, 404, 500, 502, 503, 200]) assert.equal(isConsentRefusal(status as any), false, String(status))
 })
 
-test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips; junk is null', () => {
-  const body = buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['7'] }, NOW)
-  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, enabled: true, enabledAt: 'e', assistantIds: ['7'], fetchedAt: new Date(NOW).toISOString() })
-  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], fetchedAtMs: NOW })
+test('buildKeepAliveCache / parseKeepAliveCache: the design 3.4 file shape round trips (with the switch and the windows setting); a cache written before them reads as today; junk is null', () => {
+  const body = buildKeepAliveCache({ enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true }, NOW)
+  assert.deepEqual(JSON.parse(body), { schemaVersion: 1, enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAt: new Date(NOW).toISOString() })
+  assert.deepEqual(parseKeepAliveCache(body), { enabled: true, enabledAt: 'e', assistantIds: ['7'], switchState: 'on', showAgentWindows: true, fetchedAtMs: NOW })
+  const older = JSON.stringify({ schemaVersion: 1, enabled: false, enabledAt: null, assistantIds: [], fetchedAt: new Date(NOW).toISOString() })
+  assert.deepEqual(parseKeepAliveCache(older), { enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, fetchedAtMs: NOW })
+  const neverSet = buildKeepAliveCache({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'never_set', showAgentWindows: false }, NOW)
+  assert.equal(parseKeepAliveCache(neverSet)!.switchState, 'never_set')
   for (const junk of ['', '{', '[]', JSON.stringify({ schemaVersion: 2, enabled: true, assistantIds: [], fetchedAt: 'x' }), JSON.stringify({ schemaVersion: 1, enabled: true, assistantIds: [], fetchedAt: 'never' })]) {
     assert.equal(parseKeepAliveCache(junk), null, junk)
+  }
+})
+
+test('decideCreateLaunch: a new agent is SUPERVISED when the computer is on, and when it was never set (choice 1: the first new agent turns it on); a computer the owner turned off, or no answer, is a hidden one shot', () => {
+  assert.deepEqual(CREATE_LAUNCH_REASONS, ['switch_on', 'never_set', 'switch_off', 'no_answer'])
+  const consent = (patch: Record<string, unknown>) => ({ enabled: false, enabledAt: null, assistantIds: [], switchState: 'off', showAgentWindows: false, source: 'live', ...patch })
+  const rows: Array<[string, any, { mode: string; reason: string }]> = [
+    ['switch on', consent({ enabled: true, switchState: 'on' }), { mode: 'supervised', reason: 'switch_on' }],
+    ['switch on, from the cache', consent({ enabled: true, switchState: 'on', source: 'cache' }), { mode: 'supervised', reason: 'switch_on' }],
+    ['never set (choice 1)', consent({ switchState: 'never_set' }), { mode: 'supervised', reason: 'never_set' }],
+    ['owner turned it off', consent({ switchState: 'off' }), { mode: 'once', reason: 'switch_off' }],
+    ['older backend, no row', consent({}), { mode: 'once', reason: 'switch_off' }],
+    ['no answer and no cache', consent({ source: 'none' }), { mode: 'once', reason: 'no_answer' }],
+    ['pairing refused', consent({ source: 'refused' }), { mode: 'once', reason: 'no_answer' }],
+    ['nothing at all', null, { mode: 'once', reason: 'no_answer' }],
+  ]
+  for (const [name, input, expected] of rows) {
+    const decided = decideCreateLaunch(input)
+    assert.deepEqual(decided, expected, name)
+    assert.ok(CREATE_LAUNCH_REASONS.includes(decided.reason), name)
   }
 })
 
