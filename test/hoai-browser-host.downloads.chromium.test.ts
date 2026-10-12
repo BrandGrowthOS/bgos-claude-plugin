@@ -1,10 +1,15 @@
 /**
  * DOWNLOADS IN THE AGENT'S OWN BROWSER, END TO END (HOAI board row 67562770).
  *
- * The host is started the way the daemon starts it (startBrowserHostSupervisor:
- * node bin/hoai-browser-host.mjs, the pairing env, stdin as the stop) against
- * a fake backend, with a real Chrome, and an agent clicks links on a
- * 127.0.0.1 page that answer with Content-Disposition: attachment.
+ * The host process is started with what the daemon's supervisor hands it
+ * (node bin/hoai-browser-host.mjs, the pairing env, stdin as the stop),
+ * against a fake backend, with a real Chrome, and an agent clicks links on a
+ * 127.0.0.1 page that answer with Content-Disposition: attachment. It keeps
+ * the full environment, as the host end to end case in hoai-browser-host.test.ts
+ * does: on GitHub's Windows runner PowerShell times out under the daemon's
+ * allow-listed environment, so the vault refuses every profile there
+ * (unsafe_profile), which is not about downloads (vaultProbe says so if it
+ * ever shows here). The measurement of this row used the supervisor itself.
  *
  * What it pins, measured on main 0a4c96a before the fix: Chrome raised the
  * download, Playwright's own tab code saved it into the agent's output folder
@@ -18,7 +23,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
@@ -27,7 +32,7 @@ import { join, relative, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import { resolveChromeExecutable } from '../bin/hoai-browser-host.mjs'
-import { browserHostLogPath, browserHostPairingKey, hostEnv, startBrowserHostSupervisor } from '../lib/browser-host-supervisor.ts'
+import { hostEnv } from '../lib/browser-host-supervisor.ts'
 import { startFakeRelay } from './helpers/fake-browser-relay.ts'
 
 const HOST_BIN = join(import.meta.dirname, '..', 'bin', 'hoai-browser-host.mjs')
@@ -75,19 +80,14 @@ test(
     const downloadAnswers: Array<{ state: string; choice: string | null } | null> = []
     relay.answerCardsBy((card) => (card.kind === 'download' ? (downloadAnswers.shift() ?? null) : { state: 'answered', choice: 'allow_session' }))
 
-    const supLog: string[] = []
-    const handle = startBrowserHostSupervisor({
-      env: env as Record<string, string>,
-      auth: { mode: 'pairing', complete: true, backendUrl: relay.backendUrl, pairingToken: 'tok-dl', assistantId: '900' },
-      agentRoot,
-      hostScript: HOST_BIN,
-      nodePath: process.execPath,
-      log: (line: string) => supLog.push(line),
+    // The variables lib/browser-host-supervisor.ts adds for the one pairing it serves.
+    const logs: string[] = []
+    const child = spawn(process.execPath, [HOST_BIN], {
+      env: { ...env, HOAI_BROWSER_HOST_PAIRING_TOKEN: 'tok-dl', HOAI_BROWSER_HOST_BACKEND_URL: relay.backendUrl, HOAI_BROWSER_HOST_ASSISTANT_ID: '900', HOAI_BROWSER_HOST_PARENT_PID: String(process.pid), HOAI_BROWSER_HOST_STOP_ON_STDIN_EOF: '1' } as NodeJS.ProcessEnv,
+      stdio: ['pipe', 'ignore', 'pipe'],
     })
-    const hostLog = () => {
-      const p = browserHostLogPath(agentRoot, browserHostPairingKey(relay.backendUrl, 'tok-dl'))
-      return existsSync(p) ? readFileSync(p, 'utf8') : '(no host log)'
-    }
+    child.stderr!.on('data', (c: Buffer) => logs.push(c.toString()))
+    const hostLog = () => logs.join('') || '(no host log)'
     // Every file under the home holding one of this run's markers, and where.
     const markerFiles = (key?: CaseKey) =>
       walk(home).filter((p) => {
@@ -187,10 +187,11 @@ test(
       for (const p of markerFiles()) assert.ok(p.startsWith(agentDir + sep), `outside the agent folder: ${relative(home, p)}`)
       bodyPassed = true
     } finally {
-      handle.stop()
+      // The daemon's stop: close the host's stdin.
+      child.stdin!.end()
       const deadline = Date.now() + 30_000
-      while (handle.child && handle.child.exitCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200))
-      if (handle.child && handle.child.exitCode === null) handle.child.kill('SIGKILL')
+      while (child.exitCode === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200))
+      if (child.exitCode === null) child.kill('SIGKILL')
       await relay.close()
       site.server.close()
     }

@@ -601,6 +601,62 @@ test('the folder guard refuses a synced or roaming folder, on its path and on wh
   assert.equal(guard.reason, 'roaming_profile')
 })
 
+test('the folder guard on Windows: the built in Administrator reads back as LA, and entries a creating token left (SYSTEM, Administrators) are removed', async () => {
+  // Measured on GitHub's windows runner (the agent there is the built in
+  // Administrator, RID 500): a folder made where nothing is inherited carries
+  // the creating token's default DACL as EXPLICIT entries, which
+  // /inheritance:r does not remove, and SDDL writes RID 500 as LA.
+  const sid = 'S-1-5-21-1-2-3-500'
+  const runs: string[][] = []
+  let sddl = 'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)'
+  const files = new Map<string, Buffer>()
+  const guard = new KeptFolderGuard({
+    dir: 'C:\\Users\\runneradmin\\.bgos-agent\\900\\browser-downloads',
+    platform: 'win32',
+    env: { SystemRoot: 'C:\\Windows' },
+    home: 'C:\\Users\\runneradmin',
+    run: async (file: string, args: string[]) => {
+      runs.push([file.split('\\').pop()!, ...args])
+      if (/whoami/i.test(file)) return { stdout: `"host\\\\runneradmin","${sid}"\r\n` }
+      if (/reg\.exe/i.test(file)) throw new Error('value not found')
+      if (args.includes('/save')) files.set(args[2]!, Buffer.from(`\uFEFFbrowser-downloads\r\n${sddl}\r\n`, 'utf16le'))
+      if (args.includes('/remove:g')) sddl = 'D:PAI(A;OICI;FA;;;LA)'
+      return { stdout: '' }
+    },
+    fsImpl: {
+      mkdirSync: () => {},
+      lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false, dev: 1, ino: 2 }),
+      realpathSync: { native: (p: string) => p },
+      readFileSync: (p: string) => files.get(p)!,
+      unlinkSync: () => {},
+    } as any,
+  })
+  assert.equal(await guard.prepare(), true, `guard: ${guard.reason}; read back ${guard.readBack}`)
+  const removal = runs.find((r) => r.includes('/remove:g'))
+  assert.ok(removal, 'the other entries were removed')
+  assert.deepEqual(removal!.slice(removal!.indexOf('/remove:g') + 1).sort(), ['*S-1-5-18', '*S-1-5-32-544'], 'by SID: SYSTEM and Administrators, never the user')
+  // An entry the guard cannot name is never guessed at: refused.
+  sddl = 'D:PAI(A;OICI;FA;;;LA)(A;OICI;FA;;;XY)'
+  const strange = new KeptFolderGuard({ ...guard, dir: guard.dir, platform: 'win32', env: { SystemRoot: 'C:\\Windows' }, home: 'C:\\Users\\runneradmin', run: (guard as any).run, fsImpl: (guard as any).fs })
+  assert.equal(await strange.prepare(), false)
+  assert.equal(strange.reason, 'not_owner_only')
+})
+
+test('the folder guard on the REAL file system makes a folder owner only even when it starts with explicit entries for others', { skip: process.platform !== 'win32' ? 'Windows only' : false }, async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dl-guard-explicit-'))
+  try {
+    const dir = join(home, '.bgos-agent', '900', 'browser-downloads')
+    mkdirSync(dir, { recursive: true })
+    // What the runner's folders look like: no inheritance, the entries explicit.
+    const d = spawnSync('icacls.exe', [dir, '/inheritance:d'], { encoding: 'utf8' })
+    assert.equal(d.status, 0, d.stdout + d.stderr)
+    const guard = new KeptFolderGuard({ dir, home, env: { ...process.env, OneDrive: undefined, OneDriveConsumer: undefined, OneDriveCommercial: undefined } })
+    assert.equal(await guard.prepare(), true, `guard: ${guard.reason}; ACL read back: ${guard.readBack}`)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('the folder guard on the REAL file system: owner only, read back, nothing above it trusted', { skip: process.platform === 'win32' && !spawnSync('icacls.exe', ['/?']).stdout ? 'no icacls' : false }, async () => {
   const home = mkdtempSync(join(tmpdir(), 'dl-guard-'))
   try {
