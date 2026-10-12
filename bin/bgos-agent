@@ -949,8 +949,8 @@ UNIT
 # workspace settings file IS read, so the same entries go there, pointed at this
 # checkout's forwarder by absolute path. Idempotent: safe on every install and
 # on every re-install. Best effort: a failure costs the tool detail, nothing else.
-install_hook_entries() { # $1 workdir $2 plugin_dir
-  local workdir="$1" plugin_dir="$2"
+install_hook_entries() { # $1 workdir $2 plugin_dir [$3 "nofloor"]
+  local workdir="$1" plugin_dir="$2" floor_mode="${3:-}"
   if ! command -v node >/dev/null 2>&1; then
     warn "node not found, skipping the activity hooks (the agent works, tool detail will not show)"
     return 0
@@ -958,12 +958,17 @@ install_hook_entries() { # $1 workdir $2 plugin_dir
   HOAI_PRESEED="$plugin_dir/lib/claude-preseed.mjs" \
   HOAI_SETTINGS="$workdir/.claude/settings.local.json" \
   HOAI_FORWARDER="$plugin_dir/bin/hoai-hook.mjs" \
+  HOAI_NO_FLOOR="$([ "$floor_mode" = "nofloor" ] && echo 1 || echo 0)" \
   node -e '
     const { pathToFileURL } = require("node:url");
     import(pathToFileURL(process.env.HOAI_PRESEED).href)
       .then((m) => m.ensureHookEntries({
         settingsPath: process.env.HOAI_SETTINGS,
         forwarderPath: process.env.HOAI_FORWARDER,
+        // A workspace that never carried the hooks gets the rail and the
+        // private turn hook, not a floor it never had (a held action on an
+        // unattended agent is a decision for the owner, not for an update).
+        ...(process.env.HOAI_NO_FLOOR === "1" ? { floorHookPath: null } : {}),
       }))
       .catch((err) => { process.stderr.write(String(err) + "\n"); process.exitCode = 1; });
   ' 2>/dev/null \
@@ -1105,6 +1110,44 @@ cmd_restart() {
 # workspace that already carries the rail is touched (a marketplace channel's
 # hooks come from its own hooks file, and its settings carry no hoai-hook
 # entry). Best effort: install_hook_entries never fails the update.
+# Is this workspace a CLONE workspace of THIS checkout? Its .mcp.json names a
+# `bgos` server whose server.ts lives in this plugin dir (compared by real path:
+# /Users/fitecho and /Users/bgos are one directory on KC's Mac, and the
+# .mcp.json may spell either). Only then does the CLI read its hooks from the
+# workspace settings file and nowhere else, which is the case a refresh must
+# cover even when the folder never carried a hoai-hook entry (board bbbf3438:
+# 0.67.0 gated private tools on a hook such a folder never had).
+workdir_names_this_clone() { # $1 workdir $2 plugin_dir
+  local mcp="$1/.mcp.json" server real_server real_plugin
+  [ -f "$mcp" ] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  server="$(HOAI_MCP="$mcp" node -e '
+    try {
+      const d = JSON.parse(require("fs").readFileSync(process.env.HOAI_MCP, "utf8"));
+      const s = d && d.mcpServers && d.mcpServers.bgos;
+      const arg = s && Array.isArray(s.args) ? s.args.find((a) => typeof a === "string" && a.endsWith("server.ts")) : "";
+      process.stdout.write(arg || "");
+    } catch {}
+  ' 2>/dev/null)"
+  [ -n "$server" ] || return 1
+  real_server="$(cd -P "$(dirname "$server")" 2>/dev/null && pwd)" || return 1
+  real_plugin="$(cd -P "$2" 2>/dev/null && pwd)" || return 1
+  [ "$real_server" = "$real_plugin" ]
+}
+
+# Register a clone workspace's hooks after an update WITHOUT a restart: for an
+# agent whose supervisor is not bgos-agent's (a keepalive launchd job, a
+# watchdog). The CLI reads hooks at launch, so the owner restarts it after.
+register_hooks_for_clone_workdir() { # $1 workdir
+  local workdir="$1"
+  [ -n "$(plugin_cache_key "$PLUGIN_DIR")" ] && return 0
+  workdir_names_this_clone "$workdir" "$PLUGIN_DIR" || return 0
+  local settings="$workdir/.claude/settings.local.json" floor_mode="nofloor"
+  # A folder that already carries the rail keeps its full set, floor included.
+  if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then floor_mode=""; fi
+  install_hook_entries "$workdir" "$PLUGIN_DIR" "$floor_mode"
+}
+
 refresh_hook_entries() { # $1 assistant id
   local id="$1" service_file="" workdir=""
   case "$OS" in
@@ -1129,6 +1172,10 @@ refresh_hook_entries() { # $1 assistant id
   fi
   if [ -f "$settings" ] && grep -q 'hoai-hook\.mjs' "$settings"; then
     install_hook_entries "$workdir" "$PLUGIN_DIR"
+  else
+    # No hoai-hook entry yet: a clone workspace still needs the private turn
+    # hook, or every boards, schedule and browser call refuses.
+    register_hooks_for_clone_workdir "$workdir"
   fi
 }
 
@@ -1232,7 +1279,22 @@ cmd_update() {
       Linux)  service_file="$(unitfile_for "$id")" ;;
       *)      continue ;;
     esac
-    [ -f "$service_file" ] || continue
+    if [ ! -f "$service_file" ]; then
+      # An agent kept alive by another supervisor (a keepalive job, a watchdog)
+      # declares its folder in service.json. Register its hooks; it restarts
+      # through its own supervisor, which the owner or the watcher drives.
+      local declared=""
+      if [ -f "$state_dir/service.json" ] && command -v node >/dev/null 2>&1; then
+        declared="$(HOAI_SVC="$state_dir/service.json" node -e '
+          try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.env.HOAI_SVC, "utf8")).cwd || "")); } catch {}
+        ' 2>/dev/null)"
+      fi
+      if [ -n "$declared" ] && [ -d "$declared" ]; then
+        register_hooks_for_clone_workdir "$declared"
+        info "agent $id: hooks checked in $declared (restart it to load them)"
+      fi
+      continue
+    fi
     installed=1
     restart_after_update "$id"
   done

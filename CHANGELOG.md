@@ -2,6 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.67.2 (2026-10-12)
+
+**Boards, schedule and browser tools no longer refuse every call on a clone agent that never had the private turn hook (board row bbbf3438 follow-up).** 0.67.0 runs a private tool only inside a turn whose marker `hoai-private-turn-hook.mjs` wrote. A clone workspace gets that hook only from its own `.claude/settings.local.json`, and `bgos-agent update` refreshed only a folder that already named `hoai-hook.mjs`. Nine agents on KC's Mac had no entry, so after a restart onto 0.67.x every private call answered "its current sender could not be verified", on scheduler wakes and every other turn.
+
+`bgos-agent update` now registers the hooks for a clone workspace (its `.mcp.json` names this checkout's `server.ts`, compared by real path) even when the folder never carried one, and for agents another supervisor keeps alive (a keepalive job, a watchdog) it does so from the folder their `service.json` declares. A folder that never had the hooks gets the activity forwarder and the private turn hook, not the blocking floor hook. The CLI reads hooks at launch, so each agent needs one restart after the update.
+
+The gate itself is unchanged and stays closed without the hook. The daemon now looks once at boot and logs `private turn: the private turn hook is NOT registered for this session` with the fix, and a refused private call says that cause instead of blaming the sender.
+
 ## 0.67.1 (2026-10-12)
 
 **A connector update no longer calls an agent deaf when it never restarted it (board row bbbf3438).** The keepalive launcher calls `bin/hoai-keepalive-marker.mjs` through an aliased home path, and the script compared its resolved module URL with that alias, so `main()` never ran: exit 0, nothing written, `keepalive.json` left naming dead pids. The update then had no live session to restart, reported "restarted", and verification failed on the unchanged boot time. The script now compares real paths on both sides, as `hoai-core.mjs` already does.
