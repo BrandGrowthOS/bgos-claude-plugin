@@ -14,11 +14,11 @@ import { existsSync, readFileSync } from 'node:fs'
 const server = readFileSync(new URL('../server.ts', import.meta.url), 'utf8')
 const NO_WIRING = 'server.ts never starts the restart-marker takeover: a marker the hoai launcher refuses (bin/hoai-core.mjs:2295-2299) is never acted on'
 
-/** The takeover block in main(), from its declaration to markerTakeover.start(). */
+/** The takeover block in main(), from its Windows gate to markerTakeover.start(). */
 function block(): string {
   const at = server.indexOf('createMarkerTakeover({')
   assert.ok(at >= 0, NO_WIRING)
-  const from = server.lastIndexOf('let markerTakeover', at)
+  const from = server.lastIndexOf("if (process.platform === 'win32' && String(process.env.HOAI_MARKER_TAKEOVER", at)
   const to = server.indexOf('markerTakeover.start()', at)
   assert.ok(from >= 0 && to > at, NO_WIRING)
   return server.slice(from, to + 'markerTakeover.start()'.length)
@@ -54,11 +54,12 @@ test('the relaunch uses the installed root (currentPluginRootFor), the daemon\'s
   assert.match(b, /pluginStateDir: pathDirname\(CURSOR_FILE_PATH\)/)
 })
 
-test('shutdown stops the takeover', () => {
+test('the shutdown path never names the takeover: it is inert once shutdown begins (active), and the lifted stand-down site stays as it was', () => {
   const at = server.indexOf('const shutdown = (cause')
   assert.ok(at >= 0)
   const end = server.indexOf('process.exit(code)', at)
-  assert.match(server.slice(at, end), /markerTakeover\?\.stop\(\)/, NO_WIRING)
+  assert.doesNotMatch(server.slice(at, end), /markerTakeover/, 'test/stand-down-sites.test.ts runs this site in a sandbox that names only the daemon state it needs')
+  assert.match(block(), /active: \(\) => lockHeld && !shuttingDown/)
 })
 
 test('bin/hoai-restart-handoff.mjs exists and runs runRestartHandoff', () => {

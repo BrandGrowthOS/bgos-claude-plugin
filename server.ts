@@ -14832,14 +14832,10 @@ async function main(): Promise<void> {
   // instantly instead of waiting out the staleness window. Idempotent because
   // stdin fires 'end' and then 'close', and both mean the same thing.
   let shuttingDown = false
-  // The restart-marker takeover (Windows), started further down; declared here
-  // because a parent that dies during startup calls shutdown() before that.
-  let markerTakeover: ReturnType<typeof createMarkerTakeover> | null = null
   const shutdown = (cause: ShutdownCause | string, code: number): void => {
     if (shuttingDown) return
     shuttingDown = true
     log(describeShutdownCause(cause))
-    markerTakeover?.stop()
     selfUpdater?.markGracefulStop()
     stopHookIntake()
     // A clean stop takes the published state away (only when it is ours), so
@@ -14884,11 +14880,13 @@ async function main(): Promise<void> {
   // watches its own marker and, when the launcher provably left a fresh one
   // unanswered, starts ONE detached hidden helper (bin/hoai-restart-handoff.mjs)
   // that proves this session, ends claude and brings the agent back on its
-  // pinned session. Only the pairing lock holder acts.
+  // pinned session. Only the pairing lock holder acts, and never once shutdown
+  // has begun (active), so the shutdown path needs nothing from it: its poll
+  // is unref'd and its folder watch is not persistent.
   if (process.platform === 'win32' && String(process.env.HOAI_MARKER_TAKEOVER ?? '').trim().toLowerCase() !== 'off') {
     const takeoverDir = agentStateDir(homedir(), ASSISTANT_ID)
     if (takeoverDir) {
-      markerTakeover = createMarkerTakeover({
+      const markerTakeover = createMarkerTakeover({
         platform: process.platform,
         assistantId: String(ASSISTANT_ID),
         stateDir: takeoverDir,
