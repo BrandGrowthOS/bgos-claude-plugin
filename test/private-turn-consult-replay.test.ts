@@ -98,7 +98,7 @@ function agentHome(t: any) {
     }
     return { tracker, submit, consult, wake, call, stop, replays, revokes, outcomes }
   }
-  const ledgerKeys = () => Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires)
+  const ledgerKeys = (): string[] => { try { return Object.keys((JSON.parse(readFileSync(firesPath, 'utf8')) as any).fires) } catch { return [] } }
   return { life, clock, ledgerKeys }
 }
 
@@ -189,4 +189,50 @@ test('a replay injected into a consult\'s turn ends it, for #227\'s reason', (t)
   second.wake('F6')
   assert.equal(second.call(), null)
   assert.match(second.revokes.at(-1)!, /^private turn: a delivery that is not this voice consult \(chat 10\) ended the private turn/)
+})
+
+test('a consult answered or expired before its card was submitted is not used up, though another prompt began first', (t) => {
+  const home = agentHome(t)
+  const first = home.life()
+  const frame = stamped('77777777-7777-4777-8777-777777777777')
+  first.consult(frame)
+  // The consult ends (answered, timed out, or its delivery failed) before its card is submitted.
+  first.tracker.endConsult(frame.rpcId)
+  // Another prompt begins, and the turn ends: neither records the consult's fire.
+  first.submit(first.wake('F7'))
+  first.stop()
+  assert.ok(!home.ledgerKeys().includes(`consult:${frame.rpcId}`), 'never usable, so never recorded')
+  // After a restart, inside its window, the same frame still opens its one turn.
+  const second = home.life()
+  second.submit(second.consult(frame))
+  assert.equal(second.call(), OWNER)
+})
+
+test('an unstamped consult is no fire: it never enters the ledger', (t) => {
+  const home = agentHome(t)
+  const one = home.life()
+  const unstamped = { ...stamped('88888888-8888-4888-8888-888888888888'), payload: { callId: 'tool-1', name: 'agent_consult', args: {}, voiceSessionId: '501' } }
+  one.submit(one.consult(unstamped as any))
+  assert.equal(one.call(), null, 'an unstamped consult opens nothing (#227)')
+  one.stop()
+  // Another unstamped consult the CLI never submits on its own (injected into the next prompt's turn): still no fire.
+  one.consult({ ...unstamped, rpcId: '88888888-8888-4888-8888-888888888889' } as any)
+  one.submit(one.wake('F8'))
+  one.stop()
+  assert.ok(!home.ledgerKeys().some((key) => key.startsWith('consult:')), home.ledgerKeys().join(', '))
+})
+
+test('a consult with a very long id is keyed by its hash, so no key outgrows the ledger', (t) => {
+  const home = agentHome(t)
+  const first = home.life()
+  const long = 'c'.repeat(600)
+  const frame = stamped(long)
+  first.submit(first.consult(frame))
+  assert.equal(first.call(), OWNER)
+  const keys = home.ledgerKeys().filter((key) => key.startsWith('consult:'))
+  assert.equal(keys.length, 1)
+  assert.match(keys[0]!, /^consult:#[a-f0-9]{32}$/)
+  const second = home.life()
+  const card = second.consult(frame)
+  assert.match(card, /^\[replayed: this voice consult was already handled at /, 'and the hashed key still catches its replay')
 })

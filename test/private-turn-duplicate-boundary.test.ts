@@ -1087,7 +1087,7 @@ test('Vera replay: the boot order, a replay swept in before the owner\'s backlog
   vera.deliver(ownerFrame(vera.chatId, 'hi, are the boards up to date?'))
   vera.pump()
   assert.equal(vera.privateCall(), null, 'the replay may run inside this turn: nobody may act in it')
-  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire was delivered just before it, and the CLI may run it inside this turn$/)
+  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire or voice consult was delivered just before it, and the CLI may run it inside this turn$/)
   // The next prompt (no Stop in between: the replay was taken in the turn above, or is its own prompt by now) opens.
   vera.deliver(ownerFrame(vera.chatId))
   vera.pump()
