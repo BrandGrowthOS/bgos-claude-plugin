@@ -77,7 +77,9 @@ import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inv
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
+import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -605,7 +607,8 @@ import {
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
 import { serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
-import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
+import { listProcesses } from './lib/process-tree.mjs'
 import {
   drawCatchupDelayMs,
   drawReconnectBaseDelayMs,
@@ -14776,11 +14779,14 @@ async function main(): Promise<void> {
   log(privateHookBootLine(PRIVATE_HOOK))
   // A clone workspace that lost or never had the hook gets it written now, so the NEXT
   // launch of this agent has it. It does not reach this session: the CLI read its hooks
-  // at launch. Marketplace installs and folders that are not this checkout's are left alone.
+  // at launch, so a registration made here asks for ONE restart below (lib/hook-restart.mjs).
+  // Marketplace installs and folders that are not this checkout's are left alone.
+  const hookOutcomes: string[] = []
   if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {
     for (const folder of new Set(FLOOR_FOLDERS)) {
       const result = registerCloneHooks({ workdir: folder, pluginDir: import.meta.dir })
-      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; restart this agent to load them`)
+      hookOutcomes.push(result.outcome)
+      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; they load at this agent's next launch`)
       else if (result.outcome === 'failed') log(`private turn: could not register the agent hooks in ${folder}: ${result.detail ?? 'unknown'}`)
     }
   }
@@ -14871,6 +14877,114 @@ async function main(): Promise<void> {
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
+
+  // The restart-marker takeover (lib/marker-takeover.mjs, Windows only). The
+  // hoai launcher allows 3 marker relaunches per hour per process and then
+  // ignores every marker for good (bin/hoai-core.mjs:2228, :2293, :2295-2299);
+  // launchers already running in the field cannot be changed. This daemon
+  // watches its own marker and, when the launcher provably left a fresh one
+  // unanswered, starts ONE detached hidden helper (bin/hoai-restart-handoff.mjs)
+  // that proves this session, ends claude and brings the agent back on its
+  // pinned session. Only the pairing lock holder acts, and never once shutdown
+  // has begun (active), so the shutdown path needs nothing from it: its poll
+  // is unref'd and its folder watch is not persistent.
+  if (process.platform === 'win32' && String(process.env.HOAI_MARKER_TAKEOVER ?? '').trim().toLowerCase() !== 'off') {
+    const takeoverDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (takeoverDir) {
+      const markerTakeover = createMarkerTakeover({
+        platform: process.platform,
+        assistantId: String(ASSISTANT_ID),
+        stateDir: takeoverDir,
+        bootAtMs: DAEMON_START_MS,
+        now: Date.now,
+        ownPid: process.pid,
+        active: () => lockHeld && !shuttingDown,
+        claudePid: () => agentClaudePid(),
+        fs: nodeTakeoverFs(),
+        pidAlive: defaultPidAlive,
+        setInterval,
+        clearInterval,
+        setTimeout,
+        watch,
+        helperParams: () => ({
+          home: homedir(),
+          launchCwd: LAUNCH_CWD,
+          logPath: LOG_FILE,
+          pluginStateDir: pathDirname(CURSOR_FILE_PATH),
+          credentialsPath: CREDENTIALS_PATH,
+          pluginRoot: currentPluginRootFor({
+            installMethod: INSTALL_METHOD,
+            pluginRoot: PLUGIN_ROOT,
+            installedPluginsRaw: readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+            exists: existsSync,
+          }),
+        }),
+        helperEnv: () =>
+          handoffEnv(process.env, {
+            platform: process.platform,
+            extraKeys: mcpEnvKeys(
+              readTextOrNull(pathJoin(RUNNING_ROOT, '.claude-plugin', 'plugin.json')),
+              readTextOrNull(pathJoin(LAUNCH_CWD, '.mcp.json')),
+            ),
+          }),
+        spawnHelper: (argv: string[], env: Record<string, string>) => {
+          const child = spawnProcess(process.execPath, [pathJoin(RUNNING_ROOT, 'bin', 'hoai-restart-handoff.mjs'), ...argv], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+            cwd: takeoverDir,
+            env,
+          })
+          child.on('error', () => {})
+          child.unref()
+          return { pid: child.pid ?? null }
+        },
+        log,
+      })
+      markerTakeover.start()
+    }
+  }
+
+  // The ONE restart after this boot registered the private turn hook itself
+  // (lib/hook-restart.mjs): otherwise every private call keeps refusing until a
+  // person restarts the agent. Only a registration made by this boot arms it,
+  // never a fresh start that found the hook; a record in the agent's state
+  // folder makes it single use across the restart it causes. The daemon's own
+  // ladder does the restart, the one a scheduled update asks, at the safe
+  // moment the watcher waits for: the same facts agent-state.json publishes,
+  // claude's process tree, and no update in flight. Only the pairing lock
+  // holder asks, never once shutdown has begun (active), so the shutdown path
+  // needs nothing from it; its poll is unref'd.
+  const hookRestartDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (hookRestartDir) {
+    const hookRestart = createHookRestart({
+      outcomes: hookOutcomes,
+      folders: [...new Set(FLOOR_FOLDERS)],
+      recordPath: pathJoin(hookRestartDir, HOOK_RESTART_FILE_NAME),
+      fs: nodeHookRestartFs(),
+      bootAtMs: DAEMON_START_MS,
+      now: Date.now,
+      ownPid: process.pid,
+      active: () => lockHeld && !shuttingDown,
+      draining: () => updateDrainMode,
+      updateLockHeld: () =>
+        INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
+      safeState: () => ({
+        turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+        turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+        ...updateDrainSnapshot(),
+      }),
+      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+      claudePid: () => agentClaudePid(),
+      listProcesses: () => listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env }),
+      drain: setUpdateDrainMode,
+      requestRestart: () => updateRpc.restartAfterHookRegistration(),
+      log,
+      setInterval,
+      clearInterval,
+    })
+    hookRestart.start()
+  }
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:
