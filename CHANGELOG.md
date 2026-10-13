@@ -4,7 +4,7 @@ Notable changes to the HOAI Claude Code plugin.
 
 ## 0.68.4 (2026-10-13)
 
-One release carrying two pull requests: a voice consult from the owner opens a private turn for that one consult (#227), and replayed scheduled fires, the Windows hook self-restart and the private turn hook's cold start (#229). #229 was written as 0.68.6 and ships here as 0.68.4.
+One release carrying three pull requests: a voice consult from the owner opens a private turn for that one consult (#227); replayed scheduled fires, the Windows hook self-restart and the private turn hook's cold start (#229, written as 0.68.6); and the PATH baked into an agent's or the watcher's unit is correct for its OS (#226).
 
 From #227: **A voice consult from the owner on a live call can use schedule, boards and the browser, for that one consult only.** On a live HOAI call the owner's question reaches the agent as a `voice_rpc` consult frame, answered with `voice_consult_reply`. Since the private turn gate (0.67.0) every private tool called while answering it was refused ("This private action did not start because its current sender could not be verified"): the consult card was pushed as a raw notification, never through `privateTurns.deliver`, and named nobody. Seen on Ares (agent 1040, Windows, 0.67.5) at 04:30Z on 2026-10-13: schedule refused twice from a consult, then accepted from an owner-typed message.
 
@@ -58,6 +58,8 @@ From #229: three fixes from Mark's run of 0.68.3 on agent 909 (Vera, Windows), a
   - **Existing installs.** An existing clone registration with the old 3 s is rewritten on the next registration (launcher start, update, `bgos-agent`), one entry per event. The daemon's own boot check ignores the timeout, so this costs no extra restart.
 
 **Old daemon sweeps.** From 0.68.3 every daemon logs each spool folder it removes (`hook intake: removed the spool of session ...`), in its own log. A spool that vanishes with no such line in any 0.68.3+ daemon's log was removed by an older daemon (or by something outside the plugin). This release does not change the sweep.
+
+From #226: **The PATH baked into an agent's or the watcher's unit is correct for its OS (board row 84296679, Nicole, kc-server).** `/opt/homebrew/bin` is Homebrew's macOS prefix; the rebaked Linux units still carried it. `servicePath` (the watcher's launchd plist and systemd unit) takes the platform and leaves it out of the systemd unit, and `bin/bgos-agent install` adds it only on Darwin. A macOS plist keeps it, and every other directory and the order are unchanged.
 
 
 ## 0.68.3 (2026-10-13)

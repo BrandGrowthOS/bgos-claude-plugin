@@ -372,7 +372,12 @@ cmd_install() {
   # finds by name. Each directory is listed once.
   path="$(dirname "$claude_bin"):$(dirname "$node_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin")"
   [ -n "$tmux_bin" ] && path="$path:$(dirname "$tmux_bin")"
-  path="$path:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  # Homebrew's prefix is a macOS directory; on a Linux unit it only names a path that cannot exist.
+  if [ "$OS" = "Darwin" ]; then
+    path="$path:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  else
+    path="$path:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  fi
   path="$(dedupe_path "$path")"
   # Stamped for EVERY always-on install (fact 3). The app records alwaysOn in BGOS only
   # after it has seen this agent connect, and until then the agent's own daemon reads
