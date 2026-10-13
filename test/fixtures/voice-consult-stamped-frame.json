@@ -1,0 +1,25 @@
+{
+  "rpcId": "0b03289b-6622-49dd-96d7-69743237c693",
+  "op": "consult",
+  "assistantId": "78",
+  "agentRoute": "",
+  "chatId": "78",
+  "payload": {
+    "callId": "tool-2",
+    "name": "agent_consult",
+    "args": {
+      "question": "Remind me to call Sam at five"
+    },
+    "voiceSessionId": "53",
+    "eventMeta": {
+      "source": "voice_consult",
+      "payload": {
+        "actingUserId": "user_cs_started_68564_1791867757956_1",
+        "consultId": "0b03289b-6622-49dd-96d7-69743237c693",
+        "assistantId": "78",
+        "voiceSessionId": "53",
+        "expiresAt": "2026-10-13T05:03:23.504Z"
+      }
+    }
+  }
+}

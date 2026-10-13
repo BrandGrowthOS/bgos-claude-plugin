@@ -74,6 +74,7 @@ import {
   type SessionOp,
   type SessionRow,
 } from './session-controls-contract.ts'
+import { voiceConsultActor } from './private-turn.mjs'
 
 export type VoiceRpcOp = 'mint' | 'consult' | 'dispatch' | 'stop_turn' | SessionOp
 
@@ -366,8 +367,20 @@ export interface VoiceRpcDeps {
   postAck(rpcId: string): Promise<unknown>
   /** POST integrations/voice-rpc/:rpcId/result (X-API-Key). */
   postResult(rpcId: string, body: VoiceRpcResultBody): Promise<unknown>
-  /** Push a channel notification into the live Claude Code session. */
-  notify(content: string, meta: Record<string, unknown>): Promise<unknown>
+  /** Push a channel notification into the live Claude Code session. A
+   *  consult card also names its consult and the owner the backend's stamp
+   *  verified (voiceConsultActor, lib/private-turn.mjs), or null: the daemon
+   *  delivers it through privateTurns.deliver. Every other card has none. */
+  notify(
+    content: string,
+    meta: Record<string, unknown>,
+    consult?: VoiceConsultDelivery,
+  ): Promise<unknown>
+  /** Told once when a consult is over: answered (final), the final word on a
+   *  continuation, timed out, or never delivered. The daemon ends that
+   *  consult's private turn. Fire and forget: a throw is logged and
+   *  swallowed. */
+  onConsultEnded?(consultId: string): void
   /** Best-effort agent identity for the voice persona (caller caches). */
   getIdentity(timeoutMs: number): Promise<AgentIdentity | null>
   /** Plain outbound chat message via the normal send path (POST
@@ -394,6 +407,13 @@ export interface VoiceRpcDeps {
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch
   timing?: Partial<VoiceRpcTiming>
+}
+
+/** What a consult card carries to the daemon's private turn tracker. */
+export interface VoiceConsultDelivery {
+  consultId: string
+  chatId: string
+  actor: { actingUserId: string; deadline: number } | null
 }
 
 class VoiceRpcError extends Error {
@@ -591,6 +611,8 @@ export function buildConsultNotification(args: {
   context: string
   responseStyle: string
   budgetSeconds: number
+  /** The backend's stamp verified: this consult opens a private turn. */
+  privateTurn?: boolean
 }): string {
   return (
     `[voice_consult] Your user is asking you LIVE on a voice call ` +
@@ -607,7 +629,12 @@ export function buildConsultNotification(args: {
     `final=false (say it is your last known reading), keep working, then ` +
     `call voice_consult_reply AGAIN with the same consult_id and the fresh ` +
     `answer: it is announced in the call when it lands. Never leave a ` +
-    `final=false consult without a second reply.`
+    `final=false consult without a second reply.` +
+    (args.privateTurn
+      ? ` Private tools (schedule, boards, the browser) act for your user ` +
+        `only inside this consult, until its final answer: run them before ` +
+        `the final voice_consult_reply, or reply with final=false first.`
+      : '')
   )
 }
 
@@ -1173,6 +1200,26 @@ export class VoiceRpcHandler {
     const responseStyle =
       typeof args?.responseStyle === 'string' ? args.responseStyle.trim() : ''
     const consultId = frame.rpcId
+    const chatId =
+      frame.chatId != null
+        ? String(frame.chatId)
+        : String(this.deps.config.chatIdFallback ?? '')
+    // The owner only when the backend proved them live on this call and the
+    // stamp is for this agent, this owner and this very frame.
+    const stamp = voiceConsultActor({
+      frame,
+      assistantId: this.deps.config.assistantId,
+      ownerUserId: this.deps.config.userId,
+      now: Date.now(),
+    })
+    const delivery: VoiceConsultDelivery = {
+      consultId: String(consultId),
+      chatId,
+      actor: stamp
+        ? { actingUserId: stamp.actingUserId, deadline: stamp.deadline }
+        : null,
+    }
+
     const content = buildConsultNotification({
       consultId,
       question,
@@ -1183,12 +1230,14 @@ export class VoiceRpcHandler {
         5,
         Math.floor((this.timing.consultTimeoutMs - 8_000) / 1000),
       ),
+      privateTurn: stamp !== null,
     })
 
     const settled = await new Promise<{ text: string; pending?: boolean }>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingConsults.delete(consultId)
         this.rememberExpired(consultId)
+        this.consultEnded(consultId)
         reject(
           new VoiceRpcError(
             'CONSULT_TIMEOUT',
@@ -1205,6 +1254,7 @@ export class VoiceRpcHandler {
         fail: (err) => {
           clearTimeout(timer)
           this.pendingConsults.delete(consultId)
+          this.consultEnded(consultId)
           reject(err)
         },
       })
@@ -1219,16 +1269,14 @@ export class VoiceRpcHandler {
           channelMeta(
             {
               event_type: 'voice_consult',
-              chat_id:
-                frame.chatId != null
-                  ? String(frame.chatId)
-                  : String(this.deps.config.chatIdFallback ?? ''),
+              chat_id: chatId,
               assistant_id: String(this.deps.config.assistantId),
               user_id: String(this.deps.config.userId ?? ''),
               transport: 'ws',
             },
             { consult_id: String(consultId), call_id: String(callId) },
           ),
+          delivery,
         )
         .catch((err) => {
           // If the live session is unreachable the consult can never
@@ -1274,16 +1322,31 @@ export class VoiceRpcHandler {
         return 'partial'
       }
       pending.settle({ text: answer })
+      this.consultEnded(consultId)
       return 'resolved'
     }
     this.pruneExpired()
     if (this.continuations.has(consultId)) {
       // Any reply on a continuation is the final word; the daemon posts it.
       this.continuations.delete(consultId)
+      this.consultEnded(consultId)
       return 'continued'
     }
     if (this.expiredConsults.has(consultId)) return 'late'
     return 'unknown'
+  }
+
+  /** The consult is over: its private turn ends (deps.onConsultEnded). */
+  private consultEnded(consultId: string): void {
+    try {
+      this.deps.onConsultEnded?.(consultId)
+    } catch (err) {
+      this.deps.log(
+        `voice consult end not recorded (consult=${consultId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
   }
 
   /** Number of consults answered provisionally and still awaiting their

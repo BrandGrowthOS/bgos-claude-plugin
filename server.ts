@@ -11358,11 +11358,28 @@ const voiceRpc = new VoiceRpcHandler({
       `integrations/voice-rpc/${encodeURIComponent(rpcId)}/result`,
       body as unknown as Record<string, unknown>,
     ),
-  notify: (content, meta) =>
+  notify: (content, meta, consult) =>
     mcp.notification({
       method: 'notifications/claude/channel',
-      params: { content, meta },
+      params: {
+        // A voice consult card is a delivery like any message: its own
+        // single use token, and the owner only when the backend's stamp
+        // verified (lib/private-turn.mjs voiceConsultActor). Its turn is
+        // that consult's alone and ends with it (onConsultEnded below).
+        content: consult
+          ? privateTurns.deliver({
+            content,
+            actingUserId: consult.actor?.actingUserId ?? null,
+            chatId: consult.chatId,
+            consult: { consultId: consult.consultId, deadline: consult.actor?.deadline ?? null },
+          })
+          : content,
+        meta,
+      },
     }),
+  onConsultEnded: (consultId) => {
+    privateTurns.endConsult(consultId)
+  },
   getIdentity: getVoiceIdentity,
   // stop_turn's short plain confirmation rides the normal outbound send
   // path (POST send-message), same shape as the permission-prompt sender.
