@@ -273,6 +273,18 @@ export function emailMatchesPreview(email: EmailSendPreview, args: unknown): boo
   return text === email.text
 }
 
+/**
+ * The most of a body a card shows, in characters (Unicode code points, as the
+ * server counts them). Wire shapes v7: a body longer than this is never
+ * approvable on a card (no Allow, no approval), and its send keeps a draft.
+ */
+export const EMAIL_SEND_CARD_TEXT_MAX = 1000
+
+/** Is this body too long for the owner to approve on a card (v7)? */
+export function emailSendTooLongForCard(text: string): boolean {
+  return Array.from(String(text ?? '')).length > EMAIL_SEND_CARD_TEXT_MAX
+}
+
 /** The binding a held card names (section 1 of the server approval contract), in its wire shape. */
 export type EmailSendBlock =
   | { to: string; subject: string; text: string; body_sha256: string; text_preview: string }
@@ -450,6 +462,12 @@ export interface EmailSendGrant {
   requestId: string | null
   approval: EmailSendApprovalClick | null
   binding: EmailSendBlock | null
+  /**
+   * v7: the body is too long to approve on a card, so the relay posted none
+   * and let the send through to the server, which keeps it as a draft. Set
+   * only when true, and only with a binding that names this very call.
+   */
+  tooLongForCard?: true
 }
 
 export interface EmailSendApprovals {
@@ -470,6 +488,12 @@ export interface EmailSendApprovals {
   take(args: unknown): boolean
   /** An approval about to go on a send: itself the first time, null ever after (one approval, one send). */
   spend(approval: EmailSendApprovalClick | null): EmailSendApprovalClick | null
+  /**
+   * v7: a body too long for a card is about to be kept as a draft: true the
+   * first time this daemon sees that body (its hash), false ever after, so an
+   * agent that tries again saves no second draft.
+   */
+  firstTooLongDraft(bodySha256: string): boolean
 }
 
 /** How many approval ids the store remembers handing out. */
@@ -485,6 +509,7 @@ export function createEmailSendApprovals(
 ): EmailSendApprovals {
   let waiting: Array<{ at: number; email: EmailSendPreview; grant: EmailSendGrant }> = []
   const spent = new Set<string>()
+  const keptTooLong = new Set<string>()
   const dropStale = () => {
     const at = now()
     waiting = waiting.filter((entry) => at - entry.at <= ttlMs)
@@ -512,8 +537,9 @@ export function createEmailSendApprovals(
     const bound = entry!.grant.binding !== null && bindingMatchesCall(entry!.grant.binding, args)
     return {
       requestId: entry!.grant.requestId,
-      approval: bound ? spend(entry!.grant.approval) : null,
+      approval: bound && !entry!.grant.tooLongForCard ? spend(entry!.grant.approval) : null,
       binding: bound ? entry!.grant.binding : null,
+      ...(bound && entry!.grant.tooLongForCard ? { tooLongForCard: true as const } : {}),
     }
   }
   return {
@@ -529,6 +555,7 @@ export function createEmailSendApprovals(
           requestId: typeof grant.requestId === 'string' && grant.requestId !== '' ? grant.requestId : null,
           approval: readEmailSendApprovalClick(grant.approval),
           binding: isEmailSendBlock(grant.binding) ? (grant.binding as EmailSendBlock) : null,
+          ...(grant.tooLongForCard === true ? { tooLongForCard: true as const } : {}),
         },
       })
       while (waiting.length > MAX_WAITING) waiting.shift()
@@ -537,6 +564,12 @@ export function createEmailSendApprovals(
     claim,
     take: (args) => claim(args) !== null,
     spend,
+    firstTooLongDraft(bodySha256) {
+      if (keptTooLong.has(bodySha256)) return false
+      keptTooLong.add(bodySha256)
+      while (keptTooLong.size > MAX_SPENT) keptTooLong.delete(keptTooLong.values().next().value as string)
+      return true
+    },
   }
 }
 

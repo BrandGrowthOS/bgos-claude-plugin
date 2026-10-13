@@ -34,7 +34,7 @@
 import { EMAIL_SEND_REFUSAL } from './private-turn.mjs'
 import { scanText } from './secret-scan.ts'
 import { isOwnSendingTool } from './hard-floor.ts'
-import { parsePreviewObject } from './email-send-approval.ts'
+import { EMAIL_SEND_CARD_TEXT_MAX, emailSendTooLongForCard, parsePreviewObject } from './email-send-approval.ts'
 
 /** The capability token: this daemon ships both tools (declared-capabilities.ts). */
 export const EMAIL_SEND = 'email_send'
@@ -107,8 +107,22 @@ export interface EmailToolDeps {
    * gate: wire-shapes.md "Server approval for a send", section 4). Without
    * it, email_send sends nothing.
    */
-  approve?: (rawArgs: unknown) => Promise<string | null | { approval: { id: string } }>
+  approve?: (rawArgs: unknown) => Promise<string | null | { approval?: { id: string }; tooLongForCard?: boolean }>
 }
+
+/**
+ * Wire shapes v7: a body too long to approve on a card is kept as a draft, and
+ * the agent is told so plainly, once. Said when such a send comes back as a
+ * draft held for the approval (or for a reason this plugin does not know yet),
+ * never over another rule's own reason.
+ */
+export function emailSendTooLongDraftText(characters: number, line: string): string {
+  return `Not sent: the email was kept as a draft for your owner, because it is too long for your owner to approve on a card (${characters} characters; a card shows at most ${EMAIL_SEND_CARD_TEXT_MAX}). Your owner can read all of it and send it from the app (${line}). Do not try again; tell your owner it is waiting.`
+}
+
+/** v7: the same too long email again, which this daemon already handed over as a draft: nothing more is saved. */
+export const EMAIL_SEND_TOO_LONG_AGAIN =
+  'Not sent: this email is already waiting as a draft for your owner (it is too long to approve on a card), and nothing more was saved. Do not try again; tell your owner it is waiting.'
 
 /** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
 const APPROVAL_UUID =
@@ -310,12 +324,18 @@ function draftLine(answer: Record<string, unknown>): string {
   return `draft ${id}${to ? `, to ${to}` : ''}`
 }
 
-function renderSend(answer: unknown): EmailToolResult {
+function renderSend(answer: unknown, text = ''): EmailToolResult {
   const a = answer && typeof answer === 'object' ? (answer as Record<string, unknown>) : {}
   const draft = (a.draft && typeof a.draft === 'object' ? a.draft : {}) as Record<string, unknown>
   const json = JSON.stringify(answer)
   if (a.outcome === 'sent') {
     return { content: [{ type: 'text', text: `Sent (${draftLine(draft)}). It shows in your Email chat as sent by you; tell your owner.\n${json}` }] }
+  }
+  // v7: a body too long for a card can never carry an approval, so a draft held for one (or for a reason this
+  // plugin does not know yet) was kept because of its length. Another rule's own reason keeps its own words.
+  const reason = typeof a.reason === 'string' ? a.reason : null
+  if (a.outcome === 'draft' && emailSendTooLongForCard(text) && reason !== null && (reason === 'approval_required' || !Object.hasOwn(HELD_REASONS, reason))) {
+    return { content: [{ type: 'text', text: `${emailSendTooLongDraftText(Array.from(text).length, draftLine(draft))}\n${json}` }] }
   }
   if (a.outcome === 'draft' && a.reason === 'approval_required') {
     // The server is the gate while Always ask is on: no approval from the owner's tap for exactly this email.
@@ -327,7 +347,6 @@ function renderSend(answer: unknown): EmailToolResult {
     }
   }
   if (a.outcome === 'draft') {
-    const reason = typeof a.reason === 'string' ? a.reason : null
     const why = reason === null
       ? 'your owner sends every email themselves, so it waits as a draft for them'
       : `${Object.hasOwn(HELD_REASONS, reason) ? HELD_REASONS[reason] : `a sending rule stopped it (${reason.replace(/[^a-z_]/g, '').slice(0, 40)})`}, so it waits as a draft for your owner with that reason shown`
@@ -402,7 +421,7 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
   const approvalId = go && typeof go === 'object' ? (go as { approval?: { id?: unknown } }).approval?.id : undefined
   const approval = typeof approvalId === 'string' && APPROVAL_UUID.test(approvalId) ? { approval: { id: approvalId } } : {}
   try {
-    return renderSend(await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id }, ...approval }))
+    return renderSend(await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id }, ...approval }), text)
   } catch (err) {
     return fail(serverAnswered(err)
       ? `email_send failed, so treat it as not sent and tell your owner: ${errorText(err)}`

@@ -988,6 +988,33 @@ test('the poll lane, backlog: a boot replay of the owner\'s message or a wake na
   assert.ok(r.seen.every((d) => String(d.content).includes('[backlog')), 'all three are the boot replay')
 })
 
+test('the stream and socket lanes, backlog: a message sent before this daemon started names no reason to send, as on the poll lane (Data F6)', async () => {
+  // The poll lane flags its boot replay (isBacklog: sent before DAEMON_START_MS). The stream can replay after a restart
+  // too, and the socket carries a sent date: the same rule, so a message an earlier process may have answered is never a reason.
+  const r = deliveryRecorder()
+  const start = Date.parse('2026-10-13T12:00:00.000Z')
+  const before = '2026-10-13T11:59:00.000Z'
+  const after = '2026-10-13T12:01:00.000Z'
+  const owner = (messageId: number, sentDate: string) => ({
+    chatId: Number(CHAT), messageId, userId: OWNER, text: 'send Dana the venue', messageType: 'text', sentDate,
+    sender: { userId: OWNER, displayName: 'Kc', relationship: 'owner' },
+  })
+  wsLane({ privateTurns: r.privateTurns, DAEMON_START_MS: start }).fn(owner(9010, before))
+  wsLane({ privateTurns: r.privateTurns, DAEMON_START_MS: start }).fn(owner(9011, after))
+  const streamView = (messageId: number, sentDate: string) => streamApply.viewStreamMessage(
+    { seq: 7, kind: 'message_new', chatId: Number(CHAT), messageId, payload: { text: 'send Dana the venue', sender: 'user', senderUserId: OWNER, messageType: 'text', sentDate } } as never,
+    ASSISTANT_ID,
+  )!
+  await streamLane({ privateTurns: r.privateTurns, DAEMON_START_MS: start }).fn(streamView(9012, before), false)
+  await streamLane({ privateTurns: r.privateTurns, DAEMON_START_MS: start }).fn(streamView(9013, after), false)
+  assert.deepEqual(r.seen.map((d) => d.emailBasis), [
+    null,
+    { kind: 'owner_message', id: '9011' },
+    null,
+    { kind: 'owner_message', id: '9013' },
+  ])
+})
+
 test('the permission wait never takes an answer from an email row', () => {
   const verdictFrom = serverFunction('async function waitForVerdict(').match(/verdictFrom: \(msg\) => \{[\s\S]*?\n {6}const text = msg\.message\.text/)
   assert.ok(verdictFrom, 'verdictFrom is where it was')

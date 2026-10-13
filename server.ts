@@ -146,6 +146,7 @@ import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, private
 import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_SEND_APPROVALS_PATH,
+  EMAIL_SEND_TOO_LONG_AGAIN,
   EMAIL_TOOL_DECLS,
   emailCallRefusal,
   emailSendPreflight,
@@ -160,6 +161,7 @@ import {
   emailSendCardBinding,
   emailSendCardChat,
   emailSendFloorRefusal,
+  emailSendTooLongForCard,
   readEmailSendApprovalPull,
   type EmailSendApprovalClick,
 } from './lib/email-send-approval.js'
@@ -321,6 +323,7 @@ import {
   planPollCycle,
   selectFirstPollBacklogIds,
   selectRestartRecoveryIds,
+  sentBeforeStart,
   sentDateToMs,
   globalIntervalMs,
   RECONCILE_ALWAYS_ON_INTERVAL_MS,
@@ -3309,6 +3312,23 @@ function relayPermissionToOwner(
   if (emailCard) {
     log(`email_send card [${request_id}]: ${emailCard.block ? `binds the email (from the ${emailCard.source})` : 'names no email it can bind, so the server lets the owner only deny it and the email stays a draft'}`)
   }
+  // WIRE SHAPES v7: a body longer than a card shows is never approvable on a
+  // card (no Allow, no approval), and its send keeps a draft. So no card is
+  // posted for it: the send goes to the server, which, while the owner asks
+  // before every send, keeps it as a draft for them to read whole and send,
+  // and the agent is told so (lib/agent-email-tools.ts). Recorded BEFORE the
+  // CLI hears allow, like every Allow.
+  if (emailCard?.block && emailSendTooLongForCard(emailCard.block.text)) {
+    emailSendApprovals.allow(tool_name, input_preview, { requestId: request_id, approval: null, binding: emailCard.block, tooLongForCard: true })
+    log(`email_send [${request_id}]: the email is too long to approve on a card, so none is posted; it goes to the server, which keeps it as a draft for the owner`)
+    await mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id, behavior: 'allow' },
+    }).catch((err) => {
+      log(`Failed to send the verdict for a too long email_send: ${err}`)
+    })
+    return
+  }
   // Interactive mode: post a real BGOS approval card. The typed yes/no
   // fallback below stays for old clients, or if a button-click event is not
   // materialized in chat history.
@@ -3685,8 +3705,15 @@ function postFloorCheck(
  * ask first. A hold, a check that cannot answer, or an answer that is not
  * about a send sends nothing. Null lets the send go; text is why it may not.
  */
-async function emailSendApproval(args: unknown): Promise<string | null | { approval: { id: string } }> {
+async function emailSendApproval(args: unknown): Promise<string | null | { approval?: { id: string }; tooLongForCard?: boolean }> {
   const grant = emailSendApprovals.claim(args)
+  if (grant?.tooLongForCard) {
+    // v7: no approval can exist for it, so none is asked for. The server keeps
+    // it as a draft; the same body again saves no second one.
+    if (!grant.binding || !emailSendApprovals.firstTooLongDraft(grant.binding.body_sha256)) return EMAIL_SEND_TOO_LONG_AGAIN
+    log(`email_send: too long to approve on a card [${grant.requestId ?? '?'}]; the server keeps it as a draft`)
+    return { tooLongForCard: true }
+  }
   if (grant) {
     // The approval the tap issued (it rode on the answer), else the pull route,
     // once, for a tap the daemon missed. None: the send goes without one, and
@@ -12857,7 +12884,7 @@ async function forwardStreamInbound(
       deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: isSystem && !streamIsEmail ? 'system' : view.senderKind, agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw, messageId: view.messageId, backlog: sentBeforeStart(view.sentDate, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
           meta: finalInboundMeta(
             streamChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -13963,7 +13990,7 @@ function connectWebsocket(): void {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, emailBasis: emailSendBasis({ senderType: wsSenderType, agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId, backlog: sentBeforeStart(payload?.sentDate ?? payload?.sent_date, DAEMON_START_MS) }), fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
             slashDelivery ? slashDelivery.meta : null,

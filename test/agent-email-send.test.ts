@@ -2037,3 +2037,96 @@ test('merged 0.68.4: a voice consult\'s turn is a private turn, but never a reas
   f.tracker.deliver({ content: 'voice consult', actingUserId: OWNER, chatId: OWN_CHAT, consult: { consultId: 'consult-2', deadline: Date.now() + 60_000 } } as never)
   assert.ok(sendTurn(f).refused)
 })
+
+// ── 11. Data's security review (2026-10-13 23:03Z) F6, and wire shapes v7: a body too long for a card ────────
+
+test('F6: the stream and socket lanes hand the reason the same backlog rule as the poll lane (sent before this daemon started)', async () => {
+  const pc = await import('../lib/poll-core.ts')
+  assert.equal(typeof (pc as Record<string, any>).sentBeforeStart, 'function', 'lib/poll-core.ts exports sentBeforeStart')
+  const sentBeforeStart = (pc as Record<string, any>).sentBeforeStart
+  const start = Date.parse('2026-10-13T12:00:00.000Z')
+  assert.equal(sentBeforeStart('2026-10-13T11:59:59.000Z', start), true)
+  assert.equal(sentBeforeStart('2026-10-13T12:00:00.000Z', start), false)
+  assert.equal(sentBeforeStart(start - 1, start), true, 'a socket frame may carry epoch milliseconds')
+  for (const unknown of [undefined, null, '', 'soon']) assert.equal(sentBeforeStart(unknown, start), false)
+  const lines = SRC.match(/privateTurns\.deliver\(\{[^\n]*\}\)/g) ?? []
+  const stream = lines.find((line) => line.includes('view.eventMetaRaw'))
+  const socket = lines.find((line) => line.includes('wsAgentOrigin'))
+  assert.match(stream ?? '', /emailBasis: emailSendBasis\(\{[^}]*messageId: view\.messageId, backlog: sentBeforeStart\(view\.sentDate, DAEMON_START_MS\) \}\)/)
+  assert.match(socket ?? '', /emailBasis: emailSendBasis\(\{[^}]*messageId, backlog: sentBeforeStart\(payload\?\.sentDate \?\? payload\?\.sent_date, DAEMON_START_MS\) \}\)/)
+})
+
+const LONG_BODY = `Hi Sam,\n\n${'Here is the full plan for Friday, with every detail the venue asked for. '.repeat(20)}\n\nThanks,`
+
+test('v7: a body longer than a card shows (1000 characters, counted as code points) is too long to approve on a card', async () => {
+  const a = await approval()
+  assert.equal(typeof a.emailSendTooLongForCard, 'function', 'lib/email-send-approval.ts exports emailSendTooLongForCard')
+  assert.equal(a.emailSendTooLongForCard('x'.repeat(1000)), false)
+  assert.equal(a.emailSendTooLongForCard('x'.repeat(1001)), true)
+  assert.equal(a.emailSendTooLongForCard('\u{1F600}'.repeat(1000)), false, '1000 emoji are 2000 UTF-16 units but 1000 characters')
+  assert.equal(a.emailSendTooLongForCard(LONG_BODY), true)
+})
+
+test('server.ts, run, v7: a held email_send too long for a card gets no card; it goes to the server, which keeps a draft', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const run = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: input, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  // Bounded: a relay that posts a card waits for a tap that never comes here.
+  await Promise.race([
+    run.relay({ request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(input) }, SEND_TOOL, true, record),
+    new Promise((done) => setTimeout(done, 2000)),
+  ])
+  assert.equal(run.posts.length, 0, 'no card: nothing on it could ever be approved')
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'allow' }])
+  // The note's claim used SEND_ARGS; claim the long call itself.
+  assert.equal(run.notes[0]!.claimed, null)
+  const grant = run.store.claim(input)
+  assert.equal(grant?.tooLongForCard, true)
+  assert.equal(grant?.approval, null)
+})
+
+test('server.ts, run, v7: the agent hears plainly the email was kept as a draft because it is too long to approve on a card, and nothing retries', async (t) => {
+  const f = fixture(t)
+  const a = await approval()
+  const b = await binding()
+  const store = a.createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  const block = b.emailSendBinding(SEND_TOOL, input)
+  store.allow(SEND_TOOL, previewOf(input), { requestId: 'abcde', approval: null, binding: block, tooLongForCard: true })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', input)
+  const text = textOf(result)
+  assert.match(text, /^Not sent: the email was kept as a draft for your owner, because it is too long for your owner to approve on a card/)
+  assert.match(text, /Do not try again/)
+  assert.equal(/\bwas sent\b|^Sent/i.test(text), false)
+  assert.equal(backend.requests.length, 1)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.equal(backend.pulls.length, 0, 'no approval can exist for it, so none is asked for')
+  // The agent sends it again anyway: a second card cycle hands the same body over, and nothing more is saved.
+  store.allow(SEND_TOOL, previewOf(input), { requestId: 'bcdef', approval: null, binding: block, tooLongForCard: true })
+  const again = await call('email_send', input)
+  assert.match(textOf(again), /already waiting as a draft for your owner/)
+  assert.match(textOf(again), /Do not try again/)
+  assert.equal(backend.requests.length, 1, 'no second draft')
+})
+
+test('v7: whatever reason a draft of a too long email carries, the agent hears it was too long for a card, unless another rule held it', async (t) => {
+  const draftOf = (reason: string) => ({ outcome: 'draft', reason, draft: { id: DRAFT_ID, emailId: null, kind: 'new', author: 'agent', to: [SEND_ARGS.to], state: 'draft', createdAt: '2026-10-13T09:14:02.000Z' } })
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  for (const reason of ['approval_required', 'card_too_long']) {
+    const backend = await fakeBackend(t, { answer: draftOf(reason) })
+    const result = await callTool('email_send', input, { post: backend.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
+    assert.match(textOf(result), /too long for your owner to approve on a card/, reason)
+  }
+  const limited = await fakeBackend(t, { answer: draftOf('daily_limit') })
+  const held = await callTool('email_send', input, { post: limited.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
+  assert.match(textOf(held), /today's sending limit/)
+  // A short email without an approval keeps the plain approval wording.
+  const short = await fakeBackend(t, { answer: draftOf('approval_required') })
+  const plain = await callTool('email_send', SEND_ARGS, { post: short.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
+  assert.match(textOf(plain), /did not carry their approval for exactly this email/)
+})
