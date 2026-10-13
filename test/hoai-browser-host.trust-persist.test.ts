@@ -52,7 +52,7 @@ function backend(choice: string) {
       answered.set(String(card.gateId), choice)
       return true
     },
-    readGate: async (gateId: string) => (answered.has(gateId) ? { state: 'answered', choice: answered.get(gateId) } : { state: 'unknown', choice: null }),
+    readGate: async (gateId: string) => ({ state: answered.has(gateId) ? 'answered' : 'unknown', choice: answered.get(gateId) ?? null }),
   }
 }
 
