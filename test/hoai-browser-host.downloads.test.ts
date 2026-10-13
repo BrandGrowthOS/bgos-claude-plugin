@@ -224,8 +224,8 @@ test('a site the owner trusts covers its downloads from the first one, before an
     const profileDir = join(s.agentRoot, '900', 'browser', 'owner')
     mkdirSync(profileDir, { recursive: true })
     // A remembered Trust this site, in the grants this host seeds from the
-    // settings (profiles.sessionGrants; the host's key for a numeric agent
-    // id reads the alwaysGrants overlay).
+    // settings (profiles.sessionGrants, which reads the legacy alwaysGrants
+    // overlay for every agent, under its own agentGrants key).
     writeFileSync(join(profileDir, 'agent-browser.settings.json'), JSON.stringify({ v: 1, alwaysGrants: { 'https://files.example.com': { trust: 'allow' } } }))
     await s.call('hoai_browser_open_session', { purpose: 'files' })
     const slot = s.pool.peek(s.ctx)

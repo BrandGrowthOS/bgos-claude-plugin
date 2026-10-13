@@ -77,7 +77,9 @@ import { listSkills, managedSkillsDir, removeAgentSkill } from './lib/skills-inv
 import { exportSkill, installBundle } from './lib/skills-share.js'
 import { ChangesRpcHandler, normalizeChangesRpc } from './lib/changes-rpc.js'
 import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-changes.js'
-import { pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
+import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
+import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
 import { buildCallOwnerBody } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
@@ -140,7 +142,7 @@ import {
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
-import { createPrivateTurnTracker, privateActor, privateSenderUserId, privateContextPath, privateMarkerPath, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -506,9 +508,11 @@ import {
   isAutoUpdateEnabled,
   isUpdateLockHeld,
   loadAutoUpdateState,
+  decideToolAdmission,
   loadSharedUpdateSafety,
   MessageActivityTracker,
   resolveAutoUpdateStatePath,
+  UPDATE_STALE_WORK_MS,
   type SelfUpdater,
 } from './lib/self-update'
 import { normalizeUpdateRpc, UpdateRpcHandler } from './lib/update-rpc.js'
@@ -605,7 +609,8 @@ import {
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
 import { serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
-import { installWatcherBundle } from './lib/watcher-bundle.mjs'
+import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
+import { listProcesses } from './lib/process-tree.mjs'
 import {
   drawCatchupDelayMs,
   drawReconnectBaseDelayMs,
@@ -3477,12 +3482,16 @@ let floorMarkerKeys: string[] = []
  * Say to the floor hook that a HOAI daemon is attached to this project folder,
  * so a listed action here asks (bin/hoai-floor-hook.mjs asks nowhere else).
  * Written while this daemon holds its pairing lock, taken down when it stands
- * down or exits. Never throws.
+ * down or exits. Never throws. The entry names the folder this daemon's session
+ * transcripts live in, and the folder a relative transcript path is read
+ * against (the intake's own two), so the private turn hook writes its marker
+ * only under its own daemon's key, never another agent's (lib/floor-state.mjs
+ * findOwnAttachedKey).
  */
 function markFloorAttachedIfHolder(): void {
   if (!lockHeld) return
   try {
-    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS })
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD })
     if (floorMarkerKeys.length === 0) {
       log('floor: could not write the attached marker; the floor hook stays silent in this session')
     }
@@ -5345,7 +5354,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     recordLiveMarker(LIVE_MARKER_PATH, new Date().toISOString(), DAEMON_BOOTED_AT_ISO)
     return Promise.resolve({ content: [{ type: 'text' as const, text: 'ok' }] })
   }
-  if (updateDrainMode) {
+  // A pending update only DEFERS the restart (HOAI product board row a741d98b,
+  // Pylon 929, 2026-10-11: a staged update refused every tool for as long as it
+  // waited for work to finish, and that work was waiting on a send). A call is
+  // admitted while the daemon is merely waiting for in-flight work; it is
+  // refused only once the daemon is drained and the restart is committed.
+  if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {
     return Promise.resolve({
       content: [
         {
@@ -5371,7 +5385,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         const peer = (privateTurns as { peerTurn?: () => { sourceAssistantId: string } | null }).peerTurn?.()
         if (peer) log(recordPeerRefusal({ dir: pathDirname(CURSOR_FILE_PATH), tool: req.params.name, delegate: peer.sourceAssistantId, target: ASSISTANT_ID }).line)
       } catch { /* counting is best effort */ }
-      // Still refused. With no hook registered the sender is not the problem, so say that.
+      // Still refused. With no hook registered the sender is not the problem, so say that. Either way the log names
+      // the check that failed, marker by marker (the refusal text the model sees stays the same).
+      try {
+        if (lockHeld) log(`private turn: refused ${req.params.name}: ${privateTurns.explain({ markerPaths: PRIVATE_MARKER_PATHS })}`)
+      } catch { /* A diagnostic line never changes the refusal. */ }
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
     }
@@ -8601,7 +8619,8 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
  *  whoever sent it. Fed at the three inbound sites and the two meeting sites. */
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
-const privateTurns = createPrivateTurnTracker({ onRevoke: () => publishBrowserPrivateTurn() })
+// A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
+const privateTurns = createPrivateTurnTracker({ onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
@@ -9250,13 +9269,16 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
   if (event.name === 'SessionEnd') privateTurns.end()
   if (event.name === 'UserPromptSubmit') {
     // A prompt past the forwarder's clip arrives as its token(s) plus the full prompt's hash.
-    privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId })
+    const began = privateTurns.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
     hookTurnLive = true
     // The turn's chat is decided HERE and held until Stop. The prompt carries
     // the message we delivered, so the delivery it matches names the chat; with
     // no match (a cron wake the agent started itself) the last delivery stands.
     // Either way a peer message or a meeting arriving mid turn moves nothing.
     const matched = turnChat.matchDelivered(payload.prompt)
+    // One line per prompt that carried a delivery token, or that carries a delivered message without one: what
+    // the private turn decided. Without it a wake that opened no turn left nothing in the log (Vera, 2026-10-12).
+    if (began !== 'repeat' && (began !== 'no-token' || matched !== null)) log(privateBeginLine(began, hookSessionId))
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
@@ -11855,9 +11877,18 @@ const marketplaceLatest = createMarketplaceLatestTracker({
 // request held every inbound message for up to the whole wait while the owner
 // pressed a button that did nothing.
 function updateDrainSnapshot() {
+  // Only work that is not wedged or abandoned counts (UPDATE_STALE_WORK_MS): a
+  // queued wake delivery nobody read, or a reply owed to a conversation that
+  // moved on, must not hold an update off for ever. The agent state the
+  // watcher reads keeps the raw counts (it publishes them separately).
+  const nowMs = Date.now()
+  let freshInbounds = 0
+  for (const pending of pendingInbounds.values()) {
+    if (nowMs - pending.ts < UPDATE_STALE_WORK_MS) freshInbounds += 1
+  }
   return {
-    activeOperations: messageActivity.activeOperations,
-    pendingMessages: pendingInbounds.size,
+    activeOperations: messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS),
+    pendingMessages: freshInbounds,
     pendingPermissions: pendingPermissions.size,
   }
 }
@@ -14673,11 +14704,7 @@ async function main(): Promise<void> {
     env: process.env,
     runningVersion: readOwnVersion(import.meta.dir),
     log,
-    drainSnapshot: () => ({
-      activeOperations: messageActivity.activeOperations,
-      pendingMessages: pendingInbounds.size,
-      pendingPermissions: pendingPermissions.size,
-    }),
+    drainSnapshot: updateDrainSnapshot,
     setDrainMode: setUpdateDrainMode,
     exit: (code) => process.exit(code),
     // The nightly update asks the SAME ladder the clicked one uses (KC,
@@ -14776,11 +14803,14 @@ async function main(): Promise<void> {
   log(privateHookBootLine(PRIVATE_HOOK))
   // A clone workspace that lost or never had the hook gets it written now, so the NEXT
   // launch of this agent has it. It does not reach this session: the CLI read its hooks
-  // at launch. Marketplace installs and folders that are not this checkout's are left alone.
+  // at launch, so a registration made here asks for ONE restart below (lib/hook-restart.mjs).
+  // Marketplace installs and folders that are not this checkout's are left alone.
+  const hookOutcomes: string[] = []
   if (!PRIVATE_HOOK.registered && INSTALL_METHOD !== 'marketplace') {
     for (const folder of new Set(FLOOR_FOLDERS)) {
       const result = registerCloneHooks({ workdir: folder, pluginDir: import.meta.dir })
-      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; restart this agent to load them`)
+      hookOutcomes.push(result.outcome)
+      if (result.outcome === 'registered') log(`private turn: registered the agent hooks in ${folder}; they load at this agent's next launch`)
       else if (result.outcome === 'failed') log(`private turn: could not register the agent hooks in ${folder}: ${result.detail ?? 'unknown'}`)
     }
   }
@@ -14871,6 +14901,114 @@ async function main(): Promise<void> {
   // The session pin (finding 7): asks only while this daemon holds the channel
   // and its live session is not pinned yet (lib/session-pin.ts).
   setInterval(() => checkSessionPin(), SESSION_PIN_CHECK_MS).unref()
+
+  // The restart-marker takeover (lib/marker-takeover.mjs, Windows only). The
+  // hoai launcher allows 3 marker relaunches per hour per process and then
+  // ignores every marker for good (bin/hoai-core.mjs:2228, :2293, :2295-2299);
+  // launchers already running in the field cannot be changed. This daemon
+  // watches its own marker and, when the launcher provably left a fresh one
+  // unanswered, starts ONE detached hidden helper (bin/hoai-restart-handoff.mjs)
+  // that proves this session, ends claude and brings the agent back on its
+  // pinned session. Only the pairing lock holder acts, and never once shutdown
+  // has begun (active), so the shutdown path needs nothing from it: its poll
+  // is unref'd and its folder watch is not persistent.
+  if (process.platform === 'win32' && String(process.env.HOAI_MARKER_TAKEOVER ?? '').trim().toLowerCase() !== 'off') {
+    const takeoverDir = agentStateDir(homedir(), ASSISTANT_ID)
+    if (takeoverDir) {
+      const markerTakeover = createMarkerTakeover({
+        platform: process.platform,
+        assistantId: String(ASSISTANT_ID),
+        stateDir: takeoverDir,
+        bootAtMs: DAEMON_START_MS,
+        now: Date.now,
+        ownPid: process.pid,
+        active: () => lockHeld && !shuttingDown,
+        claudePid: () => agentClaudePid(),
+        fs: nodeTakeoverFs(),
+        pidAlive: defaultPidAlive,
+        setInterval,
+        clearInterval,
+        setTimeout,
+        watch,
+        helperParams: () => ({
+          home: homedir(),
+          launchCwd: LAUNCH_CWD,
+          logPath: LOG_FILE,
+          pluginStateDir: pathDirname(CURSOR_FILE_PATH),
+          credentialsPath: CREDENTIALS_PATH,
+          pluginRoot: currentPluginRootFor({
+            installMethod: INSTALL_METHOD,
+            pluginRoot: PLUGIN_ROOT,
+            installedPluginsRaw: readTextOrNull(installedPluginsPath(CLAUDE_CONFIG_DIR)),
+            exists: existsSync,
+          }),
+        }),
+        helperEnv: () =>
+          handoffEnv(process.env, {
+            platform: process.platform,
+            extraKeys: mcpEnvKeys(
+              readTextOrNull(pathJoin(RUNNING_ROOT, '.claude-plugin', 'plugin.json')),
+              readTextOrNull(pathJoin(LAUNCH_CWD, '.mcp.json')),
+            ),
+          }),
+        spawnHelper: (argv: string[], env: Record<string, string>) => {
+          const child = spawnProcess(process.execPath, [pathJoin(RUNNING_ROOT, 'bin', 'hoai-restart-handoff.mjs'), ...argv], {
+            detached: true,
+            stdio: 'ignore',
+            windowsHide: true,
+            cwd: takeoverDir,
+            env,
+          })
+          child.on('error', () => {})
+          child.unref()
+          return { pid: child.pid ?? null }
+        },
+        log,
+      })
+      markerTakeover.start()
+    }
+  }
+
+  // The ONE restart after this boot registered the private turn hook itself
+  // (lib/hook-restart.mjs): otherwise every private call keeps refusing until a
+  // person restarts the agent. Only a registration made by this boot arms it,
+  // never a fresh start that found the hook; a record in the agent's state
+  // folder makes it single use across the restart it causes. The daemon's own
+  // ladder does the restart, the one a scheduled update asks, at the safe
+  // moment the watcher waits for: the same facts agent-state.json publishes,
+  // claude's process tree, and no update in flight. Only the pairing lock
+  // holder asks, never once shutdown has begun (active), so the shutdown path
+  // needs nothing from it; its poll is unref'd.
+  const hookRestartDir = agentStateDir(homedir(), ASSISTANT_ID)
+  if (hookRestartDir) {
+    const hookRestart = createHookRestart({
+      outcomes: hookOutcomes,
+      folders: [...new Set(FLOOR_FOLDERS)],
+      recordPath: pathJoin(hookRestartDir, HOOK_RESTART_FILE_NAME),
+      fs: nodeHookRestartFs(),
+      bootAtMs: DAEMON_START_MS,
+      now: Date.now,
+      ownPid: process.pid,
+      active: () => lockHeld && !shuttingDown,
+      draining: () => updateDrainMode,
+      updateLockHeld: () =>
+        INSTALL_METHOD !== 'marketplace' && isUpdateLockHeld(joinPath(import.meta.dir, '.git', AUTO_UPDATE_LOCK_FILE)),
+      safeState: () => ({
+        turnInFlight: hookTurnLive || hookTurn.carried.size > 0,
+        turnSignal: hookTurnSignal({ lastEventAtMs: lastHookEventAtMs, endedSessionId: hookEndedSessionId }),
+        ...updateDrainSnapshot(),
+      }),
+      activityMs: () => [DAEMON_START_MS, lastInboundAtMs, lastHookEventAtMs, agentTranscript().activityMs],
+      claudePid: () => agentClaudePid(),
+      listProcesses: () => listProcesses({ platform: process.platform, exec: nodeExec(), env: process.env }),
+      drain: setUpdateDrainMode,
+      requestRestart: () => updateRpc.restartAfterHookRegistration(),
+      log,
+      setInterval,
+      clearInterval,
+    })
+    hookRestart.start()
+  }
 
   // The parent Claude Code session holds our stdin. When it dies the pipe closes, which is a fact
   // about the process tree rather than an inference. Without this the daemon survives its session:

@@ -179,6 +179,13 @@ export const RESTART_DID_NOT_ARRIVE = 'restart_did_not_arrive'
  */
 export const SCHEDULED_RESTART_RPC = 'scheduled-auto-update' 
 
+/**
+ * The rpc id of the ONE restart a daemon asks for after it registered the
+ * private turn hook at boot (lib/hook-restart.mjs). Nobody asked either, so it
+ * too reports to the log, never to the backend.
+ */
+export const HOOK_RESTART_RPC = 'hook-registration'
+
 /** The backend caps progress messages at 300 chars (design 2.2). */
 export const PROGRESS_MESSAGE_MAX_CHARS = 300
 
@@ -306,10 +313,10 @@ export class UpdateRpcHandler {
   /** Progress is reporting, never control flow: a failed POST is logged and
    *  the update continues (the backend's own timeouts cover a silent rpc). */
   private async progress(rpcId: string, body: UpdateRpcProgress): Promise<void> {
-    if (rpcId === SCHEDULED_RESTART_RPC) {
+    if (rpcId === SCHEDULED_RESTART_RPC || rpcId === HOOK_RESTART_RPC) {
       // Nobody asked, so there is nobody to answer. Posting would be a
       // progress report for an rpc the backend never issued.
-      this.deps.log(`auto-update restart: ${body.stage}`)
+      this.deps.log(`${rpcId === HOOK_RESTART_RPC ? 'hook registration restart' : 'auto-update restart'}: ${body.stage}`)
       return
     }
     try {
@@ -592,6 +599,16 @@ export class UpdateRpcHandler {
     return this.restartLadder(SCHEDULED_RESTART_RPC, targetVersion)
   }
 
+  /**
+   * Restart this process ONCE after it registered the private turn hook at
+   * boot (lib/hook-restart.mjs decides when, and that it is once): the CLI
+   * reads its hooks only at launch. The same ladder for the same reasons as
+   * restartAfterScheduledUpdate; no version moves, so none is reported.
+   */
+  async restartAfterHookRegistration(): Promise<boolean> {
+    return this.restartLadder(HOOK_RESTART_RPC, null)
+  }
+
   /** Is the job a service authority names actually holding this process?
    *  Pure decision over raw readings; a refusal logs the handle and both
    *  pids so the operator sees what was declared and what really holds us. */
@@ -625,8 +642,11 @@ export class UpdateRpcHandler {
   private async restartDidNotArrive(rpcId: string): Promise<void> {
     this.deps.log(
       `update_rpc: RESTART DID NOT ARRIVE within ${RESTART_WATCHDOG_MS / 1000}s of 'restarting' (rpc=${rpcId}); ` +
-        'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
-        'the update stays on disk as pendingRestartVersion until something really restarts this process',
+        (rpcId === HOOK_RESTART_RPC
+          ? 'Un-draining so the daemon is not left deaf; the hook restart is single use, so ' +
+            'restart this agent by hand to load the private turn hook'
+          : 'this process is still running the OLD code. Un-draining so the daemon is not left deaf; ' +
+            'the update stays on disk as pendingRestartVersion until something really restarts this process'),
     )
     this.deps.setDrainMode(false)
     await this.progress(rpcId, { stage: 'error', message: RESTART_DID_NOT_ARRIVE })

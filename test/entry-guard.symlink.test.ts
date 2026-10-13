@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
+import { floorKey, floorStateRoot, markFloorAttached, sessionFolders } from '../lib/floor-state.mjs'
 import { privateMarkerPath } from '../lib/private-turn.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -90,11 +90,13 @@ for (const [label, rootOf] of [
     const state = mkdtempSync(join(tmpdir(), 'entry-private-'))
     const cwd = mkdtempSync(join(tmpdir(), 'entry-cwd-'))
     const env = { BGOS_PLUGIN_STATE_DIR: state, HOME: state, USERPROFILE: state }
-    // A managed agent has a private-turn marker for its folder; with one in
-    // place, a prompt that has no session id must be refused, not ignored.
-    const payload = { hook_event_name: 'UserPromptSubmit', cwd, prompt: 'hello' }
+    // A managed agent's daemon is attached to its folder and names where its
+    // transcripts live (0.68.4); with it in place, a prompt that has no
+    // session id must be refused, not ignored.
+    const payload = { hook_event_name: 'UserPromptSubmit', cwd, transcript_path: join(cwd, 'session.jsonl'), prompt: 'hello' }
     const root = floorStateRoot(env)
     const key = sessionFolders(payload, env).map(floorKey)[0]!
+    markFloorAttached({ root, folders: [cwd], projectDir: cwd })
     const marker = privateMarkerPath(root, key)
     mkdirSync(dirname(marker), { recursive: true })
     writeFileSync(marker, JSON.stringify({ schemaVersion: 1 }))

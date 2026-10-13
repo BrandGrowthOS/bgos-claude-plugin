@@ -807,3 +807,30 @@ test('decideHeldFailure: an old launch-status is not a loop in progress, and a h
     null,
   )
 })
+
+test('decideFreshStart: a restart is written only onto the session it was judged on, and never onto a fresh start', async () => {
+  const plan: any = await import('../lib/keepalive-plan.mjs')
+  assert.equal(typeof plan.decideFreshStart, 'function', 'keepalive-plan has no fresh-start guard: a sweep judged before a relaunch writes its marker onto the new session (2026-10-12 17:17:10)')
+  const now = Date.parse('2026-10-12T13:17:10.486Z')
+  const base = { now, windowMs: 30 * 60_000, judgedDaemonPid: 4912, liveDaemonPid: 4912, launchStartedAtMs: now - 3_600_000, newestClaudeStartedAtMs: now - 3_600_000, markerMtimeMs: null, markerTier: true }
+  assert.deepEqual(plan.decideFreshStart(base), { proceed: true })
+  assert.deepEqual(plan.decideFreshStart({ ...base, liveDaemonPid: 4913 }), { proceed: false, reason: 'fresh_start' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, liveDaemonPid: null }), { proceed: false, reason: 'fresh_start' }, 'the judged daemon is gone and none is up yet (a keep-alive backoff): the session changed')
+  assert.deepEqual(plan.decideFreshStart({ ...base, launchStartedAtMs: now - 9_328 }), { proceed: false, reason: 'fresh_start' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, newestClaudeStartedAtMs: now - 15 * 60_000 }), { proceed: false, reason: 'fresh_start' }, 'inside the 30 min window')
+  assert.deepEqual(plan.decideFreshStart({ ...base, windowMs: 10 * 60_000, newestClaudeStartedAtMs: now - 15 * 60_000 }), { proceed: true }, 'past the 10 min window')
+  assert.deepEqual(plan.decideFreshStart({ ...base, launchStartedAtMs: now + 60_000 }), { proceed: false, reason: 'fresh_start' }, 'a stamp in the future reads as recent')
+  // Unknown pids or stamps prove nothing either way.
+  assert.deepEqual(plan.decideFreshStart({ ...base, judgedDaemonPid: null, liveDaemonPid: 4913, launchStartedAtMs: null, newestClaudeStartedAtMs: null }), { proceed: true })
+})
+
+test('decideFreshStart: a PENDING marker (recent, written after this session started) is never rewritten by the marker tier; a stranded one, or another tier, goes ahead', async () => {
+  const plan: any = await import('../lib/keepalive-plan.mjs')
+  const now = Date.parse('2026-10-12T13:17:10.486Z')
+  const base = { now, windowMs: 30 * 60_000, judgedDaemonPid: 4912, liveDaemonPid: 4912, launchStartedAtMs: now - 3_600_000, newestClaudeStartedAtMs: now - 3_600_000, markerMtimeMs: now - 20_000, markerTier: true }
+  assert.deepEqual(plan.decideFreshStart(base), { proceed: false, reason: 'restart_already_requested' })
+  assert.deepEqual(plan.decideFreshStart({ ...base, markerMtimeMs: now + 5_000 }), { proceed: false, reason: 'restart_already_requested' }, 'a stamp in the future reads as pending')
+  assert.deepEqual(plan.decideFreshStart({ ...base, markerMtimeMs: now - plan.MARKER_PENDING_MS }), { proceed: true }, 'stranded longer than anyone takes to act on it: rewrite it, so a takeover sees a fresh one')
+  assert.deepEqual(plan.decideFreshStart({ ...base, markerMtimeMs: now - 2 * 3_600_000 }), { proceed: true }, 'written before this session started: stale')
+  assert.deepEqual(plan.decideFreshStart({ ...base, markerTier: false }), { proceed: true }, 'a service restart does not go through the marker')
+})

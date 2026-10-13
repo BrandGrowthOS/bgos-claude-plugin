@@ -1733,9 +1733,18 @@ export class BrowserHostCore {
     }
   }
 
-  /** The key a remembered grant is filed under: this agent, on this browser. */
+  /**
+   * The key a remembered grant is filed under: this agent, on this browser.
+   * agentProfileKey (vendored, byte for byte) takes a STRING agent id and
+   * returns null for a number, and relay() has already made ctx.assistantId a
+   * number, so it was handed the id the way local-mcp.js hands it a relay
+   * assistant: "relay:<id>", which keys it "assistant-<id>", the key the
+   * desktop files the same assistant under. An id that is not a positive
+   * integer gets no key, so nothing is remembered (board row b774a758).
+   */
   _profileKey(ctx) {
-    return hostProfiles.agentProfileKey(ctx.assistantId)
+    const id = assistantIdOrNull(ctx.assistantId)
+    return id === null ? null : hostProfiles.agentProfileKey(`relay:${id}`)
   }
 
   /** This browser's settings, read once per slot and kept. */
