@@ -200,6 +200,26 @@ test('consult after the call ended: an expired consult opens nothing, and an ope
   assert.throws(() => g.gate(), /did not start/, 'closed for good, not only while the clock says so')
 })
 
+test('a consult card submitted after its deadline binds nothing: no turn to end, nothing to revoke', (t) => {
+  const clock = { now: T0 }
+  const f = fixture(t, clock)
+  const late = f.consultCard(stamped())
+  clock.now = T0 + 45_000
+  f.submit(late)
+  const before = f.revoked()
+  assert.equal(f.tracker.endConsult(RPC), false, 'the prompt began after the deadline: no turn was ever bound')
+  assert.equal(f.tracker.rawCard('[meeting_message] hi'), false)
+  assert.equal(f.revoked(), before)
+})
+
+test('a consult delivery that names an actor with no usable deadline names nobody', (t) => {
+  for (const deadline of [null, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const f = fixture(t)
+    f.submit(f.tracker.deliver({ content: '[voice_consult] x', actingUserId: OWNER, chatId: '10', consult: { consultId: `rpc-${deadline}`, deadline } }))
+    assert.throws(() => f.gate(), /did not start/, String(deadline))
+  }
+})
+
 test('a replayed consult_id opens nothing, before or after the first was answered', (t) => {
   const f = fixture(t)
   const first = f.consultCard(stamped())
@@ -409,4 +429,30 @@ test('the daemon delivers every consult card through privateTurns.deliver and en
   // Every other voice card (stop_turn, dispatch) is still a plain notification.
   await wiring.notify('[stop_turn]', { event_type: 'stop_turn' })
   assert.equal(sent[1]!.content, '[stop_turn]')
+})
+
+test('the daemon names nobody on an unstamped consult card, and that card still ends a live owner turn', async (t) => {
+  const f = fixture(t, { now: Date.now() })
+  const sent: Array<{ content: string; meta: { user_id?: unknown } }> = []
+  const wiring = execute(`return ({ ${voiceDepsSource} })`, {
+    mcp: { notification: async (n: { params: { content: string; meta: { user_id?: unknown } } }) => { sent.push(n.params) } },
+    privateTurns: f.tracker,
+  })
+  f.submit(f.tracker.deliver({ content: 'owner typed', actingUserId: OWNER, chatId: '10' }))
+  assert.equal(f.gate().actingUserId, OWNER)
+
+  const h = handlerDeps()
+  const handler = new VoiceRpcHandler({ ...h.deps, notify: wiring.notify, onConsultEnded: wiring.onConsultEnded })
+  const frame = live()
+  delete frame.payload.eventMeta
+  const done = handler.handle(frame)
+  await settle()
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]!.meta.user_id, OWNER, 'the transport meta names the owner, and is never read as the actor')
+  assert.match(sent[0]!.content, /<hoai-private-turn id="[a-f0-9-]{36}"\/>$/, 'delivered through the tracker')
+  assert.throws(() => f.gate(), /did not start/, 'the unstamped consult card ended the owner turn')
+  f.submit(sent[0]!.content)
+  assert.throws(() => f.gate(), /did not start/, 'and opens nothing itself')
+  handler.resolveConsult(RPC, 'ok')
+  await done
 })
