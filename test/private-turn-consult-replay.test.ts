@@ -69,7 +69,7 @@ function agentHome(t: any) {
       fires: createFireLedger({ path: firesPath, now: () => clock.now }),
       onReplay: (replay) => replays.push(privateReplayLine(replay)),
       onRevoke: (info) => revokes.push(privateRevokeLine(info)),
-    } as any)
+    })
     const sessionId = `session-${++session}`
     /** Claude Code submits a delivered card through the real synchronous hook; the daemon begins it. */
     const submit = (prompt: string) => {
