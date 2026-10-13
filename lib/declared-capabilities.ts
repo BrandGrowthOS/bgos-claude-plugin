@@ -202,6 +202,18 @@
  *                       hands an email to it is proved by
  *                       test/external-email-label.test.ts, which runs each
  *                       lane's real code out of server.ts.
+ *   email_send          this daemon ships the agent's two email tools,
+ *                       email_draft (a draft for the owner, never sent) and
+ *                       email_send (sent only on the owner's own message or
+ *                       a task the owner scheduled, refused in an email, peer
+ *                       or non wake system turn; lib/agent-email-tools.ts,
+ *                       outgoing email modes, HOAI board row 2dd04488). The
+ *                       backend serves the canon's sentence about the two
+ *                       tools, the signature line included, only to a daemon
+ *                       that declares it. Every host and connection: the
+ *                       tools are plain code. Declared only while
+ *                       shipsEmailTools(), the tools' own check, holds (the
+ *                       email_label precedent).
  *
  * Token grammar is the backend's: /^[a-z][a-z0-9_]{0,63}$/, at most 32
  * entries (backend/src/dto/integrations/pair-exchange.dto.ts). The base is
@@ -222,6 +234,7 @@
 import { HARD_FLOOR_RULES_2_TOKEN, HARD_FLOOR_TOKEN, PERMISSION_CARD, PLAN_CARD } from './claude-capability-tokens.js'
 import { SESSIONS_LIBRARY, STOP_PAUSES_MISSION } from './session-controls-contract.ts'
 import { EMAIL_LABEL, labelsExternalEmail } from './inbound-channel.ts'
+import { EMAIL_SEND, shipsEmailTools } from './agent-email-tools.ts'
 
 /** Declared wherever this plugin runs, on every host and every connection. */
 export const DECLARED_CAPABILITIES_BASE: readonly string[] = Object.freeze([
@@ -302,6 +315,7 @@ export function declaredCapabilities(input: {
   return [
     ...DECLARED_CAPABILITIES_BASE,
     ...(labelsExternalEmail() ? [EMAIL_LABEL] : []),
+    ...(shipsEmailTools() ? [EMAIL_SEND] : []),
     ...(input.authMode === 'pairing' && input.floorHook === true ? DECLARED_CAPABILITIES_PAIRING : []),
     ...(input.canInjectGoal === true ? DECLARED_CAPABILITIES_INJECTOR : []),
   ]
