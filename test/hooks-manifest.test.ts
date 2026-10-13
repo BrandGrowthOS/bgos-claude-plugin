@@ -112,7 +112,7 @@ test('the registered set is deliberate: no event fires that nothing reads', () =
   // all it needs to record which turn started a helper, so a background helper
   // cannot later act as the sender of a different turn.
   assert.ok('SubagentStop' in manifest.hooks, 'a helper row closes on this event')
-  assert.deepEqual(manifest.hooks.SubagentStart, [{ hooks: [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false }] }])
+  assert.deepEqual(manifest.hooks.SubagentStart, [{ hooks: [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 5, async: false }] }])
   for (const unregistered of ['PermissionRequest', 'Notification',
     'PostToolBatch', 'StopFailure', 'TaskCreated', 'TaskCompleted']) {
     assert.ok(
@@ -181,14 +181,14 @@ test('only the floor and private turn boundaries add a matcher', () => {
       assert.equal(matchers[1]!.matcher, FLOOR_MATCHER)
       assert.deepEqual(matchers[1]!.hooks?.map((h) => h.args), [[FLOOR]])
       assert.equal(matchers[2]!.matcher, PRIVATE_TOOL_MATCHER)
-      assert.deepEqual(matchers[2]!.hooks, [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false }])
+      assert.deepEqual(matchers[2]!.hooks, [{ type: 'command', command: 'node', args: [PRIVATE], timeout: 5, async: false }])
       continue
     }
     if (PRIVATE_ONLY_EVENTS.includes(event)) continue
     if (PRIVATE_EVENTS.includes(event)) {
       assert.equal(matchers.length, 2)
       const entry = matchers.flatMap(m => m.hooks ?? []).find(h => h.args?.[0] === PRIVATE)
-      assert.deepEqual(entry, { type: 'command', command: 'node', args: [PRIVATE], timeout: 3, async: false })
+      assert.deepEqual(entry, { type: 'command', command: 'node', args: [PRIVATE], timeout: 5, async: false })
       continue
     }
     assert.equal(matchers.length, 1, `${event} must declare one matcher object`)

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import { privateActor, privateSenderUserId } from '../lib/private-turn.mjs'
+import * as privateTurnModule from '../lib/private-turn.mjs'
 import { buildScheduleCancelPath, buildScheduleCreateBody, buildScheduleListPath } from '../lib/schedule.js'
 
 const source = readFileSync('server.ts', 'utf8')
@@ -58,7 +59,8 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /senderUserId: privateSenderUserId\(payload\)/)
   assert.match(source, /privateTurns\.begin\(\{ prompt: payload\.prompt, promptHash: payload\.hoai_clipped === true \? payload\.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload\.prompt_id \}\)/)
   // What begin() decided is logged for every prompt that carried a token, and a refused call names the failed check.
-  assert.match(source, /if \(began !== 'repeat' && \(began !== 'no-token' \|\| matched !== null\)\) log\(privateBeginLine\(began, hookSessionId\)\)/)
+  // A replayed fire is said once, by its own line (onReplay), not also by the begin line.
+  assert.match(source, /if \(began !== 'repeat' && began !== 'replayed' && \(began !== 'no-token' \|\| matched !== null\)\) log\(privateBeginLine\(began, hookSessionId\)\)/)
   assert.match(source, /onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}/)
   assert.match(source, /if \(lockHeld\) log\(`private turn: refused \$\{req\.params\.name\}: \$\{privateTurns\.explain\(\{ markerPaths: PRIVATE_MARKER_PATHS \}\)\}`\)/)
   // The turn ends where the rail's turn ends: a Stop's turn_end reaches endHookTurn, which closes the private turn.
@@ -66,7 +68,9 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /case 'turn_end': \{\n\s*void finishHookTurn\(effect\.keepCard\)/)
   // A mid-turn delivery that revokes the turn republishes the signed browser context right away.
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\) \}\)/)
+  // The fires this agent opened a turn for persist in its own state folder (0.68.4): a replay after a restart opens none.
+  assert.match(source, /const privateFires = createFireLedger\(\{ path: privateFiresPath\(FLOOR_STATE_ROOT, ASSISTANT_ID\) \}\)/)
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 
@@ -82,6 +86,30 @@ test('actual delivery actor expressions refuse legacy owner userId and user_id i
         pollSenderType: 'user', pollAgentOrigin: null, isSystem: false, wsSenderType: 'user', wsAgentOrigin: null }
       assert.equal(execute('return ' + match[1], bindings), null)
       assert.equal(execute('return ' + match[1], { ...bindings, msg: { message: { ...payload, senderUserId: 'user_recipient' } }, view: { raw: { ...payload, senderUserId: 'user_recipient' }, senderKind: 'user' }, payload: { ...payload, senderUserId: 'user_recipient' } }), 'user_recipient')
+    }
+  }
+})
+
+test('every lane names the scheduled fire it delivers, with the same fields its actor comes from (0.68.4)', () => {
+  // Vera, 2026-10-13: a wake re-offered as backlog after a restart opened a second private turn. Each lane must hand
+  // deliver() the fire key, or a replay through it is never caught.
+  const privateFireKey = (privateTurnModule as any).privateFireKey
+  assert.equal(typeof privateFireKey, 'function', 'lib/private-turn.mjs exports privateFireKey')
+  const lines = source.split('\n').filter(line => line.includes('content: privateTurns.deliver('))
+  assert.equal(lines.length, 3)
+  const wake = { source: 'scheduler', payload: { scheduledTaskId: 77, fireId: '3f2a9c1e-0000-4000-8000-000000000001', actingUserId: 'user_owner' } }
+  const reminder = { source: 'scheduler', payload: { scheduled_action_id: 'a0da1344-0000-4000-8000-000000000000', actingUserId: 'user_owner' } }
+  for (const line of lines) {
+    const match = line.trim().match(/fireKey: (privateFireKey\(\{.*?\}\)), actingUserId: privateActor\(/)
+    assert.ok(match, `no fireKey before actingUserId in: ${line.trim().slice(0, 160)}`)
+    for (const [eventMeta, expected] of [[wake, 'native:3f2a9c1e-0000-4000-8000-000000000001'], [reminder, 'n8n:a0da1344-0000-4000-8000-000000000000:118303']] as const) {
+      const bindings = { privateFireKey, msg: { message: { id: 118303, eventMeta } }, view: { messageId: 118303, eventMetaRaw: eventMeta, senderKind: 'user' },
+        payload: { eventMeta }, messageId: 118303, pollSenderType: 'system', isSystem: true, wsSenderType: 'system' }
+      assert.equal(execute('return ' + match![1], bindings), expected, line.trim().slice(0, 120))
+      // An owner's message on the same lane is its message id (release 0.68.4: restart recovery re-offers it too).
+      assert.equal(execute('return ' + match![1], { ...bindings, pollSenderType: 'user', isSystem: false, wsSenderType: 'user' }), 'owner:118303')
+      // A peer agent's message on the same lane names nothing.
+      assert.equal(execute('return ' + match![1], { ...bindings, pollSenderType: 'agent', isSystem: false, view: { ...bindings.view, senderKind: 'agent' }, wsSenderType: 'agent' }), null)
     }
   }
 })

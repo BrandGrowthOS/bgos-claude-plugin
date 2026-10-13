@@ -223,7 +223,8 @@ test('a background job under claude holds it, and so does a process table it can
   assert.ok(r.state.listings > 0, 'it looked')
   assert.equal(r.fs.files.has(RECORD), false)
   r.state.claudePid = CLAUDE
-  await r.pass(60_000)
+  // The table was read while claude was unnamed (0.68.4), so the next look waits out the listing backoff.
+  await r.pass(need().HOOK_RESTART_LIST_BACKOFF_MS + need().HOOK_RESTART_POLL_MS)
   assert.equal(r.requests.length, 1)
 })
 
@@ -251,7 +252,8 @@ test('it says why it waits, once per reason, so a restart that cannot happen is 
   await r.pass(15 * 60_000)
   const waits = r.logs.filter((l) => l.startsWith('hook restart: waiting'))
   assert.equal(waits.filter((l) => l.includes('turn_in_flight')).length, 1, r.logs.join('\n'))
-  assert.equal(waits.filter((l) => l.includes('process_tree_unreadable')).length, 1, r.logs.join('\n'))
+  // A claude the daemon cannot name (and the table does not name either) has its own reason since 0.68.4.
+  assert.equal(waits.filter((l) => l.includes('claude_not_found')).length, 1, r.logs.join('\n'))
   assert.equal(waits.filter((l) => l.includes('young')).length, 0, 'the first minute is not news')
 })
 
@@ -469,4 +471,165 @@ test('a hook restart that never arrives says to restart by hand, not that an upd
   assert.doesNotMatch(line, /pendingRestartVersion/)
   assert.deepEqual(l.drains, [false], 'intake is lifted')
   assert.deepEqual(l.posted, [])
+})
+
+// ── Vera, 2026-10-13: armed at 07:46:00, "waiting: process_tree_unreadable" at 07:47:00, then nothing (0.68.4) ──
+//
+// The daemon did not know its claude pid: on Windows that comes from a PowerShell parent walk with a 5 s limit,
+// cached as a miss for 10 minutes (server.ts agentClaudePid), and the walk to the top of the tree measured 3.2 to 5 s
+// on an idle PC. With claude unknown the controller never listed the table at all, logged the reason once and waited
+// in silence for ever. The whole-table read (lib/process-tree.mjs listProcesses, 30 s limit) took 1.1 to 1.8 s.
+
+/** Claude, the launcher and this daemon (4321), as a Windows clone runs them: claude.exe > node bgos-launch > bun. */
+const CHAIN = [
+  { pid: CLAUDE, ppid: 1, command: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 0f0e0d0c-1111-4222-8333-444455556666' },
+  { pid: 4300, ppid: CLAUDE, command: 'node C:\\plugins\\bgos-claude-plugin\\bin\\bgos-launch.mjs C:\\plugins\\bgos-claude-plugin\\server.ts' },
+  { pid: 4321, ppid: 4300, command: 'C:\\Users\\kc\\.bun\\bin\\bun.exe C:\\plugins\\bgos-claude-plugin\\server.ts' },
+]
+const unknownBound = () => (need() as any).HOOK_RESTART_UNKNOWN_MAX_MS ?? 60 * 60_000
+
+test('Vera: the daemon cannot name its claude, but the whole process table does: it asks once, at the safe moment', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.claudePid = null
+  r.state.listing = { ok: true, processes: [...CHAIN] }
+  r.c.start()
+  await r.pass(60 * 60_000)
+  assert.equal(r.requests.length, 1, `one restart, got ${r.requests.length}:\n${r.logs.join('\n')}`)
+  assert.ok(r.requests[0] >= T0 + 10 * 60_000 && r.requests[0] < T0 + 11 * 60_000, `asked at +${(r.requests[0] - T0) / 1000} s`)
+  assert.ok(r.state.listings >= 1, 'it read the table although the daemon did not know its claude')
+})
+
+test('Vera: a job under the claude the table names still holds it, and is not a reason to give up', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.claudePid = null
+  r.state.listing = { ok: true, processes: [...CHAIN, JOB] }
+  r.c.start()
+  await r.pass(4 * 3600_000)
+  assert.equal(r.requests.length, 0)
+  assert.ok(!r.logs.some((l) => /waited \d+ min/.test(l)), r.logs.join('\n'))
+  assert.ok(r.logs.some((l) => l.includes('waiting: background_job')), r.logs.join('\n'))
+  r.state.listing = { ok: true, processes: [...CHAIN] }
+  await r.pass(10 * 60_000)
+  assert.equal(r.requests.length, 1, 'the job ended: it asks')
+})
+
+test('Vera: a process table that stays unreadable is said within a bounded time, never becomes a restart, and is not read on every poll', async () => {
+  const bound = unknownBound()
+  assert.ok(bound >= 30 * 60_000 && bound <= 2 * 3600_000, `bound ${bound / 60_000} min`)
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: false, error: 'powershell_failed:1' }
+  r.c.start()
+  await r.pass(10 * 60_000 + bound + 2 * need().HOOK_RESTART_LIST_BACKOFF_MS)
+  assert.equal(r.requests.length, 0, 'never a restart it cannot prove safe')
+  assert.equal(r.fs.files.has(RECORD), false, 'no single use record: nothing was asked')
+  const waits = r.logs.filter((l) => l.startsWith('hook restart: waiting'))
+  assert.ok(waits.some((l) => l.includes('process_tree_unreadable (powershell_failed:1)')), `the reader's error is named:\n${r.logs.join('\n')}`)
+  const told = r.logs.filter((l) => /^hook restart: waited \d+ min without a readable process table \(powershell_failed:1\)/.test(l))
+  assert.equal(told.length, 1, `said once, within the bound:\n${r.logs.join('\n')}`)
+  assert.match(told[0]!, /restart this agent by hand to load the private turn hook\. It looks again every 30 min and asks on its own if the table reads at a safe moment$/)
+  // While it waited, the table was read once per backoff, never on every 30 s poll.
+  const most = Math.ceil(bound / need().HOOK_RESTART_LIST_BACKOFF_MS) + 3
+  assert.ok(r.state.listings >= need().HOOK_RESTART_UNKNOWN_MIN_LOOKS && r.state.listings <= most, `${r.state.listings} listings`)
+  // After saying so, once every 30 minutes; still no restart, and nothing said again.
+  const listings = r.state.listings
+  await r.pass(24 * 3600_000)
+  assert.ok(r.state.listings - listings <= 24 * 2 + 1, `${r.state.listings - listings} listings in a day`)
+  assert.equal(r.requests.length, 0)
+  assert.equal(r.logs.filter((l) => /waited \d+ min/.test(l)).length, 1)
+})
+
+test('Vera: after saying so, a table that reads again at a safe moment still gets its one restart', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: false, error: 'powershell_failed:1' }
+  r.c.start()
+  await r.pass(10 * 60_000 + unknownBound() + 2 * need().HOOK_RESTART_LIST_BACKOFF_MS)
+  assert.ok(r.logs.some((l) => /waited \d+ min without a readable process table/.test(l)))
+  r.state.listing = { ok: true, processes: [...TABLE] }
+  await r.pass(need().HOOK_RESTART_UNKNOWN_RETRY_MS + need().HOOK_RESTART_POLL_MS)
+  assert.equal(r.requests.length, 1, r.logs.join('\n'))
+})
+
+test('Vera: time the agent was busy is not a spell: two failed looks an hour apart are not said', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: false, error: 'powershell_failed:1' }
+  r.c.start()
+  await r.pass(11 * 60_000)
+  assert.ok(r.state.listings >= 1)
+  // A long working turn: nothing is looked at.
+  r.state.turn = { turnInFlight: true, turnSignal: 'hooks' }
+  for (let i = 0; i < 12; i++) {
+    r.state.activity = [T0, r.clock.now]
+    await r.pass(10 * 60_000)
+  }
+  r.state.turn = { turnInFlight: false, turnSignal: 'hooks' }
+  r.state.activity = [T0, r.clock.now]
+  await r.pass(11 * 60_000)
+  assert.ok(!r.logs.some((l) => /waited \d+ min/.test(l)), `two failed looks two hours apart are not a spell:\n${r.logs.join('\n')}`)
+  await r.pass(6 * need().HOOK_RESTART_LIST_BACKOFF_MS)
+  assert.ok(r.logs.some((l) => /waited \d+ min/.test(l)), 'six failed looks in a row, over the bound, are')
+  assert.equal(r.requests.length, 0)
+})
+
+test('Vera: claude named nowhere (not by the daemon, not in a readable table) is said within the bound too', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.claudePid = null
+  r.state.listing = { ok: true, processes: CHAIN.slice(1).map((p) => (p.pid === 4300 ? { ...p, ppid: 1 } : p)) }
+  r.c.start()
+  await r.pass(10 * 60_000 + unknownBound() + 2 * need().HOOK_RESTART_LIST_BACKOFF_MS)
+  assert.equal(r.requests.length, 0)
+  assert.ok(r.logs.some((l) => /^hook restart: waited \d+ min without finding claude above this daemon \(pid 4321\) in a table of 2 processes/.test(l)), r.logs.join('\n'))
+})
+
+test('Vera: a table unreadable for a while, then readable, still asks; the bound counts only an unbroken spell', async () => {
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: false, error: 'powershell_failed:null' }
+  r.c.start()
+  // Quiet from +10 min, so the table is first read then; unreadable for (bound - 5 min), then readable again.
+  await r.pass(10 * 60_000 + unknownBound() - 5 * 60_000)
+  r.state.listing = { ok: true, processes: [...TABLE] }
+  await r.pass(10 * 60_000)
+  assert.equal(r.requests.length, 1, r.logs.join('\n'))
+  assert.ok(!r.logs.some((l) => /waited \d+ min/.test(l)))
+})
+
+test('Vera: the bound counts an unbroken spell: a readable look in between (a job under claude) starts it again', async () => {
+  const bound = unknownBound()
+  const r = rig({ outcomes: ['registered'] })
+  r.state.listing = { ok: false, error: 'powershell_failed:1' }
+  r.c.start()
+  await r.pass(10 * 60_000 + bound - 15 * 60_000)
+  // The table reads again and shows a job: a known reason to wait, not an unknown one.
+  r.state.listing = { ok: true, processes: [...TABLE, JOB] }
+  await r.pass(20 * 60_000)
+  r.state.listing = { ok: false, error: 'powershell_failed:1' }
+  await r.pass(bound - 15 * 60_000)
+  assert.ok(!r.logs.some((l) => /waited \d+ min/.test(l)), `a new spell, not the old one continued:\n${r.logs.join('\n')}`)
+  await r.pass(30 * 60_000)
+  assert.ok(r.logs.some((l) => /waited \d+ min/.test(l)), 'and that spell, too, is said within the bound')
+  assert.equal(r.requests.length, 0)
+})
+
+test('Vera: never mid turn, whatever the table: a long live turn never asks, read or unreadable, named or not', async () => {
+  for (const [claudePid, listing] of [[CLAUDE, { ok: false, error: 'powershell_failed:1' }], [null, { ok: false, error: 'powershell_failed:1' }], [null, { ok: true, processes: [...CHAIN] }]] as const) {
+    const r = rig({ outcomes: ['registered'] })
+    r.state.claudePid = claudePid
+    r.state.listing = listing
+    r.state.turn = { turnInFlight: true, turnSignal: 'hooks' }
+    r.c.start()
+    // A six hour turn that keeps working: its tool calls keep the activity fresh.
+    for (let i = 0; i < 36; i++) {
+      r.state.activity = [T0, r.clock.now]
+      await r.pass(10 * 60_000)
+    }
+    assert.equal(r.requests.length, 0, JSON.stringify(listing))
+  }
+  // Owed messages, a pending permission and running operations hold it too.
+  for (const snapshot of [{ ...IDLE, pendingMessages: 1 }, { ...IDLE, pendingPermissions: 1 }, { ...IDLE, activeOperations: 1 }]) {
+    const r = rig({ outcomes: ['registered'] })
+    r.state.listing = { ok: false, error: 'powershell_failed:1' }
+    r.state.snapshot = snapshot
+    r.c.start()
+    await r.pass(6 * 3600_000)
+    assert.equal(r.requests.length, 0, JSON.stringify(snapshot))
+  }
 })

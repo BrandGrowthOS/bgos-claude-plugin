@@ -21,7 +21,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
-            "timeout": 3,
+            "timeout": 5,
             "async": false
           }
         ]
@@ -69,7 +69,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
-            "timeout": 3,
+            "timeout": 5,
             "async": false
           }
         ]
@@ -108,7 +108,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
-            "timeout": 3,
+            "timeout": 5,
             "async": false
           }
         ]
@@ -132,7 +132,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
-            "timeout": 3,
+            "timeout": 5,
             "async": false
           }
         ]
@@ -184,7 +184,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/hoai-private-turn-hook.mjs"],
-            "timeout": 3,
+            "timeout": 5,
             "async": false
           }
         ]
