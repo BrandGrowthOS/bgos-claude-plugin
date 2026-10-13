@@ -26,6 +26,18 @@
 //    ask first, from a server whose list holds email_send (rules version 3).
 //    Anything else sends nothing (emailSendFloorRefusal).
 //
+// THE SERVER IS THE GATE (Data, 2026-10-13, wire-shapes.md "Server approval
+// for a send"). While Always ask is on, the send route sends only with a
+// single use approval that the owner's own tap on that exact email's card
+// issued. So the held card carries `approvalMeta.email_send`, the binding
+// the tap approves (emailSendCardBinding, from the hook's record when it
+// pairs, lib/email-send-binding.mjs); the tap's approval {id, expiresAt}
+// rides on the answer the daemon already reads (readEmailSendApprovalClick,
+// answeredEmailSendApproval), or comes from the pull route when the daemon
+// missed it (readEmailSendApprovalPull); and the Allow keeps it for the one
+// send it allowed (claim, spend). The daemon check above stays as the
+// backstop for a send no card allowed.
+//
 // Pure: no network, no env, no clock but the injected one.
 // No em or en dashes anywhere in this file (project copy rule).
 
@@ -36,6 +48,8 @@ import {
   isOwnSendingTool,
   type HardFloorMatch,
 } from './hard-floor.js'
+import { bindingMatchesCall, emailSendBinding, isEmailSendBlock } from './email-send-binding.mjs'
+import { floorRecordProbeFits } from './floor-state.mjs'
 
 /**
  * The first rules version whose list holds the channel's own email_send. A
@@ -259,12 +273,211 @@ export function emailMatchesPreview(email: EmailSendPreview, args: unknown): boo
   return text === email.text
 }
 
-export interface EmailSendApprovals {
-  /** The relay heard the owner allow a card: remember it when the card was this channel's email_send. */
-  allow(toolName: string, inputPreview: unknown): boolean
-  /** The tool is about to send: is an unused Allow waiting for exactly this call? Takes it. */
-  take(args: unknown): boolean
+/** The binding a held card names (section 1 of the server approval contract), in its wire shape. */
+export type EmailSendBlock =
+  | { to: string; subject: string; body_sha256: string; text_preview: string }
+  | { email_id: string; body_sha256: string; text_preview: string }
+
+/** The approval an owner's Allow once tap issued (section 3): its id and when it expires. */
+export interface EmailSendApprovalClick {
+  id: string
+  expiresAt: string
 }
+
+/** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
+const APPROVAL_ID =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})$/i
+
+/**
+ * The approval an answer or a pull carries, or null: a plain object with a
+ * uuid `id` and a date `expiresAt`, copied as exactly those two, so nothing
+ * else ever rides along and nothing is ever made up. Its expiry is the
+ * server's to judge (its own clock): the daemon only reads it.
+ */
+export function readEmailSendApprovalClick(raw: unknown): EmailSendApprovalClick | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const { id, expiresAt } = raw as Record<string, unknown>
+  if (typeof id !== 'string' || !APPROVAL_ID.test(id)) return null
+  if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) return null
+  return { id, expiresAt }
+}
+
+/**
+ * The approval on an answered card row (the card read in waitForVerdict, and
+ * the stored answer of section 3c), or null when the card is unanswered or
+ * names none.
+ */
+export function answeredEmailSendApproval(row: unknown): EmailSendApprovalClick | null {
+  if (row === null || typeof row !== 'object') return null
+  const r = row as { answeredAt?: unknown; answerPayload?: unknown }
+  if (typeof r.answeredAt !== 'string' || r.answeredAt === '') return null
+  const payload = r.answerPayload
+  if (payload === null || typeof payload !== 'object') return null
+  return readEmailSendApprovalClick((payload as Record<string, unknown>).emailSendApproval)
+}
+
+/** The pull route's answer (section 3b): a 200 carrying the approval, else none. */
+export function readEmailSendApprovalPull(response: { status: number; text: string }): EmailSendApprovalClick | null {
+  if (Number(response?.status) !== 200) return null
+  try {
+    return readEmailSendApprovalClick(JSON.parse(String(response.text ?? '')))
+  } catch {
+    return null
+  }
+}
+
+/** A field as two writers render it: whitespace folded (the CLI folds runs of it), ends trimmed. */
+const folded = (value: unknown): string => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '')
+
+/**
+ * Does the record's raw start agree with the start of the text the request
+ * shows (whitespace folded on both sides, the CLI's cut taken out)? With the
+ * probe of the text's ends, this pairs a record with its own request, in any
+ * script, and never with another email that only shares its first and last
+ * words.
+ */
+function startAgrees(textPreview: string, previewText: string): boolean {
+  const head = folded(previewText.split(PREVIEW_ELISION_RE)[0] ?? '')
+  const start = folded(textPreview)
+  if (head.length >= start.length) return head.startsWith(start)
+  // A preview whose head is shorter than the record's start (escapes take room in the CLI's cut).
+  return head.length >= 500 && start.startsWith(head)
+}
+
+/**
+ * Does this call carry the email the card the owner allowed showed? Field by
+ * field, whitespace folded the way the CLI folds the preview, and a text the
+ * CLI cut by the head and the tail it kept. The check that the call is the
+ * one whose card was tapped; the exact text is the binding's to check.
+ */
+function previewMatchesCall(email: EmailSendPreview, args: unknown): boolean {
+  if (args === null || typeof args !== 'object' || Array.isArray(args)) return false
+  const call = args as Record<string, unknown>
+  for (const key of Object.keys(call)) if (!isEmailField(key)) return false
+  for (const key of ['to', 'subject', 'email_id'] as const) {
+    const value = call[key] === null || call[key] === undefined ? undefined : call[key]
+    if ((value === undefined) !== (email[key] === undefined)) return false
+    if (value !== undefined && folded(value) !== folded(email[key])) return false
+  }
+  if (typeof call.text !== 'string' || email.text === undefined) return false
+  const text = folded(call.text)
+  const parts = email.text.split(PREVIEW_ELISION_RE)
+  if (parts.length === 1) return text === folded(email.text)
+  return text.startsWith(folded(parts[0])) && text.endsWith(folded(parts[parts.length - 1]))
+}
+
+/** What the card names besides the text: the address and subject, or the email, as both copies say it. */
+function sameTarget(block: EmailSendBlock, email: EmailSendPreview): boolean {
+  if ('email_id' in block) {
+    return email.to === undefined && email.subject === undefined && folded(email.email_id).toLowerCase() === block.email_id.toLowerCase()
+  }
+  return email.email_id === undefined && folded(email.to) === folded(block.to) && folded(email.subject) === folded(block.subject)
+}
+
+/**
+ * The binding a held email_send card names, and where it came from. In order:
+ *   - the hook's record, when it is a well formed binding, the record's probe
+ *     confirms it was written for THIS request (not an older call that never
+ *     asked), and its address, subject or email agree with the preview's;
+ *   - else the preview's own, when the CLI did not cut the text (a text it
+ *     folded binds a hash the real send cannot match, which only ever keeps
+ *     a draft);
+ *   - else none: the card goes without one, the server makes it deny only,
+ *     and the email stays a draft.
+ * `refusal` is the tool's own check (its arguments and secrets) over what the
+ * card would show: when it refuses, nothing may reach the card, and
+ * `refused` says why (the CLI can redact a secret out of the preview that
+ * the record's raw start still holds).
+ */
+export function emailSendCardBinding(input: {
+  toolName: string
+  inputPreview: unknown
+  record: unknown
+  refusal: (fields: Record<string, string>) => string | null
+}): { block: EmailSendBlock | null; source: 'record' | 'preview' | null; refused?: string } {
+  const none = { block: null, source: null } as const
+  if (!isOwnSendingTool(input.toolName)) return none
+  const preview = readEmailSendPreview(input.inputPreview)
+  if (!preview) return none
+  const record = input.record as { emailSend?: unknown } | null
+  const fromRecord =
+    record && isEmailSendBlock(record.emailSend) && floorRecordProbeFits(record, input.toolName, input.inputPreview)
+      ? (record.emailSend as EmailSendBlock)
+      : null
+  let chosen: { block: EmailSendBlock; source: 'record' | 'preview' } | null =
+    fromRecord && sameTarget(fromRecord, preview) && preview.text !== undefined && startAgrees(fromRecord.text_preview, preview.text)
+      ? { block: fromRecord, source: 'record' }
+      : null
+  if (!chosen && preview.text !== undefined && !PREVIEW_ELISION_RE.test(preview.text)) {
+    const own = emailSendBinding(input.toolName, preview) as EmailSendBlock | null
+    if (own) chosen = { block: own, source: 'preview' }
+  }
+  if (!chosen) return none
+  const shown: Record<string, string> =
+    'email_id' in chosen.block
+      ? { email_id: chosen.block.email_id, text: chosen.block.text_preview }
+      : { to: chosen.block.to, subject: chosen.block.subject, text: chosen.block.text_preview }
+  const refused = input.refusal(shown)
+  if (refused) return { block: null, source: null, refused }
+  return chosen
+}
+
+/**
+ * The chat a held email_send card goes to. Only a card in the agent's own
+ * main chat with its owner can carry an Allow (section 2), and a card
+ * anywhere else would show the email's start to everyone in that chat for a
+ * send that can never go. So: the chat of the turn the owner opened, when it
+ * is one of the agent's main chats (`main`, from the inbox); else the first
+ * main chat this daemon may post in; and when no chat kinds are known at all
+ * (an older inbox), the owner's turn chat as before. Undefined leaves the
+ * default pick.
+ */
+export function emailSendCardChat(input: {
+  turn: { actingUserId?: unknown; chatId?: unknown } | null
+  ownerUserId: string
+  monitored: readonly string[]
+  main: readonly string[]
+  refused: ReadonlyArray<{ has(chatId: string): boolean }>
+}): string | undefined {
+  const usable = (chatId: string) =>
+    chatId !== '' && input.monitored.includes(chatId) && !input.refused.some((set) => set.has(chatId))
+  const turn = input.turn
+  const turnChat =
+    turn && typeof turn.actingUserId === 'string' && turn.actingUserId === input.ownerUserId ? String(turn.chatId ?? '') : ''
+  if (input.main.length === 0) return usable(turnChat) ? turnChat : undefined
+  if (input.main.includes(turnChat) && usable(turnChat)) return turnChat
+  return input.main.find(usable)
+}
+
+/** What the relay keeps with an owner's Allow: the card, the tap's approval, the binding the card named. */
+export interface EmailSendGrant {
+  requestId: string | null
+  approval: EmailSendApprovalClick | null
+  binding: EmailSendBlock | null
+}
+
+export interface EmailSendApprovals {
+  /**
+   * The relay heard the owner allow a card: remember it when the card was
+   * this channel's email_send, with what the card and the tap carried.
+   */
+  allow(toolName: string, inputPreview: unknown, grant?: Partial<EmailSendGrant>): boolean
+  /**
+   * The tool is about to send: the unused Allow of the card that showed this
+   * call, taken once, or null. Its approval and binding come back only when
+   * the binding names this call to the byte (its hash), and the approval only
+   * the first time that id is handed out; otherwise both are null and the
+   * send goes without one.
+   */
+  claim(args: unknown): EmailSendGrant | null
+  /** claim, as a yes or no. */
+  take(args: unknown): boolean
+  /** An approval about to go on a send: itself the first time, null ever after (one approval, one send). */
+  spend(approval: EmailSendApprovalClick | null): EmailSendApprovalClick | null
+}
+
+/** How many approval ids the store remembers handing out. */
+const MAX_SPENT = 256
 
 /**
  * The owner's Allows of email_send cards, each good for the one call it
@@ -274,28 +487,60 @@ export interface EmailSendApprovals {
 export function createEmailSendApprovals(
   { now = Date.now, ttlMs = EMAIL_SEND_APPROVAL_TTL_MS }: { now?: () => number; ttlMs?: number } = {},
 ): EmailSendApprovals {
-  let waiting: Array<{ at: number; email: EmailSendPreview }> = []
+  let waiting: Array<{ at: number; email: EmailSendPreview; grant: EmailSendGrant }> = []
+  const spent = new Set<string>()
   const dropStale = () => {
     const at = now()
     waiting = waiting.filter((entry) => at - entry.at <= ttlMs)
   }
+  const spend = (approval: EmailSendApprovalClick | null): EmailSendApprovalClick | null => {
+    const fresh = readEmailSendApprovalClick(approval)
+    if (!fresh || spent.has(fresh.id)) return null
+    spent.add(fresh.id)
+    while (spent.size > MAX_SPENT) spent.delete(spent.values().next().value as string)
+    return fresh
+  }
+  // The call must be the one whose card was allowed: for a card that named a
+  // binding, its preview read the way the CLI folds it; for one that named
+  // none, the preview exactly (as before). Then the approval goes only with a
+  // call its binding names to the byte; otherwise the send goes without it,
+  // and while Always ask is on the server keeps it as a draft.
+  const allowedCard = (entry: { email: EmailSendPreview; grant: EmailSendGrant }, args: unknown) =>
+    entry.grant.binding ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
+  const claim = (args: unknown): EmailSendGrant | null => {
+    dropStale()
+    let index = waiting.findIndex((entry) => allowedCard(entry, args) && entry.grant.binding !== null && bindingMatchesCall(entry.grant.binding, args))
+    if (index < 0) index = waiting.findIndex((entry) => allowedCard(entry, args))
+    if (index < 0) return null
+    const [entry] = waiting.splice(index, 1)
+    const bound = entry!.grant.binding !== null && bindingMatchesCall(entry!.grant.binding, args)
+    return {
+      requestId: entry!.grant.requestId,
+      approval: bound ? spend(entry!.grant.approval) : null,
+      binding: bound ? entry!.grant.binding : null,
+    }
+  }
   return {
-    allow(toolName, inputPreview) {
+    allow(toolName, inputPreview, grant = {}) {
       if (!isOwnSendingTool(toolName)) return false
       const email = readEmailSendPreview(inputPreview)
       if (!email) return false
       dropStale()
-      waiting.push({ at: now(), email })
+      waiting.push({
+        at: now(),
+        email,
+        grant: {
+          requestId: typeof grant.requestId === 'string' && grant.requestId !== '' ? grant.requestId : null,
+          approval: readEmailSendApprovalClick(grant.approval),
+          binding: isEmailSendBlock(grant.binding) ? (grant.binding as EmailSendBlock) : null,
+        },
+      })
       while (waiting.length > MAX_WAITING) waiting.shift()
       return true
     },
-    take(args) {
-      dropStale()
-      const index = waiting.findIndex((entry) => emailMatchesPreview(entry.email, args))
-      if (index < 0) return false
-      waiting.splice(index, 1)
-      return true
-    },
+    claim,
+    take: (args) => claim(args) !== null,
+    spend,
   }
 }
 

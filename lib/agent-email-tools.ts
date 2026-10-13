@@ -46,6 +46,8 @@ const EMAIL_TOOL_NAMES: ReadonlySet<string> = new Set([EMAIL_DRAFT_TOOL, EMAIL_S
 
 export const AGENT_EMAIL_DRAFT_PATH = 'integrations/agent-email/reply-drafts'
 export const AGENT_EMAIL_SEND_PATH = 'integrations/agent-email/send'
+/** GET <this>/:requestId: the approval an owner's tap issued for that card (server approval, section 3b). */
+export const AGENT_EMAIL_SEND_APPROVALS_PATH = 'integrations/agent-email/send-approvals'
 
 /** The server's caps (wire-shapes.md section 1). The text cap includes the signature it adds. */
 export const MAX_EMAIL_TEXT_CHARS = 32_000
@@ -98,12 +100,19 @@ export interface EmailToolDeps {
   secrets?: readonly string[]
   /**
    * Always ask stops a send (Data, 2026-10-13): asked last before email_send
-   * posts, with the call's own arguments. Null lets it go; text is why it
-   * may not, and nothing is sent (server.ts emailSendApproval). Without it,
-   * email_send sends nothing.
+   * posts, with the call's own arguments (server.ts emailSendApproval). Text
+   * is why it may not, and nothing is sent; null lets it go; an object lets
+   * it go carrying the approval the owner's tap issued for exactly this
+   * email, which the send passes as `approval: { id }` (the server is the
+   * gate: wire-shapes.md "Server approval for a send", section 4). Without
+   * it, email_send sends nothing.
    */
-  approve?: (rawArgs: unknown) => Promise<string | null>
+  approve?: (rawArgs: unknown) => Promise<string | null | { approval: { id: string } }>
 }
+
+/** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
+const APPROVAL_UUID =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})$/i
 
 const TARGET_PROPERTIES = {
   email_id: {
@@ -186,7 +195,9 @@ export function shipsEmailTools(
 
 const ALLOWED_ARGS: ReadonlySet<string> = new Set(Object.keys(TARGET_PROPERTIES))
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** A uuid as the server's IsUUID() reads one: an email id the server would refuse never reaches a card or the network. */
+const UUID =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|0{8}-0{4}-0{4}-0{4}-0{12}|f{8}-f{4}-f{4}-f{4}-f{12})$/i
 /** One plain mailbox: no display name, no list, no spaces. The server checks it strictly. */
 const PLAIN_MAILBOX = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+\.[^\s@<>,;:"()[\]\\]+$/
 /** In plain letters only: a look alike letter, a bidi or a zero width mark could disguise it on the owner's card. */
@@ -306,6 +317,15 @@ function renderSend(answer: unknown): EmailToolResult {
   if (a.outcome === 'sent') {
     return { content: [{ type: 'text', text: `Sent (${draftLine(draft)}). It shows in your Email chat as sent by you; tell your owner.\n${json}` }] }
   }
+  if (a.outcome === 'draft' && a.reason === 'approval_required') {
+    // The server is the gate while Always ask is on: no approval from the owner's tap for exactly this email.
+    return {
+      content: [{
+        type: 'text',
+        text: `Not sent: the email was kept as a draft for your owner, because your owner approves every email before it is sent and this send did not carry their approval for exactly this email (${draftLine(draft)}). Do not try again; tell your owner it is waiting.\n${json}`,
+      }],
+    }
+  }
   if (a.outcome === 'draft') {
     const reason = typeof a.reason === 'string' ? a.reason : null
     const why = reason === null
@@ -371,15 +391,18 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
   }
   const unchecked = 'email_send did not start: HOAI could not check whether your owner asks before every send, so nothing was sent.'
   if (typeof deps.approve !== 'function') return fail(unchecked)
-  let held: string | null
+  let go: unknown
   try {
-    held = await deps.approve(rawArgs)
+    go = await deps.approve(rawArgs)
   } catch (err) {
-    held = `${unchecked} ${errorText(err)}`
+    go = `${unchecked} ${errorText(err)}`
   }
-  if (held) return fail(held)
+  if (typeof go === 'string') return fail(go || unchecked)
+  // The approval the owner's tap issued, as exactly {id}: never its expiry, never anything made up.
+  const approvalId = go && typeof go === 'object' ? (go as { approval?: { id?: unknown } }).approval?.id : undefined
+  const approval = typeof approvalId === 'string' && APPROVAL_UUID.test(approvalId) ? { approval: { id: approvalId } } : {}
   try {
-    return renderSend(await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id } }))
+    return renderSend(await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id }, ...approval }))
   } catch (err) {
     return fail(serverAnswered(err)
       ? `email_send failed, so treat it as not sent and tell your owner: ${errorText(err)}`

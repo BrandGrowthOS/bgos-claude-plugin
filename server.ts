@@ -143,12 +143,24 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requireEmailSendTurn, requirePrivateTurn } from './lib/private-turn.mjs'
-import { EMAIL_TOOL_DECLS, emailSendPreflight, handleEmailTool, type EmailSendBasis } from './lib/agent-email-tools.js'
+import {
+  AGENT_EMAIL_SEND_APPROVALS_PATH,
+  EMAIL_TOOL_DECLS,
+  emailCallRefusal,
+  emailSendPreflight,
+  handleEmailTool,
+  type EmailSendBasis,
+} from './lib/agent-email-tools.js'
 import {
   EMAIL_SEND_FLOOR_MATCH,
   EMAIL_SEND_FLOOR_TOOL,
+  answeredEmailSendApproval,
   createEmailSendApprovals,
+  emailSendCardBinding,
+  emailSendCardChat,
   emailSendFloorRefusal,
+  readEmailSendApprovalPull,
+  type EmailSendApprovalClick,
 } from './lib/email-send-approval.js'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
@@ -424,7 +436,7 @@ import {
   watchPermissionVerdict,
   type PermissionChoice,
 } from './lib/permission-relay.js'
-import { classifyPermissionRequest } from './lib/hard-floor.js'
+import { classifyPermissionRequest, isOwnSendingTool } from './lib/hard-floor.js'
 import {
   consultElidedFloor,
   consultFloor,
@@ -2522,7 +2534,8 @@ interface PendingPermission {
   // theirs. Best-available value: the user_id of the most recent inbound user
   // message (falls back to the configured account owner USER_ID).
   requesterUserId: string
-  resolve: (choice: PermissionChoice) => void
+  /** The choice, and for an Allow once tap the email send approval it issued (lib/permission-relay.ts resolvePermissionClick). */
+  resolve: (choice: PermissionChoice, emailSendApproval?: EmailSendApprovalClick | null) => void
   /**
    * True when the hard floor HOLDS this request for the owner (0.53.0): only a
    * tap may allow it, never a typed verdict (typedPermissionVerdict).
@@ -3154,6 +3167,9 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
   // the floor, and the line says why without repeating it.
   const emailRefusal = emailSendPreflight(tool_name, input_preview, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey])
   if (emailRefusal) {
+    // Take (delete) the hook's record for this call too, so it can never pair
+    // with a later request and lend that card this email's start.
+    takeOwnFloorRecord(tool_name, input_preview)
     log(`Permission request ${tool_name} [${request_id}] denied before any card: ${emailRefusal}`)
     return mcp
       .notification({
@@ -3188,8 +3204,10 @@ mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {
     toolName: tool_name,
     inputPreview: input_preview,
     record: floorRecord,
+    // This channel's email_send is read with auto approve off too: its card can
+    // carry the owner's Allow only when the floor holds it (lib/floor-check.ts).
     previewMatch:
-      floorRecord === null && AUTO_APPROVE
+      floorRecord === null && (AUTO_APPROVE || isOwnSendingTool(tool_name))
         ? classifyPermissionRequest(tool_name, input_preview)
         : null,
   })
@@ -3234,6 +3252,9 @@ function relayPermissionToOwner(
   params: PermissionRequestParams,
   floorEvidence?: string,
   floorHeld = false,
+  // The floor hook's record for this request: for this channel's email_send,
+  // it carries the binding of the whole email the owner's tap approves.
+  floorRecord: unknown = null,
 ): Promise<void> {
   const { request_id, tool_name, description, input_preview } = params
 
@@ -3264,13 +3285,46 @@ function relayPermissionToOwner(
   }
 
   return trackMessageOperation(async () => {
+  // THE EMAIL THE OWNER'S TAP APPROVES (server approval, Data 2026-10-13): a
+  // held email_send card names it (approvalMeta.email_send), the server's
+  // approval is issued for exactly that, and an email the tool would refuse
+  // (a secret the CLI redacted out of the preview) reaches no card at all.
+  const emailCard = isOwnSendingTool(tool_name) && floorHeld
+    ? emailSendCardBinding({
+        toolName: tool_name,
+        inputPreview: input_preview,
+        record: floorRecord,
+        refusal: (fields) => emailCallRefusal('email_send', fields, [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey]),
+      })
+    : null
+  if (emailCard?.refused) {
+    log(`Permission request ${tool_name} [${request_id}] denied before any card: ${emailCard.refused}`)
+    await mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id, behavior: 'deny' },
+    }).catch(() => {})
+    return
+  }
+  if (emailCard) {
+    log(`email_send card [${request_id}]: ${emailCard.block ? `binds the email (from the ${emailCard.source})` : 'names no email it can bind, so the server lets the owner only deny it and the email stays a draft'}`)
+  }
   // Interactive mode: post a real BGOS approval card. The typed yes/no
   // fallback below stays for old clients, or if a button-click event is not
   // materialized in chat history.
   // Never a chat that has already refused this agent's posts for good: a
   // refused card posts again, is refused again and fails closed again, once
-  // per request (lib/peer-refusal.ts pickPermissionChat).
-  const chatId = pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats])
+  // per request (lib/peer-refusal.ts pickPermissionChat). A held email_send
+  // card goes to the chat of the owner's turn: only the agent's own main chat
+  // with its owner can carry an Allow.
+  const chatId = (emailCard
+    ? emailSendCardChat({
+        turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
+        ownerUserId: USER_ID,
+        monitored: monitoredChatIds,
+        main: mainChatIds,
+        refused: [hookRailRefusedChats, a2aRouteRefusedChats],
+      })
+    : undefined) ?? pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats])
   if (!chatId) {
     log(`No monitored chat that takes this agent's posts, auto-denying ${tool_name} [${request_id}]`)
     await mcp.notification({
@@ -3280,9 +3334,18 @@ function relayPermissionToOwner(
     return
   }
 
-  let resolveButtonChoice!: (choice: PermissionChoice) => void
+  // The email send approval an Allow once tap issued, from whichever lane saw
+  // the tap first (a click intake, or the card read below).
+  let tapApproval: EmailSendApprovalClick | null = null
+  const keepTapApproval = (choice: PermissionChoice, approval?: EmailSendApprovalClick | null) => {
+    if (choice === 'once' && approval) tapApproval = approval
+  }
+  let resolveButtonChoice!: (choice: PermissionChoice, emailSendApproval?: EmailSendApprovalClick | null) => void
   const buttonChoice = new Promise<PermissionChoice>((resolve) => {
-    resolveButtonChoice = resolve
+    resolveButtonChoice = (choice, emailSendApproval) => {
+      keepTapApproval(choice, emailSendApproval)
+      resolve(choice)
+    }
   })
 
   // Bind the verdict to the user who is driving the session in this chat.
@@ -3329,6 +3392,7 @@ function relayPermissionToOwner(
         toolName: tool_name,
         description,
         inputPreview: input_preview,
+        emailSend: emailCard?.block ?? null,
         floorEvidence,
       }),
     )
@@ -3374,6 +3438,7 @@ function relayPermissionToOwner(
         permissionBackstopMs(storedWait),
         requesterUserId,
         floorHeld,
+        (approval) => keepTapApproval('once', approval),
       ),
     ])
     const behavior = choiceToBehavior(choice)
@@ -3382,9 +3447,16 @@ function relayPermissionToOwner(
     pendingPermissions.delete(request_id)
     // The owner allowed a card the floor HELD, which only a person's tap can
     // allow: when it is an email_send, that one send may go
-    // (emailSendApproval). Recorded BEFORE the CLI hears the verdict, since the
-    // CLI runs the tool the moment it does.
-    if (behavior === 'allow' && floorHeld) emailSendApprovals.allow(tool_name, input_preview)
+    // (emailSendApproval), carrying the approval the tap issued for exactly
+    // the email the card named. Recorded BEFORE the CLI hears the verdict,
+    // since the CLI runs the tool the moment it does.
+    if (behavior === 'allow' && floorHeld) {
+      emailSendApprovals.allow(tool_name, input_preview, {
+        requestId: request_id,
+        approval: choice === 'once' ? tapApproval : null,
+        binding: emailCard?.block ?? null,
+      })
+    }
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior },
@@ -3438,7 +3510,7 @@ function settleFloorRequest(
         // matched command rides along so the card shows it and the server can
         // stamp the floor on it even when the preview lost it. HELD: only a
         // tap may allow it, never a typed yes (typedPermissionVerdict).
-        return relayPermissionToOwner(params, match.evidence, true)
+        return relayPermissionToOwner(params, match.evidence, true, plan.record)
       case 'owner':
         // Auto approve off, and the owner's floor does not hold it: the card
         // this install always posts, nothing more.
@@ -3612,10 +3684,16 @@ function postFloorCheck(
  * ask first. A hold, a check that cannot answer, or an answer that is not
  * about a send sends nothing. Null lets the send go; text is why it may not.
  */
-async function emailSendApproval(args: unknown): Promise<string | null> {
-  if (emailSendApprovals.take(args)) {
-    log('email_send: the owner allowed this send on its card')
-    return null
+async function emailSendApproval(args: unknown): Promise<string | null | { approval: { id: string } }> {
+  const grant = emailSendApprovals.claim(args)
+  if (grant) {
+    // The approval the tap issued (it rode on the answer), else the pull route,
+    // once, for a tap the daemon missed. None: the send goes without one, and
+    // while Always ask is on the server keeps it as a draft (approval_required).
+    const approval =
+      grant.approval ?? (grant.binding && grant.requestId ? emailSendApprovals.spend(await pullEmailSendApproval(grant.requestId)) : null)
+    log(`email_send: the owner allowed this send on card [${grant.requestId ?? '?'}]; ${approval ? 'it carries the approval their tap issued' : 'no approval came with it, so the server keeps it as a draft if it asks first'}`)
+    return approval ? { approval: { id: approval.id } } : null
   }
   const decision = await consultFloor({
     toolName: EMAIL_SEND_FLOOR_TOOL,
@@ -3627,6 +3705,34 @@ async function emailSendApproval(args: unknown): Promise<string | null> {
   })
   log(`email_send, no card allowed it: ${decision.line}`)
   return emailSendFloorRefusal(decision)
+}
+
+/**
+ * The approval an owner's tap issued for card `requestId`, from the pull
+ * route (server approval, section 3b): for a tap whose answer the daemon read
+ * without it. Read only, never consumes it; anything but a 200 carrying one
+ * is none. Not bgosGet: its error carries no status and its cache can answer
+ * 304.
+ */
+async function pullEmailSendApproval(requestId: string): Promise<EmailSendApprovalClick | null> {
+  if (requestId === '' || requestId.length > 200) return null
+  const path = `${AGENT_EMAIL_SEND_APPROVALS_PATH}/${encodeURIComponent(requestId)}`
+  try {
+    return readEmailSendApprovalPull(
+      await bgosCall(
+        {
+          url: `${API_BASE}/${path}`,
+          init: { method: 'GET', headers: authHeaders(AUTH) },
+          timeoutMs: HTTP_TIMEOUT_MS,
+          label: `GET ${path}`,
+        },
+        async (response) => ({ status: response.status, text: await response.text().catch(() => '') }),
+      ),
+    )
+  } catch (err) {
+    log(`email_send: could not ask for the approval of card [${requestId}]: ${err}`)
+    return null
+  }
 }
 
 /**
@@ -3658,6 +3764,9 @@ async function waitForVerdict(
   timeoutMs: number,
   requesterUserId: string,
   floorHeld = false,
+  // The email send approval an Allow once tap issued, as this card read finds
+  // it on the answer (server approval, section 3c): handed over with the tap.
+  onTapApproval?: (approval: EmailSendApprovalClick | null) => void,
 ): Promise<PermissionChoice> {
   const baselineId = chatLastSeen.get(chatId) ?? 0
   // See answeredOn below: the card is re-read every tick, so its mismatch line
@@ -3794,6 +3903,7 @@ async function waitForVerdict(
         }
         return null
       }
+      if (choice === 'once') onTapApproval?.(answeredEmailSendApproval(msg.message))
       return choice
     },
     verdictFrom: (msg) => {
@@ -7481,6 +7591,8 @@ interface AnswerPayload {
   callback_data?: string
   button_text?: string
   custom_text?: string
+  /** The approval an Allow once tap on an email_send card issued (server approval, section 3c). */
+  emailSendApproval?: unknown
 }
 
 interface ChatMessage {
@@ -8676,6 +8788,11 @@ function noteSlashPlanDelivery(
   onPlanDirectiveDelivered(String(chatId), Number(messageId) || 0)
 }
 let monitoredChatIds: string[] = []
+/**
+ * The agent's own main chats, from the inbox's chat kinds: the only chats a
+ * held email_send card can carry the owner's Allow in (emailSendCardChat).
+ */
+let mainChatIds: string[] = []
 
 // ── Chat membership authority ────────────────────────────────────────────────
 // Defense-in-depth: the backend is the sole authority for chat resolution +
@@ -9655,6 +9772,9 @@ async function discoverChats(): Promise<void> {
           c.assistantId === Number(ASSISTANT_ID) && c.kind !== 'meeting',
       )
       .map((c) => String(c.id))
+    mainChatIds = data.chats
+      .filter((c) => c.assistantId === Number(ASSISTANT_ID) && c.kind === 'main')
+      .map((c) => String(c.id))
     const meetingChatSet = new Set(
       data.chats
         .filter((c) => c.kind === 'meeting')
@@ -10019,6 +10139,7 @@ async function pollChat(chatId: string): Promise<void> {
         callbackData,
         clickerUserId: senderUserIdOf(payload),
         pending: pendingPermissions,
+        emailSendApproval: payload.emailSendApproval,
       })
       if (permOutcome.kind !== 'not_permission') {
         if (permOutcome.kind === 'resolved') {
@@ -12796,6 +12917,7 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
       callbackData: answer.callbackData,
       clickerUserId: senderUserIdOf(answer),
       pending: pendingPermissions,
+      emailSendApproval: answer.emailSendApproval,
     })
     if (outcome.kind === 'not_permission') {
       // decideButtonsAnswered said 'permission' but the callback will not

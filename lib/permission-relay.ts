@@ -53,9 +53,15 @@
  * answers at all.
  */
 
-import { classifyToolCall, previewIsElided } from './hard-floor.js'
+import { classifyToolCall, isOwnSendingTool, previewIsElided } from './hard-floor.js'
 import { compactFloorEvidence } from './floor-evidence.mjs'
-import { emailSendCardText, emailSendCardTool } from './email-send-approval.js'
+import {
+  emailSendCardText,
+  emailSendCardTool,
+  readEmailSendApprovalClick,
+  type EmailSendApprovalClick,
+} from './email-send-approval.js'
+import { isEmailSendBlock } from './email-send-binding.mjs'
 
 export type PermissionBehavior = 'allow' | 'deny'
 export type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
@@ -388,6 +394,14 @@ export interface PermissionRequestBodyInput {
   description?: string
   inputPreview?: string
   /**
+   * This channel's email_send, held for the owner's Always ask: the email the
+   * owner's tap approves (approvalMeta.email_send, the server approval
+   * contract's section 1; lib/email-send-approval.ts emailSendCardBinding).
+   * Sent only when well formed: a block the server refuses would fail the
+   * whole card, and with none the card is deny only.
+   */
+  emailSend?: unknown
+  /**
    * The command the hard floor matched, when the relay holds this request for
    * the owner's floor (the hook's record, or the preview's own match).
    */
@@ -531,6 +545,7 @@ export function buildPermissionRequestBody(
       // absent wait is not "as it was", it is the server's 60 s, which is
       // shorter than the clock this change removed.
       wait_seconds: PERMISSION_HOLD_SECONDS,
+      ...(isEmailSendBlock(input.emailSend) && isOwnSendingTool(input.toolName) ? { email_send: input.emailSend } : {}),
     },
   }
 }
@@ -882,7 +897,8 @@ export function permissionRowsReader<T>(opts: {
 
 export interface PendingPermissionLike {
   requesterUserId: string
-  resolve: (choice: PermissionChoice) => void
+  /** The choice, and for an Allow once tap the email send approval the server issued for it (or null). */
+  resolve: (choice: PermissionChoice, emailSendApproval?: EmailSendApprovalClick | null) => void
 }
 
 export type PermissionClickOutcome =
@@ -924,6 +940,8 @@ export function resolvePermissionClick(opts: {
   callbackData: string
   clickerUserId: string
   pending: Map<string, PendingPermissionLike>
+  /** The answer's emailSendApproval as the lane received it (unvalidated). */
+  emailSendApproval?: unknown
 }): PermissionClickOutcome {
   const click = parsePermissionClick(opts.callbackData)
   if (!click) return { kind: 'not_permission' }
@@ -941,7 +959,12 @@ export function resolvePermissionClick(opts: {
       requesterUserId: entry.requesterUserId,
     }
   }
-  entry.resolve(click.choice)
+  // Only an Allow once tap issues an approval (a deny issues nothing): the
+  // answer's emailSendApproval, read as exactly {id, expiresAt} or not at all.
+  entry.resolve(
+    click.choice,
+    click.vocabulary === 'ea' && click.choice === 'once' ? readEmailSendApprovalClick(opts.emailSendApproval) : null,
+  )
   opts.pending.delete(click.requestId)
   return {
     kind: 'resolved',
