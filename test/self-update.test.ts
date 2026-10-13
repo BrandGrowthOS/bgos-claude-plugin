@@ -21,6 +21,10 @@ import {
   UPDATE_JITTER_MAX_MS,
   UPDATE_LOCK_STALE_MS,
   UPDATE_DRAIN_TIMEOUT_MS,
+  UPDATE_BUSY_RETRY_MS,
+  UPDATE_SCHEDULED_QUIET_CEILING_MS,
+  UPDATE_STALE_WORK_MS,
+  decideToolAdmission,
   compareSemver,
   decideDrainWait,
   isUpdateLockHeld,
@@ -339,7 +343,10 @@ describe('schedule and drain decisions', () => {
       expect(handlerBody(event)).toContain('trackMessageOperation(() => mcp.notification')
     }
     expect(source).not.toContain('void handleRemoteCompact(')
-    expect(source).toContain('if (updateDrainMode) {\n    return Promise.resolve({')
+    // The tool handler's own refusal used to be this bare `if (updateDrainMode)`, which refused
+    // every send for as long as a staged update waited (product board row a741d98b, Pylon 929).
+    // It is now admitted while the update only waits and refused once drained: decideToolAdmission.
+    expect(source).toContain("if (decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() }) === 'refuse') {\n    return Promise.resolve({")
     // The permission relay closes admission like every entry point above it,
     // and since 0.49.0 it also ANSWERS the CLI on the way out: the old
     // `return Promise.resolve()` sent no verdict at all, so a request raised
@@ -2379,5 +2386,158 @@ describe('self-update registers the clone workspace hooks before the restart', (
     })
     await updaterFail!.checkNow().catch(() => undefined)
     expect(failCalls).toEqual([])
+  })
+})
+
+// -- a pending update never blocks sends and never waits forever (HOAI product board row a741d98b, Pylon 929, 2026-10-11) --
+
+describe('a staged scheduled update only DEFERS the restart', () => {
+  const busy = { activeOperations: 1, pendingMessages: 0, pendingPermissions: 0 }
+  const quiet = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
+
+  async function updaterWith(opts: {
+    snapshot: () => { activeOperations: number; pendingMessages: number; pendingPermissions: number }
+    drainModes: boolean[]
+    scheduled: number[]
+    clock: { t: number }
+    calls: Array<{ file: string; args: readonly string[] }>
+    logs?: string[]
+  }) {
+    const rootDir = tempDir('self-update-busy-root-')
+    mkdirSync(join(rootDir, '.git'))
+    const stateFilePath = join(tempDir('self-update-busy-state-'), 'auto-update.json')
+    return initializeSelfUpdater({
+      rootDir,
+      stateFilePath,
+      env: { BGOS_AUTO_UPDATE: 'on' },
+      runningVersion: '0.26.0',
+      log: (line) => opts.logs?.push(line),
+      drainSnapshot: opts.snapshot,
+      setDrainMode: (enabled) => opts.drainModes.push(enabled),
+      exit: () => {},
+      runner: gitRunner({ calls: opts.calls }),
+      now: () => opts.clock.t,
+      delay: async (ms) => {
+        opts.clock.t += ms
+      },
+      schedule: (_callback, delayMs) => {
+        opts.scheduled.push(delayMs)
+        return setTimeout(() => {}, 60_000)
+      },
+    })
+  }
+
+  test('a busy daemon keeps intake open while it waits, gives up at the ceiling, installs nothing, and retries soon (not in 24 h)', async () => {
+    const drainModes: boolean[] = []
+    const scheduled: number[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const logs: string[] = []
+    const clock = { t: 1_000 }
+    const updater = await updaterWith({ snapshot: () => busy, drainModes, scheduled, clock, calls, logs })
+    await updater!.checkNow()
+    // The wait never closed intake or refused a tool: drain mode was never turned ON.
+    expect(drainModes).toEqual([])
+    expect(calls.some((call) => call.args.includes('merge'))).toBe(false)
+    expect(clock.t - 1_000).toBeGreaterThanOrEqual(UPDATE_SCHEDULED_QUIET_CEILING_MS)
+    expect(logs.join('\n')).toMatch(/not quiet.*retry/i)
+    const next = scheduled[scheduled.length - 1]!
+    expect(next).toBeLessThanOrEqual(UPDATE_BUSY_RETRY_MS)
+    expect(next).toBeLessThan(UPDATE_CHECK_INTERVAL_MS)
+  })
+
+  test('intake is closed only once the daemon is quiet, and the update then goes ahead', async () => {
+    const drainModes: boolean[] = []
+    const seenWhileBusy: number[] = []
+    let polls = 0
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const clock = { t: 1_000 }
+    const updater = await updaterWith({
+      snapshot: () => {
+        polls += 1
+        if (polls <= 5) {
+          seenWhileBusy.push(drainModes.length)
+          return busy
+        }
+        return quiet
+      },
+      drainModes,
+      scheduled: [],
+      clock,
+      calls,
+    })
+    await updater!.checkNow()
+    expect(seenWhileBusy).toEqual([0, 0, 0, 0, 0])
+    expect(drainModes[0]).toBe(true)
+    expect(calls).toContainEqual({ file: 'git', args: ['merge', '--ff-only', '--no-edit', COMMIT_B] })
+  })
+
+  test('work that arrives in the instant between "quiet" and "intake closed" is waited for briefly, then the update yields and intake reopens', async () => {
+    const drainModes: boolean[] = []
+    const calls: Array<{ file: string; args: readonly string[] }> = []
+    const clock = { t: 1_000 }
+    let polls = 0
+    const updater = await updaterWith({
+      snapshot: () => {
+        polls += 1
+        return polls === 1 ? quiet : busy
+      },
+      drainModes,
+      scheduled: [],
+      clock,
+      calls,
+    })
+    await updater!.checkNow()
+    expect(drainModes).toEqual([true, false])
+    expect(calls.some((call) => call.args.includes('merge'))).toBe(false)
+    expect(clock.t - 1_000).toBeGreaterThanOrEqual(UPDATE_DRAIN_TIMEOUT_MS)
+  })
+})
+
+describe('what counts as work for a drain', () => {
+  test('an operation older than the stale bound is not work: a wedged wake delivery cannot hold an update off for ever', async () => {
+    const tracker = new MessageActivityTracker()
+    let release!: () => void
+    const held = tracker.track(() => new Promise<void>((resolve) => (release = resolve)))
+    expect(tracker.activeOperations).toBe(1)
+    const now = Date.now()
+    expect(tracker.freshOperations(now, UPDATE_STALE_WORK_MS)).toBe(1)
+    expect(tracker.freshOperations(now + UPDATE_STALE_WORK_MS + 1_000, UPDATE_STALE_WORK_MS)).toBe(0)
+    release()
+    await held
+    expect(tracker.activeOperations).toBe(0)
+  })
+})
+
+describe('a tool call during an update', () => {
+  const quiet = { activeOperations: 0, pendingMessages: 0, pendingPermissions: 0 }
+  const busy = { activeOperations: 2, pendingMessages: 1, pendingPermissions: 0 }
+
+  test('is admitted while the update is only WAITING for work to finish (a send is that work finishing)', () => {
+    expect(decideToolAdmission({ drainMode: true, snapshot: busy })).toBe('admit')
+    expect(decideToolAdmission({ drainMode: false, snapshot: busy })).toBe('admit')
+    expect(decideToolAdmission({ drainMode: false, snapshot: quiet })).toBe('admit')
+  })
+
+  test('is refused only once the daemon is drained and the restart is committed', () => {
+    expect(decideToolAdmission({ drainMode: true, snapshot: quiet })).toBe('refuse')
+  })
+})
+
+describe('server.ts wiring of the update drain (a source pin: nothing here can run without a live MCP session)', () => {
+  const source = readFileSync(join(import.meta.dir, '..', 'server.ts'), 'utf8')
+
+  test('the tool handler decides admission through decideToolAdmission, never a bare drain flag', () => {
+    expect(source).toContain('decideToolAdmission({ drainMode: updateDrainMode, snapshot: updateDrainSnapshot() })')
+    // The refusal text exists exactly once, behind that decision.
+    expect(source.split('The BGOS channel is restarting for an update. Retry this tool shortly.').length - 1).toBe(1)
+    expect(source).not.toMatch(/if \(updateDrainMode\) \{\s*return Promise\.resolve\(\{\s*content: \[\s*\{\s*type: 'text' as const,\s*text: 'The BGOS channel is restarting/)
+  })
+
+  test('the updater and the restart ladder both count only fresh work', () => {
+    expect(source.split('drainSnapshot: updateDrainSnapshot,').length - 1).toBe(2)
+    const fn = source.slice(source.indexOf('function updateDrainSnapshot()'), source.indexOf('const updateRpc = new UpdateRpcHandler'))
+    expect(fn).toContain('messageActivity.freshOperations(nowMs, UPDATE_STALE_WORK_MS)')
+    expect(fn).toContain('nowMs - pending.ts < UPDATE_STALE_WORK_MS')
+    expect(fn).not.toMatch(/activeOperations: messageActivity\.activeOperations/)
   })
 })
