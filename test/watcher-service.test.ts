@@ -14,6 +14,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  servicePath,
   WATCHER_LAUNCHD_LABEL,
   WATCHER_SYSTEMD_UNIT,
   WATCHER_TASK_NAME,
@@ -116,7 +117,7 @@ test('darwin spec: launchd plist (KeepAlive, RunAtLoad, node + watcher run, logs
       '  <key>StandardErrorPath</key><string>/home/kc/.bgos-agent/watcher/logs/service.err.log</string>',
       '  <key>EnvironmentVariables</key>',
       '  <dict>',
-      '    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/home/kc/.bun/bin:/home/kc/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>',
+      '    <key>PATH</key><string>/home/kc/.local/bin:/home/kc/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>',
       '    <key>HOME</key><string>/home/kc</string>',
       '    <key>USER</key><string>kc</string>',
       '    <key>LOGNAME</key><string>kc</string>',
@@ -172,7 +173,7 @@ test('linux spec: systemd --user unit (Restart=always, RestartSec=5, quoted Exec
       'ExecStart="/usr/local/bin/node" "/home/kc/.bgos-agent/watcher/bin/hoai-watcher.mjs" run',
       'Restart=always',
       'RestartSec=5',
-      'Environment=PATH=/usr/local/bin:/opt/homebrew/bin:/home/kc/.bun/bin:/home/kc/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+      'Environment=PATH=/home/kc/.local/bin:/home/kc/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
       'Environment=HOME=/home/kc',
       'Environment=USER=kc',
       'Environment=LOGNAME=kc',
@@ -329,9 +330,9 @@ test('service PATH: the dirs where node, bun, claude, tmux, expect and git were 
   const mac = watcherServiceSpec({ ...POSIX, platform: 'darwin', nodePath: '/opt/node-22/bin/node', env, exists })
   const plist = mac.files[0]!.content
   const pathLine = plist.split('\n').find((l) => l.includes('<key>PATH</key>'))!
-  assert.match(pathLine, /<string>\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  assert.match(pathLine, /<string>\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/home\/kc\/\.local\/bin:/)
   const linux = watcherServiceSpec({ ...POSIX, platform: 'linux', nodePath: '/opt/node-22/bin/node', env, exists })
-  assert.match(linux.files[0]!.content, /Environment=PATH=\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/usr\/local\/bin:/)
+  assert.match(linux.files[0]!.content, /Environment=PATH=\/opt\/node-22\/bin:\/opt\/tools\/bun\/bin:\/opt\/tools\/claude\/bin:\/home\/kc\/\.local\/bin:/)
   // /usr/bin (expect) is already a default: listed once, in its default place.
   assert.equal(pathLine.split('/usr/bin:').length - 1, 1)
   // Nothing found off the defaults (the fixture's node is /usr/local/bin/node): byte for byte as before.
@@ -546,4 +547,22 @@ test('applyWin32CredentialsAcl: the exact icacls argv from bgos-pair (inheritanc
   const noUser = await applyWin32CredentialsAcl('C:\\x', { username: '', exec })
   assert.equal(noUser.ok, false)
   assert.match(noUser.message, /UNPROTECTED/)
+})
+
+// -- the user's own directories lead the service PATH (board row 84296679) ----------------------
+
+test('servicePath: ~/.local/bin and ~/.bun/bin come before /usr/local/bin, so a stale system claude never shadows the native one', () => {
+  // kc-server, 2026-10-12: /usr/local/bin/claude 2.1.22 sat ahead of ~/.local/bin/claude, the
+  // keep-alive reinstall baked it, and five agents crash-looped about 420 times.
+  const parts = servicePath('/home/kc').split(':')
+  assert.ok(parts.indexOf('/home/kc/.local/bin') >= 0)
+  assert.ok(parts.indexOf('/home/kc/.local/bin') < parts.indexOf('/usr/local/bin'))
+  assert.ok(parts.indexOf('/home/kc/.bun/bin') < parts.indexOf('/usr/local/bin'))
+  assert.ok(parts.indexOf('/usr/local/bin') < parts.indexOf('/usr/bin'))
+})
+
+test('servicePath: a directory is listed once even when it is found and is also a default', () => {
+  const parts = servicePath('/home/kc', ['/home/kc/.local/bin', '/usr/local/bin', '/opt/x/bin']).split(':')
+  assert.equal(new Set(parts).size, parts.length)
+  assert.equal(parts[0], '/opt/x/bin')
 })

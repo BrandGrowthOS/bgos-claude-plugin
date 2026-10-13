@@ -253,6 +253,14 @@ cmd_install() {
     # here, before anything is written, so a refused install leaves nothing.
     command -v node >/dev/null 2>&1 \
       || die "supervisor:node-not-found the always-on supervisor runs hoai on Node.js and no node is on PATH. Install Node.js 18 or newer, then run this again."
+    # WHICH claude gets baked. `command -v claude` under the watcher's service PATH
+    # returned a stale /usr/local/bin/claude 2.1.22 that does not know the launch flag
+    # and exited rc=1 on every launch (board row 84296679, kc-server, 2026-10-12: five
+    # agents, about 420 silent crash loops). The selector asks each candidate (the
+    # native ~/.local/bin/claude first, then every claude on PATH) whether it knows
+    # --dangerously-load-development-channels and names the ones it steps over.
+    # Decided HERE, before anything is written, so a refusal leaves nothing behind.
+    select_claude
     # Optional: without tmux the agent still runs, but /compact from the app
     # cannot reach it (finding 8), so say so now rather than let it be found.
     command -v tmux >/dev/null 2>&1 \
@@ -352,16 +360,20 @@ cmd_install() {
   # --- always-on supervisor -------------------------------------------------
   info "Installing always-on supervisor (auto-restart + survive reboot)"
   local claude_bin bun_bin expect_bin node_bin tmux_bin path topology plugin_key=""
-  claude_bin="$(command -v claude)"
+  claude_bin="${SELECTED_CLAUDE_BIN:-$(command -v claude)}"
   bun_bin="$(command -v bun)"
   expect_bin="$(command -v expect)"
   # Resolved and BAKED now: run.sh starts hoai with exactly this node, and the
   # marketplace plugin's MCP server and hooks find `node` on the service PATH.
   node_bin="$(command -v node)"
   tmux_bin="$(command -v tmux || true)"
-  path="$(dirname "$node_bin"):$(dirname "$claude_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin")"
+  # The chosen claude's directory leads: a stale claude further along the same PATH
+  # (a /usr/local/bin one behind node's directory) can then never be the one a launch
+  # finds by name. Each directory is listed once.
+  path="$(dirname "$claude_bin"):$(dirname "$node_bin"):$(dirname "$bun_bin"):$(dirname "$expect_bin")"
   [ -n "$tmux_bin" ] && path="$path:$(dirname "$tmux_bin")"
-  path="$path:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+  path="$path:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  path="$(dedupe_path "$path")"
   # Stamped for EVERY always-on install (fact 3). The app records alwaysOn in BGOS only
   # after it has seen this agent connect, and until then the agent's own daemon reads
   # "off" with a supervisor installed, which used to mean "remove it", within seconds,
@@ -428,6 +440,56 @@ cmd_install() {
   printf '  status    : hoai-agent status --assistant %s\n' "$ASSISTANT_ID"
   printf '  watch     : hoai-agent attach --assistant %s   (its tmux session, when tmux is installed)\n' "$ASSISTANT_ID"
   printf '  off       : hoai-agent uninstall --assistant %s\n' "$ASSISTANT_ID"
+}
+
+# The claude an always-on install bakes, chosen by what it can DO (lib/claude-binary.mjs),
+# never by PATH order alone. Sets SELECTED_CLAUDE_BIN. A selector that cannot run at
+# all falls back to the first claude on PATH with a warning: this check must never be
+# the reason an install fails, only a stale claude may be.
+select_claude() {
+  local out line status="" bin="" version="" reason="" message=""
+  out="$(node "$PLUGIN_DIR/bin/hoai-select-claude.mjs" 2>&1)" || true
+  while IFS= read -r line; do
+    case "$line" in
+      HOAI_CLAUDE_OK$'\t'*)
+        status="ok"; line="${line#HOAI_CLAUDE_OK$'\t'}"
+        bin="${line%%$'\t'*}"; version="${line#*$'\t'}"
+        ;;
+      HOAI_CLAUDE_REFUSED$'\t'*)
+        status="refused"; line="${line#HOAI_CLAUDE_REFUSED$'\t'}"
+        reason="${line%%$'\t'*}"; message="${line#*$'\t'}"
+        ;;
+      skipping\ *) warn "${line}" ;;
+    esac
+  done <<<"$out"
+  case "$status" in
+    ok)
+      SELECTED_CLAUDE_BIN="$bin"
+      info "claude: $bin${version:+ ($version)}"
+      ;;
+    refused)
+      die "claude:$reason $message"
+      ;;
+    *)
+      SELECTED_CLAUDE_BIN="$(command -v claude)"
+      warn "could not check which claude to use; using $SELECTED_CLAUDE_BIN (the first on PATH)"
+      ;;
+  esac
+}
+
+# A PATH with each directory once, first occurrence kept. The baked service PATH is
+# built from several lists that share directories, and a duplicated PATH hides which
+# entry won when a stale tool is shadowed (board row 84296679, fix 5).
+dedupe_path() { # $1 colon separated path
+  local out="" seg IFS=:
+  for seg in $1; do
+    [ -n "$seg" ] || continue
+    case ":$out:" in
+      *":$seg:"*) ;;
+      *) out="${out:+$out:}$seg" ;;
+    esac
+  done
+  printf '%s' "$out"
 }
 
 # --- the paired topology (a workspace with no .mcp.json) ----------------------
@@ -633,6 +695,14 @@ fails=$(cat "$sd/failcount" 2>/dev/null || echo 0)
 case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
 start=$(date +%s)
 echo "[$(ts)] starting agent (consecutive fast-fails: $fails)"
+# Which claude this launch will find by name, and what it is. A stale one used to
+# exit rc=1 at once and leave no trace of which binary it was (board row 84296679).
+claude_at="$(command -v claude 2>/dev/null || true)"
+if [ -n "$claude_at" ]; then
+  echo "[$(ts)] claude: $claude_at $("$claude_at" --version </dev/null 2>&1 | head -n 1)"
+else
+  echo "[$(ts)] claude: not found on the service PATH ($PATH)"
+fi
 # Cleared first, so a launch that dies before hoai can write its line is never
 # reported with the reason the PREVIOUS launch left behind.
 note_status "outcome=starting"
@@ -1060,6 +1130,24 @@ cmd_status() {
   else
     warn "tmux session $sock is not running: remote compact OFF until the agent runs in it"
   fi
+  # A unit that is installed and loaded is not an agent that is up. A crash loop (a
+  # claude too old for the launch flag exited rc=1 about 420 times on kc-server and
+  # every line above still read as healthy, board row 84296679) is named here, from
+  # the same two files run.sh and hoai write, before the generic last-launch line.
+  local fails last
+  fails="$(cat "$statedir/failcount" 2>/dev/null || echo 0)"
+  case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
+  last="$(cat "$statedir/launch-status" 2>/dev/null || true)"
+  case "$last" in
+    *outcome=exited-during-startup*|*outcome=plugin-root-missing*|*outcome=node-missing*|*outcome=gate-*|*outcome=live-but-not-signed-in*)
+      warn "NOT RUNNING HEALTHY: the last launch did not come up ($fails consecutive fast fail(s)): $last"
+      ;;
+    *)
+      if [ "$fails" -ge 3 ]; then
+        warn "NOT RUNNING HEALTHY: $fails consecutive fast fails, this agent is crash looping. Last launch: ${last:-unknown}"
+      fi
+      ;;
+  esac
   # How the most recent launch went, as hoai measured it (which startup gates
   # it answered, the screen it could not answer, or why it refused), or what
   # run.sh saw before hoai ran (a missing plugin root, no tmux).

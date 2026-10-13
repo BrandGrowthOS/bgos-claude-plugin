@@ -3,29 +3,98 @@
 import { randomUUID } from 'node:crypto'
 import { realpathSync, rmSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { findAttachedKey, floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
-import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privatePromptHash, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
+import { findOwnAttachedKey, floorKey, floorStateRoot, sessionFolders } from '../lib/floor-state.mjs'
+import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privatePromptHash, privateUnservedPath, readPrivateJson, writePrivateJson } from '../lib/private-turn.mjs'
 
-/** This session's marker, or null for a standalone CLI session with no managed private tools. */
-function managedMarkerPath(payload, env) {
-  const root = floorStateRoot(env)
-  const folders = sessionFolders(payload, env)
-  const key = findAttachedKey({ root, folders }) || folders.map(floorKey).find(candidate => readPrivateJson(privateMarkerPath(root, candidate), 2048))
-  return key ? privateMarkerPath(root, key) : null
+const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
+
+/** One attached entry the hook passed over, in a few words. */
+function describeEntry({ key, state, pid, projectDir }) {
+  if (state === 'other-project') return `${key}: pid ${pid} serves the transcripts in ${projectDir}`
+  if (state === 'older-daemon') return `${key}: pid ${pid}, a daemon older than 0.68.4, at a folder other than this session's project folder`
+  if (state === 'not-running') return `${key}: pid ${pid} is not running`
+  return `${key}: unreadable`
 }
 
-export function recordPrivateBoundary(payload, env = process.env) {
-  const path = managedMarkerPath(payload, env)
-  if (!path) return false // A standalone CLI session has no managed private tools.
+/**
+ * This session's marker: { path } under the key whose live daemon serves this session, else { path: null, why, stale },
+ * `why` null when there is nothing to say (a standalone CLI session: nothing attached, no marker, no managed tools).
+ * Before 0.68.4 the marker went under the first live attached entry of ANY daemon, or with none under the first of
+ * the session's folders that held a marker. On a computer running several agents that was another agent's key, so
+ * neither daemon could use the turn and the other agent's own marker was overwritten (Vera's under Mark's,
+ * 2026-10-13). Now nothing is written unless this session's own daemon is attached (findOwnAttachedKey).
+ * `stale`: this session's own live markers at keys no other live daemon holds. With nowhere to write, they are
+ * closed instead, so a turn they carried (its signed browser context lives up to 60 s) cannot outlast this boundary.
+ */
+function managedMarker(payload, env) {
+  const root = floorStateRoot(env)
+  const folders = sessionFolders(payload, env)
+  const projectFolder = envText(env, 'CLAUDE_PROJECT_DIR')
+  const transcriptPath = typeof payload?.transcript_path === 'string' ? payload.transcript_path : ''
+  const base = projectFolder || (typeof payload?.cwd === 'string' ? payload.cwd : '')
+  const { key, seen } = findOwnAttachedKey({ root, folders, transcriptPath, projectFolder, base })
+  if (key) return { root, path: privateMarkerPath(root, key), stale: [] }
+  const held = new Set(seen.filter((entry) => entry.state === 'other-project' || entry.state === 'older-daemon').map((entry) => entry.key))
+  const sessionId = String(payload?.session_id ?? '').trim()
+  const markers = folders.map(floorKey).filter(Boolean)
+    .map((candidate) => ({ key: candidate, path: privateMarkerPath(root, candidate), marker: readPrivateJson(privateMarkerPath(root, candidate), 2048) }))
+    .filter((entry) => entry.marker)
+  const stale = markers.filter((entry) => sessionId && entry.marker.sessionId === sessionId && entry.marker.live === true && !held.has(entry.key)).map((entry) => entry.path)
+  if (seen.length === 0 && markers.length === 0) return { root, path: null, why: null, stale }
+  const found = seen.length > 0 ? seen.map(describeEntry).join('; ') : 'none of them has a daemon attached'
+  return { root, path: null, why: `no live daemon attached to this session's folders serves its transcript ${transcriptPath || '(none named)'} (${found})`, stale }
+}
+
+/** Best effort: turn these markers non-live. */
+function closeMarkers(paths) {
+  for (const path of paths) {
+    try {
+      writePrivateJson(path, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
+    } catch {
+      try { rmSync(path, { force: true }) } catch { /* Nothing more can be done from a hook. */ }
+    }
+  }
+}
+
+/** A session id safe to name a file by, or ''. */
+const fileSafeSession = (sessionId) => (/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ? sessionId : '')
+
+/**
+ * @param {(why: string) => void} [report] told why a prompt's marker was not written, when there is a reason to give
+ */
+export function recordPrivateBoundary(payload, env = process.env, report = () => {}) {
   const event = payload?.hook_event_name
   if (!['UserPromptSubmit', 'Stop', 'SessionEnd'].includes(event)) return false
+  const target = managedMarker(payload, env)
   const sessionId = String(payload?.session_id ?? '').trim()
+  const notePath = fileSafeSession(sessionId) ? privateUnservedPath(target.root, sessionId) : ''
+  if (!target.path) {
+    closeMarkers(target.stale)
+    // A standalone CLI session has no managed private tools; any other session's prompt says why it has no turn,
+    // here and in a note its own daemon's refusal line quotes (lib/private-turn.mjs explain).
+    if (event === 'UserPromptSubmit' && target.why) {
+      try { report(target.why) } catch { /* Reporting is best effort. */ }
+      const promptId = typeof payload?.prompt_id === 'string' ? payload.prompt_id.trim().slice(0, 128) : ''
+      if (notePath) {
+        try { writePrivateJson(notePath, { schemaVersion: 1, at: Date.now(), sessionId, ...(promptId ? { promptId } : {}), why: target.why.slice(0, 1024) }) } catch { /* The stderr line still says it. */ }
+      }
+    }
+    return false
+  }
+  const path = target.path
   if (!sessionId) throw new Error('Private tool turn has no session identity.')
+  // promptId: the CLI's prompt_id, shared by every hook of one submission, so the daemon can tell a second hook
+  // source re-stamping this marker from the same words submitted again (lib/private-turn.mjs current).
+  const promptId = typeof payload?.prompt_id === 'string' ? payload.prompt_id.trim().slice(0, 128) : ''
   const marker = {
     schemaVersion: 1, turnId: randomUUID(), sessionId,
     promptHash: privatePromptHash(payload.prompt), live: event === 'UserPromptSubmit',
+    ...(promptId ? { promptId } : {}),
   }
   writePrivateJson(path, marker)
+  if (notePath && event === 'UserPromptSubmit') {
+    try { rmSync(notePath, { force: true }) } catch { /* A stale note only adds words to a refusal line. */ }
+  }
   return { path, marker }
 }
 
@@ -40,7 +109,7 @@ const helperId = (payload) => {
  * without this record it would act as whoever sends the NEXT message.
  */
 export function recordSubagentTurn(payload, env = process.env) {
-  const path = managedMarkerPath(payload, env)
+  const path = managedMarker(payload, env).path
   const agentId = helperId(payload)
   if (!path || !agentId) return false
   const marker = readPrivateJson(path, 2048)
@@ -61,8 +130,10 @@ export function recordSubagentTurn(payload, env = process.env) {
 export function privateToolRefusal(payload, env = process.env) {
   if (!new RegExp(PRIVATE_TOOL_MATCHER).test(String(payload?.tool_name ?? ''))) return null
   if (String(payload?.agent_id ?? '').trim() === '') return null
-  const path = managedMarkerPath(payload, env)
-  if (!path) return null
+  const target = managedMarker(payload, env)
+  // A helper in a session whose own daemon is not attached: the turn that started it cannot be checked.
+  if (!target.path) return target.why ? 'HOAI refused this private tool: no HOAI daemon of this agent is attached to the session, so the turn that started this helper agent cannot be checked.' : null
+  const path = target.path
   const agentId = helperId(payload)
   const marker = readPrivateJson(path, 2048)
   const known = readPrivateJson(privateAgentsPath(path), 16384)
@@ -71,19 +142,15 @@ export function privateToolRefusal(payload, env = process.env) {
   return 'HOAI refused this private tool: this helper agent was started in an earlier turn (or its start was not recorded), so it cannot act for the person who sent the current message. Finish without it, or ask the sender to send the request again.'
 }
 
-/** Best effort: turn every existing marker for this session's folders non-live. */
+/**
+ * Best effort: turn this session's marker non-live: the one under its own daemon's key, else its own live markers at
+ * keys no other live daemon holds. Every marker of the session's folders used to be closed, and one of those folders
+ * can be another agent's, whose live turn it ended.
+ */
 export function invalidatePrivateBoundary(payload, env = process.env) {
   try {
-    const root = floorStateRoot(env)
-    for (const key of new Set(sessionFolders(payload, env).map(floorKey))) {
-      const path = privateMarkerPath(root, key)
-      if (!readPrivateJson(path, 2048)) continue
-      try {
-        writePrivateJson(path, { schemaVersion: 1, turnId: randomUUID(), sessionId: '', promptHash: '', live: false })
-      } catch {
-        try { rmSync(path, { force: true }) } catch { /* Nothing more can be done from a hook. */ }
-      }
-    }
+    const target = managedMarker(payload, env)
+    closeMarkers(target.path ? (readPrivateJson(target.path, 2048) ? [target.path] : []) : target.stale)
   } catch { /* An unreadable payload has no folders to close. */ }
 }
 
@@ -110,7 +177,14 @@ export async function main() {
       recordSubagentTurn(payload)
       return
     }
-    const recorded = recordPrivateBoundary(payload)
+    let unserved = ''
+    const recorded = recordPrivateBoundary(payload, process.env, (why) => { unserved = why })
+    if (unserved) {
+      // Exit 1: a non blocking error the CLI records with the prompt. The prompt runs; its private tools refuse.
+      process.stderr.write(`HOAI wrote no private turn marker: ${unserved}. Private tools refuse this turn.\n`)
+      process.exitCode = 1
+      return
+    }
     if (recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-private-turn id="')) {
       // Claude runs matching hooks in parallel. Give the existing async
       // forwarder and daemon intake time to publish before the first tool.

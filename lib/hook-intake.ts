@@ -17,7 +17,7 @@
  * probe-requested.json), so it is a pattern this codebase has already debugged.
  *
  *   <state>/hooks/<session_id>/events.jsonl    the lines
- *   <state>/hooks/<session_id>/cursor.json     how far THIS host has drained
+ *   <state>/hooks/<session_id>/own-cursor.json how far the session's own daemon has drained
  *
  * Three rules this module holds.
  *
@@ -48,6 +48,19 @@
  *    (which posted every card, marker and step again). Lines below the
  *    persisted cursor are never re-applied, a partial trailing line is left for
  *    the next drain, and the in memory dedupe catches what is left.
+ *    Two things keep a cursor on the file and the daemon it belongs to (0.68.4).
+ *    Every agent of one OS user drains every session under one root, so ONLY A
+ *    SESSION'S OWN DAEMON WRITES ITS CURSOR: the one bound to it, or the one
+ *    whose project folder it is while it still waits for proof. A neighbour
+ *    that refused the session used to write it too, and the session's own
+ *    daemon then resumed after lines it had never applied. The file is
+ *    own-cursor.json; the cursor.json every daemon wrote before 0.68.4 is never
+ *    read, since an older neighbour on the same computer still writes it. And a
+ *    cursor NAMES THE FILE it counted (`head`): a spool the idle sweep removed
+ *    is recreated by the next prompt, often longer than the old one, and a
+ *    cursor that only compared sizes skipped that prompt. Both lost a 17:30
+ *    scheduled wake on a Windows fleet PC: privateTurns.begin() never ran, so
+ *    no private turn opened.
  *
  * A session directory is swept when its SessionEnd has been consumed, or when
  * nothing in it has been touched for SESSION_SWEEP_MS.
@@ -75,12 +88,19 @@ export const SPOOL_DIR_NAME = 'hooks'
 export const SPOOL_FILE_NAME = 'events.jsonl'
 /** The rotated twin: the forwarder renames onto it and starts a fresh file. */
 export const SPOOL_ROTATED_NAME = 'events.1.jsonl'
-/** How far this host has drained the file beside it. */
-export const CURSOR_FILE_NAME = 'cursor.json'
+/** How far the session's own daemon has drained the file beside it (header rule 3). */
+export const CURSOR_FILE_NAME = 'own-cursor.json'
+/**
+ * Before 0.68.4 every daemon that drained a folder wrote this, sessions it
+ * refused included. Never read: an older neighbour may still write it.
+ */
+export const LEGACY_CURSOR_FILE_NAME = 'cursor.json'
 /** Refuse to grow a spool past this; rotate instead. */
 export const SPOOL_MAX_BYTES = 2 * 1024 * 1024
 /** A session directory nothing has touched for this long is not coming back. */
 export const SESSION_SWEEP_MS = 30 * 60_000
+/** The reason a removal line gives for the idle sweep. */
+const SWEPT_IDLE = 'idle sweep'
 /** How long an unproven session's events are held before they are dropped. */
 export const UNBOUND_BUFFER_MS = 60_000
 /** How many lines one unproven session may hold. A turn is far below this. */
@@ -184,6 +204,18 @@ export interface DrainCursor {
   lines: number
   /** Bytes those lines occupy, so a rotation (a smaller file) is detectable. */
   bytes: number
+  /**
+   * Which file they were counted in: a short hash of its first complete line.
+   * Every spool line carries a minted id, so a recreated or rotated file has
+   * another first line whatever its size. Absent while the file has no
+   * complete line yet; such a cursor falls back to the size check alone.
+   */
+  head?: string
+}
+
+/** The identity of the file a cursor counts: a hash of its first complete line. */
+function spoolHead(firstLine: string): string {
+  return createHash('sha256').update(firstLine).digest('hex').slice(0, 16)
 }
 
 export const EMPTY_CURSOR: DrainCursor = { lines: 0, bytes: 0 }
@@ -196,14 +228,15 @@ export function parseCursor(raw: string | null | undefined): DrainCursor {
     if (!isRecord(parsed)) return { ...EMPTY_CURSOR }
     const lines = typeof parsed.lines === 'number' && Number.isFinite(parsed.lines) ? Math.max(0, Math.floor(parsed.lines)) : 0
     const bytes = typeof parsed.bytes === 'number' && Number.isFinite(parsed.bytes) ? Math.max(0, Math.floor(parsed.bytes)) : 0
-    return { lines, bytes }
+    const head = typeof parsed.head === 'string' && /^[a-f0-9]{16}$/.test(parsed.head) ? parsed.head : null
+    return head ? { lines, bytes, head } : { lines, bytes }
   } catch {
     return { ...EMPTY_CURSOR }
   }
 }
 
 export function serializeCursor(cursor: DrainCursor): string {
-  return `${JSON.stringify({ lines: cursor.lines, bytes: cursor.bytes })}\n`
+  return `${JSON.stringify({ lines: cursor.lines, bytes: cursor.bytes, ...(cursor.head ? { head: cursor.head } : {}) })}\n`
 }
 
 export interface DrainDecision {
@@ -211,7 +244,7 @@ export interface DrainDecision {
   fresh: string[]
   /** Where to persist the cursor once they are applied. */
   next: DrainCursor
-  /** The file shrank under us: it was rotated or truncated. */
+  /** Another file is under the cursor: it was rotated, truncated or recreated. */
   reset: boolean
 }
 
@@ -227,17 +260,20 @@ export function decideDrain(input: { cursor: DrainCursor; text: string }): Drain
   const text = typeof input.text === 'string' ? input.text : ''
   const held = input.cursor ?? EMPTY_CURSOR
   const size = Buffer.byteLength(text, 'utf8')
-  const reset = size < held.bytes
-  const cursor = reset ? { ...EMPTY_CURSOR } : held
   const parts = text.split('\n')
   // Whether or not the file ends in a newline, the final element is either an
   // empty string or an unfinished line. Neither is drainable.
   const complete = parts.slice(0, -1)
+  const head = complete.length > 0 ? spoolHead(complete[0]!) : ''
+  // A smaller file was rotated or truncated. A file whose first line is not the
+  // one the cursor counted was recreated, and may well be LARGER (header rule 3).
+  const reset = size < held.bytes || Boolean(held.head && head && head !== held.head)
+  const cursor = reset ? { ...EMPTY_CURSOR } : held
   const completeBytes = complete.length === 0 ? 0 : Buffer.byteLength(`${complete.join('\n')}\n`, 'utf8')
   const fresh = complete.length > cursor.lines ? complete.slice(cursor.lines) : []
   return {
     fresh,
-    next: { lines: complete.length, bytes: completeBytes },
+    next: head ? { lines: complete.length, bytes: completeBytes, head } : { lines: complete.length, bytes: completeBytes },
     reset,
   }
 }
@@ -638,12 +674,47 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
     return newest
   }
 
+  /** Folders this intake failed to remove, so the failure is said once and not on every pump. */
+  const stuck = new Set<string>()
+  /**
+   * Remove a session's spool folder and say so, one line per folder: which session, why, how long nothing in it
+   * had been touched, and whether it was the session this daemon is bound to. Every daemon of the OS user sweeps
+   * every folder, so the line is in the log of whichever daemon removed it (Vera, 2026-10-12: her bound session's
+   * folder went during an idle and no log said who removed it, or when).
+   */
+  const removeSession = (dirName: string, reason: string, newest: number | null): void => {
+    const dir = join(root, dirName)
+    const ms = newest === null ? 0 : Math.max(0, now() - newest)
+    const idle = `${Math.floor(ms / 60_000)}m${String(Math.floor((ms % 60_000) / 1000)).padStart(2, '0')}s`
+    const why = `${reason}: nothing in it touched for ${idle}`
+    const ours = bound !== null && safeSessionKey(bound) === dirName
+    const spool = join(dir, SPOOL_FILE_NAME)
+    const spoolAt = fs.statMtime(spool)
+    fs.removeDir(dir)
+    forget(dirName)
+    // Removed when the folder is gone, or when the spool in it now is one the forwarder recreated since (newer).
+    // Anything else left, the very spool or a file the removal could not take, is a removal that did not finish.
+    const left = fs.statMtime(spool)
+    const recreated = left !== null && spoolAt !== null && left > spoolAt
+    if (fs.statMtime(dir) !== null && !recreated) {
+      if (!stuck.has(dirName)) {
+        stuck.add(dirName)
+        log(`hook intake: could not remove the spool of session ${dirName} (${why}); the sweep tries again later`)
+      }
+      return
+    }
+    stuck.delete(dirName)
+    const binding = !ours ? ''
+      : reason === SWEPT_IDLE ? '; this daemon is bound to that session and stays bound'
+        : '; this daemon was bound to that session and is now unbound'
+    log(`hook intake: removed the spool of session ${dirName} (${why})${binding}`)
+  }
+
   const sweepIfIdle = (dirName: string): boolean => {
     const dir = join(root, dirName)
     const newest = newestTouch(dir)
     if (newest === null || now() - newest <= SESSION_SWEEP_MS) return false
-    fs.removeDir(dir)
-    forget(dirName)
+    removeSession(dirName, SWEPT_IDLE, newest)
     return true
   }
 
@@ -686,9 +757,11 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
     const held = cursorFor(dirName)
     const decision = decideDrain({ cursor: held, text: raw })
     if (decision.reset) {
-      log(`hook intake: ${dirName} was rotated or truncated; draining it from the top`)
+      log(`hook intake: ${dirName} was rotated, truncated or recreated; draining it from the top`)
     }
     let ended = false
+    // Is this folder this daemon's own session, or may it yet be (header rule 3)?
+    let own = bound !== null && safeSessionKey(bound) === dirName
     for (const rawLine of decision.fresh) {
       const line = parseSpoolLine(rawLine)
       if (line === null) continue
@@ -725,6 +798,7 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
       })
       if (!verdict.admit) {
         if (verdict.reason === 'unproven') {
+          own = true
           // Hold it: the proof usually lands a line or two later, and throwing
           // the opening of a turn away would cost the card that turn.
           const held2 = pending.get(sessionId) ?? { firstAt: now(), lines: [] }
@@ -742,6 +816,7 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
         }
         continue
       }
+      own = true
       if (verdict.binds) {
         bound = sessionId
         log(`hook intake: bound to session ${sessionId} (proof: ${verdict.proof})`)
@@ -755,15 +830,18 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
       if (event === 'SessionEnd') ended = true
     }
     const next = decision.next
-    if (next.lines !== held.lines || next.bytes !== held.bytes) {
+    // How long the session had been quiet when it ended, read before this daemon's own cursor write touches it.
+    const endedQuietSince = ended ? newestTouch(dir) : null
+    if (next.lines !== held.lines || next.bytes !== held.bytes || next.head !== held.head) {
       cursors.set(dirName, next)
-      fs.writeFile(join(dir, CURSOR_FILE_NAME), serializeCursor(next))
+      // On disk only for its own session (header rule 3). A session it refused
+      // is another daemon's: its cursor stays in memory.
+      if (own) fs.writeFile(join(dir, CURSOR_FILE_NAME), serializeCursor(next))
     }
     if (ended) {
       // The session said goodbye and we consumed it. Nothing will append here
       // again, and leaving it would let a future daemon re-drain a dead session.
-      fs.removeDir(dir)
-      forget(dirName)
+      removeSession(dirName, 'its SessionEnd was consumed', endedQuietSince)
       if (bound !== null && safeSessionKey(bound) === dirName) bound = null
       return
     }

@@ -218,7 +218,13 @@ while {$hoai_outcome eq ""} {
     -re "channels(.*?)${hoai_footer}"                 { hoai_answer channels $expect_out(1,string) "using"       "Exit" }
     -re "Resuming(.*?)${hoai_footer}"                 { hoai_answer resume   $expect_out(1,string) "recommended" "as-is" }
     -re "(.*)${hoai_footer}"                          { hoai_unrecognised $expect_out(1,string) }
-    eof                                               { set hoai_outcome "exited-during-startup" }
+    eof {
+      set hoai_outcome "exited-during-startup"
+      # What claude printed before it went (an `error: unknown option` from a CLI too old
+      # for the launch flag used to vanish with the pane, board row 84296679): the last
+      # words of its output, in the status line and in hoai.err.
+      catch { set hoai_screen [hoai_plain $expect_out(buffer)] }
+    }
     timeout                                           { set hoai_outcome "no-live-marker" }
   }
 }

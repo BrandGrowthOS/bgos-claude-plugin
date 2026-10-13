@@ -579,3 +579,62 @@ test('a paired folder whose plugin is installed ONLY under the custom CLAUDE_CON
   const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
   assert.ok(service.includes(custom), 'the service looks in the config dir the proof looked in')
 })
+
+// -- which claude gets baked (board row 84296679, kc-server, 2026-10-12) ---------------------------
+
+const FLAG = '--dangerously-load-development-channels'
+
+/** Replace the shim `claude` with a stand-in that answers the bare launch flag like a real CLI. */
+function writeClaude(path: string, version: string, knowsFlag: boolean) {
+  mkdirSync(dirname(path), { recursive: true })
+  const flagLine = knowsFlag
+    ? `echo "error: option '${FLAG} <servers...>' argument missing" >&2; exit 1`
+    : `echo "error: unknown option '${FLAG}'" >&2; exit 1`
+  writeFileSync(path, `#!/bin/sh\ncase "$1" in\n  --version) echo "${version} (Claude Code)" ;;\n  *) ${flagLine} ;;\nesac\n`)
+  chmodSync(path, 0o755)
+}
+
+test('a stale claude first on PATH is stepped over and named, and the one that knows the launch flag is baked FIRST on the service PATH', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine({ realNode: true })
+  const workspace = pair(m, '874')
+  writeClaude(join(m.home, 'shims', 'claude'), '2.1.22', false)
+  const good = join(m.home, 'opt', 'bin')
+  writeClaude(join(good, 'claude'), '2.1.296', true)
+  const result = m.run(['--assistant', '874', '--dir', workspace, '--always-on'], {
+    PATH: `${join(m.home, 'shims')}:${good}:/usr/bin:/bin:/usr/sbin:/sbin`,
+  })
+  assert.equal(result.status, 0, result.out)
+  assert.match(result.out, /skipping .*shims\/claude 2\.1\.22 does not know --dangerously-load-development-channels/)
+  assert.match(result.out, new RegExp(`claude: ${good.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/claude \\(2\\.1\\.296\\)`))
+  const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
+  // launchd: <key>PATH</key><string>...</string>; systemd: Environment=PATH=... (or "PATH=...")
+  const pathValue = (/<key>PATH<\/key>\s*<string>([^<]+)<\/string>/.exec(service) ?? /PATH=([^\n"]+)/.exec(service))?.[1] ?? ''
+  assert.ok(pathValue.startsWith(`${good}:`), `the chosen claude's directory leads the baked PATH, got ${pathValue}`)
+  const entries = pathValue.split(':')
+  assert.equal(new Set(entries).size, entries.length, 'each directory is listed once')
+})
+
+test('when EVERY claude is stale the install is refused by name and leaves nothing behind', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine({ realNode: true })
+  const workspace = pair(m, '874')
+  writeClaude(join(m.home, 'shims', 'claude'), '2.1.22', false)
+  const result = m.run(['--assistant', '874', '--dir', workspace, '--always-on'])
+  assert.notEqual(result.status, 0, result.out)
+  assert.match(result.out, /claude:none-supports-flag every claude found \(.*2\.1\.22\) is too old/)
+  assert.deepEqual(m.serviceFiles(), [], 'no service file may be written')
+  assert.equal(existsSync(join(m.home, '.bgos-agent', '874', 'run.sh')), false, 'and no run.sh')
+})
+
+test('run.sh logs which claude the launch found and its version, every launch', SLOW, (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  const workspace = pair(m, '874')
+  const result = m.run(['--assistant', '874', '--dir', workspace, '--always-on'])
+  assert.equal(result.status, 0, result.out)
+  const runSh = readFileSync(join(m.home, '.bgos-agent', '874', 'run.sh'), 'utf8')
+  assert.match(runSh, /claude_at="\$\(command -v claude/)
+  assert.match(runSh, /echo "\[\$\(ts\)\] claude: \$claude_at \$\("\$claude_at" --version/)
+  assert.match(runSh, /claude: not found on the service PATH/)
+})

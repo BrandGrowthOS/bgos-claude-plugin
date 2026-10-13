@@ -1381,7 +1381,21 @@ export function buildGateAutoAcceptExpect({ claudePath, args, gateBlock = readGa
       // Kill the spawned claude on SIGTERM so a supervisor kill never orphans it.
       'trap {catch {exec kill [exp_pid]}; exit 143} SIGTERM',
       gateBlock,
+      // A claude that exited during startup: its exit code and its last words go to hoai.err
+      // (the file run.sh reads back and prints) and to the status line, so a CLI too old for
+      // the launch flag says so instead of crash looping in silence (board row 84296679).
+      'set hoai_rc ""',
+      'if {$hoai_outcome eq "exited-during-startup"} {',
+      '  set hoai_rc "?"',
+      '  catch { set hoai_w [wait]; set hoai_rc [lindex $hoai_w 3] }',
+      '  catch {',
+      '    set hoai_ef [open "$hoai_statedir/hoai.err" a]',
+      '    puts $hoai_ef "[clock format [clock seconds] -format {%Y-%m-%d %H:%M:%S}] claude exited during startup (rc=$hoai_rc): $hoai_screen"',
+      '    close $hoai_ef',
+      '  }',
+      '}',
       'set hoai_line "outcome=$hoai_outcome answered=\\[$hoai_answered\\]"',
+      'if {$hoai_rc ne ""} { append hoai_line " rc=$hoai_rc" }',
       'if {$hoai_screen ne ""} { append hoai_line " screen=\\"$hoai_screen\\"" }',
       // Static text from this launcher, brace-quoted: compact=on | compact=off reason=no-tmux.
       `append hoai_line { ${String(supervised.compact ?? '').replace(/[{}\\]/g, '')}}`,

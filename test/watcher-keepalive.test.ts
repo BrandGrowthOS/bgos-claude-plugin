@@ -1890,3 +1890,195 @@ test('an upgrade with no known folder is reported, and spends neither an attempt
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'upgrade_pending', 'no_known_folder'], ['912', 'restarted', 'service']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(HOME))!).agents['7'].attempts, undefined)
 })
+
+// -- a failed agent stays failed until something proves it is up (board row 84296679, fix 4) ----------------------
+
+const NO_CLAUDE_PS = [psLine(1, 0, '/sbin/launchd')].join('\n')
+
+function seedFailed(fs: MemoryFs, id: string, reasonText: string) {
+  fs.writeFile(
+    keepAliveStatePath(HOME),
+    JSON.stringify({
+      schemaVersion: 1,
+      enabled: true,
+      consentSource: 'live',
+      agents: { [id]: { state: 'failed', reason: reasonText, since: new Date(T0 - 60_000).toISOString(), attempts: 1, lastRestartAt: new Date(T0 - 60_000).toISOString() } },
+    }),
+  )
+}
+
+test('fix 4 (kc-server 871, 10:42:33 failed then 10:42:59 supervised): the sweep AFTER a failed verify keeps the agent failed while nothing runs', async () => {
+  // Up to date (nothing pending), its unit file present, its launch crash looping: the old code
+  // classified it by the unit file alone and wrote `supervised canonical`.
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { installedVersion: '0.62.0' })
+  seedFailed(fs, '912', 'agent_deaf_after_restart')
+  const rec = recorder({ ps: NO_CLAUDE_PS })
+  const clock = fakeClock()
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
+  assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'failed', 'agent_deaf_after_restart']])
+})
+
+test('fix 4: a launch that is itself failing is failed with no earlier record, and a live daemon ends the hold', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: null }], { installedVersion: '0.62.0' })
+  const statusPath = `${HOME}/.bgos-agent/912/launch-status`
+  fs.writeFile(statusPath, "2026-10-12 10:41:03 outcome=exited-during-startup answered=[] screen=\"error: unknown option\" rc=1\n")
+  fs.writeFile(`${HOME}/.bgos-agent/912/failcount`, '9\n')
+  const clock = fakeClock()
+  fs.touch(statusPath, clock.now() - 20_000)
+  const looping = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: NO_CLAUDE_PS }), clock).ctx as any)
+  assert.deepEqual(looping.agents.map((a: any) => [a.state, a.reason]), [['failed', 'launch_failing:exited-during-startup']])
+
+  // The daemon comes up and publishes a fresh state: proof, so it is supervised again.
+  clock.advance(60_000)
+  fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now(), { runningVersion: '0.62.1' }))
+  const up = await runKeepAliveSweep(ctxFor(fs, recorder({ ps: IDLE_PS }), clock).ctx as any)
+  assert.deepEqual(up.agents.map((a: any) => a.state), ['supervised'])
+})
+
+// -- A fresh start is never restarted again (Mark, agent 909, 2026-10-12 17:17:10) ----------------
+//
+// A marker restart leaves a gap: the old daemon removes agent-state.json on its
+// clean stop and the new one publishes only once it holds the pairing lock, so a
+// sweep in that gap judges the agent by time ('started_before_install'). The
+// launcher had just started claude, yet nothing the sweep counted as activity
+// said so: a hand restart was followed 9 s later by a '{}' marker and a second,
+// unrequested restart.
+
+function freshStartMachine(ageMs: number, landedAgoMs: number) {
+  const startedAt = T0 - ageMs
+  return windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    // hoai-core rewrites launch.json right before the claude it starts.
+    [`${WSTATE}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: WCWD, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: new Date(startedAt - 200).toISOString(), pid: 777 })),
+    // The new daemon holds the lock; it has not published agent-state.json yet.
+    [`${WHOME}\\.bgos-agent\\credentials-912.json.lock`]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 1000 }),
+    [`${WHOME}\\.claude\\plugins\\installed_plugins.json`]: JSON.stringify({ plugins: { 'hoai@hoai': [{ scope: 'user', version: '0.62.1', installPath: WROOT, lastUpdated: new Date(T0 - landedAgoMs).toISOString() }] } }),
+  })
+}
+
+function freshStartListing(ageMs: number) {
+  return JSON.stringify([
+    { ProcessId: 777, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: `"C:\\Program Files\\nodejs\\node.exe" ${WROOT}\\bin\\hoai-core.mjs --keep-alive` },
+    { ProcessId: 5912, ParentProcessId: 777, CreationDate: T0 - ageMs, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+    { ProcessId: 4912, ParentProcessId: 5912, CreationDate: T0 - ageMs + 500, CommandLine: 'bun C:\\x\\server.ts' },
+  ])
+}
+
+test('win32: a session the launcher started 9 s ago is never restarted by the sweep, whatever the time rule says (the relaunch gap)', async () => {
+  const alive = (pid: number) => [777, 4912, 5912].includes(pid)
+  const fresh = freshStartMachine(9_000, 5_000)
+  const report = await runKeepAliveSweep(windowsCtx(fresh, recorder({ win32Ps: freshStartListing(9_000) }), { pidAlive: alive }) as any)
+  assert.equal(fresh.files.has(`${WSTATE}\\restart-requested.json`), false, 'a fresh start must never request another restart')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'fresh_start']])
+  // Control: the same session two hours old (and the install landed after it) restarts as before.
+  const old = freshStartMachine(120 * MIN, 30 * MIN)
+  const clock = fakeClock()
+  clock.onSleep((_ms, at) => {
+    if (old.files.has(`${WSTATE}\\probe-requested.json`)) old.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+  })
+  await runKeepAliveSweep(windowsCtx(old, recorder({ win32Ps: freshStartListing(120 * MIN) }), { pidAlive: alive, now: clock.now, sleep: clock.sleep }) as any)
+  assert.equal(old.files.get(`${WSTATE}\\restart-requested.json`), '{}')
+})
+
+test('fresh start (agent 909, 2026-10-12): a restart judged on the session before a relaunch is never written onto the session after it', async () => {
+  const statePath = 'C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json'
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    // The OLD daemon's fresh state: an update is pending and the session has been quiet an hour.
+    [statePath]: stateBody('912', T0, { claudePid: null }),
+  })
+  const clock = fakeClock()
+  const alive = new Set([777, 4912, 5912])
+  const rec = recorder({ win32Ps: winListing(false) })
+  let relaunched = false
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'powershell.exe' && args.includes('-Command') && !relaunched) {
+      // While the sweep's listing runs, a person's marker restarts claude: the
+      // old daemon removes its state, the launcher rewrites launch.json and
+      // starts a new claude, whose daemon takes the lock and publishes.
+      relaunched = true
+      for (const pid of [4912, 5912]) alive.delete(pid)
+      for (const pid of [4913, 6912]) alive.add(pid)
+      fs.rm(statePath)
+      fs.writeFile(`${WSTATE}\\launch.json`, JSON.stringify(buildLaunchRecipe({ assistantId: '912', cwd: WCWD, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: new Date(T0 + 1_158).toISOString(), pid: 777 })))
+      fs.writeFile(`${WHOME}\\.bgos-agent\\credentials-912.json.lock`, JSON.stringify({ pid: 4913, heartbeatAt: T0 + 2_000 }))
+      fs.writeFile(statePath, stateBody('912', T0 + 9_400, { pid: 4913, claudePid: null, pendingRestartVersion: null, lastActivityAt: new Date(T0 + 1_500).toISOString() }))
+      clock.advance(9_400)
+      return {
+        code: 0,
+        stdout: JSON.stringify([
+          { ProcessId: 4100, ParentProcessId: 1, CreationDate: T0 - 120 * MIN, CommandLine: 'C:\\Windows\\System32\\cmd.exe' },
+          { ProcessId: 6912, ParentProcessId: 4100, CreationDate: T0 + 1_100, CommandLine: '"C:\\Users\\kc\\.local\\bin\\claude.exe" --resume 8c1f0000-0000-4000-8000-000000000001' },
+          { ProcessId: 6001, ParentProcessId: 6912, CreationDate: T0 + 1_200, CommandLine: 'node C:\\x\\bin\\bgos-launch.mjs C:\\x\\server.ts' },
+          { ProcessId: 4913, ParentProcessId: 6001, CreationDate: T0 + 1_300, CommandLine: 'bun C:\\x\\server.ts' },
+        ]),
+        stderr: '',
+        error: null,
+        timedOut: false,
+      }
+    }
+    return rec.exec(file, args, o)
+  }
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { exec, now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => alive.has(pid) }) as any)
+  assert.ok(relaunched, 'the relaunch happened during the listing')
+  assert.equal(fs.files.has(`${WSTATE}\\restart-requested.json`), false, 'the judgement was about the session before the relaunch; it is never written onto the new one')
+  assert.equal(fs.files.has(`${WSTATE}\\probe-requested.json`), false)
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'fresh_start']])
+})
+
+test('a restart marker already on disk (a person\'s, or one the takeover still owes) is never rewritten and spends nothing', async () => {
+  const mark = '{"reason":"marker proof","requestedBy":"mark"}' + ' '.repeat(22)
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    [`${WSTATE}\\restart-requested.json`]: mark,
+  })
+  // Written 20 s ago: a pending request the launcher or the takeover is about to act on.
+  fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 20_000)
+  const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
+  assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), mark, 'byte for byte')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'restart_already_requested']])
+})
+
+test('a marker stranded longer than anyone takes to act on it does not block the restart: the sweep rewrites it', async () => {
+  const fs = windowsMachine({
+    [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n",
+    [`${WSTATE}\\supervisor-generation`]: '2\n',
+    [`${WSTATE}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
+    ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0, { claudePid: null }),
+    [`${WSTATE}\\restart-requested.json`]: '{"left":"by an exhausted launcher"}',
+  })
+  fs.touch(`${WSTATE}\\restart-requested.json`, T0 - 10 * MIN)
+  const clock = fakeClock()
+  clock.onSleep((_ms, at) => {
+    if (fs.files.has(`${WSTATE}\\probe-requested.json`)) fs.writeFile('C:\\Users\\kc\\.bgos-plugin-state\\912\\channel-live.json', JSON.stringify({ firstLiveAt: 'x', lastLiveAt: new Date(at).toISOString() }))
+  })
+  const report = await runKeepAliveSweep(windowsCtx(fs, recorder({ win32Ps: winListing(false) }), { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => [777, 4912, 5912].includes(pid) }) as any)
+  assert.equal(fs.files.get(`${WSTATE}\\restart-requested.json`), '{}')
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+})
+
+test('off the marker tier a marker on disk never blocks the restart (a canonical service restarts through the service)', async () => {
+  const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
+  fs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  fs.writeFile(`${HOME}/.bgos-agent/912/restart-requested.json`, '{"left":"by an exhausted launcher"}')
+  const ps = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(2900, 1, `tmux -L hoai-912 new-session -d -s hoai-912 -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ].join('\n')
+  const rec = recorder({ ps })
+  const clock = fakeClock()
+  answerProbes(fs, clock, ['912'])
+  const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+})

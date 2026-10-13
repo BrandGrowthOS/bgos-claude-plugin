@@ -1031,3 +1031,20 @@ test('listAgents: rows carry the verified keepalive, the supervisor generation (
   assert.equal(byId['5']!.supervisorGeneration, 2)
   assert.equal(byId['5']!.launcherLive, true, 'a v2 supervisor runs hoai, whose supervisor.json is live')
 })
+
+test('listAgents includeIds: an agent with no credentials-<id>.json (its key lives in .mcp.json) gets a row only when asked for; the default is unchanged', () => {
+  const files = {
+    '/home/kc/.bgos-agent/credentials-7.json': '{"pairingToken":"secret"}',
+    '/home/kc/.bgos-agent/909/launch.json': recipeFor('909', '/home/kc/hoai-agents/vera'),
+    '/home/kc/.bgos-agent/909/supervisor.json': supervisorFileBody(4242, 'x'),
+    '/home/kc/hoai-agents/vera/.bgos-agent-id': '909\n',
+  }
+  const fs = memFs(files, ['/home/kc/hoai-agents/vera'])
+  const exec = () => ({ code: 1, stdout: '' })
+  const plain = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => true, execSync: exec })
+  assert.deepEqual(plain.map((a) => a.assistantId), ['7'])
+  const asked = listAgents({ home: HOME, env: {}, platform: 'linux', fs, pidAlive: () => true, execSync: exec, includeIds: ['909', '../x', ''] })
+  assert.deepEqual(asked.map((a) => a.assistantId), ['7', '909'])
+  assert.equal(asked[1]!.supervisor, 'launcher-live')
+  assert.deepEqual(asked[0], plain[0], 'an asked-for id changes nothing about the others')
+})

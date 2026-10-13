@@ -222,3 +222,28 @@ test('logs shows hoai\'s own stderr from the running launch (hoai.err): in tmux 
   writeFileSync(join(m.state, 'hoai.err'), '')
   assert.doesNotMatch(m.run(['logs', '--assistant', '42']).out, /hoai\.err/)
 })
+
+test('status names a crash loop: an installed, loaded unit is not an agent that is up (board row 84296679)', (t) => {
+  if (!ready(t)) return
+  const m = machine()
+  t.after(m.cleanup)
+  mkdirSync(m.state, { recursive: true })
+  writeFileSync(join(m.state, 'supervisor-generation'), '2\n')
+  // kc-server: claude 2.1.22 exited rc=1 at once on every launch, about 420 times.
+  writeFileSync(
+    join(m.state, 'launch-status'),
+    "2026-10-12 10:41:03 outcome=exited-during-startup answered=[] screen=\"error: unknown option '--dangerously-load-development-channels'\" rc=1\n",
+  )
+  writeFileSync(join(m.state, 'failcount'), '12\n')
+  const looping = m.run(['status', '--assistant', '42'])
+  assert.match(looping.out, /NOT RUNNING HEALTHY: the last launch did not come up \(12 consecutive fast fail\(s\)\).*unknown option/)
+
+  // Three fast fails with an outcome this guard does not know is still a loop.
+  writeFileSync(join(m.state, 'launch-status'), '2026-10-12 10:41:03 outcome=starting\n')
+  assert.match(m.run(['status', '--assistant', '42']).out, /NOT RUNNING HEALTHY: 12 consecutive fast fails, this agent is crash looping/)
+
+  // A healthy launch says nothing of the kind.
+  writeFileSync(join(m.state, 'launch-status'), '2026-10-12 10:41:03 outcome=live answered=[channels] compact=on\n')
+  writeFileSync(join(m.state, 'failcount'), '0\n')
+  assert.doesNotMatch(m.run(['status', '--assistant', '42']).out, /NOT RUNNING HEALTHY/)
+})

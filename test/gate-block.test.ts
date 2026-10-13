@@ -166,6 +166,8 @@ const GATES = {
   'trust-reworded':   { head: 'Quick safety check: do you vouch for this place?', opts: ['Nope', 'Sure thing'], want: -1 },
 }
 if (mode === 'dies') process.exit(0)
+// a claude too old for the launch flag: it prints this and exits 1 at once (board row 84296679)
+if (mode === 'rejects-flag') { process.stdout.write("error: unknown option '--dangerously-load-development-channels'\\r\\n"); process.exit(1) }
 const LIVE = '\\r\\n\\x1b[3G\\x1b[6Gbypass\\x1b[13Gpermissions\\x1b[25Gon\\r\\n'
 const gate = GATES[mode]
 let sel = 0, downs = 0, got = Buffer.alloc(0)
@@ -346,4 +348,11 @@ test('behaviour: a claude that exits during startup is named, and a signed-out T
   assert.equal(died.outcome, 'exited-during-startup')
   assert.equal(signedOut.outcome, 'live-but-not-signed-in')
   assert.equal(signedOut.keys, NOTHING)
+})
+
+test('behaviour: a claude that rejects the launch flag leaves its own words in the status, not a silent exit (board row 84296679)', SLOW, async () => {
+  if (!expectBin) return requireExpect()
+  const rejected = await runBlock('rejects-flag', { recordsKeys: false })
+  assert.equal(rejected.outcome, 'exited-during-startup')
+  assert.match(rejected.screen, /unknown option '--dangerously-load-development-channels'/)
 })
