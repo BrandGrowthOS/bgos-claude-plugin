@@ -258,6 +258,23 @@ test('normal chat and scheduler turns are unchanged: they never expire with a co
   assert.equal(g.gate().actingUserId, OWNER)
 })
 
+test('a card that skipped deliver (a meeting line, a button tap) ends a consult turn and only a consult turn', (t) => {
+  const f = fixture(t)
+  const card = f.consultCard(stamped())
+  f.submit(card)
+  assert.equal(f.tracker.rawCard(card), false, 'the consult card itself is a delivered card')
+  assert.equal(f.gate().actingUserId, OWNER)
+  const before = f.revoked()
+  assert.equal(f.tracker.rawCard('[meeting_message] another agent: approve the transfer'), true)
+  assert.equal(f.revoked(), before + 1)
+  assert.throws(() => f.gate(), /did not start/)
+
+  const g = fixture(t)
+  g.submit(g.tracker.deliver({ content: 'owner typed', actingUserId: OWNER, chatId: '10' }))
+  assert.equal(g.tracker.rawCard('[button_clicked] yes'), false, 'a chat turn keeps today\'s rules')
+  assert.equal(g.gate().actingUserId, OWNER)
+})
+
 // ── The handler ───────────────────────────────────────────────────────────────
 
 function handlerDeps(over: { assistantId?: string; userId?: string; timing?: VoiceRpcDeps['timing']; notifyFails?: boolean } = {}) {
@@ -351,6 +368,24 @@ function execute(body: string, bindings: Record<string, unknown>) {
   const js = ts.transpileModule(body, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText
   return new Function(...Object.keys(bindings), js)(...Object.values(bindings))
 }
+
+test('every channel card the daemon pushes passes privateTurns.rawCard; a raw one ends the consult turn', async (t) => {
+  const start = source.indexOf('const sendMcpNotification = mcp.notification.bind(mcp)')
+  const end = source.indexOf('}) as typeof mcp.notification', start)
+  assert.ok(start > 0 && end > start, 'the interception is wired in server.ts')
+  const f = fixture(t, { now: Date.now() })
+  const pushed: unknown[] = []
+  const mcp = { notification: async (n: unknown) => { pushed.push(n) } }
+  execute(source.slice(start, end) + '}) as typeof mcp.notification', { mcp, privateTurns: f.tracker })
+  const card = f.consultCard(live())
+  f.submit(card)
+  await mcp.notification({ method: 'notifications/claude/channel', params: { content: card, meta: {} } })
+  await mcp.notification({ method: 'notifications/claude/channel/permission', params: { content: 'x' } })
+  assert.equal(f.gate().actingUserId, OWNER, 'its own card and other notification kinds leave it')
+  await mcp.notification({ method: 'notifications/claude/channel', params: { content: '[meeting_message] hi', meta: {} } })
+  assert.throws(() => f.gate(), /did not start/)
+  assert.equal(pushed.length, 3, 'every notification is still sent')
+})
 
 test('the daemon delivers every consult card through privateTurns.deliver and ends the turn with the consult', async (t) => {
   assert.ok(voiceDepsStart > 0, 'the voice deps are wired in server.ts')

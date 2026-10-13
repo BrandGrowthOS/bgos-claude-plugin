@@ -8622,6 +8622,16 @@ const turnChat = createTurnChatTracker()
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
 const privateTurns = createPrivateTurnTracker({ onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
+// Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
+// dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
+// alone. Chat and scheduler turns keep today's rules (privateTurns.rawCard).
+const sendMcpNotification = mcp.notification.bind(mcp)
+mcp.notification = ((notification: Parameters<typeof mcp.notification>[0]) => {
+  if (notification?.method === 'notifications/claude/channel') {
+    privateTurns.rawCard(String((notification.params as { content?: unknown } | undefined)?.content ?? ''))
+  }
+  return sendMcpNotification(notification)
+}) as typeof mcp.notification
 function publishBrowserPrivateTurn(): void {
   if (!lockHeld) return
   try {
