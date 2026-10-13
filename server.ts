@@ -3477,12 +3477,16 @@ let floorMarkerKeys: string[] = []
  * Say to the floor hook that a HOAI daemon is attached to this project folder,
  * so a listed action here asks (bin/hoai-floor-hook.mjs asks nowhere else).
  * Written while this daemon holds its pairing lock, taken down when it stands
- * down or exits. Never throws.
+ * down or exits. Never throws. The entry names the folder this daemon's session
+ * transcripts live in, and the folder a relative transcript path is read
+ * against (the intake's own two), so the private turn hook writes its marker
+ * only under its own daemon's key, never another agent's (lib/floor-state.mjs
+ * findOwnAttachedKey).
  */
 function markFloorAttachedIfHolder(): void {
   if (!lockHeld) return
   try {
-    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS })
+    floorMarkerKeys = markFloorAttached({ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder.projectDirectory, baseDir: LAUNCH_CWD })
     if (floorMarkerKeys.length === 0) {
       log('floor: could not write the attached marker; the floor hook stays silent in this session')
     }

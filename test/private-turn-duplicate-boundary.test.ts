@@ -94,6 +94,27 @@ function wakeFrame(chatId: number, actingUserId = OWNER, source = 'scheduler') {
     sessionHandle: `sh_${messageId}`,
   }
 }
+/**
+ * The n8n Agent Scheduler's reminder (Vera, 2026-10-12 22:51Z; Mark's step 0, 2026-10-13): a system event from the
+ * scheduler in Vera's own chat with her owner, but its payload is the reminder's own fields and names no acting user
+ * (a native wake's carries actingUserId, fireId and ack). The sender block still says owner.
+ */
+function n8nReminderFrame(chatId: number) {
+  return {
+    chatId, messageId: ++messageId, userId: OWNER,
+    text: `${SYSTEM_MARKER}\nReminder\nList the boards you can reach with boards_query and say what is on them.`,
+    files: [], messageType: 'event', senderType: 'system',
+    eventMeta: {
+      source: 'scheduler', title: 'Reminder', peek: 'List the boards you can reach with boards_query and say what is on them.',
+      payload: {
+        scheduled_action_id: 'a0da1344-0000-4000-8000-000000000000', agent_id: null, action_type: 'reminder', recurrence: null,
+        context: { bgos_chat_id: chatId, bgos_assistant_id: 909 },
+      },
+    },
+    sender: { userId: OWNER, displayName: 'Owner', relationship: 'owner' },
+    sessionHandle: `sh_${messageId}`,
+  }
+}
 function ownerFrame(chatId: number, text = 'Please list the boards you can reach and tell me what is on them.') {
   return {
     chatId, messageId: ++messageId, userId: OWNER, text, files: [], messageType: 'text', senderType: 'user',
@@ -147,10 +168,13 @@ function fleetHost(t: any) {
     const logs: string[] = []
     /** server.ts logs each repeat through privateRepeatLine (onRepeat). */
     const repeats: string[] = []
+    /** server.ts onHookPayload logs what begin() decided for each prompt (privateBeginLine). */
+    const begins: string[] = []
 
     /** One daemon life: a fresh tracker, turn chat and intake (server.ts state is per process). */
     function daemon(provenTranscript: () => string | null) {
-      markFloorAttached({ root, folders })
+      // server.ts markFloorAttachedIfHolder: the entry names the folder this daemon's session transcripts live in.
+      markFloorAttached({ root, folders, projectDir })
       const tracker = createPrivateTurnTracker({ onRepeat: (repeat) => repeats.push(privateRepeatLine(repeat)) })
       const turnChat = createTurnChatTracker()
       const publish = () => publishPrivateContext({
@@ -164,7 +188,9 @@ function fleetHost(t: any) {
           const hookSessionId = String(payload.session_id ?? '').trim()
           if (payload.hook_event_name === 'SessionEnd') tracker.end()
           if (payload.hook_event_name === 'UserPromptSubmit') {
-            tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+            const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
+            const matched = turnChat.matchDelivered(String(payload.prompt ?? ''))
+            if (began !== 'repeat' && (began !== 'no-token' || matched !== null)) begins.push(privateBeginLineOf(began, hookSessionId))
           }
           if (payload.hook_event_name === 'Stop') tracker.end()
           publish()
@@ -183,7 +209,7 @@ function fleetHost(t: any) {
     let marker: { path: string; marker: { turnId: string } } | null = null
 
     const a = {
-      name, id, chatId, folder, root, markerPaths, logs, repeats,
+      name, id, chatId, folder, root, markerPaths, logs, repeats, begins,
       get session() { return session },
       get tracker() { return life.tracker },
       get intake() { return life.intake },
@@ -777,4 +803,70 @@ test('a revoked turn and an ended turn are told apart, and the revoke is reporte
 test('the begin line says admitted, not usable, and a missing token has words', () => {
   assert.match(privateBeginLineOf('opened', 's'), /admitted its sender; the turn is usable once its marker matches/)
   assert.match(privateBeginLineOf('no-token', 's'), /opens no private turn: it carries no delivery token/)
+})
+
+test('a scheduler delivery without actingUserId (the n8n reminder) opens no private turn, and the log line says what it lacks', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const reminder = n8nReminderFrame(vera.chatId)
+  // The actor comes from eventMeta.payload.actingUserId alone: the sender block naming the owner is not one.
+  assert.equal(privateActor({ senderType: 'system', senderUserId: privateSenderUserId(reminder), eventMeta: reminder.eventMeta }), null)
+  vera.deliver(reminder)
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'boards_query refuses: nobody verified sent the reminder')
+  assert.deepEqual(vera.begins, [
+    `private turn: the prompt in session ${vera.session} opens no private turn: its delivery names no verified sender: ` +
+      'neither a person\'s own message with their user_ id nor a scheduler event carrying eventMeta.payload.actingUserId',
+  ])
+  assert.match(explainOf(vera.tracker, vera.markerPaths), new RegExp(`no private turn is open \\(the last prompt, in session ${vera.session}: no-actor\\)`))
+  // Control: the same reminder with the owner stamped as its acting user opens the owner's turn, fireId or not.
+  const stamped = n8nReminderFrame(vera.chatId)
+  ;(stamped.eventMeta.payload as Record<string, unknown>).actingUserId = OWNER
+  vera.deliver(stamped)
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  assert.match(vera.begins.at(-1)!, /admitted its sender/)
+  // Control: the native wake opens it too.
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  vera.deliver(wakeFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+})
+
+test('what a scheduler card needs for a private turn: actingUserId, and nothing else the native wake carries', (t) => {
+  // Vera, 2026-10-13: the native wake passed (02:30Z) carrying actingUserId, scheduledTaskId and fireId; the n8n
+  // reminder (02:40Z) carried none of them and was refused. Which ones does begin() need?
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const turn = (frame: Record<string, any>) => {
+    vera.deliver(frame)
+    vera.pump()
+    const actor = vera.privateCall()?.actingUserId ?? null
+    vera.hook('Stop', { stop_hook_active: false })
+    vera.pump()
+    return actor
+  }
+  const withPayload = (frame: Record<string, any>, payload: Record<string, unknown>) => ({ ...frame, eventMeta: { ...frame.eventMeta, payload } })
+  const native = wakeFrame(vera.chatId)
+  const { actingUserId, ...nativeWithoutActor } = native.eventMeta.payload
+  assert.equal(actingUserId, OWNER)
+  // The native wake as it arrives: the owner's turn.
+  assert.equal(turn(native), OWNER)
+  // The same wake without actingUserId, scheduledTaskId, fireId, ack and dueAt kept: no turn.
+  assert.equal(turn(withPayload(wakeFrame(vera.chatId), nativeWithoutActor)), null)
+  // The n8n reminder with ONLY actingUserId added: the owner's turn, no scheduledTaskId, fireId or ack needed.
+  const reminder = n8nReminderFrame(vera.chatId)
+  assert.equal(turn(withPayload(reminder, { ...reminder.eventMeta.payload, actingUserId: OWNER })), OWNER)
+  // actingUserId alone, nothing else in the payload: still the owner's turn.
+  assert.equal(turn(withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER })), OWNER)
+  // Spelled or shaped otherwise it names nobody: snake case, a numeric id, another prefix, a non string.
+  for (const payload of [{ acting_user_id: OWNER }, { actingUserId: '909' }, { actingUserId: 'usr_owner909' }, { actingUserId: [OWNER] }]) {
+    assert.equal(turn(withPayload(n8nReminderFrame(vera.chatId), payload)), null, JSON.stringify(payload))
+  }
+  // Another person's id opens THEIR turn, never the owner's: each private call then names them to the backend.
+  assert.equal(turn(withPayload(n8nReminderFrame(vera.chatId), { actingUserId: 'user_colleague7' })), 'user_colleague7')
+  // And the card must say it comes from the scheduler, as a system message.
+  assert.equal(turn({ ...withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER }), eventMeta: { source: 'n8n', payload: { actingUserId: OWNER } } }), null)
+  assert.equal(turn({ ...withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER }), senderType: 'agent', agentOrigin: { sourceAssistantId: 888, sourceName: 'Mark', targetAssistantId: 909 } }), null)
 })

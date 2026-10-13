@@ -99,6 +99,8 @@ export const LEGACY_CURSOR_FILE_NAME = 'cursor.json'
 export const SPOOL_MAX_BYTES = 2 * 1024 * 1024
 /** A session directory nothing has touched for this long is not coming back. */
 export const SESSION_SWEEP_MS = 30 * 60_000
+/** The reason a removal line gives for the idle sweep. */
+const SWEPT_IDLE = 'idle sweep'
 /** How long an unproven session's events are held before they are dropped. */
 export const UNBOUND_BUFFER_MS = 60_000
 /** How many lines one unproven session may hold. A turn is far below this. */
@@ -672,12 +674,47 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
     return newest
   }
 
+  /** Folders this intake failed to remove, so the failure is said once and not on every pump. */
+  const stuck = new Set<string>()
+  /**
+   * Remove a session's spool folder and say so, one line per folder: which session, why, how long nothing in it
+   * had been touched, and whether it was the session this daemon is bound to. Every daemon of the OS user sweeps
+   * every folder, so the line is in the log of whichever daemon removed it (Vera, 2026-10-12: her bound session's
+   * folder went during an idle and no log said who removed it, or when).
+   */
+  const removeSession = (dirName: string, reason: string, newest: number | null): void => {
+    const dir = join(root, dirName)
+    const ms = newest === null ? 0 : Math.max(0, now() - newest)
+    const idle = `${Math.floor(ms / 60_000)}m${String(Math.floor((ms % 60_000) / 1000)).padStart(2, '0')}s`
+    const why = `${reason}: nothing in it touched for ${idle}`
+    const ours = bound !== null && safeSessionKey(bound) === dirName
+    const spool = join(dir, SPOOL_FILE_NAME)
+    const spoolAt = fs.statMtime(spool)
+    fs.removeDir(dir)
+    forget(dirName)
+    // Removed when the folder is gone, or when the spool in it now is one the forwarder recreated since (newer).
+    // Anything else left, the very spool or a file the removal could not take, is a removal that did not finish.
+    const left = fs.statMtime(spool)
+    const recreated = left !== null && spoolAt !== null && left > spoolAt
+    if (fs.statMtime(dir) !== null && !recreated) {
+      if (!stuck.has(dirName)) {
+        stuck.add(dirName)
+        log(`hook intake: could not remove the spool of session ${dirName} (${why}); the sweep tries again later`)
+      }
+      return
+    }
+    stuck.delete(dirName)
+    const binding = !ours ? ''
+      : reason === SWEPT_IDLE ? '; this daemon is bound to that session and stays bound'
+        : '; this daemon was bound to that session and is now unbound'
+    log(`hook intake: removed the spool of session ${dirName} (${why})${binding}`)
+  }
+
   const sweepIfIdle = (dirName: string): boolean => {
     const dir = join(root, dirName)
     const newest = newestTouch(dir)
     if (newest === null || now() - newest <= SESSION_SWEEP_MS) return false
-    fs.removeDir(dir)
-    forget(dirName)
+    removeSession(dirName, SWEPT_IDLE, newest)
     return true
   }
 
@@ -793,6 +830,8 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
       if (event === 'SessionEnd') ended = true
     }
     const next = decision.next
+    // How long the session had been quiet when it ended, read before this daemon's own cursor write touches it.
+    const endedQuietSince = ended ? newestTouch(dir) : null
     if (next.lines !== held.lines || next.bytes !== held.bytes || next.head !== held.head) {
       cursors.set(dirName, next)
       // On disk only for its own session (header rule 3). A session it refused
@@ -802,8 +841,7 @@ export function startHookIntake(opts: HookIntakeOptions): HookIntake {
     if (ended) {
       // The session said goodbye and we consumed it. Nothing will append here
       // again, and leaving it would let a future daemon re-drain a dead session.
-      fs.removeDir(dir)
-      forget(dirName)
+      removeSession(dirName, 'its SessionEnd was consumed', endedQuietSince)
       if (bound !== null && safeSessionKey(bound) === dirName) bound = null
       return
     }

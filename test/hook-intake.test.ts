@@ -858,6 +858,106 @@ test('a session directory nobody has touched for half an hour is swept', () => {
   intake.stop()
 })
 
+test('every spool folder the intake removes is logged once: its session, the reason and how long it sat idle', () => {
+  // Vera, 2026-10-12: her bound session's folder vanished during an idle and no daemon's log said who removed it.
+  let now = 4_000_000
+  const h = harness(() => now)
+  const logs: string[] = []
+  h.write('sess-ours', [spooled(ourPayload())])
+  h.write('sess-abandoned', [spooled(strangerPayload())])
+  h.write('sess-between-turns', [spooled(strangerPayload({ session_id: 'sess-between-turns', tool_use_id: 'sx-2' }))])
+  const intake = h.start({ log: (msg: string) => logs.push(msg) })
+  assert.equal(intake.bound(), 'sess-ours')
+  const removals = () => logs.filter((line) => /spool of session/.test(line))
+  assert.deepEqual(removals(), [], 'nothing removed, nothing said')
+  h.touch('sess-abandoned', now - 35 * 60_000)
+  h.touch('sess-ours', now - 31 * 60_000 - 5_000)
+  h.touch('sess-between-turns', now - 1_000)
+  intake.pump()
+  assert.deepEqual(removals(), [
+    'hook intake: removed the spool of session sess-ours (idle sweep: nothing in it touched for 31m05s); ' +
+      'this daemon is bound to that session and stays bound',
+    'hook intake: removed the spool of session sess-abandoned (idle sweep: nothing in it touched for 35m00s)',
+  ], 'one line per removed folder, the bound one marked as such, the fresh one kept and not named')
+  intake.pump()
+  assert.equal(removals().length, 2, 'a removed folder is not named again')
+  // A session that ends: its SessionEnd is consumed and the folder goes at once.
+  now += 60_000
+  h.write('sess-ours', [spooled(ourPayload({ tool_use_id: 'tu-9' }))])
+  now += 4_000
+  h.write('sess-ours', [spooled(ourPayload({ hook_event_name: 'SessionEnd', tool_use_id: undefined }))])
+  now += 7_000
+  intake.pump()
+  assert.equal(removals().at(-1),
+    'hook intake: removed the spool of session sess-ours (its SessionEnd was consumed: nothing in it touched for 0m07s); ' +
+      'this daemon was bound to that session and is now unbound')
+  assert.equal(intake.bound(), null)
+  for (const line of removals()) assert.ok(!line.includes('\n') && !/[\u2013\u2014]/.test(line), line)
+  intake.stop()
+})
+
+test('a spool folder that cannot be removed is named once, not on every pump', () => {
+  const now = 4_000_000
+  const h = harness(() => now)
+  const logs: string[] = []
+  h.write('sess-stuck', [spooled(strangerPayload({ session_id: 'sess-stuck' }))])
+  const fs = { ...h.fs, removeDir: (path: string) => { h.removed.push(path) } }
+  const intake = h.start({ fs, log: (msg: string) => logs.push(msg) })
+  h.touch('sess-stuck', now - 40 * 60_000)
+  intake.pump()
+  intake.pump()
+  intake.pump()
+  const lines = logs.filter((line) => /spool of session sess-stuck/.test(line))
+  assert.deepEqual(lines, ['hook intake: could not remove the spool of session sess-stuck (idle sweep: nothing in it touched for 40m00s); the sweep tries again later'])
+  intake.stop()
+})
+
+test('a removal that takes the spool but not a locked file in the folder is named once as unfinished, then once as removed', () => {
+  let now = 4_000_000
+  const h = harness(() => now)
+  const logs: string[] = []
+  h.write('sess-half', [spooled(strangerPayload({ session_id: 'sess-half' }))])
+  const lockedCursor = join(ROOT, 'sess-half', 'own-cursor.json')
+  let locked = true
+  const fs = {
+    ...h.fs,
+    removeDir: (path: string) => {
+      h.fs.removeDir(path)
+      if (!locked) return
+      // Windows: every file goes but a locked one, and the folder stays, touched by the deletions.
+      h.files.set(lockedCursor, '{}')
+      h.touch('sess-half', now)
+    },
+  }
+  const intake = h.start({ fs, log: (msg: string) => logs.push(msg) })
+  h.touch('sess-half', now - 32 * 60_000)
+  intake.pump()
+  locked = false
+  now += 31 * 60_000
+  intake.pump()
+  assert.deepEqual(logs.filter((line) => /spool of session sess-half/.test(line)), [
+    'hook intake: could not remove the spool of session sess-half (idle sweep: nothing in it touched for 32m00s); the sweep tries again later',
+    'hook intake: removed the spool of session sess-half (idle sweep: nothing in it touched for 31m00s)',
+  ])
+  intake.stop()
+})
+
+test('a spool the forwarder recreates right after the sweep removed it is logged as removed, not as stuck', () => {
+  let now = 4_000_000
+  const h = harness(() => now)
+  const logs: string[] = []
+  h.write('sess-back', [spooled(strangerPayload({ session_id: 'sess-back' }))])
+  // The removal works, and the next prompt's line lands in a fresh folder before the intake looks again.
+  const fs = { ...h.fs, removeDir: (path: string) => { h.fs.removeDir(path); now += 1; h.write('sess-back', [spooled(strangerPayload({ session_id: 'sess-back', tool_use_id: 'sx-9' }))]) } }
+  const intake = h.start({ fs, log: (msg: string) => logs.push(msg) })
+  h.touch('sess-back', now - 33 * 60_000)
+  intake.pump()
+  assert.deepEqual(logs.filter((line) => /spool of session sess-back/.test(line)), [
+    'hook intake: removed the spool of session sess-back (idle sweep: nothing in it touched for 33m00s)',
+  ])
+  intake.stop()
+})
+
 test('a throwing handler never stops the drain', () => {
   const h = harness()
   h.write('sess-ours', [spooled(ourPayload()), spooled(ourPayload({ tool_use_id: 'tu-2' }))])

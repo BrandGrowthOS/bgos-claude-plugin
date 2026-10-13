@@ -560,7 +560,9 @@ test('server.ts builds the binder from the agent folder and the CLI config dir, 
   // The third reader is agent-state.json's transcript activity (code review
   // F1), which reads the same dir for an agent whose hook rail is silent.
   assert.match(server, /readSessionTranscript\(\{\s*resolve: \(\) => sessionBinder\.resolve\(\),\s*projectDir: sessionBinder\.projectDirectory,/)
-  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 3)
+  // The fourth is the floor's attached entry, which the private turn hook matches its transcript against (0.68.4).
+  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder\.projectDirectory, baseDir: LAUNCH_CWD \}\)/)
+  assert.equal((server.match(/sessionBinder\.projectDirectory/g) ?? []).length, 4)
 })
 
 // The two other transcript readers (mission 104 fix round, verifier item a).
