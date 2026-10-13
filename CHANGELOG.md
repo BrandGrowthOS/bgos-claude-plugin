@@ -2,6 +2,16 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.5 (2026-10-14)
+
+**The plugin's second copy of a channel stands aside when the session already runs the checkout (kc-server, 2026-10-13; agents 863, 867, 871, 872, 873, 876).** An agent whose folder registers the checkout as the `bgos` server in `.mcp.json` (launched with `--dangerously-load-development-channels server:bgos`) and whose user settings also enable the marketplace plugin started TWO daemons for one pairing. The lock logic was right (the checkout proves its channel loaded and holds the lock; the plugin copy proves it is not and stays passive), but passive is not silent: the session also listed the plugin's tools (`mcp__plugin_hoai_bgos__*`), the model picked them, and a private tool (`schedule`, `boards_*`) answered "does not hold the active agent connection". The copy also raced for the lock at every boot and filed a stand down report each time.
+
+- **The plugin copy serves a one tool notice, `hoai_duplicate_copy`, instead of a second daemon** when ALL of these hold: it is the marketplace install; its own channel spec is not on the session's claude command line while `server:bgos` is; and the launch folder's `.mcp.json` registers a `bgos` server whose `server.ts` exists in another checkout. It takes no pairing lock, writes no supervisor record or plugin state, starts no poll and declares no `claude/channel` capability, so the checkout stays the only channel the session can push into. Any doubt (no claude ancestor, a command line it cannot read, Windows, no `.mcp.json`, a sibling whose `server.ts` is gone, both specs listed) keeps the daemon exactly as before.
+- Takes effect for a session's NEXT start, and only once the plugin copy in the cache is this version or newer: the check lives in the copy's own code. Nothing changes in a running agent.
+- Not changed: the private turn gate. A button click does not carry the sender's authority (its card has no delivery token), so a private tool called inside a click turn is refused as before; a typed message opens the turn.
+
+Guards: `test/duplicate-copy.test.ts` (the decision table, the notice over a real in-memory MCP client, the process table probe, server.ts ordering) and `test/duplicate-copy.e2e.test.ts`, which boots the real `server.ts` as the cache copy under a stand-in `claude` and reads what it answers.
+
 ## 0.68.4 (2026-10-13)
 
 One release carrying three pull requests: a voice consult from the owner opens a private turn for that one consult (#227); replayed scheduled fires, the Windows hook self-restart and the private turn hook's cold start (#229, written as 0.68.6); and the PATH baked into an agent's or the watcher's unit is correct for its OS (#226). Found on the release head: an owner message the agent answered opens no private turn when a restart brings it back.

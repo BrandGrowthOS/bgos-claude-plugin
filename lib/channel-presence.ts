@@ -204,3 +204,30 @@ export function probeChannelLoaded(input: {
     return { loaded: null, reason: 'claude command line not readable' }
   }
 }
+
+/**
+ * The channel specs the session above this daemon registers (the values of
+ * `--channels` and `--dangerously-load-development-channels`), or null when
+ * they cannot be proven: Windows, no claude ancestor, a command line that is
+ * unreadable or shows no arguments (a rewritten process title). An empty list
+ * is a real answer: the session loads no channel. Never throws.
+ */
+export function probeSessionChannelSpecs(input: {
+  platform: string
+  ownPid: number
+  execSync: (file: string, args: string[]) => SyncExecResult
+}): string[] | null {
+  try {
+    if (input.platform === 'win32') return null
+    const ancestry = readProcessAncestry(input.ownPid, input.execSync)
+    for (const pid of ancestry.slice(1)) {
+      const command = readFullCommand(pid, input.execSync)
+      if (!isClaudeCommandLine(command)) continue
+      if (String(command).trim().split(/\s+/).length < 2) return null
+      return parseChannelSpecs(String(command))
+    }
+    return null
+  } catch {
+    return null
+  }
+}

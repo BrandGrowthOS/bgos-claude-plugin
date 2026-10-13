@@ -361,7 +361,8 @@ import {
   formatRouteTakeoverLine,
   BEACON_HEARTBEAT_FILE,
 } from './lib/pairing-lock.js'
-import { probeChannelLoaded, type ChannelPresence } from './lib/channel-presence.js'
+import { probeChannelLoaded, probeSessionChannelSpecs, specMatches, type ChannelPresence } from './lib/channel-presence.js'
+import { decideDuplicateCopy, findSiblingClone } from './lib/duplicate-copy.mjs'
 import { startBrowserHostSupervisor, type BrowserHostSupervisor } from './lib/browser-host-supervisor.js'
 import {
   CLONE_CHANNEL_SPEC,
@@ -609,7 +610,7 @@ import {
   resolveNodePath,
 } from './lib/watcher-install.mjs'
 import { readMarketplaceLatest, runClaudeCli } from './lib/plugin-cli.mjs'
-import { serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
+import { serveDuplicateCopy, serveHomeRefused, servePairRequired } from './lib/pair-required-server.mjs'
 import { installWatcherBundle, nodeExec } from './lib/watcher-bundle.mjs'
 import { listProcesses } from './lib/process-tree.mjs'
 import {
@@ -14719,6 +14720,33 @@ async function reconcileAlwaysOn(): Promise<void> {
 // ── Startup ──────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  // THE PLUGIN'S SECOND COPY STANDS ASIDE (kc-server, 2026-10-13). When this is the marketplace
+  // copy and the session provably loads the checkout as its channel (server:bgos, this folder's
+  // .mcp.json), a second full daemon only adds a lock race and a second set of tools that refuse
+  // private calls. It serves a one tool notice instead and runs nothing else: no lock, no
+  // supervisor record, no polling, no channel capability. Every doubt keeps the daemon as it was
+  // (lib/duplicate-copy.mjs). Asked FIRST, before anything below writes a file or starts a timer.
+  {
+    const verdict = decideDuplicateCopy({
+      installMethod: INSTALL_METHOD,
+      ownSpec: INSTALL_DETECTION?.method === 'marketplace' ? marketplaceChannelSpec(INSTALL_DETECTION.marketplace) : '',
+      sessionSpecs:
+        INSTALL_METHOD === 'marketplace'
+          ? probeSessionChannelSpecs({ platform: process.platform, ownPid: process.pid, execSync: defaultExecSync })
+          : null,
+      sibling: INSTALL_METHOD === 'marketplace' ? findSiblingClone({ cwd: LAUNCH_CWD, ownRoot: import.meta.dir }) : null,
+      specMatches,
+    })
+    if (verdict.duplicate) {
+      log(`duplicate plugin copy, standing aside: ${verdict.reason}`)
+      const served = await serveDuplicateCopy({
+        reason: verdict.reason,
+        version: readOwnVersion(import.meta.dir) ?? undefined,
+        log: (line: string) => process.stderr.write(`[bgos] ${line}\n`),
+      })
+      process.exit(served ? 0 : 1)
+    }
+  }
   // The git self-updater is for CLONE installs only. A marketplace install's
   // plugin root is Claude Code's own cache dir, which the CLI leaves as a git
   // clone pinned to the release tag: without this gate the updater would

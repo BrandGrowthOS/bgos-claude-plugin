@@ -901,11 +901,16 @@ test('every identity call site uses the SAME directory', () => {
   // against the folder recorded for this agent, so a relocated cwd would not
   // degrade it, it would make it refuse the real agent and admit the stray,
   // inverting the guard. Same directory, same reason.
+  //
+  // 2026-10-14: six to seven. The plugin's duplicate-copy check reads the launch
+  // folder's .mcp.json to find the checkout registered there (lib/duplicate-copy.mjs).
+  // That file lives where the agent LAUNCHED, so a relocated cwd would miss it and the
+  // copy would keep running as a second daemon.
   const uses = serverSource.match(/cwd: LAUNCH_CWD/g) ?? []
   assert.equal(
     uses.length,
-    6,
-    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver and the home-folder binding to share LAUNCH_CWD, found ${uses.length}`,
+    7,
+    `expected boot, recheck, boot-log, the env-only risk check, the deaf-notice route resolver, the home-folder binding and the duplicate-copy lookup to share LAUNCH_CWD, found ${uses.length}`,
   )
   // Scoped to the identity paths ON PURPOSE. Other call sites still pass
   // process.cwd() and should: the cursor-file path and the health report are
