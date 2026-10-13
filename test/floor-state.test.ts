@@ -24,8 +24,11 @@ import {
   FLOOR_RECORD_STALE_MS,
   buildFloorRecord,
   clearFloorAttached,
+  comparableFolder,
   daemonFloorFolders,
   findAttachedKey,
+  findOwnAttachedKey,
+  folderHolds,
   floorAsksDir,
   floorKey,
   floorStateRoot,
@@ -313,9 +316,68 @@ test('server.ts keys the floor by daemonFloorFolders with LAUNCH_CWD, the folder
     /const FLOOR_FOLDERS: string\[\] = daemonFloorFolders\(\{\s*launchCwd: LAUNCH_CWD,\s*cwd: process\.cwd\(\),\s*env: process\.env,?\s*\}\)/,
   )
   assert.match(server, /const LAUNCH_CWD = process\.env\.BGOS_LAUNCH_CWD\?\.trim\(\) \|\| process\.cwd\(\)/)
-  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS \}\)/)
+  // The entry names the folder this daemon's transcripts live in: the private turn hook writes only under its own
+  // daemon's key (findOwnAttachedKey), never another agent's (0.68.4).
+  assert.match(server, /markFloorAttached\(\{ root: FLOOR_STATE_ROOT, folders: FLOOR_FOLDERS, projectDir: sessionBinder\.projectDirectory, baseDir: LAUNCH_CWD \}\)/)
   assert.match(server, /const FLOOR_KEYS = \[\.\.\.new Set\(FLOOR_FOLDERS\.map/)
   // And the launcher still hands the folder through under that name.
   const launcher = readFileSync(join(import.meta.dirname, '..', 'bin', 'bgos-launch.mjs'), 'utf8')
   assert.match(launcher, /BGOS_LAUNCH_CWD: env\.BGOS_LAUNCH_CWD \|\| process\.cwd\(\)/)
+})
+
+test('folderHolds: containment on a folder boundary, every spelling of one path alike (0.68.4)', () => {
+  const dir = 'C:\\Users\\kc\\.claude\\projects\\C--agents-vera'
+  for (const child of [
+    'C:\\Users\\kc\\.claude\\projects\\C--agents-vera\\s.jsonl',
+    'c:/users/KC/.claude/projects/c--agents-vera/s.jsonl',
+    '/mnt/c/Users/kc/.claude/projects/C--agents-vera/s.jsonl',
+    '//?/C:/Users/kc/.claude/projects/C--agents-vera/s.jsonl',
+    'C:/Users/kc/./.claude//projects/C--agents-vera/s.jsonl',
+    'C:/Users/kc/x/../.claude/projects/C--agents-vera/s.jsonl',
+    dir,
+  ]) assert.equal(folderHolds(dir, child), true, child)
+  for (const child of [
+    'C:/Users/kc/.claude/projects/C--agents-vera2/s.jsonl', // a sibling whose name starts the same
+    'C:/Users/kc/.claude/projects/C--agents/s.jsonl', // the folder above
+    'C:/Users/kc/.claude/projects/C--agents-vera/../C--agents-mark/s.jsonl', // `..` climbs out
+    'D:/Users/kc/.claude/projects/C--agents-vera/s.jsonl',
+    'projects/C--agents-vera/s.jsonl', // relative, nothing to read it against
+    '',
+  ]) assert.equal(folderHolds(dir, child), false, child)
+  // A relative path is read against the base it is given, `..` included.
+  assert.equal(folderHolds(dir, '../.claude/projects/C--agents-vera/s.jsonl', 'C:/Users/kc/agents'), true)
+  assert.equal(folderHolds(dir, '.claude/projects/C--agents-vera/s.jsonl', 'C:/Users/other'), false)
+  assert.equal(folderHolds('', 'C:/x/s.jsonl'), false)
+  assert.equal(folderHolds('/', '/home/kc/s.jsonl'), true)
+  assert.equal(folderHolds('//server/share/p', '//server/share/p/s.jsonl'), true)
+  assert.equal(folderHolds('//server/share/p', '/server/share/p/s.jsonl'), false, 'a UNC share is not a root path')
+  assert.equal(comparableFolder('\\\\?\\C:\\A\\.\\b\\..\\C'), 'c:/a/c')
+})
+
+test('findOwnAttachedKey: only a live entry whose projectDir holds the transcript, an older entry only at the project folder', () => {
+  const root = mkdtempSync(join(tmpdir(), 'floor-own-'))
+  try {
+    const vera = '/w/agents/vera'
+    const mark = '/w/agents/mark'
+    const alive = (pid: unknown) => pid === 1 || pid === 2
+    const t = '/h/.claude/projects/-w-agents-vera/s.jsonl'
+    markFloorAttached({ root, folders: [mark], pid: 2, projectDir: '/h/.claude/projects/-w-agents-mark' })
+    let found = findOwnAttachedKey({ root, folders: [mark, vera], transcriptPath: t, projectFolder: vera, isAlive: alive })
+    assert.equal(found.key, null)
+    assert.deepEqual(found.seen, [{ key: floorKey(mark), state: 'other-project', pid: 2, projectDir: '/h/.claude/projects/-w-agents-mark' }])
+    markFloorAttached({ root, folders: [vera], pid: 1, projectDir: '/h/.claude/projects/-w-agents-vera' })
+    assert.equal(findOwnAttachedKey({ root, folders: [mark, vera], transcriptPath: t, projectFolder: vera, isAlive: alive }).key, floorKey(vera))
+    markFloorAttached({ root, folders: [vera], pid: 3, projectDir: '/h/.claude/projects/-w-agents-vera' })
+    assert.equal(findOwnAttachedKey({ root, folders: [vera], transcriptPath: t, projectFolder: vera, isAlive: alive }).key, null, 'its pid is gone')
+    markFloorAttached({ root, folders: [vera, mark], pid: 1 })
+    assert.equal(findOwnAttachedKey({ root, folders: [mark, vera], transcriptPath: t, projectFolder: vera, isAlive: alive }).key, floorKey(vera), 'an older entry at the project folder')
+    assert.equal(findOwnAttachedKey({ root, folders: [mark], transcriptPath: t, projectFolder: vera, isAlive: alive }).key, null, 'an older entry anywhere else')
+    // A relative transcript path is read against the entry's baseDir before the caller's base.
+    markFloorAttached({ root, folders: [vera], pid: 1, projectDir: '/w/agents/vera/.cw/projects/x', baseDir: vera })
+    assert.equal(findOwnAttachedKey({ root, folders: [vera], transcriptPath: '.cw/projects/x/s.jsonl', base: '/elsewhere', isAlive: alive }).key, floorKey(vera))
+    const entry = JSON.parse(readFileSync(join(root, 'floor', 'attached', `${floorKey(vera)}.json`), 'utf8'))
+    assert.deepEqual(Object.keys(entry), ['v', 'pid', 'at', 'projectDir', 'baseDir'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
