@@ -82,7 +82,7 @@ interface Machine {
   serviceFiles: () => string[]
 }
 
-function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, realNode = false, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; realNode?: boolean; os?: 'Linux'; holdInstall?: boolean } = {}): Machine {
+function machine({ fromClone = false, fromCache = false, pluginInstalled = true, pluginEnabled = true, withNode = true, realNode = false, os, holdInstall = false }: { fromClone?: boolean; fromCache?: boolean; pluginInstalled?: boolean; pluginEnabled?: boolean; withNode?: boolean; realNode?: boolean; os?: 'Linux' | 'Darwin'; holdInstall?: boolean } = {}): Machine {
   const home = mkdtempSync(join(tmpdir(), 'hoai-install-'))
   // Where the code runs from. npx-shaped by default; a plain checkout-shaped dir for the clone
   // case; a marketplace plugin's versioned cache dir (where the watcher's sweep runs it from).
@@ -655,6 +655,10 @@ test('the PATH an install bakes is correct for its OS: Homebrew on macOS only (b
   assert.equal(new Set(linuxPath).size, linuxPath.length, 'each directory once')
 
   const mac = machine({ os: 'Darwin' })
+  // A Linux runner has no plutil, which the macOS install path validates the plist with; the plist
+  // is what this leg reads, so a stand-in that accepts it is enough on any host.
+  writeFileSync(join(mac.home, 'shims', 'plutil'), '#!/bin/sh\nexit 0\n')
+  chmodSync(join(mac.home, 'shims', 'plutil'), 0o755)
   const mw = pair(mac, '874')
   const mr = mac.run(['--assistant', '874', '--dir', mw, '--always-on'])
   assert.equal(mr.status, 0, mr.out)
