@@ -70,6 +70,15 @@ const privateBeginLineOf: (outcome: string, sessionId: string) => string =
   (privateTurnModule as any).privateBeginLine ?? ((outcome) => `(no begin line: ${outcome})`)
 const privateRevokeLineOf: (info: Record<string, unknown>) => string =
   (privateTurnModule as any).privateRevokeLine ?? ((info) => `(no revoke line: ${JSON.stringify(info)})`)
+// The replayed fire dedupe (0.68.6), read the same way so this file still loads on 0.68.3.
+const privateFireKeyOf: (input: Record<string, unknown>) => string | null =
+  (privateTurnModule as any).privateFireKey ?? (() => null)
+const privateFiresPathOf: (root: string, assistantId: string) => string =
+  (privateTurnModule as any).privateFiresPath ?? ((root, assistantId) => join(root, assistantId, 'private-fires.json'))
+const createFireLedgerOf: (options: { path: string, now?: () => number }) => any =
+  (privateTurnModule as any).createFireLedger ?? (() => undefined)
+const privateReplayLineOf: (replay: Record<string, unknown>) => string =
+  (privateTurnModule as any).privateReplayLine ?? ((replay) => `(no replay line: ${JSON.stringify(replay)})`)
 const explainOf = (tracker: any, markerPaths: string[]): string =>
   typeof tracker.explain === 'function' ? tracker.explain({ markerPaths }) : '(no explain)'
 
@@ -148,7 +157,7 @@ interface Runs {
 }
 
 /** One computer's home shared by several agents. Each agent is one daemon plus its CLI session. */
-function fleetHost(t: any) {
+function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-dup-boundary-')))
   t.after(() => rmSync(base, { recursive: true, force: true }))
   const root = join(base, 'home', '.bgos-plugin-state')
@@ -170,12 +179,23 @@ function fleetHost(t: any) {
     const repeats: string[] = []
     /** server.ts onHookPayload logs what begin() decided for each prompt (privateBeginLine). */
     const begins: string[] = []
+    /** server.ts logs each replayed fire through privateReplayLine (onReplay), and each revoke (onRevoke). */
+    const replays: string[] = []
+    const revokes: string[] = []
+    /** The agent's own fire ledger, in its own state folder (server.ts privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID)). */
+    const firesPath = privateFiresPathOf(root, id)
 
     /** One daemon life: a fresh tracker, turn chat and intake (server.ts state is per process). */
     function daemon(provenTranscript: () => string | null) {
       // server.ts markFloorAttachedIfHolder: the entry names the folder this daemon's session transcripts live in.
       markFloorAttached({ root, folders, projectDir })
-      const tracker = createPrivateTurnTracker({ onRepeat: (repeat) => repeats.push(privateRepeatLine(repeat)) })
+      // server.ts privateTurns: a new process reads the agent's fire ledger from disk; nothing else survives.
+      const tracker = createPrivateTurnTracker({
+        now, fires: createFireLedgerOf({ path: firesPath, now }),
+        onRepeat: (repeat) => repeats.push(privateRepeatLine(repeat)),
+        onReplay: (replay) => replays.push(privateReplayLineOf(replay)),
+        onRevoke: (info) => revokes.push(privateRevokeLineOf(info)),
+      })
       const turnChat = createTurnChatTracker()
       const publish = () => publishPrivateContext({
         path: privateContextPath(root, id), secret: `pair_${id}`, assistantId: id, ownerUserId: OWNER,
@@ -190,7 +210,7 @@ function fleetHost(t: any) {
           if (payload.hook_event_name === 'UserPromptSubmit') {
             const began = tracker.begin({ prompt: payload.prompt, promptHash: payload.hoai_clipped === true ? payload.prompt_sha256 : undefined, sessionId: hookSessionId, promptId: payload.prompt_id })
             const matched = turnChat.matchDelivered(String(payload.prompt ?? ''))
-            if (began !== 'repeat' && (began !== 'no-token' || matched !== null)) begins.push(privateBeginLineOf(began, hookSessionId))
+            if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) begins.push(privateBeginLineOf(began, hookSessionId))
           }
           if (payload.hook_event_name === 'Stop') tracker.end()
           publish()
@@ -209,7 +229,7 @@ function fleetHost(t: any) {
     let marker: { path: string; marker: { turnId: string } } | null = null
 
     const a = {
-      name, id, chatId, folder, root, markerPaths, logs, repeats, begins,
+      name, id, chatId, folder, root, markerPaths, logs, repeats, begins, replays, revokes, firesPath,
       get session() { return session },
       get tracker() { return life.tracker },
       get intake() { return life.intake },
@@ -257,6 +277,12 @@ function fleetHost(t: any) {
       },
       /** The socket lane (server.ts deliverWsInbound): actor, turn chat, private delivery; then the CLI's prompt. */
       deliver(frame: Record<string, any>, runs: Runs = {}, extra: Record<string, unknown> = {}) {
+        const prompt = a.card(frame)
+        a.hook('UserPromptSubmit', { prompt, ...extra }, runs)
+        return prompt
+      },
+      /** The same delivery with no prompt of its own: the CLI injects the card into the turn that is running. */
+      card(frame: Record<string, any>): string {
         const agentOrigin = frame.agentOrigin ?? null
         const senderType = String(frame.senderType ?? (agentOrigin ? 'agent' : 'user'))
         const channel = buildInboundChannel({
@@ -266,11 +292,10 @@ function fleetHost(t: any) {
         life.turnChat.note({ chatId: frame.chatId, messageId: frame.messageId, kind: senderType === 'agent' ? 'peer' : senderType === 'system' ? 'system' : 'user', text: frame.text, now: Date.now() })
         const content = life.tracker.deliver({
           content: channel.content, chatId: frame.chatId, peerSourceAssistantId: agentOrigin?.sourceAssistantId,
+          fireKey: privateFireKeyOf({ senderType, eventMeta: frame.eventMeta, messageId: frame.messageId }),
           actingUserId: privateActor({ senderType, senderUserId: privateSenderUserId(frame), agentOrigin, eventMeta: frame.eventMeta }),
         })
-        const prompt = renderChannel(content, channel.meta)
-        a.hook('UserPromptSubmit', { prompt, ...extra }, runs)
-        return prompt
+        return renderChannel(content, channel.meta)
       },
       /** What the daemon answers the model's first private call with. */
       privateCall() {
@@ -869,4 +894,355 @@ test('what a scheduler card needs for a private turn: actingUserId, and nothing 
   // And the card must say it comes from the scheduler, as a system message.
   assert.equal(turn({ ...withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER }), eventMeta: { source: 'n8n', payload: { actingUserId: OWNER } } }), null)
   assert.equal(turn({ ...withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER }), senderType: 'agent', agentOrigin: { sourceAssistantId: 888, sourceName: 'Mark', targetAssistantId: 909 } }), null)
+})
+
+// ── Vera, 2026-10-13: a wake already handled comes back after a restart (0.68.6) ──
+//
+// After restarts on 0.68.3, two old native wakes (messages 118303 and 118672) came back as backlog and were each
+// admitted as a FRESH private turn, one with a new private-turn token. The poll lane's boot restart recovery re-offers
+// a system card the agent answered (lib/poll-core.ts selectRestartRecoveryIds: only an assistant row after a USER row
+// stops it), each re-offer is delivered with a new token and a new 15 minute window, and the tracker is per process.
+// Delivery is at least once, so the plugin keeps the fires it opened a turn for, per agent, on disk, for 48 hours.
+
+/** Deliver one frame, let the daemon take it, and say whose private turn it opened (null: none); then end the turn. */
+function turnOf(a: any, frame: Record<string, any>): string | null {
+  a.deliver(frame)
+  a.pump()
+  const actor = a.privateCall()?.actingUserId ?? null
+  a.hook('Stop', { stop_hook_active: false })
+  a.pump()
+  return actor
+}
+/** The n8n reminder with the owner stamped as its acting user (the backend's stamp). */
+function stampedReminder(chatId: number) {
+  const card = n8nReminderFrame(chatId)
+  ;(card.eventMeta.payload as Record<string, unknown>).actingUserId = OWNER
+  return card
+}
+const HOUR = 3600_000
+
+test('Vera replay: the same native wake delivered again after a restart, with a new token, opens no private turn', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  const fireId = wake.eventMeta.payload.fireId
+  assert.equal(turnOf(vera, wake), OWNER, 'the first delivery opens the owner turn')
+  assert.equal(vera.replays.length, 0)
+  // The daemon restarts; its boot poll re-offers the answered wake as backlog. Same message, same fire, new token.
+  vera.restart()
+  const before = vera.begins.length
+  const prompt = vera.deliver(wake)
+  vera.pump()
+  assert.match(prompt, /Check the boards/, 'the replay still reaches the agent as text')
+  assert.match(prompt, /<hoai-private-turn id="[a-f0-9-]{36}"\/>/)
+  assert.equal(vera.privateCall(), null, 'boards_query refuses: the fire was already handled')
+  assert.equal(vera.replays.length, 1, 'one line for the replayed prompt')
+  assert.match(vera.replays[0]!, new RegExp(`^private turn: replayed fire native:${fireId}, already handled at \\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d\\.\\d{3}Z$`))
+  const handledAt = readPrivateJson(vera.firesPath, 262144)?.fires?.[`native:${fireId}`]
+  assert.ok(vera.replays[0]!.endsWith(`already handled at ${new Date(handledAt).toISOString()}`), 'the time it was first handled, not now')
+  assert.ok(!vera.begins.slice(before).some((line: string) => /admitted its sender/.test(line)), vera.begins.join('\n'))
+  assert.match(explainOf(vera.tracker, vera.markerPaths), /no private turn is open \(the last prompt, in session [^:]+: replayed\)/)
+  // Control: a different fire after the restart opens.
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  assert.equal(turnOf(vera, wakeFrame(vera.chatId)), OWNER, 'a new fire opens the owner turn')
+})
+
+test('Vera replay: the replay arriving twice through two hook sources is one repeat, still one line', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  vera.restart()
+  vera.deliver(wake, DOUBLED)
+  vera.pump()
+  assert.equal(vera.privateCall(), null)
+  assert.equal(vera.replays.length, 1, 'a second record of the same submission is a repeat, not a second replay')
+})
+
+test('Vera replay: the same fire with a new message id (a re-fire) is also caught, keyed by its fireId', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  vera.restart()
+  assert.equal(turnOf(vera, { ...wakeFrame(vera.chatId), eventMeta: wake.eventMeta }), null)
+  assert.equal(vera.replays.length, 1)
+})
+
+test('Vera replay: an n8n card replay (same scheduled_action_id and message id) is caught; its next recurrence opens', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const card = stampedReminder(vera.chatId)
+  assert.equal(turnOf(vera, card), OWNER)
+  vera.restart()
+  assert.equal(turnOf(vera, card), null)
+  assert.equal(vera.replays.length, 1)
+  assert.match(vera.replays[0]!, new RegExp(`^private turn: replayed fire n8n:${card.eventMeta.payload.scheduled_action_id}:${card.messageId}, already handled at `))
+  assert.equal(turnOf(vera, stampedReminder(vera.chatId)), OWNER, 'the same action\'s next card (a new message id) opens')
+  // An unstamped reminder opens no turn at all, and leaves no key behind.
+  const unstamped = n8nReminderFrame(vera.chatId)
+  assert.equal(turnOf(vera, unstamped), null)
+  assert.ok(!JSON.stringify(readPrivateJson(vera.firesPath, 262144) ?? {}).includes(`:${unstamped.messageId}"`))
+})
+
+test('Vera replay: the set survives daemon restarts, in the agent\'s own state folder', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  vera.restart()
+  vera.restart()
+  assert.equal(turnOf(vera, wake), null, 'two restarts later the fire is still known')
+  assert.equal(vera.firesPath, join(host.root, '909', 'private-fires.json'))
+  const ledger = readPrivateJson(vera.firesPath, 262144)
+  assert.equal(ledger?.v, 1)
+  assert.equal(typeof ledger?.fires?.[`native:${wake.eventMeta.payload.fireId}`], 'number')
+})
+
+test('Vera replay: a fire handled more than 48 hours ago opens again; one handled 47 hours ago does not', (t) => {
+  const clock = { now: Date.now() }
+  const host = fleetHost(t, { now: () => clock.now })
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  const other = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  assert.equal(turnOf(vera, other), OWNER)
+  vera.restart()
+  clock.now += 47 * HOUR
+  assert.equal(turnOf(vera, wake), null, '47 hours later it is still a replay')
+  vera.restart()
+  clock.now += 2 * HOUR
+  assert.equal(turnOf(vera, wake), OWNER, '49 hours after it was handled the key has expired')
+  // The other fire, handled 49 hours ago and never seen since, is pruned from the file when it is written again.
+  const keys = Object.keys(readPrivateJson(vera.firesPath, 262144)?.fires ?? {})
+  assert.deepEqual(keys, [`native:${wake.eventMeta.payload.fireId}`])
+})
+
+test('Vera replay: two agents on one home keep separate sets', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const nova = host.agent('nova', '910', 5002)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  // The same fire id reaching Nova (her own card for it) is not Vera's fire.
+  assert.equal(turnOf(nova, { ...wakeFrame(nova.chatId), eventMeta: wake.eventMeta }), OWNER)
+  assert.notEqual(vera.firesPath, nova.firesPath)
+  vera.restart()
+  assert.equal(turnOf(vera, wake), null, 'Vera still knows her own')
+})
+
+test('Vera replay: owner messages are untouched, delivered again after a restart they open again', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const owner = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, owner), OWNER)
+  vera.restart()
+  assert.equal(turnOf(vera, owner), OWNER, 'an owner message carries no fire, so restart recovery re-offering it still opens')
+  assert.equal(vera.replays.length, 0)
+  assert.equal(existsSync(vera.firesPath), false, 'nothing recorded for an owner message')
+})
+
+test('Vera replay: a fire whose key cannot be recorded gives no usable turn (fail closed), and the refusal says so', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  // The ledger path is a folder: nothing can be written there.
+  mkdirSync(vera.firesPath, { recursive: true })
+  const wake = wakeFrame(vera.chatId)
+  vera.deliver(wake)
+  vera.pump()
+  assert.equal(vera.privateCall(), null)
+  assert.match(explainOf(vera.tracker, vera.markerPaths), new RegExp(`but its scheduled fire native:${wake.eventMeta.payload.fireId} could not be recorded as handled`))
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  assert.equal(turnOf(vera, ownerFrame(vera.chatId)), OWNER, 'an owner message does not need the ledger')
+})
+
+test('Vera replay: a replayed fire injected into the owner\'s running turn ends it, says why, and is marked as a replay', (t) => {
+  // The review's case: restart recovery re-offers an owner row and an answered wake together, and the CLI injects
+  // the wake into the owner's turn with no prompt of its own. Its work was done when it was handled.
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  vera.restart()
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the owner\'s backlog turn is open')
+  const injected = vera.card(wake)
+  assert.match(injected, /^<channel [^>]*>\n\[replayed: this scheduled fire was already handled at \d{4}-\d\d-\d\dT[^;]+; it opens no private turn\]\n/)
+  assert.equal(vera.privateCall(), null, 'nobody may act until the next prompt')
+  assert.match(vera.revokes.at(-1)!, /^private turn: a delivery that replays a scheduled fire already handled \(chat 5001\) ended the private turn/)
+})
+
+test('Vera replay: the boot order, a replay swept in before the owner\'s backlog prompt: that prompt opens no turn, the next one does', (t) => {
+  // Restart recovery re-offers the owner's "hi" and an answered wake together, in the boot sweep, before the hook
+  // intake starts: no turn is open when the replay is delivered, and the CLI may inject it into the owner's turn.
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  assert.equal(turnOf(vera, wake), OWNER)
+  vera.restart()
+  vera.card(wake)
+  vera.deliver(ownerFrame(vera.chatId, 'hi, are the boards up to date?'))
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'the replay may run inside this turn: nobody may act in it')
+  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire was delivered just before it, and the CLI may run it inside this turn$/)
+  // The next prompt (no Stop in between: the replay was taken in the turn above, or is its own prompt by now) opens.
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+})
+
+test('Vera replay: the backend firing the same fire again in one daemon life, before the first is recorded, opens one turn', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const first = wakeFrame(vera.chatId)
+  const again = { ...wakeFrame(vera.chatId), eventMeta: first.eventMeta }
+  // Both delivered while a long turn runs; the CLI queues them.
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  const firstPrompt = vera.card(first)
+  const againPrompt = vera.card(again)
+  assert.match(againPrompt, /\[replayed: this scheduled fire was already handled at /, 'the second delivery is a replay from the start')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  vera.hook('UserPromptSubmit', { prompt: firstPrompt })
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the first one opens')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  vera.hook('UserPromptSubmit', { prompt: againPrompt })
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'the second one does not')
+  assert.equal(vera.replays.length, 1)
+})
+
+test('Vera replay: a fire whose first delivery was begun but never usable is not used up by it: its re-fire in the same life opens', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const first = wakeFrame(vera.chatId)
+  vera.deliver(first, { privateRuns: 0 })
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'no marker, no usable turn')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  assert.equal(turnOf(vera, { ...wakeFrame(vera.chatId), eventMeta: first.eventMeta }), OWNER, 'the re-fire is its first usable turn')
+  assert.equal(vera.replays.length, 0)
+})
+
+test('Vera replay: a new fire injected into the owner\'s turn is handled there; its replay after a restart opens nothing', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  const wake = wakeFrame(vera.chatId)
+  vera.card(wake)
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the same owner in the same chat: the turn stands')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  assert.equal(typeof readPrivateJson(vera.firesPath, 262144)?.fires?.[`native:${wake.eventMeta.payload.fireId}`], 'number', 'handled when the turn ended')
+  vera.restart()
+  assert.equal(turnOf(vera, wake), null)
+  assert.equal(vera.replays.length, 1)
+})
+
+test('Vera replay: a fire delivered just before another prompt began is handled; its own prompt after that still opens', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  const wakePrompt = vera.card(wake)
+  // The owner's prompt begins first (back to back after a restart): the wake may be injected into it, so it is
+  // handled as that prompt begins, before the turn ends (a restart mid turn would otherwise lose it).
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  assert.equal(typeof readPrivateJson(vera.firesPath, 262144)?.fires?.[`native:${wake.eventMeta.payload.fireId}`], 'number', 'recorded when the owner\'s prompt began')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // But the CLI queued it: its own prompt now begins, and it is the original delivery, not a replay.
+  vera.hook('UserPromptSubmit', { prompt: wakePrompt })
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the original opens its turn')
+  assert.equal(vera.replays.length, 0)
+})
+
+test('Vera replay: a fire whose turn opened but never became usable (no marker) is not used up; its replay opens', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const wake = wakeFrame(vera.chatId)
+  vera.deliver(wake, { privateRuns: 0 })
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'no marker, no usable turn')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  assert.equal(existsSync(vera.firesPath), false, 'not handled')
+  vera.restart()
+  assert.equal(turnOf(vera, wake), OWNER, 'the replay is its one chance, and it opens')
+})
+
+test('privateFireKey: a native wake by its fireId, an n8n card by its action and message id, nothing else', () => {
+  const key = (input: Record<string, unknown>) => privateFireKeyOf(input)
+  const wake = { source: 'scheduler', payload: { scheduledTaskId: 77, fireId: '3f2a9c1e-0000-4000-8000-000000000001', actingUserId: OWNER } }
+  assert.equal(key({ senderType: 'system', eventMeta: wake, messageId: 1 }), 'native:3f2a9c1e-0000-4000-8000-000000000001')
+  assert.equal(key({ senderType: 'SYSTEM', eventMeta: { ...wake, payload: { ...wake.payload, fireId: '77-1791857622844' } }, messageId: 1 }), 'native:77-1791857622844')
+  const reminder = { source: 'scheduler', payload: { scheduled_action_id: 'a0da1344-0000-4000-8000-000000000000', agent_id: null } }
+  assert.equal(key({ senderType: 'system', eventMeta: reminder, messageId: 118672 }), 'n8n:a0da1344-0000-4000-8000-000000000000:118672')
+  assert.equal(key({ senderType: 'system', eventMeta: reminder, messageId: '118672' }), 'n8n:a0da1344-0000-4000-8000-000000000000:118672')
+  for (const input of [
+    { senderType: 'user', eventMeta: wake, messageId: 1 },
+    { senderType: 'agent', eventMeta: wake, messageId: 1 },
+    { senderType: 'email', eventMeta: wake, messageId: 1 },
+    { senderType: 'system', eventMeta: { ...wake, source: 'n8n' }, messageId: 1 },
+    { senderType: 'system', eventMeta: { source: 'scheduler', payload: JSON.stringify(wake.payload) }, messageId: 1 },
+    { senderType: 'system', eventMeta: { source: 'scheduler', payload: [wake.payload] }, messageId: 1 },
+    { senderType: 'system', eventMeta: { source: 'scheduler', payload: { fireId: '' } }, messageId: 0 },
+    { senderType: 'system', eventMeta: { source: 'scheduler', payload: { fireId: 'x'.repeat(300) } }, messageId: null },
+    { senderType: 'system', eventMeta: reminder, messageId: null },
+    { senderType: 'system', eventMeta: reminder, messageId: 0 },
+    { senderType: 'system', eventMeta: null, messageId: 1 },
+    {},
+  ]) assert.equal(key(input), null, JSON.stringify(input))
+  // Any other scheduler card with a usable message id is that message: restart recovery re-offers it unchanged.
+  assert.equal(key({ senderType: 'system', eventMeta: { source: 'scheduler', payload: { fireId: '' } }, messageId: 4242 }), 'scheduler:4242')
+  assert.equal(key({ senderType: 'system', eventMeta: { source: 'scheduler', payload: { actingUserId: OWNER } }, messageId: 4242 }), 'scheduler:4242')
+})
+
+test('the fire ledger: read on every check, pruned on every write, a junk file is empty, another writer is merged', (t) => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hoai-fires-')))
+  t.after(() => rmSync(base, { recursive: true, force: true }))
+  const path = join(base, '909', 'private-fires.json')
+  const clock = { now: 1_800_000_000_000 }
+  const ledger: any = createFireLedgerOf({ path, now: () => clock.now })
+  assert.ok(ledger, 'createFireLedger exists')
+  assert.equal(ledger.handledAt('native:a'), null)
+  assert.equal(ledger.record('native:a'), true)
+  assert.equal(ledger.handledAt('native:a'), clock.now)
+  // Another daemon of the same agent (a handover) records into the same file: both survive.
+  const rival: any = createFireLedgerOf({ path, now: () => clock.now })
+  clock.now += 1000
+  assert.equal(rival.record('native:b'), true)
+  assert.equal(ledger.handledAt('native:b'), clock.now, 'a key written by another writer is seen')
+  assert.equal(ledger.record('native:c'), true)
+  assert.deepEqual(Object.keys(readPrivateJson(path, 262144).fires).sort(), ['native:a', 'native:b', 'native:c'])
+  // 48 hours plus one millisecond after 'a': it is gone from reads and from the next write.
+  clock.now += 48 * HOUR + 1 - 1000
+  assert.equal(ledger.handledAt('native:a'), null)
+  assert.equal(ledger.record('native:d'), true)
+  assert.deepEqual(Object.keys(readPrivateJson(path, 262144).fires).sort(), ['native:b', 'native:c', 'native:d'])
+  // A junk file reads as empty and is replaced on the next write; nothing throws.
+  writeFileSync(path, '{not json')
+  assert.equal(ledger.handledAt('native:d'), null)
+  assert.equal(ledger.record('native:e'), true)
+  assert.deepEqual(Object.keys(readPrivateJson(path, 262144).fires), ['native:e'])
+  // Bounded: the oldest keys go first past the cap.
+  for (let i = 0; i < 1100; i++) { clock.now += 1; ledger.record(`native:k${i}`) }
+  const kept = Object.keys(readPrivateJson(path, 262144).fires)
+  assert.equal(kept.length, 1000)
+  assert.ok(kept.includes('native:k1099') && !kept.includes('native:k0') && !kept.includes('native:e'))
+  // A path that cannot be written answers false and never throws.
+  const blocked: any = createFireLedgerOf({ path: join(base, '909', 'private-fires.json', 'x', 'y.json'), now: () => clock.now })
+  assert.equal(blocked.record('native:z'), false)
+  assert.equal(blocked.handledAt('native:z'), null)
 })
