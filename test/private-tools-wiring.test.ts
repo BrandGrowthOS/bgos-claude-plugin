@@ -70,7 +70,7 @@ test('all three admitted message lanes use opaque private delivery identity and 
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
   // The fires this agent opened a turn for persist in its own state folder (0.68.4): a replay after a restart opens none.
   assert.match(source, /const privateFires = createFireLedger\(\{ path: privateFiresPath\(FLOOR_STATE_ROOT, ASSISTANT_ID\) \}\)/)
-  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\) \}\)/)
+  assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\), onUnrecorded: \(info\) => log\(privateUnrecordedLine\(info\)\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
 })
 
@@ -106,8 +106,10 @@ test('every lane names the scheduled fire it delivers, with the same fields its 
       const bindings = { privateFireKey, msg: { message: { id: 118303, eventMeta } }, view: { messageId: 118303, eventMetaRaw: eventMeta, senderKind: 'user' },
         payload: { eventMeta }, messageId: 118303, pollSenderType: 'system', isSystem: true, wsSenderType: 'system' }
       assert.equal(execute('return ' + match![1], bindings), expected, line.trim().slice(0, 120))
-      // An owner's message on the same lane names no fire.
-      assert.equal(execute('return ' + match![1], { ...bindings, pollSenderType: 'user', isSystem: false, wsSenderType: 'user' }), null)
+      // An owner's message on the same lane is its message id (release 0.68.4: restart recovery re-offers it too).
+      assert.equal(execute('return ' + match![1], { ...bindings, pollSenderType: 'user', isSystem: false, wsSenderType: 'user' }), 'owner:118303')
+      // A peer agent's message on the same lane names nothing.
+      assert.equal(execute('return ' + match![1], { ...bindings, pollSenderType: 'agent', isSystem: false, view: { ...bindings.view, senderKind: 'agent' }, wsSenderType: 'agent' }), null)
     }
   }
 })

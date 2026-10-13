@@ -79,6 +79,8 @@ const createFireLedgerOf: (options: { path: string, now?: () => number }) => any
   (privateTurnModule as any).createFireLedger ?? (() => undefined)
 const privateReplayLineOf: (replay: Record<string, unknown>) => string =
   (privateTurnModule as any).privateReplayLine ?? ((replay) => `(no replay line: ${JSON.stringify(replay)})`)
+const privateUnrecordedLineOf: (info: Record<string, unknown>) => string =
+  (privateTurnModule as any).privateUnrecordedLine ?? ((info) => `(no unrecorded line: ${JSON.stringify(info)})`)
 const explainOf = (tracker: any, markerPaths: string[]): string =>
   typeof tracker.explain === 'function' ? tracker.explain({ markerPaths }) : '(no explain)'
 
@@ -182,6 +184,8 @@ function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
     /** server.ts logs each replayed fire through privateReplayLine (onReplay), and each revoke (onRevoke). */
     const replays: string[] = []
     const revokes: string[] = []
+    /** server.ts logs a person's message it could not record (privateUnrecordedLine, onUnrecorded). */
+    const unrecorded: string[] = []
     /** The agent's own fire ledger, in its own state folder (server.ts privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID)). */
     const firesPath = privateFiresPathOf(root, id)
 
@@ -194,6 +198,7 @@ function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
         now, fires: createFireLedgerOf({ path: firesPath, now }),
         onRepeat: (repeat) => repeats.push(privateRepeatLine(repeat)),
         onReplay: (replay) => replays.push(privateReplayLineOf(replay)),
+        onUnrecorded: (info) => unrecorded.push(privateUnrecordedLineOf(info)),
         onRevoke: (info) => revokes.push(privateRevokeLineOf(info)),
       })
       const turnChat = createTurnChatTracker()
@@ -229,7 +234,7 @@ function fleetHost(t: any, { now = Date.now }: { now?: () => number } = {}) {
     let marker: { path: string; marker: { turnId: string } } | null = null
 
     const a = {
-      name, id, chatId, folder, root, markerPaths, logs, repeats, begins, replays, revokes, firesPath,
+      name, id, chatId, folder, root, markerPaths, logs, repeats, begins, replays, revokes, unrecorded, firesPath,
       get session() { return session },
       get tracker() { return life.tracker },
       get intake() { return life.intake },
@@ -1032,15 +1037,161 @@ test('Vera replay: two agents on one home keep separate sets', (t) => {
   assert.equal(turnOf(vera, wake), null, 'Vera still knows her own')
 })
 
-test('Vera replay: owner messages are untouched, delivered again after a restart they open again', (t) => {
+// Vera, 2026-10-13 15:05Z, 15:13Z and 15:15Z (Mark on 2bf7978): restart recovery re-offered KC's owner message 119731,
+// answered as 119866, on every restart (lib/poll-core.ts counts an assistant row as an answer only right after a user
+// row, and a system row sat between), and each time it was admitted as a fresh owner private turn. A person's message
+// is now in the ledger too, as owner:<message id>, once it opened a usable turn (release 0.68.4).
+const ledgerKeysOf = (a: any): string[] => Object.keys(readPrivateJson(a.firesPath, 262144)?.fires ?? {})
+
+test('Vera owner replay: KC\'s answered message, re-offered after each restart, reaches the agent as text and opens no private turn', (t) => {
   const host = fleetHost(t)
   const vera = host.agent('vera', '909', 5001)
-  const owner = ownerFrame(vera.chatId)
-  assert.equal(turnOf(vera, owner), OWNER)
+  const kc = ownerFrame(vera.chatId, 'Can you check the Tasks board and tell me what is overdue?')
+  assert.equal(turnOf(vera, kc), OWNER, 'the first delivery opens the owner turn')
+  for (const restart of [1, 2, 3]) {
+    vera.restart()
+    const before = vera.begins.length
+    const prompt = vera.deliver(kc)
+    vera.pump()
+    assert.equal(vera.privateCall(), null, `restart ${restart}: the re-offer opens no turn (2bf7978 admitted it as a fresh owner turn)`)
+    const handledAt = readPrivateJson(vera.firesPath, 262144)?.fires?.[`owner:${kc.messageId}`]
+    assert.equal(typeof handledAt, 'number', 'recorded once its first turn was usable')
+    assert.match(prompt, /Can you check the Tasks board/, 'the replay still reaches the agent as text')
+    assert.match(prompt, /^<channel [^>]*>\n\[replayed: this message was already handled at [^;]+; it opens no private turn\]\n/)
+    assert.ok(prompt.includes(`already handled at ${new Date(handledAt).toISOString()};`), 'the time it was first handled, not now')
+    assert.equal(vera.replays.length, restart, 'one line per replayed prompt')
+    assert.equal(vera.replays.at(-1), `private turn: replayed fire owner:${kc.messageId}, already handled at ${new Date(handledAt).toISOString()}`)
+    assert.ok(!vera.begins.slice(before).some((line: string) => /admitted its sender/.test(line)), vera.begins.join('\n'))
+    assert.match(explainOf(vera.tracker, vera.markerPaths), /no private turn is open \(the last prompt, in session [^:]+: replayed\)/)
+    vera.hook('Stop', { stop_hook_active: false })
+    vera.pump()
+  }
+  assert.deepEqual(ledgerKeysOf(vera), [`owner:${kc.messageId}`], 'a replay records nothing')
+})
+
+test('Vera owner replay, control: a new owner message after the restart opens its turn, before and after the replay', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
   vera.restart()
-  assert.equal(turnOf(vera, owner), OWNER, 'an owner message carries no fire, so restart recovery re-offering it still opens')
+  assert.equal(turnOf(vera, ownerFrame(vera.chatId, 'A new question, sent after the restart.')), OWNER, 'a new owner message opens')
+  assert.equal(turnOf(vera, kc), null, 'the re-offer does not')
+  assert.equal(turnOf(vera, ownerFrame(vera.chatId, 'And one more.')), OWNER, 'the next new one opens again')
+  assert.equal(vera.replays.length, 1)
+})
+
+test('Vera owner replay, control: the re-offer injected into a new owner turn ends it, and is marked as a replay', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
+  vera.restart()
+  vera.deliver(ownerFrame(vera.chatId, 'A new question, sent after the restart.'))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the new message opens its turn')
+  const injected = vera.card(kc)
+  assert.match(injected, /^<channel [^>]*>\n\[replayed: this message was already handled at /)
+  assert.equal(vera.privateCall(), null, 'the old request never runs with the owner\'s authority')
+  assert.match(vera.revokes.at(-1)!, /^private turn: a delivery that replays a scheduled fire, voice consult or message already handled \(chat 5001\) ended the private turn/)
+})
+
+test('Vera owner replay, control: the boot order, the re-offer and a new owner message both delivered before the first prompt', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
+  vera.restart()
+  // The boot poll's sweep delivers the re-offer, and a new message arrives, before any prompt begins.
+  const replay = vera.card(kc)
+  const fresh = vera.card(ownerFrame(vera.chatId, 'A new question, sent during the boot.'))
+  // Each runs as its own prompt, in order: the re-offer opens nothing, the new message opens its turn.
+  vera.hook('UserPromptSubmit', { prompt: replay })
+  vera.pump()
+  assert.equal(vera.privateCall(), null)
+  assert.equal(vera.replays.length, 1)
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  vera.hook('UserPromptSubmit', { prompt: fresh })
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER, 'the new message opens its turn')
+})
+
+test('Vera owner replay, control: a new owner message whose prompt begins while the re-offer still waits opens no turn; the next one does', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
+  vera.restart()
+  vera.card(kc)
+  vera.deliver(ownerFrame(vera.chatId, 'A new question, its prompt first.'))
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'the old request may run inside this turn: nobody may act in it')
+  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire, voice consult or message was delivered just before it, and the CLI may run it inside this turn$/)
+  vera.deliver(ownerFrame(vera.chatId))
+  vera.pump()
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+})
+
+test('Vera owner replay, control: an owner message that never got a usable turn of its own still opens one when re-offered', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  // Begun, but no marker: never usable.
+  const unmarked = ownerFrame(vera.chatId, 'The private hook never ran for this one.')
+  vera.deliver(unmarked, { privateRuns: 0 })
+  vera.pump()
+  assert.equal(vera.privateCall(), null, 'no marker, no usable turn')
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // Injected into another owner turn with no prompt of its own (the same owner, the same chat: that turn stands).
+  vera.deliver(ownerFrame(vera.chatId, 'The turn it was injected into.'))
+  vera.pump()
+  const injected = ownerFrame(vera.chatId, 'Injected mid turn.')
+  vera.card(injected)
+  assert.equal(vera.privateCall()?.actingUserId, OWNER)
+  vera.hook('Stop', { stop_hook_active: false })
+  vera.pump()
+  // Delivered, never begun before the restart.
+  const lost = ownerFrame(vera.chatId, 'Delivered just before the restart.')
+  vera.card(lost)
+  const keys = ledgerKeysOf(vera)
+  for (const frame of [unmarked, injected, lost]) assert.ok(!keys.includes(`owner:${frame.messageId}`), `${frame.text}: ${keys.join(', ')}`)
+  vera.restart()
+  for (const frame of [unmarked, injected, lost]) assert.equal(turnOf(vera, frame), OWNER, `${frame.text}: its re-offer opens`)
   assert.equal(vera.replays.length, 0)
-  assert.equal(existsSync(vera.firesPath), false, 'nothing recorded for an owner message')
+})
+
+test('Vera owner replay, control: two agents on one home keep separate entries', (t) => {
+  const host = fleetHost(t)
+  const vera = host.agent('vera', '909', 5001)
+  const nova = host.agent('nova', '910', 5002)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
+  assert.notEqual(vera.firesPath, nova.firesPath)
+  assert.ok(!ledgerKeysOf(nova).includes(`owner:${kc.messageId}`), 'nothing in Nova\'s ledger')
+  // The same message id reaching Nova (one chat both agents sit in) is not hers to have handled.
+  nova.restart()
+  assert.equal(turnOf(nova, { ...kc, chatId: nova.chatId }), OWNER)
+  vera.restart()
+  assert.equal(turnOf(vera, kc), null, 'Vera still knows her own')
+  const other = ownerFrame(nova.chatId)
+  assert.equal(turnOf(nova, other), OWNER)
+  vera.restart()
+  assert.equal(turnOf(vera, { ...other, chatId: vera.chatId }), OWNER, 'and Nova\'s own is not Vera\'s')
+})
+
+test('Vera owner replay, control: an owner message handled more than 48 hours ago opens again; one handled 47 hours ago does not', (t) => {
+  const clock = { now: Date.now() }
+  const host = fleetHost(t, { now: () => clock.now })
+  const vera = host.agent('vera', '909', 5001)
+  const kc = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, kc), OWNER)
+  vera.restart()
+  clock.now += 47 * HOUR
+  assert.equal(turnOf(vera, kc), null, '47 hours later it is still a replay')
+  vera.restart()
+  clock.now += 2 * HOUR
+  assert.equal(turnOf(vera, kc), OWNER, '49 hours after it was handled the key has expired')
 })
 
 test('Vera replay: a fire whose key cannot be recorded gives no usable turn (fail closed), and the refusal says so', (t) => {
@@ -1055,7 +1206,14 @@ test('Vera replay: a fire whose key cannot be recorded gives no usable turn (fai
   assert.match(explainOf(vera.tracker, vera.markerPaths), new RegExp(`but its scheduled fire native:${wake.eventMeta.payload.fireId} could not be recorded as handled`))
   vera.hook('Stop', { stop_hook_active: false })
   vera.pump()
-  assert.equal(turnOf(vera, ownerFrame(vera.chatId)), OWNER, 'an owner message does not need the ledger')
+  const owner = ownerFrame(vera.chatId)
+  assert.equal(turnOf(vera, owner), OWNER, 'an owner message does not need the ledger')
+  const line = `private turn: owner:${owner.messageId} could not be recorded in the fire ledger; its turn stands, but a re-offer of this message after a restart would open a private turn again`
+  assert.deepEqual(vera.unrecorded, [line], 'and the daemon says its replay will not be caught')
+  // Not recorded, so its re-offer after a restart opens as on 0.68.3 (fail open for a person's own message).
+  vera.restart()
+  assert.equal(turnOf(vera, owner), OWNER)
+  assert.deepEqual(vera.unrecorded, [line, line])
 })
 
 test('Vera replay: a replayed fire injected into the owner\'s running turn ends it, says why, and is marked as a replay', (t) => {
@@ -1072,7 +1230,7 @@ test('Vera replay: a replayed fire injected into the owner\'s running turn ends 
   const injected = vera.card(wake)
   assert.match(injected, /^<channel [^>]*>\n\[replayed: this scheduled fire was already handled at \d{4}-\d\d-\d\dT[^;]+; it opens no private turn\]\n/)
   assert.equal(vera.privateCall(), null, 'nobody may act until the next prompt')
-  assert.match(vera.revokes.at(-1)!, /^private turn: a delivery that replays a scheduled fire already handled \(chat 5001\) ended the private turn/)
+  assert.match(vera.revokes.at(-1)!, /^private turn: a delivery that replays a scheduled fire, voice consult or message already handled \(chat 5001\) ended the private turn/)
 })
 
 test('Vera replay: the boot order, a replay swept in before the owner\'s backlog prompt: that prompt opens no turn, the next one does', (t) => {
@@ -1087,7 +1245,7 @@ test('Vera replay: the boot order, a replay swept in before the owner\'s backlog
   vera.deliver(ownerFrame(vera.chatId, 'hi, are the boards up to date?'))
   vera.pump()
   assert.equal(vera.privateCall(), null, 'the replay may run inside this turn: nobody may act in it')
-  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire or voice consult was delivered just before it, and the CLI may run it inside this turn$/)
+  assert.match(vera.begins.at(-1)!, /opens no private turn: a replayed scheduled fire, voice consult or message was delivered just before it, and the CLI may run it inside this turn$/)
   // The next prompt (no Stop in between: the replay was taken in the turn above, or is its own prompt by now) opens.
   vera.deliver(ownerFrame(vera.chatId))
   vera.pump()
@@ -1182,7 +1340,7 @@ test('Vera replay: a fire whose turn opened but never became usable (no marker) 
   assert.equal(turnOf(vera, wake), OWNER, 'the replay is its one chance, and it opens')
 })
 
-test('privateFireKey: a native wake by its fireId, an n8n card by its action and message id, nothing else', () => {
+test('privateFireKey: a native wake by its fireId, an n8n card by its action and message id, a person\'s message by its id, nothing else', () => {
   const key = (input: Record<string, unknown>) => privateFireKeyOf(input)
   const wake = { source: 'scheduler', payload: { scheduledTaskId: 77, fireId: '3f2a9c1e-0000-4000-8000-000000000001', actingUserId: OWNER } }
   assert.equal(key({ senderType: 'system', eventMeta: wake, messageId: 1 }), 'native:3f2a9c1e-0000-4000-8000-000000000001')
@@ -1190,9 +1348,19 @@ test('privateFireKey: a native wake by its fireId, an n8n card by its action and
   const reminder = { source: 'scheduler', payload: { scheduled_action_id: 'a0da1344-0000-4000-8000-000000000000', agent_id: null } }
   assert.equal(key({ senderType: 'system', eventMeta: reminder, messageId: 118672 }), 'n8n:a0da1344-0000-4000-8000-000000000000:118672')
   assert.equal(key({ senderType: 'system', eventMeta: reminder, messageId: '118672' }), 'n8n:a0da1344-0000-4000-8000-000000000000:118672')
+  // A person's own message is its message id, whatever eventMeta it carries (release 0.68.4).
+  assert.equal(key({ senderType: 'user', messageId: 119731 }), 'owner:119731')
+  assert.equal(key({ senderType: 'USER', eventMeta: wake, messageId: '119731' }), 'owner:119731')
   for (const input of [
-    { senderType: 'user', eventMeta: wake, messageId: 1 },
+    { senderType: 'user', messageId: 0 },
+    { senderType: 'user', messageId: -5 },
+    { senderType: 'user', messageId: 1.5 },
+    { senderType: 'user', messageId: 'abc' },
+    { senderType: 'user', messageId: null },
+    { senderType: 'user' },
     { senderType: 'agent', eventMeta: wake, messageId: 1 },
+    { senderType: 'agent', messageId: 1 },
+    { senderType: 'external_email', messageId: 1 },
     { senderType: 'email', eventMeta: wake, messageId: 1 },
     { senderType: 'system', eventMeta: { ...wake, source: 'n8n' }, messageId: 1 },
     { senderType: 'system', eventMeta: { source: 'scheduler', payload: JSON.stringify(wake.payload) }, messageId: 1 },

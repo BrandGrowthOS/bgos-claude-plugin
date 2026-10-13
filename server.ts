@@ -143,7 +143,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
-import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine } from './lib/private-turn.mjs'
+import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -8622,9 +8622,10 @@ const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
 // The scheduled fires this agent opened a private turn for, in its own state folder (0.68.4): a fire that restart
-// recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn.
+// recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn. A person's own
+// message the same way, as owner:<message id>.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
-const privateTurns = createPrivateTurnTracker({ fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)) })
+const privateTurns = createPrivateTurnTracker({ fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)), onUnrecorded: (info) => log(privateUnrecordedLine(info)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
