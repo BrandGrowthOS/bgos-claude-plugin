@@ -143,6 +143,7 @@ import {
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
 import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
+import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
   HOST_POSTED_REFUSAL,
@@ -8620,7 +8621,10 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
-const privateTurns = createPrivateTurnTracker({ onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)) })
+// The scheduled fires this agent opened a private turn for, in its own state folder (0.68.6): a fire that restart
+// recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn.
+const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
+const privateTurns = createPrivateTurnTracker({ fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)) })
 const PRIVATE_MARKER_PATHS = FLOOR_KEYS.map((key) => privateMarkerPath(FLOOR_STATE_ROOT, key))
 // Every channel card passes here. One that skipped privateTurns.deliver (a meeting line, a button tap, a voice
 // dispatch or stop) names nobody, so it ends a voice consult's private turn, whose authority is that consult's
@@ -9288,7 +9292,7 @@ function onHookPayload(payload: Record<string, unknown>, line?: SpoolLine): void
     const matched = turnChat.matchDelivered(payload.prompt)
     // One line per prompt that carried a delivery token, or that carries a delivered message without one: what
     // the private turn decided. Without it a wake that opened no turn left nothing in the log (Vera, 2026-10-12).
-    if (began !== 'repeat' && (began !== 'no-token' || matched !== null)) log(privateBeginLine(began, hookSessionId))
+    if (began !== 'repeat' && began !== 'replayed' && (began !== 'no-token' || matched !== null)) log(privateBeginLine(began, hookSessionId))
     turnChat.beginTurn({ chatId: matched?.chatId ?? null, now: Date.now() })
   }
   const { next, effects } = applyHookEventToTurn(hookTurn, event, receivedAt)
@@ -10319,7 +10323,7 @@ async function pollChat(chatId: string): Promise<void> {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: pollAgentOrigin?.sourceAssistantId, fireKey: privateFireKey({ senderType: pollSenderType, eventMeta: msg.message.eventMeta, messageId: msg.message.id }), actingUserId: privateActor({ senderType: pollSenderType, senderUserId: privateSenderUserId(msg.message), agentOrigin: pollAgentOrigin, eventMeta: msg.message.eventMeta }) }),
           meta: finalInboundMeta(
             pollChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -12615,7 +12619,7 @@ async function forwardStreamInbound(
       deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: view.agentOrigin?.sourceAssistantId, fireKey: privateFireKey({ senderType: isSystem ? 'system' : view.senderKind, eventMeta: view.eventMetaRaw, messageId: view.messageId }), actingUserId: privateActor({ senderType: isSystem ? 'system' : view.senderKind, senderUserId: privateSenderUserId(view.raw), agentOrigin: view.agentOrigin, eventMeta: view.eventMetaRaw }) }),
           meta: finalInboundMeta(
             streamChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -13719,7 +13723,7 @@ function connectWebsocket(): void {
       void trackMessageOperation(() => deliverInbound(steerPlan, (interrupted) => mcp.notification({
         method: 'notifications/claude/channel',
         params: {
-          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
+          content: privateTurns.deliver({ content, chatId, peerSourceAssistantId: wsAgentOrigin?.sourceAssistantId, fireKey: privateFireKey({ senderType: wsSenderType, eventMeta: payload?.eventMeta ?? payload?.event_meta, messageId }), actingUserId: privateActor({ senderType: wsSenderType, senderUserId: privateSenderUserId(payload), agentOrigin: wsAgentOrigin, eventMeta: payload?.eventMeta ?? payload?.event_meta }) }),
           meta: finalInboundMeta(
             wsChannel.meta,
             slashDelivery ? slashDelivery.meta : null,
@@ -15187,6 +15191,10 @@ async function main(): Promise<void> {
   // where undoing it is safe.
   let pollLoopKicked = false
   const armDelivery = async (): Promise<void> => {
+    // Attached before anything is delivered (0.68.6). The private turn hook writes a delivered prompt's marker only
+    // under its own daemon's attached entry, and the boot poll delivers backlog before this arm ends: attached only by
+    // startHookIntakeIfHolder at the end, the first backlog prompt after a restart found no entry and lost its turn.
+    markFloorAttachedIfHolder()
     if (deliveryLoopsStarted) {
       await phase('re-discover chats', () => discoverChats())
       // Catch the cursor file up BEFORE the first poll of the new spell. While

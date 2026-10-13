@@ -73,7 +73,11 @@ function workspace() {
   return { ws, configDir }
 }
 
-function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[] | null } = {}) {
+/**
+ * `claudeKnown: false` is Vera's Windows daemon (2026-10-13): its PowerShell parent walk missed, so it does not know
+ * its claude pid. `unreadable` is a process table that cannot be read at all.
+ */
+function harness({ forceOutcomes, claudeKnown = true, unreadable = false }: { forceOutcomes?: (boot: number) => string[] | null; claudeKnown?: boolean; unreadable?: boolean } = {}) {
   const { ws, configDir } = workspace()
   const clock = { now: T0 }
   const files = new Map<string, { text: string; mtimeMs: number }>()
@@ -158,8 +162,8 @@ function harness({ forceOutcomes }: { forceOutcomes?: (boot: number) => string[]
         // The workspace never had the hook rail, so no turn signal: the 30 minute rule.
         safeState: () => ({ turnInFlight: false, turnSignal: 'none', ...IDLE }),
         activityMs: () => [g.bootAtMs],
-        claudePid: () => g.claude,
-        listProcesses: async () => ({
+        claudePid: () => (claudeKnown ? g.claude : null),
+        listProcesses: async () => (unreadable ? { ok: false, error: 'powershell_failed:1' } : {
           ok: true,
           processes: live().flatMap((x) => [
             { pid: x.claude, ppid: 4000, command: `claude ${x.child.args.join(' ')}` },
@@ -277,6 +281,37 @@ test('the restarted daemon writes the hook AGAIN (its detection disagreed): the 
   assert.equal(h.gens.length, 2, `a second self-requested restart:\n${h.logs.join('\n')}`)
   assert.equal(h.markersWritten.length, 1)
   assert.ok(h.logs.some((l) => l.includes(`daemon ${h.gens[1].daemon}: hook restart: `) && /already/.test(l)), h.logs.join('\n'))
+  h.live()[0].child.emit('exit', 0, null)
+  assert.equal(await run, 0)
+})
+
+test('Vera: a Windows daemon that cannot name its claude still gets its ONE restart, the table names claude (0.68.6)', async () => {
+  // Armed at 07:46:00, "waiting: process_tree_unreadable" at 07:47:00, then nothing: a fresh install still needed a
+  // manual second restart. The whole table names claude when the daemon's own parent walk did not.
+  const h = harness({ claudeKnown: false })
+  const run = h.launch()
+  await until(() => h.gens.length === 1, 'the first claude')
+  assert.deepEqual(h.gens[0].outcomes, ['registered'])
+  await h.pass(31 * 60_000)
+  await until(() => h.gens.length === 2, `the launcher relaunch:\n${h.logs.join('\n')}`)
+  assert.deepEqual(h.gens[1].child.args.slice(-2), ['--resume', PIN])
+  assert.equal(h.markersWritten.length, 1, 'one marker, through the ladder')
+  await h.pass(60 * 60_000)
+  assert.equal(h.gens.length, 2, 'exactly one restart')
+  h.live()[0].child.emit('exit', 0, null)
+  assert.equal(await run, 0)
+})
+
+test('Vera: a process table that cannot be read at all never restarts the agent, and the daemon says so within the bound', async () => {
+  const h = harness({ claudeKnown: false, unreadable: true })
+  const run = h.launch()
+  await until(() => h.gens.length === 1, 'the first claude')
+  await h.pass(4 * 3600_000)
+  assert.equal(h.gens.length, 1, 'no restart it cannot prove safe')
+  assert.equal(h.markersWritten.length, 0)
+  const told = h.logs.filter((l) => /hook restart: waited \d+ min without a readable process table \(powershell_failed:1\)/.test(l))
+  assert.equal(told.length, 1, h.logs.join('\n'))
+  assert.match(told[0]!, /restart this agent by hand to load the private turn hook/)
   h.live()[0].child.emit('exit', 0, null)
   assert.equal(await run, 0)
 })

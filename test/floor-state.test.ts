@@ -309,6 +309,18 @@ test('a launcher start with no CLAUDE_PROJECT_DIR still asks, and the relay take
   }
 })
 
+test('server.ts attaches before the arm delivers anything, so a backlog prompt right after a restart finds its daemon (0.68.6)', () => {
+  // Linux lab, 2026-10-13: the boot poll delivered a backlog card before the arm's last line attached the daemon,
+  // and the private turn hook, finding no daemon of its own, wrote no marker: that prompt's private turn was lost.
+  const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const start = server.indexOf('const armDelivery = async (): Promise<void> => {')
+  assert.ok(start > 0)
+  const body = server.slice(start, server.indexOf('\n  }\n', start))
+  const code = body.split('\n').slice(1).map((line) => line.trim()).filter((line) => line && !line.startsWith('//'))
+  assert.equal(code[0], 'markFloorAttachedIfHolder()', 'the first statement of armDelivery attaches the daemon')
+  assert.ok(body.indexOf('markFloorAttachedIfHolder()') < body.indexOf('discoverChats'), 'before any chat is polled')
+})
+
 test('server.ts keys the floor by daemonFloorFolders with LAUNCH_CWD, the folder bgos-launch hands through', () => {
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(
