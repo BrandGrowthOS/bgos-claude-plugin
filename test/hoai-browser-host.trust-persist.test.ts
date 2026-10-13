@@ -215,17 +215,22 @@ test('a missing or invalid agent id has no key and saves nothing anywhere', asyn
     assert.equal(core._profileKey({ assistantId: 900 }), 'assistant-900')
     assert.equal(core._profileKey({ assistantId: '900' }), 'assistant-900', 'the id as digits is the same agent')
     assert.notEqual(core._profileKey({ assistantId: 900 }), core._profileKey({ assistantId: 901 }))
+    // The key and the folder read the id the same way: "0900" is agent 900 in both.
+    assert.equal(core._profileKey({ assistantId: '0900' }), 'assistant-900')
+    assert.equal(profileDir(r.agentRoot, '0900' as any), profileDir(r.agentRoot, 900))
 
-    // Through the host: a call with no usable id never reaches a browser.
+    // Through the host a call with no usable id never reaches a browser, so
+    // there is no folder to write in (browserPathsFor refuses the id first).
     for (const choice of ['always_allow', 'trust_site']) {
       const host = startHost(r.agentRoot, choice)
       const nav = await host.call('not-an-id', 'browser_navigate', { url: `${SITE}/` })
       assert.equal(nav.isError, true)
+      assert.equal(host.srv.cards.length, 0, 'no card is raised for a call with no agent')
       await host.stop()
     }
     assert.deepEqual(filesUnder(r.agentRoot), [], 'nothing written under the agent root')
 
-    // And _remember itself, handed a real folder but no usable id, writes nothing.
+    // The save itself: _remember, handed a real folder but no usable id, writes nothing.
     const dir = join(r.home, 'some-profile')
     mkdirSync(dir, { recursive: true })
     for (const choice of ['always_allow', 'trust_site']) {
