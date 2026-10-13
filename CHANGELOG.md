@@ -59,6 +59,8 @@ From #229: three fixes from Mark's run of 0.68.3 on agent 909 (Vera, Windows), a
 
 **Old daemon sweeps.** From 0.68.3 every daemon logs each spool folder it removes (`hook intake: removed the spool of session ...`), in its own log. A spool that vanishes with no such line in any 0.68.3+ daemon's log was removed by an older daemon (or by something outside the plugin). This release does not change the sweep.
 
+**Together: a voice consult and a replayed fire (this release).** #227's consult turn and #229's fire ledger run in one tracker. A replayed fire opens no turn even on a card that also carries a consult stamp; a fresh consult after a replay still opens its own turn and ends with the consult; and a replay injected into a consult's turn ends it, for #227's reason (`a delivery that is not this voice consult`). A voice consult is also a fire of its own, `consult:<consult id>`: #227 refuses a consult id delivered a second time while the daemon lives (`consultsSeen`, in memory), and the ledger now refuses it after a restart too, with the card line `[replayed: this voice consult was already handled at <time>; it opens no private turn]`. Guard: `test/private-turn-consult-replay.test.ts` (on #227 alone three of its six cases fail; on the plain merge of both, the restart case fails).
+
 From #226: **The PATH baked into an agent's or the watcher's unit is correct for its OS (board row 84296679, Nicole, kc-server).** `/opt/homebrew/bin` is Homebrew's macOS prefix; the rebaked Linux units still carried it. `servicePath` (the watcher's launchd plist and systemd unit) takes the platform and leaves it out of the systemd unit, and `bin/bgos-agent install` adds it only on Darwin. A macOS plist keeps it, and every other directory and the order are unchanged.
 
 

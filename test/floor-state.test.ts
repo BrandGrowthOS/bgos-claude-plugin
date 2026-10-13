@@ -309,7 +309,7 @@ test('a launcher start with no CLAUDE_PROJECT_DIR still asks, and the relay take
   }
 })
 
-test('server.ts attaches before the arm delivers anything, so a backlog prompt right after a restart finds its daemon (0.68.6)', () => {
+test('server.ts attaches before the arm delivers anything, so a backlog prompt right after a restart finds its daemon (0.68.4)', () => {
   // Linux lab, 2026-10-13: the boot poll delivered a backlog card before the arm's last line attached the daemon,
   // and the private turn hook, finding no daemon of its own, wrote no marker: that prompt's private turn was lost.
   const server = readFileSync(join(import.meta.dirname, '..', 'server.ts'), 'utf8').replace(/\r\n/g, '\n')

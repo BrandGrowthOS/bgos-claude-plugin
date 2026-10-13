@@ -1,5 +1,5 @@
 /**
- * The private turn hook finishes inside its registered timeout with a margin, however slowly node starts (0.68.6).
+ * The private turn hook finishes inside its registered timeout with a margin, however slowly node starts (0.68.4).
  *
  * THE REPORT (Data, board row d6aa4f1f, 2026-10-13; Mark's run on Vera, 0.68.3, Windows). The UserPromptSubmit
  * private turn hook timed out on cold start: 3082, 3160 and 3706 ms against its 3000 ms limit. Prompts were still

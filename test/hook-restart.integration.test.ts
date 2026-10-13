@@ -285,7 +285,7 @@ test('the restarted daemon writes the hook AGAIN (its detection disagreed): the 
   assert.equal(await run, 0)
 })
 
-test('Vera: a Windows daemon that cannot name its claude still gets its ONE restart, the table names claude (0.68.6)', async () => {
+test('Vera: a Windows daemon that cannot name its claude still gets its ONE restart, the table names claude (0.68.4)', async () => {
   // Armed at 07:46:00, "waiting: process_tree_unreadable" at 07:47:00, then nothing: a fresh install still needed a
   // manual second restart. The whole table names claude when the daemon's own parent walk did not.
   const h = harness({ claudeKnown: false })

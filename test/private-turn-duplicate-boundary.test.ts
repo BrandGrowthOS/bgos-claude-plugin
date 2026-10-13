@@ -70,7 +70,7 @@ const privateBeginLineOf: (outcome: string, sessionId: string) => string =
   (privateTurnModule as any).privateBeginLine ?? ((outcome) => `(no begin line: ${outcome})`)
 const privateRevokeLineOf: (info: Record<string, unknown>) => string =
   (privateTurnModule as any).privateRevokeLine ?? ((info) => `(no revoke line: ${JSON.stringify(info)})`)
-// The replayed fire dedupe (0.68.6), read the same way so this file still loads on 0.68.3.
+// The replayed fire dedupe (0.68.4), read the same way so this file still loads on 0.68.3.
 const privateFireKeyOf: (input: Record<string, unknown>) => string | null =
   (privateTurnModule as any).privateFireKey ?? (() => null)
 const privateFiresPathOf: (root: string, assistantId: string) => string =
@@ -896,7 +896,7 @@ test('what a scheduler card needs for a private turn: actingUserId, and nothing 
   assert.equal(turn({ ...withPayload(n8nReminderFrame(vera.chatId), { actingUserId: OWNER }), senderType: 'agent', agentOrigin: { sourceAssistantId: 888, sourceName: 'Mark', targetAssistantId: 909 } }), null)
 })
 
-// ── Vera, 2026-10-13: a wake already handled comes back after a restart (0.68.6) ──
+// ── Vera, 2026-10-13: a wake already handled comes back after a restart (0.68.4) ──
 //
 // After restarts on 0.68.3, two old native wakes (messages 118303 and 118672) came back as backlog and were each
 // admitted as a FRESH private turn, one with a new private-turn token. The poll lane's boot restart recovery re-offers

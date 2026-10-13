@@ -223,7 +223,7 @@ test('a background job under claude holds it, and so does a process table it can
   assert.ok(r.state.listings > 0, 'it looked')
   assert.equal(r.fs.files.has(RECORD), false)
   r.state.claudePid = CLAUDE
-  // The table was read while claude was unnamed (0.68.6), so the next look waits out the listing backoff.
+  // The table was read while claude was unnamed (0.68.4), so the next look waits out the listing backoff.
   await r.pass(need().HOOK_RESTART_LIST_BACKOFF_MS + need().HOOK_RESTART_POLL_MS)
   assert.equal(r.requests.length, 1)
 })
@@ -252,7 +252,7 @@ test('it says why it waits, once per reason, so a restart that cannot happen is 
   await r.pass(15 * 60_000)
   const waits = r.logs.filter((l) => l.startsWith('hook restart: waiting'))
   assert.equal(waits.filter((l) => l.includes('turn_in_flight')).length, 1, r.logs.join('\n'))
-  // A claude the daemon cannot name (and the table does not name either) has its own reason since 0.68.6.
+  // A claude the daemon cannot name (and the table does not name either) has its own reason since 0.68.4.
   assert.equal(waits.filter((l) => l.includes('claude_not_found')).length, 1, r.logs.join('\n'))
   assert.equal(waits.filter((l) => l.includes('young')).length, 0, 'the first minute is not news')
 })
@@ -473,7 +473,7 @@ test('a hook restart that never arrives says to restart by hand, not that an upd
   assert.deepEqual(l.posted, [])
 })
 
-// ── Vera, 2026-10-13: armed at 07:46:00, "waiting: process_tree_unreadable" at 07:47:00, then nothing (0.68.6) ──
+// ── Vera, 2026-10-13: armed at 07:46:00, "waiting: process_tree_unreadable" at 07:47:00, then nothing (0.68.4) ──
 //
 // The daemon did not know its claude pid: on Windows that comes from a PowerShell parent walk with a 5 s limit,
 // cached as a miss for 10 minutes (server.ts agentClaudePid), and the walk to the top of the tree measured 3.2 to 5 s

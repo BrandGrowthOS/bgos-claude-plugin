@@ -11,7 +11,7 @@ const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name]
 /** The longest the hook waits for the daemon's receipt (<marker>.ready) after writing a live marker. */
 export const PRIVATE_TURN_READY_WAIT_MS = 2500
 /**
- * The latest it waits, counted from its own process start (0.68.6). The CLI's timeout counts from the spawn, and the
+ * The latest it waits, counted from its own process start (0.68.4). The CLI's timeout counts from the spawn, and the
  * 2.5 s used to count from the marker write, so a slow node start added on top: Vera's hook took 3082 to 3706 ms
  * against a 3 s limit (Data, board row d6aa4f1f). The imports cost about 8 ms; the start is what varied. The CLI's
  * timeout for this hook is 5 s (hooks/hooks.json, lib/claude-preseed.mjs PRIVATE_HOOK_TIMEOUT_SECONDS): 2 s over this

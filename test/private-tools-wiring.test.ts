@@ -68,7 +68,7 @@ test('all three admitted message lanes use opaque private delivery identity and 
   assert.match(source, /case 'turn_end': \{\n\s*void finishHookTurn\(effect\.keepCard\)/)
   // A mid-turn delivery that revokes the turn republishes the signed browser context right away.
   // A second record of the same prompt keeps the turn and is logged (test/private-turn-duplicate-boundary.test.ts).
-  // The fires this agent opened a turn for persist in its own state folder (0.68.6): a replay after a restart opens none.
+  // The fires this agent opened a turn for persist in its own state folder (0.68.4): a replay after a restart opens none.
   assert.match(source, /const privateFires = createFireLedger\(\{ path: privateFiresPath\(FLOOR_STATE_ROOT, ASSISTANT_ID\) \}\)/)
   assert.match(source, /const privateTurns = createPrivateTurnTracker\(\{ fires: privateFires, onRevoke: \(info\) => \{ log\(privateRevokeLine\(info\)\); publishBrowserPrivateTurn\(\) \}, onRepeat: \(repeat\) => log\(privateRepeatLine\(repeat\)\), onReplay: \(replay\) => log\(privateReplayLine\(replay\)\) \}\)/)
   assert.match(source, /boardsTransports\(privateCall!\.headers\)/)
@@ -90,7 +90,7 @@ test('actual delivery actor expressions refuse legacy owner userId and user_id i
   }
 })
 
-test('every lane names the scheduled fire it delivers, with the same fields its actor comes from (0.68.6)', () => {
+test('every lane names the scheduled fire it delivers, with the same fields its actor comes from (0.68.4)', () => {
   // Vera, 2026-10-13: a wake re-offered as backlog after a restart opened a second private turn. Each lane must hand
   // deliver() the fire key, or a replay through it is never caught.
   const privateFireKey = (privateTurnModule as any).privateFireKey

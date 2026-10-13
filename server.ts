@@ -8621,7 +8621,7 @@ const HOOK_STEPS_HEARTBEAT_MS = 60_000
 const turnChat = createTurnChatTracker()
 // A mid-turn card from another person revokes the signed browser context at once, not on the next tick.
 // A second record of the same prompt (a second hook source) keeps the turn, and says so once per record.
-// The scheduled fires this agent opened a private turn for, in its own state folder (0.68.6): a fire that restart
+// The scheduled fires this agent opened a private turn for, in its own state folder (0.68.4): a fire that restart
 // recovery re-offers as backlog after a restart reaches the agent as text but opens no second turn.
 const privateFires = createFireLedger({ path: privateFiresPath(FLOOR_STATE_ROOT, ASSISTANT_ID) })
 const privateTurns = createPrivateTurnTracker({ fires: privateFires, onRevoke: (info) => { log(privateRevokeLine(info)); publishBrowserPrivateTurn() }, onRepeat: (repeat) => log(privateRepeatLine(repeat)), onReplay: (replay) => log(privateReplayLine(replay)) })
@@ -15191,7 +15191,7 @@ async function main(): Promise<void> {
   // where undoing it is safe.
   let pollLoopKicked = false
   const armDelivery = async (): Promise<void> => {
-    // Attached before anything is delivered (0.68.6). The private turn hook writes a delivered prompt's marker only
+    // Attached before anything is delivered (0.68.4). The private turn hook writes a delivered prompt's marker only
     // under its own daemon's attached entry, and the boot poll delivers backlog before this arm ends: attached only by
     // startHookIntakeIfHolder at the end, the first backlog prompt after a restart found no entry and lost its turn.
     markFloorAttachedIfHolder()
