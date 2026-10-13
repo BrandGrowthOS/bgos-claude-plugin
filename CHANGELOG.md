@@ -2,6 +2,52 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.6 (2026-10-13)
+
+Three fixes from Mark's run of 0.68.3 on agent 909 (Vera, Windows), and one race the restart proof found.
+
+**A scheduled fire opens one private turn, however often it is delivered.** After restarts on 0.68.3, two old native wakes (messages 118303 and 118672) came back as backlog and were each admitted as a fresh private turn, one with a new private-turn token.
+
+- **Why.**
+  - On every boot, the poll lane's restart recovery re-offers user and system rows from the last 24 hours that it does not count as answered (`lib/poll-core.ts` `selectRestartRecoveryIds`). Only an assistant row directly after a USER row counts, so a wake the agent answered is re-offered on every restart.
+  - Each re-offer is a new delivery, with a new token and a new 15 minute window.
+  - The private turn tracker lives in memory, per process.
+  - Delivery is at least once.
+- **The fix** (`lib/private-turn.mjs`, `server.ts`):
+  - **The record.** Each agent keeps, in its own state folder (`<state>/<assistant id>/private-fires.json`), the scheduled fires it handled, for 48 hours: twice the recovery window. The file survives restarts, is read on every delivery, and is written atomically (once more after a short pause if a Windows rename fails) and pruned on every record, keeping the newest 1000.
+  - **The key** (`privateFireKey`). A native wake is `native:<eventMeta.payload.fireId>`. An n8n Agent Scheduler card is `n8n:<scheduled_action_id>:<message id>`. Any other scheduler card is `scheduler:<message id>`. Only a scheduler system card has one: the same cards an actor can come from. All three delivery lanes pass it.
+  - **Replay, decided at delivery.** A fire found in the record, or already delivered by this daemon, is a replay. It still reaches the agent as text, after a line saying `[replayed: this scheduled fire was already handled at <time>; it opens no private turn]`. Its own prompt opens no private turn, and the daemon logs once: `private turn: replayed fire <key>, already handled at <time>`.
+  - **Replays injected into a turn.** A replay injected into a running turn ends it: `a delivery that replays a scheduled fire already handled (chat C) ended the private turn`. A replay delivered before any turn was open (the boot sweep comes before the hook intake starts) keeps the next prompt from opening one (`opens no private turn: a replayed scheduled fire was delivered just before it, and the CLI may run it inside this turn`). The prompt after that opens as usual.
+  - **When a fire is recorded.** A new fire is recorded when its own turn becomes usable (its marker adopted). One the CLI injected into another turn instead is recorded when the next prompt begins or that turn ends. So a fire delivered but never run, or never usable, before a restart still runs once. A fire that cannot be recorded opens no usable turn (fail closed), and the refusal says so.
+- **Unchanged:** owner messages have no fire and open their turn as before; who may open a private turn; two agents on one home keep separate files. #228's `email_send` takes its basis from the open private turn (`current()`), so a replayed fire, which opens none, can never be its basis.
+- **The race the restart proof found** (`server.ts` `armDelivery`). The daemon wrote its attached floor entry only at the end of the arm, after the boot poll had delivered backlog. The private turn hook of that first backlog prompt then found no daemon of its own, wrote no marker (0.68.3 fails closed there), and the prompt lost its private turn. On Linux this happened on every restart in the lab. The entry is now written first.
+
+**The hook self-restart no longer waits in silence on Windows** (#220). On Vera it logged `armed` at 07:46:00, then `waiting: process_tree_unreadable` at 07:47:00 and nothing more, so a fresh install still needed a manual second restart.
+
+- **Why.**
+  - The process table was readable. The daemon did not know its claude pid: on Windows that comes from a PowerShell parent walk with a 5 s limit, whose miss is cached for 10 minutes (`server.ts` `agentClaudePid`). The walk measured 1.6 to 2.4 s for three links, and 3.2 to 5 s or more to the top of the tree, on an idle PC.
+  - With claude unknown, the controller never listed the table at all. It logged the reason once and waited in silence, and nothing ended the wait.
+  - wmic plays no part: nothing in the plugin calls it.
+- **The fix** (`lib/hook-restart.mjs`):
+  - **The table names claude.** When the daemon does not know its claude, the whole process table names it: the nearest claude above this daemon, the watcher's own rule (`nearestClaudeAncestor`). The whole-table read has a 30 s limit and took 1.1 to 1.8 s on the same PC.
+  - **Errors named.** The waiting line names the reader's error, and a claude found nowhere has its own reason, `claude_not_found`.
+  - **Bounded.** After 60 minutes and at least six failed looks in a row (time the agent was busy adds no looks), the daemon says once: `hook restart: waited N min without a readable process table (<error>), so this daemon cannot prove that no tool or background job is running under claude; restart this agent by hand to load the private turn hook. It looks again every 30 min and asks on its own if the table reads at a safe moment`.
+  - **Never blind.** It never restarts without the table: nothing else proves that no tool or background job is running.
+- **Unchanged:** the safe moment itself (no turn in flight, nothing owed, no job under claude, the quiet window); single use; the ladder.
+
+**The private turn hook ends inside its timeout, however slowly node starts** (board row d6aa4f1f). On Vera the UserPromptSubmit private turn hook timed out on cold starts: 3082, 3160 and 3706 ms against 3000 ms.
+
+- **Why.**
+  - After writing a live marker, the hook waits up to 2.5 s for the daemon's receipt (`.ready`). That wait counted from the marker write, while the CLI's timeout counts from the spawn. So a slow start was added on top: 2.5 s plus 0.6 to 1.2 s of start is exactly Vera's numbers.
+  - The imports cost about 8 ms, so lazy imports would not help.
+  - A start slower than the whole limit was killed before the marker was even written.
+- **The fix: lighter, and a safe margin.**
+  - **Lighter.** The wait ends 2.5 s after the marker, but never later than 3 s after the hook's own process start (`performance.now()`, `bin/hoai-private-turn-hook.mjs` `readyWaitEnd`). The hook's own time is bounded whatever its start cost, and a normal start keeps the whole 2.5 s wait.
+  - **Margin.** The CLI's timeout for the private turn hook is 5 s in all five registrations (`hooks/hooks.json`; clone installs through `lib/claude-preseed.mjs` `PRIVATE_HOOK_TIMEOUT_SECONDS`). That leaves 2 s over the hook's deadline for its creation and exit.
+  - **Existing installs.** An existing clone registration with the old 3 s is rewritten on the next registration (launcher start, update, `bgos-agent`), one entry per event. The daemon's own boot check ignores the timeout, so this costs no extra restart.
+
+**Old daemon sweeps.** From 0.68.3 every daemon logs each spool folder it removes (`hook intake: removed the spool of session ...`), in its own log. A spool that vanishes with no such line in any 0.68.3+ daemon's log was removed by an older daemon (or by something outside the plugin). This release does not change the sweep.
+
 ## 0.68.3 (2026-10-13)
 
 One release carrying five fixes: restart marker takeover (#220), private turn and wake fixes (#221), stale claude on Linux installs (#222), a pending update no longer blocks sends (#223), and Always allow / Trust this site saved per agent (#224).
