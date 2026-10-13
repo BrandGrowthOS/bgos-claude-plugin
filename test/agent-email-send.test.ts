@@ -459,8 +459,9 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
       emailId: block.email_id ? block.email_id.toLowerCase() : null,
       to: block.to ? block.to.toLowerCase() : null,
       subject: block.subject ?? null,
-      bodySha256: block.body_sha256!,
-      textPreview: block.text_preview!,
+      // v6: the server's own hash and preview of the body; any agent written hash or preview is ignored.
+      bodySha256: sha256Hex(block.text ?? ''),
+      textPreview: Array.from(block.text ?? '').slice(0, 1000).join(''),
       expiresAt: clock + 10 * 60_000,
       used: false,
     })
@@ -1379,10 +1380,11 @@ const cliPreview = (input: Record<string, unknown>) =>
 
 const APPROVAL_ID = 'e0c1f4a2-6b1d-4b4f-9a7e-2c3d4e5f6a7b'
 const APPROVAL_CLICK = { id: APPROVAL_ID, expiresAt: '2026-10-13T14:10:00.000Z' }
-/** The block section 1 asks for, for SEND_ARGS. */
+/** The block section 1 asks for (v6: the exact body as `text`), for SEND_ARGS. */
 const SEND_BLOCK = {
   to: 'sam@harborhall.com',
   subject: 'Friday venue check',
+  text: SEND_ARGS.text,
   body_sha256: sha256Hex(SEND_ARGS.text),
   text_preview: SEND_ARGS.text,
 }
@@ -1392,12 +1394,12 @@ test('the binding: the exact text hashed, the address, subject and id as the too
   assert.equal(typeof b.emailSendBinding, 'function', 'lib/email-send-binding.mjs exports emailSendBinding')
   const text = 'Hi Sam,\n  could you confirm  the room?  \n'
   const block = b.emailSendBinding(SEND_TOOL, { to: ' sam@harborhall.com ', subject: ' Friday venue check ', text })
-  assert.deepEqual(block, { to: 'sam@harborhall.com', subject: 'Friday venue check', body_sha256: sha256Hex(text), text_preview: text })
-  assert.deepEqual(Object.keys(block), ['to', 'subject', 'body_sha256', 'text_preview'])
+  assert.deepEqual(block, { to: 'sam@harborhall.com', subject: 'Friday venue check', text, body_sha256: sha256Hex(text), text_preview: text })
+  assert.deepEqual(Object.keys(block), ['to', 'subject', 'text', 'body_sha256', 'text_preview'])
   assert.match(block.body_sha256, /^[0-9a-f]{64}$/)
   // A reply names the email only.
   const reply = b.emailSendBinding('mcp__bgos__email_send', { email_id: ` ${EMAIL_ID} `, text: 'Hi Dana.' })
-  assert.deepEqual(reply, { email_id: EMAIL_ID, body_sha256: sha256Hex('Hi Dana.'), text_preview: 'Hi Dana.' })
+  assert.deepEqual(reply, { email_id: EMAIL_ID, text: 'Hi Dana.', body_sha256: sha256Hex('Hi Dana.'), text_preview: 'Hi Dana.' })
   // At most 1000 UTF-16 units, and never half of a character: the text begins with it.
   const emoji = `${'x'.repeat(999)}\u{1F600}tail`
   const cut = b.emailSendBinding(SEND_TOOL, { email_id: EMAIL_ID, text: emoji }).text_preview
@@ -1441,7 +1443,15 @@ test('the held card posts approvalMeta.email_send exactly as section 1 writes it
   assert.deepEqual((body.approvalMeta as Record<string, unknown>).email_send, SEND_BLOCK)
   assert.equal((body.approvalMeta as Record<string, unknown>).request_id, 'abcde')
   // A block the server would refuse is never sent (it would fail the whole card): the card stays deny only.
-  for (const bad of [{ ...SEND_BLOCK, body_sha256: SEND_BLOCK.body_sha256.toUpperCase() }, { ...SEND_BLOCK, email_id: EMAIL_ID }, { ...SEND_BLOCK, text_preview: 'p'.repeat(1001) }, { body_sha256: SEND_BLOCK.body_sha256, text_preview: 'x' }]) {
+  const { text: _body, ...withoutText } = SEND_BLOCK
+  for (const bad of [
+    { ...SEND_BLOCK, body_sha256: SEND_BLOCK.body_sha256.toUpperCase() },
+    { ...SEND_BLOCK, email_id: EMAIL_ID },
+    { ...SEND_BLOCK, text_preview: 'p'.repeat(1001) },
+    { body_sha256: SEND_BLOCK.body_sha256, text_preview: 'x' },
+    withoutText,
+    { ...SEND_BLOCK, text: `${SEND_ARGS.text} And the codes.` },
+  ]) {
     const card = buildPermissionRequestBody({ chatId: OWN_CHAT, requestId: 'abcde', toolName: SEND_TOOL, inputPreview: previewOf(SEND_ARGS), emailSend: bad } as never)
     assert.equal('email_send' in (card.approvalMeta as Record<string, unknown>), false, JSON.stringify(bad).slice(0, 60))
   }
@@ -1480,7 +1490,7 @@ test('the floor record carries the binding of the whole input, and pairs to its 
   assert.equal('emailSend' in fs.buildFloorRecord({ toolName: 'Bash', toolInput: { command: 'rm -rf x' }, match: { ruleId: 'recursive_delete', rulesVersion: 3, evidence: 'rm -rf x' } }), false)
 })
 
-test('the card takes its binding from the hook record when it pairs, else from an uncut preview, else none; a secret in it refuses', async () => {
+test('the card takes its binding from the hook record when it pairs, else none (the preview is never the body); a secret in it refuses', async () => {
   const a = await approval()
   const fs = await import('../lib/floor-state.mjs')
   const m = await tools()
@@ -1495,20 +1505,20 @@ test('the card takes its binding from the hook record when it pairs, else from a
   const fromRecord = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: folded, record, refusal })
   assert.equal(fromRecord.source, 'record')
   assert.equal(fromRecord.block.body_sha256, sha256Hex(text))
-  // An orphan record (another email): not its binding; the uncut preview's own is used.
+  // An orphan record (another email): not its binding, and the preview is never taken for the body (v6): none.
   const orphan = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, text: 'Something else entirely.' }, match })
   const fromPreview = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf(SEND_ARGS), record: orphan, refusal })
-  assert.equal(fromPreview.source, 'preview')
-  assert.deepEqual(fromPreview.block, SEND_BLOCK)
+  assert.equal(fromPreview.source, null)
+  assert.equal(fromPreview.block, null)
   // A record whose recipient differs from the preview's is not this email's.
   const other = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, to: 'mallory@evil.example' }, match })
-  assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf(SEND_ARGS), record: other, refusal }).source, 'preview')
+  assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf(SEND_ARGS), record: other, refusal }).block, null)
   // A cut preview and no record: no block (the server makes the card deny only).
   const cut = `{ "email_id": "${EMAIL_ID}", "text": "${'A'.repeat(2000)}\n⋯ 700 code points elided ⋯\n${'Z'.repeat(1500)}" }`
   assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: cut, record: null, refusal }).block, null)
   // A malformed binding on a record is ignored.
   const forged = { ...record, emailSend: { ...(record as Record<string, any>).emailSend, body_sha256: 'nope' } }
-  assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: folded, record: forged, refusal }).source, 'preview')
+  assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: folded, record: forged, refusal }).block, null)
   // The CLI may redact a secret out of the preview: the record (the raw text) then does not agree with it,
   // so its start never reaches the card, even with a probe that fits.
   const secretText = `Here it is: ${PAIRING_TOKEN}`
@@ -1711,7 +1721,7 @@ test('server.ts, run, server approval: a wrong body hash is a draft', async (t) 
   const f = fixture(t)
   const store = (await approval()).createEmailSendApprovals()
   const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
-  const wrong = backend.tap('abcde', { ...SEND_BLOCK, body_sha256: sha256Hex('Hi Sam, could you confirm the Harbor room for Saturday?') })
+  const wrong = backend.tap('abcde', { ...SEND_BLOCK, text: 'Hi Sam, could you confirm the Harbor room for Saturday?' })
   store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: wrong, binding: SEND_BLOCK })
   f.start(TURNS.ownerMessage)
   const result = await call('email_send', SEND_ARGS)
@@ -1825,16 +1835,14 @@ test('review: a long email in any script pairs with its own record, and an email
   const theirs = ends('Please also send the invoice for September and the floor plan.')
   const theirRecord = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, text: theirs }, match })
   const mine2 = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf({ ...SEND_ARGS, text: mine }), record: theirRecord, refusal })
-  assert.notEqual(mine2.block?.body_sha256, sha256Hex(theirs))
-  assert.equal(mine2.source, 'preview')
+  assert.equal(mine2.block, null, 'not their record, and never the preview')
   // Two long emails with the same first 1000 characters and another ending: the probe of the ends tells them apart.
   const opening = 'Dear Sam, '.repeat(110)
   const endingA = `${opening}please book the Harbor room for Friday morning.`
   const endingB = `${opening}please cancel every booking we hold with you.`
   const recordA = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, text: endingA }, match })
   const forB = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf({ ...SEND_ARGS, text: endingB }), record: recordA, refusal })
-  assert.equal(forB.source, 'preview')
-  assert.equal(forB.block.body_sha256, sha256Hex(endingB))
+  assert.equal(forB.block, null, 'not A\'s record, and never the preview')
 })
 
 test('review: a denied email_send leaves no floor record behind for a later request to pair with', async () => {
@@ -1930,4 +1938,102 @@ test('review: an email id or an approval id is a uuid as the server reads one (v
   const refused = await callTool('email_draft', { email_id: versionZero, text: 'Hi' }, { post: backend.post })
   assert.equal(refused.isError, true)
   assert.equal(backend.requests.length, 0)
+})
+
+// ── 9. v6 (2026-10-13, #2326 651ff28a2): the card carries the exact body as `text` ─────────────
+
+test('v6: the card\'s block carries the exact body the send will carry, from the hook, never the CLI\'s folded or cut preview', async () => {
+  const fs = await import('../lib/floor-state.mjs')
+  const a = await approval()
+  const m = await tools()
+  const match = { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL }
+  const refusal = (fields: unknown) => m.emailCallRefusal('email_send', fields, [PAIRING_TOKEN])
+  // A long, indented email: the CLI folds its runs of spaces and cuts its middle.
+  const body = `Hi Sam,\n\n${Array.from({ length: 80 }, (_, i) => `  - item ${i + 1}: confirm the Harbor room,  chairs and the projector.`).join('\n')}\n\nThanks,`
+  const input = { ...SEND_ARGS, text: body }
+  const preview = cliPreview(input)
+  assert.ok(preview.includes('code points elided'))
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: input, match })
+  const bound = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: preview, record, refusal })
+  assert.equal(bound.source, 'record')
+  assert.equal(bound.block.text, body, 'the exact body, not the preview')
+  const card = buildPermissionRequestBody({ chatId: OWN_CHAT, requestId: 'abcde', toolName: SEND_TOOL, inputPreview: preview, emailSend: bound.block } as never)
+  assert.equal(((card.approvalMeta as Record<string, any>).email_send).text, body)
+  // No exact body known (no record): no block at all, never a guessed one, folded, cut or neither.
+  for (const p of [preview, cliPreview({ ...SEND_ARGS, text: 'Thanks.  See you Friday.' }), previewOf(SEND_ARGS)]) {
+    assert.equal(a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: p, record: null, refusal }).block, null)
+  }
+})
+
+test('v6: a block whose body is not the one its own hash names, or that has none, is never sent', async () => {
+  const b = await binding()
+  assert.equal(b.isEmailSendBlock(SEND_BLOCK), true)
+  assert.equal(b.isEmailSendBlock({ ...SEND_BLOCK, text: 'Hi Sam, something else.' }), false)
+  const { text: _t, ...noBody } = SEND_BLOCK
+  assert.equal(b.isEmailSendBlock(noBody), false)
+  assert.equal(b.isEmailSendBlock({ ...SEND_BLOCK, text: 'Hi\u0000' , body_sha256: sha256Hex('Hi\u0000'), text_preview: 'Hi\u0000' }), false)
+})
+
+test('v6: the whole body goes to the server with the card, so a secret anywhere in it refuses before any card', async () => {
+  const fs = await import('../lib/floor-state.mjs')
+  const a = await approval()
+  const m = await tools()
+  const match = { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL }
+  const refusal = (fields: unknown) => m.emailCallRefusal('email_send', fields, [PAIRING_TOKEN])
+  const body = `${'All fine here. '.repeat(80)}And the key: ${PAIRING_TOKEN}`
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, text: body }, match })
+  const refused = a.emailSendCardBinding({ toolName: SEND_TOOL, inputPreview: previewOf({ ...SEND_ARGS, text: body }), record, refusal })
+  assert.equal(refused.block, null)
+  assert.match(String(refused.refused), /secret/)
+})
+
+// ── 10. Merged with release 0.68.4 (#227 voice consult turn, #229 replayed fires) ───────────────────
+
+test('merged 0.68.4: a replayed owner message can never make the agent send (the ledger opens no turn, and it names no reason)', async (t) => {
+  const f = fixture(t)
+  const fires = pt.createFireLedger({ path: join(f.root, 'private-fires.json') })
+  const key = pt.privateFireKey({ senderType: 'user', messageId: OWNER_MESSAGE_ID })
+  assert.equal(key, `owner:${OWNER_MESSAGE_ID}`)
+  fires.record(key)
+  const tracker = pt.createPrivateTurnTracker({ fires })
+  const { backend, call } = await serverCallTool(t, f, { privateTurns: tracker })
+  // A restart brings the owner's already answered message back, through the same lane fields as a live one.
+  const prompt = tracker.deliver({
+    content: 'send Dana the venue',
+    chatId: OWN_CHAT,
+    actingUserId: OWNER,
+    emailBasis: pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID }),
+    fireKey: key,
+  })
+  assert.match(prompt, /\[replayed: this message was already handled/)
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'session-a', cwd: f.cwd, prompt }, f.env)
+  assert.equal(tracker.begin({ prompt, sessionId: 'session-a' }), 'replayed')
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true)
+  assert.match(textOf(result), /did not start/)
+  assert.equal(backend.requests.length, 0)
+  // Injected into an owner turn that is open, it ends that turn's sending as well.
+  const live = tracker.deliver({ content: 'and Sam', chatId: OWN_CHAT, actingUserId: OWNER, emailBasis: pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID + 7 }), fireKey: pt.privateFireKey({ senderType: 'user', messageId: OWNER_MESSAGE_ID + 7 }) })
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'session-a', cwd: f.cwd, prompt: live }, f.env)
+  assert.equal(tracker.begin({ prompt: live, sessionId: 'session-a' }), 'opened')
+  tracker.deliver({ content: 'send Dana the venue', chatId: OWN_CHAT, actingUserId: OWNER, emailBasis: pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID }), fireKey: key })
+  assert.throws(() => pt.requireEmailSendTurn(tracker, f.markerPaths, OWNER), /did not start|never make you send/)
+})
+
+test('merged 0.68.4: a voice consult\'s turn is a private turn, but never a reason to send', async (t) => {
+  const f = fixture(t)
+  const tracker = pt.createPrivateTurnTracker()
+  // The voice lane delivers a stamped consult with the owner as its actor and no reason (server.ts notify).
+  const prompt = tracker.deliver({ content: 'voice consult: email Sam the venue', actingUserId: OWNER, chatId: OWN_CHAT, consult: { consultId: 'consult-1', deadline: Date.now() + 60_000 } })
+  recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: 'session-a', cwd: f.cwd, prompt }, f.env)
+  assert.equal(tracker.begin({ prompt, sessionId: 'session-a' }), 'opened')
+  assert.ok(requirePrivateTurn(tracker, f.markerPaths, OWNER), 'the consult opens its private turn (#227)')
+  assert.throws(() => pt.requireEmailSendTurn(tracker, f.markerPaths, OWNER), /did not start/, 'but it names no reason to send')
+  const { backend, call } = await serverCallTool(t, f, { privateTurns: tracker })
+  assert.equal((await call('email_send', SEND_ARGS)).isError, true)
+  assert.equal(backend.requests.length, 0)
+  // A consult card in the middle of an owner turn stops that turn's sending too.
+  f.start(TURNS.ownerMessage)
+  f.tracker.deliver({ content: 'voice consult', actingUserId: OWNER, chatId: OWN_CHAT, consult: { consultId: 'consult-2', deadline: Date.now() + 60_000 } } as never)
+  assert.ok(sendTurn(f).refused)
 })

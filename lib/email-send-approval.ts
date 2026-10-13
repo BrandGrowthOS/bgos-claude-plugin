@@ -48,7 +48,7 @@ import {
   isOwnSendingTool,
   type HardFloorMatch,
 } from './hard-floor.js'
-import { bindingMatchesCall, emailSendBinding, isEmailSendBlock } from './email-send-binding.mjs'
+import { bindingMatchesCall, isEmailSendBlock } from './email-send-binding.mjs'
 import { floorRecordProbeFits } from './floor-state.mjs'
 
 /**
@@ -275,8 +275,8 @@ export function emailMatchesPreview(email: EmailSendPreview, args: unknown): boo
 
 /** The binding a held card names (section 1 of the server approval contract), in its wire shape. */
 export type EmailSendBlock =
-  | { to: string; subject: string; body_sha256: string; text_preview: string }
-  | { email_id: string; body_sha256: string; text_preview: string }
+  | { to: string; subject: string; text: string; body_sha256: string; text_preview: string }
+  | { email_id: string; text: string; body_sha256: string; text_preview: string }
 
 /** The approval an owner's Allow once tap issued (section 3): its id and when it expires. */
 export interface EmailSendApprovalClick {
@@ -375,26 +375,26 @@ function sameTarget(block: EmailSendBlock, email: EmailSendPreview): boolean {
 }
 
 /**
- * The binding a held email_send card names, and where it came from. In order:
- *   - the hook's record, when it is a well formed binding, the record's probe
- *     confirms it was written for THIS request (not an older call that never
- *     asked), and its address, subject or email agree with the preview's;
- *   - else the preview's own, when the CLI did not cut the text (a text it
- *     folded binds a hash the real send cannot match, which only ever keeps
- *     a draft);
- *   - else none: the card goes without one, the server makes it deny only,
- *     and the email stays a draft.
- * `refusal` is the tool's own check (its arguments and secrets) over what the
- * card would show: when it refuses, nothing may reach the card, and
- * `refused` says why (the CLI can redact a secret out of the preview that
- * the record's raw start still holds).
+ * The binding a held email_send card names, and where it came from: the
+ * hook's record, when it is a well formed binding whose hash names its own
+ * body, the record's probe confirms it was written for THIS request (not an
+ * older call that never asked), its start agrees with the request's text, and
+ * its address, subject or email agree with the preview's. Else none: the card
+ * goes without one, the server makes it deny only, and the email stays a
+ * draft. Never the CLI's preview: v6 puts the exact body on the card
+ * (`text`), and a preview the CLI folded or cut is not it, so a guessed body
+ * is never sent.
+ * `refusal` is the tool's own check (its arguments and secrets) over all the
+ * card would carry, the whole body included, since the server receives it:
+ * when it refuses, nothing may reach the card, and `refused` says why (the
+ * CLI can redact a secret out of the preview that the record still holds).
  */
 export function emailSendCardBinding(input: {
   toolName: string
   inputPreview: unknown
   record: unknown
   refusal: (fields: Record<string, string>) => string | null
-}): { block: EmailSendBlock | null; source: 'record' | 'preview' | null; refused?: string } {
+}): { block: EmailSendBlock | null; source: 'record' | null; refused?: string } {
   const none = { block: null, source: null } as const
   if (!isOwnSendingTool(input.toolName)) return none
   const preview = readEmailSendPreview(input.inputPreview)
@@ -404,19 +404,15 @@ export function emailSendCardBinding(input: {
     record && isEmailSendBlock(record.emailSend) && floorRecordProbeFits(record, input.toolName, input.inputPreview)
       ? (record.emailSend as EmailSendBlock)
       : null
-  let chosen: { block: EmailSendBlock; source: 'record' | 'preview' } | null =
+  const chosen: { block: EmailSendBlock; source: 'record' } | null =
     fromRecord && sameTarget(fromRecord, preview) && preview.text !== undefined && startAgrees(fromRecord.text_preview, preview.text)
       ? { block: fromRecord, source: 'record' }
       : null
-  if (!chosen && preview.text !== undefined && !PREVIEW_ELISION_RE.test(preview.text)) {
-    const own = emailSendBinding(input.toolName, preview) as EmailSendBlock | null
-    if (own) chosen = { block: own, source: 'preview' }
-  }
   if (!chosen) return none
   const shown: Record<string, string> =
     'email_id' in chosen.block
-      ? { email_id: chosen.block.email_id, text: chosen.block.text_preview }
-      : { to: chosen.block.to, subject: chosen.block.subject, text: chosen.block.text_preview }
+      ? { email_id: chosen.block.email_id, text: chosen.block.text }
+      : { to: chosen.block.to, subject: chosen.block.subject, text: chosen.block.text }
   const refused = input.refusal(shown)
   if (refused) return { block: null, source: null, refused }
   return chosen
