@@ -1,6 +1,9 @@
 /**
- * Cross-repo hard floor fixture, rules_version 2 (P2 stage 6, C-19; version
- * 2 adds adds_skill_or_plugin, DSH parity item 10, 2026-10-02).
+ * Cross-repo hard floor fixture, rules_version 3 (P2 stage 6, C-19; version
+ * 2 adds adds_skill_or_plugin, DSH parity item 10, 2026-10-02; version 3 adds
+ * the channel's own `email_send` to acts_on_owners_behalf, outgoing email
+ * modes, "Always ask stops a send", Data 2026-10-13, and lets the plugin tell
+ * a server whose list holds it from one whose list predates it).
  *
  * THE ANTI-DRIFT GUARD, on the secret-scan pattern. The floor list ("Always
  * ask before risky actions") is implemented twice: once in the platform
@@ -105,7 +108,7 @@ export interface HardFloorFixtureCardCase {
 }
 
 /** The cross repo key. Both classifiers export the same number. */
-export const HARD_FLOOR_FIXTURE_RULES_VERSION = 2;
+export const HARD_FLOOR_FIXTURE_RULES_VERSION = 3;
 
 export const HARD_FLOOR_FIXTURE_RULES: HardFloorFixtureRule[] = [
   { id: "recursive_delete", words: "deleting a folder and everything in it" },
@@ -1874,6 +1877,40 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
     input: { kind: "path", path: ".claude/skills/invoice-reader/SKILL.md" },
     ruleId: null,
   },
+  {
+    name: "own_channel_email_send",
+    input: { kind: "tool", toolName: "mcp__plugin_hoai_bgos__email_send" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "own_channel_standalone_email_send",
+    input: { kind: "tool", toolName: "mcp__bgos__email_send" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "own_channel_qa_install_email_send",
+    input: { kind: "tool", toolName: "mcp__plugin_hoaiq_bgos__email_send" },
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "own_channel_email_draft_is_not_a_send",
+    input: { kind: "tool", toolName: "mcp__plugin_hoai_bgos__email_draft" },
+    ruleId: null,
+  },
+  {
+    name: "own_channel_email_send_by_exact_name_only",
+    input: { kind: "tool", toolName: "mcp__plugin_hoai_bgos__email_send_preview" },
+    ruleId: null,
+  },
+  {
+    name: "request_own_channel_email_send",
+    input: {
+      kind: "request",
+      toolName: "mcp__plugin_hoai_bgos__email_send",
+      inputPreview: '{ "to": "sam@harborhall.com", "subject": "Friday venue check", "text": "Hi Sam" }',
+    },
+    ruleId: "acts_on_owners_behalf",
+  },
 ];
 
 /**
@@ -1891,7 +1928,10 @@ export const HARD_FLOOR_FIXTURE: HardFloorFixtureCase[] = [
  * bare name when there is no preview); a held shell command whose match the
  * card would not show (the preview over the 2000 character cap, or cut in the
  * middle by the CLI) as the lead line `{"command":"<evidence>"}` above the
- * preview; anything else as the preview, capped with `...`.
+ * preview; anything else as the preview, capped with `...`. The channel's own
+ * `email_send` is an MCP tool whose fields follow its name as JSON in a fixed
+ * order (`to`, `subject`, `email_id`, `text`), so the recipient and the
+ * subject come first.
  */
 export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
   {
@@ -2123,15 +2163,36 @@ export const HARD_FLOOR_CARD_FIXTURE: HardFloorFixtureCardCase[] = [
     tool: "bash -lc 'codex plugin list --available --json'",
     ruleId: null,
   },
+  {
+    name: "card_relay_own_channel_email_send_leads_with_recipient",
+    writer: "claude_relay",
+    relay: {
+      toolName: "mcp__plugin_hoai_bgos__email_send",
+      inputPreview:
+        '{ "text": "Hi Sam, could you confirm the Harbor room for Friday?", "subject": "Friday venue check", "to": "sam@harborhall.com" }',
+    },
+    tool: 'mcp__plugin_hoai_bgos__email_send {"to":"sam@harborhall.com","subject":"Friday venue check","text":"Hi Sam, could you confirm the Harbor room for Friday?"}',
+    ruleId: "acts_on_owners_behalf",
+  },
+  {
+    name: "card_relay_own_channel_email_send_reply",
+    writer: "claude_relay",
+    relay: {
+      toolName: "mcp__bgos__email_send",
+      inputPreview: '{ "text": "Hi Dana, Kc picks the Harbor room.", "email_id": "3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40" }',
+    },
+    tool: 'mcp__bgos__email_send {"email_id":"3b9f0d6e-6a51-4f0f-8a2b-5d7c1e2f9a40","text":"Hi Dana, Kc picks the Harbor room."}',
+    ruleId: "acts_on_owners_behalf",
+  },
 ];
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_FIXTURE_DIGEST =
-  "348c65c0cb60e83150c5d002bd7781275ecdae8d5be55bc6f97823a8e7af87b8";
+  "fcf7ed968947d326bb7afa077f920e5bf5b3657025b8be39f42d8d37ef9599fa";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_CARD_FIXTURE). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_CARD_FIXTURE_DIGEST =
-  "babfef7b64bf5b817b59ff8d8b0163d99553e138307e9e71005ff87449f26f0f";
+  "87efa65cfcfbd2f24e8a991d1229d5ab53461eb8aeb4619b045590d3ebebd920";
 
 /** sha256 of JSON.stringify(HARD_FLOOR_FIXTURE_RULES). Identical in both repos, and pinned again as a literal in each repo's spec. */
 export const HARD_FLOOR_RULES_DIGEST =

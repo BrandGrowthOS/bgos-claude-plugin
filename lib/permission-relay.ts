@@ -55,6 +55,7 @@
 
 import { classifyToolCall, previewIsElided } from './hard-floor.js'
 import { compactFloorEvidence } from './floor-evidence.mjs'
+import { emailSendCardText, emailSendCardTool } from './email-send-approval.js'
 
 export type PermissionBehavior = 'allow' | 'deny'
 export type PermissionChoice = 'once' | 'session' | 'permanent' | 'deny'
@@ -416,6 +417,12 @@ export const FLOOR_EVIDENCE_LEAD_MAX = 1500
  *     matches it. The lead is fitted to FLOOR_EVIDENCE_LEAD_MAX by dropping
  *     arguments, never the operator, with a marker saying how many went.
  *   - anything else: the preview, capped, as before.
+ *
+ * And this channel's own `email_send`, an MCP tool the floor holds when the
+ * owner chose Always ask (Data, 2026-10-13): its name, then the email's
+ * fields in a fixed order, the recipient (or the email a reply answers) and
+ * the subject before the text, so the cap never hides who it goes to
+ * (lib/email-send-approval.ts emailSendCardTool).
  */
 export function permissionCardTool(input: {
   toolName: string
@@ -424,7 +431,9 @@ export function permissionCardTool(input: {
 }): string {
   const name = String(input.toolName ?? '')
   const preview = (input.inputPreview ?? '').trim()
-  if (name.startsWith('mcp__')) return capToolPreview(preview ? `${name} ${preview}` : name)
+  if (name.startsWith('mcp__')) {
+    return capToolPreview(emailSendCardTool(name, preview) ?? (preview ? `${name} ${preview}` : name))
+  }
   if (!preview) return name
   const evidence = (input.floorEvidence ?? '').trim()
   const key = floorLeadKey(name)
@@ -506,7 +515,8 @@ export function buildPermissionRequestBody(
   return {
     chatId: Number(input.chatId),
     sender: 'assistant',
-    text: permissionCardText(input.description, input.toolName),
+    // This channel's email_send: the email itself is what the owner reads (lib/email-send-approval.ts).
+    text: emailSendCardText(input.toolName, input.inputPreview) ?? permissionCardText(input.description, input.toolName),
     messageType: 'approval_request',
     options: permissionApprovalOptions(input.requestId),
     approvalMeta: {

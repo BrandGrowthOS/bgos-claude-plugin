@@ -1,7 +1,7 @@
 // ── Agent email: the email_draft and email_send MCP tools ───────────────────
 //
 // Outgoing email modes (HOAI board row 2dd04488, addition 5; the backend's
-// wire shapes are evidence/agent-email-outbound/wire-shapes.md, v1). The
+// wire shapes are evidence/agent-email-outbound/wire-shapes.md, v3). The
 // owner chooses per agent how its email leaves: "Ask me before every send"
 // (the default), "Drafts only" or "Send for me". The agent writes the email in
 // every mode; these two tools are how it hands one to the server.
@@ -19,7 +19,9 @@
 //                 turn is refused there before this file runs. The server
 //                 stays the authority: it checks the reason, the mode, the
 //                 sending list and the limits, and anything it does not send
-//                 it keeps as a draft for the owner, with the reason.
+//                 it keeps as a draft for the owner, with the reason. With
+//                 "Always ask" on, the owner approves each send on a card
+//                 first (lib/email-send-approval.ts, the `approve` step).
 //
 // Pure except the injected transport, like lib/boards-tools.ts: validation is
 // instructive and happens before the network, backend refusals pass through
@@ -31,6 +33,8 @@
 
 import { EMAIL_SEND_REFUSAL } from './private-turn.mjs'
 import { scanText } from './secret-scan.ts'
+import { isOwnSendingTool } from './hard-floor.ts'
+import { parsePreviewObject } from './email-send-approval.ts'
 
 /** The capability token: this daemon ships both tools (declared-capabilities.ts). */
 export const EMAIL_SEND = 'email_send'
@@ -92,6 +96,13 @@ export interface EmailToolDeps {
   basis: EmailSendBasis | null
   /** This daemon's own credentials: an email that carries one is refused. */
   secrets?: readonly string[]
+  /**
+   * Always ask stops a send (Data, 2026-10-13): asked last before email_send
+   * posts, with the call's own arguments. Null lets it go; text is why it
+   * may not, and nothing is sent (server.ts emailSendApproval). Without it,
+   * email_send sends nothing.
+   */
+  approve?: (rawArgs: unknown) => Promise<string | null>
 }
 
 const TARGET_PROPERTIES = {
@@ -145,8 +156,9 @@ export const EMAIL_TOOL_DECLS = Object.freeze([
       '`email_id`, a new email names `to` and `subject`. The server decides: with Send ' +
       'for me on, it sends only to your owner\'s sending list and within the daily ' +
       'limits; otherwise, or when a rule stops it, it saves a draft for your owner and ' +
-      'says why. Say exactly what it answered, and never say an email was sent unless ' +
-      'it answered sent. ' + EMAIL_SIGNATURE_SENTENCE,
+      'says why. When your owner chose Always ask, each send first waits for their ' +
+      'approval on a card. Say exactly what it answered, and never say an email was ' +
+      'sent unless it answered sent. ' + EMAIL_SIGNATURE_SENTENCE,
     inputSchema: {
       type: 'object' as const,
       properties: TARGET_PROPERTIES,
@@ -177,6 +189,8 @@ const ALLOWED_ARGS: ReadonlySet<string> = new Set(Object.keys(TARGET_PROPERTIES)
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** One plain mailbox: no display name, no list, no spaces. The server checks it strictly. */
 const PLAIN_MAILBOX = /^[^\s@<>,;:"()[\]\\]+@[^\s@<>,;:"()[\]\\]+\.[^\s@<>,;:"()[\]\\]+$/
+/** In plain letters only: a look alike letter, a bidi or a zero width mark could disguise it on the owner's card. */
+const PRINTABLE_ASCII = /^[\x21-\x7e]+$/
 
 type Target =
   | { kind: 'reply'; emailId: string }
@@ -216,8 +230,8 @@ function parseArgs(tool: string, raw: unknown): Parsed {
     return { ok: false, error: `${tool} needs email_id (a reply) or to and subject (a new email).` }
   }
   const to = typeof args.to === 'string' ? args.to.trim() : ''
-  if (!PLAIN_MAILBOX.test(to)) {
-    return { ok: false, error: `${tool}: to must be one plain address, name@company.com, with no name around it.` }
+  if (!PRINTABLE_ASCII.test(to) || !PLAIN_MAILBOX.test(to)) {
+    return { ok: false, error: `${tool}: to must be one plain address, name@company.com, in plain letters, with no name around it.` }
   }
   const subject = typeof args.subject === 'string' ? args.subject.trim() : ''
   if (subject === '') return { ok: false, error: `${tool}: a new email needs a subject.` }
@@ -242,8 +256,32 @@ function secretRefusal(tool: string, parts: string[], secrets: readonly string[]
   return `${tool} refused: the email holds a secret (${what}). Never put a key, token or password in an email; nothing was saved or sent.`
 }
 
+/** Why this call would be refused before the network (its arguments, a secret in it), or null. */
+export function emailCallRefusal(name: string, rawArgs: unknown, secrets: readonly string[]): string | null {
+  const parsed = parseArgs(name, rawArgs)
+  if (!parsed.ok) return parsed.error
+  const { target, text } = parsed
+  return secretRefusal(name, target.kind === 'new' ? [target.to, target.subject, text] : [text], secrets)
+}
+
+/**
+ * Would email_send refuse the call this permission request previews? Its
+ * argument and secret checks, run on the CLI's preview before the owner's
+ * card is posted, so an email the tool would refuse (a secret in it, an
+ * address that is not plain letters, a key it does not take) never reaches a
+ * card, a chat row or a push. A preview that is not the arguments is still
+ * scanned for a secret. Null when it passes, or for any other tool.
+ */
+export function emailSendPreflight(toolName: string, inputPreview: unknown, secrets: readonly string[]): string | null {
+  if (!isOwnSendingTool(toolName)) return null
+  const args = parsePreviewObject(inputPreview)
+  if (args) return emailCallRefusal(EMAIL_SEND_TOOL, args, secrets)
+  return secretRefusal(EMAIL_SEND_TOOL, [typeof inputPreview === 'string' ? inputPreview : ''], secrets)
+}
+
 const HELD_REASONS: Readonly<Record<string, string>> = Object.freeze({
   sending_off: 'sending for your owner is switched off on the server',
+  email_off: 'your owner turned your email off',
   paused: 'your owner paused your sending',
   no_owner_reason: 'this turn is not your owner\'s own message in their chat with you, or a task your owner scheduled',
   not_on_send_list: 'the recipient is not on your owner\'s sending list',
@@ -331,6 +369,15 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
   if (!basis || (basis.kind !== 'owner_message' && basis.kind !== 'owner_task') || typeof basis.id !== 'string' || basis.id === '') {
     return fail('email_send did not start: the turn it is in names no reason to send. Tell your owner instead.')
   }
+  const unchecked = 'email_send did not start: HOAI could not check whether your owner asks before every send, so nothing was sent.'
+  if (typeof deps.approve !== 'function') return fail(unchecked)
+  let held: string | null
+  try {
+    held = await deps.approve(rawArgs)
+  } catch (err) {
+    held = `${unchecked} ${errorText(err)}`
+  }
+  if (held) return fail(held)
   try {
     return renderSend(await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id } }))
   } catch (err) {

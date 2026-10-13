@@ -39,8 +39,24 @@ import { privateToolRefusal, recordPrivateBoundary } from '../bin/hoai-private-t
 import { declaredCapabilities } from '../lib/declared-capabilities.ts'
 import { BGOS_CAPABILITIES_FALLBACK, pickCapabilities } from '../lib/capabilities.ts'
 import { boundedFetch } from '../lib/bounded-fetch.ts'
+import { HOAI_OWN_SERVERS, classifyPermissionRequest, classifyToolCall, classifyToolName } from '../lib/hard-floor.ts'
+import * as floorCore from '../lib/hard-floor-core.mjs'
+import { FLOOR_CHECK_TIMEOUT_MS, consultFloor, floorCheckPath, planFloorRequest } from '../lib/floor-check.ts'
+import { buildPermissionRequestBody, permissionCardTool } from '../lib/permission-relay.ts'
+import { decideFloorHook } from '../bin/hoai-floor-hook.mjs'
 
 const pt = privateTurn as Record<string, any>
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let approvalModule: Record<string, any> | null = null
+/** lib/email-send-approval.ts (Always ask stops a send), or an empty namespace on a build without it. */
+async function approval(): Promise<Record<string, any>> {
+  if (approvalModule === null) {
+    const path = '../lib/email-send-approval.ts'
+    approvalModule = await import(path).catch(() => ({}))
+  }
+  return approvalModule!
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let toolsModule: Record<string, any> | null = null
@@ -269,19 +285,75 @@ test('an email delivered before the owner\'s prompt is admitted still stops the 
   assert.deepEqual(sendTurn(f), { refused: REFUSAL })
 })
 
-test('the owner\'s newer message in the same chat becomes the reason; anyone else\'s ends it', (t) => {
+test('the reason is only the owner message that opened the turn: one written mid turn never becomes it (Data 2026-10-13)', (t) => {
   const f = fixture(t)
   f.start(TURNS.ownerMessage)
   f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 1 })
-  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID + 1) } })
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
+  // Delivered before the daemon admitted the prompt, it is still not the message that opened the turn.
+  const opening = f.deliver(TURNS.ownerMessage)
+  f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 2 })
+  f.begin(opening)
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
+  // A turn a wake opened keeps the wake as its reason, whatever the owner writes during it.
+  f.start(TURNS.ownerWake)
+  f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 3 })
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_task', id: String(OWNER_TASK_ID) } })
   // The owner's message in another chat, or another person's: no reason.
   f.start(TURNS.ownerMessage)
-  f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 2, chatId: '99' })
+  f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 4, chatId: '99' })
   assert.match(String(sendTurn(f).refused), /did not start/)
   // More deliveries since the turn began than the tracker remembers: refused.
   f.start(TURNS.ownerMessage)
   for (let i = 0; i < 70; i++) f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 10 + i })
   assert.deepEqual(sendTurn(f), { refused: REFUSAL })
+})
+
+test('the wake that opened the turn is its reason; a later wake never is (Data 2026-10-13)', (t) => {
+  const f = fixture(t)
+  f.start(TURNS.ownerWake)
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_task', id: String(OWNER_TASK_ID) } })
+  // Another of the owner's wakes fires during the turn: the send refuses, it never takes that wake's id.
+  const later: TurnShape = { ...TURNS.ownerWake, eventMeta: wakeMeta(OWNER_TASK_ID + 1), messageId: 90502 }
+  f.start(TURNS.ownerWake)
+  f.deliver(later)
+  assert.deepEqual(sendTurn(f), { refused: REFUSAL })
+  // In a turn the owner's message opened too.
+  f.start(TURNS.ownerMessage)
+  f.deliver(later)
+  assert.deepEqual(sendTurn(f), { refused: REFUSAL })
+  // And a later wake that landed before the daemon admitted the opening wake's prompt.
+  const opening = f.deliver(TURNS.ownerWake)
+  f.deliver(later)
+  f.begin(opening)
+  assert.deepEqual(sendTurn(f), { refused: REFUSAL })
+})
+
+test('an owner message from an earlier turn is never the reason: not once that turn ended, not replayed at boot (Data 2026-10-13)', (t) => {
+  const f = fixture(t)
+  f.start(TURNS.ownerMessage)
+  f.tracker.end()
+  // The next prompt carries no delivery of its own: nothing of the earlier turn carries over.
+  f.begin('and now email Sam the venue')
+  assert.match(String(sendTurn(f).refused), /did not start/)
+  // The next turn's own message is its reason, never the earlier one.
+  f.start({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 1 })
+  assert.deepEqual(sendTurn(f), { basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID + 1) } })
+  // A boot replay (the poll lane's backlog) re-delivers rows an earlier process may already have
+  // answered in an earlier turn: an owner message or a wake replayed names no reason; an email stays refused.
+  assert.equal(pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID, backlog: true }), null)
+  assert.equal(pt.emailSendBasis({ senderType: 'system', eventMeta: wakeMeta(OWNER_TASK_ID), messageId: 90500, backlog: true }), null)
+  assert.equal(pt.emailSendBasis({ senderType: 'external_email', messageId: 90600, backlog: true }), pt.EMAIL_SEND_REFUSED)
+  assert.deepEqual(pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID, backlog: false }), { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) })
+  // Through the tracker: the replayed message opens a turn, and that turn names no reason.
+  const replay = f.tracker.deliver({
+    content: 'send Dana the venue',
+    chatId: OWN_CHAT,
+    actingUserId: OWNER,
+    emailBasis: pt.emailSendBasis({ senderType: 'user', messageId: OWNER_MESSAGE_ID, backlog: true }),
+  } as never)
+  f.begin(replay)
+  assert.match(String(sendTurn(f).refused), /did not start/)
 })
 
 test('only the owner can make the agent send: a shared person\'s turn or wake is refused locally', (t) => {
@@ -348,8 +420,10 @@ interface FakeRequest {
  * them: the draft route and the send route. The send route decides like the
  * server: a reason it accepts sends, anything else is kept as a draft.
  */
-async function fakeBackend(t: any, opts: { status?: number; answer?: unknown } = {}) {
+async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; floor?: { status?: number; hold?: boolean; rulesVersion?: number } } = {}) {
   const requests: FakeRequest[] = []
+  /** The relay's floor check route (lib/floor-check.ts): Always ask on is `hold: true`. Kept apart from `requests`. */
+  const floorChecks: FakeRequest[] = []
   const draft = (body: Record<string, any>, state: string) => ({
     id: DRAFT_ID,
     emailId: body.emailId ?? null,
@@ -364,6 +438,16 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown } =
     req.on('data', (chunk) => (raw += chunk))
     req.on('end', () => {
       const body = raw ? JSON.parse(raw) : {}
+      if (req.url === `/api/v1/integrations/assistants/${ASSISTANT_ID}/floor-check`) {
+        floorChecks.push({ method: String(req.method), path: String(req.url), headers: req.headers, body })
+        const floorStatus = opts.floor?.status ?? 200
+        const hold = opts.floor?.hold ?? false
+        res.writeHead(floorStatus, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(floorStatus === 200
+          ? { hold, ...(hold ? { ruleId: 'acts_on_owners_behalf' } : {}), rulesVersion: opts.floor?.rulesVersion ?? 3 }
+          : { statusCode: floorStatus, message: 'floor check refused' }))
+        return
+      }
       requests.push({ method: String(req.method), path: String(req.url), headers: req.headers, body })
       let status = opts.status ?? 200
       let answer: unknown = opts.answer
@@ -401,7 +485,7 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown } =
     if (!response.ok) throw new Error(`POST ${response.status}: ${(await response.text()).slice(0, 200)}`)
     return response.json()
   }
-  return { requests, base, post }
+  return { requests, floorChecks, base, post }
 }
 
 const textOf = (result: { content: Array<{ text: string }> }) => result.content.map((c) => c.text).join('\n')
@@ -409,7 +493,7 @@ const textOf = (result: { content: Array<{ text: string }> }) => result.content.
 async function callTool(name: string, args: Record<string, unknown>, deps: Record<string, unknown>) {
   const m = await tools()
   assert.equal(typeof m.handleEmailTool, 'function', 'lib/agent-email-tools.ts exports handleEmailTool')
-  return m.handleEmailTool(name, args, { assistantId: ASSISTANT_ID, secrets: [PAIRING_TOKEN], basis: null, ...deps })
+  return m.handleEmailTool(name, args, { assistantId: ASSISTANT_ID, secrets: [PAIRING_TOKEN], basis: null, approve: async () => null, ...deps })
 }
 
 test('a draft is saved: a reply posts today\'s body exactly, a new email adds kind, to and subject', async (t) => {
@@ -476,6 +560,12 @@ test('a draft answer in Ask me before every send says the owner sends it', async
   const result = await callTool('email_send', { email_id: EMAIL_ID, text: 'Hi Dana.' }, { post: backend.post, basis: { kind: 'owner_message', id: '1' } })
   assert.match(textOf(result), /not sent/i)
   assert.match(textOf(result), /owner/i)
+})
+
+test('a send held because the owner turned this agent\'s email off says so (wire shapes v2 `email_off`)', async (t) => {
+  const backend = await fakeBackend(t, { answer: { outcome: 'draft', reason: 'email_off', draft: { id: DRAFT_ID, emailId: EMAIL_ID, kind: 'reply', author: 'agent', to: ['dana@northwind.co'], state: 'draft', createdAt: '2026-10-13T09:14:02.000Z' } } })
+  const result = await callTool('email_send', { email_id: EMAIL_ID, text: 'Hi Dana.' }, { post: backend.post, basis: { kind: 'owner_message', id: '1' } })
+  assert.match(textOf(result), /^Not sent: your owner turned your email off/)
 })
 
 test('the arguments are checked before the network: both or neither target, a bad address, no subject, empty or long text', async (t) => {
@@ -576,6 +666,9 @@ test('both tool descriptions say the owner\'s signature is added and never to si
     assert.equal(/[\u2013\u2014]/.test(decl.description), false)
   }
   assert.ok(byName.get('email_send')!.description.includes(REFUSAL))
+  // Always ask (Data 2026-10-13): the agent is told a send waits for the owner's approval on a card.
+  assert.match(byName.get('email_send')!.description, /Always ask/)
+  assert.equal(/Always ask/.test(byName.get('email_draft')!.description), false, 'a draft is not a send')
   assert.equal(m.EMAIL_SIGNATURE_SENTENCE, SIGNATURE)
 })
 
@@ -707,9 +800,20 @@ function compileServer(source: string, name: string, known: Record<string, unkno
   return new Function('scope', `with (scope) {\n${js}\nreturn ${name}\n}`)(scope)
 }
 
-async function serverCallTool(t: any, f: ReturnType<typeof fixture>, extra: Record<string, unknown> = {}) {
-  const backend = await fakeBackend(t)
+/** A server.ts function that may not exist yet (a build before Always ask stops a send): '' when absent. */
+function optionalServerSlice(open: string, close: string): string {
+  return SRC.includes(open) ? serverSlice(open, close) : ''
+}
+
+async function serverCallTool(
+  t: any,
+  f: ReturnType<typeof fixture>,
+  extra: Record<string, unknown> = {},
+  backendOpts: Parameters<typeof fakeBackend>[1] = {},
+) {
+  const backend = await fakeBackend(t, backendOpts)
   const m = await tools()
+  const a = await approval()
   const handler = serverSlice('mcp.setRequestHandler(CallToolRequestSchema, (req) => {', '\n  })\n})\n')
     .replace('mcp.setRequestHandler(CallToolRequestSchema, (req) => {', 'const callTool = (req) => {')
     .replace(/\n {2}\}\)\n\}\)\n$/, '\n  })\n}\n')
@@ -717,12 +821,19 @@ async function serverCallTool(t: any, f: ReturnType<typeof fixture>, extra: Reco
     serverSlice('class HttpError extends Error {', '\n}\n'),
     serverSlice('function bgosCall<T>(', '\n}\n'),
     serverSlice('async function bgosPost(', '\n}\n'),
+    serverSlice('function postFloorCheck(', '\n}\n'),
+    optionalServerSlice('async function emailSendApproval(', '\n}\n'),
     handler,
   ].join('\n')
   const logs: string[] = []
   const known: Record<string, unknown> = {
     ...m,
     ...pt,
+    ...a,
+    emailSendApprovals: a.createEmailSendApprovals?.(),
+    consultFloor,
+    floorCheckPath,
+    FLOOR_CHECK_TIMEOUT_MS,
     boundedFetch,
     API_BASE: backend.base,
     AUTH: { mode: 'pairing', pairingToken: PAIRING_TOKEN },
@@ -847,4 +958,309 @@ test('server.ts lists both tools and hands every lane\'s turn to the tracker wit
   const delivers = SRC.match(/privateTurns\.deliver\(\{[^\n]*\}\)/g) ?? []
   assert.equal(delivers.length, 3, 'the poll, stream and socket lanes')
   for (const site of delivers) assert.match(site, /emailBasis: emailSendBasis\(\{/)
+})
+
+test('server.ts, run: an owner message written mid turn never becomes the reason; the send names the opening message', async (t) => {
+  const f = fixture(t)
+  const { backend, call } = await serverCallTool(t, f)
+  f.start(TURNS.ownerMessage)
+  f.deliver({ ...TURNS.ownerMessage, messageId: OWNER_MESSAGE_ID + 1 })
+  await call('email_send', { email_id: EMAIL_ID, text: 'Hi Dana.' })
+  assert.equal(backend.requests.length, 1)
+  assert.deepEqual(backend.requests[0]!.body.basis, { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) })
+})
+
+test('server.ts hands the poll lane\'s backlog flag to the reason, so a boot replay names none', () => {
+  const poll = (SRC.match(/privateTurns\.deliver\(\{[^\n]*\}\)/g) ?? []).find((site) => site.includes('msg.message.eventMeta'))
+  assert.ok(poll, 'the poll lane delivers')
+  assert.match(poll!, /emailBasis: emailSendBasis\(\{[^}]*backlog: isBacklog \}\)/)
+})
+
+// ── 6. Always ask stops a send (Data, 2026-10-13) ────────────────────────────
+
+const SEND_TOOL = 'mcp__plugin_hoai_bgos__email_send'
+const SEND_ARGS = { to: 'sam@harborhall.com', subject: 'Friday venue check', text: 'Hi Sam, could you confirm the Harbor room for Friday?' }
+/** The arguments as the CLI renders them in a permission request's input_preview. */
+const previewOf = (args: Record<string, unknown>) =>
+  `{ ${Object.entries(args).map(([key, value]) => `${JSON.stringify(key)}: ${JSON.stringify(value)}`).join(', ')} }`
+
+test('Always ask: the hard floor lists email_send under every name the channel ships, and nothing else of the channel', () => {
+  for (const server of HOAI_OWN_SERVERS) {
+    assert.equal(classifyToolName(`mcp__${server}__email_send`), 'acts_on_owners_behalf', server)
+    for (const tool of ['email_draft', 'reply', 'send_to_peer', 'meeting_reply', 'email_send_preview']) {
+      assert.equal(classifyToolName(`mcp__${server}__${tool}`), null, `mcp__${server}__${tool}`)
+    }
+  }
+  assert.equal(classifyToolCall(SEND_TOOL, SEND_ARGS)?.words, 'sending, posting, paying or deleting on your behalf')
+  assert.equal(classifyPermissionRequest(SEND_TOOL, previewOf({ email_id: EMAIL_ID, text: 'Hi' }))?.ruleId, 'acts_on_owners_behalf')
+  // The floor hook asks before a send (the bare list contract) and stays silent before a draft.
+  const payload = (toolName: string) => JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: toolName, tool_input: SEND_ARGS })
+  assert.match(decideFloorHook(payload(SEND_TOOL), floorCore), /"permissionDecision":"ask"/)
+  assert.equal(decideFloorHook(payload('mcp__plugin_hoai_bgos__email_draft'), floorCore), '')
+})
+
+test('Always ask: the relay asks the floor check about email_send and holds the card when the owner asks first', async () => {
+  const preview = previewOf(SEND_ARGS)
+  const plan = planFloorRequest({ autoApprove: true, toolName: SEND_TOOL, inputPreview: preview, record: null, previewMatch: classifyPermissionRequest(SEND_TOOL, preview) })
+  assert.equal(plan.action, 'consult')
+  if (plan.action !== 'consult') return
+  const sent: unknown[] = []
+  const decision = await consultFloor({
+    toolName: SEND_TOOL,
+    inputPreview: preview,
+    requestId: 'abcde',
+    match: plan.match,
+    path: floorCheckPath('pairing', ASSISTANT_ID),
+    send: async (path, body) => {
+      sent.push({ path, body })
+      return { status: 200, text: '{"hold":true,"ruleId":"acts_on_owners_behalf","rulesVersion":3}' }
+    },
+  })
+  assert.equal(decision.route, 'hold')
+  assert.deepEqual(sent, [{ path: `integrations/assistants/${ASSISTANT_ID}/floor-check`, body: { toolName: SEND_TOOL, inputPreview: '{}' } }])
+})
+
+test('Always ask: the owner\'s card shows the recipient, the subject and the first lines, whatever order the agent wrote them in', () => {
+  const longText = ['Hi Sam,', '', 'Could you confirm the Harbor room for Friday?', ...Array.from({ length: 60 }, (_, i) => `Line ${i + 1} of the plan, with enough words to fill a card.`)].join('\n')
+  // The CLI renders the arguments in the order the model wrote them: text first used to push the recipient past the card's cap.
+  const preview = `{ "text": ${JSON.stringify(longText)}, "subject": "Friday venue check", "to": "sam@harborhall.com" }`
+  const tool = permissionCardTool({ toolName: SEND_TOOL, inputPreview: preview })
+  assert.ok(tool.startsWith(`${SEND_TOOL} {"to":"sam@harborhall.com","subject":"Friday venue check","text":"Hi Sam,\\n\\nCould you confirm the Harbor room for Friday?`), tool.slice(0, 200))
+  assert.ok(tool.length <= 2000)
+  const body = buildPermissionRequestBody({ chatId: OWN_CHAT, requestId: 'abcde', toolName: SEND_TOOL, description: 'email_send', inputPreview: preview })
+  const text = String(body.text)
+  for (const part of ['sam@harborhall.com', 'Friday venue check', 'Could you confirm the Harbor room for Friday?']) assert.ok(text.includes(part), text)
+  assert.ok(text.split('\n').length < 16, `the first lines, not the whole email: ${text}`)
+  // The server's card reader reads the first word: still the tool's own name, so it stamps the floor.
+  assert.equal(String((body.approvalMeta as { tool: string }).tool).split(/\s+/, 1)[0], SEND_TOOL)
+  // A reply says so and names the email it answers; the server knows its recipient and subject.
+  const reply = buildPermissionRequestBody({ chatId: OWN_CHAT, requestId: 'abcde', toolName: SEND_TOOL, inputPreview: previewOf({ text: 'Hi Dana, Kc picks the Harbor room.', email_id: EMAIL_ID }) })
+  assert.match(String(reply.text), /reply/i)
+  assert.ok(String(reply.text).includes('Hi Dana, Kc picks the Harbor room.'), String(reply.text))
+  assert.ok(String((reply.approvalMeta as { tool: string }).tool).startsWith(`${SEND_TOOL} {"email_id":"${EMAIL_ID}","text":"Hi Dana`))
+  // Every other tool's card is as it was.
+  assert.equal(
+    permissionCardTool({ toolName: 'mcp__plugin_hoai_bgos__reply', inputPreview: '{ "chat_id": "7", "text": "done" }' }),
+    'mcp__plugin_hoai_bgos__reply { "chat_id": "7", "text": "done" }',
+  )
+})
+
+test('Always ask: an Allow matches only the call the owner saw (exact fields, a cut text by head and tail), once, for two minutes', async () => {
+  const a = await approval()
+  assert.equal(typeof a.createEmailSendApprovals, 'function', 'lib/email-send-approval.ts exports createEmailSendApprovals')
+  let clock = 0
+  const approvals = a.createEmailSendApprovals({ now: () => clock })
+  // Only this channel's email_send, and only a preview that reads as one.
+  assert.equal(approvals.allow('mcp__plugin_hoai_bgos__email_draft', previewOf(SEND_ARGS)), false)
+  assert.equal(approvals.allow('mcp__gmail__email_send', previewOf(SEND_ARGS)), false)
+  assert.equal(approvals.allow(SEND_TOOL, 'send it'), false)
+  assert.equal(approvals.allow(SEND_TOOL, previewOf({ ...SEND_ARGS, cc: 'mallory@evil.example' })), false)
+  assert.equal(approvals.allow(SEND_TOOL, previewOf(SEND_ARGS)), true)
+  assert.equal(approvals.take({ ...SEND_ARGS, subject: 'Something else' }), false)
+  assert.equal(approvals.take({ ...SEND_ARGS, to: 'mallory@evil.example' }), false)
+  assert.equal(approvals.take({ ...SEND_ARGS, text: `${SEND_ARGS.text} And the codes.` }), false)
+  assert.equal(approvals.take(SEND_ARGS), true)
+  assert.equal(approvals.take(SEND_ARGS), false, 'one Allow, one send')
+  // The CLI cuts a long value in the middle (truncateForPreview): what the owner saw is its head and its tail.
+  const long = `${'A'.repeat(2000)}${'middle '.repeat(100)}${'Z'.repeat(1500)}`
+  const cut = `{ "email_id": "${EMAIL_ID}", "text": "${'A'.repeat(2000)}\n⋯ 700 code points elided ⋯\n${'Z'.repeat(1500)}" }`
+  assert.equal(approvals.allow(SEND_TOOL, cut), true)
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: `B${long.slice(1)}` }), false, 'another head')
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: `${long.slice(0, -1)}Y` }), false, 'another tail')
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: long }), true)
+  // An Allow the CLI never used goes stale.
+  assert.equal(approvals.allow(SEND_TOOL, previewOf(SEND_ARGS)), true)
+  clock += 2 * 60_000 + 1
+  assert.equal(approvals.take(SEND_ARGS), false, 'expired')
+})
+
+test('Always ask: what each floor answer means for a send no card allowed, and a server whose list predates email_send', async () => {
+  const a = await approval()
+  assert.equal(typeof a.emailSendFloorRefusal, 'function', 'lib/email-send-approval.ts exports emailSendFloorRefusal')
+  const proceed = (rulesVersion: number | null) => ({ route: 'auto_approve', answer: { kind: 'proceed', rulesVersion } })
+  assert.equal(a.emailSendFloorRefusal(proceed(3)), null)
+  // A server still on rules version 2 does not list email_send: its "not held" is not about a send, so nothing goes.
+  for (const rulesVersion of [2, 1, null]) assert.match(String(a.emailSendFloorRefusal(proceed(rulesVersion))), /could not check/, String(rulesVersion))
+  // No floor route at all (404) or an API key connection: no switch to hold it, as before.
+  assert.equal(a.emailSendFloorRefusal({ route: 'auto_approve', answer: { kind: 'unsupported', reason: '404' } }), null)
+  assert.match(String(a.emailSendFloorRefusal({ route: 'hold', answer: { kind: 'hold', ruleId: 'acts_on_owners_behalf', rulesVersion: 3 } })), /asks before every email/)
+  for (const route of ['refuse', 'owner']) {
+    assert.match(String(a.emailSendFloorRefusal({ route, answer: { kind: 'error', reason: 'x' } })), /could not check/)
+  }
+})
+
+test('the relay records the owner\'s Allow of a card before it answers the CLI, so that one send may go', () => {
+  const relay = serverSlice('function relayPermissionToOwner(', '\n}\n')
+  const verdict = relay.indexOf('const behavior = choiceToBehavior(choice)')
+  // Only a card the floor HELD, which only a person's tap can allow (a typed yes never answers one).
+  const allow = relay.search(/if \(behavior === 'allow' && floorHeld\) emailSendApprovals\.allow\(tool_name, input_preview\)/)
+  const answer = relay.indexOf('params: { request_id, behavior },', verdict)
+  assert.ok(verdict > 0 && allow > verdict && answer > allow, 'recorded after the verdict and before the CLI hears it')
+  assert.match(SRC, /\nconst emailSendApprovals = createEmailSendApprovals\(\)\n/)
+})
+
+test('server.ts, run, Always ask: a send no card allowed is not sent; the floor check is asked about email_send', async (t) => {
+  const f = fixture(t)
+  const { backend, call, logs } = await serverCallTool(t, f, {}, { floor: { hold: true } })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true, textOf(result))
+  assert.match(textOf(result), /asks before every email/)
+  assert.match(textOf(result), /email_draft/)
+  assert.equal(backend.requests.length, 0, 'nothing reached the send route')
+  assert.equal(backend.floorChecks.length, 1)
+  assert.deepEqual(backend.floorChecks[0]!.body, { toolName: 'mcp__bgos__email_send', inputPreview: '{}' })
+  assert.equal(backend.floorChecks[0]!.headers['x-bgos-pairing'], PAIRING_TOKEN)
+  assert.ok(logs.some((line) => line.includes('email_send') && line.includes('HOLDS')), logs.join(' | '))
+})
+
+test('server.ts, run, Always ask: the owner\'s Allow on the card lets exactly that send go, once', async (t) => {
+  const f = fixture(t)
+  const a = await approval()
+  assert.equal(typeof a.createEmailSendApprovals, 'function', 'lib/email-send-approval.ts exports createEmailSendApprovals')
+  const approvals = a.createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: approvals }, { floor: { hold: true } })
+  f.start(TURNS.ownerMessage)
+  assert.equal(approvals.allow(SEND_TOOL, previewOf(SEND_ARGS)), true)
+  const sent = await call('email_send', SEND_ARGS)
+  assert.equal(sent.isError, undefined, textOf(sent))
+  assert.equal(backend.requests.length, 1)
+  assert.equal(backend.floorChecks.length, 0, 'the card was the owner\'s answer')
+  const again = await call('email_send', SEND_ARGS)
+  assert.equal(again.isError, true, 'the same email again needs a new Allow')
+  assert.equal(backend.requests.length, 1)
+})
+
+test('server.ts, run, Always ask: an Allow for another email does not let this one go', async (t) => {
+  const f = fixture(t)
+  const a = await approval()
+  assert.equal(typeof a.createEmailSendApprovals, 'function', 'lib/email-send-approval.ts exports createEmailSendApprovals')
+  const approvals = a.createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: approvals }, { floor: { hold: true } })
+  f.start(TURNS.ownerMessage)
+  approvals.allow(SEND_TOOL, previewOf({ ...SEND_ARGS, text: 'See you Friday.' }))
+  approvals.allow(SEND_TOOL, previewOf({ ...SEND_ARGS, to: 'dana@northwind.co' }))
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true)
+  assert.match(textOf(result), /asks before every email/)
+  assert.equal(backend.requests.length, 0)
+})
+
+test('server.ts, run, Always ask: off, the send goes after one floor check; a draft never asks', async (t) => {
+  const f = fixture(t)
+  const off = await serverCallTool(t, f, {}, { floor: { hold: false } })
+  f.start(TURNS.ownerMessage)
+  const sent = await off.call('email_send', SEND_ARGS)
+  assert.equal(sent.isError, undefined, textOf(sent))
+  assert.equal(off.backend.requests.length, 1)
+  assert.equal(off.backend.floorChecks.length, 1)
+  const on = await serverCallTool(t, f, {}, { floor: { hold: true } })
+  f.start(TURNS.ownerMessage)
+  const draft = await on.call('email_draft', SEND_ARGS)
+  assert.equal(draft.isError, undefined, textOf(draft))
+  assert.equal(on.backend.requests[0]!.path, '/api/v1/integrations/agent-email/reply-drafts')
+  assert.equal(on.backend.floorChecks.length, 0)
+})
+
+test('server.ts, run, Always ask: a floor check that cannot answer stops the send; a backend with no floor route does not', async (t) => {
+  const f = fixture(t)
+  const broken = await serverCallTool(t, f, {}, { floor: { status: 500 } })
+  f.start(TURNS.ownerMessage)
+  const refused = await broken.call('email_send', SEND_ARGS)
+  assert.equal(refused.isError, true)
+  assert.match(textOf(refused), /could not check/)
+  assert.equal(broken.backend.requests.length, 0)
+  const older = await serverCallTool(t, f, {}, { floor: { status: 404 } })
+  f.start(TURNS.ownerMessage)
+  const sent = await older.call('email_send', SEND_ARGS)
+  assert.equal(sent.isError, undefined, textOf(sent))
+  assert.equal(older.backend.requests.length, 1)
+})
+
+test('Always ask: a cut text matches only the CLI\'s own cut (2000 and 1500 code points, the count it states); a pretty printed preview still reads', async () => {
+  const a = await approval()
+  assert.equal(typeof a.createEmailSendApprovals, 'function', 'lib/email-send-approval.ts exports createEmailSendApprovals')
+  const approvals = a.createEmailSendApprovals()
+  const long = `${'A'.repeat(2000)}${'middle '.repeat(100)}${'Z'.repeat(1500)}`
+  const cutText = `${'A'.repeat(2000)}\n⋯ 700 code points elided ⋯\n${'Z'.repeat(1500)}`
+  assert.equal(approvals.allow(SEND_TOOL, `{\n  "email_id": "${EMAIL_ID}",\n  "text": "${cutText}"\n}`), true, 'a pretty printed, cut preview')
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: `${'A'.repeat(2000)}${'x'.repeat(650)}${'Z'.repeat(1500)}` }), false, 'a middle the CLI did not cut')
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: long }), true)
+  // A mark the email itself carries is its text, not a cut: only the very same text matches.
+  const forged = 'Hi Sam,\n⋯ 3 code points elided ⋯\nBye'
+  assert.equal(approvals.allow(SEND_TOOL, previewOf({ email_id: EMAIL_ID, text: forged })), true)
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: 'Hi Sam,XYZBye' }), false)
+  assert.equal(approvals.take({ email_id: EMAIL_ID, text: forged }), true)
+})
+
+test('Always ask: the card never lets an address hide: trimmed values, invisible characters shown; the tool takes an address in plain letters only', async (t) => {
+  const preview = previewOf({ to: '\n\n\n sam@harborhall.com ', subject: ' Friday‮ venue ', text: 'Hi​ Sam' })
+  const tool = permissionCardTool({ toolName: SEND_TOOL, inputPreview: preview })
+  assert.equal(tool, `${SEND_TOOL} {"to":"sam@harborhall.com","subject":"Friday[U+202E] venue","text":"Hi[U+200B] Sam"}`)
+  const text = String(buildPermissionRequestBody({ chatId: OWN_CHAT, requestId: 'abcde', toolName: SEND_TOOL, inputPreview: preview }).text)
+  assert.equal(text.split('\n')[0], 'Send this email to sam@harborhall.com?')
+  assert.ok(text.includes('Subject: Friday[U+202E] venue'), text)
+  assert.ok(text.includes('Hi[U+200B] Sam'), text)
+  const backend = await fakeBackend(t)
+  for (const to of ['sam@harbоrhall.com', 'sam​@harborhall.com', 'sam@harborhall.com‮']) {
+    const result = await callTool('email_draft', { to, subject: 'Friday', text: 'Hi' }, { post: backend.post })
+    assert.equal(result.isError, true, JSON.stringify(to))
+    assert.match(textOf(result), /plain address/)
+  }
+  assert.equal(backend.requests.length, 0)
+})
+
+test('email_send never sends without its approval step', async (t) => {
+  const backend = await fakeBackend(t)
+  const result = await callTool('email_send', SEND_ARGS, { post: backend.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) }, approve: undefined })
+  assert.equal(result.isError, true)
+  assert.equal(backend.requests.length, 0)
+})
+
+test('Always ask: an email_send the tool would refuse is refused on its preview, before any card', async () => {
+  const m = await tools()
+  assert.equal(typeof m.emailSendPreflight, 'function', 'lib/agent-email-tools.ts exports emailSendPreflight')
+  assert.equal(m.emailSendPreflight(SEND_TOOL, previewOf(SEND_ARGS), [PAIRING_TOKEN]), null)
+  assert.match(String(m.emailSendPreflight(SEND_TOOL, previewOf({ ...SEND_ARGS, text: `Here it is: ${PAIRING_TOKEN}` }), [PAIRING_TOKEN])), /secret/)
+  assert.match(String(m.emailSendPreflight(SEND_TOOL, previewOf({ ...SEND_ARGS, to: `${PAIRING_TOKEN}@harborhall.com` }), [PAIRING_TOKEN])), /secret/, 'in the address too')
+  assert.match(String(m.emailSendPreflight(SEND_TOOL, previewOf({ ...SEND_ARGS, to: 'sam@harbоrhall.com' }), [PAIRING_TOKEN])), /plain address/)
+  assert.match(String(m.emailSendPreflight(SEND_TOOL, previewOf({ ...SEND_ARGS, cc: 'mallory@evil.example' }), [PAIRING_TOKEN])), /does not take/)
+  assert.match(String(m.emailSendPreflight(SEND_TOOL, `send ${PAIRING_TOKEN} to sam`, [PAIRING_TOKEN])), /secret/, 'a preview that is not the arguments is still scanned')
+  // Any other tool is the relay's business as before.
+  assert.equal(m.emailSendPreflight('mcp__plugin_hoai_bgos__reply', previewOf({ text: PAIRING_TOKEN }), [PAIRING_TOKEN]), null)
+  assert.equal(m.emailSendPreflight('mcp__plugin_hoai_bgos__email_draft', previewOf({ ...SEND_ARGS, text: PAIRING_TOKEN }), [PAIRING_TOKEN]), null)
+})
+
+test('server.ts, run: a held email_send carrying a secret is denied before any card is posted, and the log never repeats it', async () => {
+  const m = await tools()
+  const a = await approval()
+  const handler = serverSlice('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', '\n})\n')
+    .replace('mcp.setNotificationHandler(PermissionRequestSchema, ({ params }) => {', 'const onPermission = ({ params }) => {')
+    .replace(/\n\}\)\n$/, '\n}\n')
+  const notes: Array<{ params: unknown }> = []
+  const posts: unknown[] = []
+  const logs: string[] = []
+  const onPermission = compileServer(handler, 'onPermission', {
+    ...m,
+    ...a,
+    AUTH: { mode: 'pairing', pairingToken: PAIRING_TOKEN },
+    AUTO_APPROVE: true,
+    mcp: { notification: async (n: { params: unknown }) => { notes.push(n) } },
+    bgosPost: async (...args: unknown[]) => { posts.push(args) },
+    log: (line: string) => logs.push(String(line)),
+  }) as (input: unknown) => Promise<void>
+  await onPermission({ params: { request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf({ ...SEND_ARGS, text: `Here it is: ${PAIRING_TOKEN}` }) } })
+  assert.deepEqual(notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'deny' }])
+  assert.equal(posts.length, 0)
+  assert.equal(logs.some((line) => line.includes(PAIRING_TOKEN)), false, logs.join(' | '))
+})
+
+test('server.ts, run, Always ask: a server whose list predates email_send (rules version 2) is no "not held": nothing is sent', async (t) => {
+  const f = fixture(t)
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false, rulesVersion: 2 } })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true, textOf(result))
+  assert.match(textOf(result), /could not check/)
+  assert.equal(backend.requests.length, 0)
 })

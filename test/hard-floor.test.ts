@@ -44,7 +44,8 @@ import { HARD_FLOOR_FIXTURE } from '../lib/hard-floor-fixture.ts'
 
 test('the seven rules, their ids and their words, exactly as spec section 1 writes them', () => {
   // Rules version 2 (BGOS DSH parity item 10, 2026-10-02): adds_skill_or_plugin.
-  assert.equal(HARD_FLOOR_RULES_VERSION, 2)
+  // Rules version 3 (Data, 2026-10-13): the channel's own email_send acts on the owner's behalf.
+  assert.equal(HARD_FLOOR_RULES_VERSION, 3)
   assert.deepEqual(
     HARD_FLOOR_RULES.map((r) => [r.id, r.words]),
     [
@@ -77,7 +78,7 @@ test('a match carries the rule, the version, the words and what matched', () => 
   const match = classifyToolCall('Bash', { command: 'cd app && rm -rf build', description: 'x' })
   assert.deepEqual(match, {
     ruleId: 'recursive_delete',
-    rulesVersion: 2,
+    rulesVersion: 3,
     words: 'deleting a folder and everything in it',
     evidence: 'rm -rf build',
   })
@@ -515,6 +516,6 @@ test('a plugin install reads in a Claude Code permission request and names its w
     inputPreview: JSON.stringify({ command: 'claude plugin install page-checker@site-tools', description: 'Add it' }),
   })
   assert.equal(match?.ruleId, 'adds_skill_or_plugin')
-  assert.equal(match?.rulesVersion, 2)
+  assert.equal(match?.rulesVersion, 3)
   assert.equal(match?.words, 'installing a new plugin or tool that stays after this chat')
 })

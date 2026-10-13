@@ -976,6 +976,18 @@ test('every lane names an owner turn by its message id, a wake by its task id, a
   ])
 })
 
+test('the poll lane, backlog: a boot replay of the owner\'s message or a wake names no reason to send; an email stays refused', async () => {
+  // A replayed row may have been answered in an earlier turn by an earlier process (Data 2026-10-13).
+  const r = deliveryRecorder()
+  await pollLane([
+    { message: { id: 9002, text: 'send Dana the venue', sender: 'user', senderUserId: OWNER, messageType: 'text', sentDate: TS }, messageFiles: [] },
+    { message: { id: 9004, text: 'Wake: Friday venue check', sender: 'system', messageType: 'event', sentDate: TS, eventMeta: WAKE_META }, messageFiles: [] },
+    { message: pollEmailRow({ id: 9006 }), messageFiles: [] },
+  ], { privateTurns: r.privateTurns, chatLastSeen: new Map() }).fn(CHAT)
+  assert.deepEqual(r.seen.map((d) => d.emailBasis), [null, null, 'refused'])
+  assert.ok(r.seen.every((d) => String(d.content).includes('[backlog')), 'all three are the boot replay')
+})
+
 test('the permission wait never takes an answer from an email row', () => {
   const verdictFrom = serverFunction('async function waitForVerdict(').match(/verdictFrom: \(msg\) => \{[\s\S]*?\n {6}const text = msg\.message\.text/)
   assert.ok(verdictFrom, 'verdictFrom is where it was')
