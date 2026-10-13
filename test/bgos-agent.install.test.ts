@@ -638,3 +638,25 @@ test('run.sh logs which claude the launch found and its version, every launch', 
   assert.match(runSh, /echo "\[\$\(ts\)\] claude: \$claude_at \$\("\$claude_at" --version/)
   assert.match(runSh, /claude: not found on the service PATH/)
 })
+
+test('the PATH an install bakes is correct for its OS: Homebrew on macOS only (board row 84296679, kc-server)', SLOW, (t) => {
+  if (!ready(t)) return
+  const pathOf = (m: Machine) => {
+    const service = readFileSync(m.serviceFiles()[0]!, 'utf8')
+    return (/<key>PATH<\/key>\s*<string>([^<]+)<\/string>/.exec(service) ?? /PATH=([^\n"]+)/.exec(service))?.[1] ?? ''
+  }
+  const linux = machine({ os: 'Linux' })
+  const lw = pair(linux, '874')
+  const lr = linux.run(['--assistant', '874', '--dir', lw, '--always-on'])
+  assert.equal(lr.status, 0, lr.out)
+  const linuxPath = pathOf(linux).split(':')
+  assert.equal(linuxPath.includes('/opt/homebrew/bin'), false, `no Homebrew on a Linux unit PATH: ${linuxPath.join(':')}`)
+  assert.ok(linuxPath.includes('/usr/local/bin') && linuxPath.includes('/usr/bin'))
+  assert.equal(new Set(linuxPath).size, linuxPath.length, 'each directory once')
+
+  const mac = machine({ os: 'Darwin' })
+  const mw = pair(mac, '874')
+  const mr = mac.run(['--assistant', '874', '--dir', mw, '--always-on'])
+  assert.equal(mr.status, 0, mr.out)
+  assert.ok(pathOf(mac).split(':').includes('/opt/homebrew/bin'), 'Homebrew stays on a macOS plist PATH')
+})

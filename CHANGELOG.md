@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.4 (2026-10-13)
+
+**The PATH baked into an agent's or the watcher's unit is correct for its OS (board row 84296679, Nicole, kc-server).** `/opt/homebrew/bin` is Homebrew's macOS prefix; the rebaked Linux units still carried it. `servicePath` (the watcher's launchd plist and systemd unit) takes the platform and leaves it out of the systemd unit, and `bin/bgos-agent install` adds it only on Darwin. A macOS plist keeps it, and every other directory and the order are unchanged.
+
 ## 0.68.3 (2026-10-13)
 
 One release carrying five fixes: restart marker takeover (#220), private turn and wake fixes (#221), stale claude on Linux installs (#222), a pending update no longer blocks sends (#223), and Always allow / Trust this site saved per agent (#224).
