@@ -2,6 +2,10 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## 0.68.5 (2026-10-13)
+
+**The owner's Always allow and Trust this site in the agent's own browser now outlive the browser host (HOAI board row b774a758).** On a daemon placed agent, both answers lasted only until the host restarted, and the owner was asked again. The host files a remembered answer under `profiles.agentProfileKey`, the desktop's own key function, vendored byte for byte. That function takes the agent id as a string (`relay:<id>` for an assistant the backend resolved) and returns null for anything else, and the host handed it `ctx.assistantId`, which `relay()` has already turned into a number. So the key was always null and `_remember` wrote nothing. `_profileKey` (`bin/hoai-browser-host.mjs`) now hands it `relay:<id>`, as `local-mcp.js` does for the relay door, which keys the agent `assistant-<id>`: the key the desktop uses for the same assistant, the key `withoutTrustGrant` revokes under, and one key per agent. An id that is not a positive integer gets no key and nothing is remembered; before, a non numeric string id would have been filed as a loopback client (`client-<name>`). The vendored `profiles.js` is unchanged. Allow once and Allow for this session are still never written to disk, and every answer is still written only to the agent's own browser folder. Guard: `test/hoai-browser-host.trust-persist.test.ts`. No version is published or tagged here.
+
 ## 0.68.2 (2026-10-12)
 
 **An email reaches the agent as a stranger's words, never as the owner (agent email, HOAI board row 2dd04488, piece P2: the plugin).** The backend delivers an email to an agent as a row of the agent's email chat: sender `user`, no sender user id, `fromAgent {name: 'Email', type: 'external_email'}`, and `senderType: 'external_email'` on the socket and the history route. This plugin knew no such sender: every lane delivered it as a plain user turn, with `user="User"` and the owner's id as `user_id` (the owner fallback); an email stamped `slash_command` ran `/status` on the socket lane, and a `yes <code>` email was swallowed as a permission answer on the poll and stream lanes.
