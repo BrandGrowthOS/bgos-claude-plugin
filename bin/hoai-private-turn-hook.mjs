@@ -8,6 +8,21 @@ import { PRIVATE_TOOL_MATCHER, privateAgentsPath, privateMarkerPath, privateProm
 
 const envText = (env, name) => (env && typeof env[name] === 'string' ? env[name].trim() : '')
 
+/** The longest the hook waits for the daemon's receipt (<marker>.ready) after writing a live marker. */
+export const PRIVATE_TURN_READY_WAIT_MS = 2500
+/**
+ * The latest it waits, counted from its own process start (0.68.4). The CLI's timeout counts from the spawn, and the
+ * 2.5 s used to count from the marker write, so a slow node start added on top: Vera's hook took 3082 to 3706 ms
+ * against a 3 s limit (Data, board row d6aa4f1f). The imports cost about 8 ms; the start is what varied. The CLI's
+ * timeout for this hook is 5 s (hooks/hooks.json, lib/claude-preseed.mjs PRIVATE_HOOK_TIMEOUT_SECONDS): 2 s over this
+ * deadline for what the process cannot see of itself, its creation and its exit.
+ */
+export const PRIVATE_TURN_HOOK_DEADLINE_MS = 3000
+/** When the wait for the receipt ends, given the ms since this process started when the marker was written. */
+export function readyWaitEnd(sinceStartMs) {
+  return Math.min(sinceStartMs + PRIVATE_TURN_READY_WAIT_MS, PRIVATE_TURN_HOOK_DEADLINE_MS)
+}
+
 /** One attached entry the hook passed over, in a few words. */
 function describeEntry({ key, state, pid, projectDir }) {
   if (state === 'other-project') return `${key}: pid ${pid} serves the transcripts in ${projectDir}`
@@ -187,12 +202,13 @@ export async function main() {
     }
     if (recorded && recorded.marker.live && String(payload.prompt).includes('<hoai-private-turn id="')) {
       // Claude runs matching hooks in parallel. Give the existing async
-      // forwarder and daemon intake time to publish before the first tool.
-      const until = Date.now() + 2500
-      while (Date.now() < until) {
+      // forwarder and daemon intake time to publish before the first tool,
+      // within the deadline counted from this process's start (performance.now()).
+      const until = readyWaitEnd(performance.now())
+      while (performance.now() < until) {
         const ready = readPrivateJson(`${recorded.path}.ready`, 2048)
         if (ready?.turnId === recorded.marker.turnId && ready.sessionId === recorded.marker.sessionId) break
-        await new Promise((resolve) => setTimeout(resolve, 25))
+        await new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.min(25, until - performance.now()))))
       }
     }
   } catch {

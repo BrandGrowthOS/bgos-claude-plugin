@@ -173,7 +173,7 @@ test('linux spec: systemd --user unit (Restart=always, RestartSec=5, quoted Exec
       'ExecStart="/usr/local/bin/node" "/home/kc/.bgos-agent/watcher/bin/hoai-watcher.mjs" run',
       'Restart=always',
       'RestartSec=5',
-      'Environment=PATH=/home/kc/.local/bin:/home/kc/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+      'Environment=PATH=/home/kc/.local/bin:/home/kc/.bun/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
       'Environment=HOME=/home/kc',
       'Environment=USER=kc',
       'Environment=LOGNAME=kc',
@@ -565,4 +565,25 @@ test('servicePath: a directory is listed once even when it is found and is also 
   const parts = servicePath('/home/kc', ['/home/kc/.local/bin', '/usr/local/bin', '/opt/x/bin']).split(':')
   assert.equal(new Set(parts).size, parts.length)
   assert.equal(parts[0], '/opt/x/bin')
+})
+
+// -- the baked PATH is correct for its OS (board row 84296679, Nicole: /opt/homebrew/bin on Linux) --------------
+
+test('servicePath: /opt/homebrew/bin is on a macOS service PATH and never on a Linux one', () => {
+  assert.ok(servicePath('/home/kc', [], 'darwin').split(':').includes('/opt/homebrew/bin'))
+  assert.equal(servicePath('/home/kc', [], 'linux').split(':').includes('/opt/homebrew/bin'), false)
+  // The user's own and the shared system directories are on both.
+  for (const platform of ['darwin', 'linux']) {
+    const parts = servicePath('/home/kc', [], platform).split(':')
+    for (const dir of ['/home/kc/.local/bin', '/usr/local/bin', '/usr/bin', '/bin']) assert.ok(parts.includes(dir), `${platform} ${dir}`)
+  }
+})
+
+test('the watcher unit carries the PATH of its own OS: the launchd plist keeps Homebrew, the systemd unit has none', () => {
+  const mac = watcherServiceSpec({ ...POSIX, platform: 'darwin' }).files[0]!.content
+  assert.match(mac, /<key>PATH<\/key><string>[^<]*\/opt\/homebrew\/bin/)
+  const linux = watcherServiceSpec({ ...POSIX, platform: 'linux' }).files[0]!.content
+  const line = linux.split('\n').find((l) => l.startsWith('Environment=PATH='))!
+  assert.ok(line, 'the systemd unit sets PATH')
+  assert.doesNotMatch(line, /\/opt\/homebrew\/bin/)
 })
