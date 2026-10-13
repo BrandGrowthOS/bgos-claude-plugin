@@ -31,7 +31,9 @@ import {
   VOICE_CONSULT_TURN_MAX_MS,
   createPrivateTurnTracker,
   privateActor,
+  privateBeginLine,
   privateMarkerPath,
+  privateRevokeLine,
   requirePrivateTurn,
   voiceConsultActor,
 } from '../lib/private-turn.mjs'
@@ -86,7 +88,8 @@ function fixture(t: any, clock = { now: T0 }) {
   markFloorAttached({ root, folders: [cwd] })
   const markerPaths = [privateMarkerPath(root, floorKey(cwd))]
   let revoked = 0
-  const tracker = createPrivateTurnTracker({ now: () => clock.now, onRevoke: () => { revoked++ } })
+  const revokes: Array<{ chatId: string, why: string, consultId?: string }> = []
+  const tracker = createPrivateTurnTracker({ now: () => clock.now, onRevoke: (info) => { revoked++; revokes.push(info) } })
   /** The prompt Claude Code submits for a delivered card, through the real synchronous hook. */
   const submit = (prompt: string, session = 'session-a') => {
     recordPrivateBoundary({ hook_event_name: 'UserPromptSubmit', session_id: session, cwd, prompt }, env)
@@ -102,7 +105,7 @@ function fixture(t: any, clock = { now: T0 }) {
     })
   }
   const gate = () => requirePrivateTurn(tracker, markerPaths, OWNER)
-  return { root, cwd, env, markerPaths, tracker, submit, consultCard, gate, revoked: () => revoked }
+  return { root, cwd, env, markerPaths, tracker, submit, consultCard, gate, revoked: () => revoked, revokes }
 }
 
 // ── The stamp ─────────────────────────────────────────────────────────────────
@@ -293,6 +296,42 @@ test('a card that skipped deliver (a meeting line, a button tap) ends a consult 
   g.submit(g.tracker.deliver({ content: 'owner typed', actingUserId: OWNER, chatId: '10' }))
   assert.equal(g.tracker.rawCard('[button_clicked] yes'), false, 'a chat turn keeps today\'s rules')
   assert.equal(g.gate().actingUserId, OWNER)
+})
+
+test('the daemon log says why a consult turn is gone: past its deadline, answered, another card, or a card that skipped the tracker', (t) => {
+  const clock = { now: T0 }
+  const f = fixture(t, clock)
+  const late = f.consultCard(stamped())
+  clock.now = T0 + 45_000
+  const outcome = f.tracker.begin({ prompt: late, sessionId: 'session-a' })
+  assert.equal(outcome, 'consult-over')
+  assert.match(privateBeginLine(outcome, 'session-a'), /opens no private turn: its voice consult passed its deadline/)
+
+  clock.now = T0
+  const g = fixture(t, clock)
+  g.submit(g.consultCard(stamped()))
+  assert.equal(g.gate().actingUserId, OWNER)
+  g.tracker.endConsult(RPC)
+  assert.match(privateRevokeLine(g.revokes.at(-1)!), new RegExp(`voice consult ${RPC} was answered or expired; its private turn ended`))
+  assert.match(g.tracker.explain({ markerPaths: g.markerPaths }), /its turn then ended with its voice consult/)
+
+  const h = fixture(t, clock)
+  h.submit(h.consultCard(stamped({ frame: { rpcId: 'rpc-deadline' } })))
+  assert.equal(h.gate().actingUserId, OWNER)
+  clock.now = T0 + 45_000
+  assert.throws(() => h.gate(), /did not start/)
+  assert.match(h.tracker.explain({ markerPaths: h.markerPaths }), /its turn then ended with its voice consult/)
+
+  clock.now = T0
+  const i = fixture(t, clock)
+  i.submit(i.consultCard(stamped()))
+  i.consultCard(stamped({ frame: { rpcId: 'rpc-other' } }))
+  assert.match(privateRevokeLine(i.revokes.at(-1)!), /a delivery that is not this voice consult \(chat 10\) ended the private turn/)
+
+  const j = fixture(t, clock)
+  j.submit(j.consultCard(stamped()))
+  j.tracker.rawCard('[meeting_message] hi')
+  assert.match(privateRevokeLine(j.revokes.at(-1)!), /a delivery that skipped the tracker \(a meeting line, a button tap\) during a voice consult \(chat 10\)/)
 })
 
 // ── The handler ───────────────────────────────────────────────────────────────
