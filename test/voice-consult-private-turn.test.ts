@@ -7,7 +7,7 @@
  * the Agent Browser) called while answering it was refused: the card never
  * went through privateTurns.deliver and named nobody (Ares, 2026-10-13
  * 04:30Z). The backend now stamps the owner on the frame ONLY when it proved,
- * server side, that the owner is live on that call (BGOS
+ * server side, that the owner is live on that call and has spoken on it (BGOS
  * backend/src/voice/voice-consult-actor.ts), as
  * `payload.eventMeta = {source: 'voice_consult', payload: {actingUserId,
  * consultId, assistantId, voiceSessionId, expiresAt}}`. Here:

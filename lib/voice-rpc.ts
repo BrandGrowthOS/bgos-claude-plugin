@@ -1204,8 +1204,9 @@ export class VoiceRpcHandler {
       frame.chatId != null
         ? String(frame.chatId)
         : String(this.deps.config.chatIdFallback ?? '')
-    // The owner only when the backend proved them live on this call and the
-    // stamp is for this agent, this owner and this very frame.
+    // The owner only when the backend proved them live on this call, with
+    // their own words on it on record, and the stamp is for this agent, this
+    // owner and this very frame.
     const stamp = voiceConsultActor({
       frame,
       assistantId: this.deps.config.assistantId,
