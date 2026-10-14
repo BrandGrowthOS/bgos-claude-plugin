@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "sourceCommit": "549ffc88c479595f7fae3d06a226def82c205fa0",
+  "sourceCommit": "2c38e020e950dbb3b76d736154d09850ddf0d3e5",
   "why": "Byte-identical encrypted checkpoint, lossless storage, strict complete portable state, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.",
   "files": {
     "crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/crypto.js",
-      "sha256": "e834d6780f19a79e3e93079784b430e9ca5758da71089a722422f9c58685b840"
+      "sha256": "8618f0702f01bd2a23a59dd3fcbef388512b1b218823953b0a7e63b83158a3a3"
     },
     "storage.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/storage.js",
@@ -17,15 +17,19 @@
     },
     "native-runtime.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/native-runtime.js",
-      "sha256": "03badbb6fc8901f3156cff8d2dcb3178705768831a0f4ab7578b5a405a0c8d3a"
+      "sha256": "72a5d9a2d7606b4d114184608d8c620cee567aabdab291197209541590ba64e1"
     },
     "coordinator-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/coordinator-client.js",
-      "sha256": "ab7527ce462e83901bb7d7cfc651b66bf0b29b2c0ebf98f678924e3265d5124d"
+      "sha256": "bab7b233ff7c616898833b9c65481e7dbab599b043a62e8c7e6cddee972c524e"
     },
     "runtime-endpoint.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-endpoint.js",
       "sha256": "cb5023d79d476cf30edda6facec71c2d60a4192147cbc053d807d2d1ea19cb50"
+    },
+    "stopped-head-stage.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/stopped-head-stage.js",
+      "sha256": "a5925d3cdb8da842766d6da29a96b5e6f820cfd8b9dc2f14c36b3a966a928f6c"
     }
   }
 }
