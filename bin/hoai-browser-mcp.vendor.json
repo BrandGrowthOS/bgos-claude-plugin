@@ -3,9 +3,9 @@
   "source": "BGOS: frontend/electron-app/agent-browser/shim/hoai-browser-mcp.mjs",
   "sha256": "007dd4f6f27af2bd71df63a335424e624afbb88b85cd481dc9392134214e8e50",
   "vendoredAt": "2026-10-14",
-  "sourceCommit": "277dea9b83c1326ec69c4aa8bf3a4675f4ac0f7d",
+  "sourceCommit": "166f1fbe6d7a9fad3c545cbec780200e4d93d754",
   "why": "bin/hoai-browser-mcp.mjs is a byte-identical COPY of the BGOS shim, not a fork. This file is the copy's expected sha256, checked by test/hoai-browser-mcp.vendor.test.ts on every run, so the identity claim lives in the tree instead of in a commit message.",
   "howToUpdate": "docs/vendoring-the-hoai-browser-shim.md",
   "crossTreeCheck": "HOAI_BROWSER_SHIM_SOURCE=<path to the BGOS shim> npx tsx --test test/hoai-browser-mcp.vendor.test.ts",
-  "upstreamPending": "Shared agents Phase 0, item 0.2 (board row 3d604489) edited this copy first: the recipient turn text (RECIPIENT_BROWSER_TEXT, OFFLINE_TEXT_RELAY_RECIPIENT, RECIPIENT_RELAY_ERROR_TEXT, the managed context's recipient flag). The BGOS shim at sourceCommit does not carry it yet; the same change must land there (and in codex-channel-bgos vendor/hoai-browser-mcp.mjs) and this pin be re-taken from the BGOS commit, per howToUpdate."
+  "sourceBranch": "BGOS fix/shared-agents-phase0-shim, a local commit not yet merged (shared agents Phase 0, item 0.2): the BGOS shim, its hoai-browser-mcp.pin.json and its tests there carry the same bytes, so land the two together. codex-channel-bgos vendor/hoai-browser-mcp.mjs is behind until it is re-vendored."
 }
