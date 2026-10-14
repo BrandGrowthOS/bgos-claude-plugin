@@ -14,14 +14,15 @@ const destinationAuthority = { ...authority, endpointId: 'linux-destination', bo
 const context = { version: 1, schemaVersion: 1, profileId: authority.profileId, actingUserId: authority.actingUserId, assistantId: 7, transitionId: 'linux-transition', revision: 1, previousManifestHash: null, keyEpoch: 1,
   source: { endpointId: authority.endpointId, bootId: authority.bootId, runtimeId: authority.runtimeId, sessionId: authority.sessionId, writerEpoch: 1 },
   destination: { endpointId: destinationAuthority.endpointId, bootId: destinationAuthority.bootId, runtimeId: destinationAuthority.runtimeId, sessionId: destinationAuthority.sessionId, grantVersion: 2, keyFingerprint: destinationAuthority.keyFingerprint } }
-const report = { kind: 'Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only', checks: [] }, runtimes = [], ledger = [], pending = [], events = [], extraStores = new Map(), fixtureNativeKey = randomBytes(32)
+const report = { kind: 'Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only', transportQualification:'Restricted disposable literal-loopback only; no general Chrome155 RTC qualification',checks: [] }, runtimes = [], ledger = [], pending = [], events = [], extraStores = new Map(), fixtureNativeKey = randomBytes(32)
 const privateDirectory = mkdtempSync(join(tmpdir(), 'hoai-profile-capsules.'))
 const portableExtras = { passwordVault: { v: 1, entries: [{ id: '0d694ca4-9b5d-4d95-a8bc-36eb1876bd80', origin: 'https://fixture.test', username: 'synthetic-user', password: 'HOAI_LINUX_SAVED_LOGIN_SECRET', name: 'Fixture', createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z' }], neverOrigins: ['https://never.example.test'] }, preferences: { v: 1, searchEngine: 'duckduckgo' } }
 const nativeBundle = file => { const envelope = JSON.parse(readFileSync(file, 'utf8')), bytes = Buffer.from(envelope.ciphertext, 'base64'), decipher = createDecipheriv('aes-256-gcm', fixtureNativeKey, Buffer.from(envelope.iv, 'base64')); decipher.setAuthTag(Buffer.from(envelope.tag, 'base64')); const plaintext = Buffer.concat([decipher.update(bytes), decipher.final()]); try { return portableState.validatePortableBundle(JSON.parse(plaintext)) } finally { plaintext.fill(0) } }
-let server
+let server,origin
 const make = async authority => {
   const store = { bundle: authority.endpointId === 'linux-destination' ? { passwordVault: { v: 1, entries: [], neverOrigins: ['https://stale.example.test'] }, preferences: { v: 1, searchEngine: 'bing' } } : structuredClone(portableExtras), held: false, commits: 0, file: join(privateDirectory, authority.runtimeId + '.native-fixture-vault') }
   const runtime = await BrowserProfileRuntime.create({ chromium, executable: process.env.HOAI_PROBE_EXECUTABLE, authority, timeoutMs: 3000,
+    transferQualification:{kind:'restricted-disposable-fixture',origins:[origin],assertQualified:()=>true},
     preflightExtras: () => structuredClone(store.bundle),
     captureExtras: () => { assert.equal(runtime.context.pages().length, 0); assert.equal(runtime.state, 'quiescing'); assert.equal(store.held, false); store.held = true; return { bundle: structuredClone(store.bundle), assertCurrent() { assert.equal(store.held, true) }, release() { store.held = false } } },
     commitExtras: ({ bundle, receipt, grant }) => {
@@ -55,9 +56,13 @@ try {
     if (request.url === '/worker.js' || request.url === '/shared.js') { response.writeHead(200, { 'content-type': 'application/javascript' }); response.end(request.url === '/shared.js' ? 'onconnect=e=>{fetch("/pending-shared",{method:"POST"}).catch(()=>{});e.ports[0].postMessage("ready");};' : 'fetch("/pending-dedicated",{method:"POST"}).catch(()=>{});postMessage("ready");'); return }
     response.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'session=HOAI_LINUX_MEMORY_SECRET; HttpOnly; Path=/' }); response.end('<!doctype html><title>Disposable plugin runtime</title>')
   })
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const origin = `http://127.0.0.1:${server.address().port}`
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); origin = `http://127.0.0.1:${server.address().port}`
   portableExtras.passwordVault.entries[0].origin = origin
   const runtime = await make(authority); await runtime.activate('exact-fixture-grant'); const page = await runtime.newPage(origin + '/source')
+  const fixtureQualification=runtime.transferQualification;runtime.transferQualification=undefined
+  await assert.rejects(runtime.finalize({context,source,destinationIdentity:destination.identity,contentKeyEpoch:key}),{reason:'profile_transport_qualification_required'})
+  assert.equal(runtime.state,'active');assert.equal(runtime.network,'active');assert.equal(runtime.browser.isConnected(),true);assert.equal(page.isClosed(),false);runtime.transferQualification=fixtureQualification
+  report.checks.push({name:'missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page',ok:true})
   const argv = readFileSync(`/proc/${runtime.processIdentity.pid}/cmdline`, 'utf8').split('\0'), expectedFeatures = (await import('../lib/browser-profile-launch.mjs')).profileLaunchArguments().args[0]
   assert.equal(argv.includes('--no-sandbox'), false); assert.equal(argv.filter(value => value.startsWith('--disable-features=')).length, 1); assert.ok(argv.includes(expectedFeatures)); assert.ok(argv.includes('--remote-debugging-pipe')); assert.equal(argv.some(value => value.startsWith('--remote-debugging-port=')), false)
   report.browserVersion = runtime.browser.version(); report.launch = { sandboxEnabled: true, privatePipe: true, featureSwitch: expectedFeatures, source: 'https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts', omniboxSource: 'https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b' }

@@ -175,13 +175,56 @@ function runtimeFixture(overrides: any = {}) {
   let connected = true
   const browser = { close: async () => { calls.push('process-close'); connected = false }, isConnected: () => connected }
   const ledger: any = { generation: 1, frozen: false, inventory: async () => [], assertIdle() {}, freeze: async () => { calls.push('freeze'); ledger.frozen = true; return ledger.generation }, resume: async () => { calls.push('resume'); ledger.frozen = false }, dispose: () => calls.push('dispose') }
-  const runtime: any = new BrowserProfileRuntime({ browser, context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
+  const runtime: any = new BrowserProfileRuntime({ browser, browserVersion:'155.0.0.1',transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>true},context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
     closeAndDrain: async () => { calls.push('drain'); return { admissionClosed: true, drained: true } }, checkpoint: async (value: any) => { calls.push('checkpoint'); return { durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) } },
     authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('current') } }),
     preflightExtras: () => emptyExtras(), captureExtras: () => ({ bundle: emptyExtras(), assertCurrent() {}, release() {} }), commitExtras: () => ({ committed: true }), ...overrides })
   runtime.contextId = 'context-a'; runtime._exporter = async () => ({ evaluate: async () => true }); runtime.processIdentity = { pid: 7, started: 'fixture' }
   return { runtime, source, destination, key, context, authority, targetAuthority, calls, nativeContext, ledger, finalize: () => runtime.finalize({ context, source, destinationIdentity: destination.identity, contentKeyEpoch: key }) }
 }
+
+test('missing native transport qualification refuses before drain and cannot borrow a desktop browser proof',async()=>{
+  for(const transferQualification of [undefined,{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.2',confirmStopped:async()=>true,assertQualified:()=>true},{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>false},{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:async()=>true}]){
+    const f=runtimeFixture({transferQualification});await f.runtime.activate({});f.calls.length=0
+    await assert.rejects(f.finalize());assert.equal(f.calls.includes('drain'),false);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active');assert.equal(f.runtime.browser.isConnected(),true)
+  }
+  assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-native-observer-v1',browserVersion:'144.0.7559.173',assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+})
+
+test('fixture-only movement is restricted to exact literal-loopback origins and immutable scope',async()=>{
+  const qualification={kind:'restricted-disposable-fixture',origins:['http://127.0.0.1:12345'],assertQualified:()=>true}
+  const f=runtimeFixture({transferQualification:qualification});await f.runtime.activate({});f.runtime.knownOrigins.add('https://foreign.example.test');qualification.origins.push('https://foreign.example.test')
+  await assert.rejects(f.finalize(),{reason:'profile_transport_qualification_required'});assert.equal(f.calls.includes('drain'),false)
+  for(const origins of [['https://localhost'],['https://example.test'],['http://127.0.0.1:12345/path'],[]])assert.throws(()=>runtimeFixture({transferQualification:{kind:'restricted-disposable-fixture',origins,assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+  const good=runtimeFixture({transferQualification:{kind:'restricted-disposable-fixture',origins:['http://127.0.0.1:12345'],assertQualified:()=>true}});await good.runtime.activate({});good.runtime.knownOrigins.add('http://127.0.0.1:12345');good.runtime._exporter=async(origin:string)=>({evaluate:async()=>({schema:'hoai-origin-storage-v1',origin,localStorage:[],databases:[]})});await good.finalize();assert.equal(good.runtime.state,'stopped')
+})
+
+test('transport qualification is checked again after JS freeze before any destructive stop',async()=>{
+  let checks=0
+  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',confirmStopped:async()=>true,assertQualified:()=>++checks<3}});await f.runtime.activate({});f.calls.length=0
+  await assert.rejects(f.finalize(),{reason:'profile_transport_qualification_required'});assert.equal(checks,3);assert.equal(f.calls.includes('freeze'),true);assert.equal(f.calls.includes('process-close'),false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.state,'active');assert.equal(f.runtime.network,'active')
+})
+test('qualified product movement requires asynchronous stopped-history confirmation before extras capture',async()=>{
+  assert.throws(()=>runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'})
+  let observed=false,f:any
+  f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,async confirmStopped({authority,context,browserVersion,assertPhysicalZero}:any){assert.equal(context,f.nativeContext);assert.deepEqual(authority,f.authority);assert.equal(browserVersion,'155.0.0.1');assert.equal(f.runtime.state,'quiescing');assert.equal(await assertPhysicalZero(),true);await tick();observed=true;return true}},captureExtras:()=>{assert.equal(observed,true);return{bundle:emptyExtras(),assertCurrent(){},release(){}}}})
+  await f.runtime.activate({});await f.finalize();assert.equal(observed,true);assert.equal(f.runtime.state,'stopped')
+})
+test('failed stopped-history proof or revived exact-context worker never captures or seals a checkpoint',async()=>{
+  for(const confirmStopped of [async()=>false,async()=>{throw Error('fixture native history unavailable')}]){
+    let captured=false
+    const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped},captureExtras:()=>{captured=true;throw Error('must not capture')}});await f.runtime.activate({})
+    await assert.rejects(f.finalize(),{reason:'profile_transport_qualification_required'});assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.network,'blocked')
+  }
+  let revived=false,captured=false
+  const f=runtimeFixture({transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped:async()=>{revived=true;return true}},captureExtras:()=>{captured=true;throw Error('must not capture')}});f.runtime.root.send=async()=>({targetInfos:revived?[{browserContextId:'context-a',type:'worker'}]:[]});await f.runtime.activate({})
+  await assert.rejects(f.finalize(),{reason:'profile_runtime_workers_running'});assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false)
+})
+test('revocation during stopped-history confirmation cannot reach capture or resume the page',async()=>{
+  let release:any,captured=false,current=true
+  const f=runtimeFixture({authorizeActivation:async({authority}:any)=>({authority,assertCurrent(){if(!current)throw Error('fixture revoked')}}),transferQualification:{kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.0.1',assertQualified:()=>true,confirmStopped:()=>new Promise(resolve=>release=resolve)},captureExtras:()=>{captured=true;throw Error('must not capture')}})
+  await f.runtime.activate({});const task=f.finalize();void task.catch(()=>{});for(let count=0;count<100&&!release;count++)await tick();assert.equal(typeof release,'function');current=false;release(true);await assert.rejects(task,/fixture revoked/);assert.equal(captured,false);assert.equal(f.calls.includes('checkpoint'),false);assert.equal(f.runtime.network,'blocked');assert.equal(f.runtime.browser.isConnected(),false)
+})
 test('activation binds every runtime field and a nonfresh revision requires a staged checkpoint', async () => {
   for (const field of ['profileId', 'actingUserId', 'endpointId', 'bootId', 'runtimeId', 'sessionId', 'writerEpoch', 'revision', 'contentKeyEpoch', 'grantVersion', 'keyFingerprint']) {
     const f = runtimeFixture(); f.runtime.authorizeActivation = async () => ({ authority: { ...f.authority, [field]: typeof (f.authority as any)[field] === 'number' ? (f.authority as any)[field] + 1 : field === 'keyFingerprint' ? '0'.repeat(64) : 'other' }, assertCurrent() {} })
