@@ -148,20 +148,23 @@ import {
   AGENT_EMAIL_SEND_APPROVALS_PATH,
   EMAIL_SEND_TOO_LONG_AGAIN,
   EMAIL_TOOL_DECLS,
+  agentEmailCallerHeaders,
   emailCallRefusal,
   emailSendPreflight,
   handleEmailTool,
   type EmailSendBasis,
+  type EmailSendGo,
 } from './lib/agent-email-tools.js'
 import {
   EMAIL_SEND_FLOOR_MATCH,
   EMAIL_SEND_FLOOR_TOOL,
   answeredEmailSendApproval,
   createEmailSendApprovals,
+  emailSendAlwaysAskOff,
   emailSendCardBinding,
   emailSendCardChat,
+  emailSendCardTooLong,
   emailSendFloorRefusal,
-  emailSendTooLongForCard,
   readEmailSendApprovalPull,
   type EmailSendApprovalClick,
 } from './lib/email-send-approval.js'
@@ -3316,9 +3319,11 @@ function relayPermissionToOwner(
   // card (no Allow, no approval), and its send keeps a draft. So no card is
   // posted for it: the send goes to the server, which, while the owner asks
   // before every send, keeps it as a draft for them to read whole and send,
-  // and the agent is told so (lib/agent-email-tools.ts). Recorded BEFORE the
-  // CLI hears allow, like every Allow.
-  if (emailCard?.block && emailSendTooLongForCard(emailCard.block.text)) {
+  // and the agent is told so (lib/agent-email-tools.ts). Known by the exact
+  // body, or, with no hook record, by a preview already over the limit (a
+  // preview, without the CLI's cut line, is never longer than its body).
+  // Recorded BEFORE the CLI hears allow, like every Allow.
+  if (emailCard && emailSendCardTooLong(emailCard.block, input_preview)) {
     emailSendApprovals.allow(tool_name, input_preview, { requestId: request_id, approval: null, binding: emailCard.block, tooLongForCard: true })
     log(`email_send [${request_id}]: the email is too long to approve on a card, so none is posted; it goes to the server, which keeps it as a draft for the owner`)
     await mcp.notification({
@@ -3705,12 +3710,12 @@ function postFloorCheck(
  * ask first. A hold, a check that cannot answer, or an answer that is not
  * about a send sends nothing. Null lets the send go; text is why it may not.
  */
-async function emailSendApproval(args: unknown): Promise<string | null | { approval?: { id: string }; tooLongForCard?: boolean }> {
+async function emailSendApproval(args: unknown): Promise<string | null | EmailSendGo> {
   const grant = emailSendApprovals.claim(args)
   if (grant?.tooLongForCard) {
     // v7: no approval can exist for it, so none is asked for. The server keeps
-    // it as a draft; the same body again saves no second one.
-    if (!grant.binding || !emailSendApprovals.firstTooLongDraft(grant.binding.body_sha256)) return EMAIL_SEND_TOO_LONG_AGAIN
+    // it as a draft; once it has, the very same email again saves no second.
+    if (emailSendApprovals.keptTooLong(args)) return EMAIL_SEND_TOO_LONG_AGAIN
     log(`email_send: too long to approve on a card [${grant.requestId ?? '?'}]; the server keeps it as a draft`)
     return { tooLongForCard: true }
   }
@@ -3732,7 +3737,10 @@ async function emailSendApproval(args: unknown): Promise<string | null | { appro
     send: postFloorCheck,
   })
   log(`email_send, no card allowed it: ${decision.line}`)
-  return emailSendFloorRefusal(decision)
+  // The server's word that the owner does not ask first lets it go, and says
+  // so (v7: a reason the server holds no record of still asks an approval
+  // then, and no card can give it, so the agent is told plainly).
+  return emailSendFloorRefusal(decision) ?? (emailSendAlwaysAskOff(decision) ? { alwaysAskOff: true } : null)
 }
 
 /**
@@ -3740,7 +3748,8 @@ async function emailSendApproval(args: unknown): Promise<string | null | { appro
  * route (server approval, section 3b): for a tap whose answer the daemon read
  * without it. Read only, never consumes it; anything but a 200 carrying one
  * is none. Not bgosGet: its error carries no status and its cache can answer
- * 304.
+ * 304. v7: it names its caller, this daemon's own agent (a missing header is
+ * a 403), and answers only that agent's own approvals.
  */
 async function pullEmailSendApproval(requestId: string): Promise<EmailSendApprovalClick | null> {
   if (requestId === '' || requestId.length > 200) return null
@@ -3750,7 +3759,7 @@ async function pullEmailSendApproval(requestId: string): Promise<EmailSendApprov
       await bgosCall(
         {
           url: `${API_BASE}/${path}`,
-          init: { method: 'GET', headers: authHeaders(AUTH) },
+          init: { method: 'GET', headers: { ...authHeaders(AUTH), ...agentEmailCallerHeaders(ASSISTANT_ID) } },
           timeoutMs: HTTP_TIMEOUT_MS,
           label: `GET ${path}`,
         },
@@ -7567,13 +7576,16 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     case 'email_draft':
     case 'email_send':
       return handleEmailTool(req.params.name, rawArgs, {
-        post: (path, body) => bgosPost(path, body),
+        // The caller header (v7) is built from assistantId below, this daemon's own agent.
+        post: (path, body, headers) => bgosPost(path, body, { headers }),
         assistantId: ASSISTANT_ID,
         basis: emailSendReason,
         // An email that carries this daemon's own credential never leaves.
         secrets: [AUTH.mode === 'pairing' ? AUTH.pairingToken : AUTH.apiKey],
         // Always ask stops a send: the owner's Allow on its card, or the server's word that they do not ask first.
         approve: (args) => emailSendApproval(args),
+        // A too long email the server kept as a draft: the very same one again saves no second.
+        answered: (args, answer) => emailSendApprovals.noteSendAnswer(args, answer),
       })
 
     default:

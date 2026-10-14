@@ -428,7 +428,17 @@ interface FakeApproval {
   textPreview: string
   expiresAt: number
   used: boolean
+  /** v7: the agent whose card it was; only that agent's calls can pull or use it. */
+  assistantId: string
 }
+
+/** v7: another agent of the same owner on the same pairing (a sibling). */
+const SIBLING_ID = '13'
+/** The agents the fake pairing credential holds. */
+const PAIRED_AGENTS: ReadonlySet<string> = new Set([ASSISTANT_ID, SIBLING_ID])
+/** v7 F3: a Unicode control character (category Cc) other than tab, line feed and carriage return. */
+const FAKE_CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/
+const codePoints = (text: unknown) => Array.from(String(text ?? '')).length
 
 const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex')
 
@@ -440,17 +450,39 @@ const sha256Hex = (text: string) => createHash('sha256').update(text, 'utf8').di
  * and 4: an approval issued by the owner's tap (`tap`), single use, bound to
  * the email, gone 10 minutes after the tap, readable through the pull route;
  * a send that every other rail passed sends only with it.
+ *
+ * v7 (#2326 d8fbaf5d7), exactly: all three agent routes need
+ * X-Caller-Assistant-Id naming the calling agent (equal to the body's
+ * `assistantId`; for the pull, the agent the approval belongs to), else 403
+ * with nothing written, and a sibling's approval pulls as 404 (F5); a reason
+ * the server holds no delivery record for (`unrecorded`) needs an approval
+ * even while Always ask is off (F1); an approval needed for a text over 1000
+ * code points is `too_long_to_approve`, no approval read or used, and a tap on
+ * such a card issues nothing (F2); an approval binds only a text EQUAL to its
+ * preview (F2); a control character other than tab, LF and CR in `text` or
+ * `subject` is a 400 (F3).
  */
-async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; floor?: { status?: number; hold?: boolean; rulesVersion?: number } } = {}) {
+async function fakeBackend(
+  t: any,
+  opts: { status?: number; answer?: unknown; floor?: { status?: number; hold?: boolean; rulesVersion?: number }; unrecorded?: boolean } = {},
+) {
   const requests: FakeRequest[] = []
+  /** v7 F5: the agent email requests refused 403 for their caller header, nothing written. Also in `requests`. */
+  const forbidden: FakeRequest[] = []
   /** The relay's floor check route (lib/floor-check.ts): Always ask on is `hold: true`. Kept apart from `requests`. */
   const floorChecks: FakeRequest[] = []
   /** GET send-approvals/:requestId (section 3b). Kept apart from `requests`. */
   const pulls: FakeRequest[] = []
   const approvals = new Map<string, FakeApproval>()
   let clock = Date.parse('2026-10-13T14:00:00.000Z')
-  /** The owner's Allow once tap on the card `requestId` whose email_send block is `block` (section 3). */
-  const tap = (requestId: string, block: Record<string, string>) => {
+  /**
+   * The owner's Allow once tap on the card `requestId` whose email_send block
+   * is `block` (section 3), on the card of `assistantId` (this agent unless
+   * named). v7: a card whose body is over 1000 characters offers no Allow, so
+   * nothing can be issued: tapping one throws.
+   */
+  const tap = (requestId: string, block: Record<string, string>, assistantId: string = ASSISTANT_ID) => {
+    if (codePoints(block.text) > 1000) throw new Error('a card over 1000 characters offers no Allow')
     const id = randomUUID()
     approvals.set(id, {
       id,
@@ -464,6 +496,7 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
       textPreview: Array.from(block.text ?? '').slice(0, 1000).join(''),
       expiresAt: clock + 10 * 60_000,
       used: false,
+      assistantId,
     })
     return { id, expiresAt: new Date(clock + 10 * 60_000).toISOString() }
   }
@@ -476,6 +509,7 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
     if (typeof id !== 'string') return 'missing'
     const a = approvals.get(id)
     if (!a) return 'unknown'
+    if (a.assistantId !== String(body.assistantId)) return 'agent'
     if (a.used) return 'used'
     if (a.expiresAt <= clock) return 'expired'
     if ((typeof body.emailId === 'string' ? 'reply' : 'new') !== a.kind) return 'kind'
@@ -483,7 +517,8 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
     if (a.kind === 'new' && String(body.to).toLowerCase() !== a.to) return 'to'
     if (a.kind === 'new' && body.subject !== a.subject) return 'subject'
     if (sha256Hex(String(body.text)) !== a.bodySha256) return 'body_sha256'
-    if (!String(body.text).startsWith(a.textPreview)) return 'text_preview'
+    // v7: the text EQUAL to the preview the owner read (the whole body), no longer only its start.
+    if (String(body.text) !== a.textPreview) return 'text_preview'
     return null
   }
   const refusals: string[] = []
@@ -501,11 +536,20 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
     req.on('data', (chunk) => (raw += chunk))
     req.on('end', () => {
       const body = raw ? JSON.parse(raw) : {}
+      const caller = req.headers['x-caller-assistant-id']
+      const forbid = (seen: FakeRequest) => {
+        forbidden.push(seen)
+        res.writeHead(403, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ statusCode: 403, message: 'X-Caller-Assistant-Id must name the calling agent' }))
+      }
       const pull = /^\/api\/v1\/integrations\/agent-email\/send-approvals\/([^/?]+)$/.exec(String(req.url))
       if (req.method === 'GET' && pull) {
-        pulls.push({ method: String(req.method), path: String(req.url), headers: req.headers, body })
+        const seen = { method: String(req.method), path: String(req.url), headers: req.headers, body }
+        pulls.push(seen)
+        // v7 F5: the caller names an agent this pairing holds, else 403; only that agent's own approvals answer.
+        if (typeof caller !== 'string' || !PAIRED_AGENTS.has(caller)) return forbid(seen)
         const requestId = decodeURIComponent(pull[1]!)
-        const found = [...approvals.values()].reverse().find((a) => a.requestId === requestId && !a.used && a.expiresAt > clock)
+        const found = [...approvals.values()].reverse().find((a) => a.requestId === requestId && a.assistantId === caller && !a.used && a.expiresAt > clock)
         res.writeHead(found ? 200 : 404, { 'content-type': 'application/json' })
         res.end(JSON.stringify(found
           ? { id: found.id, expiresAt: new Date(found.expiresAt).toISOString() }
@@ -522,7 +566,24 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
           : { statusCode: floorStatus, message: 'floor check refused' }))
         return
       }
-      requests.push({ method: String(req.method), path: String(req.url), headers: req.headers, body })
+      const seen = { method: String(req.method), path: String(req.url), headers: req.headers, body }
+      requests.push(seen)
+      const agentRoute = req.url === '/api/v1/integrations/agent-email/reply-drafts' || req.url === '/api/v1/integrations/agent-email/send'
+      // v7 F5: missing, or naming another agent than the body's (a sibling on the same pairing included): 403, nothing written.
+      if (agentRoute && (typeof caller !== 'string' || caller !== String(body.assistantId) || !PAIRED_AGENTS.has(caller))) return forbid(seen)
+      // v7 F3: a control character other than tab, LF and CR in the text or the subject; a subject on two lines.
+      const badField = !agentRoute
+        ? null
+        : FAKE_CONTROL.test(String(body.text ?? ''))
+          ? 'text'
+          : FAKE_CONTROL.test(String(body.subject ?? '')) || /[\r\n]/.test(String(body.subject ?? ''))
+            ? 'subject'
+            : null
+      if (badField) {
+        res.writeHead(400, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ statusCode: 400, message: `${badField} must not contain control characters` }))
+        return
+      }
       let status = opts.status ?? 200
       let answer: unknown = opts.answer
       if (answer === undefined && status === 200) {
@@ -533,15 +594,21 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
           const accepted =
             (body.basis?.kind === 'owner_message' && body.basis.id === String(OWNER_MESSAGE_ID)) ||
             (body.basis?.kind === 'owner_task' && body.basis.id === String(OWNER_TASK_ID))
-          // Always ask on: the approval is checked LAST, and used only by a send that every other rail passed.
-          const refusal = accepted && opts.floor?.hold === true ? approvalRefusal(body) : null
+          // Always ask on, or (v7) a reason with no delivery record: the approval is checked LAST, and used
+          // only by a send that every other rail passed. A text over 1000 needs one no card can give (v7):
+          // too_long_to_approve, with no approval read or used.
+          const needed = accepted && (opts.floor?.hold === true || opts.unrecorded === true)
+          const tooLong = needed && codePoints(body.text) > 1000
+          const refusal = needed && !tooLong ? approvalRefusal(body) : null
           if (refusal) refusals.push(refusal)
-          if (accepted && opts.floor?.hold === true && refusal === null) approvals.get(body.approval.id)!.used = true
+          if (needed && !tooLong && refusal === null) approvals.get(body.approval.id)!.used = true
           answer = !accepted
             ? { outcome: 'draft', reason: 'no_owner_reason', draft: draft(body, 'draft') }
-            : refusal
-              ? { outcome: 'draft', reason: 'approval_required', draft: draft(body, 'draft') }
-              : { outcome: 'sent', draft: draft(body, 'sent') }
+            : tooLong
+              ? { outcome: 'draft', reason: 'too_long_to_approve', draft: draft(body, 'draft') }
+              : refusal
+                ? { outcome: 'draft', reason: 'approval_required', draft: draft(body, 'draft') }
+                : { outcome: 'sent', draft: draft(body, 'sent') }
         } else {
           status = 404
           answer = { statusCode: 404, message: 'Cannot POST' }
@@ -555,17 +622,17 @@ async function fakeBackend(t: any, opts: { status?: number; answer?: unknown; fl
   t.after(() => new Promise<void>((done) => server.close(() => done())))
   const address = server.address() as { port: number }
   const base = `http://127.0.0.1:${address.port}/api/v1`
-  /** A transport shaped like server.ts's bgosPost, for the unit tests. */
-  const post = async (path: string, body: Record<string, unknown>) => {
+  /** A transport shaped like server.ts's bgosPost (with its extra headers), for the unit tests. */
+  const post = async (path: string, body: Record<string, unknown>, headers: Record<string, string> = {}) => {
     const response = await fetch(`${base}/${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': PAIRING_TOKEN },
+      headers: { 'Content-Type': 'application/json', 'X-BGOS-Pairing': PAIRING_TOKEN, ...headers },
       body: JSON.stringify(body),
     })
     if (!response.ok) throw new Error(`POST ${response.status}: ${(await response.text()).slice(0, 200)}`)
     return response.json()
   }
-  return { requests, floorChecks, pulls, approvals, refusals, tap, advance, base, post }
+  return { requests, forbidden, floorChecks, pulls, approvals, refusals, tap, advance, base, post }
 }
 
 const textOf = (result: { content: Array<{ text: string }> }) => result.content.map((c) => c.text).join('\n')
@@ -2114,14 +2181,19 @@ test('server.ts, run, v7: the agent hears plainly the email was kept as a draft 
   assert.equal(backend.requests.length, 1, 'no second draft')
 })
 
-test('v7: whatever reason a draft of a too long email carries, the agent hears it was too long for a card, unless another rule held it', async (t) => {
+test('v7: a draft of a too long email is told as too long only when the server names too_long_to_approve; another reason keeps its own words', async (t) => {
   const draftOf = (reason: string) => ({ outcome: 'draft', reason, draft: { id: DRAFT_ID, emailId: null, kind: 'new', author: 'agent', to: [SEND_ARGS.to], state: 'draft', createdAt: '2026-10-13T09:14:02.000Z' } })
   const input = { ...SEND_ARGS, text: LONG_BODY }
-  for (const reason of ['approval_required', 'card_too_long']) {
-    const backend = await fakeBackend(t, { answer: draftOf(reason) })
-    const result = await callTool('email_send', input, { post: backend.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
-    assert.match(textOf(result), /too long for your owner to approve on a card/, reason)
-  }
+  const named = await fakeBackend(t, { answer: draftOf('too_long_to_approve') })
+  assert.match(textOf(await callTool('email_send', input, { post: named.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })), /too long for your owner to approve on a card/)
+  // v7 names the reason, so nothing else is read as it: an approval it asks for, or a reason it does not name, keeps its words.
+  const approvalNeeded = await fakeBackend(t, { answer: draftOf('approval_required') })
+  const asked = textOf(await callTool('email_send', input, { post: approvalNeeded.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } }))
+  assert.match(asked, /did not carry their approval for exactly this email/)
+  const unnamed = await fakeBackend(t, { answer: draftOf('card_too_long') })
+  const shown = textOf(await callTool('email_send', input, { post: unnamed.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } }))
+  assert.match(shown, /a sending rule stopped it \(card_too_long\)/)
+  assert.equal(/too long for your owner to approve/.test(shown), false)
   const limited = await fakeBackend(t, { answer: draftOf('daily_limit') })
   const held = await callTool('email_send', input, { post: limited.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
   assert.match(textOf(held), /today's sending limit/)
@@ -2129,4 +2201,323 @@ test('v7: whatever reason a draft of a too long email carries, the agent hears i
   const short = await fakeBackend(t, { answer: draftOf('approval_required') })
   const plain = await callTool('email_send', SEND_ARGS, { post: short.post, basis: { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) } })
   assert.match(textOf(plain), /did not carry their approval for exactly this email/)
+})
+
+// ── 12. Backend #2326 at d8fbaf5d7 (wire shapes v7, Data's review F1 to F5): what the plugin sends and says ──
+
+const OWNER_BASIS = { kind: 'owner_message', id: String(OWNER_MESSAGE_ID) }
+const draftAnswer = (reason: string) => ({ outcome: 'draft', reason, draft: { id: DRAFT_ID, emailId: null, kind: 'new', author: 'agent', to: [SEND_ARGS.to], state: 'draft', createdAt: '2026-10-13T09:14:02.000Z' } })
+
+test('v7 F5, the fake backend itself: an agent email route without X-Caller-Assistant-Id, or naming a sibling, is a 403 with nothing written; a sibling\'s approval pulls as 404', async (t) => {
+  const backend = await fakeBackend(t)
+  const body = { assistantId: Number(ASSISTANT_ID), to: SEND_ARGS.to, subject: SEND_ARGS.subject, text: SEND_ARGS.text, basis: OWNER_BASIS }
+  for (const path of ['integrations/agent-email/send', 'integrations/agent-email/reply-drafts']) {
+    await assert.rejects(backend.post(path, body), /POST 403/)
+    await assert.rejects(backend.post(path, body, { 'X-Caller-Assistant-Id': SIBLING_ID }), /POST 403/)
+  }
+  assert.equal(backend.forbidden.length, 4)
+  const pull = (headers: Record<string, string>) =>
+    fetch(`${backend.base}/integrations/agent-email/send-approvals/abcde`, { headers: { 'X-BGOS-Pairing': PAIRING_TOKEN, ...headers } })
+  assert.ok(backend.tap('abcde', SEND_BLOCK, SIBLING_ID))
+  assert.equal((await pull({})).status, 403)
+  assert.equal((await pull({ 'X-Caller-Assistant-Id': ASSISTANT_ID })).status, 404)
+  assert.equal((await pull({ 'X-Caller-Assistant-Id': SIBLING_ID })).status, 200)
+  assert.throws(() => backend.tap('bcdef', { ...SEND_BLOCK, text: LONG_BODY }), /offers no Allow/)
+})
+
+test('v7 F5: email_send and email_draft name their caller, this daemon\'s own agent, the same id as the body\'s assistantId', async (t) => {
+  const m = await tools()
+  assert.equal(typeof m.agentEmailCallerHeaders, 'function', 'lib/agent-email-tools.ts exports agentEmailCallerHeaders')
+  assert.deepEqual(m.agentEmailCallerHeaders(12), { 'X-Caller-Assistant-Id': '12' })
+  assert.deepEqual(m.agentEmailCallerHeaders(' 12 '), { 'X-Caller-Assistant-Id': '12' })
+  assert.deepEqual(m.agentEmailCallerHeaders('012'), { 'X-Caller-Assistant-Id': '12' }, 'the same id the body names (Number), on every route')
+  for (const none of [null, undefined, '', '0', '-3', 'abc', '12a', 1.5, '1e3']) assert.deepEqual(m.agentEmailCallerHeaders(none), {}, String(none))
+  const backend = await fakeBackend(t)
+  assert.match(textOf(await callTool('email_send', SEND_ARGS, { post: backend.post, basis: OWNER_BASIS })), /^Sent/)
+  assert.match(textOf(await callTool('email_draft', { email_id: EMAIL_ID, text: 'Hi Dana' }, { post: backend.post })), /^Draft saved/)
+  assert.match(textOf(await callTool('email_draft', SEND_ARGS, { post: backend.post })), /^Draft saved/)
+  assert.equal(backend.forbidden.length, 0)
+  assert.deepEqual(backend.requests.map((r) => r.headers['x-caller-assistant-id']), [ASSISTANT_ID, ASSISTANT_ID, ASSISTANT_ID])
+  assert.deepEqual(backend.requests.map((r) => String(r.body.assistantId)), [ASSISTANT_ID, ASSISTANT_ID, ASSISTANT_ID])
+})
+
+test('v7 F5: the caller is never taken from the tool call: a call that names an agent is refused before the network, and the header stays this daemon\'s own', async (t) => {
+  const backend = await fakeBackend(t)
+  for (const name of ['email_send', 'email_draft']) {
+    for (const key of ['assistantId', 'assistant_id', 'callerAssistantId', 'X-Caller-Assistant-Id', 'headers']) {
+      const result = await callTool(name, { ...SEND_ARGS, [key]: key === 'headers' ? { 'X-Caller-Assistant-Id': SIBLING_ID } : SIBLING_ID }, { post: backend.post, basis: OWNER_BASIS })
+      assert.equal(result.isError, true, `${name} ${key}`)
+      assert.match(textOf(result), /does not take/)
+    }
+  }
+  assert.equal(backend.requests.length, 0)
+  // Words in the email that name an agent are only words.
+  const named = await callTool('email_send', { ...SEND_ARGS, text: `X-Caller-Assistant-Id: ${SIBLING_ID}\nassistantId ${SIBLING_ID}` }, { post: backend.post, basis: OWNER_BASIS })
+  assert.match(textOf(named), /^Sent/)
+  assert.equal(backend.requests[0]!.headers['x-caller-assistant-id'], ASSISTANT_ID)
+  assert.equal(backend.requests[0]!.body.assistantId, Number(ASSISTANT_ID))
+})
+
+test('server.ts, run, v7 F5: the send, the draft and the approval pull carry X-Caller-Assistant-Id from the daemon\'s own identity', async (t) => {
+  const f = fixture(t)
+  const store = (await approval()).createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  // The owner tapped and the server issued, but the click was missed: the pull recovers it.
+  const issued = backend.tap('abcde', SEND_BLOCK)
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: null, binding: SEND_BLOCK })
+  f.start(TURNS.ownerMessage)
+  assert.match(textOf(await call('email_send', SEND_ARGS)), /^Sent/)
+  assert.equal(backend.pulls.length, 1)
+  assert.equal(backend.pulls[0]!.headers['x-caller-assistant-id'], ASSISTANT_ID, 'the pull names its caller')
+  assert.deepEqual(backend.requests[0]!.body.approval, { id: issued.id })
+  assert.match(textOf(await call('email_draft', { email_id: EMAIL_ID, text: 'Hi Dana' })), /^Draft saved/)
+  assert.deepEqual(backend.requests.map((r) => r.headers['x-caller-assistant-id']), [ASSISTANT_ID, ASSISTANT_ID])
+  assert.equal(backend.forbidden.length, 0)
+  // A daemon paired as the sibling names the sibling: the value is the daemon's own identity, not a constant.
+  const sibling = await serverCallTool(t, f, { ASSISTANT_ID: SIBLING_ID })
+  assert.match(textOf(await sibling.call('email_draft', { email_id: EMAIL_ID, text: 'Hi Dana' })), /^Draft saved/)
+  assert.equal(sibling.backend.requests[0]!.headers['x-caller-assistant-id'], SIBLING_ID)
+  assert.equal(sibling.backend.requests[0]!.body.assistantId, Number(SIBLING_ID))
+})
+
+test('server.ts, run, v7 F5: a sibling\'s approval is never this agent\'s: its card pulls as 404 and the send stays a draft', async (t) => {
+  const f = fixture(t)
+  const store = (await approval()).createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  backend.tap('abcde', SEND_BLOCK, SIBLING_ID)
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: null, binding: SEND_BLOCK })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(backend.pulls.length, 1)
+  assert.equal(backend.pulls[0]!.headers['x-caller-assistant-id'], ASSISTANT_ID)
+  assert.equal(backend.forbidden.length, 0)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.deepEqual(backend.refusals, ['missing'])
+  assert.match(textOf(result), /^Not sent: the email was kept as a draft for your owner/)
+})
+
+test('v7 F2: too_long_to_approve is read by its name: kept as a draft, waiting in the Email chat, never retried, whatever length HOAI counted', async (t) => {
+  for (const text of [LONG_BODY, SEND_ARGS.text]) {
+    const backend = await fakeBackend(t, { answer: draftAnswer('too_long_to_approve') })
+    const result = await callTool('email_send', { ...SEND_ARGS, text }, { post: backend.post, basis: OWNER_BASIS })
+    const said = textOf(result)
+    assert.match(said, /^Not sent: the email was kept as a draft for your owner, because it is too long for your owner to approve on a card/)
+    assert.match(said, /send it from the Email chat/)
+    assert.match(said, /Do not try again; tell your owner it is waiting as a draft in the Email chat\./)
+    assert.equal(result.isError, undefined)
+    assert.equal(/\bwas sent\b|^Sent/i.test(said), false)
+    // The count is said only when it is the card's limit that it passes.
+    assert.equal(/\d+ characters; a card shows at most 1000/.test(said), text === LONG_BODY, text.slice(0, 20))
+  }
+  const m = await tools()
+  assert.match(m.EMAIL_SEND_TOO_LONG_AGAIN, /waiting as a draft for your owner in the Email chat/)
+})
+
+test('server.ts, run, v7 F2: Always ask on and a body over 1000: no approval is asked for, the server answers too_long_to_approve, the agent hears the Email chat', async (t) => {
+  const f = fixture(t)
+  const store = (await approval()).createEmailSendApprovals()
+  const b = await binding()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  store.allow(SEND_TOOL, previewOf(input), { requestId: 'abcde', approval: null, binding: b.emailSendBinding(SEND_TOOL, input), tooLongForCard: true })
+  f.start(TURNS.ownerMessage)
+  const said = textOf(await call('email_send', input))
+  assert.match(said, /"reason":"too_long_to_approve"/)
+  assert.match(said, /too long for your owner to approve on a card/)
+  assert.match(said, /Email chat/)
+  assert.equal(backend.pulls.length, 0)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.deepEqual(backend.refusals, [], 'no approval read or used')
+})
+
+test('server.ts, run, v7 F1: with Always ask off, a send whose reason the server holds no record of is kept as a draft; no card is waited on, nothing is pulled, and the agent hears plainly it waits in the Email chat', async (t) => {
+  const f = fixture(t)
+  const { backend, call } = await serverCallTool(t, f, {}, { floor: { hold: false }, unrecorded: true })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  const said = textOf(result)
+  assert.equal(backend.floorChecks.length, 1, 'the server\'s word that the owner does not ask first')
+  assert.equal(backend.pulls.length, 0, 'no card written now could issue an approval, so none is asked for')
+  assert.equal(backend.requests.length, 1)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.match(said, /"reason":"approval_required"/)
+  assert.match(said, /^Not sent: the email was kept as a draft for your owner/)
+  assert.match(said, /no record/)
+  assert.match(said, /send it from the Email chat/)
+  assert.match(said, /Do not try again; tell your owner it is waiting as a draft in the Email chat\./)
+  assert.equal(/approves every email|did not carry their approval/.test(said), false, 'never that the owner asks before every send')
+  assert.equal(/\bwas sent\b|^Sent/i.test(said), false)
+  assert.equal(result.isError, undefined)
+  // Too long for any card as well: the server says too_long_to_approve, and the agent hears that.
+  f.start(TURNS.ownerMessage)
+  const long = textOf(await call('email_send', { ...SEND_ARGS, text: LONG_BODY }))
+  assert.match(long, /"reason":"too_long_to_approve"/)
+  assert.match(long, /too long for your owner to approve on a card/)
+  assert.equal(backend.pulls.length, 0)
+})
+
+test('v7 F1: only the server\'s own word that the owner does not ask first (rules version 3 or more) says so; a backend with no floor route keeps the approval wording', async (t) => {
+  const a = await approval()
+  assert.equal(typeof a.emailSendAlwaysAskOff, 'function', 'lib/email-send-approval.ts exports emailSendAlwaysAskOff')
+  assert.equal(a.emailSendAlwaysAskOff({ route: 'auto_approve', answer: { kind: 'proceed', rulesVersion: 3 } }), true)
+  assert.equal(a.emailSendAlwaysAskOff({ route: 'auto_approve', answer: { kind: 'proceed', rulesVersion: 4 } }), true)
+  for (const decision of [
+    { route: 'auto_approve', answer: { kind: 'proceed', rulesVersion: 2 } },
+    { route: 'auto_approve', answer: { kind: 'proceed', rulesVersion: null } },
+    { route: 'auto_approve', answer: { kind: 'unsupported', reason: 'no route' } },
+    { route: 'hold', answer: { kind: 'hold', rulesVersion: 3 } },
+    { route: 'deny' },
+    { route: 'auto_approve' },
+  ]) assert.equal(a.emailSendAlwaysAskOff(decision), false, JSON.stringify(decision))
+  const f = fixture(t)
+  const noRoute = await serverCallTool(t, f, {}, { floor: { status: 404 }, answer: draftAnswer('approval_required') })
+  f.start(TURNS.ownerMessage)
+  const said = textOf(await noRoute.call('email_send', SEND_ARGS))
+  assert.match(said, /did not carry their approval for exactly this email/)
+  assert.equal(/no record/.test(said), false)
+  // An Allow on a card the floor held is Always ask on: the approval wording, never the plain one.
+  const store = (await approval()).createEmailSendApprovals()
+  const on = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: null, binding: SEND_BLOCK })
+  f.start(TURNS.ownerMessage)
+  const held = textOf(await on.call('email_send', SEND_ARGS))
+  assert.match(held, /did not carry their approval for exactly this email/)
+  assert.equal(/no record/.test(held), false)
+})
+
+test('v7 F3: a control character other than tab and line breaks, in the text or the subject, or a subject on two lines, is refused before the network and never reaches a card', async (t) => {
+  const backend = await fakeBackend(t)
+  const b = await binding()
+  const m = await tools()
+  const cases: Array<Record<string, string>> = [
+    { ...SEND_ARGS, text: 'Hi Sam,\u0007 the room' },
+    { ...SEND_ARGS, text: 'Hi Sam,\u001b[31m red' },
+    { ...SEND_ARGS, text: 'Hi\u0085Sam' },
+    { ...SEND_ARGS, text: 'Hi\u007fSam' },
+    { ...SEND_ARGS, text: 'Hi\u000bSam' },
+    { ...SEND_ARGS, subject: 'Friday\u0000 venue' },
+    { ...SEND_ARGS, subject: 'Friday\u0008venue' },
+    { ...SEND_ARGS, subject: 'Friday\nBcc: x@y.com' },
+    { ...SEND_ARGS, subject: 'Friday\rvenue' },
+    { email_id: EMAIL_ID, text: 'Hi Dana\u000c thanks' },
+  ]
+  for (const args of cases) {
+    for (const name of ['email_send', 'email_draft']) {
+      const result = await callTool(name, args, { post: backend.post, basis: OWNER_BASIS })
+      assert.equal(result.isError, true, `${name} ${JSON.stringify(args)}`)
+      assert.match(textOf(result), /control character|one line/, JSON.stringify(args))
+    }
+    assert.notEqual(m.emailCallRefusal('email_send', args, []), null, JSON.stringify(args))
+    assert.equal(b.emailSendBinding(SEND_TOOL, args), null, JSON.stringify(args))
+  }
+  assert.equal(backend.requests.length, 0)
+  // A tab, a line feed and a carriage return are an email's own; a tab in a subject too.
+  const fine = { ...SEND_ARGS, subject: 'Friday\tvenue', text: 'Hi Sam,\r\n\tthe room\nThanks' }
+  assert.match(textOf(await callTool('email_send', fine, { post: backend.post, basis: OWNER_BASIS })), /^Sent/)
+  assert.notEqual(b.emailSendBinding(SEND_TOOL, fine), null)
+  // A block that carries one is never well formed.
+  const text = 'Hi\u0007 Sam'
+  assert.equal(b.isEmailSendBlock({ ...SEND_BLOCK, text, body_sha256: sha256Hex(text), text_preview: text }), false)
+  assert.equal(b.isEmailSendBlock({ ...SEND_BLOCK, subject: 'Friday\u0008venue' }), false)
+})
+
+test('server.ts, run, v7 F2: with no hook record, a held email_send whose preview already shows more than 1000 characters gets no card either, and is kept as a draft once', async (t) => {
+  const f = fixture(t)
+  const a = await approval()
+  assert.equal(typeof a.emailSendCardTooLong, 'function', 'lib/email-send-approval.ts exports emailSendCardTooLong')
+  // Folded (two spaces) and cut (over 3500): the CLI's preview is never longer than the body, so it proves it.
+  const folded = { ...SEND_ARGS, text: LONG_BODY.replace('Hi Sam,', 'Hi  Sam,') }
+  const cut = { ...SEND_ARGS, text: LONG_BODY.repeat(3) }
+  for (const [i, input] of [folded, cut].entries()) {
+    const run = await relayRun(t, f)
+    f.start(TURNS.ownerMessage)
+    await Promise.race([
+      run.relay({ request_id: `abcd${i}`, tool_name: SEND_TOOL, description: 'email_send', input_preview: cliPreview(input) }, SEND_TOOL, true, null),
+      new Promise((done) => setTimeout(done, 2000)),
+    ])
+    assert.equal(run.posts.length, 0, `no card (${i})`)
+    assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: `abcd${i}`, behavior: 'allow' }])
+    const grant = run.store.claim(input)
+    assert.equal(grant?.tooLongForCard, true, `the call it allowed (${i})`)
+    assert.equal(grant?.approval, null)
+  }
+  // A preview of at most 1000 characters proves nothing about the body: its card is posted as before.
+  const shortRun = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  void shortRun.relay({ request_id: 'bcdef', tool_name: SEND_TOOL, description: 'email_send', input_preview: cliPreview(SEND_ARGS) }, SEND_TOOL, true, null)
+  for (let i = 0; i < 50 && shortRun.posts.length === 0; i++) await new Promise((r) => setImmediate(r))
+  assert.equal(shortRun.posts.length, 1)
+  assert.equal('email_send' in shortRun.posts[0]!.body.approvalMeta, false)
+  // The tool then hands it to the server, which keeps it as a draft; the same body again saves no second one.
+  const store = a.createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  store.allow(SEND_TOOL, cliPreview(folded), { requestId: 'cdefg', approval: null, binding: null, tooLongForCard: true })
+  f.start(TURNS.ownerMessage)
+  const said = textOf(await call('email_send', folded))
+  assert.match(said, /too long for your owner to approve on a card/)
+  assert.equal(backend.requests.length, 1)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.equal(backend.pulls.length, 0)
+  store.allow(SEND_TOOL, cliPreview(folded), { requestId: 'defgh', approval: null, binding: null, tooLongForCard: true })
+  const again = textOf(await call('email_send', folded))
+  assert.match(again, /already waiting as a draft for your owner/)
+  assert.equal(backend.requests.length, 1, 'no second draft')
+})
+
+// ── 13. Round 6 review (security reviewer on the v7 delta) ──────────────────────────────────────────
+
+test('server.ts, run, v7 review: "already waiting" only once the server kept that very email as too long: a failed send is not waiting, and the same words to someone else are their own draft', async (t) => {
+  const f = fixture(t)
+  const a = await approval()
+  const b = await binding()
+  const store = a.createEmailSendApprovals()
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  const other = { ...input, to: 'dana@northwind.co' }
+  const allowLong = (args: Record<string, string>, requestId: string) =>
+    store.allow(SEND_TOOL, previewOf(args), { requestId, approval: null, binding: b.emailSendBinding(SEND_TOOL, args), tooLongForCard: true })
+  // The first send is refused before anything is kept (409 too_many_drafts): nothing is waiting.
+  const refused = await serverCallTool(t, f, { emailSendApprovals: store }, { status: 409, answer: { statusCode: 409, message: 'too many drafts', code: 'too_many_drafts' } })
+  allowLong(input, 'abcde')
+  f.start(TURNS.ownerMessage)
+  assert.equal((await refused.call('email_send', input)).isError, true)
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  allowLong(input, 'bcdef')
+  f.start(TURNS.ownerMessage)
+  assert.match(textOf(await call('email_send', input)), /too long for your owner to approve on a card/, 'a retry after a refusal reaches the server')
+  assert.equal(backend.requests.length, 1)
+  allowLong(other, 'cdefg')
+  assert.match(textOf(await call('email_send', other)), /too long for your owner to approve on a card/, 'another recipient is another email')
+  assert.equal(backend.requests.length, 2)
+  allowLong(input, 'defgh')
+  assert.match(textOf(await call('email_send', input)), /already waiting as a draft for your owner/)
+  assert.equal(backend.requests.length, 2, 'the very same email: nothing more saved')
+})
+
+test('v7 review: the CLI\'s cut line is never counted as the body, and a broken character (a lone surrogate) is refused before the network', async (t) => {
+  const a = await approval()
+  const at = (text: string) => `{ "to": "${SEND_ARGS.to}", "subject": "${SEND_ARGS.subject}", "text": ${JSON.stringify(text)} }`
+  // 995 characters around a cut line: over 1000 only with the line, so nothing is proven.
+  const cutLine = `${'a'.repeat(980)}\n\u22EF 7 code points elided \u22EF\n${'b'.repeat(15)}`
+  assert.equal(a.emailSendCardTooLong(null, at(cutLine)), false)
+  assert.equal(a.emailSendCardTooLong(null, at(`${'a'.repeat(990)}\n\u22EF 7 code points elided \u22EF\n${'b'.repeat(15)}`)), true)
+  assert.equal(a.emailSendCardTooLong(null, at('a'.repeat(1001))), true)
+  assert.equal(a.emailSendCardTooLong(null, at('a'.repeat(1000))), false)
+  const backend = await fakeBackend(t)
+  for (const text of ['Hi \ud800 Sam', 'Hi \udc00 Sam', `Hi Sam ${'\ud83d'}`]) {
+    for (const name of ['email_send', 'email_draft']) {
+      const result = await callTool(name, { ...SEND_ARGS, text }, { post: backend.post, basis: OWNER_BASIS })
+      assert.equal(result.isError, true, `${name} ${JSON.stringify(text)}`)
+      assert.match(textOf(result), /broken character/)
+    }
+  }
+  assert.equal(backend.requests.length, 0)
+  assert.match(textOf(await callTool('email_send', { ...SEND_ARGS, text: 'Hi Sam \u{1F600}' }, { post: backend.post, basis: OWNER_BASIS })), /^Sent/, 'a whole emoji is fine')
+})
+
+test('v7 review: the plain words for an approval asked for while the owner did not ask first never state one cause as certain', async () => {
+  const m = await tools()
+  const said = m.emailSendUnrecordedDraftText('draft x')
+  assert.match(said, /no record of the reason this turn gives/)
+  assert.match(said, /or your owner just turned on asking before every send/)
+  assert.equal(/approves every email/.test(said), false)
 })

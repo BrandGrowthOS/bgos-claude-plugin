@@ -48,7 +48,7 @@ import {
   isOwnSendingTool,
   type HardFloorMatch,
 } from './hard-floor.js'
-import { bindingMatchesCall, isEmailSendBlock } from './email-send-binding.mjs'
+import { bindingMatchesCall, emailSendBinding, isEmailSendBlock } from './email-send-binding.mjs'
 import { floorRecordProbeFits } from './floor-state.mjs'
 
 /**
@@ -285,6 +285,20 @@ export function emailSendTooLongForCard(text: string): boolean {
   return Array.from(String(text ?? '')).length > EMAIL_SEND_CARD_TEXT_MAX
 }
 
+/**
+ * Is this held email_send too long to approve on a card (v7)? By its exact
+ * body when the card has one (the hook's record); else by the CLI's preview,
+ * which, without the line the CLI writes where it cut, is never longer than
+ * the body (the CLI only folds runs of whitespace, and cuts out of a value
+ * over 3500), so a preview text over 1000 characters proves the body is. A
+ * shorter preview proves nothing: no.
+ */
+export function emailSendCardTooLong(block: EmailSendBlock | null, inputPreview: unknown): boolean {
+  if (block) return emailSendTooLongForCard(block.text)
+  const text = readEmailSendPreview(inputPreview)?.text
+  return typeof text === 'string' && emailSendTooLongForCard(text.replace(PREVIEW_ELISION_RE, ''))
+}
+
 /** The binding a held card names (section 1 of the server approval contract), in its wire shape. */
 export type EmailSendBlock =
   | { to: string; subject: string; text: string; body_sha256: string; text_preview: string }
@@ -465,7 +479,9 @@ export interface EmailSendGrant {
   /**
    * v7: the body is too long to approve on a card, so the relay posted none
    * and let the send through to the server, which keeps it as a draft. Set
-   * only when true, and only with a binding that names this very call.
+   * only when true, and only for a call over 1000 characters: one its
+   * binding names, or, with no binding (no hook record), one its preview
+   * showed. It never carries an approval.
    */
   tooLongForCard?: true
 }
@@ -489,11 +505,13 @@ export interface EmailSendApprovals {
   /** An approval about to go on a send: itself the first time, null ever after (one approval, one send). */
   spend(approval: EmailSendApprovalClick | null): EmailSendApprovalClick | null
   /**
-   * v7: a body too long for a card is about to be kept as a draft: true the
-   * first time this daemon sees that body (its hash), false ever after, so an
-   * agent that tries again saves no second draft.
+   * v7: has the server already kept this very email (its recipient, subject
+   * or email, and text) as a draft too long to approve on a card? Then an
+   * agent that tries again saves no second one.
    */
-  firstTooLongDraft(bodySha256: string): boolean
+  keptTooLong(args: unknown): boolean
+  /** What the send route answered for this call: a `too_long_to_approve` draft is remembered (keptTooLong). */
+  noteSendAnswer(args: unknown, answer: unknown): void
 }
 
 /** How many approval ids the store remembers handing out. */
@@ -510,6 +528,11 @@ export function createEmailSendApprovals(
   let waiting: Array<{ at: number; email: EmailSendPreview; grant: EmailSendGrant }> = []
   const spent = new Set<string>()
   const keptTooLong = new Set<string>()
+  // One email: where it goes (the address as the server compares it, the subject, or the email) and its text.
+  const emailKey = (args: unknown): string | null => {
+    const b = emailSendBinding(EMAIL_SEND_FLOOR_TOOL, args) as Record<string, string> | null
+    return b ? JSON.stringify([b.to?.toLowerCase() ?? null, b.subject ?? null, b.email_id?.toLowerCase() ?? null, b.body_sha256]) : null
+  }
   const dropStale = () => {
     const at = now()
     waiting = waiting.filter((entry) => at - entry.at <= ttlMs)
@@ -522,12 +545,13 @@ export function createEmailSendApprovals(
     return fresh
   }
   // The call must be the one whose card was allowed: for a card that named a
-  // binding, its preview read the way the CLI folds it; for one that named
+  // binding, or a too long one that no card showed (it never carries an
+  // approval), its preview read the way the CLI folds it; for one that named
   // none, the preview exactly (as before). Then the approval goes only with a
   // call its binding names to the byte; otherwise the send goes without it,
   // and while Always ask is on the server keeps it as a draft.
   const allowedCard = (entry: { email: EmailSendPreview; grant: EmailSendGrant }, args: unknown) =>
-    entry.grant.binding ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
+    entry.grant.binding || entry.grant.tooLongForCard ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
   const claim = (args: unknown): EmailSendGrant | null => {
     dropStale()
     let index = waiting.findIndex((entry) => allowedCard(entry, args) && entry.grant.binding !== null && bindingMatchesCall(entry.grant.binding, args))
@@ -535,11 +559,15 @@ export function createEmailSendApprovals(
     if (index < 0) return null
     const [entry] = waiting.splice(index, 1)
     const bound = entry!.grant.binding !== null && bindingMatchesCall(entry!.grant.binding, args)
+    // Too long by its binding, or, with none, by the call itself (whose preview showed over 1000).
+    const tooLong =
+      entry!.grant.tooLongForCard === true &&
+      (bound || (entry!.grant.binding === null && emailSendTooLongForCard(String((args as { text?: unknown }).text ?? ''))))
     return {
       requestId: entry!.grant.requestId,
       approval: bound && !entry!.grant.tooLongForCard ? spend(entry!.grant.approval) : null,
       binding: bound ? entry!.grant.binding : null,
-      ...(bound && entry!.grant.tooLongForCard ? { tooLongForCard: true as const } : {}),
+      ...(tooLong ? { tooLongForCard: true as const } : {}),
     }
   }
   return {
@@ -564,11 +592,17 @@ export function createEmailSendApprovals(
     claim,
     take: (args) => claim(args) !== null,
     spend,
-    firstTooLongDraft(bodySha256) {
-      if (keptTooLong.has(bodySha256)) return false
-      keptTooLong.add(bodySha256)
+    keptTooLong(args) {
+      const key = emailKey(args)
+      return key !== null && keptTooLong.has(key)
+    },
+    noteSendAnswer(args, answer) {
+      const a = answer as { outcome?: unknown; reason?: unknown } | null
+      if (!a || a.outcome !== 'draft' || a.reason !== 'too_long_to_approve') return
+      const key = emailKey(args)
+      if (key === null) return
+      keptTooLong.add(key)
       while (keptTooLong.size > MAX_SPENT) keptTooLong.delete(keptTooLong.values().next().value as string)
-      return true
     },
   }
 }
@@ -590,8 +624,22 @@ export function emailSendFloorRefusal(decision: {
   if (decision.route !== 'auto_approve') return EMAIL_SEND_UNCHECKED_REFUSAL
   const answer = decision.answer
   if (answer?.kind === 'unsupported') return null
-  if (answer?.kind === 'proceed' && typeof answer.rulesVersion === 'number' && answer.rulesVersion >= EMAIL_SEND_FLOOR_MIN_RULES_VERSION) {
-    return null
-  }
+  if (emailSendAlwaysAskOff(decision)) return null
   return EMAIL_SEND_UNCHECKED_REFUSAL
+}
+
+/**
+ * Is this floor check decision the server's own word that the owner does not
+ * ask before every send: "not held" from a server whose list holds
+ * email_send (rules version 3 or more)? Nothing else is (no floor route, an
+ * API key, a hold, an error, an older list). Wire shapes v7 (F1): the server
+ * then still asks an approval for a reason it holds no record of, which no
+ * card written now can give, so the agent is told that plainly.
+ */
+export function emailSendAlwaysAskOff(decision: {
+  route: string
+  answer?: { kind?: string; rulesVersion?: number | null }
+}): boolean {
+  const answer = decision.route === 'auto_approve' ? decision.answer : undefined
+  return answer?.kind === 'proceed' && typeof answer.rulesVersion === 'number' && answer.rulesVersion >= EMAIL_SEND_FLOOR_MIN_RULES_VERSION
 }
