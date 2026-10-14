@@ -1631,8 +1631,9 @@ test('the owner\'s tap hands its approval on: only an Allow once of a pending ca
 })
 
 test('server.ts reads the tap\'s approval on every lane it learns of a tap, through the one shared resolver, and adds no inbound_click listener', () => {
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*\}\)/)
-  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n\s*\}\)/)
+  // Release 0.69.0: both intakes read the server's tapper first (#233, shared agents Phase 0, item 0.8).
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData,\n\s*clickerUserId: readTapperUserId\(payload\) \?\? senderUserIdOf\(payload\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: payload\.emailSendApproval,\n\s*\}\)/)
+  assert.match(SRC, /resolvePermissionClick\(\{\n\s*callbackData: answer\.callbackData,\n\s*clickerUserId: answer\.tapperUserId \?\? senderUserIdOf\(answer\),\n\s*pending: pendingPermissions,\n\s*emailSendApproval: answer\.emailSendApproval,\n\s*\}\)/)
   assert.equal((SRC.match(/resolvePermissionClick\(/g) ?? []).length, 2)
   const wait = serverSlice('async function waitForVerdict(', '\n}\n')
   assert.match(wait, /if \(choice === 'once'\) onTapApproval\?\.\(answeredEmailSendApproval\(msg\.message\)\)/)
@@ -1647,8 +1648,9 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>) {
   const m = await tools()
   const b = await binding()
   const relayNs = await import('../lib/permission-relay.ts')
-  const { pickPermissionChat } = await import('../lib/peer-refusal.ts')
+  const { createRefusedChats, pickPermissionChat } = await import('../lib/peer-refusal.ts')
   const { isOwnSendingTool } = await import('../lib/hard-floor.ts')
+  const { createChatOwnership } = await import('../lib/chat-ownership.ts')
   assert.equal(typeof a.createEmailSendApprovals, 'function')
   const store = a.createEmailSendApprovals()
   const pending = new Map<string, any>()
@@ -1674,6 +1676,9 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>) {
     mainChatIds: [OWN_CHAT],
     hookRailRefusedChats: new Set(),
     a2aRouteRefusedChats: new Set(),
+    // Release 0.69.0: the relay also reads #233's chat ownership and its 403 refused set.
+    permissionCardRefusedChats: createRefusedChats(),
+    chatOwnership: createChatOwnership(OWNER),
     privateTurns: f.tracker,
     PRIVATE_MARKER_PATHS: f.markerPaths,
     USER_ID: OWNER,

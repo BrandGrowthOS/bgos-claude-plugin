@@ -435,8 +435,13 @@ test('the record names the plan\'s person, from the permission relay\'s own sour
   )
   assert.ok(post.length > 0)
   assert.match(post, /requesterUserId: lastInboundUserByChat\.get\(planChatId\) \?\? USER_ID,/)
-  // The permission relay's line, so the two stay one source.
-  assert.match(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
+  // The permission relay USED to bind the same way, and this line kept the two
+  // one source. Shared agents Phase 0, item 0.8 split them on purpose: a plan
+  // belongs to the person it was proposed to, but a permission card is about a
+  // tool on the OWNER's machine, so only the owner may answer it
+  // (test/permission-card-owner-chat.test.ts holds that binding).
+  assert.match(SERVER, /const requesterUserId = USER_ID\n/)
+  assert.doesNotMatch(SERVER, /const requesterUserId = lastInboundUserByChat\.get\(chatId\) \?\? USER_ID/)
 })
 
 test('all three call sites pass a NULL AWARE clicker id and drop a refused tap', () => {

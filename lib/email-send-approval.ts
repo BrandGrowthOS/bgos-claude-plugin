@@ -453,6 +453,12 @@ export function emailSendCardBinding(input: {
  * main chat this daemon may post in; and when no chat kinds are known at all
  * (an older inbox), the owner's turn chat as before. Undefined leaves the
  * default pick.
+ *
+ * `ownership` (shared agents Phase 0, item 0.8, lib/chat-ownership.ts), as
+ * pickPermissionChat reads it: on a shared agent every recipient has a main
+ * chat of their own, so a chat known to be somebody else's is never picked,
+ * and of the main chats the owner's own come first, most recently confirmed
+ * first. Without it, or with no evidence, the pick is exactly what it was.
  */
 export function emailSendCardChat(input: {
   turn: { actingUserId?: unknown; chatId?: unknown } | null
@@ -460,15 +466,19 @@ export function emailSendCardChat(input: {
   monitored: readonly string[]
   main: readonly string[]
   refused: ReadonlyArray<{ has(chatId: string): boolean }>
+  ownership?: { ownerChats(): string[]; isOthers(chatId: string): boolean } | null
 }): string | undefined {
+  const ownership = input.ownership ?? null
   const usable = (chatId: string) =>
-    chatId !== '' && input.monitored.includes(chatId) && !input.refused.some((set) => set.has(chatId))
+    chatId !== '' && input.monitored.includes(chatId) && !input.refused.some((set) => set.has(chatId)) &&
+    !(ownership?.isOthers(chatId) ?? false)
   const turn = input.turn
   const turnChat =
     turn && typeof turn.actingUserId === 'string' && turn.actingUserId === input.ownerUserId ? String(turn.chatId ?? '') : ''
   if (input.main.length === 0) return usable(turnChat) ? turnChat : undefined
   if (input.main.includes(turnChat) && usable(turnChat)) return turnChat
-  return input.main.find(usable)
+  const owners = ownership ? ownership.ownerChats().filter((chatId) => input.main.includes(chatId)) : []
+  return owners.find(usable) ?? input.main.find(usable)
 }
 
 /** What the relay keeps with an owner's Allow: the card, the tap's approval, the binding the card named. */
