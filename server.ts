@@ -871,6 +871,7 @@ import {
   type PeerRefusal,
 } from './lib/peer-refusal.js'
 import { messagesCallerHeaders } from './lib/messages-caller-header.js'
+import { createChatOwnership } from './lib/chat-ownership.js'
 import { createTurnChatTracker } from './lib/turn-chat.js'
 
 // One stable, documented log path under the plugin state root so remote
@@ -2518,11 +2519,10 @@ interface PendingPermission {
   description: string
   inputPreview?: string
   createdAt: number
-  // User who is driving the session that triggered this permission request.
-  // The verdict is bound to this user so that, in a shared-assistant chat,
-  // an unrelated user cannot approve/deny a permission prompt that wasn't
-  // theirs. Best-available value: the user_id of the most recent inbound user
-  // message (falls back to the configured account owner USER_ID).
+  // The only user who may answer this request: the OWNER, USER_ID (shared
+  // agents Phase 0, item 0.8). The tool runs on the owner's machine, whoever's
+  // turn raised it; before this it was whoever last wrote in the card's chat,
+  // so a share recipient could allow a tool on the owner's machine.
   requesterUserId: string
   resolve: (choice: PermissionChoice) => void
   /**
@@ -2540,14 +2540,35 @@ interface PendingPermission {
   waitMs?: number
 }
 
-// Tracks the user_id of the most recent inbound USER message per chat. Used to
-// bind a permission verdict to the user who actually drove the session, rather
-// than accepting a verdict from any user in a shared-assistant chat. The plugin
-// currently only ever sees the configured account owner (USER_ID) because the
-// chat-message payload carries no per-sender user id, but this indirection
-// means that once the backend starts shipping a distinct sender user_id, the
-// binding tightens automatically with no further wiring.
+// Tracks the user_id of the most recent inbound USER message per chat (the
+// backend now stamps a per-sender id; senderUserIdOf falls back to the owner).
+// A plan card is bound to that person. A permission card is NOT any more: it is
+// about the owner's machine and is bound to USER_ID (shared agents Phase 0,
+// item 0.8).
 const lastInboundUserByChat = new Map<string, string>()
+
+// WHOSE each chat is (shared agents Phase 0, item 0.8; lib/chat-ownership.ts):
+// the owner's own, somebody else's, or unknown. A permission card is about the
+// OWNER's machine, so pickPermissionChat sends it to the owner's own chat and
+// never to a chat known to be a share recipient's. Fed by the inbox rows
+// (discoverChats) and by noteChatAuthor at the three inbound sites.
+const chatOwnership = createChatOwnership(USER_ID)
+// Chats that answered a permission card with a 403: the backend half refuses
+// a card in a share recipient's chat. Skipped from then on, apart from the
+// hook rail's set, so the tool activity rail still posts in those chats.
+const permissionCardRefusedChats = createRefusedChats()
+
+/**
+ * A person's message in `chatId`, for chatOwnership. `human` is the lane's own
+ * verdict (a user row, no peer origin, not an email); the author is the
+ * server's stamp only (privateSenderUserId), never senderUserIdOf, whose owner
+ * fallback would make every unstamped row the owner's. A meeting chat is never
+ * the owner's own chat.
+ */
+function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
+  if (!chatId || !human || meetingChatIds.has(chatId)) return
+  chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
+}
 
 /** Pending permission requests waiting for user verdict from BGOS chat. */
 const pendingPermissions = new Map<string, PendingPermission>()
@@ -3241,7 +3262,12 @@ function relayPermissionToOwner(
   // Never a chat that has already refused this agent's posts for good: a
   // refused card posts again, is refused again and fails closed again, once
   // per request (lib/peer-refusal.ts pickPermissionChat).
-  const chatId = pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats])
+  //
+  // The card is about the OWNER's machine (shared agents Phase 0, item 0.8),
+  // so the owner's own chat comes first and a chat known to be a share
+  // recipient's never does (chatOwnership); a chat that refused a card with a
+  // 403 is skipped too (permissionCardRefusedChats, below).
+  const chatId = pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership)
   if (!chatId) {
     log(`No monitored chat that takes this agent's posts, auto-denying ${tool_name} [${request_id}]`)
     await mcp.notification({
@@ -3256,10 +3282,13 @@ function relayPermissionToOwner(
     resolveButtonChoice = resolve
   })
 
-  // Bind the verdict to the user who is driving the session in this chat.
-  // Falls back to the configured account owner when no inbound user has been
-  // seen for this chat yet (e.g. a proactive/cron-triggered tool use).
-  const requesterUserId = lastInboundUserByChat.get(chatId) ?? USER_ID
+  // Bind the verdict to the OWNER (shared agents Phase 0, item 0.8; MATRIX
+  // M13.3). The request is for a tool on the owner's machine, whoever's turn
+  // raised it. It used to be bound to whoever last wrote in the card's chat
+  // (`lastInboundUserByChat.get(chatId) ?? USER_ID`), so in a share
+  // recipient's chat the recipient could allow a tool on the owner's machine.
+  // Both answer arms (waitForVerdict) and both click intakes compare to this.
+  const requesterUserId = USER_ID
 
   pendingPermissions.set(request_id, {
     chatId,
@@ -3291,6 +3320,9 @@ function relayPermissionToOwner(
   // the way back. Until the clamp is deployed that smaller number is always
   // the hold itself, which is why the log below prints what came back rather
   // than what was sent.
+  // Whether the card is up: a 403 before it is a chat refusing the card, one
+  // after it is not, and the card is never posted twice.
+  let cardPosted = false
   try {
     const posted = await bgosPost(
       'messages',
@@ -3303,6 +3335,7 @@ function relayPermissionToOwner(
         floorEvidence,
       }),
     )
+    cardPosted = true
     const cardMessageId = cardMessageIdFrom(posted)
     // What the SERVER decided this request waits, off the row it just created.
     // Null means the response did not say, and the backstop falls back to the
@@ -3362,6 +3395,16 @@ function relayPermissionToOwner(
     // A permanent refusal is remembered, so the next request picks another
     // chat instead of posting into this one again.
     refuseHookRailChat(chatId, err)
+    // A chat that answers the card itself with a 403 (shared agents Phase 0,
+    // item 0.8: the backend refuses a card posted into a share recipient's
+    // chat) is skipped from now on, and THIS request moves on to the next
+    // chat rather than being denied. Each chat is tried once: the set grows
+    // on every pass, so when none is left the no chat exit above denies.
+    if (!cardPosted && httpStatusOf(err) === 403) {
+      permissionCardRefusedChats.add(chatId)
+      log(`Permission card refused in chat ${chatId} (403) for ${tool_name} [${request_id}]; no more cards go there, trying the next chat`)
+      return relayPermissionToOwner(params, floorEvidence, floorHeld)
+    }
     log(`Permission relay failed for ${tool_name} [${request_id}]: ${err}`)
     // On failure, deny to be safe
     await mcp.notification({
@@ -3579,9 +3622,9 @@ function postFloorCheck(
  * request could be declined here while the card in the owner's hand was still
  * perfectly tappable.
  *
- * The verdict is bound to `requesterUserId`, the user who drove the session
- * that triggered this permission request, so in a shared-assistant chat an
- * unrelated user cannot approve or deny a prompt that was not theirs. The two
+ * The verdict is bound to `requesterUserId`, which is the owner (USER_ID,
+ * shared agents Phase 0, item 0.8): the tool runs on the owner's machine, so
+ * in a shared-assistant chat nobody else can approve or deny it. The two
  * arms below read that binding off DIFFERENT fields, and so they answer an
  * unstamped one differently: a typed verdict is an inbound user message and a
  * current backend stamps a real per-sender id on one of those, so
@@ -9587,7 +9630,14 @@ async function discoverChats(): Promise<void> {
         id: number
         assistantId: number
         kind?: 'main' | 'a2a' | 'meeting'
+        userId?: string
+        user_id?: string
       }[]
+    }
+    // Whose each chat is, when the backend names the chat's user on the row
+    // (shared agents Phase 0, item 0.8). A row with no user says nothing.
+    for (const c of data.chats) {
+      chatOwnership.noteRow({ chatId: String(c.id), kind: c.kind, userId: c.userId ?? c.user_id })
     }
     // Two acceptance rules:
     //  - Owned chats (main + a2a): plugin owns the chat directly →
@@ -10345,14 +10395,16 @@ async function pollChat(chatId: string): Promise<void> {
         msg.message.eventMeta,
       )
       rememberSessionHandle(chatId, pollSessionHandle)
-      // Remember who drove this chat so a permission verdict can be bound to
-      // them (see lastInboundUserByChat / PendingPermission.requesterUserId).
+      // Remember who drove this chat, for a plan card's binding (see
+      // lastInboundUserByChat; a permission card binds to USER_ID).
       // Block A: resolve the REAL sender id the backend now stamps per message
       // (senderUserIdOf reads msg.senderUserId, then falls back to the owner).
-      // Reused for the verdict-binding map AND the agent-delivered meta so a
-      // shared assistant sees which human actually sent this message.
+      // Reused for that map AND the agent-delivered meta so a shared assistant
+      // sees which human actually sent this message. noteChatAuthor reads the
+      // stamp alone, with no fallback, for whose chat this is (item 0.8).
       // An email has no human sender, and the owner fallback must not stand in.
       if (!pollIsEmail) lastInboundUserByChat.set(chatId, pollSenderUserId)
+      noteChatAuthor(chatId, pollSenderType === 'user' && !pollAgentOrigin && !pollIsEmail, msg.message)
       actingUser.noteInbound({
         chatId,
         userId: pollSenderUserId,
@@ -12637,6 +12689,7 @@ async function forwardStreamInbound(
   lastInboundAtMs = Date.now()
   // An email has no human sender, and the owner fallback must not stand in.
   if (!streamIsEmail) lastInboundUserByChat.set(chatId, senderUserId)
+  noteChatAuthor(chatId, !isSystem && view.senderKind === 'user' && !view.agentOrigin && !streamIsEmail, view.raw)
   actingUser.noteInbound({
     chatId,
     userId: senderUserId,
@@ -13613,6 +13666,7 @@ function connectWebsocket(): void {
       const wsSenderUserId = senderUserIdOf(payload)
       // An email has no human sender, and the owner fallback must not stand in.
       if (chatId && !wsIsEmail) lastInboundUserByChat.set(chatId, wsSenderUserId)
+      noteChatAuthor(chatId, wsSenderType === 'user' && !wsAgentOrigin && !wsIsEmail, payload)
       actingUser.noteInbound({
         chatId,
         userId: wsSenderUserId,

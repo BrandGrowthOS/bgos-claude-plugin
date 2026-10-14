@@ -1,3 +1,5 @@
+import type { ChatOwnership } from './chat-ownership.ts'
+
 /**
  * The two backend refusals this daemon treats as PERMANENT for a chat.
  *
@@ -231,10 +233,24 @@ export function a2aRouteRequiredResult(
  * failed closed again (Ares's check of plugin 0.62.1, 2026-10-08). Undefined
  * when every monitored chat has refused, and the caller denies, as it does
  * when there is no chat at all.
+ *
+ * WITH `ownership` (shared agents Phase 0, item 0.8; MATRIX M13.2) the card is
+ * about the OWNER's machine, so it goes to the owner's own chat first, the
+ * most recently confirmed first (lib/chat-ownership.ts), and never to a chat
+ * known to be somebody else's: on a shared agent the first monitored chat can
+ * be a recipient's DM, which then saw the owner's command text. A chat neither
+ * known to be the owner's nor somebody else's keeps today's order, so with no
+ * evidence at all the answer is exactly what it was.
  */
 export function pickPermissionChat(
   monitored: readonly string[],
   refused: ReadonlyArray<Pick<RefusedChats, 'has'>>,
+  ownership?: Pick<ChatOwnership, 'ownerChats' | 'isOthers'>,
 ): string | undefined {
-  return monitored.find((chatId) => !refused.some((set) => set.has(chatId)))
+  const open = (chatId: string): boolean => !refused.some((set) => set.has(chatId))
+  if (!ownership) return monitored.find(open)
+  const watched = new Set(monitored)
+  const owners = ownership.ownerChats().find((chatId) => watched.has(chatId) && open(chatId))
+  if (owners !== undefined) return owners
+  return monitored.find((chatId) => open(chatId) && !ownership.isOthers(chatId))
 }
