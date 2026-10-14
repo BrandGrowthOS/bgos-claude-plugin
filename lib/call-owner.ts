@@ -188,3 +188,11 @@ export function buildCallOwnerBody({
   }
   return body
 }
+
+/**
+ * call_owner on a share recipient's turn naming a chat that is not theirs
+ * (shared agents Phase 0, item 0.3). The call is bound to the turn's own chat:
+ * the owner's chat, or another recipient's, would file the call there.
+ */
+export const CALL_OWNER_OTHER_CHAT_REFUSAL =
+  'This call did not start: on the turn of a person this agent is shared with, a call is bound to their own chat, and the chat named is not theirs.'

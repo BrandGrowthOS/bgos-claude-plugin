@@ -18,11 +18,18 @@
  *
  * THE RULES. Only a MAIN chat can be the owner's own chat: a row whose kind
  * says otherwise (a peer side thread, a meeting, a group) never is, whoever
- * owns the row. A chat where anybody but the owner was seen is somebody
- * else's, for good: a main chat belongs to one person, so the owner turning up
- * in it later does not make it theirs, and a card there could still be read
- * by the other person. Silence is not evidence either way: a chat nobody was
- * seen in is unknown, and pickPermissionChat keeps today's order for those.
+ * owns the row. A row naming the chat's user is the backend saying whose it
+ * is, so it outranks any message stamp, both ways. Without one, a chat where
+ * anybody but the owner was seen is somebody else's, for good: a main chat's
+ * user rows are its owner's (the backend refuses the agent owner's user
+ * message into a recipient's chat), so a foreign stamp means it is not the
+ * owner's, and a card there could still be read by that person. Silence is
+ * not evidence either way: a chat nobody was seen in is unknown, and
+ * pickPermissionChat keeps today's order for those.
+ *
+ * ORDER. A person's message confirms a chat again and makes it the newest; a
+ * row only adds a chat not yet known, behind the confirmed ones, because the
+ * inbox is re-read on every discovery in its own (newest created) order.
  *
  * Bounded, oldest first out, like the refused chat sets: forgetting a chat
  * costs a preference, never a wrong card.
@@ -52,6 +59,8 @@ export function createChatOwnership(ownerUserId: string, limit: number = CHAT_OW
   const owners = new Set<string>()
   const others = new Set<string>()
   const notMain = new Set<string>()
+  // Chats a backend row named the user of: the row decided, so no stamp moves them.
+  const decided = new Set<string>()
   const bound = (set: Set<string>) => {
     while (set.size > limit) {
       const oldest = set.values().next().value
@@ -71,6 +80,20 @@ export function createChatOwnership(ownerUserId: string, limit: number = CHAT_OW
     owners.add(chatId)
     bound(owners)
   }
+  // A row's answer: it replaces a stamp's, and keeps a known owner chat where it is in the order.
+  const decide = (chatId: string, ownerUser: boolean) => {
+    decided.add(chatId)
+    bound(decided)
+    if (!ownerUser) return markOther(chatId)
+    others.delete(chatId)
+    if (notMain.has(chatId) || owners.has(chatId)) return
+    // Behind the confirmed ones: the oldest end of the insertion order.
+    const confirmed = [...owners]
+    owners.clear()
+    owners.add(chatId)
+    for (const known of confirmed) owners.add(known)
+    bound(owners)
+  }
   return {
     noteRow(row) {
       const chatId = id(row.chatId)
@@ -83,13 +106,17 @@ export function createChatOwnership(ownerUserId: string, limit: number = CHAT_OW
       }
       const user = stated(row.userId)
       if (user === null) return
-      if (user === ownerUserId) markOwner(chatId)
-      else markOther(chatId)
+      decide(chatId, user === ownerUserId)
     },
     noteAuthor(chatId, authorUserId) {
       const chat = id(chatId)
       const author = stated(authorUserId)
       if (chat === '' || author === null) return
+      if (decided.has(chat)) {
+        // The row decided whose it is; the owner speaking there makes it the newest owner chat.
+        if (author === ownerUserId && owners.has(chat)) markOwner(chat)
+        return
+      }
       if (author === ownerUserId) markOwner(chat)
       else markOther(chat)
     },

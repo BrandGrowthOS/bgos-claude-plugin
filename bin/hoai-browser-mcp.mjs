@@ -87,6 +87,12 @@ const RELAY_ERROR_TEXT = {
 
 const RELAY_UNSUPPORTED_TEXT = "This HOAI backend does not have the browser relay yet. Tell the owner to update Home of Agents.";
 
+// The relay answers whose words name the owner's desktop app, as said on a share recipient's turn instead (item 0.2).
+const RECIPIENT_RELAY_ERROR_TEXT = {
+  host_offline: OFFLINE_TEXT_RELAY_RECIPIENT,
+  host_timeout: "The browser's host did not answer the browser call within 50 seconds. On this turn you act for a person this agent is shared with: their browser runs on this agent's own host or on their own Home of Agents desktop app, never on the owner's desktop app. Say so and retry once; if it happens again, tell them their browser looks stuck.",
+};
+
 // A collect (GET .../mcp/:rpcId) that fails AFTER the call went pending: the call WAS SENT, so it may already have
 // run (a click, a purchase, a message), and "Retry in a moment" or "Retry it once" invited a blind repeat.
 const SENT_CALL_ADVICE = "The call may or may not have run, or may still be running. Check the page with browser_snapshot before you retry, and never repeat a click, a purchase or a message without checking first; if the page cannot tell you, ask your owner.";
@@ -655,7 +661,7 @@ async function handle(msg, entry) {
     if (!res.ok) {
       dropRelay(res.code, context);
       if (!relayConnections.has(relayClientId(context))) setMode("offline");
-      const text = res.code === "host_offline" && context?.recipient ? OFFLINE_TEXT_RELAY_RECIPIENT : res.text;
+      const text = context?.recipient && Object.hasOwn(RECIPIENT_RELAY_ERROR_TEXT, res.code) ? RECIPIENT_RELAY_ERROR_TEXT[res.code] : res.text;
       return reply({ content: [{ type: "text", text }], isError: params?.name !== "hoai_browser_status" || res.code !== "host_offline" });
     }
     if (params?.name === "hoai_browser_status" && res.message?.result && !res.message.result.isError && r.relay.hostLabel) {

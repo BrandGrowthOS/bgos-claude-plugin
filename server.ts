@@ -80,7 +80,7 @@ import { collectChanges, createNodeRunGit, nodeChangesFs } from './lib/git-chang
 import { defaultPidAlive, pluginStateDirFor, readBootClock } from './lib/agent-inventory.mjs'
 import { createMarkerTakeover, currentPluginRootFor, handoffEnv, mcpEnvKeys, nodeTakeoverFs } from './lib/marker-takeover.mjs'
 import { HOOK_RESTART_FILE_NAME, createHookRestart, nodeHookRestartFs } from './lib/hook-restart.mjs'
-import { buildCallOwnerBody } from './lib/call-owner.js'
+import { buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL } from './lib/call-owner.js'
 import { alwaysOnGraceRemainingMs, ALWAYS_ON_INSTALL_GRACE_MS, ALWAYS_ON_INSTALLED_AT_FILE } from './lib/always-on-grace.js'
 import {
   buildReachableChatsPath,
@@ -142,7 +142,7 @@ import {
   handleBoardsTool,
 } from './lib/boards-tools.js'
 import { createActingUserTracker } from './lib/acting-user.js'
-import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn } from './lib/private-turn.mjs'
+import { createPrivateTurnTracker, privateActor, privateBeginLine, privateSenderUserId, privateContextPath, privateMarkerPath, privateRepeatLine, privateRevokeLine, publishPrivateContext, requirePrivateTurn, turnAwarePrivateTurn } from './lib/private-turn.mjs'
 import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   BUNDLED_RENDERABLES_FALLBACK,
@@ -213,6 +213,7 @@ import {
   buildMissionResumePath,
   formatMissionSummary,
   pickImplicitMissionChat,
+  explicitMissionChatRefusal,
   MISSION_DONE_WHEN_MAX,
   MISSION_TITLE_MAX,
   type MissionSnapshot,
@@ -864,6 +865,7 @@ import {
   a2aRouteRequiredResult,
   classifyPeerRefusal,
   createRefusedChats,
+  isPermissionCardOwnerChatOnly,
   peerNotParticipantResult,
   peerRefusalOf,
   pickPermissionChat,
@@ -1381,12 +1383,15 @@ async function loadServedCapabilities(): Promise<ServedCapabilities> {
 class HttpError extends Error {
   readonly status: number
   readonly peerRefusal: PeerRefusal | null
+  /** The whole response body, bounded, when the thrower kept it (bgosPost): a refusal is read off it, never off the message. */
+  readonly body: string | null
 
-  constructor(message: string, status: number, peerRefusal: PeerRefusal | null = null) {
+  constructor(message: string, status: number, peerRefusal: PeerRefusal | null = null, body: string | null = null) {
     super(message)
     this.name = 'HttpError'
     this.status = status
     this.peerRefusal = peerRefusal
+    this.body = body
   }
 }
 
@@ -1437,6 +1442,7 @@ async function bgosPost(
           `POST ${response.status}: ${text.slice(0, 200)}`,
           response.status,
           classifyPeerRefusal(response.status, text),
+          text.slice(0, 8192),
         )
       }
       return response.json()
@@ -2567,6 +2573,10 @@ const permissionCardRefusedChats = createRefusedChats()
  */
 function noteChatAuthor(chatId: string, human: boolean, record: unknown): void {
   if (!chatId || !human || meetingChatIds.has(chatId)) return
+  // A machine event row (a wake, a notice, an email card) is nobody speaking,
+  // whatever user it is stamped with.
+  const row = (record ?? {}) as Record<string, unknown>
+  if ((row.messageType ?? row.message_type) === 'event' || row.eventMeta != null || row.event_meta != null) return
   chatOwnership.noteAuthor(chatId, privateSenderUserId(record))
 }
 
@@ -3395,12 +3405,14 @@ function relayPermissionToOwner(
     // A permanent refusal is remembered, so the next request picks another
     // chat instead of posting into this one again.
     refuseHookRailChat(chatId, err)
-    // A chat that answers the card itself with a 403 (shared agents Phase 0,
-    // item 0.8: the backend refuses a card posted into a share recipient's
-    // chat) is skipped from now on, and THIS request moves on to the next
-    // chat rather than being denied. Each chat is tried once: the set grows
-    // on every pass, so when none is left the no chat exit above denies.
-    if (!cardPosted && httpStatusOf(err) === 403) {
+    // A chat that refuses the card itself (shared agents Phase 0, item 0.8:
+    // the backend's 403 for a card posted into a share recipient's chat, its
+    // exact sentence, lib/peer-refusal.ts isPermissionCardOwnerChatOnly) is
+    // skipped from now on, and THIS request moves on to the next chat rather
+    // than being denied. Each chat is tried once: the set grows on every pass,
+    // so when none is left the no chat exit above denies. Any other 403 is a
+    // deny as before and drops nothing.
+    if (!cardPosted && isPermissionCardOwnerChatOnly(err)) {
       permissionCardRefusedChats.add(chatId)
       log(`Permission card refused in chat ${chatId} (403) for ${tool_name} [${request_id}]; no more cards go there, trying the next chat`)
       return relayPermissionToOwner(params, floorEvidence, floorHeld)
@@ -3760,7 +3772,13 @@ async function waitForVerdict(
       // tick later (with no id this read is off, and the post site says so).
       // All three decide on the same field
       // the day the backend stamps a tapper id on the answer.
-      const clickerUserId = senderUserIdCandidate(msg.message.answerPayload)
+      //
+      // THE SERVER'S TAPPER FIRST (shared agents Phase 0, item 0.8): the
+      // backend stamps the authenticated caller on the answer as
+      // `answeredByUserId` (readTapperUserId), and the request is bound to the
+      // owner, so a tap it names as a share recipient's never allows a tool on
+      // the owner's machine. An answer that names nobody keeps the rule above.
+      const clickerUserId = readTapperUserId(msg.message.answerPayload) ?? senderUserIdCandidate(msg.message.answerPayload)
       if (clickerUserId !== null && clickerUserId !== requesterUserId) {
         // Once per request, unlike verdictFrom's line. A user message is read
         // once and then left behind the cursor; the CARD is re-read on every
@@ -5429,8 +5447,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  // The same bgos tools as PRIVATE_TOOL_MATCHER (lib/private-turn.mjs), the helper guard's list.
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission', 'list_chats'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -5450,6 +5467,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       } catch { /* A diagnostic line never changes the refusal. */ }
       const text = !PRIVATE_HOOK.registered && lockHeld ? PRIVATE_HOOK_MISSING_REFUSAL : String((err as Error).message)
       return Promise.resolve({ content: [{ type: 'text' as const, text }], isError: true })
+    }
+  } else if (['call_owner', 'list_chats', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission'].includes(req.params.name)) {
+    // TURN AWARE, not turn gated (shared agents Phase 0, items 0.3, 0.4, 0.7;
+    // lib/private-turn.mjs turnAwarePrivateTurn). A verified turn is used as
+    // above, so a share recipient's is named; with none the owner's own work
+    // (the goal lane, a mission card, a tap, a peer) runs as it always did,
+    // unless this turn's chat is known to be a recipient's. These tools and
+    // the gated ones above are PRIVATE_TOOL_MATCHER, the helper guard's list.
+    try {
+      privateCall = turnAwarePrivateTurn({
+        tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID,
+        turnChatId: turnChat.current(Date.now())?.chatId ?? null,
+        othersChat: (chatId: string) => chatOwnership.isOthers(chatId),
+      })
+    } catch (err) {
+      try { log(`private turn: refused ${req.params.name}: no verified sender, in a share recipient's chat`) } catch { /* A diagnostic line never changes the refusal. */ }
+      return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
     }
   }
   return trackMessageOperation(async () => {
@@ -6604,14 +6638,23 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       // recent monitored chat, the same fallback the permission-request flow
       // uses (monitoredChatIds[0]). The backend chatId is optional, so an
       // unbound call is still valid when we have no monitored chat yet.
+      //
+      // On a share recipient's verified turn (shared agents Phase 0, item 0.3)
+      // the call is bound to THEIR chat, the turn's own: the first monitored
+      // chat can be the owner's or another recipient's, and a chat named that
+      // is not theirs is refused. The owner's turn is unchanged.
+      const recipientTurn = privateCall!.actingUserId !== USER_ID && privateCall!.chatId != null
       let resolvedChatId: number | undefined
       if (chatIdArg) {
         const callAuth = resolveAuthorizedChat(chatIdArg)
         if (!callAuth.ok) return callAuth.error
+        if (recipientTurn && String(callAuth.chatId) !== String(privateCall!.chatId)) {
+          return { content: [{ type: 'text', text: CALL_OWNER_OTHER_CHAT_REFUSAL }], isError: true }
+        }
         const n = Number(callAuth.chatId)
         if (Number.isFinite(n)) resolvedChatId = n
       } else {
-        const fallback = monitoredChatIds[0]
+        const fallback = recipientTurn ? String(privateCall!.chatId) : monitoredChatIds[0]
         if (fallback) {
           const n = Number(fallback)
           if (Number.isFinite(n)) resolvedChatId = n
@@ -9516,6 +9559,9 @@ function resolveMissionToolChat(rawChatId: unknown, turn: { actingUserId: string
   if (rawChatId != null && rawChatId !== '') {
     const resolved = resolveAuthorizedChat(String(rawChatId))
     if (!resolved.ok) return resolved
+    // A share recipient's turn names only its own chat (lib/missions.ts).
+    const refusal = explicitMissionChatRefusal({ privateTurn: turn, ownerUserId: USER_ID, chatId: resolved.chatId })
+    if (refusal !== null) return { ok: false, error: { content: [{ type: 'text', text: refusal }], isError: true } }
     return { ok: true, chatId: resolved.chatId }
   }
   const record = turnChat.current(Date.now())
@@ -9548,30 +9594,34 @@ function resolveMissionToolChat(rawChatId: unknown, turn: { actingUserId: string
  * single-chat agent is unchanged.
  *
  * `privateHeaders` are the private turn's (shared agents Phase 0, item 0.4):
- * empty on the owner's own turn, which keeps the cached read exactly as it
- * was; on a share recipient's turn the read names them and never rides the
- * shared ETag cache, whose key is the path alone.
+ * empty on the owner's own turn, which keeps the cached read and an explicit
+ * mission_id exactly as they were. On a share recipient's turn the read names
+ * them and never rides the shared ETag cache, whose key is the path alone,
+ * and an explicit mission_id is never taken at face value: the session can
+ * hold the owner's mission ids, so it must be the open mission of their own
+ * chat, or the answer is null.
  */
 async function resolveMissionId(
   rawMissionId: unknown,
   chatId: string | null,
   privateHeaders: Record<string, string>,
 ): Promise<number | null> {
-  if (
+  const named =
     typeof rawMissionId === 'number' &&
     Number.isInteger(rawMissionId) &&
     rawMissionId > 0
-  ) {
-    return rawMissionId
-  }
+  const personal = Object.keys(privateHeaders).length > 0
+  if (named && !personal) return rawMissionId
   const builtPath = buildMissionActivePath(ASSISTANT_ID, chatId)
   if (!builtPath.ok) return null
-  const result = (Object.keys(privateHeaders).length === 0
-    ? await bgosGetCachedOn304(builtPath.path)
-    : await bgosGet(builtPath.path, { headers: privateHeaders })) as {
+  const result = (personal
+    ? await bgosGet(builtPath.path, { headers: privateHeaders })
+    : await bgosGetCachedOn304(builtPath.path)) as {
     mission?: MissionSnapshot | null
   }
-  return result?.mission?.id ?? null
+  const open = result?.mission?.id ?? null
+  if (named && open !== rawMissionId) return null
+  return open
 }
 
 function resolveAuthorizedChat(rawChatId: string):
@@ -10015,11 +10065,15 @@ async function pollChat(chatId: string): Promise<void> {
       // exactly as it is, because the tap is not lost when it happens, whenever
       // the card's id came back off the post: the watch then reads the same
       // answer off the card row a tick later, and THAT read is null aware (see
-      // answeredOn in waitForVerdict; with no card id that read is off). Moving
-      // both onto `answeredByUserId` is a separate change to this rule.
+      // answeredOn in waitForVerdict; with no card id that read is off).
+      //
+      // The tapper the server stamps (`answeredByUserId`) is read FIRST since
+      // shared agents Phase 0, item 0.8: a permission request is bound to the
+      // owner, so a click the server names as a share recipient's is foreign.
+      // A click it names nobody for keeps the owner fallback above.
       const permOutcome = resolvePermissionClick({
         callbackData,
-        clickerUserId: senderUserIdOf(payload),
+        clickerUserId: readTapperUserId(payload) ?? senderUserIdOf(payload),
         pending: pendingPermissions,
       })
       if (permOutcome.kind !== 'not_permission') {
@@ -12812,9 +12866,11 @@ function applyStreamButtonsAnswered(update: StreamUpdate): void {
   if (recentButtonPrompts.get(chatId)?.messageId === view.messageId) recentButtonPrompts.delete(chatId)
 
   if (decision === 'permission') {
+    // The server's tapper first, as the poll intake reads it (shared agents
+    // Phase 0, item 0.8): a click it names as a recipient's is foreign.
     const outcome = resolvePermissionClick({
       callbackData: answer.callbackData,
-      clickerUserId: senderUserIdOf(answer),
+      clickerUserId: answer.tapperUserId ?? senderUserIdOf(answer),
       pending: pendingPermissions,
     })
     if (outcome.kind === 'not_permission') {

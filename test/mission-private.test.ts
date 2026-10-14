@@ -31,7 +31,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import ts from 'typescript'
-import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker } from '../lib/private-turn.mjs'
+import * as privateTurnModule from '../lib/private-turn.mjs'
+import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, requirePrivateTurn } from '../lib/private-turn.mjs'
+// Read off the module, so a tree without them reports each case rather than failing to load.
+const { TURN_AWARE_REFUSAL, turnAwarePrivateTurn } = privateTurnModule as any
 import { PRIVATE_TOOL_MATCHER as PRESEED_MATCHER } from '../lib/claude-preseed.mjs'
 import { markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
@@ -92,20 +95,23 @@ test('a helper started in an earlier turn cannot write a mission for the current
   }
 })
 
-test('the admission gate freezes the verified turn for every mission tool, and refuses an unverified one', async () => {
+test('the admission gate is turn aware for every mission tool: a verified turn frozen, an unverified one in a recipient chat refused, else the owner', async () => {
   for (const name of MISSION_TOOLS) {
-    const bindings = {
-      req: { params: { name } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [],
-      PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: OWNER,
-    }
-    let called = 0
-    const refused = await execute(admissionSource + '\nreturn privateCall;', {
-      ...bindings, requirePrivateTurn: () => { called++; throw new Error('This private action did not start because its current sender could not be verified.') },
+    const run = (turn: unknown, turnChatId: string | null) => execute(admissionSource + '\nreturn privateCall;', {
+      req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn }, PRIVATE_MARKER_PATHS: [],
+      PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
+      requirePrivateTurn, turnAwarePrivateTurn,
+      turnChat: { current: () => (turnChatId ? { chatId: turnChatId } : null) },
+      chatOwnership: { isOthers: (chatId: string) => chatId === '20' },
     })
-    assert.equal(called, 1, `the gate ran for ${name}`)
-    assert.equal(refused?.isError, true, `${name}: an unverified sender writes no mission`)
-    const frozen = { actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } }
-    assert.deepEqual(await execute(admissionSource + '\nreturn privateCall;', { ...bindings, requirePrivateTurn: () => frozen }), frozen)
+    const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, '20')
+    assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
+    const refused = await run(null, '20')
+    assert.equal(refused?.isError, true, `${name}: an unverified sender in a recipient chat writes no mission`)
+    assert.equal(refused.content[0].text, TURN_AWARE_REFUSAL, name)
+    // The owner's own work on a turn no delivery opened (the goal lane, a mission card, a tap) runs as before.
+    const owner = await run(null, '10')
+    assert.deepEqual([owner.actingUserId, owner.headers], ['user_owner', {}], name)
   }
 })
 
@@ -233,4 +239,67 @@ test('a recipient turn with no chat of its own writes nothing and says why, for 
     assert.equal(result.content[0].text, (missions as any).RECIPIENT_MISSION_CHAT_REFUSAL, name)
     assert.deepEqual(r.sent, [], `${name} sent nothing`)
   }
+})
+
+test('on a recipient turn a chat named that is not their own is refused, for every mission tool', async () => {
+  const recipientCall = { actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } }
+  for (const name of MISSION_TOOLS) {
+    const r = rig(recipientCall)
+    const result = await r.run(name, { ...ARGS[name]!, chat_id: OWNER_CHAT })
+    assert.equal(result?.isError, true, name)
+    assert.equal(result.content[0].text, (missions as any).RECIPIENT_MISSION_OTHER_CHAT_REFUSAL, name)
+    assert.deepEqual(r.sent, [], `${name} sent nothing`)
+    // Their own chat, named, is fine.
+    const own = rig(recipientCall)
+    assert.notEqual((await own.run(name, { ...ARGS[name]!, chat_id: RECIPIENT_CHAT }))?.isError, true, name)
+  }
+  // The owner's turn may name any chat it can reach, as before.
+  const owner = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
+  assert.notEqual((await owner.run('create_mission', { ...ARGS.create_mission!, chat_id: RECIPIENT_CHAT }))?.isError, true)
+})
+
+test('on a recipient turn a mission id is never taken at face value: it must be the open mission of their own chat', async () => {
+  const recipientCall = { actingUserId: RECIPIENT, chatId: RECIPIENT_CHAT, headers: { 'X-BGOS-Acting-User': RECIPIENT } }
+  for (const name of MISSION_TOOLS.filter((n) => n !== 'create_mission')) {
+    const foreign = rig(recipientCall)
+    const refused = await foreign.run(name, { ...ARGS[name]!, mission_id: 555 })
+    assert.equal(refused?.isError, true, `${name}: the owner's mission 555 is not the open mission of their chat (77)`)
+    assert.deepEqual(foreign.sent.map((c) => c.method), ['GET'], `${name}: only the read, no write`)
+    const theirs = rig(recipientCall)
+    assert.notEqual((await theirs.run(name, { ...ARGS[name]!, mission_id: 77 }))?.isError, true, name)
+  }
+  // The owner's turn takes an explicit id as it always did: no read at all.
+  for (const name of MISSION_TOOLS.filter((n) => n !== 'create_mission')) {
+    const owner = rig({ actingUserId: OWNER, chatId: OWNER_CHAT, headers: {} })
+    await owner.run(name, { ...ARGS[name]!, mission_id: 555 })
+    assert.ok(!owner.sent.some((c) => c.method.startsWith('GET')), `${name}: no read on the owner's turn`)
+    assert.ok(owner.sent[0]!.path.includes('/missions/555'), name)
+  }
+})
+
+const bgosGetSource = source.slice(source.indexOf('async function bgosGet('), source.indexOf('\n}\n', source.indexOf('async function bgosGet(')) + 3)
+
+test('bgosGet with a private turn headers never rides the shared ETag cache; without them it is unchanged', async () => {
+  const run = async (opts: Record<string, unknown> | undefined) => {
+    const recorded: string[] = []
+    const sent: Array<Record<string, string>> = []
+    const result = await execute(`${bgosGetSource}\nreturn bgosGet('assistants/900/missions/active?chatId=7788', opts);`, {
+      opts, API_BASE: 'https://hoai.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, NOT_MODIFIED: Symbol('nm'),
+      AUTH: {}, authHeaders: () => ({ 'X-BGOS-Pairing': 'pairing-token' }),
+      bgosEtagCache: { ifNoneMatch: () => 'W/"owner-view"', record: (key: string, tag: string) => recorded.push(`${key} ${tag}`) },
+      bgosCall: async (call: { init: { headers: Record<string, string> } }, consume: (res: any) => Promise<unknown>) => {
+        sent.push(call.init.headers)
+        return consume({ status: 200, ok: true, headers: { get: () => 'W/"fresh"' }, json: async () => ({ mission: null }), text: async () => '' })
+      },
+    })
+    return { result, recorded, sent }
+  }
+  const personal = await run({ headers: { 'X-BGOS-Acting-User': RECIPIENT } })
+  assert.deepEqual(personal.sent, [{ 'X-BGOS-Pairing': 'pairing-token', 'X-BGOS-Acting-User': RECIPIENT }], 'no validator is sent')
+  assert.deepEqual(personal.recorded, [], 'and none is kept')
+  const owner = await run(undefined)
+  assert.deepEqual(owner.sent, [{ 'X-BGOS-Pairing': 'pairing-token', 'If-None-Match': 'W/"owner-view"' }])
+  assert.deepEqual(owner.recorded, ['assistants/900/missions/active?chatId=7788 W/"fresh"'])
+  const empty = await run({ headers: {} })
+  assert.deepEqual(empty.sent, owner.sent, 'empty headers are the owner path')
 })

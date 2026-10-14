@@ -40,7 +40,7 @@ const OWNER_OFFLINE_TEXT =
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-async function rig(t: any, { actor, online = true, callStatus = 200 }: { actor: string; online?: boolean; callStatus?: number }) {
+async function rig(t: any, { actor, online = true, callStatus = 200, callCode = 'host_offline' }: { actor: string; online?: boolean; callStatus?: number; callCode?: string }) {
   const home = mkdtempSync(join(tmpdir(), 'hoai-recipient-host-'))
   const contextFile = join(home, 'context.json')
   const markerFile = join(home, 'marker.json')
@@ -52,7 +52,7 @@ async function rig(t: any, { actor, online = true, callStatus = 200 }: { actor: 
     if (String(req.url).startsWith('/api/v1/integrations/browser/host')) return answer(200, { online, hostLabel: 'Synthetic host' })
     const msg = body?.message
     if (msg?.method === 'tools/call' && callStatus !== 200) {
-      return answer(callStatus, { code: 'host_offline', message: 'No browser host is online for this person.' })
+      return answer(callStatus, { code: callCode, message: 'No browser host answered for this person.' })
     }
     const result = msg?.method === 'initialize' ? { instructions: 'Relay fixture' }
       : msg?.method === 'tools/list' ? { tools: [{ name: 'hoai_browser_status' }] }
@@ -64,8 +64,10 @@ async function rig(t: any, { actor, online = true, callStatus = 200 }: { actor: 
   const context = { schemaVersion: 1, assistantId: '42', ownerUserId: OWNER, actingUserId: actor, chatId: '11', turnId: 'turn-a', sessionId: 'claude-session', claudePid: process.pid, pid: process.pid, updatedAt: Date.now(), live: true, markerPath: markerFile, promptHash: 'a'.repeat(64) }
   writeFileSync(markerFile, JSON.stringify({ schemaVersion: 1, turnId: context.turnId, sessionId: context.sessionId, promptHash: context.promptHash, live: true }))
   writeFileSync(contextFile, JSON.stringify({ context, signature: createHmac('sha256', SECRET).update(JSON.stringify(context)).digest('hex') }))
+  // Nothing HOAI shaped is inherited from the shell: only what this rig sets.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('HOAI_')))
   const env: Record<string, string | undefined> = {
-    ...process.env, HOAI_HOME: home, HOAI_RELAY_BACKEND_URL: url, HOAI_RELAY_ASSISTANT_ID: '42', HOAI_RELAY_PAIRING_TOKEN: SECRET,
+    ...inherited, HOAI_HOME: home, HOAI_RELAY_BACKEND_URL: url, HOAI_RELAY_ASSISTANT_ID: '42', HOAI_RELAY_PAIRING_TOKEN: SECRET,
     HOAI_RELAY_API_KEY: '', HOAI_RELAY_PROBE_MS: '600000', HOAI_RELAY_CONTEXT_FILE: contextFile, HOAI_RELAY_OWNER_USER_ID: OWNER,
     HOAI_RELAY_CLIENT_PID: String(process.pid),
   }
@@ -151,4 +153,14 @@ test('with no host online, the owner turn keeps the owner text word for word', a
 test('the shim no longer claims a shared agent page never runs on the owner machine', () => {
   const shim = readFileSync(SHIM, 'utf8')
   assert.doesNotMatch(shim, /for a shared agent the page does not run\s*\/\/\s*on the owner's machine at all/)
+})
+
+test("a host timeout on a recipient turn never blames the owner's desktop app; the owner turn keeps its words", async (t) => {
+  const recipient = await rig(t, { actor: RECIPIENT, callStatus: 504, callCode: 'host_timeout' })
+  const said = texts((await recipient.request('tools/call', { name: 'browser_snapshot', arguments: {} })).result).join('\n')
+  assert.doesNotMatch(said, /The owner's desktop app did not answer/)
+  assert.match(said, NEVER_OWNER_DESKTOP)
+  assert.match(said, /did not answer the browser call within 50 seconds/)
+  const owner = await rig(t, { actor: OWNER, callStatus: 504, callCode: 'host_timeout' })
+  assert.match(texts((await owner.request('tools/call', { name: 'browser_snapshot', arguments: {} })).result).join('\n'), /^The owner's desktop app did not answer the browser call within 50 seconds\./)
 })

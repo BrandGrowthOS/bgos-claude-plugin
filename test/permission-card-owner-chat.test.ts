@@ -29,7 +29,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
+import * as peerRefusal from '../lib/peer-refusal.ts'
 import { createRefusedChats, pickPermissionChat } from '../lib/peer-refusal.ts'
+import * as permissionRelay from '../lib/permission-relay.ts'
+import { readTapperUserId } from '../lib/inbound-channel.ts'
 import {
   buildPermissionRequestBody,
   cardMessageIdFrom,
@@ -121,11 +124,19 @@ test('with no ownership evidence pickPermissionChat is exactly what it was', () 
 
 // ── the relay itself, executed from server.ts ────────────────────────────────
 
+// The backend half's exact refusal (BGOS permission-card-placement.ts PERMISSION_CARD_OWNER_CHAT_ONLY).
+const OWNER_CHAT_ONLY = "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into the chat of a person it is shared with."
+
 class FakeHttpError extends Error {
-  constructor(public status: number) { super(`POST ${status}: {"statusCode":${status},"message":"refused"}`) }
+  readonly body: string
+  constructor(public status: number, message = 'refused') {
+    const body = JSON.stringify({ statusCode: status, message, path: '/api/v1/messages', timestamp: '2026-10-14T10:00:00Z' })
+    super(`POST ${status}: ${body.slice(0, 200)}`)
+    this.body = body
+  }
 }
 
-function relayRig(opts: { monitored: string[]; refuse?: Record<string, number>; verdictThrows?: number; lastInbound?: Record<string, string> }) {
+function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | [number, string]>; verdictThrows?: number; lastInbound?: Record<string, string> }) {
   const posts: string[] = []
   const waits: Array<{ chatId: string; requesterUserId: string }> = []
   const verdicts: string[] = []
@@ -144,12 +155,13 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number>; 
     USER_ID: OWNER, pendingPermissions: pending,
     buildPermissionRequestBody, cardMessageIdFrom, storedWaitSeconds, permissionBackstopMs, choiceToBehavior,
     httpStatusOf: (err: unknown) => (err instanceof FakeHttpError ? err.status : null),
+    isPermissionCardOwnerChatOnly: (peerRefusal as any).isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
     bgosPost: async (_path: string, body: { chatId: number | string }) => {
       const chatId = String(body.chatId)
       posts.push(chatId)
-      const status = opts.refuse?.[chatId]
-      if (status) throw new FakeHttpError(status)
+      const refusal = opts.refuse?.[chatId]
+      if (refusal) throw Array.isArray(refusal) ? new FakeHttpError(refusal[0], refusal[1]) : new FakeHttpError(refusal, refusal === 403 ? OWNER_CHAT_ONLY : 'refused')
       return { id: 9000 + posts.length }
     },
     waitForVerdict: async (_requestId: string, chatId: string, _card: number | null, _ms: number, requesterUserId: string) => {
@@ -200,6 +212,17 @@ test('when every chat refuses the card with a 403, each is tried once and the re
   assert.deepEqual(r.verdicts, ['deny'])
 })
 
+test('only the backend refusal moves on: another 403 is a deny as before, and the chat is tried again next time', async () => {
+  assert.equal((peerRefusal as any).PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE, OWNER_CHAT_ONLY, 'the backend sentence, byte for byte')
+  const r = relayRig({ monitored: ['10', '20'], refuse: { 10: [403, 'Forbidden resource'] } })
+  await r.relay('req-8')
+  assert.deepEqual(r.posts, ['10'], 'an unrelated 403 does not move the card to another chat')
+  assert.deepEqual(r.verdicts, ['deny'])
+  assert.equal(r.refusedCards.has('10'), false, 'nor drop the chat from permission cards for good')
+  await r.relay('req-9')
+  assert.deepEqual(r.posts, ['10', '10'])
+})
+
 test('any other failure is a deny as before, and a 403 after the card was posted never posts it twice', async () => {
   const failing = relayRig({ monitored: ['20', '10'], refuse: { 20: 500 } })
   await failing.relay('req-6')
@@ -243,4 +266,119 @@ test('every inbound lane notes a person message author from the server stamp, ne
   assert.match(helper, /chatOwnership\.noteAuthor\(chatId, privateSenderUserId\(record\)\)/, 'the author stamp only: privateSenderUserId never falls back to the owner')
   assert.match(helper, /meetingChatIds\.has\(chatId\)/, 'a meeting chat is never the owner own chat')
   assert.match(relaySource, /pickPermissionChat\(monitoredChatIds, \[hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats\], chatOwnership\)/)
+})
+
+// ── a tap is the owner's only when the server says so (review of the branch) ─
+
+const waitSource = source.slice(source.indexOf('async function waitForVerdict('), source.indexOf('\n}\n', source.indexOf('async function waitForVerdict(')) + 3)
+
+/** The real answeredOn of waitForVerdict, captured from the watch it hands its callbacks to. */
+function answeredOnOf(requesterUserId: string) {
+  let captured: any = null
+  execute(`${waitSource}\nvoid waitForVerdict('abcde', '10', 777, 1000, ${JSON.stringify(requesterUserId)}, false); return null;`, {
+    chatLastSeen: new Map(), oncePerRow: () => () => true, log: () => {}, pendingPermissions: new Map(), USER_ID: OWNER,
+    watchPermissionVerdict: (opts: any) => { captured = opts; return new Promise(() => {}) },
+    permissionRowsReader: () => ({}), bgosGet: async () => null, isNotModified: () => false, isApprovalExpired: () => false,
+    answeredPermissionChoice: permissionRelay.answeredPermissionChoice, senderUserIdCandidate: permissionRelay.senderUserIdCandidate,
+    readTapperUserId,
+  })
+  assert.ok(captured?.answeredOn, 'waitForVerdict hands answeredOn to the watch')
+  return (answerPayload: Record<string, unknown>) =>
+    captured.answeredOn({ message: { id: 777, answeredAt: '2026-10-14T10:00:00Z', answerPayload: { callbackData: 'ea:once:abcde', ...answerPayload } } })
+}
+
+test('a tap on the card the server says a recipient made never allows the owner machine tool', () => {
+  const answeredOn = answeredOnOf(OWNER)
+  assert.equal(answeredOn({ answeredByUserId: RECIPIENT }), null, 'the server named the recipient as the tapper')
+  assert.equal(answeredOn({ answered_by_user_id: RECIPIENT }), null)
+  assert.equal(answeredOn({ answeredByUserId: OWNER }), 'once', 'the owner tap is the answer')
+  assert.equal(answeredOn({}), 'once', 'an unstamped tap keeps the old rule (the backend lets only the owner press there)')
+})
+
+/** A click intake's tapper expression, as written in server.ts, evaluated. */
+function intakeTapper(lane: 'poll' | 'stream') {
+  const start = lane === 'poll'
+    ? source.indexOf('const permOutcome = resolvePermissionClick({')
+    : source.indexOf('resolvePermissionClick({', source.indexOf("  if (decision === 'permission') {"))
+  assert.ok(start > 0, `${lane} intake found`)
+  const call = source.slice(start, source.indexOf('})', start))
+  const expr = call.match(/clickerUserId: (.+),\n/)?.[1]
+  assert.ok(expr, `${lane}: the clickerUserId expression`)
+  return (payload: Record<string, unknown>) => execute(`return ${expr}`, {
+    readTapperUserId, senderUserIdOf: (m: unknown) => permissionRelay.senderUserIdCandidate(m) ?? OWNER,
+    payload, answer: { callbackData: 'ea:once:abcde', tapperUserId: readTapperUserId(payload), ...payload },
+  })
+}
+
+test('both click intakes read the server tapper first, so a recipient click is foreign to the owner request', () => {
+  for (const lane of ['poll', 'stream'] as const) {
+    const tapper = intakeTapper(lane)
+    assert.equal(tapper({ answeredByUserId: RECIPIENT }), RECIPIENT, lane)
+    assert.equal(tapper({ answeredByUserId: OWNER }), OWNER, lane)
+    assert.equal(tapper({}), OWNER, `${lane}: unstamped keeps the old owner fallback`)
+    const pending = new Map([['abcde', { requesterUserId: OWNER, resolve: () => {} } as any]])
+    assert.equal(permissionRelay.resolvePermissionClick({ callbackData: 'ea:once:abcde', clickerUserId: tapper({ answeredByUserId: RECIPIENT }), pending }).kind, 'foreign', lane)
+  }
+})
+
+// ── the ownership evidence, tightened by the review ──────────────────────────
+
+test('a backend row naming the chat user outranks a message stamp, both ways', () => {
+  const o = createChatOwnership(OWNER)
+  o.noteRow({ chatId: '10', kind: 'main', userId: OWNER })
+  o.noteAuthor('10', RECIPIENT)
+  assert.deepEqual([o.isOwners('10'), o.isOthers('10')], [true, false], 'the row says it is the owner chat')
+  o.noteRow({ chatId: '20', kind: 'main', userId: RECIPIENT })
+  o.noteAuthor('20', OWNER)
+  assert.deepEqual([o.isOwners('20'), o.isOthers('20')], [false, true], 'the row says it is the recipient chat')
+})
+
+test('discovering the chats again keeps the most recently confirmed owner chat first', () => {
+  const o = createChatOwnership(OWNER)
+  o.noteAuthor('10', OWNER)
+  o.noteAuthor('11', OWNER)
+  assert.equal(o.ownerChats()[0], '11')
+  // The inbox lists newest first; noting its rows must not reorder what the owner did.
+  o.noteRow({ chatId: '11', kind: 'main', userId: OWNER })
+  o.noteRow({ chatId: '10', kind: 'main', userId: OWNER })
+  assert.equal(o.ownerChats()[0], '11')
+  // A row for a chat not yet known adds it, behind the confirmed ones.
+  o.noteRow({ chatId: '12', kind: 'main', userId: OWNER })
+  assert.deepEqual(o.ownerChats(), ['11', '10', '12'])
+})
+
+const authorSource = source.slice(source.indexOf('function noteChatAuthor('), source.indexOf('\n}\n', source.indexOf('function noteChatAuthor(')) + 3)
+
+test('a machine event row is never a person speaking, whoever it is stamped with', async () => {
+  const { privateSenderUserId } = await import('../lib/private-turn.mjs')
+  const o = createChatOwnership(OWNER)
+  const note = (chatId: string, record: unknown) => execute(`${authorSource}\nreturn noteChatAuthor(${JSON.stringify(chatId)}, true, record);`, {
+    chatOwnership: o, meetingChatIds: new Set(['90']), privateSenderUserId, record,
+  })
+  note('10', { senderUserId: OWNER, messageType: 'event', eventMeta: { source: 'scheduler' } })
+  note('11', { senderUserId: OWNER, message_type: 'event' })
+  note('12', { senderUserId: OWNER, event_meta: { source: 'agent_email' } })
+  note('90', { senderUserId: OWNER, messageType: 'text' })
+  for (const chatId of ['10', '11', '12', '90']) assert.equal(o.isOwners(chatId), false, chatId)
+  note('13', { senderUserId: OWNER, messageType: 'text' })
+  assert.equal(o.isOwners('13'), true, 'a person message still counts')
+})
+
+const httpErrorSource = source.slice(source.indexOf('class HttpError extends Error {'), source.indexOf('\n}\n', source.indexOf('class HttpError extends Error {')) + 3)
+const bgosPostSource = source.slice(source.indexOf('async function bgosPost('), source.indexOf('\n}\n', source.indexOf('async function bgosPost(')) + 3)
+
+test('bgosPost carries the whole refusal body, so the backend sentence is read past the 200 character excerpt', async () => {
+  const body = JSON.stringify({ statusCode: 403, message: OWNER_CHAT_ONLY, path: '/api/v1/messages', timestamp: '2026-10-14T10:00:00.000Z' })
+  assert.ok(body.length > 200 + 'POST 403: '.length - 10, 'the excerpt alone would cut it')
+  const err = await execute(`${httpErrorSource}\n${bgosPostSource}\nreturn bgosPost('messages', { chatId: 20 }).then(() => null, (e) => e);`, {
+    API_BASE: 'https://hoai.invalid/api/v1', HTTP_TIMEOUT_MS: 1000, AUTH: {}, ASSISTANT_ID: '900', authHeaders: () => ({}),
+    messagesCallerHeaders: () => ({}), meetingChatIds: new Set(), peerConvByChat: new Map(), closedPeerChats: new Set(), a2aRouteRefusedChats: new Set(),
+    classifyPeerRefusal: peerRefusal.classifyPeerRefusal,
+    bgosCall: async (_call: unknown, consume: (res: any) => Promise<unknown>) => consume({ ok: false, status: 403, text: async () => body }),
+  })
+  assert.ok(err instanceof Error)
+  assert.equal((peerRefusal as any).isPermissionCardOwnerChatOnly(err), true)
+  assert.equal((peerRefusal as any).isPermissionCardOwnerChatOnly({ status: 403, body: JSON.stringify({ statusCode: 403, message: 'Forbidden resource' }) }), false)
+  assert.equal((peerRefusal as any).isPermissionCardOwnerChatOnly({ status: 400, body }), false, 'the status counts too')
+  assert.equal((peerRefusal as any).isPermissionCardOwnerChatOnly(new Error(`POST 403: ${body}`)), false, 'never read off the message')
 })

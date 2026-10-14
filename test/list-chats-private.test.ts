@@ -25,7 +25,10 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import ts from 'typescript'
-import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker } from '../lib/private-turn.mjs'
+import * as privateTurnModule from '../lib/private-turn.mjs'
+import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, requirePrivateTurn } from '../lib/private-turn.mjs'
+// Read off the module, so a tree without them reports each case rather than failing to load.
+const { TURN_AWARE_REFUSAL, turnAwarePrivateTurn } = privateTurnModule as any
 import { PRIVATE_TOOL_MATCHER as PRESEED_MATCHER } from '../lib/claude-preseed.mjs'
 import { markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
@@ -76,19 +79,24 @@ test('a helper started in an earlier turn cannot list chats for the current send
   assert.equal(refused.status, 2, 'list_chats from a helper of an earlier turn must be refused')
 })
 
-test('the admission gate freezes the verified turn for list_chats, and refuses an unverified one', async () => {
-  const bindings = {
-    req: { params: { name: 'list_chats' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [],
-    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner',
+test('the admission gate is turn aware for list_chats: a verified turn frozen, an unverified one in a recipient chat refused, else the owner', async () => {
+  for (const name of ['list_chats']) {
+    const run = (turn: unknown, turnChatId: string | null) => execute(admissionSource + '\nreturn privateCall;', {
+      req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn }, PRIVATE_MARKER_PATHS: [],
+      PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
+      requirePrivateTurn, turnAwarePrivateTurn,
+      turnChat: { current: () => (turnChatId ? { chatId: turnChatId } : null) },
+      chatOwnership: { isOthers: (chatId: string) => chatId === '20' },
+    })
+    const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, '20')
+    assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
+    const refused = await run(null, '20')
+    assert.equal(refused?.isError, true, `${name}: an unverified sender in a recipient chat lists nothing`)
+    assert.equal(refused.content[0].text, TURN_AWARE_REFUSAL, name)
+    // The owner's own work on a turn no delivery opened (the goal lane, a mission card, a tap) runs as before.
+    const owner = await run(null, '10')
+    assert.deepEqual([owner.actingUserId, owner.headers], ['user_owner', {}], name)
   }
-  let called = 0
-  const refused = await execute(admissionSource + '\nreturn privateCall;', {
-    ...bindings, requirePrivateTurn: () => { called++; throw new Error('This private action did not start because its current sender could not be verified.') },
-  })
-  assert.equal(called, 1, 'the gate ran for list_chats')
-  assert.equal(refused?.isError, true, 'an unverified sender lists nothing')
-  const frozen = { actingUserId: 'user_recipient', chatId: '20', headers: { 'X-BGOS-Acting-User': 'user_recipient' } }
-  assert.deepEqual(await execute(admissionSource + '\nreturn privateCall;', { ...bindings, requirePrivateTurn: () => frozen }), frozen)
 })
 
 async function runListChats(privateCall: unknown) {

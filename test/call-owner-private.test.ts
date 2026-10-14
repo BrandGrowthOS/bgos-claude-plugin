@@ -30,11 +30,15 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import ts from 'typescript'
-import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, privateMarkerPath } from '../lib/private-turn.mjs'
+import * as privateTurnModule from '../lib/private-turn.mjs'
+import { PRIVATE_TOOL_MATCHER, createPrivateTurnTracker, requirePrivateTurn, privateMarkerPath } from '../lib/private-turn.mjs'
+// Read off the module, so a tree without them reports each case rather than failing to load.
+const { TURN_AWARE_REFUSAL, turnAwarePrivateTurn } = privateTurnModule as any
 import { PRIVATE_TOOL_MATCHER as PRESEED_MATCHER } from '../lib/claude-preseed.mjs'
 import { floorKey, markFloorAttached } from '../lib/floor-state.mjs'
 import { recordPrivateBoundary } from '../bin/hoai-private-turn-hook.mjs'
-import { buildCallOwnerBody } from '../lib/call-owner.ts'
+import * as callOwner from '../lib/call-owner.ts'
+const { buildCallOwnerBody } = callOwner
 
 const source = readFileSync('server.ts', 'utf8')
 const admissionStart = source.indexOf('  // Freeze private authority at request admission')
@@ -93,28 +97,31 @@ test('a helper started in an earlier turn cannot ring anyone for the current sen
   assert.equal(call('mcp__bgos__call_owner').status, 0)
 })
 
-test('the admission gate freezes the verified turn for call_owner, and refuses an unverified one before any work', async () => {
-  const bindings = {
-    req: { params: { name: 'call_owner' } }, lockHeld: true, privateTurns: {}, PRIVATE_MARKER_PATHS: [],
-    PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner',
+test('the admission gate is turn aware for call_owner: a verified turn frozen, an unverified one in a recipient chat refused, else the owner', async () => {
+  for (const name of ['call_owner']) {
+    const run = (turn: unknown, turnChatId: string | null) => execute(admissionSource + '\nreturn privateCall;', {
+      req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn }, PRIVATE_MARKER_PATHS: [],
+      PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
+      requirePrivateTurn, turnAwarePrivateTurn,
+      turnChat: { current: () => (turnChatId ? { chatId: turnChatId } : null) },
+      chatOwnership: { isOthers: (chatId: string) => chatId === '20' },
+    })
+    const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, '20')
+    assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
+    const refused = await run(null, '20')
+    assert.equal(refused?.isError, true, `${name}: an unverified sender in a recipient chat rings nobody`)
+    assert.equal(refused.content[0].text, TURN_AWARE_REFUSAL, name)
+    // The owner's own work on a turn no delivery opened (the goal lane, a mission card, a tap) runs as before.
+    const owner = await run(null, '10')
+    assert.deepEqual([owner.actingUserId, owner.headers], ['user_owner', {}], name)
   }
-  let called = 0
-  const refused = await execute(admissionSource + '\nreturn privateCall;', {
-    ...bindings, requirePrivateTurn: () => { called++; throw new Error('This private action did not start because its current sender could not be verified.') },
-  })
-  assert.equal(called, 1, 'the gate ran for call_owner')
-  assert.equal(refused?.isError, true, 'an unverified sender rings nobody')
-  assert.match(refused.content[0].text, /did not start/)
-  const frozen = { actingUserId: 'user_recipient', chatId: '20', headers: { 'X-BGOS-Acting-User': 'user_recipient' } }
-  const admitted = await execute(admissionSource + '\nreturn privateCall;', { ...bindings, requirePrivateTurn: () => frozen })
-  assert.deepEqual(admitted, frozen)
 })
 
-function runCallOwner(privateCall: unknown, response: { status: number; body: unknown }) {
+function runCallOwner(privateCall: unknown, response: { status: number; body: unknown }, args: Record<string, unknown> = {}) {
   const sent: Array<{ url: string; init: any }> = []
   const bindings = {
-    name: 'call_owner', privateCall, buildCallOwnerBody, log: () => {},
-    rawArgs: { reason: 'Quick question about the invoice' },
+    name: 'call_owner', privateCall, buildCallOwnerBody, CALL_OWNER_OTHER_CHAT_REFUSAL: (callOwner as any).CALL_OWNER_OTHER_CHAT_REFUSAL, log: () => {},
+    rawArgs: { reason: 'Quick question about the invoice', ...args }, USER_ID: 'user_owner',
     resolveAuthorizedChat: (chatId: string) => ({ ok: true, chatId }),
     monitoredChatIds: ['10'], ASSISTANT_ID: '900', API_BASE: 'https://hoai.invalid/api/v1',
     AUTH: { mode: 'pairing' }, authHeaders: () => ({ 'X-BGOS-Pairing': 'pairing-token' }), HTTP_TIMEOUT_MS: 1000,
@@ -156,4 +163,23 @@ test('the backend refusal for a recipient reaches the model as its own sentence,
   assert.equal(answer.isError, true)
   assert.ok(answer.content[0].text.includes(sentence), answer.content[0].text)
   assert.doesNotMatch(answer.content[0].text, /Calling your owner now/)
+})
+
+test('on a recipient turn the call is bound to their own chat, and a chat that is not theirs is refused', async () => {
+  const recipient = { actingUserId: 'user_recipient', chatId: '20', headers: { 'X-BGOS-Acting-User': 'user_recipient' } }
+  const own = runCallOwner(recipient, { status: 200, body: { status: 'ringing' } })
+  await own.result
+  assert.equal(JSON.parse(own.sent[0]!.init.body).chatId, 20, 'never the first monitored chat, which is the owner\'s here')
+  const other = runCallOwner(recipient, { status: 200, body: { status: 'ringing' } }, { chat_id: '10' })
+  const refused = await other.result
+  assert.equal(refused?.isError, true)
+  assert.equal(refused.content[0].text, (callOwner as any).CALL_OWNER_OTHER_CHAT_REFUSAL)
+  assert.match(String((callOwner as any).CALL_OWNER_OTHER_CHAT_REFUSAL), /did not start/)
+  assert.deepEqual(other.sent, [], 'nothing rang')
+  // The owner's turn, verified or not, keeps the first monitored chat.
+  for (const owner of [{ actingUserId: 'user_owner', chatId: '10', headers: {} }, { actingUserId: 'user_owner', chatId: null, headers: {} }]) {
+    const r = runCallOwner(owner, { status: 200, body: { status: 'ringing' } })
+    await r.result
+    assert.equal(JSON.parse(r.sent[0]!.init.body).chatId, 10)
+  }
 })

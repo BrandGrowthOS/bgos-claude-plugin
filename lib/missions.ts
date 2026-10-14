@@ -646,6 +646,31 @@ export const RECIPIENT_MISSION_CHAT_REFUSAL =
   'in their own chat.'
 
 /**
+ * The refusal for a share recipient's turn that NAMES a chat other than its
+ * own (shared agents Phase 0, item 0.4). A shared agent's one session can hold
+ * the owner's chat ids from the owner's own turns, so a recipient's ask must
+ * never reach the owner's mission through a chat_id either.
+ */
+export const RECIPIENT_MISSION_OTHER_CHAT_REFUSAL =
+  'This mission action did not start: on the turn of a person this agent is shared with, a mission can only be in ' +
+  'their own chat, and the chat named is not theirs.'
+
+/**
+ * Whether an EXPLICIT chat may be used for a mission tool: null when it may,
+ * else the refusal. Only a share recipient's turn is limited, to its own chat;
+ * the owner's turn, and a call with no private turn, name any chat they reach.
+ */
+export function explicitMissionChatRefusal(input: {
+  privateTurn?: { actingUserId: string; chatId?: string | number | null } | null
+  ownerUserId: string
+  chatId: string
+}): string | null {
+  const actor = input.privateTurn
+  if (!actor || actor.actingUserId === input.ownerUserId) return null
+  return String(input.chatId).trim() === String(actor.chatId ?? '').trim() ? null : RECIPIENT_MISSION_OTHER_CHAT_REFUSAL
+}
+
+/**
  * ON A SHARE RECIPIENT'S TURN (shared agents Phase 0, item 0.4; MATRIX M4.3,
  * M4.5) the answer is that turn's own chat and nothing else. The skip rules
  * below are the owner's: they skipped the recipient's DM (its last inbound is

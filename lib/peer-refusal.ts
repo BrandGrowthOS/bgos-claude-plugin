@@ -254,3 +254,28 @@ export function pickPermissionChat(
   if (owners !== undefined) return owners
   return monitored.find((chatId) => open(chatId) && !ownership.isOthers(chatId))
 }
+
+/**
+ * The backend's own words when a Claude Code permission card is posted into a
+ * share recipient's chat (BGOS backend/src/services/permission-card-placement.ts
+ * PERMISSION_CARD_OWNER_CHAT_ONLY, shared agents Phase 0, item 0.8), byte for
+ * byte. It is a 403 from POST /messages, with no `code`.
+ */
+export const PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE =
+  "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into the chat of a person it is shared with."
+
+/**
+ * Is this thrown HTTP failure that refusal: a 403 whose WHOLE body (`body`,
+ * never the error's 200 character excerpt) parses to that `message`, whole?
+ * Read as narrowly as the peer refusals above: every other 403 stays a deny,
+ * so an unrelated refusal never moves a card or drops a chat for good.
+ */
+export function isPermissionCardOwnerChatOnly(err: unknown): boolean {
+  const failure = err as { status?: unknown; body?: unknown } | null
+  if (failure === null || typeof failure !== 'object' || failure.status !== 403 || typeof failure.body !== 'string') return false
+  try {
+    return (JSON.parse(failure.body) as { message?: unknown } | null)?.message === PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE
+  } catch {
+    return false
+  }
+}
