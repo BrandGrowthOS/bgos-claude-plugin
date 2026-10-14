@@ -1159,11 +1159,15 @@ function bgosCall<T>(
 
 async function bgosGet(
   path: string,
-  opts?: { cacheKey?: string; callerAssistantId?: string },
+  opts?: { cacheKey?: string; callerAssistantId?: string; headers?: Record<string, string> },
 ): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   const cacheKey = opts?.cacheKey ?? path
-  const prevEtag = bgosEtagCache.ifNoneMatch(cacheKey)
+  // A private turn's headers name a share recipient (shared agents Phase 0,
+  // item 0.4). The ETag cache is keyed by the path alone, so a read made for
+  // one person never rides it: no validator is sent and none is kept.
+  const personal = opts?.headers != null && Object.keys(opts.headers).length > 0
+  const prevEtag = personal ? null : bgosEtagCache.ifNoneMatch(cacheKey)
   return bgosCall(
     {
       url,
@@ -1173,6 +1177,7 @@ async function bgosGet(
           ...(opts?.callerAssistantId
             ? { 'X-Caller-Assistant-Id': opts.callerAssistantId }
             : {}),
+          ...(personal ? opts!.headers : {}),
           ...(prevEtag ? { 'If-None-Match': prevEtag } : {}),
         },
       },
@@ -1185,7 +1190,7 @@ async function bgosGet(
         const text = await response.text().catch(() => '')
         throw new Error(`GET ${response.status}: ${text.slice(0, 200)}`)
       }
-      bgosEtagCache.record(cacheKey, response.headers.get('etag'))
+      if (!personal) bgosEtagCache.record(cacheKey, response.headers.get('etag'))
       return response.json()
     },
   )
@@ -1438,14 +1443,17 @@ async function bgosPost(
   )
 }
 
-async function bgosPatch(path: string, body: Record<string, unknown>): Promise<unknown> {
+// `privateHeaders` (here, on bgosPut and on bgosDelete) is a private turn's
+// headers, empty on the owner's own turn, so every call that passes none, or
+// the owner's, sends exactly what it sent before.
+async function bgosPatch(path: string, body: Record<string, unknown>, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
       url,
       init: {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH), ...privateHeaders },
         body: JSON.stringify(body),
       },
       timeoutMs: HTTP_TIMEOUT_MS,
@@ -1461,12 +1469,12 @@ async function bgosPatch(path: string, body: Record<string, unknown>): Promise<u
   )
 }
 
-async function bgosDelete(path: string): Promise<unknown> {
+async function bgosDelete(path: string, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
       url,
-      init: { method: 'DELETE', headers: { ...authHeaders(AUTH) } },
+      init: { method: 'DELETE', headers: { ...authHeaders(AUTH), ...privateHeaders } },
       timeoutMs: HTTP_TIMEOUT_MS,
       label: `DELETE ${path}`,
     },
@@ -2287,14 +2295,14 @@ async function confirmCompaction(
  * 204 is a success, and turning that into a thrown error made a landed write
  * look like a failed one.
  */
-async function bgosPut(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function bgosPut(path: string, body: Record<string, unknown>, privateHeaders: Record<string, string> = {}): Promise<unknown> {
   const url = `${API_BASE}/${path.replace(/^\//, '')}`
   return bgosCall(
     {
       url,
       init: {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH), ...privateHeaders },
         body: JSON.stringify(body),
       },
       timeoutMs: HTTP_TIMEOUT_MS,
@@ -5374,7 +5382,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   // The same bgos tools as PRIVATE_TOOL_MATCHER (lib/private-turn.mjs), the helper guard's list.
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6778,7 +6786,13 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       // A mission belongs to ONE CHAT (0.41.0). Omitting the chat means this
       // agent's main chat, which is what a single-chat agent has always meant,
       // so nothing changes for one.
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      //
+      // Every mission tool is a private tool (shared agents Phase 0, item
+      // 0.4): `privateCall` is the verified turn. On a share recipient's turn
+      // an omitted chat is their own chat and every request names them, so
+      // the backend answers for them; on the owner's own turn the headers are
+      // empty and each request is what it was.
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
       const built = buildMissionCreateBody({
         title: rawArgs.title,
@@ -6802,7 +6816,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
       try {
         const result = (await bgosPost(builtPath.path, {
           ...built.body,
-        })) as { mission?: MissionSnapshot }
+        }, { headers: privateCall!.headers })) as { mission?: MissionSnapshot }
         if (!result?.mission) {
           return {
             content: [{ type: 'text', text: 'Mission create returned no mission payload.' }],
@@ -6854,11 +6868,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
 
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId, privateCall!.headers)
         if (missionId == null) {
           return {
             content: [
@@ -6886,7 +6900,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         noteMissionPendingSelfWrite(missionId)
         const result = (await bgosPatch(builtPath.path, {
           ...built.body,
-        })) as { mission?: MissionSnapshot }
+        }, privateCall!.headers)) as { mission?: MissionSnapshot }
         if (!result?.mission) {
           return {
             content: [{ type: 'text', text: 'Mission tick returned no mission payload.' }],
@@ -6928,11 +6942,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
 
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId, privateCall!.headers)
         if (missionId == null) {
           return {
             content: [
@@ -6958,7 +6972,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         noteMissionPendingSelfWrite(missionId)
         const result = (await bgosPut(builtPath.path, {
           ...built.body,
-        })) as { mission?: MissionSnapshot }
+        }, privateCall!.headers)) as { mission?: MissionSnapshot }
         if (!result?.mission) {
           return {
             content: [{ type: 'text', text: 'Set goals returned no mission payload.' }],
@@ -6995,11 +7009,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
 
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId, privateCall!.headers)
         if (missionId == null) {
           return {
             content: [
@@ -7025,7 +7039,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         noteMissionPendingSelfWrite(missionId)
         const result = (await bgosPost(builtPath.path, {
           ...built.body,
-        })) as { mission?: MissionSnapshot }
+        }, { headers: privateCall!.headers })) as { mission?: MissionSnapshot }
         if (!result?.mission) {
           return {
             content: [{ type: 'text', text: 'Add goals returned no mission payload.' }],
@@ -7056,11 +7070,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     }
 
     case 'cancel_mission_goal': {
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
 
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId, privateCall!.headers)
         if (missionId == null) {
           return {
             content: [
@@ -7083,7 +7097,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
           }
         }
         noteMissionPendingSelfWrite(missionId)
-        const result = (await bgosDelete(builtPath.path)) as {
+        const result = (await bgosDelete(builtPath.path, privateCall!.headers)) as {
           mission?: MissionSnapshot
         }
         if (!result?.mission) {
@@ -7122,11 +7136,11 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         }
       }
 
-      const chat = resolveMissionToolChat(rawArgs.chat_id)
+      const chat = resolveMissionToolChat(rawArgs.chat_id, privateCall!)
       if (!chat.ok) return chat.error
 
       try {
-        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId)
+        const missionId = await resolveMissionId(rawArgs.mission_id, chat.chatId, privateCall!.headers)
         if (missionId == null) {
           return {
             content: [{ type: 'text', text: 'No active mission to complete in this chat.' }],
@@ -7147,7 +7161,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // the response home, and an unstamped one reads as the owner's own
         // Mark done.
         noteMissionPendingSelfWrite(missionId)
-        const result = (await bgosPatch(builtPath.path, { ...built.body })) as {
+        const result = (await bgosPatch(builtPath.path, { ...built.body }, privateCall!.headers)) as {
           mission?: MissionSnapshot
         }
         if (!result?.mission) {
@@ -9436,8 +9450,15 @@ function rememberSessionHandle(
  * main chat: the same thing a single-chat agent gets, and what the backend
  * resolves an absent chat to. An explicit chat_id is still passed on, and the
  * backend answers for it.
+ *
+ * `turn` is the verified private turn the call was admitted under (shared
+ * agents Phase 0, item 0.4). On a share recipient's turn the implicit chat is
+ * that turn's own chat and never falls back to the owner's; the rule and its
+ * refusal live in pickImplicitMissionChat. On the owner's own turn nothing
+ * above changes. The goal lane, which runs on no tool call, passes null and
+ * keeps the owner's rules.
  */
-function resolveMissionToolChat(rawChatId: unknown):
+function resolveMissionToolChat(rawChatId: unknown, turn: { actingUserId: string; chatId: string } | null):
   | { ok: true; chatId: string | null }
   | { ok: false; error: { content: Array<{ type: 'text'; text: string }>; isError: true } } {
   if (rawChatId != null && rawChatId !== '') {
@@ -9446,15 +9467,20 @@ function resolveMissionToolChat(rawChatId: unknown):
     return { ok: true, chatId: resolved.chatId }
   }
   const record = turnChat.current(Date.now())
-  return {
-    ok: true,
-    chatId: pickImplicitMissionChat({
-      turnChatId: record?.chatId ?? null,
-      monitoredChatIds,
-      ownerUserId: USER_ID,
-      isRoom: (chatId) => meetingIdByChatId.has(chatId),
-      lastInboundUserId: (chatId) => lastInboundUserByChat.get(chatId) ?? null,
-    }),
+  try {
+    return {
+      ok: true,
+      chatId: pickImplicitMissionChat({
+        turnChatId: record?.chatId ?? null,
+        monitoredChatIds,
+        ownerUserId: USER_ID,
+        isRoom: (chatId) => meetingIdByChatId.has(chatId),
+        lastInboundUserId: (chatId) => lastInboundUserByChat.get(chatId) ?? null,
+        privateTurn: turn ? { actingUserId: turn.actingUserId, chatId: turn.chatId } : null,
+      }),
+    }
+  } catch (err) {
+    return { ok: false, error: { content: [{ type: 'text', text: String((err as Error).message) }], isError: true } }
   }
 }
 
@@ -9468,10 +9494,16 @@ function resolveMissionToolChat(rawChatId: unknown):
  * works chat B resolves chat A's open mission and ticks the wrong card. With
  * no chat named the path is byte identical to the pre-0.41.0 one, so a
  * single-chat agent is unchanged.
+ *
+ * `privateHeaders` are the private turn's (shared agents Phase 0, item 0.4):
+ * empty on the owner's own turn, which keeps the cached read exactly as it
+ * was; on a share recipient's turn the read names them and never rides the
+ * shared ETag cache, whose key is the path alone.
  */
 async function resolveMissionId(
   rawMissionId: unknown,
   chatId: string | null,
+  privateHeaders: Record<string, string>,
 ): Promise<number | null> {
   if (
     typeof rawMissionId === 'number' &&
@@ -9482,7 +9514,9 @@ async function resolveMissionId(
   }
   const builtPath = buildMissionActivePath(ASSISTANT_ID, chatId)
   if (!builtPath.ok) return null
-  const result = (await bgosGetCachedOn304(builtPath.path)) as {
+  const result = (Object.keys(privateHeaders).length === 0
+    ? await bgosGetCachedOn304(builtPath.path)
+    : await bgosGet(builtPath.path, { headers: privateHeaders })) as {
     mission?: MissionSnapshot | null
   }
   return result?.mission?.id ?? null
@@ -10948,7 +10982,7 @@ async function attachGoalToMission(condition: string): Promise<void> {
 }
 
 async function resolveGoalMission(condition: string): Promise<number | null> {
-  const chat = resolveMissionToolChat(undefined)
+  const chat = resolveMissionToolChat(undefined, null)
   const chatId = chat.ok ? chat.chatId : null
 
   try {

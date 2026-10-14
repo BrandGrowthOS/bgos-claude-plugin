@@ -628,10 +628,43 @@ export interface ImplicitMissionChatInput {
   isRoom: (chatId: string) => boolean
   /** Who sent the last inbound seen there, or null/undefined for none seen. */
   lastInboundUserId: (chatId: string) => string | null | undefined
+  /**
+   * The verified private turn this call runs in (lib/private-turn.mjs
+   * requirePrivateTurn): the person it acts for and the chat their delivery
+   * came from. Absent, or the owner, leaves every rule above as it was.
+   */
+  privateTurn?: { actingUserId: string; chatId?: string | number | null } | null
 }
 
+/**
+ * The refusal for a share recipient's turn that names no chat of theirs. Null
+ * would MEAN the owner's main chat, so there is nothing safe to answer with.
+ */
+export const RECIPIENT_MISSION_CHAT_REFUSAL =
+  'This mission action did not start: the turn of the person this agent is shared with names no chat of ' +
+  "theirs, and a mission is never written in the owner's chat for them. Ask them to send the request again " +
+  'in their own chat.'
+
+/**
+ * ON A SHARE RECIPIENT'S TURN (shared agents Phase 0, item 0.4; MATRIX M4.3,
+ * M4.5) the answer is that turn's own chat and nothing else. The skip rules
+ * below are the owner's: they skipped the recipient's DM (its last inbound is
+ * not the owner) and fell back to an owner chat, or to null, which the backend
+ * reads as the owner's main chat, so the recipient's ask wrote the OWNER's
+ * mission. Their own chat is sent even when the backend will refuse it (a
+ * room, or a recipient the backend does not yet give missions of their own):
+ * a refusal the agent can say is the right answer, a mission in somebody
+ * else's chat never is. A recipient turn with no chat throws
+ * RECIPIENT_MISSION_CHAT_REFUSAL rather than answer null.
+ */
 export function pickImplicitMissionChat(input: ImplicitMissionChatInput): string | null {
   const { monitoredChatIds, ownerUserId, isRoom, lastInboundUserId } = input
+  const actor = input.privateTurn
+  if (actor && actor.actingUserId !== ownerUserId) {
+    const own = String(actor.chatId ?? '').trim()
+    if (own === '') throw new Error(RECIPIENT_MISSION_CHAT_REFUSAL)
+    return own
+  }
   const usable = (chatId: string): boolean => {
     if (isRoom(chatId)) return false
     const sender = lastInboundUserId(chatId)
