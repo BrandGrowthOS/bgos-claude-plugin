@@ -168,3 +168,18 @@ test('an email between a wake and the owner\'s message of one turn refuses, whic
     assert.deepEqual(f.send(), { refused: REFUSAL }, order)
   }
 })
+
+test('the owner\'s message adopted with a wake delivered after it in the same turn refuses, whichever line lands first', (t) => {
+  for (const order of ['wake line first', 'message line first'] as const) {
+    const f = fixture(t)
+    const message = f.deliver(ownerMessage(90412))
+    const fire = f.deliver(ownerWake(551, 90500))
+    // The CLI ran the wake's prompt first, so the marker it left names the message's.
+    f.hook(fire)
+    f.hook(message)
+    if (order === 'wake line first') { f.begin(fire); f.begin(message) } else { f.begin(message); f.begin(fire) }
+    assert.equal(requirePrivateTurn(f.tracker, f.markerPaths, OWNER).actingUserId, OWNER, order)
+    // #228: a wake that arrived after the turn's own delivery is never a reason, and its topic must not ride on it.
+    assert.deepEqual(f.send(), { refused: REFUSAL }, order)
+  }
+})
