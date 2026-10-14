@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const value = name => { const i = process.argv.indexOf(name); if (i < 0 || !process.argv[i + 1]) throw new Error(`Required ${name}`); return process.argv[i + 1] }
+const source = resolve(value('--source')), ref = value('--ref'), write = process.argv.includes('--write')
+const git = args => { const result = spawnSync('git', ['-C', source, ...args], { maxBuffer: 32 * 1024 * 1024, windowsHide: true }); if (result.status !== 0) throw new Error('Committed BGOS source is unavailable'); return result.stdout }
+const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).toString().trim()
+if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid source commit')
+const destination = join(root, 'lib/browser-profile-core'), files = {}
+for (const name of ['crypto.js', 'storage.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js']) {
+  const sourcePath = `frontend/electron-app/agent-browser/profile-sync/${name}`, bytes = git(['show', `${commit}:${sourcePath}`])
+  if (bytes.includes(13)) throw new Error(`${name} must be LF in the committed source`)
+  files[name] = { source: `BGOS: ${sourcePath}`, sha256: createHash('sha256').update(bytes).digest('hex') }
+  if (write) { mkdirSync(destination, { recursive: true }); writeFileSync(join(destination, name), bytes) }
+  else if (!readFileSync(join(destination, name)).equals(bytes)) throw new Error(`${name} differs from committed source`)
+}
+const manifest = { version: 1, sourceCommit: commit, why: 'Byte-identical encrypted checkpoint, lossless storage, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.', files }
+if (write) {
+  writeFileSync(join(destination, 'package.json'), '{"private":true,"type":"commonjs"}\n')
+  writeFileSync(join(destination, 'vendor.json'), JSON.stringify(manifest, null, 2) + '\n')
+} else if (JSON.stringify(JSON.parse(readFileSync(join(destination, 'vendor.json'), 'utf8'))) !== JSON.stringify(manifest)) throw new Error('Vendor manifest differs from committed source')
+console.log(JSON.stringify({ mode: write ? 'copied-committed-source' : 'verified', ...manifest }))

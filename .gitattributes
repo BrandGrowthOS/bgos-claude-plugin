@@ -36,3 +36,5 @@ lib/session-controls-contract.ts text eol=lf
 # in test/session-status-contract.pin.test.ts, so it must not pick up CRLF on a
 # Windows checkout either.
 lib/session-status-contract.ts text eol=lf
+lib/browser-profile-core/*.js text eol=lf
+lib/browser-profile-core/*.json text eol=lf

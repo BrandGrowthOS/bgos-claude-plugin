@@ -1,0 +1,265 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import { ProfileTargetLedger, restoreProfileEndpoint, restoreProfileEnrollment, BrowserProfileRuntime, profileCrypto } from '../lib/browser-profile-runtime.mjs'
+import { profileLaunchArguments } from '../lib/browser-profile-launch.mjs'
+import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+
+const tick = () => new Promise(resolve => setImmediate(resolve))
+class Protocol extends EventEmitter {
+  calls: any[] = []; targets = new Map<string, any>(); noPause = false; refuseNetwork = false
+  async send(method: string, params: any = {}): Promise<any> {
+    this.calls.push({ method, params })
+    if (method === 'Target.getTargets') return { targetInfos: [...this.targets.values()] }
+    if (method === 'Target.attachToTarget') return { sessionId: 'legacy-' + params.targetId }
+    if (method === 'Target.detachFromTarget') { this.emit('Target.detachedFromTarget', { sessionId: params.sessionId }); return {} }
+    if (method === 'Target.sendMessageToTarget') {
+      const command = JSON.parse(params.message)
+      if (command.method === 'Target.sendMessageToTarget') {
+        const child = JSON.parse(command.params.message)
+        const emit = (message: any) => this.event(params.sessionId, 'Target.receivedMessageFromTarget', { sessionId: command.params.sessionId, message: JSON.stringify(message) })
+        if (child.method === 'Debugger.pause' && !this.noPause) emit({ method: 'Debugger.paused', params: {} })
+        if (child.method === 'Debugger.resume') emit({ method: 'Debugger.resumed', params: {} })
+        setImmediate(() => emit({ id: child.id, result: {} }))
+      }
+      if (command.method === 'Debugger.pause' && !this.noPause) this.event(params.sessionId, 'Debugger.paused', {})
+      if (command.method === 'Debugger.resume') this.event(params.sessionId, 'Debugger.resumed', {})
+      setImmediate(() => this.emit('Target.receivedMessageFromTarget', { sessionId: params.sessionId, message: JSON.stringify({ id: command.id, ...(this.refuseNetwork && command.method === 'Network.enable' ? { error: { message: 'Unsupported' } } : { result: {} }) }) }))
+    }
+    return {}
+  }
+  add(id: string, type = 'page', context = 'context-a', url = 'https://fixture.test/') {
+    const targetInfo = { targetId: id, type, browserContextId: context, url }; this.targets.set(id, targetInfo)
+    this.emit('Target.targetCreated', { targetInfo }); this.emit('Target.attachedToTarget', { sessionId: 'flat-' + id, targetInfo, waitingForDebugger: true }); return targetInfo
+  }
+  event(sessionId: string, method: string, params: any) { this.emit('Target.receivedMessageFromTarget', { sessionId, message: JSON.stringify({ method, params }) }) }
+  child(id: string, method: string, params: any = {}) { this.event('legacy-' + id, method, params) }
+  childCommands(method: string) { return this.calls.filter(value => value.method === 'Target.sendMessageToTarget').map(value => JSON.parse(value.params.message)).filter(value => value.method === method) }
+}
+async function fixture(t: any, options: any = {}) {
+  const root = new Protocol(), ledger = new ProfileTargetLedger(root, { timeoutMs: 30, ...options }); t.after(() => ledger.dispose()); await ledger.start()
+  return { root, ledger, ready: async (id: string, type = 'page', context = 'context-a', url?: string) => { root.add(id, type, context, url); await ledger.readyTarget(id) } }
+}
+test('target discovery pauses births and installs raw Network tracking before any first resume', async t => {
+  const f = await fixture(t); await f.ready('page')
+  assert.deepEqual(f.root.calls.find(value => value.method === 'Target.setAutoAttach')?.params, { autoAttach: true, waitForDebuggerOnStart: true, flatten: true })
+  const methods = f.root.calls.filter(value => value.method === 'Target.sendMessageToTarget').map(value => JSON.parse(value.params.message).method)
+  assert.ok(methods.indexOf('Network.enable') < methods.indexOf('Runtime.runIfWaitingForDebugger'))
+  assert.equal((await f.ledger.inventory('context-a')).length, 1)
+})
+test('nested dedicated workers inherit the exact parent context and route raw request ownership through the parent', async t => {
+  const f = await fixture(t); await f.ready('page')
+  f.root.event('legacy-page', 'Target.attachedToTarget', { sessionId: 'nested-worker', targetInfo: { targetId: 'worker', type: 'worker', url: 'https://fixture.test/worker.js' }, waitingForDebugger: true })
+  await f.ledger.readyTarget('worker'); const worker = f.ledger.targets.get('nested-worker'); assert.equal(worker?.browserContextId, 'context-a'); assert.equal(worker?.ready, true)
+  f.root.event('legacy-page', 'Target.receivedMessageFromTarget', { sessionId: 'nested-worker', message: JSON.stringify({ method: 'Network.requestWillBeSent', params: { requestId: 'worker-token', request: { method: 'POST', url: 'https://fixture.test/token' } } }) })
+  assert.throws(() => f.ledger.assertIdle('context-a'), { reason: 'profile_requests_in_flight' }); assert.doesNotThrow(() => f.ledger.assertIdle('context-b'))
+  f.root.event('legacy-page', 'Target.detachedFromTarget', { sessionId: 'nested-worker' }); await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_network_outcome_unknown' })
+})
+test('shared-worker HTTP stays in the raw ledger until its final response completes', async t => {
+  const f = await fixture(t); await f.ready('shared', 'shared_worker')
+  f.root.child('shared', 'Network.requestWillBeSent', { requestId: 'refresh', request: { method: 'POST', url: 'https://fixture.test/token' } })
+  assert.throws(() => f.ledger.assertIdle('context-a'), { reason: 'profile_requests_in_flight' })
+  await assert.rejects(f.ledger.freeze('context-a'), { reason: 'profile_requests_in_flight' }); assert.equal(f.root.childCommands('Debugger.pause').length, 0)
+  f.root.child('shared', 'Network.loadingFinished', { requestId: 'refresh' }); assert.doesNotThrow(() => f.ledger.assertIdle('context-a'))
+  await f.ledger.freeze('context-a'); assert.equal(f.ledger.frozen, true); await f.ledger.resume(); assert.equal(f.ledger.frozen, false)
+})
+test('redirect chains retain one active identity and context scopes do not lend each other idle state', async t => {
+  const f = await fixture(t); await f.ready('page'); await f.ready('other', 'page', 'context-b')
+  f.root.child('page', 'Network.requestWillBeSent', { requestId: 'chain', request: { method: 'GET', url: 'https://fixture.test/first' } })
+  f.root.child('page', 'Network.requestWillBeSent', { requestId: 'chain', redirectResponse: {}, request: { method: 'GET', url: 'https://fixture.test/second' } })
+  assert.equal(f.ledger.active.size, 1); assert.doesNotThrow(() => f.ledger.assertIdle('context-b')); assert.throws(() => f.ledger.assertIdle('context-a'))
+  f.root.child('page', 'Network.loadingFinished', { requestId: 'chain' }); await f.ledger.inventory('context-a')
+})
+test('detached in-flight owners remain outcome unknown rather than becoming a synthetic zero', async t => {
+  const f = await fixture(t); await f.ready('page')
+  f.root.child('page', 'Network.requestWillBeSent', { requestId: 'refresh', request: { method: 'POST', url: 'https://fixture.test/token' } })
+  f.root.targets.delete('page'); f.root.emit('Target.detachedFromTarget', { sessionId: 'legacy-page' })
+  await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_network_outcome_unknown' }); assert.equal(f.ledger.active.size, 1)
+})
+test('an unmatched finished or response event proves a missed request and refuses relocation', async t => {
+  for (const method of ['Network.loadingFinished', 'Network.responseReceived']) {
+    const f = await fixture(t); await f.ready('page'); f.root.child('page', method, { requestId: 'never-observed', type: 'Document' })
+    await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_network_untracked' })
+  }
+})
+test('untracked historical or unsupported targets cannot disappear just because they close', async t => {
+  const f = await fixture(t); f.root.emit('Target.targetCreated', { targetInfo: { targetId: 'closed', type: 'worker', browserContextId: 'context-a', url: 'https://fixture.test/worker' } })
+  await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_target_unqualified' })
+  const unknown = await fixture(t); await unknown.ready('unknown', 'unknown-native-type'); await assert.rejects(unknown.ledger.inventory('context-a'), { reason: 'profile_target_unqualified' })
+})
+test('unexpected native UI targets remain refused even at a known Chrome internal URL', async t => {
+  for (const url of ['chrome://omnibox-popup.top-chrome/omnibox_popup_aim.html', 'chrome://omnibox-popup.top-chrome/?secret=yes', 'chrome://omnibox-popup.top-chrome/unknown.html', 'chrome://unqualified/']) {
+    const f = await fixture(t); await f.ready('ui', 'browser_ui', 'context-a', url); await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_target_unqualified' })
+  }
+})
+test('one feature switch preserves every pinned PW default and adds only unused headless omnibox UI exclusions', () => {
+  const value = profileLaunchArguments(), original = value.ignoreDefaultArgs[0].split('=')[1].split(','), combined = value.args[0].split('=')[1].split(',')
+  assert.deepEqual(combined.slice(0, original.length), original); assert.deepEqual(combined.slice(original.length), ['WebUIOmniboxPopup', 'WebUIOmniboxAimPopup']); assert.equal(value.args.length, 1)
+  const require = createRequire(import.meta.url), bytes = readFileSync(require.resolve('playwright-core/lib/coreBundle'))
+  assert.throws(() => profileLaunchArguments({ version: 'unqualified', bundle: bytes }), { reason: 'profile_browser_version_unqualified' })
+  assert.throws(() => profileLaunchArguments({ version: '1.63.0', bundle: Buffer.concat([bytes, Buffer.from('drift')]) }), { reason: 'profile_browser_version_unqualified' })
+})
+test('persistent or direct transports leave an explicit historical relocation refusal', async t => {
+  for (const method of ['Network.webSocketCreated', 'Network.webTransportCreated', 'Network.directTCPSocketCreated', 'Network.directUDPSocketCreated', 'Network.responseReceived']) {
+    const f = await fixture(t); await f.ready('page')
+    if (method === 'Network.responseReceived') f.root.child('page', 'Network.requestWillBeSent', { requestId: 'events', request: { method: 'GET', url: 'https://fixture.test/events' } })
+    f.root.child('page', method, { requestId: 'events', type: 'EventSource' }); await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_persistent_transport_unsupported' })
+  }
+})
+test('requests during freeze invalidate the cutoff and explicit resume restores the existing target', async t => {
+  const f = await fixture(t); await f.ready('page'); const original = f.root.send.bind(f.root)
+  f.root.send = async (method, params = {}) => { const result = await original(method, params); if (method === 'Target.sendMessageToTarget' && JSON.parse(params.message).method === 'Debugger.pause') f.root.child('page', 'Network.requestWillBeSent', { requestId: 'raced', request: { method: 'GET', url: 'https://fixture.test/raced' } }); return result }
+  await assert.rejects(f.ledger.freeze('context-a'), { reason: 'profile_activity_during_freeze' }); await f.ledger.resume(); assert.equal(f.ledger.frozen, false)
+})
+test('new targets while frozen remain stopped until explicit resume', async t => {
+  const f = await fixture(t); await f.ready('page'); await f.ledger.freeze('context-a')
+  const before = f.root.childCommands('Runtime.runIfWaitingForDebugger').length; await f.ready('late', 'shared_worker')
+  assert.equal(f.root.childCommands('Runtime.runIfWaitingForDebugger').length, before); await f.ledger.resume(); assert.ok(f.root.childCommands('Runtime.runIfWaitingForDebugger').length > before)
+})
+test('failed Network installation and unproved pauses fail closed within the native deadline', async t => {
+  const unavailable = await fixture(t); unavailable.root.refuseNetwork = true; unavailable.root.add('page'); await assert.rejects(unavailable.ledger.readyTarget('page'), { reason: 'profile_target_tracking_unavailable' })
+  const pending = await fixture(t); await pending.ready('page'); pending.root.noPause = true; await assert.rejects(pending.ledger.freeze('context-a'), { reason: 'profile_target_pause_unproved' })
+})
+test('endpoint restore requires explicit background use and forwards exact immutable actor/profile binding', async () => {
+  const endpoint = profileCrypto.createEndpointIdentity('endpoint-a'), authority = { profileId: 'profile-a', actingUserId: 'recipient', assistantId: 7, endpointId: 'endpoint-a', bootId: 'boot-a', runtimeId: 'runtime-a', sessionId: 'session-a', writerEpoch: 1, revision: 0, contentKeyEpoch: 2, grantVersion: 3, keyFingerprint: profileCrypto.identityFingerprint(endpoint.identity) }
+  const calls: any[] = [], keyStore = { restore: async (value: any) => { calls.push(value); return endpoint } }, current = () => {}
+  await assert.rejects(restoreProfileEndpoint({ keyStore, record: {}, authority, pinnedIdentity: endpoint.identity, assertCurrent: current } as any), { reason: 'profile_key_background_grant_required' })
+  assert.equal(await restoreProfileEndpoint({ keyStore, record: {}, authority, pinnedIdentity: endpoint.identity, assertCurrent: current, backgroundUse: true } as any), endpoint)
+  assert.deepEqual(calls[0].binding, { profileId: 'profile-a', actingUserId: 'recipient', assistantId: 7, endpointId: 'endpoint-a', keyFingerprint: authority.keyFingerprint, grantVersion: 3, keyEpoch: 2, backgroundUse: true }); assert.equal(calls[0].assertCurrent, current)
+})
+function enrollmentFixture() {
+  const endpoint = profileCrypto.createEndpointIdentity(randomUUID()), pairing = { pairingId: 12, ownerUserId: 'owner' }, binding = { profileId: randomUUID(), actingUserId: 'recipient', assistantId: 7, endpointId: endpoint.identity.endpointId, keyFingerprint: profileCrypto.identityFingerprint(endpoint.identity), grantVersion: 2, keyEpoch: 1, backgroundUse: true }
+  const record: any = { version: 1, provider: 'libsecret-v1', recordId: randomUUID(), binding, keys: { version: 1, identityFingerprint: binding.keyFingerprint, ciphertext: 'synthetic-encrypted-record' } }, calls: any[] = []
+  const keyStore: any = { restore: async (options: any) => { calls.push(options); options.assertCurrent(); assert.deepEqual(options.binding, options.record.binding); return { ...endpoint, contentKeyEpoch: { epoch: 99, key: Buffer.alloc(32, 7) }, authority: { stale: true } } } }
+  const options: any = { keyStore, record, pairing, pinnedIdentity: endpoint.identity, authorizeEnrollment: async (request: any) => ({ ...request, assertCurrent() {} }) }
+  return { options, endpoint, pairing, record, calls, binding }
+}
+test('explicit enrollment-only recovery uses saved AEAD binding and returns exactly keys with no DEK or runtime authority', async () => {
+  const f = enrollmentFixture(), recovered = await restoreProfileEnrollment(f.options)
+  assert.deepEqual(Object.keys(recovered).sort(), ['encryptionPrivateKey', 'identity', 'signingPrivateKey']); assert.ok(Object.isFrozen(recovered)); assert.ok(Object.isFrozen(recovered.identity)); assert.equal(recovered.signingPrivateKey, f.endpoint.signingPrivateKey)
+  assert.deepEqual(f.calls[0].binding, f.binding); assert.equal(f.calls[0].binding.grantVersion, 2); assert.equal(f.calls[0].binding.keyEpoch, 1)
+  const require = createRequire(import.meta.url), { exactAuthority } = require('../lib/browser-profile-core/coordinator-client.js'); assert.throws(() => exactAuthority(recovered), { code: 'profile_runtime_authority_invalid' })
+})
+test('enrollment proof cannot substitute profile, actor, assistant, endpoint, public pin, owner or pairing before private-key restore', async () => {
+  const changes = [{ purpose: 'runtime' }, { profileId: randomUUID() }, { actingUserId: 'foreign-recipient' }, { assistantId: 8 }, { endpointId: randomUUID() }, { keyFingerprint: '0'.repeat(64) }, { pairingId: 13 }, { ownerUserId: 'foreign-owner' }, { pinnedIdentity: profileCrypto.createEndpointIdentity(randomUUID()).identity }, { grantVersion: 999 }]
+  for (const change of changes) { const f = enrollmentFixture(); f.options.authorizeEnrollment = async (request: any) => ({ ...request, ...change, assertCurrent() {} }); await assert.rejects(restoreProfileEnrollment(f.options), { reason: 'profile_enrollment_identity_refused' }); assert.equal(f.calls.length, 0) }
+  for (const current of [() => false, async () => true, async () => { throw new Error('private-async-proof') }, () => { throw new Error('private-proof-text') }]) { const f = enrollmentFixture(); f.options.authorizeEnrollment = async (request: any) => ({ ...request, assertCurrent: current }); await assert.rejects(restoreProfileEnrollment(f.options), { reason: 'profile_enrollment_identity_refused' }); assert.equal(f.calls.length, 0) }
+})
+test('enrollment recovery snapshots the entire saved record and pairing before authorization awaits', async () => {
+  const f = enrollmentFixture(), original = structuredClone(f.record); let release: any, proof: any
+  f.options.authorizeEnrollment = (request: any) => { proof = { ...request, assertCurrent() {} }; return new Promise(resolve => { release = resolve }) }
+  const task = restoreProfileEnrollment(f.options); await tick(); f.record.binding.actingUserId = 'foreign'; f.record.keys.ciphertext = 'substitute-record'; f.pairing.pairingId = 99; f.pairing.ownerUserId = 'foreign-owner'; release(proof)
+  assert.equal((await task).signingPrivateKey, f.endpoint.signingPrivateKey); assert.deepEqual(f.calls[0].record, original); assert.ok(Object.isFrozen(f.calls[0].record.binding)); assert.equal(proof.pairingId, 12)
+})
+test('changed enrollment proof after provider await and mismatched private keys never escape', async () => {
+  const f = enrollmentFixture(); let proof: any; f.options.authorizeEnrollment = async (request: any) => { proof = { ...request, assertCurrent() {} }; return proof }; f.options.keyStore.restore = async () => { proof.ownerUserId = 'changed-owner'; return f.endpoint }
+  await assert.rejects(restoreProfileEnrollment(f.options), { reason: 'profile_enrollment_identity_refused' })
+  const g = enrollmentFixture(); g.options.keyStore.restore = async () => ({ ...g.endpoint, encryptionPrivateKey: profileCrypto.createEndpointIdentity(randomUUID()).encryptionPrivateKey }); await assert.rejects(restoreProfileEnrollment(g.options), { reason: 'profile_enrollment_identity_refused' })
+})
+test('strict runtime restore never falls back to an old saved grant or key epoch', async () => {
+  const f = enrollmentFixture(), authority = { profileId: f.binding.profileId, actingUserId: f.binding.actingUserId, assistantId: 7, endpointId: f.binding.endpointId, bootId: 'boot', runtimeId: 'runtime', sessionId: 'session', writerEpoch: 9, revision: 5, contentKeyEpoch: 4, grantVersion: 6, keyFingerprint: f.binding.keyFingerprint }
+  f.options.keyStore.restore = async (value: any) => { assert.equal(value.binding.keyEpoch, 4); assert.equal(value.binding.grantVersion, 6); throw Object.assign(new Error('mismatched old record'), { code: 'profile_key_refused' }) }
+  await assert.rejects(restoreProfileEndpoint({ ...f.options, authority, backgroundUse: true, assertCurrent() {} }), { code: 'profile_key_refused' })
+})
+
+function runtimeFixture(overrides: any = {}) {
+  const source = profileCrypto.createEndpointIdentity('source'), destination = profileCrypto.createEndpointIdentity('destination'), key = profileCrypto.createContentKeyEpoch(1)
+  const authority = { profileId: 'profile', actingUserId: 'recipient', assistantId: 7, endpointId: 'source', bootId: 'boot', runtimeId: 'runtime', sessionId: 'session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: profileCrypto.identityFingerprint(source.identity) }
+  const targetAuthority = { ...authority, endpointId: 'destination', bootId: 'target-boot', runtimeId: 'target-runtime', sessionId: 'target-session', writerEpoch: 2, revision: 1, grantVersion: 2, keyFingerprint: profileCrypto.identityFingerprint(destination.identity) }
+  const context = { version: 1, schemaVersion: 1, profileId: authority.profileId, actingUserId: authority.actingUserId, assistantId: 7, transitionId: 'transition', revision: 1, previousManifestHash: null, keyEpoch: 1,
+    source: { endpointId: 'source', bootId: 'boot', runtimeId: 'runtime', sessionId: 'session', writerEpoch: 1 }, destination: { endpointId: 'destination', bootId: 'target-boot', runtimeId: 'target-runtime', sessionId: 'target-session', grantVersion: 2, keyFingerprint: targetAuthority.keyFingerprint } }
+  const calls: string[] = [], nativeContext: any = new EventEmitter(); nativeContext.pages = () => []; nativeContext.setOffline = async (value: boolean) => { calls.push('offline:' + value) }; nativeContext.newCDPSession = async () => ({ send: async () => ({ cookies: [] }) })
+  let connected = true
+  const browser = { close: async () => { calls.push('process-close'); connected = false }, isConnected: () => connected }
+  const ledger: any = { generation: 1, frozen: false, inventory: async () => [], assertIdle() {}, freeze: async () => { calls.push('freeze'); ledger.frozen = true; return ledger.generation }, resume: async () => { calls.push('resume'); ledger.frozen = false }, dispose: () => calls.push('dispose') }
+  const runtime: any = new BrowserProfileRuntime({ browser, context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
+    closeAndDrain: async () => { calls.push('drain'); return { admissionClosed: true, drained: true } }, checkpoint: async (value: any) => { calls.push('checkpoint'); return { durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) } },
+    authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('current') } }), ...overrides })
+  runtime.contextId = 'context-a'; runtime._exporter = async () => ({ evaluate: async () => true }); runtime.processIdentity = { pid: 7, started: 'fixture' }
+  return { runtime, source, destination, key, context, authority, targetAuthority, calls, nativeContext, ledger, finalize: () => runtime.finalize({ context, source, destinationIdentity: destination.identity, contentKeyEpoch: key }) }
+}
+test('activation binds every runtime field and a nonfresh revision requires a staged checkpoint', async () => {
+  for (const field of ['profileId', 'actingUserId', 'endpointId', 'bootId', 'runtimeId', 'sessionId', 'writerEpoch', 'revision', 'contentKeyEpoch', 'grantVersion', 'keyFingerprint']) {
+    const f = runtimeFixture(); f.runtime.authorizeActivation = async () => ({ authority: { ...f.authority, [field]: typeof (f.authority as any)[field] === 'number' ? (f.authority as any)[field] + 1 : field === 'keyFingerprint' ? '0'.repeat(64) : 'other' }, assertCurrent() {} })
+    await assert.rejects(f.runtime.activate({}), { reason: 'profile_runtime_activation_refused' }); assert.equal(f.runtime.network, 'blocked')
+  }
+  const f = runtimeFixture(); f.runtime.authority = Object.freeze(f.targetAuthority); await assert.rejects(f.runtime.activate({}), { reason: 'profile_runtime_checkpoint_required' })
+})
+test('revocation during an asynchronous activation cannot enable the destination', async () => {
+  const f = runtimeFixture(); let revoked = false
+  f.runtime.authorizeActivation = async () => ({ authority: f.authority, assertCurrent() { if (revoked) throw new Error('revoked') } })
+  f.nativeContext.setOffline = async () => { revoked = true }; await assert.rejects(f.runtime.activate({}), /revoked/); assert.equal(f.runtime.state, 'new'); assert.equal(f.runtime.network, 'blocked')
+})
+test('finalize proves drain, terminal exit and encrypted durability in order before yielding a receipt', async () => {
+  const f = runtimeFixture(); await f.runtime.activate({}); const stopped = await f.finalize()
+  assert.equal(f.runtime.state, 'stopped'); assert.equal(stopped.receipt.stopped, true); assert.equal(stopped.receipt.manifestHash, profileCrypto.manifestHash(stopped.checkpoint.manifest))
+  for (const [before, after] of [['drain', 'freeze'], ['freeze', 'process-close'], ['process-close', 'exit-proof'], ['exit-proof', 'checkpoint']]) assert.ok(f.calls.indexOf(before) < f.calls.indexOf(after))
+  assert.equal(JSON.stringify(stopped).includes('hoai-native-profile-state-v1'), false); assert.ok(f.key.key.some((value: number) => value !== 0), 'caller key is not destroyed')
+})
+test('preflight HTTP refusal leaves the same source running without writing a checkpoint', async () => {
+  const f = runtimeFixture(); await f.runtime.activate({}); f.ledger.assertIdle = () => { throw Object.assign(new Error('busy'), { reason: 'profile_requests_in_flight' }) }
+  await assert.rejects(f.finalize(), { reason: 'profile_requests_in_flight' }); assert.equal(f.runtime.state, 'active'); assert.equal(f.runtime.browser.isConnected(), true); assert.equal(f.runtime.network, 'active'); assert.ok(f.calls.includes('resume')); assert.equal(f.calls.includes('checkpoint'), false)
+})
+test('revocation while the physical drain is pending never resumes JS or network on refusal', async () => {
+  const f = runtimeFixture(); let revoked = false, release: any
+  await f.runtime.activate({}); f.calls.length = 0; f.runtime.activeProof = () => { if (revoked) throw new Error('revoked') }
+  f.runtime.closeAndDrain = () => new Promise(resolve => { release = resolve }); const pending = f.finalize(); await tick(); revoked = true; release({ admissionClosed: true, drained: true })
+  await assert.rejects(pending, /revoked/); assert.equal(f.calls.includes('resume'), false); assert.equal(f.calls.includes('offline:false'), false); assert.equal(f.calls.includes('checkpoint'), false); assert.equal(f.runtime.browser.isConnected(), false); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.runtime.state, 'disposed')
+})
+test('unproved admission, live process and failed durability each prevent a usable stopped receipt', async () => {
+  for (const [method, value, reason] of [['closeAndDrain', async () => ({ admissionClosed: true, drained: false }), 'profile_runtime_drain_unproved'], ['assertProcessExited', async () => false, 'profile_runtime_process_alive'], ['checkpoint', async () => ({ durable: false }), 'profile_checkpoint_not_durable']] as const) {
+    const f = runtimeFixture({ [method]: value }); await f.runtime.activate({}); await assert.rejects(f.finalize(), { reason }); if (method !== 'checkpoint') assert.equal(f.calls.includes('checkpoint'), false)
+  }
+})
+test('fresh source proof revocation after physical stop prevents signing or durable publication', async () => {
+  const f = runtimeFixture(); let revoked = false; await f.runtime.activate({}); f.runtime.activeProof = () => { if (revoked) throw new Error('revoked') }; f.runtime.assertProcessExited = async () => { revoked = true; return true }
+  await assert.rejects(f.finalize(), /revoked/); assert.equal(f.calls.includes('checkpoint'), false); assert.equal(f.runtime.browser.isConnected(), false)
+})
+test('mutable caller endpoint and key objects cannot retarget an in-progress finalized checkpoint', async () => {
+  const f = runtimeFixture(); const original = f.source.signingPrivateKey, keyBytes = Buffer.from(f.key.key); await f.runtime.activate({}); f.runtime.closeAndDrain = async () => { f.source.signingPrivateKey = profileCrypto.createEndpointIdentity('attacker').signingPrivateKey; f.key.key.fill(0); return { admissionClosed: true, drained: true } }
+  const stopped = await f.finalize(); assert.equal(profileCrypto.verifyManifest({ manifest: stopped.checkpoint.manifest, manifestSignature: stopped.checkpoint.manifestSignature, sourceIdentity: f.source.identity, expectedContext: f.context }), true)
+  const opened = profileCrypto.openCheckpoint({ checkpoint: stopped.checkpoint, expectedContext: f.context, sourceIdentity: f.source.identity, destination: f.destination }); assert.deepEqual(opened.contentKeyEpoch.key, keyBytes); opened.plaintext.fill(0); opened.contentKeyEpoch.key.fill(0); f.source.signingPrivateKey = original
+})
+test('source identity mismatch and cross-profile context are rejected before closing admission', async () => {
+  const f = runtimeFixture(); await f.runtime.activate({}); await assert.rejects(f.runtime.finalize({ context: { ...f.context, actingUserId: 'sharer' }, source: f.source, destinationIdentity: f.destination.identity, contentKeyEpoch: f.key }), { reason: 'profile_runtime_context_mismatch' })
+  await assert.rejects(f.runtime.finalize({ context: f.context, source: profileCrypto.createEndpointIdentity('source'), destinationIdentity: f.destination.identity, contentKeyEpoch: f.key }), { reason: 'profile_runtime_identity_mismatch' }); assert.equal(f.calls.includes('drain'), false)
+})
+test('stage stays inactive, requires exact cookie readback and no surviving target before its receipt', async () => {
+  const source = runtimeFixture(); await source.runtime.activate({}); const stopped = await source.finalize()
+  for (const survivingTarget of [false, true]) {
+    const target = runtimeFixture(); target.runtime.authority = Object.freeze(source.targetAuthority); target.runtime.root.send = async () => ({ targetInfos: survivingTarget ? [{ browserContextId: 'context-a' }] : [] })
+    const stage = () => target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination })
+    if (survivingTarget) { await assert.rejects(stage(), { reason: 'profile_runtime_workers_running' }); assert.equal(target.runtime.state, 'disposed') }
+    else { const staged = await stage(); assert.equal(target.runtime.state, 'staged'); assert.equal(target.runtime.network, 'blocked'); assert.equal(staged.receipt.stagedInactive, true); assert.equal(staged.receipt.manifestHash, stopped.receipt.manifestHash) }
+  }
+})
+test('destination cookie import mismatch purges instead of issuing an inactive-stage receipt', async () => {
+  const source = runtimeFixture(), cookie = { name: 'session', value: 'synthetic', domain: 'fixture.test', path: '/', expires: -1, httpOnly: true, secure: true, session: true, priority: 'Medium', sourceScheme: 'Secure', sourcePort: 443 }
+  source.nativeContext.newCDPSession = async () => ({ send: async () => ({ cookies: [cookie] }) }); await source.runtime.activate({}); const stopped = await source.finalize()
+  const target = runtimeFixture(); target.runtime.authority = Object.freeze(source.targetAuthority); target.nativeContext.newCDPSession = async () => ({ send: async () => ({ cookies: [] }) })
+  await assert.rejects(target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }), { reason: 'profile_runtime_cookie_import_mismatch' }); assert.equal(target.runtime.state, 'disposed'); assert.equal(target.runtime.stagedReceipt, undefined)
+})
+test('isolated document safety returns booleans only and refuses pending loads and unfinished credentials', async () => {
+  for (const [value, reason] of [[{ ready: false, credentials: false }, 'profile_document_loading'], [{ ready: true, credentials: true }, 'profile_authentication_in_progress'], [{ ready: true, credentials: false }, null]] as const) {
+    const f = runtimeFixture(), calls: any[] = [], page = {}; f.nativeContext.pages = () => [page]; f.nativeContext.newCDPSession = async () => ({ detach: async () => calls.push('detach'), send: async (method: string, params: any) => { calls.push({ method, params }); return method === 'Page.getFrameTree' ? { frameTree: { frame: { id: 'main' } } } : method === 'Page.createIsolatedWorld' ? { executionContextId: 77 } : { result: { value } } } })
+    if (reason) await assert.rejects(f.runtime._assertDocumentSafety(), { reason }); else await f.runtime._assertDocumentSafety()
+    assert.equal(calls.find(value => value.method === 'Runtime.evaluate').params.contextId, 77); assert.equal(calls.at(-1), 'detach'); assert.equal(calls.find(value => value.method === 'Page.createIsolatedWorld').params.grantUniveralAccess, false)
+  }
+})
+test('dispose zeroes the owned key even when browser shutdown fails', async () => {
+  const f = runtimeFixture(), owned = Buffer.alloc(32, 7); f.runtime.contentKeyEpoch = { epoch: 1, key: owned }; f.runtime.browser.close = async () => { throw new Error('shutdown failed') }
+  await assert.rejects(f.runtime.dispose(), /shutdown failed/); assert.ok(owned.every(value => value === 0)); assert.equal(f.runtime.state, 'disposed'); assert.equal(f.runtime.contentKeyEpoch, null)
+})
+test('dispose never reports successful revoked cleanup while the owned browser process remains alive', async () => {
+  for (const connected of [true, false]) {
+    const f = runtimeFixture(), owned = Buffer.alloc(32, 9); f.runtime.contentKeyEpoch = { epoch: 1, key: owned }; f.runtime.browser.close = async () => {}; f.runtime.browser.isConnected = () => connected; f.runtime.assertProcessExited = async () => false
+    await assert.rejects(f.runtime.dispose(), { reason: 'profile_runtime_process_alive' }); assert.equal(f.runtime.state, 'disposed'); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.runtime.contentKeyEpoch, null); assert.ok(owned.every(value => value === 0))
+  }
+})
+test('oversized native packets and exhausted request inventories fail closed with bounded memory', async t => {
+  const f = await fixture(t); await f.ready('page'); f.root.emit('Target.receivedMessageFromTarget', { sessionId: 'legacy-page', message: 'x'.repeat(1024 * 1024 + 1) }); await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_target_message_invalid' })
+  const requests = await fixture(t); await requests.ready('page'); for (let index = 0; index <= 16384; index++) requests.root.child('page', 'Network.requestWillBeSent', { requestId: String(index), request: { method: 'GET', url: 'https://fixture.test/' } })
+  assert.equal(requests.ledger.active.size, 16384); await assert.rejects(requests.ledger.inventory('context-a'), { reason: 'profile_inventory_limit' })
+})
