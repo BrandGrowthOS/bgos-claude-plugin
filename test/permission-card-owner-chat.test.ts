@@ -136,7 +136,7 @@ class FakeHttpError extends Error {
   }
 }
 
-function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | [number, string]>; verdictThrows?: number; lastInbound?: Record<string, string> }) {
+function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | [number, string]>; verdictThrows?: [number, string]; lastInbound?: Record<string, string> }) {
   const posts: string[] = []
   const waits: Array<{ chatId: string; requesterUserId: string }> = []
   const verdicts: string[] = []
@@ -166,7 +166,7 @@ function relayRig(opts: { monitored: string[]; refuse?: Record<string, number | 
     },
     waitForVerdict: async (_requestId: string, chatId: string, _card: number | null, _ms: number, requesterUserId: string) => {
       waits.push({ chatId, requesterUserId })
-      if (opts.verdictThrows) throw new FakeHttpError(opts.verdictThrows)
+      if (opts.verdictThrows) throw new FakeHttpError(opts.verdictThrows[0], opts.verdictThrows[1])
       return 'once'
     },
   }
@@ -228,7 +228,8 @@ test('any other failure is a deny as before, and a 403 after the card was posted
   await failing.relay('req-6')
   assert.deepEqual(failing.posts, ['20'])
   assert.deepEqual(failing.verdicts, ['deny'])
-  const late = relayRig({ monitored: ['20', '10'], verdictThrows: 403 })
+  // Even the backend's own refusal sentence, once the card is up, is not a chat refusing the card.
+  const late = relayRig({ monitored: ['20', '10'], verdictThrows: [403, OWNER_CHAT_ONLY] })
   await late.relay('req-7')
   assert.deepEqual(late.posts, ['20'], 'the card is up; a failure while waiting does not post a second one')
   assert.deepEqual(late.verdicts, ['deny'])
