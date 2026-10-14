@@ -262,7 +262,7 @@ export function pickPermissionChat(
  * byte. It is a 403 from POST /messages, with no `code`.
  */
 export const PERMISSION_CARD_OWNER_CHAT_ONLY_MESSAGE =
-  "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into the chat of a person it is shared with."
+  "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into a chat another person can read."
 
 /**
  * Is this thrown HTTP failure that refusal: a 403 whose WHOLE body (`body`,

@@ -125,7 +125,7 @@ test('with no ownership evidence pickPermissionChat is exactly what it was', () 
 // ── the relay itself, executed from server.ts ────────────────────────────────
 
 // The backend half's exact refusal (BGOS permission-card-placement.ts PERMISSION_CARD_OWNER_CHAT_ONLY).
-const OWNER_CHAT_ONLY = "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into the chat of a person it is shared with."
+const OWNER_CHAT_ONLY = "A permission card for the owner's machine goes only into the owner's own chat with this agent, never into a chat another person can read."
 
 class FakeHttpError extends Error {
   readonly body: string
