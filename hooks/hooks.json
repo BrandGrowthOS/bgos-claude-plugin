@@ -63,7 +63,7 @@
         ]
       },
       {
-        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|complete_mission))$",
+        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|call_owner|create_mission|tick_mini_goal|set_mission_goals|add_mission_goals|cancel_mission_goal|complete_mission|list_chats))$",
         "hooks": [
           {
             "type": "command",

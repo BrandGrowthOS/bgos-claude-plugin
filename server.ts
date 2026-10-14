@@ -5382,7 +5382,7 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
   // The same bgos tools as PRIVATE_TOOL_MATCHER (lib/private-turn.mjs), the helper guard's list.
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission'].includes(req.params.name)) {
+  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner', 'create_mission', 'tick_mini_goal', 'set_mission_goals', 'add_mission_goals', 'cancel_mission_goal', 'complete_mission', 'list_chats'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6324,8 +6324,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     }
 
     case 'list_chats': {
+      // A private tool (shared agents Phase 0, item 0.7): the request names
+      // the verified turn, so on a share recipient's turn the backend lists
+      // only that person's chats, never other recipients' ids and titles. On
+      // the owner's own turn the headers are empty and the request is the same.
       try {
-        const result = await bgosPeerGet(buildReachableChatsPath())
+        const result = await bgosPeerGet(buildReachableChatsPath(), privateCall!.headers)
         const summary = summarizeReachableChats(result)
         return {
           content: [
