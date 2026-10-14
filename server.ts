@@ -5473,16 +5473,12 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
     // lib/private-turn.mjs turnAwarePrivateTurn). A verified turn is used as
     // above, so a share recipient's is named; with none the owner's own work
     // (the goal lane, a mission card, a tap, a peer) runs as it always did,
-    // unless this turn's chat is known to be a recipient's. These tools and
+    // unless the tracker saw another person reach this prompt. These tools and
     // the gated ones above are PRIVATE_TOOL_MATCHER, the helper guard's list.
     try {
-      privateCall = turnAwarePrivateTurn({
-        tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID,
-        turnChatId: turnChat.current(Date.now())?.chatId ?? null,
-        othersChat: (chatId: string) => chatOwnership.isOthers(chatId),
-      })
+      privateCall = turnAwarePrivateTurn({ tracker: privateTurns, markerPaths: PRIVATE_MARKER_PATHS, ownerUserId: USER_ID })
     } catch (err) {
-      try { log(`private turn: refused ${req.params.name}: no verified sender, in a share recipient's chat`) } catch { /* A diagnostic line never changes the refusal. */ }
+      try { log(`private turn: refused ${req.params.name}: no verified sender, and another person reached this prompt`) } catch { /* A diagnostic line never changes the refusal. */ }
       return Promise.resolve({ content: [{ type: 'text' as const, text: String((err as Error).message) }], isError: true })
     }
   }

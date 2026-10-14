@@ -97,22 +97,21 @@ test('a helper started in an earlier turn cannot ring anyone for the current sen
   assert.equal(call('mcp__bgos__call_owner').status, 0)
 })
 
-test('the admission gate is turn aware for call_owner: a verified turn frozen, an unverified one in a recipient chat refused, else the owner', async () => {
+test('the admission gate is turn aware for call_owner: a verified turn frozen, an unverified recipient prompt refused, else the owner', async () => {
   for (const name of ['call_owner']) {
-    const run = (turn: unknown, turnChatId: string | null) => execute(admissionSource + '\nreturn privateCall;', {
-      req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn }, PRIVATE_MARKER_PATHS: [],
+    // The tracker's own record of who reached the prompt (turnSenders), as the real one answers it.
+    const run = (turn: unknown, senders: { prompt: string | null; people: string[] }) => execute(admissionSource + '\nreturn privateCall;', {
+      req: { params: { name } }, lockHeld: true, privateTurns: { current: () => turn, turnSenders: () => senders }, PRIVATE_MARKER_PATHS: [],
       PRIVATE_HOOK: { registered: true }, PRIVATE_HOOK_MISSING_REFUSAL: 'hook missing', USER_ID: 'user_owner', log: () => {},
       requirePrivateTurn, turnAwarePrivateTurn,
-      turnChat: { current: () => (turnChatId ? { chatId: turnChatId } : null) },
-      chatOwnership: { isOthers: (chatId: string) => chatId === '20' },
     })
-    const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, '20')
+    const frozen = await run({ actingUserId: 'user_recipient', chatId: '20', turnId: 't' }, { prompt: 'user_recipient', people: [] })
     assert.deepEqual([frozen.actingUserId, frozen.chatId, frozen.headers], ['user_recipient', '20', { 'X-BGOS-Acting-User': 'user_recipient' }], name)
-    const refused = await run(null, '20')
-    assert.equal(refused?.isError, true, `${name}: an unverified sender in a recipient chat rings nobody`)
+    const refused = await run(null, { prompt: 'user_recipient', people: [] })
+    assert.equal(refused?.isError, true, `${name}: an unverified recipient prompt rings nobody`)
     assert.equal(refused.content[0].text, TURN_AWARE_REFUSAL, name)
     // The owner's own work on a turn no delivery opened (the goal lane, a mission card, a tap) runs as before.
-    const owner = await run(null, '10')
+    const owner = await run(null, { prompt: null, people: [] })
     assert.deepEqual([owner.actingUserId, owner.headers], ['user_owner', {}], name)
   }
 })
