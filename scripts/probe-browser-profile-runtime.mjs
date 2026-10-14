@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { BrowserProfileRuntime, profileCrypto as sync } from '../lib/browser-profile-runtime.mjs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 const require = createRequire(import.meta.url), { chromium } = require(process.env.HOAI_PROBE_PLAYWRIGHT)
+const nativeRtcFactory=process.env.HOAI_PROBE_NATIVE_RTC==='1'?(await import('../lib/browser-profile-rtc-activity.mjs')).createChromiumRtcActivity:null
 const portableState = require('../lib/browser-profile-core/portable-state.js')
 const source = sync.createEndpointIdentity('linux-source'), destination = sync.createEndpointIdentity('linux-destination'), key = sync.createContentKeyEpoch(1)
 const authority = { profileId: 'linux-profile', actingUserId: 'synthetic-recipient', assistantId: 7, endpointId: 'linux-source', bootId: 'source-boot', runtimeId: 'source-runtime', sessionId: 'source-session', writerEpoch: 1, revision: 0, contentKeyEpoch: 1, grantVersion: 1, keyFingerprint: sync.identityFingerprint(source.identity) }
@@ -14,7 +15,7 @@ const destinationAuthority = { ...authority, endpointId: 'linux-destination', bo
 const context = { version: 1, schemaVersion: 1, profileId: authority.profileId, actingUserId: authority.actingUserId, assistantId: 7, transitionId: 'linux-transition', revision: 1, previousManifestHash: null, keyEpoch: 1,
   source: { endpointId: authority.endpointId, bootId: authority.bootId, runtimeId: authority.runtimeId, sessionId: authority.sessionId, writerEpoch: 1 },
   destination: { endpointId: destinationAuthority.endpointId, bootId: destinationAuthority.bootId, runtimeId: destinationAuthority.runtimeId, sessionId: destinationAuthority.sessionId, grantVersion: 2, keyFingerprint: destinationAuthority.keyFingerprint } }
-const report = { kind: 'Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only', transportQualification:'Restricted disposable literal-loopback only; no general Chrome155 RTC qualification',checks: [] }, runtimes = [], ledger = [], pending = [], events = [], extraStores = new Map(), fixtureNativeKey = randomBytes(32)
+const report = { kind: 'Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only', transportQualification:nativeRtcFactory?'Actual pinned Chrome155 native RTC observer plus raw Network/target ledger':'Restricted disposable literal-loopback only; no general Chrome155 RTC qualification',checks: [] }, runtimes = [], ledger = [], pending = [], events = [], extraStores = new Map(), fixtureNativeKey = randomBytes(32)
 const privateDirectory = mkdtempSync(join(tmpdir(), 'hoai-profile-capsules.'))
 const portableExtras = { passwordVault: { v: 1, entries: [{ id: '0d694ca4-9b5d-4d95-a8bc-36eb1876bd80', origin: 'https://fixture.test', username: 'synthetic-user', password: 'HOAI_LINUX_SAVED_LOGIN_SECRET', name: 'Fixture', createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z' }], neverOrigins: ['https://never.example.test'] }, preferences: { v: 1, searchEngine: 'duckduckgo' } }
 const nativeBundle = file => { const envelope = JSON.parse(readFileSync(file, 'utf8')), bytes = Buffer.from(envelope.ciphertext, 'base64'), decipher = createDecipheriv('aes-256-gcm', fixtureNativeKey, Buffer.from(envelope.iv, 'base64')); decipher.setAuthTag(Buffer.from(envelope.tag, 'base64')); const plaintext = Buffer.concat([decipher.update(bytes), decipher.final()]); try { return portableState.validatePortableBundle(JSON.parse(plaintext)) } finally { plaintext.fill(0) } }
@@ -22,7 +23,7 @@ let server,origin
 const make = async authority => {
   const store = { bundle: authority.endpointId === 'linux-destination' ? { passwordVault: { v: 1, entries: [], neverOrigins: ['https://stale.example.test'] }, preferences: { v: 1, searchEngine: 'bing' } } : structuredClone(portableExtras), held: false, commits: 0, file: join(privateDirectory, authority.runtimeId + '.native-fixture-vault') }
   const runtime = await BrowserProfileRuntime.create({ chromium, executable: process.env.HOAI_PROBE_EXECUTABLE, authority, timeoutMs: 3000,
-    transferQualification:{kind:'restricted-disposable-fixture',origins:[origin],assertQualified:()=>true},
+    ...(nativeRtcFactory?{transferQualificationFactory:nativeRtcFactory}:{transferQualification:{kind:'restricted-disposable-fixture',origins:[origin],assertQualified:()=>true}}),
     preflightExtras: () => structuredClone(store.bundle),
     captureExtras: () => { assert.equal(runtime.context.pages().length, 0); assert.equal(runtime.state, 'quiescing'); assert.equal(store.held, false); store.held = true; return { bundle: structuredClone(store.bundle), assertCurrent() { assert.equal(store.held, true) }, release() { store.held = false } } },
     commitExtras: ({ bundle, receipt, grant }) => {
@@ -90,6 +91,13 @@ try {
   await eventPage.evaluate('new Promise(ok=>{window.events=new EventSource("/events");events.onopen=()=>ok(true)})')
   await assert.rejects(eventRuntime.finalize({ context: { ...context, transitionId: 'event-transition', source: { ...context.source, runtimeId: 'event-runtime', sessionId: 'event-session' } }, source, destinationIdentity: destination.identity, contentKeyEpoch: key }), { reason: 'profile_persistent_transport_unsupported' }); assert.equal(eventPage.isClosed(), false)
   report.checks.push({ name: 'persistent-EventSource-refuses-with-source-left-running', ok: true })
+  if(nativeRtcFactory){
+    const rtcAuthority={...authority,runtimeId:'rtc-runtime',sessionId:'rtc-session'},rtc=await make(rtcAuthority);await rtc.activate('exact-fixture-grant');const rtcPage=await rtc.newPage(origin+'/rtc')
+    await rtcPage.evaluate('(()=>{const peer=new RTCPeerConnection({iceServers:[]});peer.close();return true})()');const end=Date.now()+5000;while(!rtc.transportObserver.used&&Date.now()<end)await new Promise(resolve=>setTimeout(resolve,20));assert.equal(rtc.transportObserver.used,true)
+    let drained=false;rtc.closeAndDrain=async()=>{drained=true;return{admissionClosed:true,drained:true}}
+    await assert.rejects(rtc.finalize({context:{...context,transitionId:'rtc-transition',source:{...context.source,runtimeId:'rtc-runtime',sessionId:'rtc-session'}},source,destinationIdentity:destination.identity,contentKeyEpoch:key}),{reason:'profile_transport_qualification_required'});assert.equal(drained,false);assert.equal(rtcPage.isClosed(),false);assert.equal(rtc.state,'active');assert.equal(rtc.browser.isConnected(),true)
+    report.checks.push({name:'closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive',ok:true});await rtc.dispose()
+  }
   const busyAuthority = { ...authority, runtimeId: 'busy-runtime', sessionId: 'busy-session' }, busy = await make(busyAuthority); await busy.activate('exact-fixture-grant'); const busyPage = await busy.newPage(origin + '/busy')
   await busyPage.evaluate('(async()=>{window.worker=new Worker("/worker.js");window.shared=new SharedWorker("/shared.js");await Promise.all([new Promise(ok=>worker.onmessage=ok),new Promise(ok=>shared.port.onmessage=ok)]);})()')
   const busyContext = { ...context, transitionId: 'busy-transition', source: { ...context.source, runtimeId: 'busy-runtime', sessionId: 'busy-session' } }
