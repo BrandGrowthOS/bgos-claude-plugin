@@ -1720,8 +1720,11 @@ test('server.ts, run: a card the floor did not hold records nothing, and a deny 
   await notHeld
   assert.equal('email_send' in run.posts[0]!.body.approvalMeta, false)
   assert.equal(run.notes[0]!.claimed, null)
-  const denied = run.relay({ ...params, request_id: 'bcdef' }, SEND_TOOL, true, null)
-  await new Promise((r) => setImmediate(r))
+  // A held card with its record (one with none posts no card at all: Data 2026-10-14 06:43Z, section 14).
+  const fs = await import('../lib/floor-state.mjs')
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const denied = run.relay({ ...params, request_id: 'bcdef' }, SEND_TOOL, true, record)
+  for (let i = 0; i < 50 && run.posts.length < 2; i++) await new Promise((r) => setImmediate(r))
   await run.tap('ea:deny:bcdef', APPROVAL_CLICK)
   await denied
   assert.equal(run.notes[1]!.claimed, null)
@@ -2441,13 +2444,7 @@ test('server.ts, run, v7 F2: with no hook record, a held email_send whose previe
     assert.equal(grant?.tooLongForCard, true, `the call it allowed (${i})`)
     assert.equal(grant?.approval, null)
   }
-  // A preview of at most 1000 characters proves nothing about the body: its card is posted as before.
-  const shortRun = await relayRun(t, f)
-  f.start(TURNS.ownerMessage)
-  void shortRun.relay({ request_id: 'bcdef', tool_name: SEND_TOOL, description: 'email_send', input_preview: cliPreview(SEND_ARGS) }, SEND_TOOL, true, null)
-  for (let i = 0; i < 50 && shortRun.posts.length === 0; i++) await new Promise((r) => setImmediate(r))
-  assert.equal(shortRun.posts.length, 1)
-  assert.equal('email_send' in shortRun.posts[0]!.body.approvalMeta, false)
+  // Since Data's decision of 2026-10-14 06:43Z a short one with no record gets no card either (section 14).
   // The tool then hands it to the server, which keeps it as a draft; the same body again saves no second one.
   const store = a.createEmailSendApprovals()
   const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
@@ -2520,4 +2517,80 @@ test('v7 review: the plain words for an approval asked for while the owner did n
   assert.match(said, /no record of the reason this turn gives/)
   assert.match(said, /or your owner just turned on asking before every send/)
   assert.equal(/approves every email/.test(said), false)
+})
+
+// ── 14. Data's decision (2026-10-14 06:43Z): a held send with no floor hook record gets no card, short or long ──
+
+/** Relay a held email_send for `input` with `record`, bounded: a relay that posts a card waits for a tap. */
+async function relayHeld(run: Awaited<ReturnType<typeof relayRun>>, requestId: string, input: Record<string, string>, record: unknown, preview = cliPreview(input)) {
+  await Promise.race([
+    run.relay({ request_id: requestId, tool_name: SEND_TOOL, description: 'email_send', input_preview: preview }, SEND_TOOL, true, record),
+    new Promise((done) => setTimeout(done, 1000)),
+  ])
+}
+
+test('server.ts, run, Data 06:43Z: a short held email_send with no floor hook record posts no card; the CLI hears allow, and the Allow carries no approval and no binding', async (t) => {
+  const f = fixture(t)
+  const run = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  await relayHeld(run, 'abcde', SEND_ARGS, null)
+  assert.equal(run.posts.length, 0, 'no card that could never be approved')
+  assert.deepEqual(run.notes.map((n) => n.params), [{ request_id: 'abcde', behavior: 'allow' }])
+  assert.deepEqual(run.notes[0]!.claimed, { requestId: 'abcde', approval: null, binding: null, withoutCard: true })
+  // A record that does not pair with this request (another email's) is no record: no card either.
+  const fs = await import('../lib/floor-state.mjs')
+  const otherRecord = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: { ...SEND_ARGS, text: 'Hi Sam, a different email entirely.' }, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const run2 = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  await relayHeld(run2, 'bcdef', SEND_ARGS, otherRecord)
+  assert.equal(run2.posts.length, 0)
+  assert.deepEqual(run2.notes.map((n) => n.params), [{ request_id: 'bcdef', behavior: 'allow' }])
+})
+
+test('server.ts, run, Data 06:43Z: a recorded held email_send still gets its approvable card, with the binding, and waits for the owner', async (t) => {
+  const f = fixture(t)
+  const fs = await import('../lib/floor-state.mjs')
+  const run = await relayRun(t, f)
+  f.start(TURNS.ownerMessage)
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  await relayHeld(run, 'abcde', SEND_ARGS, record, previewOf(SEND_ARGS))
+  assert.equal(run.posts.length, 1)
+  assert.deepEqual(run.posts[0]!.body.approvalMeta.email_send, SEND_BLOCK)
+  assert.equal(run.notes.length, 0, 'the CLI hears nothing until the owner taps')
+})
+
+test('Data 06:43Z: an Allow with no card is claimed by the call the preview showed, folded as the CLI folds it, never carries an approval, and only once', async () => {
+  const a = await approval()
+  const store = a.createEmailSendApprovals()
+  const text = 'Hi Sam,  could you   confirm the Harbor room?'
+  const input = { ...SEND_ARGS, text }
+  store.allow(SEND_TOOL, cliPreview(input), { requestId: 'abcde', approval: APPROVAL_CLICK, binding: null, withoutCard: true })
+  assert.equal(store.claim({ ...input, text: 'Hi Sam, another email' }), null)
+  assert.deepEqual(store.claim(input), { requestId: 'abcde', approval: null, binding: null, withoutCard: true })
+  assert.equal(store.claim(input), null)
+})
+
+test('server.ts, run, Data 06:43Z: the send goes to the server with no approval and no pull, the server keeps the draft, and the agent hears plainly it waits in the Email chat', async (t) => {
+  const f = fixture(t)
+  const store = (await approval()).createEmailSendApprovals()
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  store.allow(SEND_TOOL, cliPreview(SEND_ARGS), { requestId: 'abcde', approval: null, binding: null, withoutCard: true })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  const said = textOf(result)
+  assert.equal(backend.requests.length, 1)
+  assert.equal('approval' in backend.requests[0]!.body, false)
+  assert.equal(backend.pulls.length, 0, 'no card issued anything, so nothing is pulled')
+  assert.equal(backend.floorChecks.length, 0)
+  assert.match(said, /"reason":"approval_required"/)
+  assert.match(said, /^Not sent: the email was kept as a draft for your owner/)
+  assert.match(said, /send it from the Email chat/)
+  assert.match(said, /Do not try again; tell your owner it is waiting as a draft in the Email chat\./)
+  assert.equal(/did not carry their approval/.test(said), false)
+  assert.equal(result.isError, undefined)
+  // Long, with no record: the server's too_long_to_approve words, as before.
+  const input = { ...SEND_ARGS, text: LONG_BODY }
+  store.allow(SEND_TOOL, cliPreview(input), { requestId: 'bcdef', approval: null, binding: null, withoutCard: true, tooLongForCard: true })
+  assert.match(textOf(await call('email_send', input)), /too long for your owner to approve on a card/)
+  assert.equal(backend.pulls.length, 0)
 })

@@ -484,6 +484,13 @@ export interface EmailSendGrant {
    * showed. It never carries an approval.
    */
   tooLongForCard?: true
+  /**
+   * Data, 2026-10-14 06:43Z: no card was posted because no floor hook record
+   * names the email (a card without its exact body could only be denied); the
+   * send goes to the server, which keeps it as a draft. Never with a binding,
+   * never with an approval.
+   */
+  withoutCard?: true
 }
 
 export interface EmailSendApprovals {
@@ -551,7 +558,7 @@ export function createEmailSendApprovals(
   // call its binding names to the byte; otherwise the send goes without it,
   // and while Always ask is on the server keeps it as a draft.
   const allowedCard = (entry: { email: EmailSendPreview; grant: EmailSendGrant }, args: unknown) =>
-    entry.grant.binding || entry.grant.tooLongForCard ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
+    entry.grant.binding || entry.grant.tooLongForCard || entry.grant.withoutCard ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
   const claim = (args: unknown): EmailSendGrant | null => {
     dropStale()
     let index = waiting.findIndex((entry) => allowedCard(entry, args) && entry.grant.binding !== null && bindingMatchesCall(entry.grant.binding, args))
@@ -568,6 +575,7 @@ export function createEmailSendApprovals(
       approval: bound && !entry!.grant.tooLongForCard ? spend(entry!.grant.approval) : null,
       binding: bound ? entry!.grant.binding : null,
       ...(tooLong ? { tooLongForCard: true as const } : {}),
+      ...(entry!.grant.withoutCard ? { withoutCard: true as const } : {}),
     }
   }
   return {
@@ -584,6 +592,7 @@ export function createEmailSendApprovals(
           approval: readEmailSendApprovalClick(grant.approval),
           binding: isEmailSendBlock(grant.binding) ? (grant.binding as EmailSendBlock) : null,
           ...(grant.tooLongForCard === true ? { tooLongForCard: true as const } : {}),
+          ...(grant.withoutCard === true && !isEmailSendBlock(grant.binding) ? { withoutCard: true as const } : {}),
         },
       })
       while (waiting.length > MAX_WAITING) waiting.shift()

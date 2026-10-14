@@ -3313,7 +3313,7 @@ function relayPermissionToOwner(
     return
   }
   if (emailCard) {
-    log(`email_send card [${request_id}]: ${emailCard.block ? `binds the email (from the ${emailCard.source})` : 'names no email it can bind, so the server lets the owner only deny it and the email stays a draft'}`)
+    log(`email_send card [${request_id}]: ${emailCard.block ? `binds the email (from the ${emailCard.source})` : 'names no email it can bind (no floor hook record of it), so no card is posted and the server keeps it as a draft'}`)
   }
   // WIRE SHAPES v7: a body longer than a card shows is never approvable on a
   // card (no Allow, no approval), and its send keeps a draft. So no card is
@@ -3322,15 +3322,26 @@ function relayPermissionToOwner(
   // and the agent is told so (lib/agent-email-tools.ts). Known by the exact
   // body, or, with no hook record, by a preview already over the limit (a
   // preview, without the CLI's cut line, is never longer than its body).
-  // Recorded BEFORE the CLI hears allow, like every Allow.
-  if (emailCard && emailSendCardTooLong(emailCard.block, input_preview)) {
-    emailSendApprovals.allow(tool_name, input_preview, { requestId: request_id, approval: null, binding: emailCard.block, tooLongForCard: true })
-    log(`email_send [${request_id}]: the email is too long to approve on a card, so none is posted; it goes to the server, which keeps it as a draft for the owner`)
+  // DATA, 2026-10-14 06:43Z: the same for EVERY held email_send with no
+  // floor hook record that pairs with it, short or long. Its card could carry
+  // no exact body, so it could only ever be denied: noise. The server keeps
+  // the email as a draft, whose card shows the whole text and is where the
+  // owner acts. Recorded BEFORE the CLI hears allow, like every Allow.
+  const tooLongForCard = emailCard !== null && emailSendCardTooLong(emailCard.block, input_preview)
+  if (emailCard && (tooLongForCard || !emailCard.block)) {
+    emailSendApprovals.allow(tool_name, input_preview, {
+      requestId: request_id,
+      approval: null,
+      binding: emailCard.block,
+      ...(tooLongForCard ? { tooLongForCard: true } : {}),
+      ...(emailCard.block ? {} : { withoutCard: true }),
+    })
+    log(`email_send [${request_id}]: ${tooLongForCard ? 'the email is too long to approve on a card' : 'no floor hook record names this email, so no card could approve it'}; none is posted, and it goes to the server, which keeps it as a draft for the owner`)
     await mcp.notification({
       method: 'notifications/claude/channel/permission',
       params: { request_id, behavior: 'allow' },
     }).catch((err) => {
-      log(`Failed to send the verdict for a too long email_send: ${err}`)
+      log(`Failed to send the verdict for an email_send with no card: ${err}`)
     })
     return
   }
@@ -3718,6 +3729,12 @@ async function emailSendApproval(args: unknown): Promise<string | null | EmailSe
     if (emailSendApprovals.keptTooLong(args)) return EMAIL_SEND_TOO_LONG_AGAIN
     log(`email_send: too long to approve on a card [${grant.requestId ?? '?'}]; the server keeps it as a draft`)
     return { tooLongForCard: true }
+  }
+  if (grant?.withoutCard) {
+    // Data 06:43Z: no card was posted (no floor hook record), so no approval
+    // exists and none is pulled. The server keeps it as a draft.
+    log(`email_send: no card for it [${grant.requestId ?? '?'}]; the server keeps it as a draft`)
+    return { withoutCard: true }
   }
   if (grant) {
     // The approval the tap issued (it rode on the answer), else the pull route,

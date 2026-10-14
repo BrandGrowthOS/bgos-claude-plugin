@@ -133,7 +133,7 @@ export interface EmailToolDeps {
 }
 
 /** What the approval step lets a send go with (see `approve`). */
-export type EmailSendGo = { approval?: { id: string }; tooLongForCard?: boolean; alwaysAskOff?: boolean }
+export type EmailSendGo = { approval?: { id: string }; tooLongForCard?: boolean; alwaysAskOff?: boolean; withoutCard?: boolean }
 
 /**
  * Wire shapes v7: a body too long to approve on a card is kept as a draft, and
@@ -159,6 +159,16 @@ export const EMAIL_SEND_TOO_LONG_AGAIN =
  */
 export function emailSendUnrecordedDraftText(line: string): string {
   return `Not sent: the email was kept as a draft for your owner, because the server asked for your owner's approval for this send, which no card can give now (the server holds no record of the reason this turn gives, or your owner just turned on asking before every send). Your owner can read it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat.`
+}
+
+/**
+ * Data, 2026-10-14 06:43Z: a held send with no floor hook record gets no card
+ * (one without the exact body could only be denied); the server keeps it as
+ * a draft while the owner asks before every send, and the agent is told so
+ * plainly, as for a body too long for a card.
+ */
+export function emailSendWithoutCardDraftText(line: string): string {
+  return `Not sent: the email was kept as a draft for your owner, because your owner asks before every send and this email could not be put on an approval card. Your owner can read all of it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat.`
 }
 
 /** A uuid as the server's IsUUID() reads one (version 1 to 8, variant 8 to b, or the nil and max ids). */
@@ -380,7 +390,7 @@ function draftLine(answer: Record<string, unknown>): string {
   return `draft ${id}${to ? `, to ${to}` : ''}`
 }
 
-function renderSend(answer: unknown, text = '', { alwaysAskOff = false }: { alwaysAskOff?: boolean } = {}): EmailToolResult {
+function renderSend(answer: unknown, text = '', { alwaysAskOff = false, withoutCard = false }: { alwaysAskOff?: boolean; withoutCard?: boolean } = {}): EmailToolResult {
   const a = answer && typeof answer === 'object' ? (answer as Record<string, unknown>) : {}
   const draft = (a.draft && typeof a.draft === 'object' ? a.draft : {}) as Record<string, unknown>
   const json = JSON.stringify(answer)
@@ -395,6 +405,10 @@ function renderSend(answer: unknown, text = '', { alwaysAskOff = false }: { alwa
   // v7: with the owner not asking first, only a reason the server holds no record of asks for an approval.
   if (a.outcome === 'draft' && reason === 'approval_required' && alwaysAskOff) {
     return { content: [{ type: 'text', text: `${emailSendUnrecordedDraftText(draftLine(draft))}\n${json}` }] }
+  }
+  // Data 06:43Z: no card could approve it (no floor hook record), so the server kept it for the owner.
+  if (a.outcome === 'draft' && reason === 'approval_required' && withoutCard) {
+    return { content: [{ type: 'text', text: `${emailSendWithoutCardDraftText(draftLine(draft))}\n${json}` }] }
   }
   if (a.outcome === 'draft' && a.reason === 'approval_required') {
     // The server is the gate while Always ask is on: no approval from the owner's tap for exactly this email.
@@ -483,10 +497,11 @@ export async function handleEmailTool(name: string, rawArgs: unknown, deps: Emai
   const approvalId = go && typeof go === 'object' ? (go as { approval?: { id?: unknown } }).approval?.id : undefined
   const approval = typeof approvalId === 'string' && APPROVAL_UUID.test(approvalId) ? { approval: { id: approvalId } } : {}
   const alwaysAskOff = Boolean(go && typeof go === 'object' && (go as EmailSendGo).alwaysAskOff === true)
+  const withoutCard = Boolean(go && typeof go === 'object' && (go as EmailSendGo).withoutCard === true)
   try {
     const answer = await deps.post(AGENT_EMAIL_SEND_PATH, { ...body, basis: { kind: basis.kind, id: basis.id }, ...approval }, caller)
     deps.answered?.(rawArgs, answer)
-    return renderSend(answer, text, { alwaysAskOff })
+    return renderSend(answer, text, { alwaysAskOff, withoutCard })
   } catch (err) {
     return fail(serverAnswered(err)
       ? `email_send failed, so treat it as not sent and tell your owner: ${errorText(err)}`
