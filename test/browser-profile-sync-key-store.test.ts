@@ -45,6 +45,67 @@ function fixture(options: Record<string, any> = {}) {
   return { store, calls, values, lock: () => { locked = true } }
 }
 
+test('portable extras unlock preloads a purpose-separated synchronous protector and disposal invalidates it', async () => {
+  const f = fixture(), endpointRecord = await f.store.protect({ binding, endpoint, assertCurrent: current })
+  const protector = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current })
+  const count = f.calls.length, text = 'SYNTHETIC_PORTABLE_EXTRAS', ciphertext = protector.encryptString(text)
+  assert.equal(protector.decryptString(ciphertext), text); assert.equal(f.calls.length, count)
+  const metadata = protector.record; protector.dispose()
+  assert.throws(() => protector.encryptString(text)); assert.throws(() => protector.decryptString(ciphertext))
+  const restored = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, record: metadata, assertCurrent: current })
+  try { assert.equal(restored.decryptString(ciphertext), text) } finally { restored.dispose() }
+  assert.ok([...f.values.keys()].some(value => value.includes('hoai-browser-portable-extras-v1')))
+  assert.ok([...f.values.keys()].some(value => value.includes('hoai-browser-profile-sync-v1')))
+  await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, record: endpointRecord, assertCurrent: current }))
+})
+
+test('portable protector refuses a false or asynchronous proof and exact binding changes before helper lookup', async () => {
+  const f = fixture(), protector = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), count = f.calls.length
+  try {
+    for (const change of [{ keyEpoch: 2 }, { grantVersion: 2 }, { actingUserId: 'sharer' }]) await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding: { ...binding, ...change }, pinnedIdentity: identity, record: protector.record, assertCurrent: current }))
+    for (const proof of [() => false, async () => true]) await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: proof }))
+    assert.equal(f.calls.length, count)
+  } finally { protector.dispose() }
+  let allowed = true
+  const active = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: () => allowed })
+  try { const bytes = active.encryptString('SYNTHETIC_CURRENT_SCOPE'); allowed = false; assert.throws(() => active.encryptString('SYNTHETIC_CURRENT_SCOPE')); assert.throws(() => active.decryptString(bytes)) }
+  finally { active.dispose() }
+})
+
+test('portable protection domain separation and authentication do not accept endpoint ciphertext even with a substituted OS key', async () => {
+  const f = fixture(), endpointRecord = await f.store.protect({ binding, endpoint, assertCurrent: current })
+  const protector = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), metadata = { ...protector.record, recordId: endpointRecord.recordId }
+  protector.dispose()
+  const entries = [...f.values.entries()]; f.values.set(entries[1][0].replace(protector.record.recordId, endpointRecord.recordId), Buffer.from(entries[0][1]))
+  const restored = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, record: metadata, assertCurrent: current })
+  try {
+    assert.throws(() => restored.decryptString(Buffer.from(endpointRecord.keys.ciphertext, 'base64url')))
+    const bytes = restored.encryptString('SYNTHETIC_SECRET'); bytes[bytes.length - 1] ^= 1; assert.throws(() => restored.decryptString(bytes))
+    assert.throws(() => restored.encryptString('x'.repeat(16 * 1024 * 1024 + 1)))
+  } finally { restored.dispose() }
+})
+
+test('portable protector disposal clears the actual retained native AES key buffer', async () => {
+  const f = fixture(), protector = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current })
+  const nativeCrypto = createRequire(import.meta.url)('node:crypto'), original = nativeCrypto.createCipheriv, retained:Buffer[] = []
+  nativeCrypto.createCipheriv = (...args:any[]) => { if (Buffer.isBuffer(args[1])) retained.push(args[1]); return Reflect.apply(original, nativeCrypto, args) }
+  syncBuiltinESMExports()
+  try { protector.encryptString('SYNTHETIC_KEY_LIFETIME'); assert.ok(retained.some(value => value.some(byte => byte !== 0))); protector.dispose() }
+  finally { nativeCrypto.createCipheriv = original; syncBuiltinESMExports(); protector.dispose() }
+  assert.ok(retained.length > 0); assert.ok(retained.every(value => value.every(byte => byte === 0)))
+})
+
+test('only a newly-created disposed portable protector can delete its exact OS item', async () => {
+  const f = fixture(), existing = await f.store.protect({ binding, endpoint, assertCurrent: current })
+  const protector = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), metadata = protector.record
+  await assert.rejects(() => protector.discardCreatedRecord()); assert.equal(f.values.size, 2)
+  protector.dispose(); assert.deepEqual(await protector.discardCreatedRecord(), { removed: true }); assert.equal(f.values.size, 1)
+  assert.deepEqual(await f.store.restore({ record: existing, binding, pinnedIdentity: identity, assertCurrent: current }), endpoint)
+  const prior = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: current }), saved = prior.record; prior.dispose()
+  const loaded = await f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, record: saved, assertCurrent: current }); loaded.dispose()
+  await assert.rejects(() => loaded.discardCreatedRecord()); assert.equal(f.values.size, 2)
+})
+
 test('authorized persistent record roundtrips after a fresh store without putting endpoint keys or wrapping keys in argv or files', async () => {
   const f = fixture(), record = await f.store.protect({ binding, endpoint, assertCurrent: current })
   const restored = await f.store.restore({ record, binding, pinnedIdentity: identity, assertCurrent: current })
