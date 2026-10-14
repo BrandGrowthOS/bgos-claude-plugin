@@ -106,6 +106,20 @@ test('only a newly-created disposed portable protector can delete its exact OS i
   await assert.rejects(() => loaded.discardCreatedRecord()); assert.equal(f.values.size, 2)
 })
 
+test('failed portable preload zeroes its actual wrapping key before awaiting OS cleanup', async () => {
+  const nativeCrypto = createRequire(import.meta.url)('node:crypto'), original = nativeCrypto.randomBytes, retained:Buffer[] = []
+  let current = true, observed = false
+  nativeCrypto.randomBytes = (...args:any[]) => { const bytes = Reflect.apply(original, nativeCrypto, args); if (args[0] === 32 && Buffer.isBuffer(bytes)) retained.push(bytes); return bytes }
+  syncBuiltinESMExports()
+  const f = fixture({ onCall: async (_executable:string, args:string[]) => {
+    if (args[0] === 'store') current = false
+    if (args[0] === 'clear') { assert.ok(retained.length > 0); assert.ok(retained.every(value => value.every(byte => byte === 0))); observed = true; await Promise.resolve() }
+  } })
+  try { await assert.rejects(() => f.store.preloadPortableExtrasProtector({ binding, pinnedIdentity: identity, createNew: true, assertCurrent: () => current }), { code: 'profile_key_context_changed' }) }
+  finally { nativeCrypto.randomBytes = original; syncBuiltinESMExports() }
+  assert.equal(observed, true); assert.equal(f.values.size, 0)
+})
+
 test('authorized persistent record roundtrips after a fresh store without putting endpoint keys or wrapping keys in argv or files', async () => {
   const f = fixture(), record = await f.store.protect({ binding, endpoint, assertCurrent: current })
   const restored = await f.store.restore({ record, binding, pinnedIdentity: identity, assertCurrent: current })
