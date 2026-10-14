@@ -121,8 +121,6 @@ function agentHost(t: any) {
   const unwritable = new Set<string>()
   const begins: string[] = []
   const replays: string[] = []
-  const revokes: string[] = []
-  const unrecorded: string[] = []
 
   /** One daemon life (server.ts state is per process; the fire ledger is on disk). */
   function daemon() {
@@ -134,8 +132,6 @@ function agentHost(t: any) {
         record: (key: string) => { recorded.push(key); return unwritable.has(key) ? false : ledger.record(key) },
       },
       onReplay: (replay) => replays.push(privateReplayLine(replay)),
-      onRevoke: (info) => revokes.push(info.why),
-      onUnrecorded: (info) => unrecorded.push(info.key),
     })
     const turnChat = createTurnChatTracker()
     const publish = () => publishPrivateContext({
@@ -170,7 +166,7 @@ function agentHost(t: any) {
     ({ session_id: session, transcript_path: transcript, cwd: folder, hook_event_name: event, permission_mode: 'bypassPermissions', ...extra })
 
   const a = {
-    session, markerPaths, firesPath, recorded, unwritable, begins, replays, revokes, unrecorded,
+    session, markerPaths, firesPath, recorded, unwritable, begins, replays,
     get tracker() { return life.tracker },
     /** The socket lane (server.ts deliverWsInbound): actor, fire key, turn chat, private delivery. The card the CLI gets. */
     card(frame: Record<string, any>): string {
