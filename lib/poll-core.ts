@@ -222,6 +222,21 @@ export function sentDateToMs(sentDate: string | null | undefined): number | null
   return Number.isFinite(t) ? t : null
 }
 
+/**
+ * Was this message sent before the daemon started? The poll lane's backlog
+ * rule (its boot poll frames as backlog what was sent before DAEMON_START_MS),
+ * for the lanes that carry no backlog flag of their own: the update stream,
+ * which can replay what arrived while the daemon was down, and the socket,
+ * whose frame carries a sent date (an ISO string, or epoch milliseconds). An
+ * earlier process may have answered such a message, so it is never a reason
+ * to send (lib/private-turn.mjs emailSendBasis). Unknown dates are not
+ * before: a live frame with no date is now.
+ */
+export function sentBeforeStart(sentDate: unknown, startMs: number): boolean {
+  const t = typeof sentDate === 'number' ? (Number.isFinite(sentDate) ? sentDate : null) : typeof sentDate === 'string' ? sentDateToMs(sentDate) : null
+  return t !== null && t < startMs
+}
+
 /** The projection of a chat message that first-poll selection needs. */
 export interface FirstPollRow {
   id: number

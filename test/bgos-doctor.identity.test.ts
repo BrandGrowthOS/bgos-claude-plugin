@@ -27,7 +27,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { mkdirSync, mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 import { main as doctorMain } from '../bin/bgos-doctor.mjs'
@@ -97,7 +97,10 @@ interface Fixture {
 }
 
 function fixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'doctor-identity-'))
+  // The physical path, as pairing records a home (process.cwd()): on macOS tmpdir() is /var/folders/..., a symlink
+  // to /private/var/folders/..., and the daemon stub, started in the agent's folder, sees the physical cwd. A home
+  // written through the symlink then never matched it, and both single agent elimination tests failed on macOS only.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'doctor-identity-')))
   const home = join(root, 'home')
   const agentsDir = join(root, 'agents')
   mkdirSync(join(home, '.bgos-agent'), { recursive: true })

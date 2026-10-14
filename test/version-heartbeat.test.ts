@@ -431,6 +431,7 @@ describe('declared capabilities on the heartbeat', () => {
       'skills_list',
       'skills_receive',
       'email_label',
+      'email_send',
       'hard_floor',
       'hard_floor_rules_2',
       'mission_goal_loop',
@@ -453,6 +454,7 @@ describe('declared capabilities on the heartbeat', () => {
       'skills_list',
       'skills_receive',
       'email_label',
+      'email_send',
       'hard_floor',
       'hard_floor_rules_2',
     ])
