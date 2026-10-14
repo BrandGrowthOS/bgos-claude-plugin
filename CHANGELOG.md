@@ -2,7 +2,14 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
-## 0.68.5 (2026-10-13)
+## 0.69.0 (2026-10-15)
+
+One release carrying four pull requests: the agent can save an email as a draft and send one only on its owner's own instruction (#228, written as 0.68.5); the plugin's second copy of a channel stands aside when the session already runs the checkout (#231, written as 0.68.5); two deliveries submitted together open their private turn (#232, written as 0.68.7); and shared agents Phase 0, the plugin half (#233). Where they meet, found merging them:
+
+- **A refusal to send holds for the whole turn (#228 with #232).** `email_send` was refused for a prompt that carried a delivery that cannot send (an email, a peer, a scheduler state report), decided again at every prompt. #232 found that deliveries submitted together reach the daemon as separate prompts of one turn, and keeps them admitted together; a refusal decided for one of them now still refuses `email_send` when another prompt of the same turn is admitted after it (`lib/private-turn.mjs`). It can only refuse more. Guard: `test/private-turn-email-batch.test.ts`.
+- **A held `email_send` card follows the owner's chat rules (#228 with #233).** It still goes only to a main chat, the owner's turn chat first, and now also skips every chat that refused a card with the backend's 403 and every chat known to be a share recipient's, the owner's own main chats first (`emailSendCardChat` reads the chat ownership, as `pickPermissionChat` does). #233's 403 retry now hands on the floor hook's record, so a retried card still binds the exact email instead of letting the send through with no card. Guard: `test/permission-card-email-send.test.ts`.
+
+### #228: email_draft and email_send, a send only on the owner's own instruction
 
 **The agent can save an email as a draft, and send one only on its owner's own instruction (outgoing email modes, HOAI board row 2dd04488, addition 5, piece B: the plugin).** The owner chooses per agent how its email leaves: Ask me before every send (the default), Drafts only, or Send for me. Until now the server took a draft from the agent but the agent had no tool to write one, so the owner copied its suggestion into the app by hand.
 
@@ -18,7 +25,7 @@ Notable changes to the HOAI Claude Code plugin.
 
 For the backend: the canon's `AGENT_EMAIL_SEND_SENTENCE` and the mode neutral ending of `AGENT_EMAIL_SENTENCE` must match this plugin's offline copy word for word (`lib/agent-email-tools.ts`, `lib/capabilities.ts`; `test/agent-email-send.test.ts` pins both). The server's hard floor must list the channel's own `email_send` the same way, and the fixture must be copied byte for byte (wire-shapes.md, "Always ask stops a send (Data 2026-10-13)"); until it does, the server's floor check does not hold `email_send` and Always ask does not stop it. The tool also explains the new held reason `email_off` (wire shapes v2: the owner turned the agent's email off). Guards: `test/agent-email-send.test.ts` (the tool call run out of `server.ts` against a fake backend), the lane checks in `test/external-email-label.test.ts`, and the capability and hook matcher pins. No version is published or tagged here.
 
-## 0.68.5 (2026-10-14)
+### #231: the plugin's second copy stands aside when the session already runs the checkout
 
 **The plugin's second copy of a channel stands aside when the session already runs the checkout (kc-server, 2026-10-13; agents 863, 867, 871, 872, 873, 876).** An agent whose folder registers the checkout as the `bgos` server in `.mcp.json` (launched with `--dangerously-load-development-channels server:bgos`) and whose user settings also enable the marketplace plugin started TWO daemons for one pairing. The lock logic was right (the checkout proves its channel loaded and holds the lock; the plugin copy proves it is not and stays passive), but passive is not silent: the session also listed the plugin's tools (`mcp__plugin_hoai_bgos__*`), the model picked them, and a private tool (`schedule`, `boards_*`) answered "does not hold the active agent connection". The copy also raced for the lock at every boot and filed a stand down report each time.
 
@@ -28,7 +35,7 @@ For the backend: the canon's `AGENT_EMAIL_SEND_SENTENCE` and the mode neutral en
 
 Guards: `test/duplicate-copy.test.ts` (the decision table, the notice over a real in-memory MCP client, the process table probe, server.ts ordering) and `test/duplicate-copy.e2e.test.ts`, which boots the real `server.ts` as the cache copy under a stand-in `claude` and reads what it answers.
 
-## 0.68.7 (2026-10-14)
+### #232: two deliveries submitted together open their private turn
 
 **Two deliveries submitted together open their private turn.** Mark, agent 888 on 0.68.4 (2026-10-14 08:00:15Z): wakes 1460 and 1658 fired in the same second, both prompts logged `admitted its sender; the turn is usable once its marker matches`, and boards_update refused in that turn (`admitted user_369z... (prompt 5ca60a030597), waiting for its marker; none of the files this daemon reads matches`), a retry a minute later too. A single wake earlier that day worked.
 
@@ -41,9 +48,9 @@ Guards: `test/duplicate-copy.test.ts` (the decision table, the notice over a rea
 
 Guards: `test/private-turn-two-admitted.test.ts` (22 tests) runs the real forwarder, the real private turn hook, a real intake, the fire ledger and the tracker. The reported shape in all five orders the CLI allows; a marker for the first prompt and for the second; both wakes re-offered after a restart are replays; two owner messages sent together; and fail closed controls (a combined prompt nobody admitted, a typed prompt between them, another person, another chat, another session, after Stop, a voice consult, a fire that cannot be recorded). 13 were red on 0.68.4. Mutation proven: 19 mutations, each turns at least one test red, and every test is turned red by at least one.
 
-## Unreleased: shared agents Phase 0, the plugin half
+### #233: shared agents Phase 0, the plugin half
 
-Board rows 3d604489 and dd56ddf8, BGOS `docs/reports/2026-10-14-shared-agents-review/PLAN.md` section 3. The backend half ships separately; every change here works against today's backend and against that one. No version is published or tagged here.
+Board rows 3d604489 and dd56ddf8, BGOS `docs/reports/2026-10-14-shared-agents-review/PLAN.md` section 3. The backend half ships separately; every change here works against today's backend and against that one.
 
 - **On a recipient's turn the browser shim says whose browser it is (0.2, MATRIX M8.15, KC's decision D3).** With a signed managed context naming someone other than the owner, `hoai_browser_status` adds that their browser runs on this agent's own host or on their own Home of Agents desktop app, never on the owner's desktop app; the offline text (no host online, or a relay `host_offline`) and the relay's host timeout say the same and ask them, not the owner, instead of "your owner's Home of Agents desktop app is not running" or "The owner's desktop app did not answer". The comment that claimed a shared agent's page never runs on the owner's machine is corrected: a daemon placed agent's own host can be the owner's computer, and D3 allows it. The owner's own turn reads word for word as before. The BGOS source carries the same bytes on BGOS commit `166f1fbe6` (branch `fix/shared-agents-phase0-shim`, local, not yet merged, with its own `shim.recipient-turn.test.js` and its wording pin updated for D3), which the pin (`bin/hoai-browser-mcp.vendor.json`, sha256 `007dd4f6`) names as `sourceCommit`; the cross-tree check passes against it. Land the two together; `codex-channel-bgos` vendors the same file and is behind until it is re-vendored. Guard: `test/hoai-browser-mcp.recipient-host.test.ts` (the real shim process).
 
