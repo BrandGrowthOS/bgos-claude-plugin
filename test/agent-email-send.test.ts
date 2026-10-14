@@ -1643,7 +1643,7 @@ test('server.ts reads the tap\'s approval on every lane it learns of a tap, thro
 })
 
 /** relayPermissionToOwner, run out of server.ts with a fake card post and the real click resolver. */
-async function relayRun(t: any, f: ReturnType<typeof fixture>) {
+async function relayRun(t: any, f: ReturnType<typeof fixture>, over: Record<string, unknown> = {}) {
   const a = await approval()
   const m = await tools()
   const b = await binding()
@@ -1688,6 +1688,7 @@ async function relayRun(t: any, f: ReturnType<typeof fixture>) {
     refuseHookRailChat: () => false,
     AUTH: { mode: 'pairing', pairingToken: PAIRING_TOKEN },
     log: (line: string) => logs.push(String(line)),
+    ...over,
   }) as (...args: unknown[]) => Promise<void>
   const tap = async (callbackData: string, emailSendApproval: unknown) => {
     for (let i = 0; i < 50 && posts.length === 0; i++) await new Promise((r) => setImmediate(r))
@@ -1985,11 +1986,54 @@ test('review: a held email_send card goes to a main chat, never a group the owne
     a.emailSendCardChat({ turn: { actingUserId: OWNER, chatId: turnChat }, ownerUserId: OWNER, monitored: ['7701', '7702', OWN_CHAT], main, refused: [] })
   assert.equal(pick(OWN_CHAT, [OWN_CHAT]), OWN_CHAT)
   assert.equal(pick('7702', [OWN_CHAT]), OWN_CHAT, 'the owner wrote in a group: the card goes to the main chat')
-  assert.equal(pick('7702', []), '7702', 'no chat kinds known: the turn chat, as before')
+  // Data, 2026-10-15 (fail closed): with no chat kinds known there is no main chat of the owner, so no card at all.
+  // It was the turn chat before, and the turn chat can be a group (7702 here) while the card carries the whole email.
+  assert.equal(pick('7702', []), undefined, 'no chat kinds known: no main chat of the owner, so no card, never the turn chat')
+  assert.equal(pick(OWN_CHAT, []), undefined, 'not even the owner\'s own turn chat, when the inbox names no kinds')
   assert.equal(a.emailSendCardChat({ turn: { actingUserId: OWNER, chatId: '7702' }, ownerUserId: OWNER, monitored: ['7702', OWN_CHAT], main: [OWN_CHAT], refused: [new Set([OWN_CHAT])] }), undefined)
   // server.ts keeps the agent's main chats from the inbox and hands them over.
   assert.match(SRC, /mainChatIds = data\.chats\s*\.filter\(\(c\) => c\.assistantId === Number\(ASSISTANT_ID\) && c\.kind === 'main'\)/)
   assert.match(serverSlice('function relayPermissionToOwner(', '\n}\n'), /main: mainChatIds,/)
+})
+
+test('Data 2026-10-15, fail closed: a held email_send card never goes to a group; with no main chat of the owner it is posted nowhere and the call is refused', async (t) => {
+  const fs = await import('../lib/floor-state.mjs')
+  const record = fs.buildFloorRecord({ toolName: SEND_TOOL, toolInput: SEND_ARGS, match: { ruleId: 'acts_on_owners_behalf', rulesVersion: 3, evidence: SEND_TOOL } })
+  const params = { request_id: 'abcde', tool_name: SEND_TOOL, description: 'email_send', input_preview: previewOf(SEND_ARGS) }
+  const GROUP = '7701'
+  const cases: Array<[string, Record<string, unknown>]> = [
+    // The default pick would have taken the group, monitored first.
+    ['the only main chat refuses the agent, a group is monitored', { monitoredChatIds: [GROUP, OWN_CHAT], mainChatIds: [OWN_CHAT], hookRailRefusedChats: new Set([OWN_CHAT]) }],
+    // emailSendCardChat itself would have taken the turn chat, the group the owner wrote in.
+    ['no chat kinds known, the owner wrote in a group', { monitoredChatIds: [GROUP, OWN_CHAT], mainChatIds: [] }],
+  ]
+  for (const [name, over] of cases) {
+    const f = fixture(t)
+    const run = await relayRun(t, f, over)
+    f.start({ ...TURNS.ownerMessage, chatId: GROUP })
+    // Bounded: a card posted anywhere would wait for a verdict this harness never gives, so a fallback fails here
+    // instead of hanging the file. The fail closed path settles at once.
+    await Promise.race([run.relay(params, SEND_TOOL, true, record), new Promise((resolve) => setTimeout(resolve, 1000))])
+    assert.deepEqual(run.posts.map((p) => p.body.chatId), [], `${name}: no card is posted anywhere, the group least of all`)
+    // Marked BEFORE the CLI hears the verdict, so the tool step refuses this very call (the verdict carries no text).
+    assert.deepEqual(run.notes, [{ params: { request_id: 'abcde', behavior: 'allow' }, claimed: { requestId: 'abcde', approval: null, binding: SEND_BLOCK, noOwnerChat: true } }], name)
+  }
+})
+
+test('Data 2026-10-15: the call marked for having no chat of the owner is refused at the tool step with that sentence, and nothing reaches the backend', async (t) => {
+  const f = fixture(t)
+  const m = await tools()
+  const store = (await approval()).createEmailSendApprovals()
+  store.allow(SEND_TOOL, previewOf(SEND_ARGS), { requestId: 'abcde', approval: null, binding: SEND_BLOCK, noOwnerChat: true })
+  const { backend, call } = await serverCallTool(t, f, { emailSendApprovals: store }, { floor: { hold: true } })
+  f.start(TURNS.ownerMessage)
+  const result = await call('email_send', SEND_ARGS)
+  assert.equal(result.isError, true)
+  assert.equal(typeof m.EMAIL_SEND_NO_OWNER_CHAT, 'string')
+  assert.equal(textOf(result), m.EMAIL_SEND_NO_OWNER_CHAT)
+  assert.match(textOf(result), /^Not sent: your owner has no chat of their own with you that can take the approval card/)
+  assert.equal(backend.requests.length, 0, 'nothing is sent and no draft is saved')
+  assert.equal(backend.pulls.length, 0)
 })
 
 test('review: with auto approve off and no hook record, the floor still decides a held email_send (it binds the preview)', () => {

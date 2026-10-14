@@ -127,11 +127,11 @@ test('a held email_send card never goes to a chat known to be a share recipient\
   assert.deepEqual(r.posts[0]!.emailSend, SEND_BLOCK)
 })
 
-test('when every main chat refuses the email_send card with the 403, each is tried once and the request is denied', async () => {
-  const r = relayRig({ monitored: ['20', '21'], main: ['20', '21'], refuse: ['20', '21'] })
+test('when every main chat refuses the email_send card with the 403, each is tried once, and with none left the call is refused (Data 2026-10-15), never carried to another chat', async () => {
+  const r = relayRig({ monitored: ['20', '21', '30'], main: ['20', '21'], refuse: ['20', '21'] })
   await r.relay('cdefg')
-  assert.deepEqual(r.posts.map((p) => p.chatId), ['20', '21'])
-  assert.deepEqual(r.notes.map((n) => n.behavior), ['deny'])
+  assert.deepEqual(r.posts.map((p) => p.chatId), ['20', '21'], 'never 30, which is not a main chat')
+  assert.deepEqual(r.notes, [{ behavior: 'allow', claimed: { requestId: 'cdefg', approval: null, binding: SEND_BLOCK, noOwnerChat: true } }])
 })
 
 test('emailSendCardChat: the owner\'s main chats first, never one known to be somebody else\'s; with no evidence, as before', () => {
@@ -149,6 +149,6 @@ test('emailSendCardChat: the owner\'s main chats first, never one known to be so
   assert.equal(pick(null, ['20', '10', '11']), '11', 'the owner main chat confirmed last')
   assert.equal(pick({ actingUserId: OWNER, chatId: '10' }, ['20', '10', '11']), '10', 'the owner turn chat, when it is a main chat')
   assert.equal(pick({ actingUserId: OWNER, chatId: '20' }, ['20', '10']), '10', 'never a recipient chat, even as the turn chat')
-  assert.equal(pick(null, ['20']), undefined, 'only a recipient main chat: none here, so the default pick decides')
-  assert.equal(pick({ actingUserId: OWNER, chatId: '20' }, []), undefined, 'no chat kinds known: the turn chat only when it is not somebody else\'s')
+  assert.equal(pick(null, ['20']), undefined, 'only a recipient main chat: none, and the call is refused')
+  assert.equal(pick({ actingUserId: OWNER, chatId: '10' }, []), undefined, 'no chat kinds known: none (Data 2026-10-15), not even the owner turn chat')
 })

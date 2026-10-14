@@ -146,6 +146,7 @@ import { createPrivateTurnTracker, emailSendBasis, PRIVATE_TURN_REFUSAL, private
 import { createFireLedger, privateFireKey, privateFiresPath, privateReplayLine, privateUnrecordedLine } from './lib/private-turn.mjs'
 import {
   AGENT_EMAIL_SEND_APPROVALS_PATH,
+  EMAIL_SEND_NO_OWNER_CHAT,
   EMAIL_SEND_TOO_LONG_AGAIN,
   EMAIL_TOOL_DECLS,
   agentEmailCallerHeaders,
@@ -3404,7 +3405,7 @@ function relayPermissionToOwner(
   // card goes to the chat of the owner's turn: only the agent's own main chat
   // with its owner can carry an Allow. It skips the same chats and reads the
   // same ownership, so a 403 retry never posts it into one chat twice.
-  const chatId = (emailCard
+  const chatId = emailCard
     ? emailSendCardChat({
         turn: privateTurns.current({ markerPaths: PRIVATE_MARKER_PATHS }),
         ownerUserId: USER_ID,
@@ -3413,7 +3414,33 @@ function relayPermissionToOwner(
         refused: [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats],
         ownership: chatOwnership,
       })
-    : undefined) ?? pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership)
+    : pickPermissionChat(monitoredChatIds, [hookRailRefusedChats, a2aRouteRefusedChats, permissionCardRefusedChats], chatOwnership)
+  if (emailCard && !chatId) {
+    // DATA, 2026-10-15 (the 0.69.0 review, finding 4), fail closed: no main
+    // chat of the owner can take this card, so it is posted NOWHERE. Never
+    // the default pick: that can be a group, and the card carries the whole
+    // email. The call is refused, and the agent told why
+    // (EMAIL_SEND_NO_OWNER_CHAT). The CLI's verdict carries no text (its
+    // channel permission schema is request_id and behavior only), so the
+    // refusal is made at the tool step: the call is marked here, BEFORE the
+    // CLI hears allow, and emailSendApproval refuses it, posting nothing. A
+    // call the mark does not name meets the floor check there instead, which
+    // holds it while the owner asks first, so it sends nothing either.
+    emailSendApprovals.allow(tool_name, input_preview, {
+      requestId: request_id,
+      approval: null,
+      binding: emailCard.block,
+      noOwnerChat: true,
+    })
+    log(`email_send [${request_id}]: no main chat of the owner can take its card, so none is posted anywhere; the call is refused and nothing is sent`)
+    await mcp.notification({
+      method: 'notifications/claude/channel/permission',
+      params: { request_id, behavior: 'allow' },
+    }).catch((err) => {
+      log(`Failed to send the verdict for an email_send no chat of the owner can approve: ${err}`)
+    })
+    return
+  }
   if (!chatId) {
     log(`No monitored chat that takes this agent's posts, auto-denying ${tool_name} [${request_id}]`)
     await mcp.notification({
@@ -3794,6 +3821,12 @@ function postFloorCheck(
  */
 async function emailSendApproval(args: unknown): Promise<string | null | EmailSendGo> {
   const grant = emailSendApprovals.claim(args)
+  if (grant?.noOwnerChat) {
+    // Data, 2026-10-15: no main chat of the owner could take its card, so no
+    // card was posted anywhere; the call is refused here and nothing is sent.
+    log(`email_send: refused, no main chat of the owner could take its card [${grant.requestId ?? '?'}]`)
+    return EMAIL_SEND_NO_OWNER_CHAT
+  }
   if (grant?.tooLongForCard) {
     // v7: no approval can exist for it, so none is asked for. The server keeps
     // it as a draft; once it has, the very same email again saves no second.

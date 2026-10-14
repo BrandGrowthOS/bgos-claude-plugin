@@ -146,6 +146,14 @@ export function emailSendTooLongDraftText(characters: number, line: string): str
   return `Not sent: the email was kept as a draft for your owner, because it is too long for your owner to approve on a card${count}. Your owner can read all of it and send it from the Email chat (${line}). Do not try again; tell your owner it is waiting as a draft in the Email chat.`
 }
 
+/**
+ * Data, 2026-10-15 (the 0.69.0 review, finding 4): a held send whose approval card no main chat of the owner can take
+ * is refused, never carried to a card in another chat (a group would show the whole email). The CLI's permission
+ * verdict carries no text, so the relay lets the call reach this step and the step refuses it, posting nothing.
+ */
+export const EMAIL_SEND_NO_OWNER_CHAT =
+  'Not sent: your owner has no chat of their own with you that can take the approval card for this email, so there is nowhere for them to approve it. Nothing was sent and nothing was saved. Save it with email_draft and tell your owner instead.'
+
 /** v7: the same too long email again, which this daemon already handed over as a draft: nothing more is saved. */
 export const EMAIL_SEND_TOO_LONG_AGAIN =
   'Not sent: this email is already waiting as a draft for your owner in the Email chat (it is too long to approve on a card), and nothing more was saved. Do not try again; tell your owner it is waiting as a draft in the Email chat.'

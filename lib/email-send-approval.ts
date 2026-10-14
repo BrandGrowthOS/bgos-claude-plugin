@@ -451,8 +451,11 @@ export function emailSendCardBinding(input: {
  * send that can never go. So: the chat of the turn the owner opened, when it
  * is one of the agent's main chats (`main`, from the inbox); else the first
  * main chat this daemon may post in; and when no chat kinds are known at all
- * (an older inbox), the owner's turn chat as before. Undefined leaves the
- * default pick.
+ * (an older inbox), none. Undefined means no main chat of the owner can take
+ * the card: the relay then posts it nowhere and refuses the call (Data,
+ * 2026-10-15, fail closed). It never falls back to the default pick, nor to
+ * the turn chat when no chat kinds are known, since either can be a group and
+ * the card carries the whole email.
  *
  * `ownership` (shared agents Phase 0, item 0.8, lib/chat-ownership.ts), as
  * pickPermissionChat reads it: on a shared agent every recipient has a main
@@ -475,7 +478,6 @@ export function emailSendCardChat(input: {
   const turn = input.turn
   const turnChat =
     turn && typeof turn.actingUserId === 'string' && turn.actingUserId === input.ownerUserId ? String(turn.chatId ?? '') : ''
-  if (input.main.length === 0) return usable(turnChat) ? turnChat : undefined
   if (input.main.includes(turnChat) && usable(turnChat)) return turnChat
   const owners = ownership ? ownership.ownerChats().filter((chatId) => input.main.includes(chatId)) : []
   return owners.find(usable) ?? input.main.find(usable)
@@ -501,6 +503,12 @@ export interface EmailSendGrant {
    * never with an approval.
    */
   withoutCard?: true
+  /**
+   * Data, 2026-10-15: no main chat of the owner could take the card, so none
+   * was posted anywhere and the call is refused at the tool step, sending and
+   * saving nothing (EMAIL_SEND_NO_OWNER_CHAT). Never with an approval.
+   */
+  noOwnerChat?: true
 }
 
 export interface EmailSendApprovals {
@@ -568,7 +576,9 @@ export function createEmailSendApprovals(
   // call its binding names to the byte; otherwise the send goes without it,
   // and while Always ask is on the server keeps it as a draft.
   const allowedCard = (entry: { email: EmailSendPreview; grant: EmailSendGrant }, args: unknown) =>
-    entry.grant.binding || entry.grant.tooLongForCard || entry.grant.withoutCard ? previewMatchesCall(entry.email, args) : emailMatchesPreview(entry.email, args)
+    entry.grant.binding || entry.grant.tooLongForCard || entry.grant.withoutCard || entry.grant.noOwnerChat
+      ? previewMatchesCall(entry.email, args)
+      : emailMatchesPreview(entry.email, args)
   const claim = (args: unknown): EmailSendGrant | null => {
     dropStale()
     let index = waiting.findIndex((entry) => allowedCard(entry, args) && entry.grant.binding !== null && bindingMatchesCall(entry.grant.binding, args))
@@ -582,10 +592,11 @@ export function createEmailSendApprovals(
       (bound || (entry!.grant.binding === null && emailSendTooLongForCard(String((args as { text?: unknown }).text ?? ''))))
     return {
       requestId: entry!.grant.requestId,
-      approval: bound && !entry!.grant.tooLongForCard ? spend(entry!.grant.approval) : null,
+      approval: bound && !entry!.grant.tooLongForCard && !entry!.grant.noOwnerChat ? spend(entry!.grant.approval) : null,
       binding: bound ? entry!.grant.binding : null,
       ...(tooLong ? { tooLongForCard: true as const } : {}),
       ...(entry!.grant.withoutCard ? { withoutCard: true as const } : {}),
+      ...(entry!.grant.noOwnerChat ? { noOwnerChat: true as const } : {}),
     }
   }
   return {
@@ -603,6 +614,7 @@ export function createEmailSendApprovals(
           binding: isEmailSendBlock(grant.binding) ? (grant.binding as EmailSendBlock) : null,
           ...(grant.tooLongForCard === true ? { tooLongForCard: true as const } : {}),
           ...(grant.withoutCard === true && !isEmailSendBlock(grant.binding) ? { withoutCard: true as const } : {}),
+          ...(grant.noOwnerChat === true ? { noOwnerChat: true as const } : {}),
         },
       })
       while (waiting.length > MAX_WAITING) waiting.shift()
