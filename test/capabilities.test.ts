@@ -240,6 +240,7 @@ test('the daemon\'s own base declaration reaches the fetch, boards_playbook incl
     'skills_list',
     'skills_receive',
     'email_label',
+    'email_send',
     'hard_floor',
     'hard_floor_rules_2',
   ])

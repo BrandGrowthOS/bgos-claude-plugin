@@ -70,6 +70,13 @@ export interface StreamAnswerPayload {
    * and moving what they decide on is not this field's job.
    */
   tapperUserId: string | null
+  /**
+   * The email send approval an owner's Allow once tap issued (the server
+   * approval contract's section 3), as the answer carries it, unvalidated:
+   * resolvePermissionClick reads it as exactly {id, expiresAt} or not at all.
+   * Present only when the answer carries one.
+   */
+  emailSendApproval?: unknown
 }
 
 export interface StreamMessageView {
@@ -116,6 +123,7 @@ function answerPayloadOf(raw: unknown): StreamAnswerPayload | null {
     customText,
     clickerUserId: senderUserIdCandidate(r),
     tapperUserId: readTapperUserId(r),
+    ...(r.emailSendApproval !== undefined && r.emailSendApproval !== null ? { emailSendApproval: r.emailSendApproval } : {}),
   }
 }
 

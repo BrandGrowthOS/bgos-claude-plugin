@@ -80,6 +80,7 @@ import {
   classifyPath,
   classifyPermissionRequest,
   hardFloorWords,
+  isOwnSendingTool,
   previewIsElided,
   readToolInput,
 } from './hard-floor.js'
@@ -132,6 +133,14 @@ export interface FloorRecord {
   permissionMode: string | null
   sessionId: string | null
   toolUseId: string | null
+  /** The probe of the value the floor read (lib/floor-state.mjs valueProbe). */
+  probe?: { head: string; tail: string }
+  /**
+   * This channel's email_send only: the binding the owner's card names
+   * (lib/email-send-binding.mjs), from the hook's whole input. Unvalidated
+   * as read: the relay checks it before it uses it.
+   */
+  emailSend?: unknown
 }
 
 /** How the relay treats one permission request, before any network. */
@@ -165,7 +174,11 @@ export function planFloorRequest(input: {
       },
     }
   }
-  if (!input.autoApprove) return { action: 'none' }
+  // With auto approve off only a request the record vouches for is asked
+  // about, except this channel's own email_send: its card can carry the
+  // owner's Allow only when the floor holds it (the server approval), so the
+  // preview's own match decides it as well.
+  if (!input.autoApprove && !(input.previewMatch && isOwnSendingTool(input.toolName))) return { action: 'none' }
   if (input.previewMatch) {
     return { action: 'consult', source: 'preview', record: null, match: input.previewMatch }
   }

@@ -51,7 +51,7 @@ const PRIVATE_EVENTS = ['UserPromptSubmit', 'Stop', 'SessionEnd']
 /** Registered for the private hook alone: it records which turn started each helper. */
 const PRIVATE_ONLY_EVENTS = ['SubagentStart']
 /** The private hook's PreToolUse guard: a helper's private call outside its own turn is refused. */
-const PRIVATE_TOOL_MATCHER = '^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+))$'
+const PRIVATE_TOOL_MATCHER = '^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|email_send))$'
 /** Anchored: the CLI tests a matcher that is not a plain word list as a
  *  regex, so an unanchored `Write` would also fire for `TodoWrite`. */
 const FLOOR_MATCHER = '^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*)$'
