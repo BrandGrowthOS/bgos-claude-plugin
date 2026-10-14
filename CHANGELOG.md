@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased: managed browser profile caller
+
+Managed paired launches discover the acting person's browser profile through HOAI before every call. A stopped, stale, revoked or unavailable managed profile refuses without opening a different local or legacy browser. Polls and cancellation retain the original actor and exact runtime authority. Fresh machines still need explicit human device and background-use approval; the caller does not enroll an endpoint or grant itself access.
+
+The zero-dependency shim is byte-identical to BGOS commit `9b825167dcffe5757fe3c3fbd6a8b61abb9e7a69`, SHA256 `0ff87b0708c53deb6c1dbc52340caf1e7cce28c38e0fe53bf70d5afe7f9d9a84`. The cross-tree guard and focused caller, launcher, legacy and managed-profile tests cover this copy. This source change is not a published plugin release. The separate Codex channel copy has not been updated in this worktree.
+
 ## 0.68.4 (2026-10-13)
 
 One release carrying three pull requests: a voice consult from the owner opens a private turn for that one consult (#227); replayed scheduled fires, the Windows hook self-restart and the private turn hook's cold start (#229, written as 0.68.6); and the PATH baked into an agent's or the watcher's unit is correct for its OS (#226). Found on the release head: an owner message the agent answered opens no private turn when a restart brings it back.

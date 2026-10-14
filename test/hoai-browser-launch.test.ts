@@ -324,6 +324,16 @@ test('main: the shim is spawned with node, the relay env, inherited stdio, and t
   assert.equal(await pending, 3)
 })
 
+test('main: managed paired launches always enable fresh profile discovery while legacy API credentials cannot select it',async()=>{
+  for(const mode of ['pairing','apikey']){
+    const {calls,impl}=spawnRecorder()
+    const pending=main([],{env:{HOAI_RELAY_MANAGED:'1',HOAI_RELAY_PROFILE_SYNC:'0'},home:'/home/kc',platform:'linux',exists:existsAll,dir:BIN,nodePath:'/usr/bin/node',spawnImpl:impl,writeErr:()=>{},onSignal:()=>{},spawnSyncImpl:resolverPrinting({backendUrl:'https://api.brandgrowthos.ai',pairingToken:mode==='pairing'?'synthetic-pair':'',apiKey:mode==='apikey'?'synthetic-api':'',assistantId:'42',ownerUserId:'user_owner',contextFile:'/synthetic/private-context.json',mode,complete:true})})
+    assert.equal(calls[0].opts.env.HOAI_RELAY_PROFILE_SYNC,mode==='pairing'?'1':'0')
+    assert.equal(calls[0].opts.env.HOAI_RELAY_CONTEXT_FILE,'/synthetic/private-context.json')
+    calls[0].child.emit('exit',0,null);assert.equal(await pending,0)
+  }
+})
+
 test('main: an incomplete agent still gets the shim, with no relay env and one stderr line', async () => {
   const { calls, impl } = spawnRecorder()
   const errs: string[] = []

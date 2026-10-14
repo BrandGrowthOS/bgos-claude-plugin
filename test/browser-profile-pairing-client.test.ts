@@ -26,6 +26,18 @@ test('paired callers and endpoint signers use distinct fixed routes and never mi
   assert.deepEqual(f.scopes.map(value => value.purpose), ['caller', 'caller', 'caller', 'endpoint', 'endpoint', 'endpoint']); assert.ok(f.scopes.every(Object.isFrozen)); assert.equal(f.proof.ownerUserId, 'sharer')
   for (const name of ['context', 'create', 'enrollDesktop', 'grant', 'start', 'begin', 'activate', '_request']) assert.equal((f.client as any)[name], undefined)
 })
+
+test('paired discovery uses the verified actor only and returns exact advisory managed authority',async()=>{
+  let result:any;const f=fixture({fetch:async()=>response(result)}),scope={actingUserId:f.authority.actingUserId,assistantId:f.authority.assistantId}
+  result={managed:false,...scope};assert.deepEqual(await f.client.resolve(scope),result)
+  result={managed:true,...scope,profileId:f.authority.profileId,state:'active',authority:f.authority};assert.deepEqual(await f.client.resolve(scope),result)
+  for(const state of ['idle','stopped','staged','quiescing','fenced']){result={managed:true,...scope,profileId:f.authority.profileId,state};assert.deepEqual(await f.client.resolve(scope),result)}
+  for(const call of f.calls){assert.equal(new URL(call.url).pathname,'/api/v1/browser/profile-sync/rpc/resolve');assert.deepEqual(JSON.parse(call.init.body),{assistantId:7});assert.equal(call.init.headers['X-BGOS-Acting-User'],'recipient');assert.equal(call.init.headers.Authorization,undefined)}
+  for(const malformed of [{managed:false,...scope,authority:f.authority},{managed:false,...scope,actingUserId:'sharer'},{managed:true,...scope,profileId:f.authority.profileId,state:'stopped',authority:f.authority},{managed:true,...scope,profileId:f.authority.profileId,state:'active',authority:{...f.authority,grantVersion:0}},{managed:true,...scope,profileId:randomUUID(),state:'active',authority:f.authority}]){
+    result=malformed;await assert.rejects(f.client.resolve(scope))
+  }
+  assert.equal(f.scopes.every(value=>value.purpose==='caller'),true)
+})
 test('exact shared dispatch, cancellation and Unicode result signatures bind original authority', async () => {
   const f = fixture(), payload = { ok: true, message: { jsonrpc: '2.0', id: 1, result: { text: 'مرحبا 🌍' } } }
   await f.client.dispatch(f.authority, f.endpoint, f.rpc); await f.client.cancellation(f.authority, f.endpoint, f.rpc); await f.client.result(f.authority, f.endpoint, { ...f.rpc, payload })

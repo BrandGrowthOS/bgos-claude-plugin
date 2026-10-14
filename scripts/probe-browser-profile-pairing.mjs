@@ -41,6 +41,8 @@ try {
     if (!refusal) throw new Error('fixture_foreign_actor_was_admitted')
     process.stdout.write(JSON.stringify(refusal)); process.disconnect()
   } else {
+  const resolved = await client.resolve({actingUserId:input.authority.actingUserId,assistantId:input.authority.assistantId})
+  if(resolved.managed!==true||resolved.state!=='active'||Object.keys(input.authority).some(key=>resolved.authority[key]!==input.authority[key]))throw new Error('fixture_discovery_mismatch')
   let executions = 0, frame
   runtime = createPairedProfileRuntimeEndpoint({ authority: input.authority, endpoint, client, assertCurrent, execute: async value => {
     executions++; frame = value.frame
@@ -57,7 +59,7 @@ try {
   const duplicateCall = await client.call(input.authority, { clientId: frame.clientId, message: frame.message, waitMs: 0 })
   const cancelAfter = await client.cancel(input.authority, scope)
   await runtime.close(); runtime = null
-  const summary = { bindingId: binding.bindingId, outcome, cancellation, executions, tool: frame.message.params?.name || null, polled: polled.status, duplicateCall: duplicateCall.status, cancelAfter: cancelAfter.requested, requests }
+  const summary = { resolved:{managed:resolved.managed,state:resolved.state,exactAuthority:true},bindingId: binding.bindingId, outcome, cancellation, executions, tool: frame.message.params?.name || null, polled: polled.status, duplicateCall: duplicateCall.status, cancelAfter: cancelAfter.requested, requests }
   const output = JSON.stringify(summary); if (Buffer.byteLength(output) > 16 * 1024) throw new Error('fixture_output_oversized')
   process.stdout.write(output); process.disconnect()
   }

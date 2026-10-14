@@ -294,6 +294,7 @@ export function main(argv = process.argv.slice(2), opts = {}) {
       childEnv.HOAI_RELAY_CONTEXT_FILE = childEnv.HOAI_RELAY_CONTEXT_FILE || privateContextPath(floorStateRoot(env), childEnv.HOAI_RELAY_ASSISTANT_ID || 'unavailable')
       childEnv.HOAI_RELAY_OWNER_USER_ID = childEnv.HOAI_RELAY_OWNER_USER_ID || childEnv.BGOS_USER_ID || ''
       childEnv.HOAI_RELAY_CLIENT_PID = String(process.ppid)
+      if (childEnv.HOAI_RELAY_PAIRING_TOKEN) childEnv.HOAI_RELAY_PROFILE_SYNC = '1'
     }
     const child = spawnImpl(nodePath, [shimPath(dir), ...argv], { stdio: 'inherit', env: childEnv })
     const forward = (signal) => {
