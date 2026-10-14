@@ -81,6 +81,10 @@ function relayRig(opts: { monitored: string[]; main: string[]; refuse?: string[]
     isPermissionCardOwnerChatOnly,
     refuseHookRailChat: () => false,
     bgosPost: async (_path: string, body: { chatId: number | string; approvalMeta?: Record<string, unknown> }) => {
+      // Yield, as a real post does, so a retry that loops on one chat cannot starve the test's timer; and stop it
+      // outright: a loop then ends in a deny the assertions see, instead of a hang.
+      await new Promise((resolve) => setImmediate(resolve))
+      if (posts.length >= 10) throw new Error('the card was posted 10 times: the 403 retry is looping')
       const chatId = String(body.chatId)
       posts.push({ chatId, emailSend: body.approvalMeta?.email_send ?? null })
       if (opts.refuse?.includes(chatId)) throw new FakeHttpError(403, OWNER_CHAT_ONLY)
