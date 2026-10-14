@@ -207,3 +207,13 @@ test('boards and schedule stay gated exactly as on main', async () => {
   }
   assert.match(admissionSource, /if \(req\.params\.name\.startsWith\('boards_'\) \|\| \['schedule', 'list_schedules', 'cancel_schedule'\]\.includes\(req\.params\.name\)\) \{/, 'the strict list is main\'s, unchanged')
 })
+
+test('a prompt carrying several deliveries at once (queued messages, the boot sweep) counts every sender', (t) => {
+  const s = session(t)
+  s.prompt(`${s.deliver(OWNER, '10')}\n${s.deliver(RECIPIENT, '20')}`)
+  assert.equal(s.call().refused, TURN_AWARE_REFUSAL, 'a recipient delivery rode in with the owner one')
+  assert.deepEqual(s.tracker.turnSenders(), { prompt: null, people: [OWNER, RECIPIENT] })
+  s.stop()
+  s.prompt(`${s.deliver(OWNER, '10')}\n${s.deliver(OWNER, '11')}`)
+  assert.deepEqual([s.call().actingUserId, s.call().headers], [OWNER, {}], 'two owner deliveries are the owner')
+})
