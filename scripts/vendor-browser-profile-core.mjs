@@ -12,14 +12,14 @@ const git = args => { const result = spawnSync('git', ['-C', source, ...args], {
 const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).toString().trim()
 if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid source commit')
 const destination = join(root, 'lib/browser-profile-core'), files = {}
-for (const name of ['crypto.js', 'storage.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js']) {
+for (const name of ['crypto.js', 'storage.js', 'portable-state.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js']) {
   const sourcePath = `frontend/electron-app/agent-browser/profile-sync/${name}`, bytes = git(['show', `${commit}:${sourcePath}`])
   if (bytes.includes(13)) throw new Error(`${name} must be LF in the committed source`)
   files[name] = { source: `BGOS: ${sourcePath}`, sha256: createHash('sha256').update(bytes).digest('hex') }
   if (write) { mkdirSync(destination, { recursive: true }); writeFileSync(join(destination, name), bytes) }
   else if (!readFileSync(join(destination, name)).equals(bytes)) throw new Error(`${name} differs from committed source`)
 }
-const manifest = { version: 1, sourceCommit: commit, why: 'Byte-identical encrypted checkpoint, lossless storage, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.', files }
+const manifest = { version: 1, sourceCommit: commit, why: 'Byte-identical encrypted checkpoint, lossless storage, strict complete portable state, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.', files }
 if (write) {
   writeFileSync(join(destination, 'package.json'), '{"private":true,"type":"commonjs"}\n')
   writeFileSync(join(destination, 'vendor.json'), JSON.stringify(manifest, null, 2) + '\n')

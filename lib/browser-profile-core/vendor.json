@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sourceCommit": "109872c41dc004d485e170da03e8f1a8f606cb0c",
-  "why": "Byte-identical encrypted checkpoint, lossless storage, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.",
+  "sourceCommit": "549ffc88c479595f7fae3d06a226def82c205fa0",
+  "why": "Byte-identical encrypted checkpoint, lossless storage, strict complete portable state, cookie codecs, typed runtime endpoint and signed document helpers shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.",
   "files": {
     "crypto.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/crypto.js",
@@ -11,13 +11,17 @@
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/storage.js",
       "sha256": "a78d8e9daf05e3cff71f3aa100e8a32656a63bca7508529a06923097885bbfd3"
     },
+    "portable-state.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/portable-state.js",
+      "sha256": "0539458b36a2d112277889c151f501881b4a2ff2d0a5653e3dca62818e3409b0"
+    },
     "native-runtime.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/native-runtime.js",
-      "sha256": "43bc77d1452f30e5a26819f8082ede10d2b3b5fd4945d009fe880f30aabd30e8"
+      "sha256": "03badbb6fc8901f3156cff8d2dcb3178705768831a0f4ab7578b5a405a0c8d3a"
     },
     "coordinator-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/coordinator-client.js",
-      "sha256": "cdc5bd9f1ea64a1d0b7e97213bbf871f33a0b1e1906d0b468ae5e13c1a881661"
+      "sha256": "ab7527ce462e83901bb7d7cfc651b66bf0b29b2c0ebf98f678924e3265d5124d"
     },
     "runtime-endpoint.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-endpoint.js",

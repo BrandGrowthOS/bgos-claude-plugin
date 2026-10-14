@@ -10,7 +10,7 @@ const root = join(import.meta.dirname, '..'), core = join(root, 'lib/browser-pro
 const manifest = JSON.parse(readFileSync(join(core, 'vendor.json'), 'utf8'))
 test('profile codecs ship exactly the pinned committed bytes and CommonJS boundary', () => {
   assert.deepEqual(readdirSync(core).filter(name => name.endsWith('.js')).sort(), Object.keys(manifest.files).sort())
-  assert.deepEqual(Object.keys(manifest.files).sort(), ['coordinator-client.js', 'crypto.js', 'native-runtime.js', 'runtime-endpoint.js', 'storage.js'])
+  assert.deepEqual(Object.keys(manifest.files).sort(), ['coordinator-client.js', 'crypto.js', 'native-runtime.js', 'portable-state.js', 'runtime-endpoint.js', 'storage.js'])
   assert.match(manifest.sourceCommit, /^[a-f0-9]{40}$/)
   for (const [name, pin] of Object.entries(manifest.files) as Array<[string, any]>) {
     const bytes = readFileSync(join(core, name)); assert.equal(bytes.includes(13), false)
@@ -21,6 +21,7 @@ test('profile codecs ship exactly the pinned committed bytes and CommonJS bounda
   const require = createRequire(import.meta.url)
   assert.equal(typeof require('../lib/browser-profile-core/crypto.js').sealCheckpoint, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/storage.js').createStorageAdapter, 'function')
+  assert.equal(require('../lib/browser-profile-core/portable-state.js').SCHEMA, 'hoai-portable-profile-state-v1')
   assert.equal(typeof require('../lib/browser-profile-core/native-runtime.js').cookies, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/coordinator-client.js').documentSignature, 'function')
   assert.equal(typeof require('../lib/browser-profile-core/runtime-endpoint.js').ProfileRuntimeEndpoint, 'function')

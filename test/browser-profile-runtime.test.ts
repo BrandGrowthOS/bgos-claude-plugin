@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
+const emptyExtras = () => ({ passwordVault: { v: 1, entries: [], neverOrigins: [] }, preferences: { v: 1, searchEngine: 'google' } })
 class Protocol extends EventEmitter {
   calls: any[] = []; targets = new Map<string, any>(); noPause = false; refuseNetwork = false
   async send(method: string, params: any = {}): Promise<any> {
@@ -176,7 +177,8 @@ function runtimeFixture(overrides: any = {}) {
   const ledger: any = { generation: 1, frozen: false, inventory: async () => [], assertIdle() {}, freeze: async () => { calls.push('freeze'); ledger.frozen = true; return ledger.generation }, resume: async () => { calls.push('resume'); ledger.frozen = false }, dispose: () => calls.push('dispose') }
   const runtime: any = new BrowserProfileRuntime({ browser, context: nativeContext, root: { send: async () => ({ targetInfos: [] }) }, ledger, authority, timeoutMs: 30, assertProcessExited: async () => { calls.push('exit-proof'); return true },
     closeAndDrain: async () => { calls.push('drain'); return { admissionClosed: true, drained: true } }, checkpoint: async (value: any) => { calls.push('checkpoint'); return { durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) } },
-    authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('current') } }), ...overrides })
+    authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { calls.push('current') } }),
+    preflightExtras: () => emptyExtras(), captureExtras: () => ({ bundle: emptyExtras(), assertCurrent() {}, release() {} }), commitExtras: () => ({ committed: true }), ...overrides })
   runtime.contextId = 'context-a'; runtime._exporter = async () => ({ evaluate: async () => true }); runtime.processIdentity = { pid: 7, started: 'fixture' }
   return { runtime, source, destination, key, context, authority, targetAuthority, calls, nativeContext, ledger, finalize: () => runtime.finalize({ context, source, destinationIdentity: destination.identity, contentKeyEpoch: key }) }
 }
@@ -232,7 +234,7 @@ test('stage stays inactive, requires exact cookie readback and no surviving targ
     const target = runtimeFixture(); target.runtime.authority = Object.freeze(source.targetAuthority); target.runtime.root.send = async () => ({ targetInfos: survivingTarget ? [{ browserContextId: 'context-a' }] : [] })
     const stage = () => target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination })
     if (survivingTarget) { await assert.rejects(stage(), { reason: 'profile_runtime_workers_running' }); assert.equal(target.runtime.state, 'disposed') }
-    else { const staged = await stage(); assert.equal(target.runtime.state, 'staged'); assert.equal(target.runtime.network, 'blocked'); assert.equal(staged.receipt.stagedInactive, true); assert.equal(staged.receipt.manifestHash, stopped.receipt.manifestHash) }
+    else { const staged = await stage(); assert.equal(target.runtime.state, 'staged'); assert.equal(target.runtime.network, 'blocked'); assert.equal(staged.receipt.stagedInactive, true); assert.equal(staged.receipt.manifestHash, stopped.receipt.manifestHash); assert.equal(Object.isFrozen(staged.receipt.destination), true) }
   }
 })
 test('destination cookie import mismatch purges instead of issuing an inactive-stage receipt', async () => {
@@ -262,4 +264,63 @@ test('oversized native packets and exhausted request inventories fail closed wit
   const f = await fixture(t); await f.ready('page'); f.root.emit('Target.receivedMessageFromTarget', { sessionId: 'legacy-page', message: 'x'.repeat(1024 * 1024 + 1) }); await assert.rejects(f.ledger.inventory('context-a'), { reason: 'profile_target_message_invalid' })
   const requests = await fixture(t); await requests.ready('page'); for (let index = 0; index <= 16384; index++) requests.root.child('page', 'Network.requestWillBeSent', { requestId: String(index), request: { method: 'GET', url: 'https://fixture.test/' } })
   assert.equal(requests.ledger.active.size, 16384); await assert.rejects(requests.ledger.inventory('context-a'), { reason: 'profile_inventory_limit' })
+})
+const portableState = createRequire(import.meta.url)('../lib/browser-profile-core/portable-state.js')
+const loginExtras = () => ({ passwordVault: { v: 1, entries: [{ id: '0d694ca4-9b5d-4d95-a8bc-36eb1876bd80', origin: 'https://fixture.test', username: 'synthetic-user', password: 'synthetic-portable-login-secret', name: 'Synthetic', createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:00:00.000Z' }], neverOrigins: ['https://never.example.test'] }, preferences: { v: 1, searchEngine: 'duckduckgo' } })
+test('portable extras are mandatory and invalid or asynchronous preflight never closes source admission', async () => {
+  for (const field of ['preflightExtras', 'captureExtras', 'commitExtras']) assert.throws(() => runtimeFixture({ [field]: undefined }), { reason: 'profile_runtime_extras_dependencies_required' })
+  for (const preflightExtras of [() => ({ ...emptyExtras(), preferences: { v: 1, searchEngine: 'custom' } }), () => Promise.reject(new Error('synthetic-secret')), () => false]) {
+    const f = runtimeFixture({ preflightExtras }); await f.runtime.activate({}); await assert.rejects(f.finalize()); assert.equal(f.calls.includes('drain'), false); assert.equal(f.runtime.state, 'active'); assert.equal(f.runtime.browser.isConnected(), true); assert.equal(f.runtime.network, 'active')
+  }
+})
+test('oversized saved-login preflight refuses before destructive shutdown', async () => {
+  const extras = loginExtras(), row = extras.passwordVault.entries[0]; extras.passwordVault.entries = Array.from({ length: 1100 }, (_, i) => ({ ...row, id: i.toString(16).padStart(8, '0') + '-9b5d-4d95-a8bc-36eb1876bd80', username: String(i), password: 'x'.repeat(16384) }))
+  const f = runtimeFixture({ preflightExtras: () => extras }); await f.runtime.activate({}); await assert.rejects(f.finalize(), { code: 'profile_portable_state_invalid' }); assert.equal(f.calls.includes('drain'), false); assert.equal(f.runtime.browser.isConnected(), true)
+})
+test('all source targets stop before extras capture and its mutation barrier lasts through durable encrypted seal', async () => {
+  const extras = loginExtras(); let held = false, released = 0, f: any
+  f = runtimeFixture({ preflightExtras: () => extras, captureExtras: () => { assert.equal(f.runtime.state, 'quiescing'); assert.equal(f.nativeContext.pages().length, 0); assert.equal(f.ledger.frozen, true); held = true; return { bundle: extras, assertCurrent() { assert.equal(held, true) }, release() { held = false; released++ } } },
+    checkpoint: async (value: any) => { assert.equal(f.runtime.browser.isConnected(), false); assert.equal(held, true); await tick(); assert.equal(held, true); return { durable: true, manifestHash: profileCrypto.manifestHash(value.checkpoint.manifest) } } })
+  let oldClosed = false; const oldPage = { close: async () => { oldClosed = true } }; f.nativeContext.pages = () => oldClosed ? [] : [oldPage]; f.runtime.pages.add(oldPage); f.runtime._assertDocumentSafety = async () => {}
+  await f.runtime.activate({}); const stopped = await f.finalize(), opened = profileCrypto.openCheckpoint({ checkpoint: stopped.checkpoint, expectedContext: f.context, sourceIdentity: f.source.identity, destination: f.destination })
+  const payload = portableState.decodePortableState(opened.plaintext); assert.deepEqual(payload.passwordVault, extras.passwordVault); assert.deepEqual(payload.preferences, extras.preferences); assert.equal(held, false); assert.equal(released, 1); assert.equal(JSON.stringify(stopped).includes(extras.passwordVault.entries[0].password), false); opened.plaintext.fill(0); opened.contentKeyEpoch.key.fill(0)
+})
+test('stale capture and failed checkpoint always release the barrier without a checkpoint or source resume', async () => {
+  for (const phase of ['seal', 'checkpoint']) {
+    let current = true, released = 0, f: any, checkpoints = 0
+    f = runtimeFixture({ captureExtras: () => ({ bundle: emptyExtras(), assertCurrent() { if (!current) throw new Error('fixture stale extras') }, release() { released++ } }),
+      assertProcessExited: async () => { if (phase === 'seal') current = false; return true }, checkpoint: async () => { checkpoints++; throw new Error('fixture checkpoint failed') } })
+    await f.runtime.activate({}); await assert.rejects(f.finalize()); assert.equal(released, 1); assert.equal(checkpoints, phase === 'seal' ? 0 : 1); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.runtime.browser.isConnected(), false); assert.equal(f.calls.includes('resume'), false)
+  }
+})
+test('stage holds full extras privately and exact activation commits them once before opening network', async () => {
+  const extras = loginExtras(), source = runtimeFixture({ preflightExtras: () => extras, captureExtras: () => ({ bundle: extras, assertCurrent() {}, release() {} }) }); await source.runtime.activate({}); const stopped = await source.finalize()
+  let commits = 0, native = emptyExtras(), target: any
+  target = runtimeFixture({ commitExtras: (value: any) => { commits++; assert.equal(target.runtime.network, 'blocked'); assert.equal(target.runtime.state, 'staged'); assert.equal(value.authority, target.runtime.authority); assert.equal(value.receipt, target.runtime.stagedReceipt); assert.equal(Object.isFrozen(value.bundle.passwordVault.entries[0]), true); native = structuredClone(value.bundle); return { committed: true } } }); target.runtime.authority = Object.freeze(source.targetAuthority)
+  await target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }); assert.equal(commits, 0); assert.deepEqual(native, emptyExtras()); assert.deepEqual(target.runtime.stagedExtras, extras)
+  target.runtime.authorizeActivation = async () => ({ authority: { ...target.runtime.authority, actingUserId: 'sharer' }, assertCurrent() {} }); await assert.rejects(target.runtime.activate({}), { reason: 'profile_runtime_activation_refused' }); assert.equal(commits, 0)
+  target.runtime.authorizeActivation = async () => ({ authority: target.runtime.authority, assertCurrent() {} }); await target.runtime.activate({}); assert.equal(commits, 1); assert.deepEqual(native, extras); assert.equal(target.runtime.stagedExtras, null); assert.equal(target.runtime.network, 'active')
+})
+test('uncertain native extras commit cannot be retried or open the staged browser', async () => {
+  for (const answer of [() => false, () => Promise.reject(new Error('synthetic-secret')), () => ({ committed: false }), () => { throw new Error('fixture native write') }]) {
+    const source = runtimeFixture(); await source.runtime.activate({}); const stopped = await source.finalize(); let commits = 0
+    const target = runtimeFixture({ commitExtras: () => { commits++; return answer() } }); target.runtime.authority = Object.freeze(source.targetAuthority)
+    await target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }); await assert.rejects(target.runtime.activate({})); assert.equal(target.runtime.network, 'blocked'); await assert.rejects(target.runtime.activate({}), { reason: 'profile_runtime_extras_commit_uncertain' }); assert.equal(commits, 1)
+  }
+})
+test('revoked proof after committing extras still blocks network and never repeats that committed write', async () => {
+  const source = runtimeFixture(); await source.runtime.activate({}); const stopped = await source.finalize(); let current = true, commits = 0
+  const target = runtimeFixture({ authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent() { if (!current) throw new Error('fixture revoked') } }), commitExtras: () => { commits++; current = false; return { committed: true } } }); target.runtime.authority = Object.freeze(source.targetAuthority)
+  await target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }); await assert.rejects(target.runtime.activate({}), /fixture revoked/); assert.equal(target.runtime.network, 'blocked'); current = true; await target.runtime.activate({}); assert.equal(commits, 1); assert.equal(target.runtime.network, 'active')
+})
+test('old incomplete capsule bodies refuse and disposal clears privately staged password data', async () => {
+  const source = runtimeFixture(), old = profileCrypto.sealCheckpoint({ plaintext: Buffer.from(JSON.stringify({ schema: 'hoai-native-profile-state-v1', cookies: [], origins: [] })), context: source.context, source: source.source, destinationIdentity: source.destination.identity, contentKeyEpoch: source.key })
+  const legacyTarget = runtimeFixture(); legacyTarget.runtime.authority = Object.freeze(source.targetAuthority); await assert.rejects(legacyTarget.runtime.stage({ checkpoint: old, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }), { code: 'profile_portable_state_invalid' }); assert.equal(legacyTarget.runtime.stagedExtras, null)
+  await source.runtime.activate({}); const stopped = await source.finalize(), target = runtimeFixture(); target.runtime.authority = Object.freeze(source.targetAuthority)
+  await target.runtime.stage({ checkpoint: stopped.checkpoint, expectedContext: source.context, sourceIdentity: source.source.identity, destination: source.destination }); assert.ok(target.runtime.stagedExtras); await target.runtime.dispose(); assert.equal(target.runtime.stagedExtras, null)
+})
+test('false and asynchronous activation assertions never enable native networking', async () => {
+  for (const assertCurrent of [() => false, () => Promise.resolve(true), () => Promise.reject(new Error('synthetic-secret'))]) {
+    const f = runtimeFixture({ authorizeActivation: async ({ authority }: any) => ({ authority, assertCurrent }) }); await assert.rejects(f.runtime.activate({})); assert.equal(f.runtime.network, 'blocked'); assert.equal(f.calls.includes('offline:false'), false)
+  }
 })
