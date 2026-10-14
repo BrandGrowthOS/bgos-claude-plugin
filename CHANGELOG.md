@@ -2,6 +2,12 @@
 
 Notable changes to the HOAI Claude Code plugin.
 
+## Unreleased: shared agents Phase 0, the plugin half
+
+Board rows 3d604489 and dd56ddf8, BGOS `docs/reports/2026-10-14-shared-agents-review/PLAN.md` section 3. The backend half ships separately; every change here works against today's backend and against that one. No version is published or tagged here.
+
+- **call_owner acts for the verified sender of the turn (0.3, MATRIX M7.6).** It is now a private tool: in the helper guard (`PRIVATE_TOOL_MATCHER`, all three installs) and in the daemon's admission gate, so a turn with no verified sender rings nobody and a helper started in an earlier turn cannot ring anyone for the current one. The outbound call request carries the turn's headers: on a share recipient's turn `X-BGOS-Acting-User` names them, and the backend refuses with one sentence instead of ringing the owner, which reaches the model as the tool's answer. On the owner's own turn nothing is added and the request is byte identical. Guard: `test/call-owner-private.test.ts`.
+
 ## 0.68.4 (2026-10-13)
 
 One release carrying three pull requests: a voice consult from the owner opens a private turn for that one consult (#227); replayed scheduled fires, the Windows hook self-restart and the private turn hook's cold start (#229, written as 0.68.6); and the PATH baked into an agent's or the watcher's unit is correct for its OS (#226). Found on the release head: an owner message the agent answered opens no private turn when a restart brings it back.

@@ -5373,7 +5373,8 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
   }
   // Freeze private authority at request admission, before any awaited work.
   let privateCall: ReturnType<typeof requirePrivateTurn> | null = null
-  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule'].includes(req.params.name)) {
+  // The same bgos tools as PRIVATE_TOOL_MATCHER (lib/private-turn.mjs), the helper guard's list.
+  if (req.params.name.startsWith('boards_') || ['schedule', 'list_schedules', 'cancel_schedule', 'call_owner'].includes(req.params.name)) {
     try {
       if (!lockHeld) throw new Error('This private action did not start because this daemon does not hold the active agent connection.')
       privateCall = requirePrivateTurn(privateTurns, PRIVATE_MARKER_PATHS, USER_ID)
@@ -6579,12 +6580,19 @@ mcp.setRequestHandler(CallToolRequestSchema, (req) => {
         // Bounded like every other call, but the body is read INSIDE the
         // deadline and handed back so the structured-guidance handling below
         // is unchanged.
+        //
+        // WHO THE CALL IS FOR (shared agents Phase 0, item 0.3): the verified
+        // turn frozen at admission. On a share recipient's turn its headers
+        // name them (X-BGOS-Acting-User) and the backend refuses with one
+        // sentence instead of ringing the owner; that sentence reaches the
+        // model below like any other refusal. On the owner's own turn the
+        // headers are empty and the request is byte identical to before.
         const response = await bgosCall(
           {
             url,
             init: {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH) },
+              headers: { 'Content-Type': 'application/json', ...authHeaders(AUTH), ...privateCall!.headers },
               body: JSON.stringify(body),
             },
             timeoutMs: HTTP_TIMEOUT_MS,

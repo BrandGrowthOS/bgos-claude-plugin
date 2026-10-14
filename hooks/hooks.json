@@ -63,7 +63,7 @@
         ]
       },
       {
-        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+))$",
+        "matcher": "^mcp__(.*_)?(hoai-browser__.+|bgos__(schedule|list_schedules|cancel_schedule|boards_.+|call_owner))$",
         "hooks": [
           {
             "type": "command",
