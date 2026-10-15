@@ -31,6 +31,7 @@ import { join } from 'node:path'
 
 import { bundleSha256, sha256Hex } from '../lib/skill-share-content-rules.ts'
 import { exportSkill, installBundle, readSkillFolder } from '../lib/skills-share.ts'
+import { fileSymlinkRefused, linkFolder } from './helpers/links.ts'
 
 const SKILL = '---\nname: notes\ndescription: Take notes.\n---\n\n# Notes\n'
 
@@ -142,7 +143,7 @@ test('export reads an agent skill: text files with their sha256, scripts and dot
   ])
 })
 
-test('export never reads a link that leaves the skill folder, nor a hard linked file', () => {
+test('export never reads a link that leaves the skill folder, nor a hard linked file', { skip: fileSymlinkRefused }, () => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL })
   write(join(w.home, 'private.md'), 'PRIVATE-MARKER\n')
@@ -164,7 +165,7 @@ test('export never reads a link that leaves the skill folder, nor a hard linked 
   ])
 })
 
-test('export never follows a link inside the folder either: it could name a dot file under a harmless name', () => {
+test('export never follows a link inside the folder either: it could name a dot file under a harmless name', { skip: fileSymlinkRefused }, () => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL, '.private/creds.md': 'DB pw is HIDDEN-MARKER\n', '.env': 'PW=x\n' })
   symlinkSync(join(dir, '.private', 'creds.md'), join(dir, 'notes.md'))
@@ -278,7 +279,7 @@ test('a secret never leaves on a preview even when another block outranks it', (
   }
 })
 
-test('a secret shaped name the walk leaves behind is never listed, the export is refused', () => {
+test('a secret shaped name the walk leaves behind is never listed, the export is refused', { skip: fileSymlinkRefused }, () => {
   const w = world()
   const dir = agentSkill(w, 'notes', { 'SKILL.md': SKILL })
   const name = ['AKIA', 'IOSFODNN7', 'EXAMPLQ'].join('') + '.md'
@@ -542,7 +543,7 @@ test('a symlinked .claude parent is refused and nothing is written through it', 
   const w = world()
   const elsewhere = join(w.root, 'elsewhere')
   mkdirSync(join(elsewhere, 'skills'), { recursive: true })
-  symlinkSync(elsewhere, join(w.agent, '.claude'))
+  linkFolder(elsewhere, join(w.agent, '.claude'))
   const { answer } = await inst(w, bundle(FILES))
   assert.equal(answer.ok, false)
   if (!answer.ok) assert.equal(answer.code, 'scope_refused')
@@ -552,7 +553,7 @@ test('a symlinked .claude parent is refused and nothing is written through it', 
 test('a symlinked .claude/skills parent (into the computer folder) is refused', async () => {
   const w = world()
   mkdirSync(join(w.agent, '.claude'))
-  symlinkSync(join(w.config, 'skills'), join(w.agent, '.claude', 'skills'))
+  linkFolder(join(w.config, 'skills'), join(w.agent, '.claude', 'skills'))
   const { answer } = await inst(w, bundle(FILES))
   assert.equal(answer.ok, false)
   if (!answer.ok) assert.equal(answer.code, 'scope_refused')

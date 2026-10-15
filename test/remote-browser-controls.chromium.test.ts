@@ -33,9 +33,17 @@ async function fixture(t: any) {
   const context = { assistantId: 901, principal: 'user-fixture' }
   const paths = browserPathsFor({ agentRoot: root, ...context })
   const engine: any = new ChromiumEngine({ ...paths, executable: process.env.HOAI_BROWSER_EXECUTABLE || resolveChromeExecutable({ env: process.env }).path })
+  // Registered before the start, and the server closes even when the start or the stop throws: a
+  // listening server left behind keeps this file's process alive after its last test
+  // (test/chromium-fixtures-exit.test.ts).
+  t.after(async () => {
+    try { await engine.stop() } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
   await engine.start()
   const slot: any = { engine, runningTools: new Set() }
-  t.after(async () => { await engine.stop(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }) })
   return { root, origin, context, engine, slot, paths, page: engine.pages()[0] }
 }
 

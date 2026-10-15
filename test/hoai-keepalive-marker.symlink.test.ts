@@ -16,11 +16,13 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
+
+import { linkFolder } from './helpers/links.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -44,7 +46,7 @@ test('the marker is written when the script is run through its real path', () =>
 test('the marker is written when the script is run through a symlinked checkout', () => {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'kamark-link-')))
   const alias = join(scratch, 'alias')
-  symlinkSync(repoRoot, alias)
+  linkFolder(repoRoot, alias)
   const home = mkdtempSync(join(tmpdir(), 'kamark-home-'))
   const res = runMarker(join(alias, 'bin', 'hoai-keepalive-marker.mjs'), home)
   assert.equal(res.status, 0)

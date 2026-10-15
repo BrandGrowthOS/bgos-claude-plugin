@@ -9,13 +9,14 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { registerCloneHooks, workspaceNamesThisClone } from '../lib/clone-hooks.mjs'
+import { linkFolder } from './helpers/links.ts'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -33,7 +34,7 @@ const text = (value: unknown) => JSON.stringify(value)
 const aliasOf = (target: string) => {
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'clone-hooks-alias-')))
   const alias = join(scratch, 'alias')
-  symlinkSync(target, alias)
+  linkFolder(target, alias)
   return alias
 }
 
