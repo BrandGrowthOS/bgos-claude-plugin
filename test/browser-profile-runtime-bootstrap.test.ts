@@ -2,6 +2,7 @@ import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {EventEmitter} from 'node:events'
 import {BrowserProfileRuntime,profileCrypto} from '../lib/browser-profile-runtime.mjs'
+import {bindFakeProfileNativePipe} from './helpers/browser-profile-flat-native'
 
 // Native protocol doubles exercise Runtime.create ordering. Actual Chrome155
 // observer qualification is a separate sandboxed native process proof.
@@ -17,7 +18,7 @@ function fixture(options:any={}){
  }
  const pages:any[]=[];context.pages=()=>[...pages];context.route=async()=>calls.push('route');context.newPage=async()=>{calls.push('seed');created++;const page:any=new EventEmitter();page.url=()=> 'about:blank';page.close=async()=>{pages.splice(pages.indexOf(page),1);targets.delete('seed')};pages.push(page);context.emit('page',page);const info={targetId:'seed',browserContextId:options.wrongSeed?'wrong-context':'owned-context',type:'page',url:'about:blank'};targets.set('seed',info);root.emit('Target.targetCreated',{targetInfo:info});root.emit('Target.attachedToTarget',{sessionId:'flat-seed',targetInfo:info,waitingForDebugger:true});return page}
  context.newCDPSession=async()=>({send:async()=>({targetInfo:targets.get('seed')}),detach:async()=>{}})
- const browser:any={newBrowserCDPSession:async()=>root,version:async()=> '155.0.8059.39',newContext:async()=>{calls.push('owned-context');if(!options.missingContext)ids.push('owned-context');if(options.extraContext)ids.push('foreign-context');return context},close:async()=>{calls.push('browser-close');connected=false},isConnected:()=>connected}
+ const browser:any=Object.assign(new EventEmitter(),{newBrowserCDPSession:async()=>root,version:async()=> '155.0.8059.39',newContext:async()=>{calls.push('owned-context');if(!options.missingContext)ids.push('owned-context');if(options.extraContext)ids.push('foreign-context');return context},close:async()=>{calls.push('browser-close');connected=false;browser.emit('disconnected')},isConnected:()=>connected});bindFakeProfileNativePipe(browser,root);if(options.foreignNativeConnection){root._connection={...root._connection};browser._connection=root._connection}
  const endpoint=profileCrypto.createEndpointIdentity('bootstrap-endpoint'),authority={profileId:'bootstrap-profile',actingUserId:'recipient',assistantId:7,endpointId:'bootstrap-endpoint',bootId:'boot',runtimeId:'runtime',sessionId:'session',writerEpoch:1,revision:0,contentKeyEpoch:1,grantVersion:1,keyFingerprint:profileCrypto.identityFingerprint(endpoint.identity)}
  const observer:any={kind:'qualified-chromium-native-observer-v1',browserVersion:'155.0.8059.39',privateContextId:'private-context',assertQualified:()=>true,confirmStopped:async()=>true,bindContext:async({context:owned,contextId}:any)=>{calls.push('bind');assert.equal(owned,context);assert.equal(contextId,'owned-context');assert.equal(pages.length,0);if(options.bind)await options.bind();if(options.pageDuringBind)pages.push({})},dispose:async()=>{calls.push('observer-dispose');if(options.dispose)await options.dispose()}}
  const factory=async(input:any)=>{calls.push('factory');assert.equal(input.browser,browser);assert.equal(input.root,root);assert.deepEqual(input.authority,authority);assert.equal(input.browserVersion,'155.0.8059.39');assert.deepEqual(input.processIdentity,{pid:123,started:'1234'});assert.equal(ids.length,0);assert.equal(created,0);if(options.factory)await options.factory();ids.push(options.wrongPrivate?'wrong-private':'private-context');return observer}
@@ -41,4 +42,9 @@ test('seed context must equal the context proved before any owned seed creation'
 test('mixed proof factories fail before launch and disposal failure cannot skip physical close or DEK zeroing',async()=>{
  const f=fixture();await assert.rejects(BrowserProfileRuntime.create({...f.config,transferQualification:{kind:'restricted-disposable-fixture',origins:['http://127.0.0.1'],assertQualified:()=>true}}),{reason:'profile_transport_qualification_required'});assert.equal(f.calls.length,0)
  const g=fixture({dispose:async()=>{throw Error('observer_cleanup_failed')}}),runtime=await BrowserProfileRuntime.create(g.config),key=Buffer.alloc(32,17);runtime.contentKeyEpoch={epoch:1,key};await assert.rejects(runtime.dispose(),/observer_cleanup_failed/);assert.equal(g.browser.isConnected(),false);assert.ok(g.calls.includes('exit-proof'));assert.ok(key.every(value=>value===0))
+})
+
+
+test('a noncanonical native package binding refuses without fallback and positively closes the newly owned browser',async()=>{
+ const f=fixture({foreignNativeConnection:true});await assert.rejects(BrowserProfileRuntime.create(f.config),{code:'profile_target_native_binding_invalid'});assert.equal(f.created,0);assert.equal(f.calls.includes('owned-context'),false);assert.ok(f.calls.includes('browser-close'));assert.equal(f.browser.isConnected(),false)
 })

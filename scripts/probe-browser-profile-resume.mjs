@@ -36,7 +36,19 @@ async function make(binding, review) {
       const parent = openSync(directory, 'r'); try { fsyncSync(parent) } finally { closeSync(parent) }; assert.deepEqual(readFileSync(path), bytes)
       return { durable: true, manifestHash: codec.manifestHash(stopped.checkpoint.manifest) }
     }, authorizeActivation: async ({ authority }) => { if (!cas) throw Error('synthetic_CAS_not_accepted'); return { authority, assertCurrent: currentProof } } })
-  for (const object of [runtime.ledger, runtime.root]) { const original = object.send.bind(object); object.send = (...args) => original(...args).catch(error => { commandFailures.push({ method: args[object === runtime.ledger ? 1 : 0], reason: error.protocolMessage || error.reason || error.code || error.message }); throw error }) }
+  let observerSequence=0
+  runtime.ledger.nativeObserverCommands=[]
+  for (const object of [runtime.ledger, runtime.root]) {
+    const original = object.send.bind(object)
+    object.send = (...args) => {
+      const method=args[object===runtime.ledger?1:0],observed=object===runtime.ledger&&['Network.enable','Debugger.enable','Target.setAutoAttach','Runtime.runIfWaitingForDebugger'].includes(method)
+      const record=phase=>{if(observed&&runtime.ledger.nativeObserverCommands.length<512)runtime.ledger.nativeObserverCommands.push({sequence:++observerSequence,timeMs:performance.now(),sessionId:args[0],method,phase})}
+      record('sent')
+      return original(...args).then(value=>{record('answered');return value},error=>{commandFailures.push({method,reason:error.protocolMessage||error.reason||error.code||error.message});throw error})
+    }
+  }
+  const originalMessage=runtime.ledger._message.bind(runtime.ledger);runtime.ledger.nativePopupEvents=[]
+  runtime.ledger._message=packet=>{try{const value=JSON.parse(packet.message),params=value.params||{};if(value.method?.startsWith('Network.')&&runtime.ledger.nativePopupEvents.length<512)runtime.ledger.nativePopupEvents.push({sequence:++observerSequence,timeMs:performance.now(),sessionId:packet.sessionId,targetId:runtime.ledger.targets.get(packet.sessionId)?.targetId,method:value.method,requestId:params.requestId,type:params.type,requestMethod:params.request?.method,path:typeof params.request?.url==='string'?new URL(params.request.url).pathname:undefined,status:params.response?.status,redirect:!!params.redirectResponse})}catch{}return originalMessage(packet)}
   runtimes.push(runtime); return { runtime, select: page => { selected = page } }
 }
 async function settled(runtime) { const deadline = Date.now() + 5000; while (true) { try { return await runtime.assertMovable() } catch (error) { if (Date.now() >= deadline) throw error; await new Promise(resolve => setTimeout(resolve, 10)) } } }
@@ -74,14 +86,30 @@ try {
   if (process.env.HOAI_PROBE_POPUP === '1') {
   const third = await make({ ...authority, runtimeId: 'popup-runtime', sessionId: 'popup-session' }), formRuntime = third.runtime; await formRuntime.activate({}); const form = await formRuntime.newPage(origin + '/form'); third.select(form)
   const popupTask = formRuntime.context.waitForEvent('page', { timeout: 10000 }); await form.click('button'); const popup = await popupTask; await popup.waitForLoadState('load'); await settled(formRuntime); assert.equal(popup.url(), origin + '/normal-result')
+  assert.equal(await popup.opener(),form);const popupSession=await formRuntime.context.newCDPSession(popup);let popupInfo;try{popupInfo=(await popupSession.send('Target.getTargetInfo')).targetInfo}finally{await popupSession.detach()}
+  const nativeRecord=[...formRuntime.ledger.targets.values()].find(value=>value.targetId===popupInfo.targetId),events=formRuntime.ledger.nativePopupEvents.filter(value=>value.targetId===popupInfo.targetId)
+  assert.equal(nativeRecord.ready,true);assert.equal(!!nativeRecord.unqualified,false);assert.equal(!!nativeRecord.missedRequest,false)
+  const observerCommands=formRuntime.ledger.nativeObserverCommands.filter(value=>value.sessionId===nativeRecord.sessionId)
+  const sent=method=>observerCommands.find(value=>value.method===method&&value.phase==='sent'),answered=method=>observerCommands.find(value=>value.method===method&&value.phase==='answered')
+  for(const method of ['Network.enable','Debugger.enable','Target.setAutoAttach','Runtime.runIfWaitingForDebugger']){assert.ok(sent(method));assert.ok(answered(method));assert.ok(sent(method).sequence<answered(method).sequence)}
+  for(const method of ['Network.enable','Debugger.enable','Target.setAutoAttach'])assert.ok(sent(method).sequence<sent('Runtime.runIfWaitingForDebugger').sequence)
+  const firstPost=events.find(value=>value.method==='Network.requestWillBeSent'&&value.type==='Document'&&value.requestMethod==='POST'&&value.path==='/submitted');assert.ok(firstPost)
+  assert.ok(events.some(value=>value.method==='Network.requestWillBeSent'&&value.requestId===firstPost.requestId&&value.requestMethod==='GET'&&value.path==='/normal-result'&&value.redirect))
+  assert.ok(events.some(value=>value.method==='Network.responseReceived'&&value.requestId===firstPost.requestId&&value.type==='Document'&&value.status===200));assert.ok(events.some(value=>value.method==='Network.loadingFinished'&&value.requestId===firstPost.requestId))
+  assert.equal(requests.filter(value=>value.method==='POST'&&value.url==='/submitted').length,1)
+  checks.push({name:'actual-original-popup-POST-303-GET-response-finish-with-native-observers-and-exact-opener',ok:true,postCount:1,observerCommands,events:events.filter(value=>value.requestId===firstPost.requestId)})
   const beforeDrain = drains; await assert.rejects(formRuntime.finalize({ context, source, destinationIdentity: destination.identity, contentKeyEpoch: key })); assert.equal(drains, beforeDrain); assert.equal(formRuntime.state, 'active'); assert.equal(form.isClosed(), false); assert.equal(popup.isClosed(), false)
   // Use an exact runtime-bound context for the decisive POST redirect refusal.
   const popupContext = { ...context, source: { ...context.source, runtimeId: 'popup-runtime', sessionId: 'popup-session' }, transitionId: randomUUID() }
   await assert.rejects(formRuntime.finalize({ context: popupContext, source, destinationIdentity: destination.identity, contentKeyEpoch: key }), /profile_resume_document_unproved/); assert.equal(drains, beforeDrain); assert.equal(formRuntime.context.pages().length, 2)
   checks.push({ name: 'actual-popup-POST-303-GET-refuses-before-admission-and-retains-both-original-pages', ok: true })
+  await popup.close();await settled(formRuntime);assert.equal(formRuntime.context.pages().length,1)
+  const v1Stopped=await formRuntime.finalize({context:{...popupContext,schemaVersion:1},source,destinationIdentity:destination.identity,contentKeyEpoch:key});assert.equal(v1Stopped.checkpoint.manifest.schemaVersion,1);assert.equal(formRuntime.browser.isConnected(),false);assert.throws(()=>readFileSync(`/proc/${formRuntime.processIdentity.pid}/stat`),{code:'ENOENT'})
+  checks.push({name:'closed-popup-history-remains-qualified-for-encrypted-data-only-checkpoint-and-positive-native-exit',ok:true})
+
   }
   report = { ok: true, browserVersion: await target.browser.version(), uid: process.getuid(), sandboxEnabled: true, privatePipe: true, checks, evidenceBoundary: 'Actual disposable single-Linux runtime and site traffic; synthetic coordinator/CAS/review/extras. Full HOAI and two-machine role proof is separate.' }
-} catch (error) { failure = error; const nativeDocuments = [], nativeInventories = []; for (const runtime of runtimes) if (runtime.browser.isConnected()) { nativeInventories.push({ state: runtime.state, targets: [...runtime.ledger.targets.values()].map(target => ({ type: target.type, url: target.url, ready: target.ready, paused: target.paused, unqualified: target.unqualified, pauseError: target.pauseError })) }); for (const page of runtime.context.pages()) { try { const cdp = await runtime.context.newCDPSession(page); try { nativeDocuments.push({ pageURL: page.url(), targetInfo: (await cdp.send('Target.getTargetInfo')).targetInfo, frame: (await cdp.send('Page.getFrameTree')).frameTree.frame }) } finally { await cdp.detach() } } catch {} } }; report = { ok: false, reason: error.code || error.reason || error.message, stack: String(error.stack).slice(0, 2000), checks, nativeDocuments, nativeInventories, requests, commandFailures } }
+} catch (error) { failure = error; const nativeDocuments = [], nativeInventories = []; for (const runtime of runtimes) if (runtime.browser.isConnected()) { nativeInventories.push({ state: runtime.state, activeRequests:[...runtime.ledger.active.entries()],nativePopupEvents:runtime.ledger.nativePopupEvents,targets: [...runtime.ledger.targets.values()].map(target => ({ targetId:target.targetId,sessionId:target.sessionId,detached:target.detached,interrupted:target.interrupted,type: target.type, url: target.url, ready: target.ready, paused: target.paused, unqualified: target.unqualified, pauseError: target.pauseError })) }); for (const page of runtime.context.pages()) { try { const cdp = await runtime.context.newCDPSession(page); try { nativeDocuments.push({ pageURL: page.url(), targetInfo: (await cdp.send('Target.getTargetInfo')).targetInfo, frame: (await cdp.send('Page.getFrameTree')).frameTree.frame }) } finally { await cdp.detach() } } catch {} } }; report = { ok: false, reason: error.code || error.reason || error.message, stack: String(error.stack).slice(0, 2000), checks, nativeDocuments, nativeInventories, requests, commandFailures } }
 finally {
   current = true; cas = true
   const cleanup = []
