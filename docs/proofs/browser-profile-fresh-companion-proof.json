@@ -1,0 +1,3692 @@
+{
+  "date": "2026-10-15",
+  "scope": "Actual disposable two-machine transfer, real automatic backup, one native allow-once public navigation and normal daemon EOF. HTTP delivery of restored cookies remains separate. No production write, installed Ava modification or live account login.",
+  "pluginArchive": {
+    "path": "/tmp/hoai-profile-archive.SS15nL",
+    "pluginCommit": "ce7eeb97241ab9089ceefb3ec09861ce8ddaa545",
+    "pluginArchiveSha256": "893075288fa2ea6a6aa3d18d0f8e17f0fc459a68d47a8b81f2ed41bc41c2735f",
+    "image": "hoai-profile-fresh:ce7eeb9"
+  },
+  "mainProductCommit": "901647978b666739575074c44c7e92160fe6bcf9",
+  "sourceFreezeUnchanged": true,
+  "sourceFileCount": 166,
+  "sourceHashes": {
+    "frontend\\electron-app\\agent-browser\\annotate.js": "07dfec1560476ac814d406dd817172d8d14d0dbc8e868dae3f1807ede9b0e72d",
+    "frontend\\electron-app\\agent-browser\\approval-bypass.js": "2f9475e5363c54465481f45aaa4d88b6b8b9be3fd247b0f09e81b22a5958d020",
+    "frontend\\electron-app\\agent-browser\\automatic-hold.js": "1704efc4cc3f5eaa175983a91b5fd98ba3e78c2075ee46ab3ee3b865fdf642df",
+    "frontend\\electron-app\\agent-browser\\bridge.js": "a54021d114c1a2bd9c47ed0948cec6e646101f38176e2049762ab7d39aa18f97",
+    "frontend\\electron-app\\agent-browser\\browsing-history-service.js": "062e9d5acac75779ac017786e112ad7bf666d5486bae1c40ee9d18bd73134df0",
+    "frontend\\electron-app\\agent-browser\\browsing-history-store.js": "4fb02363327be0e19242d65f86ccae50814bcf5019a3d90b0178632a02a501c8",
+    "frontend\\electron-app\\agent-browser\\chrome-out.js": "93446bca808ff2e4f2ecddc006b6ffadc2844b28378427ca5c49e2901abcf84f",
+    "frontend\\electron-app\\agent-browser\\chrome-reach.js": "639b4cac456c6c1c76b39d358115d10f4b69f86880080a07c35c0a883d52f5ab",
+    "frontend\\electron-app\\agent-browser\\chrome-transport.js": "51fdc4fcf290de7d2cb4d4e0ae277377637f75b293e11c8ac977b4ce67e3e4f7",
+    "frontend\\electron-app\\agent-browser\\command-ownership.js": "7f3063b35e23e820ef35b34e2c197c10e505065dba2112a9b04c8bbf94a92e96",
+    "frontend\\electron-app\\agent-browser\\cookie-import-channel.js": "cafee001e9f319f117d774a0cff2623e12c4c3629a5ace1e808115b54c9f7faf",
+    "frontend\\electron-app\\agent-browser\\cookie-import-model.js": "0811628cdf215ccdf81db3da07669d45f3f14aa6acd44fa62c6537f66acd07e2",
+    "frontend\\electron-app\\agent-browser\\cookie-import-service.js": "eec87fab52cc854efdf4fe32167130ed34210eae600c6be2efb7e09b263e8e5a",
+    "frontend\\electron-app\\agent-browser\\cursor-avatar.js": "9191a67d4d381677f90e77111d61283c29fdd6564381382e0c85731cc6da687b",
+    "frontend\\electron-app\\agent-browser\\cursor-overlay.js": "a7b17af9a59c44197eeb3b32af162b42fa7e2503c577949c32ba213063018ef9",
+    "frontend\\electron-app\\agent-browser\\cursor-raster-decoder.js": "03311488aea4afb8ca4b89a1ef2c2e7e97e1a9f8933defdecc2709c244be582d",
+    "frontend\\electron-app\\agent-browser\\daemon-controller.js": "dd30628e4027119413ad5d9fbc59d4ce02514a025408dbb9390b34b30975cd65",
+    "frontend\\electron-app\\agent-browser\\daemon-input-controller.js": "96f982bfc53b19e58d3ff95d978855f69c73444524092571e458347acae57248",
+    "frontend\\electron-app\\agent-browser\\daemon-native-pointer.js": "a8b6cebbdac30a156415b6aaaad49d4d4864390a5bbccd009e2d8dc1687663ad",
+    "frontend\\electron-app\\agent-browser\\daemon-transport.js": "e4e253c33f3399f7a006facbbeb870f56f8a1f4962d021029a0c411c970a5f85",
+    "frontend\\electron-app\\agent-browser\\daemon-view-preload.js": "be56d07003341f927835035edb226cf9e2a8c42f8d9823f9b0f878714f4ffdc9",
+    "frontend\\electron-app\\agent-browser\\daemon-view.js": "5dadbe9248482a8b566247882fe53da55200a12aeb966316e0e48ce8e6144f79",
+    "frontend\\electron-app\\agent-browser\\desktop-host.js": "d9f66fa9cfb335864bfa77a83c4e7382fa251f6f8354aaa9aedfd5a51bba346f",
+    "frontend\\electron-app\\agent-browser\\discovery.js": "796cbf09b5574215827f9f8d047c480ac646912ef39f1de0f4513f8dbc651403",
+    "frontend\\electron-app\\agent-browser\\engine.js": "144f51b1d4906627088e7d9769afbfec95fb6f964a722e59d8b5ec89a8861c9d",
+    "frontend\\electron-app\\agent-browser\\find-in-page.js": "ef529e4cc1b502eaed1350d16d0514052f3e5038ae1583b13d3fe55649477394",
+    "frontend\\electron-app\\agent-browser\\host-automatic-hold.js": "5a88d5dc1008e4a90589ff111fcfce4ddaf688f82c1be5fca307759a04fc98e4",
+    "frontend\\electron-app\\agent-browser\\host.js": "1dfd01b9a4a91ffeea5cebdbeca3018c3a9a7b709938fb643907f4f967535698",
+    "frontend\\electron-app\\agent-browser\\index.js": "fd4b7d5abfe194f478d92cebff9339423046bf72d9d2523a26fcf63e1f0c859e",
+    "frontend\\electron-app\\agent-browser\\instructions.js": "1682c69d8fe824c7fac3c1b0f36b3e0b6172c8aafbc095d273dfd43fd413a94d",
+    "frontend\\electron-app\\agent-browser\\local-credential-guard.js": "a0e66b449b23152caf22c0062d6a6acbbdc967b417b0a892056af9a974adbd5c",
+    "frontend\\electron-app\\agent-browser\\local-credentials-dialog-preload.js": "cbb0009161e1181f59df461b4cbedecea86074b6f1c5078246a49e017ae5f284",
+    "frontend\\electron-app\\agent-browser\\local-credentials-dialog-ui.js": "f48cb47d8d78ee17f8ba54f06afa828c9c52cd1927f2323162b3deb77aaeecea",
+    "frontend\\electron-app\\agent-browser\\local-credentials-service.js": "2d7bb3e04bd690d8611641c890ca66f18dae5160823c33ea6110fce6dd77b261",
+    "frontend\\electron-app\\agent-browser\\local-mcp.js": "02165873cb837f1d0e15b9f1a7eead26feae612736c3b41a8d6da8c5f86ce11a",
+    "frontend\\electron-app\\agent-browser\\local-profile-authority.js": "d487aac4d4ef4c0a24fde80365352374f59304f2c02893f91eebd9e1e29c028f",
+    "frontend\\electron-app\\agent-browser\\logins.js": "c220bb1b494bf48db78de1177f28fe4b6b348050bac47718ccef0c80c7a6dadd",
+    "frontend\\electron-app\\agent-browser\\native-credential-monitor-preload.js": "47f68359ce7b0ae1ef316f11d95e8c5f6436f528ec1f50455712de2725786069",
+    "frontend\\electron-app\\agent-browser\\native-credential-monitor.js": "46d50863bdd2ddeac7fc7d7ac87612d757885902a6eefceeecbad95b9ecfe15b",
+    "frontend\\electron-app\\agent-browser\\navigation.js": "20af60d12fc810dd0dd75b8e9ecfea09142064596f456c63a5367794755c8ee9",
+    "frontend\\electron-app\\agent-browser\\open-external-guard.js": "c69811e64ad68390956cb4335e6d9837a604c764d271ac9b31f5a02dfabc7292",
+    "frontend\\electron-app\\agent-browser\\password-csv.js": "d323d8942765aec2583b9c0826205258bd0ac74279599432146e2618922224b5",
+    "frontend\\electron-app\\agent-browser\\password-fill.js": "b3a2a012b3afe051185895715532b8d369135b3573b84000fc799e186ac9d41e",
+    "frontend\\electron-app\\agent-browser\\password-service.js": "10d958ba16d3dda97a985f3edcc634ba76e625fbae6d8c9f5646a5da2517ce94",
+    "frontend\\electron-app\\agent-browser\\password-vault.js": "ffb12d9f4eacf92efa62756ff6b8b6ff6c8bd418fb9e0213594146a1ae43ace8",
+    "frontend\\electron-app\\agent-browser\\playwright-cleanup.js": "88560e57a789e069685e73f536173d1ee817ca8f7b7f92c3802b6479e7a76932",
+    "frontend\\electron-app\\agent-browser\\policy.js": "7541a0c32fd5dd1b21ee0e67ba5df11ec7a9fc8e5222e422da8620cbf4f3c6bc",
+    "frontend\\electron-app\\agent-browser\\popup-ownership.js": "fd2937ef49ad301905a5e8100f90559e66c63e526904077ba713793b5f370386",
+    "frontend\\electron-app\\agent-browser\\private-driver-events.js": "2aaefdcfad81a1a254a089926fa1a81770932ac3cbeead2a405d1527fbf2e606",
+    "frontend\\electron-app\\agent-browser\\profile-admin.js": "54bf62696afa80acfdc4f7f8f171237584996063e113e006f1ccd71d113f9c21",
+    "frontend\\electron-app\\agent-browser\\profiles.js": "336225827578f3f66849d5d946aebacd6cea877c20cd793fd6c7080d8cd3119a",
+    "frontend\\electron-app\\agent-browser\\recently-closed-tabs.js": "3ef9d270fb4c478dbeaf7bbd5931cd0f54bdae8da7b475e4fdf4af9c067830b5",
+    "frontend\\electron-app\\agent-browser\\redirect-guard.js": "8fef560e8e062ecd5ed81da6cd044e7bfd34fd0084b131d9efffdfddf05cb6b1",
+    "frontend\\electron-app\\agent-browser\\remote-credentials-crypto.js": "f4e2bdec3c3981b8119d831aab2474943ce3867818a661effef2209181a8a22f",
+    "frontend\\electron-app\\agent-browser\\remote-credentials-dialog-preload.js": "01a2dc6aa66947c84e8d0c6d3aec29640e7cd01591ad0171096809a9da999593",
+    "frontend\\electron-app\\agent-browser\\remote-credentials-dialog-ui.js": "0a844fe45e8bd96df893043ea5a5e1d5b0f79aad94b78206e171fa53629f854f",
+    "frontend\\electron-app\\agent-browser\\remote-credentials-dialog.js": "e37da08c90e5b4c6f427fb474f7a692d41803b4347f86803997f82294b25f818",
+    "frontend\\electron-app\\agent-browser\\remote-credentials-service.js": "c4cb06dd7dcd7e5c68f34fee35ea986303a294c3047989396dc60164578f6a1b",
+    "frontend\\electron-app\\agent-browser\\search-settings.js": "293f2afdfe312e2d5f88dbe1e4f618801a0a22b86ca8db96d4993933d0906efd",
+    "frontend\\electron-app\\agent-browser\\session-manager.js": "152632e2c36a2bd9da69650d0fea1ca8b813f0c97567676dd5bad4c982b9427d",
+    "frontend\\electron-app\\agent-browser\\settings.js": "49317db663958dd3441b7bbfc85d3e4961a9d097799b3d0703df0cf7bad5dd72",
+    "frontend\\electron-app\\agent-browser\\site-permissions.js": "42539c03306e957efae65e7b8e5ff84f824bf59c625129f46a07da48201c00ca",
+    "frontend\\electron-app\\agent-browser\\snapshot-target.js": "588b3780958e4a2f5c5022a7201d6185cf1caa77baac1fc053065671990838e4",
+    "frontend\\electron-app\\agent-browser\\thumb-frame.js": "be1a90765df315b9a8959872c0ca9c6ec3c54494bc895455cb743fc0563e03ba",
+    "frontend\\electron-app\\agent-browser\\chrome-extension\\cookie-import-crypto.js": "2a9ce9408a71a9b9515264632dafedd8b7533527812683065209b79008927127",
+    "frontend\\electron-app\\agent-browser\\chrome-extension\\cookie-import.js": "b25ef7d6eaff5907c2e057230ff10208ec03a60d2fe109f1c6624222cc55c220",
+    "frontend\\electron-app\\agent-browser\\chrome-extension\\popup.js": "6101ecfb004f3f672f7f02dfea3c55ab005e6f2c14d2e3f90777f0aa28764b56",
+    "frontend\\electron-app\\agent-browser\\chrome-extension\\protocol.js": "adc8fab75c068e75af5d8d03fdf3a283ec253338343d2776b0e2f224f8c86dd1",
+    "frontend\\electron-app\\agent-browser\\chrome-extension\\sw.js": "82f2c2baee08e998285d7a422c82a0323a4fa2ce390c835364fb56dc22a65de3",
+    "frontend\\electron-app\\agent-browser\\dev\\browser-parity-probe.js": "f22b7439f11ac1a3ffcac66bd0e7757c21b2a282e876a0cd3dbd09cdc8adb6ed",
+    "frontend\\electron-app\\agent-browser\\dev\\browsing-history-native-probe.js": "ca7877cf2afb73caa4e2106948faeb05568b4cf37ff3241e452188f18ee6f120",
+    "frontend\\electron-app\\agent-browser\\dev\\concurrent-desktop-probe.js": "01c48e193e50a7069037f819305a0a715bd36bdfa67279155ad337385a2f697d",
+    "frontend\\electron-app\\agent-browser\\dev\\controller-input-probe.js": "7be56a50d86b239fc453be5e440f7d368cfc5f197cf056756fde2f64542689c5",
+    "frontend\\electron-app\\agent-browser\\dev\\cookie-import-probe.js": "c49b96ae56f63efce9de44135bb8ce29abad9f17d016e68697f28892efe655a2",
+    "frontend\\electron-app\\agent-browser\\dev\\daemon-main.js": "c58b129d6d9ce5f4c3a42a5ecb66759ffa5bf7c04576e7a08045926e413e955f",
+    "frontend\\electron-app\\agent-browser\\dev\\dev-main.js": "3441eafd1ceb629c8c8534fb3dfeffd1bca4a4b1adc21ab3ed70af18c57a4694",
+    "frontend\\electron-app\\agent-browser\\dev\\download-destination-probe.js": "4ce6453cd0e4898775b3bb4b0427aae84bd490fb02023de9f0e11cd3a2f6afae",
+    "frontend\\electron-app\\agent-browser\\dev\\download-history-probe.js": "0f44fa105050ebd5ea697d03a4f994f0a2fe9084b86445df5b8aa137c38b7bdf",
+    "frontend\\electron-app\\agent-browser\\dev\\fresh-companion-agent.mjs": "f9e7ef71c2c657dfa53f01b37341c4eea0a2ee9392121ffa7887cf65c3e7f7b1",
+    "frontend\\electron-app\\agent-browser\\dev\\hidden-thumb-proof.js": "b4d2a0240c325dfbfc6e55532bc085ed167d8bc6fbb4333c981e742ce965c82a",
+    "frontend\\electron-app\\agent-browser\\dev\\iframe-origin-probe.js": "bbb130cd2b216e49d07bbeafbea470f44353259056f4a27879f7b8f37e2ad24b",
+    "frontend\\electron-app\\agent-browser\\dev\\launch-spec.js": "edb260fbb694eb8456340c4b479f9001c1b5a4bac233d2fbfc84b6d8356e69cf",
+    "frontend\\electron-app\\agent-browser\\dev\\native-active-backup-scheduler.cjs": "f63988990fc3406eab5232d09a7accd5a907cba33a5284a147c825a1e9a6f453",
+    "frontend\\electron-app\\agent-browser\\dev\\native-document-preflight.cjs": "6167ffd7e6687c7449a290f4c607d66fab0608623a66f687a7eee2921efd987a",
+    "frontend\\electron-app\\agent-browser\\dev\\native-live-backup.cjs": "ce180bad153745036ee8e84a577c44240c448729d51d9fac935b6f5a6f683da6",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-activity.cjs": "8a6671ec3b96485c7c210504145ba914f8baa8d497e295723373b5d48da18955",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-fresh-companion.cjs": "72769d82522b018ba026c3c693f15237cc8ec4ef65440d6dadee7f193e28fe66",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-lifecycle.cjs": "bdc85a824cac3fad56d99724ccc6e4533bb79f95b20e2f6b7f2e23b746f174ff",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-quit-preservation.cjs": "a50367265c8252015c68f4c063b478c52a37dce87258da4815f2d19bf635d532",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-readdress.cjs": "1d86554925dba6303ffa4026507399e8d3ef441a92813bfb48ee79370b6a8839",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-relay.cjs": "19b089ab1d7f95cb87433e082f9d6f96a6c8271815640a01221a4580a69c6ecd",
+    "frontend\\electron-app\\agent-browser\\dev\\native-profile-rtc.cjs": "fa1d8e7c7a8ebc282efc66d6e5c6d6a267c7fbcde1dd454ae4734b5d83b66de2",
+    "frontend\\electron-app\\agent-browser\\dev\\password-native-cases.js": "257553886a7a856a4d05541f549ddf868407d23e31aa559856a541e86e4d7911",
+    "frontend\\electron-app\\agent-browser\\dev\\popup-native-probe.js": "fb92287198c52cba043c6ab9654e8964908146a607cf05f066df0d0abfbb7320",
+    "frontend\\electron-app\\agent-browser\\dev\\profile-admin-probe.js": "cadf106dc218f27c7cbe52690aadfcf23c9c96a9af6124b3dc12f81895335566",
+    "frontend\\electron-app\\agent-browser\\dev\\profile-cookie-roundtrip.cjs": "6b4be74eb5a79c7879f71bcafdabf6948836e1baba8f351d59621179b211eeb8",
+    "frontend\\electron-app\\agent-browser\\dev\\profile-desktop-key-store-runtime.cjs": "a701ceee78611638a1a57f1aed53b46ca72d264ac5115f520c9afef372417696",
+    "frontend\\electron-app\\agent-browser\\dev\\profile-storage-runtime.cjs": "0f3b96625e92b2a3310fe6d48e464ff0920f7d0c58ee202f1ddc84038b3df2ed",
+    "frontend\\electron-app\\agent-browser\\dev\\rail-e2e.js": "373ab707b78e591e42139bebd54e5cc4870e2c14a1b8a3a5ac1c0151a81eb099",
+    "frontend\\electron-app\\agent-browser\\dev\\redirect-native-probe.js": "6728233c1cc805494f00211fc9b0065b7575176753d36212dca959faf0cdf749",
+    "frontend\\electron-app\\agent-browser\\dev\\relay-e2e.js": "94ef5a9d4c7aab71b98e4c19137a0607acd55cdf4aee8043b171e27ffe5ec4eb",
+    "frontend\\electron-app\\agent-browser\\dev\\relay-visual-e2e.js": "887e7ef9dff821fbfb4c47c3d44ed1f8771fc84892c3e86e2f33216eeb111e1e",
+    "frontend\\electron-app\\agent-browser\\dev\\remote-storage-proof.cjs": "9fda2190bd8156232637545651d47400e3c6d3547ab96be8f535b815dd87a464",
+    "frontend\\electron-app\\agent-browser\\dev\\reopen-native-probe.js": "cc4e69fe1e329a863a7a70165b52cc70eb792202f56ef9cdc0201fc8e1f61e83",
+    "frontend\\electron-app\\agent-browser\\native-input\\build.js": "8678c0c6faaee69b6760a8c561e6554304222edbc1e2c605b40def403138e7ad",
+    "frontend\\electron-app\\agent-browser\\native-input\\controller-source.js": "2644095424d16dbbcb64a83af9fc0bda6eb83a6bb992a932a92038bbebf7fc25",
+    "frontend\\electron-app\\agent-browser\\native-input\\integration.js": "c9aa7bf4dd1d4fc8b1487394526dbf494aa07dc751225ad689ab5888aa0c22b7",
+    "frontend\\electron-app\\agent-browser\\native-input\\loader.js": "48462346863d16d543efab21d7191d04ef69dcd689b85f495e801df11cfb3c41",
+    "frontend\\electron-app\\agent-browser\\native-input\\package.js": "25b2f41e38e178212ef91779b3029de8202ea7a5091d36608ee0a412321d8ba7",
+    "frontend\\electron-app\\agent-browser\\native-input\\prepare-headers.js": "b73bae202bbb3b5f3416cc7c5b8635e8ee0cac8a265d1065dc6781d5d315d296",
+    "frontend\\electron-app\\agent-browser\\native-input\\source.js": "e78b48878c138c1fa48f48319418e583d4f0a78bff90e12147bb3f28be59d6aa",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-client.js": "4e662c5308b874f8c798bf7a3d9be8938526ef873bf698d611263237655007ea",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-crypto.js": "36b86383b4401d100359d51b9997c6ec8cd3c7c7605f7d8ee0c8454c5d0c2931",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-scheduler.js": "d50d4932e109f4357cdb7bc6048c9006c9b586140d7e3565e7186bb0ffcdddd9",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-wire.js": "d0c25ca549c91a18f1106289775f22863e8a81953c3ef2554647096f1e34077b",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\backup-journal-worker.js": "a87bd08969dc2f78610937bfb55de70a6c5412f7e2a9747f7886849b87c804a5",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\backup-journal.js": "43075421e966b46d443e0294e09d98fe3adab6d5ca9aa24e44932d0ab59fb199",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\backup-seal-client.js": "04eb8a2f021c14ed8653be808ad86941b44765a973b9a54a75b65a13d736360e",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\backup-seal-worker.js": "d3d4365353d2ab39ef715e0dc2281c1e2b0e0aac052a41b5d14de3c9cf09ecc4",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\checkpoint-store.js": "a0ca3ffb3bd8d030bdd1225882a96d1d6801da84534d5190928cf5f71f91a1ac",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\coordinator-client.js": "0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\crypto.js": "8618f0702f01bd2a23a59dd3fcbef388512b1b218823953b0a7e63b83158a3a3",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-admission.js": "95928095fc5855fa6f9e7b95ead7047948377944b176d9ed48f27cf183ff3f71",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-authorization.js": "3b564fefd39e018b2da4c53a2359448d89eca8b02cecb2ab5e9d2effec16cc34",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-key-store.js": "ad67d17dc9f6aa3ba35d8a7739b42e8c764c256d536718057767c59ad4945c0b",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-lifecycle.js": "2479e330a35292f4b599f1bae0c59f021933449f1d46cf943a30d9da0baca9f0",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-supervisor.js": "cd2aba3f2963d195eb3306d6bf94efc19fa20c743ee5c11d24b33ed283cc0dd7",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\document-safety.js": "aa98a315b2d143da35435582de1fdd4c7e75de137dbb59556f583a103ba07952",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\endpoint-offer.js": "b4ec7bcc53e9fdc93ecd4c26f9e71f10dcc0581133d554555c9d486d659aa82b",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\live-backup-capture.js": "99ff4c438672946f6718e56624377767d89a89a4a59dd6cee7515f4bd4a25ff5",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\live-backup-input.js": "aa3c3459293cc866066e1938c6f0b101e507ab822266905fb45d448b69e02284",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\live-read-scope.js": "e4a0e91f59ff9875234f12940d9309ec4966784b9fa3e022774093d3e8a85999",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\live-storage-reader.js": "f441681fc068ea567669f92ab1fcdd2821cb96e0c1685ef9811664db6266e0f2",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-active-backup-composition.js": "6e3c3b4e43e60288abfa4d581bd875225f98a6024980713c8f9ed910174654c2",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-backup-lifecycle.js": "d5e518fa3a55517132cdd32579440a0915b4725ef660e21291347ed76524b930",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-device-setup.js": "19b67bfc2f54644631efa22a25e3592ecdaa0a6c979c01eded7448fa9eb83f40",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-peer-review.js": "f638d153c14f4ddc53090d7d99f1893db238e3e83339ecc563179e1f6ed75d16",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-profile-adapter.js": "367eedd712525a9dfb482ff2f53220c76cd97c6535d5d480f8175e42a463112c",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-profile-approval.js": "bfb1e82587635ada2cbb59456ca09b987acfb73746d78e09536d4a172e8008ab",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-rtc-activity.js": "fbadd7e6e06294715aeb224e5bb18b62f5853ca70210bb72edb6a0f3077597c0",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime-permission-review.js": "ccc158123086a3ce1d90218d90302fd2a554b2e5fb38b975e0aeb524e83a862f",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime-preparation.js": "ee8607404dee080f1fef9d5c990979c1e1f00867d5b2ec825b43de207010cbed",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime.js": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\native-source-handover.js": "04b7d17682e2882154d3da624012cf4b8d8d2fc4b30da5f022b370b656059f40",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\portable-state.js": "0539458b36a2d112277889c151f501881b4a2ff2d0a5653e3dca62818e3409b0",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\private-native-activity.js": "6ef50b6f6fb957689259f65d1570582e3e98b2e055b33cd119b9ce35cbf25063",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\renderer-auth.js": "ee5b150b264cad7573611c2bb3afc4697f00744c74c1e093a6776992ede66279",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\renderer-socket.js": "1d92057cb275bde9fad543f69e644f7a55bbca751b64c28d6341f5e23f1b3497",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-endpoint.js": "cb5023d79d476cf30edda6facec71c2d60a4192147cbc053d807d2d1ea19cb50",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-host-router.js": "6e2b0265b733ce98d6f6313af91452a1dd935e151c71cec23ca768871cae121e",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-permission-wire.js": "bb36c3c94eaeffbd7a9940763b2e1d2f36df705eef4926fe97a4b72656d6e7d9",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-readiness.js": "72154701e43b869f978eb7e9dbe1808ff66a3ba0e4df5ab8b75706ecd0f5dffa",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-status-client.js": "48a0baf9169797577460f2bb6fba2c785d6d6a3fc3f5718ce3a1c895c4a7329a",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\stopped-head-stage.js": "4b350549a4e99d4ef5d8d939ab43e4e9d712c294d9b43329a5364fbf32751eac",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\storage.js": "5b26031e21b98d939b831f2665dc094f89d1c99aa27f127de8131be965756ba4",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\transfer-coordinator.js": "15d820727b649ca9e4ae08bce51ba1b59afd13809ca1c2e32f4d7d69345c862e",
+    "frontend\\electron-app\\agent-browser\\profile-sync\\vault-extras.js": "538b3f3c052f427b3bae7681a7c8cb30de3242a483b1cdc60f2d89c1d0f86f24",
+    "frontend\\electron-app\\agent-browser\\shim\\hoai-browser-mcp.mjs": "0ff87b0708c53deb6c1dbc52340caf1e7cce28c38e0fe53bf70d5afe7f9d9a84",
+    "frontend\\electron-app\\agent-browser\\ui\\pane-preload.js": "6b91c3988b7b189515854d62dfa1a4f8df34bdf317db74730b7cd107215f25ce",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\automatic-hold-fixture.js": "ca2dc860788f534ad85304db8751d3cddfc548fa7b8d8ae1f74edf42ca31f034",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\build.js": "ed744d0875656249fd377abed4259c54cdd2b81d905864a5e44434aba484e2a6",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\fixture.js": "83ddfc1852d275d33e2ba350a7acf45ac2024907ccb30b2141bde89dfbc089ae",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\handover-fixture.js": "e7c6d51275122c783bfbf6e9c50131fbb71cb92e95560037aad82ed810697106",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\host-fixture.js": "684609134cdfdfcbf25343ba7a88c782338c438b9056ccbda201e99fababb3a5",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\loader.js": "a579b30cd1e55e026976648df81299d404fd795f35176fdc9099754021ac28ee",
+    "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\production-fixture.js": "fe6fb2248e7e7beb881d5230ddc2ccd91958da677a219a2a8eaf30c6e3dc644e"
+  },
+  "nativeArchiveQualification": {
+    "uid": 1000,
+    "sourceHashes": {
+      "lib/browser-profile-rtc-activity.mjs": "06acfca53ebc57f35bee6b048b07c63e33555dab380a3ebce1f32d00c240a476",
+      "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b"
+    },
+    "reports": [
+      {
+        "name": "rtc",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            },
+            {
+              "name": "actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "a-concurrent-unknown-browser-context-never-becomes-owned-authority",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": true
+        },
+        "error": ""
+      },
+      {
+        "name": "runtime",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+          "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+          "checks": [
+            {
+              "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+              "ok": true
+            },
+            {
+              "name": "complete-target-ledger-qualified-before-navigation",
+              "ok": true,
+              "targets": 2
+            },
+            {
+              "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+              "ok": true,
+              "bytes": 4535,
+              "permissions": "0600"
+            },
+            {
+              "name": "owned-source-process-exited-before-signed-receipt",
+              "ok": true
+            },
+            {
+              "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+              "ok": true
+            },
+            {
+              "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+              "ok": true,
+              "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+            },
+            {
+              "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+              "ok": true
+            },
+            {
+              "name": "unfinished-password-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "persistent-EventSource-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+              "ok": true
+            },
+            {
+              "name": "pending-worker-POST-refuses-with-source-left-running",
+              "ok": true,
+              "reason": "profile_network_untracked",
+              "rawTargets": [
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "shared_worker",
+                  "ready": true
+                },
+                {
+                  "type": "worker",
+                  "ready": true
+                }
+              ]
+            },
+            {
+              "name": "authority-withdrawal-during-drain-physically-disposes-source",
+              "ok": true,
+              "authority": "injected fixture proof"
+            },
+            {
+              "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "launch": {
+            "sandboxEnabled": true,
+            "privatePipe": true,
+            "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+            "selection": "companion-bundled-default",
+            "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+            "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+            "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+          },
+          "ok": true,
+          "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.vqjfRm"
+        },
+        "error": ""
+      },
+      {
+        "name": "cookies",
+        "exit": 0,
+        "report": {
+          "kind": "Actual sandboxed Linux CDP cookie import compatibility with synthetic values only",
+          "ok": true,
+          "uid": 1000,
+          "version": "153.0.8010.12",
+          "coreSha256": "2cfdbb6f8e207c81061af5830a28cc940d3410a7471558e9a05f06874edae40e",
+          "cases": [
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            }
+          ],
+          "browserDisconnected": true
+        },
+        "error": ""
+      }
+    ]
+  },
+  "fixtureBoundaries": [
+    "Synthetic external human JWT verifier and extra private random bearer",
+    "Native focus and dialog choices injected",
+    "Source native Chromium input programmatic with a synthetic saved login",
+    "Socket principal registration fixture around real endpoint proof and pairing auth",
+    "Read-only native CDP and timer observation preload",
+    "Exact child-scoped CA for temporary HOAI HTTPS listener on desktop Tailscale only",
+    "Private SSH fixture process control only; actual commands and encrypted checkpoints use HOAI"
+  ],
+  "independentReview": "Root independently reviewed fixture source and cookie fix. Separate reviewer closed automatic backup receipt and positive cleanup; this does not extend to website navigation.",
+  "composed": {
+    "ok": true,
+    "out": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
+    "source": {
+      "kind": "Actual desktop lifecycle source for a fresh Linux companion",
+      "processId": 88612,
+      "versions": {
+        "electron": "40.4.1",
+        "chrome": "144.0.7559.173"
+      },
+      "checks": [
+        {
+          "name": "actual lifecycle generated and DPAPI-protected endpoint keys before human enrollment and server session start"
+        },
+        {
+          "name": "actual endpoint signature proved fixture-registered current socket"
+        },
+        {
+          "name": "explicit main Hand back releases the native edit guard on the same live page"
+        }
+      ],
+      "http": [
+        {
+          "at": 1792043899795,
+          "mono": 633.1621,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043899830,
+          "mono": 668.6055,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043899849,
+          "mono": 687.5187,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles"
+        },
+        {
+          "at": 1792043899885,
+          "mono": 723.992,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043899904,
+          "mono": 743.0795,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043899928,
+          "mono": 766.7834,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043899991,
+          "mono": 829.5304,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/endpoints"
+        },
+        {
+          "at": 1792043900007,
+          "mono": 846.0862,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/endpoints/92b4af04-89ab-4c54-a92c-bf665cbc3e23"
+        },
+        {
+          "at": 1792043900021,
+          "mono": 859.6454,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/grants"
+        },
+        {
+          "at": 1792043900042,
+          "mono": 880.7269,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043901022,
+          "mono": 1860.5614,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/session"
+        },
+        {
+          "at": 1792043901064,
+          "mono": 1902.7527,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043901118,
+          "mono": 1956.7125,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043901142,
+          "mono": 1980.189,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043901219,
+          "mono": 2057.6594,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043901237,
+          "mono": 2075.8359,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043901255,
+          "mono": 2093.6765,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043961659,
+          "mono": 62498.0375,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043961680,
+          "mono": 62518.8104,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043961701,
+          "mono": 62539.3073,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043961782,
+          "mono": 62620.8958,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/backups/head"
+        },
+        {
+          "at": 1792043962119,
+          "mono": 62957.6758,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/backups"
+        },
+        {
+          "at": 1792043962199,
+          "mono": 63037.6738,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/backups/head"
+        },
+        {
+          "at": 1792043962706,
+          "mono": 63544.7073,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043962728,
+          "mono": 63566.4199,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043962747,
+          "mono": 63586.0594,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043962790,
+          "mono": 63628.7835,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers"
+        },
+        {
+          "at": 1792043962853,
+          "mono": 63691.7993,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043963894,
+          "mono": 64732.9262,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043964938,
+          "mono": 65776.6565,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043965976,
+          "mono": 66814.6744,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967015,
+          "mono": 67853.4055,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967041,
+          "mono": 67879.6146,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967063,
+          "mono": 67902.1786,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967085,
+          "mono": 67924.2139,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9/accept"
+        },
+        {
+          "at": 1792043967121,
+          "mono": 67959.9771,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967144,
+          "mono": 67982.4567,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967165,
+          "mono": 68003.981,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043967181,
+          "mono": 68019.4852,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043967197,
+          "mono": 68035.6456,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967221,
+          "mono": 68059.535,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043967240,
+          "mono": 68079.1528,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/grants"
+        },
+        {
+          "at": 1792043967263,
+          "mono": 68101.5942,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043967281,
+          "mono": 68120.1988,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043967300,
+          "mono": 68138.2378,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967321,
+          "mono": 68160.0299,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043967378,
+          "mono": 68216.9062,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043967398,
+          "mono": 68236.2486,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043967415,
+          "mono": 68254.1704,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9"
+        },
+        {
+          "at": 1792043967437,
+          "mono": 68275.5499,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043973578,
+          "mono": 74416.8487,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043973595,
+          "mono": 74433.381,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043973614,
+          "mono": 74452.6226,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043973939,
+          "mono": 74777.9593,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043973956,
+          "mono": 74794.5903,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043973974,
+          "mono": 74812.8601,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043973998,
+          "mono": 74837.0158,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043974015,
+          "mono": 74854.0696,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043974032,
+          "mono": 74870.9584,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043974055,
+          "mono": 74893.4881,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests"
+        },
+        {
+          "at": 1792043974091,
+          "mono": 74929.9377,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043974107,
+          "mono": 74945.8546,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043974125,
+          "mono": 74963.7347,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043974146,
+          "mono": 74984.4073,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043975178,
+          "mono": 76016.3006,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043975194,
+          "mono": 76033.1203,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043975215,
+          "mono": 76054.1115,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043975238,
+          "mono": 76076.6794,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043976267,
+          "mono": 77105.5989,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043976281,
+          "mono": 77120.1072,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043976297,
+          "mono": 77135.7723,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043976320,
+          "mono": 77158.6714,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043977354,
+          "mono": 78192.5248,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043977372,
+          "mono": 78210.8435,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043977391,
+          "mono": 78229.5762,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043977422,
+          "mono": 78261.0509,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043978454,
+          "mono": 79292.2356,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043978470,
+          "mono": 79308.5984,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043978488,
+          "mono": 79326.5465,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043978512,
+          "mono": 79350.9451,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043978542,
+          "mono": 79380.7657,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043978561,
+          "mono": 79399.4105,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043978577,
+          "mono": 79415.9738,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043978600,
+          "mono": 79439.1304,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043978623,
+          "mono": 79461.9988,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043978641,
+          "mono": 79479.3344,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043978657,
+          "mono": 79495.358,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043978677,
+          "mono": 79516.0331,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043978699,
+          "mono": 79537.8436,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690/confirm"
+        },
+        {
+          "at": 1792043978748,
+          "mono": 79586.2797,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043978766,
+          "mono": 79604.2446,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043978795,
+          "mono": 79633.9966,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043978818,
+          "mono": 79656.646,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690"
+        },
+        {
+          "at": 1792043978843,
+          "mono": 79681.7298,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/agents/456/context"
+        },
+        {
+          "at": 1792043978859,
+          "mono": 79697.6198,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748"
+        },
+        {
+          "at": 1792043978875,
+          "mono": 79713.5481,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043979572,
+          "mono": 80411.0424,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers"
+        },
+        {
+          "at": 1792043979609,
+          "mono": 80447.762,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/checkpoint"
+        },
+        {
+          "at": 1792043979652,
+          "mono": 80490.8985,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043979688,
+          "mono": 80526.9891,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043979715,
+          "mono": 80554.0428,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043979744,
+          "mono": 80582.8384,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043979775,
+          "mono": 80613.2616,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043980817,
+          "mono": 81656.0419,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043980847,
+          "mono": 81685.5558,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043981892,
+          "mono": 82730.5232,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043981921,
+          "mono": 82759.4383,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043982974,
+          "mono": 83812.5338,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043983004,
+          "mono": 83842.7459,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043984067,
+          "mono": 84905.4807,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043984101,
+          "mono": 84939.4036,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        },
+        {
+          "at": 1792043984129,
+          "mono": 84967.4248,
+          "method": "POST",
+          "path": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/activate"
+        },
+        {
+          "at": 1792043984158,
+          "mono": 84996.7027,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3"
+        },
+        {
+          "at": 1792043984186,
+          "mono": 85024.3955,
+          "method": "GET",
+          "path": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/endpoints"
+        }
+      ],
+      "screenshots": [
+        {
+          "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-1.png",
+          "tick": "Live tick 1",
+          "sha256": "caf378788d7d22a1f279e580136f909fd454056d4b9d7c1003fc6dcb73b82253"
+        },
+        {
+          "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1\\lifecycle-live-2.png",
+          "tick": "Live tick 4",
+          "sha256": "a5796315eb09a3ca89cb191db554ef61dc1231bd03e3a0a47708b05ef1b19263"
+        }
+      ],
+      "fixtureBoundaries": [
+        "External human JWT verifier and private candidate token",
+        "Hidden native approval focus and decision",
+        "One-use source navigation gate approval for the exact HTTPS fixture",
+        "Exact synthetic fixture certificate pin",
+        "Socket principal registration",
+        "Programmatic native Chromium input and synthetic saved login"
+      ],
+      "actualBoundaries": [
+        "DesktopBrowserHost",
+        "DesktopProfileLifecycle and Supervisor",
+        "HOAI HTTP create/enroll/grant/start and transfer/staged/CAS",
+        "Windows DPAPI endpoint/DEK storage",
+        "Encrypted signed checkpoint journal",
+        "PasswordVault encrypted portable extras",
+        "Pinned native RTC observer",
+        "Native memory profile and ordinary Host close hooks",
+        "Unchanged browser engine and bridge"
+      ],
+      "backupSchedules": [
+        {
+          "at": 1792043901613,
+          "mono": 2451.3709,
+          "debounceMs": 60000
+        }
+      ],
+      "phase": "source",
+      "stateDir": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-f86888b8-4d1e-4f77-875f-9d9ef65787c1",
+      "backupExtras": [
+        {
+          "at": 1792043902371,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043961803,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978834,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978888,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978889,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978908,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978910,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043978912,
+          "entries": 1,
+          "passwordMatches": true
+        },
+        {
+          "at": 1792043979435,
+          "entries": 1,
+          "passwordMatches": true
+        }
+      ],
+      "nativeDecisions": [
+        {
+          "title": "Set up agent browser",
+          "detail": "This profile belongs to your account and this agent. Saved logins are encrypted on this computer. After you hand back control, the agent can read and act on the page through HOAI. Transferring your saved profile to another machine requires separate device approval. This is a shared agent. Its machine operator controls the agent software. Only hand back control if you trust that operator.",
+          "action": "Set up browser"
+        },
+        {
+          "title": "Connect agent machine",
+          "detail": "The agent will show a public key for you to verify. Sharing saved browser data requires a separate approval.",
+          "action": "Request connection"
+        },
+        {
+          "title": "Verify agent machine",
+          "detail": "Device label (self-reported): kc-server\n\nPublic key fingerprint:\n0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf\n\nObtain the other copy directly from the agent machine's setup output. Approve only if the complete keys match.",
+          "action": "I compared the keys"
+        },
+        {
+          "title": "Allow browser profile sharing",
+          "detail": "Saved cookies and logins will be encrypted for this approved machine and forwarded through HOAI. The agent and its machine operator can use and read them there. Grant this only if you trust that operator. This is a shared agent. This permission applies to your private profile for this agent.",
+          "action": "Allow background use"
+        },
+        {
+          "title": "Copy public browser setup",
+          "detail": "This computer's full public key:\n7371c291aab89b077492d49ed726cdc97b7b75273fc5f6cb2f94b32d4dc4950b\n\nApproved agent machine's full public key:\n0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf\n\nThe copied JSON contains public keys and profile identifiers. It contains no cookies, logins or private keys. Use the shipped plugin's peer-review command and compare the full source key before confirming there.",
+          "action": "Copy public setup"
+        },
+        {
+          "title": "Prepare agent browser",
+          "detail": "Machine 1\nPublic key: 0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf\n\nYour current browser stays open during preparation.",
+          "action": "Machine 1"
+        },
+        {
+          "title": "Move browser to agent",
+          "detail": "Approved public key:\n0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf\n\nSaved website data and logins move to the agent machine. Pages open when the agent navigates to them. Unsaved forms, unfinished sign-ins and device-bound sessions can prevent the move. Cookies and saved logins become readable by the approved agent and its machine operator. This grants no site permissions. This is your private profile for a shared agent.",
+          "action": "Approve handover"
+        }
+      ],
+      "activated": {
+        "state": "active_local",
+        "actingUserId": "profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284",
+        "assistantId": 456,
+        "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+        "physicalReserved": true,
+        "routingCleanupPending": false,
+        "localDurable": false,
+        "serverCommitted": false,
+        "destinationAcknowledged": false,
+        "writerState": "active",
+        "lastWrite": {
+          "operation": "session-start",
+          "outcome": "confirmed"
+        }
+      },
+      "authority": {
+        "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+        "actingUserId": "profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284",
+        "assistantId": 456,
+        "endpointId": "92b4af04-89ab-4c54-a92c-bf665cbc3e23",
+        "bootId": "5e5f43f1-2ac5-4682-98c8-c384c2f0ea59",
+        "runtimeId": "7a276bb6-c4ef-4e14-b678-46d681f9a1b8",
+        "sessionId": "7ea9f462-ebe1-44bc-80bc-c64078a55eb0",
+        "writerEpoch": 1,
+        "revision": 0,
+        "contentKeyEpoch": 1,
+        "grantVersion": 1,
+        "keyFingerprint": "7371c291aab89b077492d49ed726cdc97b7b75273fc5f6cb2f94b32d4dc4950b"
+      },
+      "fixture": {
+        "origin": "https://100.107.111.117:60926",
+        "draft": "SAVED_WEBSITE_DRAFT_9b96327886dc434fb80b008e6c4afa4d",
+        "sourceDocumentIdentity": "1792043901677-0.17303314673208836"
+      },
+      "page": {
+        "draft": "SAVED_WEBSITE_DRAFT_9b96327886dc434fb80b008e6c4afa4d",
+        "saved": "SAVED_WEBSITE_DRAFT_9b96327886dc434fb80b008e6c4afa4d",
+        "documentIdentity": "1792043901677-0.17303314673208836",
+        "tick": "Live tick 0",
+        "webContentsId": 5,
+        "requestCookiePresent": false
+      },
+      "backupHintAt": 1792043904782,
+      "websiteRequests": [
+        {
+          "path": "/fixture",
+          "cookiePresent": false
+        }
+      ],
+      "ok": true,
+      "sourceSessionEnded": true
+    },
+    "sourceCleanup": {
+      "type": "cleanup",
+      "ok": true,
+      "remainingWebContents": 0,
+      "live": [],
+      "failures": [],
+      "runtimeState": "disposed"
+    },
+    "agent": {
+      "type": "configured",
+      "pluginCommit": "ce7eeb97241ab9089ceefb3ec09861ce8ddaa545",
+      "archiveSha256": "893075288fa2ea6a6aa3d18d0f8e17f0fc459a68d47a8b81f2ed41bc41c2735f",
+      "uid": 1000,
+      "keyring": "actual-private-unlocked-persistent",
+      "browserSelection": "bundled-default",
+      "root": "/proof/fresh-companion.kM0B0Q"
+    },
+    "agentFinal": {
+      "events": [
+        {
+          "at": 1792043904796,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043906749,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043908749,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043910750,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043912751,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043914752,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043916753,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043918752,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043920755,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043922755,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043924755,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043926757,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043928759,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043930757,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043932761,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043934762,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043936764,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043938763,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043940764,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043942767,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043944766,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043946769,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043948768,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043950771,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043952772,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043954770,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043956772,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043958773,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043960774,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043962818,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043964784,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043966788,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/c064a1ee-4c6f-403d-b6f5-44644e91dff9/candidate",
+          "status": 201
+        },
+        {
+          "at": 1792043968776,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043970778,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043972795,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043972802,
+          "event": "native-key-helper",
+          "helper": "gdbus",
+          "operation": "call",
+          "elapsedMs": 6,
+          "exit": 0
+        },
+        {
+          "at": 1792043972807,
+          "event": "native-key-helper",
+          "helper": "gdbus",
+          "operation": "call",
+          "elapsedMs": 4,
+          "exit": 0
+        },
+        {
+          "at": 1792043972838,
+          "event": "native-key-helper",
+          "helper": "secret-tool",
+          "operation": "store",
+          "elapsedMs": 30,
+          "exit": 0
+        },
+        {
+          "at": 1792043974778,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043976796,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043976832,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/runtime-requests/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043976867,
+          "event": "native-key-helper",
+          "helper": "gdbus",
+          "operation": "call",
+          "elapsedMs": 5,
+          "exit": 0
+        },
+        {
+          "at": 1792043976872,
+          "event": "native-key-helper",
+          "helper": "gdbus",
+          "operation": "call",
+          "elapsedMs": 5,
+          "exit": 0
+        },
+        {
+          "at": 1792043976889,
+          "event": "native-key-helper",
+          "helper": "secret-tool",
+          "operation": "store",
+          "elapsedMs": 16,
+          "exit": 0
+        },
+        {
+          "at": 1792043976900,
+          "event": "extras-ready",
+          "encrypted": true,
+          "provider": "libsecret-v1"
+        },
+        {
+          "at": 1792043978052,
+          "event": "native-prepared",
+          "authority": {
+            "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+            "actingUserId": "profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284",
+            "assistantId": 456,
+            "endpointId": "a766312e-0e75-4a36-9fb6-b376c5292580",
+            "bootId": "d96f5a96-e215-4b2b-875a-4d9565bc76eb",
+            "runtimeId": "08fd7892-766d-4ebd-8141-b49790fcc9cc",
+            "sessionId": "2d3fce83-a89f-4265-9186-436e84fc5a65",
+            "writerEpoch": 2,
+            "revision": 1,
+            "contentKeyEpoch": 1,
+            "grantVersion": 1,
+            "keyFingerprint": "0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf"
+          },
+          "state": "new",
+          "network": "blocked",
+          "pid": 91,
+          "started": "669811335",
+          "version": "153.0.8010.12"
+        },
+        {
+          "at": 1792043978080,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690/ready",
+          "status": 201
+        },
+        {
+          "at": 1792043978791,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043980782,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043982796,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043982833,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690/read",
+          "status": 201
+        },
+        {
+          "at": 1792043982866,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/status",
+          "status": 201
+        },
+        {
+          "at": 1792043982891,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/capsule",
+          "status": 201
+        },
+        {
+          "at": 1792043982924,
+          "event": "native-url-request",
+          "state": "new",
+          "network": "private",
+          "cookiePresent": false
+        },
+        {
+          "at": 1792043982947,
+          "event": "native-cookie-get",
+          "cookies": []
+        },
+        {
+          "at": 1792043982952,
+          "event": "native-cookie-set",
+          "cookies": [
+            {
+              "path": "/",
+              "secure": true,
+              "httpOnly": true,
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "url": "https://100.107.111.117:60926/",
+              "sameSite": "Lax",
+              "fixtureName": false,
+              "fixtureValue": false
+            },
+            {
+              "path": "/",
+              "secure": false,
+              "httpOnly": true,
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "url": "http://100.107.111.117:60926/",
+              "sameSite": "Lax",
+              "fixtureName": true,
+              "fixtureValue": true
+            }
+          ]
+        },
+        {
+          "at": 1792043982953,
+          "event": "native-cookie-get",
+          "cookies": [
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 40,
+              "httpOnly": true,
+              "secure": true,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": false,
+              "fixtureValue": false
+            },
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 38,
+              "httpOnly": true,
+              "secure": false,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": true,
+              "fixtureValue": true
+            }
+          ]
+        },
+        {
+          "at": 1792043982967,
+          "event": "native-staged",
+          "state": "staged",
+          "network": "blocked",
+          "receipt": {
+            "version": 1,
+            "kind": "destination-staged",
+            "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+            "transitionId": "f3fe7469-ad86-4f37-b13b-1a1da84062e3",
+            "manifestHash": "80a635cdb7294dc6942afb02b342f17dfe0238154d08e40c76b0cec8b71d1385",
+            "revision": 1,
+            "destination": {
+              "endpointId": "a766312e-0e75-4a36-9fb6-b376c5292580",
+              "bootId": "d96f5a96-e215-4b2b-875a-4d9565bc76eb",
+              "runtimeId": "08fd7892-766d-4ebd-8141-b49790fcc9cc",
+              "sessionId": "2d3fce83-a89f-4265-9186-436e84fc5a65",
+              "grantVersion": 1,
+              "keyFingerprint": "0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf"
+            },
+            "stagedInactive": true
+          }
+        },
+        {
+          "at": 1792043982983,
+          "event": "before-staged-http",
+          "route": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/staged",
+          "journals": [
+            {
+              "manifestHash": "80a635cdb7294dc6942afb02b342f17dfe0238154d08e40c76b0cec8b71d1385",
+              "receipt": {
+                "destination": {
+                  "bootId": "d96f5a96-e215-4b2b-875a-4d9565bc76eb",
+                  "endpointId": "a766312e-0e75-4a36-9fb6-b376c5292580",
+                  "grantVersion": 1,
+                  "keyFingerprint": "0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf",
+                  "runtimeId": "08fd7892-766d-4ebd-8141-b49790fcc9cc",
+                  "sessionId": "2d3fce83-a89f-4265-9186-436e84fc5a65"
+                },
+                "kind": "destination-staged",
+                "manifestHash": "80a635cdb7294dc6942afb02b342f17dfe0238154d08e40c76b0cec8b71d1385",
+                "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+                "revision": 1,
+                "stagedInactive": true,
+                "transitionId": "f3fe7469-ad86-4f37-b13b-1a1da84062e3",
+                "version": 1
+              },
+              "encrypted": true,
+              "plaintextAbsent": true
+            }
+          ]
+        },
+        {
+          "at": 1792043983013,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/transfers/f3fe7469-ad86-4f37-b13b-1a1da84062e3/staged",
+          "status": 201
+        },
+        {
+          "at": 1792043984782,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043986787,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+          "status": 201
+        },
+        {
+          "at": 1792043988802,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043988839,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/runtime-requests/c2eeedf8-1ac1-4071-8d8d-a37d23ad8690/read",
+          "status": 201
+        },
+        {
+          "at": 1792043988859,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043988880,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/endpoints/a766312e-0e75-4a36-9fb6-b376c5292580/discovery",
+          "status": 201
+        },
+        {
+          "at": 1792043988892,
+          "event": "native-active",
+          "authority": {
+            "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+            "actingUserId": "profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284",
+            "assistantId": 456,
+            "endpointId": "a766312e-0e75-4a36-9fb6-b376c5292580",
+            "bootId": "d96f5a96-e215-4b2b-875a-4d9565bc76eb",
+            "runtimeId": "08fd7892-766d-4ebd-8141-b49790fcc9cc",
+            "sessionId": "2d3fce83-a89f-4265-9186-436e84fc5a65",
+            "writerEpoch": 2,
+            "revision": 1,
+            "contentKeyEpoch": 1,
+            "grantVersion": 1,
+            "keyFingerprint": "0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf"
+          },
+          "state": "active",
+          "network": "active",
+          "cookiePresent": true,
+          "vaultEntries": 1,
+          "passwordMatches": true,
+          "encrypted": true
+        },
+        {
+          "at": 1792043989473,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/rpc/0ed3f0ca-d3aa-4ea2-9fc6-6915b03e5a89/dispatch",
+          "status": 201
+        },
+        {
+          "at": 1792043989499,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/rpc/0ed3f0ca-d3aa-4ea2-9fc6-6915b03e5a89/result",
+          "status": 201
+        },
+        {
+          "at": 1792043991134,
+          "event": "native-url-request",
+          "state": "quiescing",
+          "network": "private",
+          "cookiePresent": true
+        },
+        {
+          "at": 1792043991153,
+          "event": "native-cookie-get",
+          "cookies": [
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 40,
+              "httpOnly": true,
+              "secure": true,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": false,
+              "fixtureValue": false
+            },
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 38,
+              "httpOnly": true,
+              "secure": false,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": true,
+              "fixtureValue": true
+            }
+          ]
+        },
+        {
+          "at": 1792043991158,
+          "event": "native-cookie-get",
+          "cookies": [
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 40,
+              "httpOnly": true,
+              "secure": true,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": false,
+              "fixtureValue": false
+            },
+            {
+              "domain": "100.107.111.117",
+              "path": "/",
+              "expires": -1,
+              "size": 38,
+              "httpOnly": true,
+              "secure": false,
+              "session": true,
+              "sameSite": "Lax",
+              "priority": "Medium",
+              "sourceScheme": "Secure",
+              "sourcePort": 60926,
+              "fixtureName": true,
+              "fixtureValue": true
+            }
+          ]
+        },
+        {
+          "at": 1792043991266,
+          "event": "hoai-http",
+          "route": "/api/v1/browser/profile-sync/profiles/9ca2c300-c254-4304-8f59-77f7df7f1748/retire",
+          "status": 201
+        }
+      ],
+      "logs": [
+        "2026-10-15T05:58:24.759Z [hoai-browser-host] pairing 422 [456]: connected as browser_host (socket byq8R9gO4H4KZfT2AAAB); the backend now checks the agents against this pairing",
+        "2026-10-15T05:58:24.798Z [hoai-browser-host] managed browser : setup_required: Open Browser > Devices in HOAI to request this exact agent machine",
+        "2026-10-15T05:59:26.788Z [hoai-browser-host] managed browser public fingerprint for recipient profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284, agent 456: 0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf",
+        "2026-10-15T05:59:32.849Z [hoai-browser-host] managed browser 456: ready_for_explicit_session_request",
+        "2026-10-15T05:59:38.082Z [hoai-browser-host] managed browser 456: waiting_for_human_session_confirmation",
+        "2026-10-15T05:59:43.013Z [hoai-browser-host] managed browser 456: staged_inactive: waiting for human activation on HOAI",
+        "2026-10-15T05:59:48.966Z [hoai-browser-host] managed browser 456: active",
+        "2026-10-15T05:59:50.547Z [hoai-browser-host] the daemon let go of this host: closing the browsers (profiles stay) and the sockets",
+        "2026-10-15T05:59:51.269Z [hoai-browser-host] managed browser 456: server_committed_stopped",
+        "2026-10-15T05:59:51.271Z [hoai-browser-host] managed browser 456: connection_unknown: new agent actions paused; live page retained",
+        "2026-10-15T05:59:51.271Z [hoai-browser-host] stopped cleanly"
+      ],
+      "hostAlive": false,
+      "keyringAlive": true,
+      "hostExit": 0,
+      "ownedBrowsersAlive": 0,
+      "keyringStopped": true,
+      "busStopped": true
+    },
+    "container": {
+      "containerAbsent": true,
+      "forcedStop": false,
+      "dockerInventoryConfirmed": true
+    },
+    "result": {
+      "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+      "authority": {
+        "profileId": "9ca2c300-c254-4304-8f59-77f7df7f1748",
+        "actingUserId": "profile-sync-recipient-f9dcee57-1c2c-4889-afbc-c4e6b8ca6284",
+        "assistantId": 456,
+        "endpointId": "a766312e-0e75-4a36-9fb6-b376c5292580",
+        "bootId": "d96f5a96-e215-4b2b-875a-4d9565bc76eb",
+        "runtimeId": "08fd7892-766d-4ebd-8141-b49790fcc9cc",
+        "sessionId": "2d3fce83-a89f-4265-9186-436e84fc5a65",
+        "writerEpoch": 2,
+        "revision": 1,
+        "contentKeyEpoch": 1,
+        "grantVersion": 1,
+        "keyFingerprint": "0e9e02e60ef119baf2b7a8afc7f0c6ef1147a69a002b1fdfe9cf126b0e434fdf"
+      },
+      "manifestHash": "80a635cdb7294dc6942afb02b342f17dfe0238154d08e40c76b0cec8b71d1385",
+      "typedStatus": true,
+      "automaticBackup": {
+        "snapshotId": "733fed69-ee09-41aa-9e31-34ab802afd78",
+        "bundleHash": "64689a9530d64fd514765d7d2440affd881feea7e267890a8590048e507f67cc",
+        "ciphertextBytes": 1867,
+        "elapsedMs": 60506.304899999996,
+        "scheduledDebounceMs": 60000,
+        "sameDocument": true,
+        "sameWebContents": true,
+        "sourceRemainedActive": true,
+        "activationAuthorityUnchanged": true,
+        "savedLoginCaptureObserved": true,
+        "plaintextAbsent": true
+      },
+      "approvedNavigation": null,
+      "siteInput": "pending recipient permission integration",
+      "fixtureBoundaries": [
+        "Synthetic external human JWT with private random bearer",
+        "Native dialog focus and decisions",
+        "Socket principal registration",
+        "Read-only native observation preload",
+        "Private test CA and temporary Tailscale HTTPS listener"
+      ]
+    },
+    "diagnosticInfrastructure": "Private SSH fixture process control; actual browser commands and encrypted transfer use the temporary HOAI HTTPS server on the desktop Tailscale interface"
+  },
+  "approvedPublicNavigationFollowup": {
+    "durationSeconds": 66.895,
+    "selectedTestPassed": true,
+    "selectedTests": 1,
+    "otherTestsExcludedByName": 72,
+    "pluginArchive": {
+      "path": "/tmp/hoai-profile-archive.TjbwOW",
+      "pluginCommit": "b948d6a1023d40f53e7c8f0e3ff19ccc4b787f99",
+      "pluginArchiveSha256": "78d1127361b4ab7a0160d56b1e51048538144818012689e0a6c1a1f1d478c9d8",
+      "image": "hoai-profile-fresh:b948d6a"
+    },
+    "nativeQualification": "{\"exit\": 0, \"output\": \"{\\\"uid\\\":1000,\\\"sourceHashes\\\":{\\\"lib/browser-profile-rtc-activity.mjs\\\":\\\"06acfca53ebc57f35bee6b048b07c63e33555dab380a3ebce1f32d00c240a476\\\",\\\"lib/browser-profile-runtime.mjs\\\":\\\"2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b\\\"},\\\"reports\\\":[{\\\"name\\\":\\\"rtc\\\",\\\"exit\\\":0,\\\"report\\\":{\\\"kind\\\":\\\"Actual disposable sandboxed Chromium private native RTC qualification\\\",\\\"checks\\\":[{\\\"name\\\":\\\"real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"a-concurrent-unknown-browser-context-never-becomes-owned-authority\\\",\\\"ok\\\":true}],\\\"browserVersion\\\":\\\"153.0.8010.12\\\",\\\"executable\\\":\\\"/opt/playwright/chromium-1243/chrome-linux64/chrome\\\",\\\"ok\\\":true},\\\"error\\\":\\\"\\\"},{\\\"name\\\":\\\"runtime\\\",\\\"exit\\\":0,\\\"report\\\":{\\\"kind\\\":\\\"Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only\\\",\\\"transportQualification\\\":\\\"Actual exact-version native RTC observer plus raw Network/target ledger\\\",\\\"checks\\\":[{\\\"name\\\":\\\"missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"complete-target-ledger-qualified-before-navigation\\\",\\\"ok\\\":true,\\\"targets\\\":2},{\\\"name\\\":\\\"only-encrypted-capsule-atomically-fsynced-after-terminal-exit\\\",\\\"ok\\\":true,\\\"bytes\\\":4535,\\\"permissions\\\":\\\"0600\\\"},{\\\"name\\\":\\\"owned-source-process-exited-before-signed-receipt\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"destination-stage-is-inactive-and-makes-zero-site-requests\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant\\\",\\\"ok\\\":true,\\\"fixture\\\":\\\"Synthetic AES encrypted native store, OS key-store bootstrap remains separate\\\"},{\\\"name\\\":\\\"matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"unfinished-password-refuses-with-source-left-running\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"persistent-EventSource-refuses-with-source-left-running\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive\\\",\\\"ok\\\":true},{\\\"name\\\":\\\"pending-worker-POST-refuses-with-source-left-running\\\",\\\"ok\\\":true,\\\"reason\\\":\\\"profile_network_untracked\\\",\\\"rawTargets\\\":[{\\\"type\\\":\\\"page\\\",\\\"ready\\\":true},{\\\"type\\\":\\\"page\\\",\\\"ready\\\":true},{\\\"type\\\":\\\"shared_worker\\\",\\\"ready\\\":true},{\\\"type\\\":\\\"worker\\\",\\\"ready\\\":true}]},{\\\"name\\\":\\\"authority-withdrawal-during-drain-physically-disposes-source\\\",\\\"ok\\\":true,\\\"authority\\\":\\\"injected fixture proof\\\"},{\\\"name\\\":\\\"resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key\\\",\\\"ok\\\":true}],\\\"browserVersion\\\":\\\"153.0.8010.12\\\",\\\"launch\\\":{\\\"sandboxEnabled\\\":true,\\\"privatePipe\\\":true,\\\"executable\\\":\\\"/opt/playwright/chromium-1243/chrome-linux64/chrome\\\",\\\"selection\\\":\\\"companion-bundled-default\\\",\\\"featureSwitch\\\":\\\"--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup\\\",\\\"source\\\":\\\"https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts\\\",\\\"omniboxSource\\\":\\\"https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b\\\"},\\\"ok\\\":true,\\\"encryptedCapsuleDirectory\\\":\\\"/tmp/hoai-profile-capsules.WNKA7L\\\"},\\\"error\\\":\\\"\\\"},{\\\"name\\\":\\\"cookies\\\",\\\"exit\\\":0,\\\"report\\\":{\\\"kind\\\":\\\"Actual sandboxed Linux CDP cookie import compatibility with synthetic values only\\\",\\\"ok\\\":true,\\\"uid\\\":1000,\\\"version\\\":\\\"153.0.8010.12\\\",\\\"coreSha256\\\":\\\"2cfdbb6f8e207c81061af5830a28cc940d3410a7471558e9a05f06874edae40e\\\",\\\"cases\\\":[{\\\"domainCookie\\\":false,\\\"secure\\\":false,\\\"sourceScheme\\\":\\\"NonSecure\\\",\\\"exact\\\":true},{\\\"domainCookie\\\":false,\\\"secure\\\":false,\\\"sourceScheme\\\":\\\"Secure\\\",\\\"exact\\\":true},{\\\"domainCookie\\\":false,\\\"secure\\\":true,\\\"sourceScheme\\\":\\\"NonSecure\\\",\\\"nativeInvalidRefused\\\":true},{\\\"domainCookie\\\":false,\\\"secure\\\":true,\\\"sourceScheme\\\":\\\"Secure\\\",\\\"exact\\\":true},{\\\"domainCookie\\\":true,\\\"secure\\\":false,\\\"sourceScheme\\\":\\\"NonSecure\\\",\\\"exact\\\":true},{\\\"domainCookie\\\":true,\\\"secure\\\":false,\\\"sourceScheme\\\":\\\"Secure\\\",\\\"exact\\\":true},{\\\"domainCookie\\\":true,\\\"secure\\\":true,\\\"sourceScheme\\\":\\\"NonSecure\\\",\\\"nativeInvalidRefused\\\":true},{\\\"domainCookie\\\":true,\\\"secure\\\":true,\\\"sourceScheme\\\":\\\"Secure\\\",\\\"exact\\\":true}],\\\"browserDisconnected\\\":true},\\\"error\\\":\\\"\\\"}]}\\n\", \"error\": \"\"}\n\n*******************************************************************\n*                    AUTHORIZED ACCESS ONLY                        *\n*  Unauthorized access is prohibited. All activity is monitored.   *\n*******************************************************************\n",
+    "sourceGuard": {
+      "capturedFiles": 167,
+      "unchangedFiles": 166,
+      "blanketGuardPassed": false,
+      "executedFixtureAndProductBytesUnchanged": true,
+      "exception": {
+        "frontend\\electron-app\\agent-browser\\dev\\native-profile-parity.cjs": {
+          "before": "86e132da1b87c165034d9e72b8e01dab954e3b64b7776eea95a59c188121b67d",
+          "after": "fc9322938ebce105e880294649988c91cdd9d4d11d0128ef04df7451f6e807c6"
+        }
+      },
+      "exceptionReason": "Independent dev-only parity probe edited by another worker; it is not imported or executed by this fixture. Literal name scan across native sources and selected backend fixture references found only self references in the parity probe."
+    },
+    "nativeSourceHashes": {
+      "frontend\\electron-app\\agent-browser\\annotate.js": "07dfec1560476ac814d406dd817172d8d14d0dbc8e868dae3f1807ede9b0e72d",
+      "frontend\\electron-app\\agent-browser\\approval-bypass.js": "2f9475e5363c54465481f45aaa4d88b6b8b9be3fd247b0f09e81b22a5958d020",
+      "frontend\\electron-app\\agent-browser\\automatic-hold.js": "1704efc4cc3f5eaa175983a91b5fd98ba3e78c2075ee46ab3ee3b865fdf642df",
+      "frontend\\electron-app\\agent-browser\\bridge.js": "a54021d114c1a2bd9c47ed0948cec6e646101f38176e2049762ab7d39aa18f97",
+      "frontend\\electron-app\\agent-browser\\browsing-history-service.js": "062e9d5acac75779ac017786e112ad7bf666d5486bae1c40ee9d18bd73134df0",
+      "frontend\\electron-app\\agent-browser\\browsing-history-store.js": "4fb02363327be0e19242d65f86ccae50814bcf5019a3d90b0178632a02a501c8",
+      "frontend\\electron-app\\agent-browser\\chrome-out.js": "93446bca808ff2e4f2ecddc006b6ffadc2844b28378427ca5c49e2901abcf84f",
+      "frontend\\electron-app\\agent-browser\\chrome-reach.js": "639b4cac456c6c1c76b39d358115d10f4b69f86880080a07c35c0a883d52f5ab",
+      "frontend\\electron-app\\agent-browser\\chrome-transport.js": "51fdc4fcf290de7d2cb4d4e0ae277377637f75b293e11c8ac977b4ce67e3e4f7",
+      "frontend\\electron-app\\agent-browser\\command-ownership.js": "7f3063b35e23e820ef35b34e2c197c10e505065dba2112a9b04c8bbf94a92e96",
+      "frontend\\electron-app\\agent-browser\\cookie-import-channel.js": "cafee001e9f319f117d774a0cff2623e12c4c3629a5ace1e808115b54c9f7faf",
+      "frontend\\electron-app\\agent-browser\\cookie-import-model.js": "0811628cdf215ccdf81db3da07669d45f3f14aa6acd44fa62c6537f66acd07e2",
+      "frontend\\electron-app\\agent-browser\\cookie-import-service.js": "eec87fab52cc854efdf4fe32167130ed34210eae600c6be2efb7e09b263e8e5a",
+      "frontend\\electron-app\\agent-browser\\cursor-avatar.js": "9191a67d4d381677f90e77111d61283c29fdd6564381382e0c85731cc6da687b",
+      "frontend\\electron-app\\agent-browser\\cursor-overlay.js": "a7b17af9a59c44197eeb3b32af162b42fa7e2503c577949c32ba213063018ef9",
+      "frontend\\electron-app\\agent-browser\\cursor-raster-decoder.js": "03311488aea4afb8ca4b89a1ef2c2e7e97e1a9f8933defdecc2709c244be582d",
+      "frontend\\electron-app\\agent-browser\\daemon-controller.js": "dd30628e4027119413ad5d9fbc59d4ce02514a025408dbb9390b34b30975cd65",
+      "frontend\\electron-app\\agent-browser\\daemon-input-controller.js": "96f982bfc53b19e58d3ff95d978855f69c73444524092571e458347acae57248",
+      "frontend\\electron-app\\agent-browser\\daemon-native-pointer.js": "a8b6cebbdac30a156415b6aaaad49d4d4864390a5bbccd009e2d8dc1687663ad",
+      "frontend\\electron-app\\agent-browser\\daemon-transport.js": "e4e253c33f3399f7a006facbbeb870f56f8a1f4962d021029a0c411c970a5f85",
+      "frontend\\electron-app\\agent-browser\\daemon-view-preload.js": "be56d07003341f927835035edb226cf9e2a8c42f8d9823f9b0f878714f4ffdc9",
+      "frontend\\electron-app\\agent-browser\\daemon-view.js": "5dadbe9248482a8b566247882fe53da55200a12aeb966316e0e48ce8e6144f79",
+      "frontend\\electron-app\\agent-browser\\desktop-host.js": "d9f66fa9cfb335864bfa77a83c4e7382fa251f6f8354aaa9aedfd5a51bba346f",
+      "frontend\\electron-app\\agent-browser\\discovery.js": "796cbf09b5574215827f9f8d047c480ac646912ef39f1de0f4513f8dbc651403",
+      "frontend\\electron-app\\agent-browser\\engine.js": "144f51b1d4906627088e7d9769afbfec95fb6f964a722e59d8b5ec89a8861c9d",
+      "frontend\\electron-app\\agent-browser\\find-in-page.js": "ef529e4cc1b502eaed1350d16d0514052f3e5038ae1583b13d3fe55649477394",
+      "frontend\\electron-app\\agent-browser\\host-automatic-hold.js": "5a88d5dc1008e4a90589ff111fcfce4ddaf688f82c1be5fca307759a04fc98e4",
+      "frontend\\electron-app\\agent-browser\\host.js": "1dfd01b9a4a91ffeea5cebdbeca3018c3a9a7b709938fb643907f4f967535698",
+      "frontend\\electron-app\\agent-browser\\index.js": "fd4b7d5abfe194f478d92cebff9339423046bf72d9d2523a26fcf63e1f0c859e",
+      "frontend\\electron-app\\agent-browser\\instructions.js": "1682c69d8fe824c7fac3c1b0f36b3e0b6172c8aafbc095d273dfd43fd413a94d",
+      "frontend\\electron-app\\agent-browser\\local-credential-guard.js": "a0e66b449b23152caf22c0062d6a6acbbdc967b417b0a892056af9a974adbd5c",
+      "frontend\\electron-app\\agent-browser\\local-credentials-dialog-preload.js": "cbb0009161e1181f59df461b4cbedecea86074b6f1c5078246a49e017ae5f284",
+      "frontend\\electron-app\\agent-browser\\local-credentials-dialog-ui.js": "f48cb47d8d78ee17f8ba54f06afa828c9c52cd1927f2323162b3deb77aaeecea",
+      "frontend\\electron-app\\agent-browser\\local-credentials-service.js": "2d7bb3e04bd690d8611641c890ca66f18dae5160823c33ea6110fce6dd77b261",
+      "frontend\\electron-app\\agent-browser\\local-mcp.js": "02165873cb837f1d0e15b9f1a7eead26feae612736c3b41a8d6da8c5f86ce11a",
+      "frontend\\electron-app\\agent-browser\\local-profile-authority.js": "d487aac4d4ef4c0a24fde80365352374f59304f2c02893f91eebd9e1e29c028f",
+      "frontend\\electron-app\\agent-browser\\logins.js": "c220bb1b494bf48db78de1177f28fe4b6b348050bac47718ccef0c80c7a6dadd",
+      "frontend\\electron-app\\agent-browser\\native-credential-monitor-preload.js": "47f68359ce7b0ae1ef316f11d95e8c5f6436f528ec1f50455712de2725786069",
+      "frontend\\electron-app\\agent-browser\\native-credential-monitor.js": "46d50863bdd2ddeac7fc7d7ac87612d757885902a6eefceeecbad95b9ecfe15b",
+      "frontend\\electron-app\\agent-browser\\navigation.js": "20af60d12fc810dd0dd75b8e9ecfea09142064596f456c63a5367794755c8ee9",
+      "frontend\\electron-app\\agent-browser\\open-external-guard.js": "c69811e64ad68390956cb4335e6d9837a604c764d271ac9b31f5a02dfabc7292",
+      "frontend\\electron-app\\agent-browser\\password-csv.js": "d323d8942765aec2583b9c0826205258bd0ac74279599432146e2618922224b5",
+      "frontend\\electron-app\\agent-browser\\password-fill.js": "b3a2a012b3afe051185895715532b8d369135b3573b84000fc799e186ac9d41e",
+      "frontend\\electron-app\\agent-browser\\password-service.js": "10d958ba16d3dda97a985f3edcc634ba76e625fbae6d8c9f5646a5da2517ce94",
+      "frontend\\electron-app\\agent-browser\\password-vault.js": "ffb12d9f4eacf92efa62756ff6b8b6ff6c8bd418fb9e0213594146a1ae43ace8",
+      "frontend\\electron-app\\agent-browser\\playwright-cleanup.js": "88560e57a789e069685e73f536173d1ee817ca8f7b7f92c3802b6479e7a76932",
+      "frontend\\electron-app\\agent-browser\\policy.js": "7541a0c32fd5dd1b21ee0e67ba5df11ec7a9fc8e5222e422da8620cbf4f3c6bc",
+      "frontend\\electron-app\\agent-browser\\popup-ownership.js": "fd2937ef49ad301905a5e8100f90559e66c63e526904077ba713793b5f370386",
+      "frontend\\electron-app\\agent-browser\\private-driver-events.js": "2aaefdcfad81a1a254a089926fa1a81770932ac3cbeead2a405d1527fbf2e606",
+      "frontend\\electron-app\\agent-browser\\profile-admin.js": "54bf62696afa80acfdc4f7f8f171237584996063e113e006f1ccd71d113f9c21",
+      "frontend\\electron-app\\agent-browser\\profiles.js": "336225827578f3f66849d5d946aebacd6cea877c20cd793fd6c7080d8cd3119a",
+      "frontend\\electron-app\\agent-browser\\recently-closed-tabs.js": "3ef9d270fb4c478dbeaf7bbd5931cd0f54bdae8da7b475e4fdf4af9c067830b5",
+      "frontend\\electron-app\\agent-browser\\redirect-guard.js": "8fef560e8e062ecd5ed81da6cd044e7bfd34fd0084b131d9efffdfddf05cb6b1",
+      "frontend\\electron-app\\agent-browser\\remote-credentials-crypto.js": "f4e2bdec3c3981b8119d831aab2474943ce3867818a661effef2209181a8a22f",
+      "frontend\\electron-app\\agent-browser\\remote-credentials-dialog-preload.js": "01a2dc6aa66947c84e8d0c6d3aec29640e7cd01591ad0171096809a9da999593",
+      "frontend\\electron-app\\agent-browser\\remote-credentials-dialog-ui.js": "0a844fe45e8bd96df893043ea5a5e1d5b0f79aad94b78206e171fa53629f854f",
+      "frontend\\electron-app\\agent-browser\\remote-credentials-dialog.js": "e37da08c90e5b4c6f427fb474f7a692d41803b4347f86803997f82294b25f818",
+      "frontend\\electron-app\\agent-browser\\remote-credentials-service.js": "c4cb06dd7dcd7e5c68f34fee35ea986303a294c3047989396dc60164578f6a1b",
+      "frontend\\electron-app\\agent-browser\\search-settings.js": "293f2afdfe312e2d5f88dbe1e4f618801a0a22b86ca8db96d4993933d0906efd",
+      "frontend\\electron-app\\agent-browser\\session-manager.js": "152632e2c36a2bd9da69650d0fea1ca8b813f0c97567676dd5bad4c982b9427d",
+      "frontend\\electron-app\\agent-browser\\settings.js": "49317db663958dd3441b7bbfc85d3e4961a9d097799b3d0703df0cf7bad5dd72",
+      "frontend\\electron-app\\agent-browser\\site-permissions.js": "42539c03306e957efae65e7b8e5ff84f824bf59c625129f46a07da48201c00ca",
+      "frontend\\electron-app\\agent-browser\\snapshot-target.js": "588b3780958e4a2f5c5022a7201d6185cf1caa77baac1fc053065671990838e4",
+      "frontend\\electron-app\\agent-browser\\thumb-frame.js": "be1a90765df315b9a8959872c0ca9c6ec3c54494bc895455cb743fc0563e03ba",
+      "frontend\\electron-app\\agent-browser\\chrome-extension\\cookie-import-crypto.js": "2a9ce9408a71a9b9515264632dafedd8b7533527812683065209b79008927127",
+      "frontend\\electron-app\\agent-browser\\chrome-extension\\cookie-import.js": "b25ef7d6eaff5907c2e057230ff10208ec03a60d2fe109f1c6624222cc55c220",
+      "frontend\\electron-app\\agent-browser\\chrome-extension\\popup.js": "6101ecfb004f3f672f7f02dfea3c55ab005e6f2c14d2e3f90777f0aa28764b56",
+      "frontend\\electron-app\\agent-browser\\chrome-extension\\protocol.js": "adc8fab75c068e75af5d8d03fdf3a283ec253338343d2776b0e2f224f8c86dd1",
+      "frontend\\electron-app\\agent-browser\\chrome-extension\\sw.js": "82f2c2baee08e998285d7a422c82a0323a4fa2ce390c835364fb56dc22a65de3",
+      "frontend\\electron-app\\agent-browser\\dev\\browser-parity-probe.js": "f22b7439f11ac1a3ffcac66bd0e7757c21b2a282e876a0cd3dbd09cdc8adb6ed",
+      "frontend\\electron-app\\agent-browser\\dev\\browsing-history-native-probe.js": "ca7877cf2afb73caa4e2106948faeb05568b4cf37ff3241e452188f18ee6f120",
+      "frontend\\electron-app\\agent-browser\\dev\\concurrent-desktop-probe.js": "01c48e193e50a7069037f819305a0a715bd36bdfa67279155ad337385a2f697d",
+      "frontend\\electron-app\\agent-browser\\dev\\controller-input-probe.js": "7be56a50d86b239fc453be5e440f7d368cfc5f197cf056756fde2f64542689c5",
+      "frontend\\electron-app\\agent-browser\\dev\\cookie-import-probe.js": "c49b96ae56f63efce9de44135bb8ce29abad9f17d016e68697f28892efe655a2",
+      "frontend\\electron-app\\agent-browser\\dev\\daemon-main.js": "c58b129d6d9ce5f4c3a42a5ecb66759ffa5bf7c04576e7a08045926e413e955f",
+      "frontend\\electron-app\\agent-browser\\dev\\dev-main.js": "3441eafd1ceb629c8c8534fb3dfeffd1bca4a4b1adc21ab3ed70af18c57a4694",
+      "frontend\\electron-app\\agent-browser\\dev\\download-destination-probe.js": "4ce6453cd0e4898775b3bb4b0427aae84bd490fb02023de9f0e11cd3a2f6afae",
+      "frontend\\electron-app\\agent-browser\\dev\\download-history-probe.js": "0f44fa105050ebd5ea697d03a4f994f0a2fe9084b86445df5b8aa137c38b7bdf",
+      "frontend\\electron-app\\agent-browser\\dev\\fresh-companion-agent.mjs": "d27779f4fff5cd024c112a8a8b2af78ce9ac9f988f292ac93368cbcfca3f53d7",
+      "frontend\\electron-app\\agent-browser\\dev\\hidden-thumb-proof.js": "b4d2a0240c325dfbfc6e55532bc085ed167d8bc6fbb4333c981e742ce965c82a",
+      "frontend\\electron-app\\agent-browser\\dev\\iframe-origin-probe.js": "bbb130cd2b216e49d07bbeafbea470f44353259056f4a27879f7b8f37e2ad24b",
+      "frontend\\electron-app\\agent-browser\\dev\\launch-spec.js": "edb260fbb694eb8456340c4b479f9001c1b5a4bac233d2fbfc84b6d8356e69cf",
+      "frontend\\electron-app\\agent-browser\\dev\\native-active-backup-scheduler.cjs": "f63988990fc3406eab5232d09a7accd5a907cba33a5284a147c825a1e9a6f453",
+      "frontend\\electron-app\\agent-browser\\dev\\native-document-preflight.cjs": "6167ffd7e6687c7449a290f4c607d66fab0608623a66f687a7eee2921efd987a",
+      "frontend\\electron-app\\agent-browser\\dev\\native-live-backup.cjs": "ce180bad153745036ee8e84a577c44240c448729d51d9fac935b6f5a6f683da6",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-activity.cjs": "8a6671ec3b96485c7c210504145ba914f8baa8d497e295723373b5d48da18955",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-fresh-companion.cjs": "72769d82522b018ba026c3c693f15237cc8ec4ef65440d6dadee7f193e28fe66",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-lifecycle.cjs": "bdc85a824cac3fad56d99724ccc6e4533bb79f95b20e2f6b7f2e23b746f174ff",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-parity.cjs": "fc9322938ebce105e880294649988c91cdd9d4d11d0128ef04df7451f6e807c6",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-quit-preservation.cjs": "a50367265c8252015c68f4c063b478c52a37dce87258da4815f2d19bf635d532",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-readdress.cjs": "1d86554925dba6303ffa4026507399e8d3ef441a92813bfb48ee79370b6a8839",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-relay.cjs": "19b089ab1d7f95cb87433e082f9d6f96a6c8271815640a01221a4580a69c6ecd",
+      "frontend\\electron-app\\agent-browser\\dev\\native-profile-rtc.cjs": "fa1d8e7c7a8ebc282efc66d6e5c6d6a267c7fbcde1dd454ae4734b5d83b66de2",
+      "frontend\\electron-app\\agent-browser\\dev\\password-native-cases.js": "257553886a7a856a4d05541f549ddf868407d23e31aa559856a541e86e4d7911",
+      "frontend\\electron-app\\agent-browser\\dev\\popup-native-probe.js": "fb92287198c52cba043c6ab9654e8964908146a607cf05f066df0d0abfbb7320",
+      "frontend\\electron-app\\agent-browser\\dev\\profile-admin-probe.js": "cadf106dc218f27c7cbe52690aadfcf23c9c96a9af6124b3dc12f81895335566",
+      "frontend\\electron-app\\agent-browser\\dev\\profile-cookie-roundtrip.cjs": "6b4be74eb5a79c7879f71bcafdabf6948836e1baba8f351d59621179b211eeb8",
+      "frontend\\electron-app\\agent-browser\\dev\\profile-desktop-key-store-runtime.cjs": "a701ceee78611638a1a57f1aed53b46ca72d264ac5115f520c9afef372417696",
+      "frontend\\electron-app\\agent-browser\\dev\\profile-storage-runtime.cjs": "0f3b96625e92b2a3310fe6d48e464ff0920f7d0c58ee202f1ddc84038b3df2ed",
+      "frontend\\electron-app\\agent-browser\\dev\\rail-e2e.js": "373ab707b78e591e42139bebd54e5cc4870e2c14a1b8a3a5ac1c0151a81eb099",
+      "frontend\\electron-app\\agent-browser\\dev\\redirect-native-probe.js": "6728233c1cc805494f00211fc9b0065b7575176753d36212dca959faf0cdf749",
+      "frontend\\electron-app\\agent-browser\\dev\\relay-e2e.js": "94ef5a9d4c7aab71b98e4c19137a0607acd55cdf4aee8043b171e27ffe5ec4eb",
+      "frontend\\electron-app\\agent-browser\\dev\\relay-visual-e2e.js": "887e7ef9dff821fbfb4c47c3d44ed1f8771fc84892c3e86e2f33216eeb111e1e",
+      "frontend\\electron-app\\agent-browser\\dev\\remote-storage-proof.cjs": "9fda2190bd8156232637545651d47400e3c6d3547ab96be8f535b815dd87a464",
+      "frontend\\electron-app\\agent-browser\\dev\\reopen-native-probe.js": "cc4e69fe1e329a863a7a70165b52cc70eb792202f56ef9cdc0201fc8e1f61e83",
+      "frontend\\electron-app\\agent-browser\\native-input\\build.js": "8678c0c6faaee69b6760a8c561e6554304222edbc1e2c605b40def403138e7ad",
+      "frontend\\electron-app\\agent-browser\\native-input\\controller-source.js": "2644095424d16dbbcb64a83af9fc0bda6eb83a6bb992a932a92038bbebf7fc25",
+      "frontend\\electron-app\\agent-browser\\native-input\\integration.js": "c9aa7bf4dd1d4fc8b1487394526dbf494aa07dc751225ad689ab5888aa0c22b7",
+      "frontend\\electron-app\\agent-browser\\native-input\\loader.js": "48462346863d16d543efab21d7191d04ef69dcd689b85f495e801df11cfb3c41",
+      "frontend\\electron-app\\agent-browser\\native-input\\package.js": "25b2f41e38e178212ef91779b3029de8202ea7a5091d36608ee0a412321d8ba7",
+      "frontend\\electron-app\\agent-browser\\native-input\\prepare-headers.js": "b73bae202bbb3b5f3416cc7c5b8635e8ee0cac8a265d1065dc6781d5d315d296",
+      "frontend\\electron-app\\agent-browser\\native-input\\source.js": "e78b48878c138c1fa48f48319418e583d4f0a78bff90e12147bb3f28be59d6aa",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-client.js": "4e662c5308b874f8c798bf7a3d9be8938526ef873bf698d611263237655007ea",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-crypto.js": "36b86383b4401d100359d51b9997c6ec8cd3c7c7605f7d8ee0c8454c5d0c2931",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-scheduler.js": "d50d4932e109f4357cdb7bc6048c9006c9b586140d7e3565e7186bb0ffcdddd9",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\active-backup-wire.js": "d0c25ca549c91a18f1106289775f22863e8a81953c3ef2554647096f1e34077b",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\backup-journal-worker.js": "a87bd08969dc2f78610937bfb55de70a6c5412f7e2a9747f7886849b87c804a5",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\backup-journal.js": "43075421e966b46d443e0294e09d98fe3adab6d5ca9aa24e44932d0ab59fb199",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\backup-seal-client.js": "04eb8a2f021c14ed8653be808ad86941b44765a973b9a54a75b65a13d736360e",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\backup-seal-worker.js": "d3d4365353d2ab39ef715e0dc2281c1e2b0e0aac052a41b5d14de3c9cf09ecc4",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\checkpoint-store.js": "a0ca3ffb3bd8d030bdd1225882a96d1d6801da84534d5190928cf5f71f91a1ac",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\coordinator-client.js": "0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\crypto.js": "8618f0702f01bd2a23a59dd3fcbef388512b1b218823953b0a7e63b83158a3a3",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-admission.js": "95928095fc5855fa6f9e7b95ead7047948377944b176d9ed48f27cf183ff3f71",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-authorization.js": "3b564fefd39e018b2da4c53a2359448d89eca8b02cecb2ab5e9d2effec16cc34",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-key-store.js": "ad67d17dc9f6aa3ba35d8a7739b42e8c764c256d536718057767c59ad4945c0b",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-lifecycle.js": "2479e330a35292f4b599f1bae0c59f021933449f1d46cf943a30d9da0baca9f0",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\desktop-supervisor.js": "cd2aba3f2963d195eb3306d6bf94efc19fa20c743ee5c11d24b33ed283cc0dd7",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\document-safety.js": "aa98a315b2d143da35435582de1fdd4c7e75de137dbb59556f583a103ba07952",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\endpoint-offer.js": "b4ec7bcc53e9fdc93ecd4c26f9e71f10dcc0581133d554555c9d486d659aa82b",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\live-backup-capture.js": "99ff4c438672946f6718e56624377767d89a89a4a59dd6cee7515f4bd4a25ff5",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\live-backup-input.js": "aa3c3459293cc866066e1938c6f0b101e507ab822266905fb45d448b69e02284",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\live-read-scope.js": "e4a0e91f59ff9875234f12940d9309ec4966784b9fa3e022774093d3e8a85999",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\live-storage-reader.js": "f441681fc068ea567669f92ab1fcdd2821cb96e0c1685ef9811664db6266e0f2",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-active-backup-composition.js": "6e3c3b4e43e60288abfa4d581bd875225f98a6024980713c8f9ed910174654c2",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-backup-lifecycle.js": "d5e518fa3a55517132cdd32579440a0915b4725ef660e21291347ed76524b930",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-device-setup.js": "19b67bfc2f54644631efa22a25e3592ecdaa0a6c979c01eded7448fa9eb83f40",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-peer-review.js": "f638d153c14f4ddc53090d7d99f1893db238e3e83339ecc563179e1f6ed75d16",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-profile-adapter.js": "367eedd712525a9dfb482ff2f53220c76cd97c6535d5d480f8175e42a463112c",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-profile-approval.js": "bfb1e82587635ada2cbb59456ca09b987acfb73746d78e09536d4a172e8008ab",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-rtc-activity.js": "fbadd7e6e06294715aeb224e5bb18b62f5853ca70210bb72edb6a0f3077597c0",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime-permission-review.js": "ccc158123086a3ce1d90218d90302fd2a554b2e5fb38b975e0aeb524e83a862f",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime-preparation.js": "ee8607404dee080f1fef9d5c990979c1e1f00867d5b2ec825b43de207010cbed",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-runtime.js": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\native-source-handover.js": "04b7d17682e2882154d3da624012cf4b8d8d2fc4b30da5f022b370b656059f40",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\portable-state.js": "0539458b36a2d112277889c151f501881b4a2ff2d0a5653e3dca62818e3409b0",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\private-native-activity.js": "6ef50b6f6fb957689259f65d1570582e3e98b2e055b33cd119b9ce35cbf25063",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\renderer-auth.js": "ee5b150b264cad7573611c2bb3afc4697f00744c74c1e093a6776992ede66279",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\renderer-socket.js": "1d92057cb275bde9fad543f69e644f7a55bbca751b64c28d6341f5e23f1b3497",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-endpoint.js": "cb5023d79d476cf30edda6facec71c2d60a4192147cbc053d807d2d1ea19cb50",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-host-router.js": "6e2b0265b733ce98d6f6313af91452a1dd935e151c71cec23ca768871cae121e",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-permission-wire.js": "bb36c3c94eaeffbd7a9940763b2e1d2f36df705eef4926fe97a4b72656d6e7d9",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-readiness.js": "72154701e43b869f978eb7e9dbe1808ff66a3ba0e4df5ab8b75706ecd0f5dffa",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\runtime-status-client.js": "48a0baf9169797577460f2bb6fba2c785d6d6a3fc3f5718ce3a1c895c4a7329a",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\stopped-head-stage.js": "4b350549a4e99d4ef5d8d939ab43e4e9d712c294d9b43329a5364fbf32751eac",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\storage.js": "5b26031e21b98d939b831f2665dc094f89d1c99aa27f127de8131be965756ba4",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\transfer-coordinator.js": "15d820727b649ca9e4ae08bce51ba1b59afd13809ca1c2e32f4d7d69345c862e",
+      "frontend\\electron-app\\agent-browser\\profile-sync\\vault-extras.js": "538b3f3c052f427b3bae7681a7c8cb30de3242a483b1cdc60f2d89c1d0f86f24",
+      "frontend\\electron-app\\agent-browser\\shim\\hoai-browser-mcp.mjs": "0ff87b0708c53deb6c1dbc52340caf1e7cce28c38e0fe53bf70d5afe7f9d9a84",
+      "frontend\\electron-app\\agent-browser\\ui\\pane-preload.js": "6b91c3988b7b189515854d62dfa1a4f8df34bdf317db74730b7cd107215f25ce",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\automatic-hold-fixture.js": "ca2dc860788f534ad85304db8751d3cddfc548fa7b8d8ae1f74edf42ca31f034",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\build.js": "ed744d0875656249fd377abed4259c54cdd2b81d905864a5e44434aba484e2a6",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\fixture.js": "83ddfc1852d275d33e2ba350a7acf45ac2024907ccb30b2141bde89dfbc089ae",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\handover-fixture.js": "e7c6d51275122c783bfbf6e9c50131fbb71cb92e95560037aad82ed810697106",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\host-fixture.js": "684609134cdfdfcbf25343ba7a88c782338c438b9056ccbda201e99fababb3a5",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\loader.js": "a579b30cd1e55e026976648df81299d404fd795f35176fdc9099754021ac28ee",
+      "frontend\\electron-app\\agent-browser\\dev\\native-input-probe\\production-fixture.js": "fe6fb2248e7e7beb881d5230ddc2ccd91958da677a219a2a8eaf30c6e3dc644e"
+    },
+    "finalFixtureHashes": {
+      "backend/src/agent-browser/profile-sync-fresh-companion.test-helper.ts": "1189c16285e9a1b572838950c6ff1e1b3e8b2f8dc557cc26f9a1f1b50a0f494b",
+      "backend/test/integration/data/profile-sync-coordinator.integration.spec.ts": "91a963cf180a725171e13a12a9dbab3f8d6bdca644c5d248d417ccf029f34aaa",
+      "frontend/electron-app/agent-browser/dev/native-profile-fresh-companion.cjs": "72769d82522b018ba026c3c693f15237cc8ec4ef65440d6dadee7f193e28fe66",
+      "frontend/electron-app/agent-browser/dev/fresh-companion-agent.mjs": "d27779f4fff5cd024c112a8a8b2af78ce9ac9f988f292ac93368cbcfca3f53d7"
+    },
+    "composed": {
+      "ok": true,
+      "out": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
+      "source": {
+        "kind": "Actual desktop lifecycle source for a fresh Linux companion",
+        "processId": 85912,
+        "versions": {
+          "electron": "40.4.1",
+          "chrome": "144.0.7559.173"
+        },
+        "checks": [
+          {
+            "name": "actual lifecycle generated and DPAPI-protected endpoint keys before human enrollment and server session start"
+          },
+          {
+            "name": "actual endpoint signature proved fixture-registered current socket"
+          },
+          {
+            "name": "explicit main Hand back releases the native edit guard on the same live page"
+          }
+        ],
+        "http": [
+          {
+            "at": 1792044623519,
+            "mono": 625.4037,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044623571,
+            "mono": 677.3955,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044623597,
+            "mono": 703.2981,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles"
+          },
+          {
+            "at": 1792044623645,
+            "mono": 751.529,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044623665,
+            "mono": 771.5828,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044623689,
+            "mono": 795.2102,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044623749,
+            "mono": 855.5981,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/endpoints"
+          },
+          {
+            "at": 1792044623770,
+            "mono": 876.0667,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/endpoints/bd5ec449-9c37-4f85-81a3-1468d14a81a8"
+          },
+          {
+            "at": 1792044623784,
+            "mono": 890.318,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/grants"
+          },
+          {
+            "at": 1792044623808,
+            "mono": 914.1212,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044624736,
+            "mono": 1842.1807,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/session"
+          },
+          {
+            "at": 1792044624766,
+            "mono": 1872.6162,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044624788,
+            "mono": 1894.0673,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044624816,
+            "mono": 1922.3701,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044624905,
+            "mono": 2010.8297,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044624945,
+            "mono": 2050.9403,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044624966,
+            "mono": 2072.1835,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044627257,
+            "mono": 4363.5073,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044627280,
+            "mono": 4386.2372,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044627300,
+            "mono": 4406.3517,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044627328,
+            "mono": 4433.8111,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers"
+          },
+          {
+            "at": 1792044627367,
+            "mono": 4473.3086,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044628409,
+            "mono": 5515.5172,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044629450,
+            "mono": 6556.0938,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044630497,
+            "mono": 7603.5777,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044631545,
+            "mono": 8650.8049,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044632585,
+            "mono": 9690.7488,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044633629,
+            "mono": 10734.8033,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044634670,
+            "mono": 11776.1361,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635705,
+            "mono": 12810.9744,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635732,
+            "mono": 12838.5206,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635756,
+            "mono": 12862.4645,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635778,
+            "mono": 12883.7839,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3/accept"
+          },
+          {
+            "at": 1792044635826,
+            "mono": 12932.1153,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635852,
+            "mono": 12958.4832,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635878,
+            "mono": 12983.9429,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044635900,
+            "mono": 13005.9176,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044635922,
+            "mono": 13027.9207,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044635950,
+            "mono": 13056.7159,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044635975,
+            "mono": 13081.3802,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/grants"
+          },
+          {
+            "at": 1792044636002,
+            "mono": 13108.2704,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044636022,
+            "mono": 13128.1091,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044636041,
+            "mono": 13146.8178,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044636064,
+            "mono": 13169.8226,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044636127,
+            "mono": 13233.7199,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044636148,
+            "mono": 13254.0464,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044636165,
+            "mono": 13270.7473,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3"
+          },
+          {
+            "at": 1792044636191,
+            "mono": 13297.0244,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044641312,
+            "mono": 18418.467,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044641330,
+            "mono": 18436.0302,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044641348,
+            "mono": 18454.5138,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044641755,
+            "mono": 18861.2737,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044641774,
+            "mono": 18880.0368,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044641792,
+            "mono": 18897.8674,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044641821,
+            "mono": 18927.3547,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044641839,
+            "mono": 18945.6306,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044641858,
+            "mono": 18964.4741,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044641883,
+            "mono": 18989.1587,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests"
+          },
+          {
+            "at": 1792044641920,
+            "mono": 19026.5978,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044641939,
+            "mono": 19044.921,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044641957,
+            "mono": 19063.0501,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044641980,
+            "mono": 19086.4605,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044643017,
+            "mono": 20122.8309,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044643033,
+            "mono": 20139.2909,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044643050,
+            "mono": 20156.0329,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044643074,
+            "mono": 20179.9515,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044644114,
+            "mono": 21220.6924,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044644132,
+            "mono": 21238.4467,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044644152,
+            "mono": 21258.5465,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044644179,
+            "mono": 21285.413,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044645225,
+            "mono": 22331.6173,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044645244,
+            "mono": 22350.1772,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044645265,
+            "mono": 22371.5589,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044645290,
+            "mono": 22396.4869,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044646322,
+            "mono": 23427.7361,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044646338,
+            "mono": 23444.0073,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044646356,
+            "mono": 23461.9583,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044646387,
+            "mono": 23493.3542,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044646415,
+            "mono": 23521.67,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044646430,
+            "mono": 23536.6223,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044646447,
+            "mono": 23553.1264,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044646468,
+            "mono": 23573.9809,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044646491,
+            "mono": 23597.4213,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044646507,
+            "mono": 23613.4237,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044646524,
+            "mono": 23630.3668,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044646548,
+            "mono": 23653.8409,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044646569,
+            "mono": 23675.114,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1/confirm"
+          },
+          {
+            "at": 1792044646616,
+            "mono": 23721.7779,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044646632,
+            "mono": 23738.016,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044646647,
+            "mono": 23753.3129,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044646668,
+            "mono": 23773.7616,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1"
+          },
+          {
+            "at": 1792044646691,
+            "mono": 23797.3251,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/agents/458/context"
+          },
+          {
+            "at": 1792044646708,
+            "mono": 23814.193,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635"
+          },
+          {
+            "at": 1792044646723,
+            "mono": 23829.3945,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044647418,
+            "mono": 24523.8489,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers"
+          },
+          {
+            "at": 1792044647447,
+            "mono": 24552.8771,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/checkpoint"
+          },
+          {
+            "at": 1792044647484,
+            "mono": 24590.215,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044647516,
+            "mono": 24622.4731,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044647541,
+            "mono": 24647.6321,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044647572,
+            "mono": 24677.99,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044647597,
+            "mono": 24702.913,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044648641,
+            "mono": 25747.1401,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044648666,
+            "mono": 25772.6377,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044649715,
+            "mono": 26821.5704,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044649741,
+            "mono": 26847.3662,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044650788,
+            "mono": 27894.4637,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044650816,
+            "mono": 27921.8675,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044651862,
+            "mono": 28968.5885,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044651891,
+            "mono": 28997.0318,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044651916,
+            "mono": 29022.4698,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/activate"
+          },
+          {
+            "at": 1792044651950,
+            "mono": 29056.566,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034"
+          },
+          {
+            "at": 1792044651979,
+            "mono": 29085.1976,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/endpoints"
+          },
+          {
+            "at": 1792044660559,
+            "mono": 37665.1753,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/runtime/permissions/pending/458"
+          },
+          {
+            "at": 1792044660607,
+            "mono": 37713.2135,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7"
+          },
+          {
+            "at": 1792044660649,
+            "mono": 37755.2398,
+            "method": "GET",
+            "path": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7"
+          },
+          {
+            "at": 1792044660688,
+            "mono": 37793.9571,
+            "method": "POST",
+            "path": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7/answer"
+          }
+        ],
+        "screenshots": [
+          {
+            "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-1.png",
+            "tick": "Live tick 1",
+            "sha256": "ef55fdab1cb49e0339587237caae2b16c7e0a4699b4309c9eebaaa100ba5b20b"
+          },
+          {
+            "file": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542\\lifecycle-live-2.png",
+            "tick": "Live tick 4",
+            "sha256": "5032534cae5f2aa3c14d3ef18727b1c8ad5ae6d34b7cb0815a690271e4da0232"
+          }
+        ],
+        "fixtureBoundaries": [
+          "External human JWT verifier and private candidate token",
+          "Hidden native approval focus and decision",
+          "One-use source navigation gate approval for the exact HTTPS fixture",
+          "Exact synthetic fixture certificate pin",
+          "Socket principal registration",
+          "Programmatic native Chromium input and synthetic saved login"
+        ],
+        "actualBoundaries": [
+          "DesktopBrowserHost",
+          "DesktopProfileLifecycle and Supervisor",
+          "HOAI HTTP create/enroll/grant/start and transfer/staged/CAS",
+          "Windows DPAPI endpoint/DEK storage",
+          "Encrypted signed checkpoint journal",
+          "PasswordVault encrypted portable extras",
+          "Pinned native RTC observer",
+          "Native memory profile and ordinary Host close hooks",
+          "Unchanged browser engine and bridge"
+        ],
+        "backupSchedules": [
+          {
+            "at": 1792044625338,
+            "mono": 2443.7977,
+            "debounceMs": 60000
+          }
+        ],
+        "phase": "source",
+        "stateDir": "C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\.tmp\\profile-sync-fresh-a91c564e-5011-4122-8678-effdcde70542",
+        "backupExtras": [
+          {
+            "at": 1792044626082,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646682,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646738,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646740,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646756,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646757,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044646759,
+            "entries": 1,
+            "passwordMatches": true
+          },
+          {
+            "at": 1792044647278,
+            "entries": 1,
+            "passwordMatches": true
+          }
+        ],
+        "nativeDecisions": [
+          {
+            "title": "Set up agent browser",
+            "detail": "This profile belongs to your account and this agent. Saved logins are encrypted on this computer. After you hand back control, the agent can read and act on the page through HOAI. Transferring your saved profile to another machine requires separate device approval. This is a shared agent. Its machine operator controls the agent software. Only hand back control if you trust that operator.",
+            "action": "Set up browser"
+          },
+          {
+            "title": "Connect agent machine",
+            "detail": "The agent will show a public key for you to verify. Sharing saved browser data requires a separate approval.",
+            "action": "Request connection"
+          },
+          {
+            "title": "Verify agent machine",
+            "detail": "Device label (self-reported): kc-server\n\nPublic key fingerprint:\n15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835\n\nObtain the other copy directly from the agent machine's setup output. Approve only if the complete keys match.",
+            "action": "I compared the keys"
+          },
+          {
+            "title": "Allow browser profile sharing",
+            "detail": "Saved cookies and logins will be encrypted for this approved machine and forwarded through HOAI. The agent and its machine operator can use and read them there. Grant this only if you trust that operator. This is a shared agent. This permission applies to your private profile for this agent.",
+            "action": "Allow background use"
+          },
+          {
+            "title": "Copy public browser setup",
+            "detail": "This computer's full public key:\n0f64a48ce669bd9d152bca76807b5ca2a5f7f81e8b5f18a052bf27ba27068bc6\n\nApproved agent machine's full public key:\n15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835\n\nThe copied JSON contains public keys and profile identifiers. It contains no cookies, logins or private keys. Use the shipped plugin's peer-review command and compare the full source key before confirming there.",
+            "action": "Copy public setup"
+          },
+          {
+            "title": "Prepare agent browser",
+            "detail": "Machine 1\nPublic key: 15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835\n\nYour current browser stays open during preparation.",
+            "action": "Machine 1"
+          },
+          {
+            "title": "Move browser to agent",
+            "detail": "Approved public key:\n15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835\n\nSaved website data and logins move to the agent machine. Pages open when the agent navigates to them. Unsaved forms, unfinished sign-ins and device-bound sessions can prevent the move. Cookies and saved logins become readable by the approved agent and its machine operator. This grants no site permissions. This is your private profile for a shared agent.",
+            "action": "Approve handover"
+          },
+          {
+            "title": "Agent browser permission",
+            "detail": "Website: https://example.com\n\nThis is the website in the original navigation request.\n\nAllow once applies only to this pending action. It does not trust the site, grant background access, or allow passwords or security codes. This request belongs to your private profile for a shared agent.",
+            "action": "Allow once"
+          }
+        ],
+        "activated": {
+          "state": "active_local",
+          "actingUserId": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+          "assistantId": 458,
+          "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+          "physicalReserved": true,
+          "routingCleanupPending": false,
+          "localDurable": false,
+          "serverCommitted": false,
+          "destinationAcknowledged": false,
+          "writerState": "active",
+          "lastWrite": {
+            "operation": "session-start",
+            "outcome": "confirmed"
+          }
+        },
+        "authority": {
+          "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+          "actingUserId": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+          "assistantId": 458,
+          "endpointId": "bd5ec449-9c37-4f85-81a3-1468d14a81a8",
+          "bootId": "7c301603-d889-4fad-b84f-b9a708b944b3",
+          "runtimeId": "2ab7a1ab-3108-4165-b11e-0b6ed4c1a04f",
+          "sessionId": "d3ff3883-0f70-4c2f-9125-e6df3edef2ec",
+          "writerEpoch": 1,
+          "revision": 0,
+          "contentKeyEpoch": 1,
+          "grantVersion": 1,
+          "keyFingerprint": "0f64a48ce669bd9d152bca76807b5ca2a5f7f81e8b5f18a052bf27ba27068bc6"
+        },
+        "fixture": {
+          "origin": "https://100.107.111.117:54578",
+          "draft": "SAVED_WEBSITE_DRAFT_0294d2f3fd4c43b486d0da0b5a624273",
+          "sourceDocumentIdentity": "1792044625409-0.4004858704125448"
+        },
+        "page": {
+          "draft": "SAVED_WEBSITE_DRAFT_0294d2f3fd4c43b486d0da0b5a624273",
+          "saved": "SAVED_WEBSITE_DRAFT_0294d2f3fd4c43b486d0da0b5a624273",
+          "documentIdentity": "1792044625409-0.4004858704125448",
+          "tick": "Live tick 0",
+          "webContentsId": 5,
+          "requestCookiePresent": false
+        },
+        "websiteRequests": [
+          {
+            "path": "/fixture",
+            "cookiePresent": false
+          }
+        ],
+        "ok": true,
+        "sourceSessionEnded": true
+      },
+      "sourceCleanup": {
+        "type": "cleanup",
+        "ok": true,
+        "remainingWebContents": 0,
+        "live": [],
+        "failures": [],
+        "runtimeState": "disposed"
+      },
+      "agent": {
+        "type": "configured",
+        "pluginCommit": "b948d6a1023d40f53e7c8f0e3ff19ccc4b787f99",
+        "archiveSha256": "78d1127361b4ab7a0160d56b1e51048538144818012689e0a6c1a1f1d478c9d8",
+        "uid": 1000,
+        "keyring": "actual-private-unlocked-persistent",
+        "browserSelection": "bundled-default",
+        "root": "/proof/fresh-companion.4d2TGq"
+      },
+      "agentFinal": {
+        "events": [
+          {
+            "at": 1792044627244,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044629176,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044631176,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044633178,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044635180,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/1f91bd6e-3b7c-4e6f-a874-9820752281f3/candidate",
+            "status": 201
+          },
+          {
+            "at": 1792044637173,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044639174,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044641188,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044641196,
+            "event": "native-key-helper",
+            "helper": "gdbus",
+            "operation": "call",
+            "elapsedMs": 6,
+            "exit": 0
+          },
+          {
+            "at": 1792044641201,
+            "event": "native-key-helper",
+            "helper": "gdbus",
+            "operation": "call",
+            "elapsedMs": 5,
+            "exit": 0
+          },
+          {
+            "at": 1792044641218,
+            "event": "native-key-helper",
+            "helper": "secret-tool",
+            "operation": "store",
+            "elapsedMs": 15,
+            "exit": 0
+          },
+          {
+            "at": 1792044643176,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044645189,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044645243,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime-requests/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044645253,
+            "event": "native-key-helper",
+            "helper": "gdbus",
+            "operation": "call",
+            "elapsedMs": 4,
+            "exit": 0
+          },
+          {
+            "at": 1792044645258,
+            "event": "native-key-helper",
+            "helper": "gdbus",
+            "operation": "call",
+            "elapsedMs": 4,
+            "exit": 0
+          },
+          {
+            "at": 1792044645272,
+            "event": "native-key-helper",
+            "helper": "secret-tool",
+            "operation": "store",
+            "elapsedMs": 14,
+            "exit": 0
+          },
+          {
+            "at": 1792044645281,
+            "event": "extras-ready",
+            "encrypted": true,
+            "provider": "libsecret-v1"
+          },
+          {
+            "at": 1792044646345,
+            "event": "native-prepared",
+            "authority": {
+              "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+              "actingUserId": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+              "assistantId": 458,
+              "endpointId": "0cecf97b-5681-44e1-a578-83cd2e34ab33",
+              "bootId": "24ff894e-1872-4345-aaa0-cfff88119aad",
+              "runtimeId": "4d1fbb87-c633-4ee4-87aa-4a5cd9148dad",
+              "sessionId": "f374dc8e-c861-4282-a7a0-2ff733cf9f33",
+              "writerEpoch": 2,
+              "revision": 1,
+              "contentKeyEpoch": 1,
+              "grantVersion": 1,
+              "keyFingerprint": "15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835"
+            },
+            "state": "new",
+            "network": "blocked",
+            "pid": 91,
+            "started": "669878173",
+            "version": "153.0.8010.12"
+          },
+          {
+            "at": 1792044646368,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1/ready",
+            "status": 201
+          },
+          {
+            "at": 1792044647173,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044649177,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044651188,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044651222,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1/read",
+            "status": 201
+          },
+          {
+            "at": 1792044651251,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/status",
+            "status": 201
+          },
+          {
+            "at": 1792044651276,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/capsule",
+            "status": 201
+          },
+          {
+            "at": 1792044651288,
+            "event": "native-url-request",
+            "state": "new",
+            "network": "private",
+            "cookiePresent": false
+          },
+          {
+            "at": 1792044651309,
+            "event": "native-cookie-get",
+            "cookies": []
+          },
+          {
+            "at": 1792044651314,
+            "event": "native-cookie-set",
+            "cookies": [
+              {
+                "path": "/",
+                "secure": false,
+                "httpOnly": true,
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 54578,
+                "url": "http://100.107.111.117:54578/",
+                "sameSite": "Lax",
+                "fixtureName": true,
+                "fixtureValue": true
+              }
+            ]
+          },
+          {
+            "at": 1792044651316,
+            "event": "native-cookie-get",
+            "cookies": [
+              {
+                "domain": "100.107.111.117",
+                "path": "/",
+                "expires": -1,
+                "size": 38,
+                "httpOnly": true,
+                "secure": false,
+                "session": true,
+                "sameSite": "Lax",
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 54578,
+                "fixtureName": true,
+                "fixtureValue": true
+              }
+            ]
+          },
+          {
+            "at": 1792044651334,
+            "event": "native-staged",
+            "state": "staged",
+            "network": "blocked",
+            "receipt": {
+              "version": 1,
+              "kind": "destination-staged",
+              "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+              "transitionId": "2ecb3b44-23aa-4690-9a1e-61202c32b034",
+              "manifestHash": "54b5a72e4357c06d578923c3d275d652b0caab6e92745a1eafdeded73f8bfc9e",
+              "revision": 1,
+              "destination": {
+                "endpointId": "0cecf97b-5681-44e1-a578-83cd2e34ab33",
+                "bootId": "24ff894e-1872-4345-aaa0-cfff88119aad",
+                "runtimeId": "4d1fbb87-c633-4ee4-87aa-4a5cd9148dad",
+                "sessionId": "f374dc8e-c861-4282-a7a0-2ff733cf9f33",
+                "grantVersion": 1,
+                "keyFingerprint": "15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835"
+              },
+              "stagedInactive": true
+            }
+          },
+          {
+            "at": 1792044651350,
+            "event": "before-staged-http",
+            "route": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/staged",
+            "journals": [
+              {
+                "manifestHash": "54b5a72e4357c06d578923c3d275d652b0caab6e92745a1eafdeded73f8bfc9e",
+                "receipt": {
+                  "destination": {
+                    "bootId": "24ff894e-1872-4345-aaa0-cfff88119aad",
+                    "endpointId": "0cecf97b-5681-44e1-a578-83cd2e34ab33",
+                    "grantVersion": 1,
+                    "keyFingerprint": "15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835",
+                    "runtimeId": "4d1fbb87-c633-4ee4-87aa-4a5cd9148dad",
+                    "sessionId": "f374dc8e-c861-4282-a7a0-2ff733cf9f33"
+                  },
+                  "kind": "destination-staged",
+                  "manifestHash": "54b5a72e4357c06d578923c3d275d652b0caab6e92745a1eafdeded73f8bfc9e",
+                  "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+                  "revision": 1,
+                  "stagedInactive": true,
+                  "transitionId": "2ecb3b44-23aa-4690-9a1e-61202c32b034",
+                  "version": 1
+                },
+                "encrypted": true,
+                "plaintextAbsent": true
+              }
+            ]
+          },
+          {
+            "at": 1792044651375,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/transfers/2ecb3b44-23aa-4690-9a1e-61202c32b034/staged",
+            "status": 201
+          },
+          {
+            "at": 1792044653177,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044655177,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044657209,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044657241,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime-requests/8f5697d4-af82-4dce-aac7-4bd6346dbed1/read",
+            "status": 201
+          },
+          {
+            "at": 1792044657263,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044657283,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoints/0cecf97b-5681-44e1-a578-83cd2e34ab33/discovery",
+            "status": 201
+          },
+          {
+            "at": 1792044657294,
+            "event": "native-active",
+            "authority": {
+              "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+              "actingUserId": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+              "assistantId": 458,
+              "endpointId": "0cecf97b-5681-44e1-a578-83cd2e34ab33",
+              "bootId": "24ff894e-1872-4345-aaa0-cfff88119aad",
+              "runtimeId": "4d1fbb87-c633-4ee4-87aa-4a5cd9148dad",
+              "sessionId": "f374dc8e-c861-4282-a7a0-2ff733cf9f33",
+              "writerEpoch": 2,
+              "revision": 1,
+              "contentKeyEpoch": 1,
+              "grantVersion": 1,
+              "keyFingerprint": "15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835"
+            },
+            "state": "active",
+            "network": "active",
+            "cookiePresent": true,
+            "vaultEntries": 1,
+            "passwordMatches": true,
+            "encrypted": true
+          },
+          {
+            "at": 1792044658301,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/rpc/d23fe84a-56f7-4ad6-8905-0d0366ae280e/dispatch",
+            "status": 201
+          },
+          {
+            "at": 1792044658334,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/rpc/d23fe84a-56f7-4ad6-8905-0d0366ae280e/result",
+            "status": 201
+          },
+          {
+            "at": 1792044659184,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044659192,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/status",
+            "status": 201
+          },
+          {
+            "at": 1792044659497,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/rpc/764bd54f-8cc6-4811-9964-d72f0ad89a0b/dispatch",
+            "status": 201
+          },
+          {
+            "at": 1792044659532,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/permissions/request",
+            "status": 201
+          },
+          {
+            "at": 1792044660567,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7/read",
+            "status": 201
+          },
+          {
+            "at": 1792044661180,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/endpoint-offers/pending",
+            "status": 201
+          },
+          {
+            "at": 1792044661187,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/status",
+            "status": 201
+          },
+          {
+            "at": 1792044661597,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7/read",
+            "status": 201
+          },
+          {
+            "at": 1792044661628,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/runtime/permissions/cc874aaa-3b79-48a8-a2fe-b526cddf6da7/consume",
+            "status": 201
+          },
+          {
+            "at": 1792044661629,
+            "event": "native-permission-consumed",
+            "state": "consumed",
+            "choice": "allow_once"
+          },
+          {
+            "at": 1792044662257,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/rpc/764bd54f-8cc6-4811-9964-d72f0ad89a0b/result",
+            "status": 201
+          },
+          {
+            "at": 1792044663518,
+            "event": "native-url-request",
+            "state": "quiescing",
+            "network": "private",
+            "cookiePresent": true
+          },
+          {
+            "at": 1792044663537,
+            "event": "native-cookie-get",
+            "cookies": [
+              {
+                "domain": "100.107.111.117",
+                "path": "/",
+                "expires": -1,
+                "size": 38,
+                "httpOnly": true,
+                "secure": false,
+                "session": true,
+                "sameSite": "Lax",
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 54578,
+                "fixtureName": true,
+                "fixtureValue": true
+              }
+            ]
+          },
+          {
+            "at": 1792044663593,
+            "event": "native-cookie-get",
+            "cookies": [
+              {
+                "domain": "100.107.111.117",
+                "path": "/",
+                "expires": -1,
+                "size": 38,
+                "httpOnly": true,
+                "secure": false,
+                "session": true,
+                "sameSite": "Lax",
+                "priority": "Medium",
+                "sourceScheme": "Secure",
+                "sourcePort": 54578,
+                "fixtureName": true,
+                "fixtureValue": true
+              }
+            ]
+          },
+          {
+            "at": 1792044663709,
+            "event": "hoai-http",
+            "route": "/api/v1/browser/profile-sync/profiles/1541a899-63b0-4a70-b415-0225d2290635/retire",
+            "status": 201
+          }
+        ],
+        "logs": [
+          "2026-10-15T06:10:27.179Z [hoai-browser-host] pairing 424 [458]: connected as browser_host (socket 9BhmmOWcG4FVl0SdAAAB); the backend now checks the agents against this pairing",
+          "2026-10-15T06:10:27.245Z [hoai-browser-host] managed browser : setup_required: Open Browser > Devices in HOAI to request this exact agent machine",
+          "2026-10-15T06:10:35.181Z [hoai-browser-host] managed browser public fingerprint for recipient profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265, agent 458: 15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835",
+          "2026-10-15T06:10:41.230Z [hoai-browser-host] managed browser 458: ready_for_explicit_session_request",
+          "2026-10-15T06:10:46.370Z [hoai-browser-host] managed browser 458: waiting_for_human_session_confirmation",
+          "2026-10-15T06:10:51.375Z [hoai-browser-host] managed browser 458: staged_inactive: waiting for human activation on HOAI",
+          "2026-10-15T06:10:57.371Z [hoai-browser-host] managed browser 458: active",
+          "2026-10-15T06:11:02.937Z [hoai-browser-host] the daemon let go of this host: closing the browsers (profiles stay) and the sockets",
+          "2026-10-15T06:11:03.712Z [hoai-browser-host] managed browser 458: server_committed_stopped",
+          "2026-10-15T06:11:03.714Z [hoai-browser-host] managed browser 458: connection_unknown: new agent actions paused; live page retained",
+          "2026-10-15T06:11:03.714Z [hoai-browser-host] stopped cleanly"
+        ],
+        "hostAlive": false,
+        "keyringAlive": true,
+        "hostExit": 0,
+        "ownedBrowsersAlive": 0,
+        "keyringStopped": true,
+        "busStopped": true
+      },
+      "container": {
+        "containerAbsent": true,
+        "forcedStop": false,
+        "dockerInventoryConfirmed": true
+      },
+      "result": {
+        "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+        "authority": {
+          "profileId": "1541a899-63b0-4a70-b415-0225d2290635",
+          "actingUserId": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+          "assistantId": 458,
+          "endpointId": "0cecf97b-5681-44e1-a578-83cd2e34ab33",
+          "bootId": "24ff894e-1872-4345-aaa0-cfff88119aad",
+          "runtimeId": "4d1fbb87-c633-4ee4-87aa-4a5cd9148dad",
+          "sessionId": "f374dc8e-c861-4282-a7a0-2ff733cf9f33",
+          "writerEpoch": 2,
+          "revision": 1,
+          "contentKeyEpoch": 1,
+          "grantVersion": 1,
+          "keyFingerprint": "15030ec88b27ee415c4823b4931b4a6d2f74ac68cc800ddec35b7d8667a14835"
+        },
+        "manifestHash": "54b5a72e4357c06d578923c3d275d652b0caab6e92745a1eafdeded73f8bfc9e",
+        "typedStatus": true,
+        "automaticBackup": null,
+        "approvedNavigation": {
+          "origin": "https://example.com",
+          "recipient": "profile-sync-recipient-8cca52ed-8ad0-4a6a-8724-9d1c95f96265",
+          "gateId": "cc874aaa-3b79-48a8-a2fe-b526cddf6da7",
+          "consumed": true,
+          "nativeApproval": true,
+          "publicPageTitleObserved": true,
+          "completedGateReadRefused": true,
+          "cookieDelivery": "separate native import readback, no claim of cookie delivery to this public website"
+        },
+        "siteInput": "one native allow-once public navigation; text and credentials remain human-only",
+        "fixtureBoundaries": [
+          "Synthetic external human JWT with private random bearer",
+          "Native dialog focus and decisions",
+          "Socket principal registration",
+          "Read-only native observation preload",
+          "Private test CA and temporary Tailscale HTTPS listener"
+        ]
+      },
+      "diagnosticInfrastructure": "Private SSH fixture process control; actual browser commands and encrypted transfer use the temporary HOAI HTTPS server on the desktop Tailscale interface"
+    },
+    "review": {
+      "reviewer": "Independent native composition agent",
+      "closed": true,
+      "scope": "Verified consumed allow_once observation, actual consume HTTP201, selected Example Domain result assertion, completed gate403 and positive cleanup. Native dialog decisions are synthetic, not physical human clicks. No restored-cookie HTTP delivery claim."
+    }
+  }
+}

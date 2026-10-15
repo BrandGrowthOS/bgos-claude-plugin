@@ -225,5 +225,225 @@
     "pluginBrowserRuntime": 55,
     "skipped": 0
   },
-  "security": "Preserves the original Secure flag and independent sourceScheme/sourcePort. Does not drop strict cookie readback, expand credential grants or relax import activation. The HTTP-shaped import URL is only a CDP cookie parameter, never a network request."
+  "security": "Preserves the original Secure flag and independent sourceScheme/sourcePort. Does not drop strict cookie readback, expand credential grants or relax import activation. The HTTP-shaped import URL is only a CDP cookie parameter, never a network request.",
+  "archivedQualification": {
+    "path": "/tmp/hoai-profile-archive.hSX2ZC",
+    "pluginCommit": "62b6b0973fd45e71e1913a6528d795d8706e9467",
+    "pluginArchiveSha256": "2da5f7a6d17a4a2c207217caaf19baee601ad8a5d89eb389862bb707ade24e5d",
+    "image": "hoai-profile-fresh:62b6b09",
+    "receipt": "Fresh UID1000 sandboxed container, exact committed git archive bytes, actual bundled default, no executable override",
+    "sourceHashes": {
+      "lib/browser-profile-rtc-activity.mjs": "06acfca53ebc57f35bee6b048b07c63e33555dab380a3ebce1f32d00c240a476",
+      "lib/browser-profile-runtime.mjs": "2d51c03b9e7cc25d0ae98340caa3e9902f48173ab598a01e05a1a03cfa0c6c8b"
+    },
+    "reports": [
+      {
+        "name": "rtc",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable sandboxed Chromium private native RTC qualification",
+          "checks": [
+            {
+              "name": "real-exclusive-startup-marker-bound-context-and-clean-target-zero-qualify",
+              "ok": true
+            },
+            {
+              "name": "actual-main-first-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-same-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-cross-frame-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-navigation-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-popup-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "actual-last-pause-closed-RTC-refuses-capture-with-normal-local-new-tab-intact",
+              "ok": true
+            },
+            {
+              "name": "a-concurrent-unknown-browser-context-never-becomes-owned-authority",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+          "ok": true
+        },
+        "error": ""
+      },
+      {
+        "name": "runtime",
+        "exit": 0,
+        "report": {
+          "kind": "Actual disposable Linux plugin runtime, injected coordinator and command lease, synthetic AES extras store only",
+          "transportQualification": "Actual exact-version native RTC observer plus raw Network/target ledger",
+          "checks": [
+            {
+              "name": "missing-native-transport-proof-refuses-before-drain-and-preserves-original-live-page",
+              "ok": true
+            },
+            {
+              "name": "complete-target-ledger-qualified-before-navigation",
+              "ok": true,
+              "targets": 2
+            },
+            {
+              "name": "only-encrypted-capsule-atomically-fsynced-after-terminal-exit",
+              "ok": true,
+              "bytes": 4535,
+              "permissions": "0600"
+            },
+            {
+              "name": "owned-source-process-exited-before-signed-receipt",
+              "ok": true
+            },
+            {
+              "name": "destination-stage-is-inactive-and-makes-zero-site-requests",
+              "ok": true
+            },
+            {
+              "name": "full-saved-login-Never-and-search-bundle-publishes-once-only-after-exact-grant",
+              "ok": true,
+              "fixture": "Synthetic AES encrypted native store, OS key-store bootstrap remains separate"
+            },
+            {
+              "name": "matching-grant-restores-HTTPOnly-cookie-localStorage-rich-IndexedDB",
+              "ok": true
+            },
+            {
+              "name": "unfinished-password-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "persistent-EventSource-refuses-with-source-left-running",
+              "ok": true
+            },
+            {
+              "name": "closed-owned-RTC-native-history-refuses-before-drain-with-original-page-alive",
+              "ok": true
+            },
+            {
+              "name": "pending-worker-POST-refuses-with-source-left-running",
+              "ok": true,
+              "reason": "profile_network_untracked",
+              "rawTargets": [
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "page",
+                  "ready": true
+                },
+                {
+                  "type": "shared_worker",
+                  "ready": true
+                },
+                {
+                  "type": "worker",
+                  "ready": true
+                }
+              ]
+            },
+            {
+              "name": "authority-withdrawal-during-drain-physically-disposes-source",
+              "ok": true,
+              "authority": "injected fixture proof"
+            },
+            {
+              "name": "resolving-close-with-live-owned-PID-refuses-cleanup-and-zeroes-key",
+              "ok": true
+            }
+          ],
+          "browserVersion": "153.0.8010.12",
+          "launch": {
+            "sandboxEnabled": true,
+            "privatePipe": true,
+            "executable": "/opt/playwright/chromium-1243/chrome-linux64/chrome",
+            "selection": "companion-bundled-default",
+            "featureSwitch": "--disable-features=AvoidUnnecessaryBeforeUnloadCheckSync,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,BlockOriginHeaderModificationOnRedirect,Translate,AutoDeElevate,OptimizationHints,msForceBrowserSignIn,msEdgeUpdateLaunchServicesPreferredVersion,WebUIOmniboxPopup,WebUIOmniboxAimPopup",
+            "source": "https://github.com/microsoft/playwright/blob/v1.63.0/packages/playwright-core/src/server/chromium/chromiumSwitches.ts",
+            "omniboxSource": "https://chromium.googlesource.com/chromium/src/+/bf3cc6d2d1098c5addd00a916373e6fa62d3dc6b"
+          },
+          "ok": true,
+          "encryptedCapsuleDirectory": "/tmp/hoai-profile-capsules.bDparf"
+        },
+        "error": ""
+      },
+      {
+        "name": "cookies",
+        "exit": 0,
+        "report": {
+          "kind": "Actual sandboxed Linux CDP cookie import compatibility with synthetic values only",
+          "ok": true,
+          "uid": 1000,
+          "version": "153.0.8010.12",
+          "coreSha256": "2cfdbb6f8e207c81061af5830a28cc940d3410a7471558e9a05f06874edae40e",
+          "cases": [
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": false,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "NonSecure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": false,
+              "sourceScheme": "Secure",
+              "exact": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "NonSecure",
+              "nativeInvalidRefused": true
+            },
+            {
+              "domainCookie": true,
+              "secure": true,
+              "sourceScheme": "Secure",
+              "exact": true
+            }
+          ],
+          "browserDisconnected": true
+        },
+        "error": ""
+      }
+    ]
+  }
 }
