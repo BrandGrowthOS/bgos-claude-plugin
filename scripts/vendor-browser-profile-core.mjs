@@ -12,7 +12,7 @@ const git = args => { const result = spawnSync('git', ['-C', source, ...args], {
 const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]).toString().trim()
 if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid source commit')
 const destination = join(root, 'lib/browser-profile-core'), files = {}
-for (const name of ['crypto.js', 'storage.js', 'portable-state.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js', 'stopped-head-stage.js', 'checkpoint-store.js', 'runtime-status-client.js']) {
+for (const name of ['crypto.js', 'storage.js', 'portable-state.js', 'native-runtime.js', 'coordinator-client.js', 'runtime-endpoint.js', 'stopped-head-stage.js', 'checkpoint-store.js', 'runtime-status-client.js', 'return-intent.js']) {
   const sourcePath = `frontend/electron-app/agent-browser/profile-sync/${name}`, bytes = git(['show', `${commit}:${sourcePath}`])
   if (bytes.includes(13)) throw new Error(`${name} must be LF in the committed source`)
   files[name] = { source: `BGOS: ${sourcePath}`, sha256: createHash('sha256').update(bytes).digest('hex') }

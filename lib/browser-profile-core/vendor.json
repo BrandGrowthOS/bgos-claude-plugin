@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "sourceCommit": "901647978b666739575074c44c7e92160fe6bcf9",
+  "sourceCommit": "53bfe63344e7401f3052bd19cd339e58eb0cb604",
   "why": "Byte-identical encrypted checkpoint, lossless storage, strict complete portable state, cookie codecs, typed runtime endpoint, signed agent stopped-head lineage and encrypted local journal shared with HOAI. NativeRuntime exports are pure until its injected Electron constructor runs. The pairing adapter uses only shared signing methods and never instantiates or inherits the desktop Bearer client.",
   "files": {
     "crypto.js": {
@@ -38,6 +38,10 @@
     "runtime-status-client.js": {
       "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/runtime-status-client.js",
       "sha256": "48a0baf9169797577460f2bb6fba2c785d6d6a3fc3f5718ce3a1c895c4a7329a"
+    },
+    "return-intent.js": {
+      "source": "BGOS: frontend/electron-app/agent-browser/profile-sync/return-intent.js",
+      "sha256": "9fb2b69303c23031951f0bf8093021cc55e50c12504403e6012584709d7009fe"
     }
   }
 }
