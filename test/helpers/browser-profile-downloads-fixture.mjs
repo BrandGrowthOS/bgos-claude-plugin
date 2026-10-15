@@ -22,13 +22,18 @@ export async function downloadFixture(options = {}) {
   const manager = await AgentProfileDownloads.create({ directory: path.join(root, 'quarantine'), authority, assertCurrent: current, isActive: () => state.active,
     createArea: async ({ directory, assertCurrent }) => { assertCurrent(); await fs.mkdir(directory, { recursive: true, mode: 0o700 }); return { directory, assertPrivateDirectory: async target => { assert.ok(target === directory || target.startsWith(directory + path.sep)); assert.equal((await fs.lstat(target)).isSymbolicLink(), false); return true } } }, filesystem, uid: 1000, ...options })
   const launch = options.unbound ? { downloadsPath: manager.directory } : await manager.launchOptions()
-  if (!options.unbound) await manager.bind({ context, stopBrowser: async () => { state.stopCalls++; for (const item of downloads) item.failure.resolve('browser stopped'); return state.stop ? state.stop() : true } })
+  // One fake native file owner serializes its own stop/cancel/delete removals.
+  // Concurrent Windows unlink calls can otherwise produce EPERM, unlike the
+  // single Chromium download owner being modeled; errors still propagate.
+  const nativeRemovals = new Map()
+  const nativeRemove = file => { const task = (nativeRemovals.get(file) || Promise.resolve()).then(async () => { for (const item of [file, file + '.crdownload']) await fs.unlink(item).catch(error => { if (error.code !== 'ENOENT') throw error }) }); nativeRemovals.set(file, task); return task }
+  if (!options.unbound) await manager.bind({ context, stopBrowser: async () => { state.stopCalls++; for (const item of downloads) { await nativeRemove(item.file); item.failure.resolve('browser stopped') }; return state.stop ? state.stop() : true } })
   const page = { context: () => context }; pages.push(page)
   async function download({ bytes = Buffer.from('synthetic completed download'), fileName = 'report.txt', file, selectedPage = page, autoFinish = false } = {}) {
     file ||= path.join(launch.downloadsPath, randomUUID()); if (bytes) await fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 })
     const failure = deferred(), value = { _artifact: { _initializer: { absolutePath: file } }, page: () => selectedPage, suggestedFilename: () => fileName,
-      failure: () => failure.promise, cancel: async () => { state.cancelCalls++; await state.beforeCancel?.(); failure.resolve('cancelled') },
-      delete: async () => { state.deleteCalls++; await state.beforeDelete?.(); for (const item of [file, file + '.crdownload']) await fs.unlink(item).catch(error => { if (error.code !== 'ENOENT') throw error }) } }
+      failure: () => failure.promise, cancel: async () => { state.cancelCalls++; await state.beforeCancel?.(); await nativeRemove(file); failure.resolve('cancelled') },
+      delete: async () => { state.deleteCalls++; await state.beforeDelete?.(); await nativeRemove(file) } }
     const row = { value, failure, file }; downloads.push(row); if (autoFinish) failure.resolve(null); return row
   }
   async function cleanup() { for (const row of downloads) row.failure.resolve('fixture cleanup'); await manager.dispose().catch(() => {}); await fs.rm(root, { recursive: true, force: true }) }

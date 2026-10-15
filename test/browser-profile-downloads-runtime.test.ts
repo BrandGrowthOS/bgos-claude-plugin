@@ -50,7 +50,7 @@ test('the Runtime refuses transfer before inspecting a page while an actual down
   const runtime = new BrowserProfileRuntime({ authority: f.authority, context, downloadBinding: binding, preflightExtras() {}, captureExtras() {}, commitExtras() {} }); runtime.state = 'active'; runtime.network = 'active'; runtime.activeProof = () => {}
   assert.equal(runtime.assertCurrent(), runtime.authority); const item = await f.download(); f.context.emit('download', item.value)
   try { for (const work of [() => runtime.assertMovable(), () => runtime.preflightResumeTabs(), () => runtime._assertDocumentSafety(), () => runtime.finalize({ context: undefined, source: undefined, destinationIdentity: undefined, contentKeyEpoch: undefined })]) await assert.rejects(work(), /in_flight/) }
-  finally { item.failure.resolve('fixture cancellation'); await binding.whenDrained() }
+  finally { await item.value.cancel(); await binding.whenDrained() }
   assert.throws(() => { (runtime as any).downloadBinding = null }, TypeError)
 })
 

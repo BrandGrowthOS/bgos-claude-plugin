@@ -69,7 +69,7 @@ test('account loss during manager creation retains creation and disposes the exa
 test('a held native download is included in positive activity and blocks a move before closing command admission', async t => {
   const f = await fixture(t); await f.companion._prepare(f.record, f.authority); await f.companion._activate(f.record, f.authority); const item = await f.d.download(); f.engineOptions.onDownload(item.value)
   try { assert.ok(f.companion.activity().pendingPhysicalOperations > 0); await assert.rejects(f.options.closeAndDrain(), /in_flight/); assert.equal(f.record.admission, 'active') }
-  finally { item.failure.resolve('fixture cancellation'); await f.d.manager.whenDrained() }
+  finally { await item.value.cancel(); await f.d.manager.whenDrained() }
 })
 
 test('ordinary disposal starts the native stop independently while original raw deletion is held', async t => {

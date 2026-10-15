@@ -47,7 +47,7 @@ test('a full four-download inventory converts by retaining its existing slots ra
 })
 test('a finite wall timer cancels an unknown-length download even when the observed clock is frozen', async t => {
   const f = await downloadFixture({ deadlineMs: 20, observationMs: 3, now: () => 0 }); t.after(f.cleanup); const item = await f.download(); f.context.emit('download', item.value)
-  await f.manager.whenDrained(); assert.equal(f.state.cancelCalls, 1); assert.equal(f.state.deleteCalls, 1); assert.equal(f.manager.completed().length, 0); assert.equal(f.state.stopCalls, 0); await assert.rejects(fs.lstat(item.file), { code: 'ENOENT' })
+  await f.manager.whenDrained(); assert.equal(f.state.cancelCalls, 1); assert.equal(f.state.deleteCalls, 0); assert.equal(f.manager.completed().length, 0); assert.equal(f.state.stopCalls, 0); await assert.rejects(fs.lstat(item.file), { code: 'ENOENT' })
 })
 test('the wall deadline remains effective while the first filesystem observation is held', async t => {
   const f = await downloadFixture({ deadlineMs: 20, observationMs: 3, now: () => 0 }); t.after(f.cleanup); const item = await f.download(), entered = deferred(), held = deferred(); f.state.beforeLstat = async (file: string) => { if (file === item.file) { entered.resolve(); await held.promise } }; f.context.emit('download', item.value); await entered.promise
@@ -57,7 +57,7 @@ test('the wall deadline remains effective while the first filesystem observation
 })
 test('an overflow is never published and its owned oversized file is deleted', async t => {
   const f = await downloadFixture(); t.after(f.cleanup); const item = await f.download({ bytes: Buffer.alloc(25 * 1024 * 1024 + 1) }); f.context.emit('download', item.value); await f.manager.whenDrained()
-  assert.equal(f.state.cancelCalls, 1); assert.equal(f.state.deleteCalls, 1); assert.equal(f.manager.completed().length, 0); assert.equal(f.manager.activity().cleanupUnknown, false); await assert.rejects(fs.lstat(item.file), { code: 'ENOENT' })
+  assert.equal(f.state.cancelCalls, 1); assert.equal(f.state.deleteCalls, 0); assert.equal(f.manager.completed().length, 0); assert.equal(f.manager.activity().cleanupUnknown, false); await assert.rejects(fs.lstat(item.file), { code: 'ENOENT' })
 })
 test('observed oversized bytes cancel before an unfinished browser reports completion', async t => {
   const f = await downloadFixture({ deadlineMs: 1000, observationMs: 2 }); t.after(f.cleanup); const item = await f.download({ bytes: Buffer.alloc(25 * 1024 * 1024 + 1) }); f.context.emit('download', item.value)
@@ -85,7 +85,7 @@ test('native disposal starts owned browser stop independently of a held download
 test('a native failure acknowledgement cannot release a still-pending cancellation', async t => {
   const f = await downloadFixture({ deadlineMs: 10 }), item = await f.download(), entered = deferred(), held = deferred(); t.after(f.cleanup); let drained = false
   f.state.beforeCancel = async () => { entered.resolve(); await held.promise }; f.context.emit('download', item.value); await entered.promise
-  item.failure.resolve('native cancellation acknowledgement'); const drain = f.manager.whenDrained().then(() => { drained = true })
+  await fs.unlink(item.file); item.failure.resolve('native cancellation acknowledgement'); const drain = f.manager.whenDrained().then(() => { drained = true })
   try { await new Promise(resolve => setTimeout(resolve, 30)); assert.equal(drained, false); assert.equal(f.state.deleteCalls, 0); assert.equal(f.manager.activity().retainedDownloads, 1); assert.ok(f.manager.activity().pendingPhysicalOperations > 0) }
   finally { held.resolve(); await drain }
 })
