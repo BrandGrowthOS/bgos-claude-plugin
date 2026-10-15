@@ -1108,17 +1108,19 @@ launchd_reload() { # $1 plist $2 label  -> returns nonzero on hard failure
   return 0
 }
 
-# launchctl print, read as #237's reader reads it: 0 listed, 1 not listed (rc
-# 113, no such job), 2 unknown (any other failure: an XPC error, a launchd that
-# does not answer). Unknown is never taken for gone.
+# launchctl print, read as #237's reader reads it (lib/watcher-service.mjs
+# readProbe): 0 listed, 1 not listed (rc 113, or any failure that says "Could
+# not find service"), 2 unknown (any other failure: an XPC error, a launchd
+# that does not answer). Unknown is never taken for gone.
 launchd_listed() { # $1 domain/label
-  local rc=0
-  launchctl print "$1" >/dev/null 2>&1 || rc=$?
+  local rc=0 out
+  out="$(launchctl print "$1" 2>&1)" || rc=$?
   case "$rc" in
     0)   return 0 ;;
     113) return 1 ;;
-    *)   return 2 ;;
   esac
+  if printf '%s\n' "$out" | grep -qi 'could not find service'; then return 1; fi
+  return 2
 }
 
 # The rename of this HOME's OLD job (before 0.69.4) to the HOME-scoped label
@@ -1138,7 +1140,7 @@ launchd_listed() { # $1 domain/label
 # the agent; every rollback puts it back. The old job's tmux server is ended
 # once the job is gone (it daemonizes out of launchd's process group, so only
 # run.sh's trap would end it).
-launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back (old loaded), 2 both left loaded, 3 neither loaded
+launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back (old loaded), 2 both may be loaded, 3 neither loaded, 4 rolled back, old job unreadable
   local id="$1" plist="$2" label="$3" domain n=0 tries=0 old_label old_plist parked="" st=0
   domain="gui/$(id -u)"
   old_label="$(legacy_label_for "$id")"
@@ -1179,39 +1181,51 @@ launchd_rename() { # $1 id $2 new plist $3 new label -> 0 renamed, 1 rolled back
   done
   if [ "$st" != 1 ]; then
     if [ "$st" = 2 ]; then
-      RENAME_FAILURE="the old job \"$old_label\" could not be read back after its bootout (launchctl print failed), so it counts as still loaded"
+      RENAME_FAILURE="the old job \"$old_label\" could not be read back after its bootout (launchctl print failed)"
     else
       RENAME_FAILURE="the old job \"$old_label\" was still loaded after $n checks"
     fi
     launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
     n=0
-    while launchd_listed "$domain/$label"; do
+    while :; do
+      st=0; launchd_listed "$domain/$label" || st=$?
+      [ "$st" = 1 ] && break
       n=$((n + 1)); [ "$n" -ge 40 ] && break; sleep 0.25
     done
     if [ -n "$parked" ] && [ -f "$parked" ]; then mv -f "$parked" "$old_plist"; fi
-    if launchd_listed "$domain/$label"; then
-      # Both stay loaded; the new one waits on the old claude. One plist, the old one's, loads at the next login.
+    if [ "$st" != 1 ]; then
+      # The new job did not go, or cannot be read back: it may still be loaded, so
+      # the old one is never loaded again beside it. It waits on the old claude.
+      # One plist, the old one's, loads at the next login.
       rm -f "$plist"
       return 2
     fi
     rm -f "$plist"
-    # A bootout that was only slow may still end the old job: it is watched for a
-    # bounded time, and loaded again, on its own run.sh, once launchd says it is gone.
+    # The old job may have gone after all (a bootout that was only slow, or one
+    # that worked while launchd could not be read): it is watched for a bounded
+    # time, an unknown read not ending the watch, and unless launchd still lists
+    # it then, its own plist is bootstrapped again on its own run.sh. launchd
+    # refuses a second bootstrap of a label it already has, so this never loads two.
     n=0
     while :; do
       st=0; launchd_listed "$domain/$old_label" || st=$?
-      [ "$st" != 0 ] && break
+      [ "$st" = 1 ] && break
       n=$((n + 1)); [ "$n" -ge 40 ] && break; sleep 0.25
     done
-    if [ "$st" = 1 ]; then
+    if [ "$st" != 0 ]; then
       restore_run_sh
       tries=0
       until launchd_listed "$domain/$old_label" || launchctl bootstrap "$domain" "$old_plist" 2>/dev/null; do
         tries=$((tries + 1)); [ "$tries" -ge 5 ] && break; sleep 0.5
       done
-      if ! launchd_listed "$domain/$old_label"; then
+      st=0; launchd_listed "$domain/$old_label" || st=$?
+      if [ "$st" = 1 ]; then
         RENAME_FAILURE="$RENAME_FAILURE; then it unloaded after all and could not be loaded again (its plist is back, so the next login starts it)"
         return 3
+      fi
+      if [ "$st" = 2 ]; then
+        RENAME_FAILURE="$RENAME_FAILURE; its plist was bootstrapped again and it still could not be read back (its plist is back, so the next login starts it)"
+        return 4
       fi
     fi
     return 1
@@ -1280,8 +1294,9 @@ PLIST
       0) ok "launchd service $label loaded"
          service_note "renamed the launchd job \"$(legacy_label_for "$id")\" (installed from this HOME by an older version) to launchd job \"$label\"" ;;
       1) rollback_die "migration rolled back (the old job \"$(legacy_label_for "$id")\" stays loaded, the new one is removed): $RENAME_FAILURE" ;;
-      2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again: both are loaded until it is (the new one waits for the old claude to leave the folder), and only the old plist loads at the next login: $RENAME_FAILURE" ;;
-      *) rollback_die "migration rolled back, but the old job \"$(legacy_label_for "$id")\" is not loaded: $RENAME_FAILURE" ;;
+      2) rollback_die "migration rolled back, but the new job \"$label\" could not be booted out again (or read back): both may be loaded, sharing one run.sh, so they end each other's session in turn until it goes (run: launchctl bootout gui/$(id -u)/$label); only the old plist loads at the next login: $RENAME_FAILURE" ;;
+      3) rollback_die "migration rolled back, but the old job \"$(legacy_label_for "$id")\" is not loaded: $RENAME_FAILURE" ;;
+      *) rollback_die "migration rolled back (the new one is removed), but the old job \"$(legacy_label_for "$id")\" could not be read back, so it may not be loaded (its plist is back, so the next login starts it): $RENAME_FAILURE" ;;
     esac
     return 0
   fi

@@ -298,7 +298,8 @@ file or run.sh is written.
 Upgrading from 0.69.3 or earlier: on Windows the watcher renames each agent's old
 `HOAI Agent <id>` of its own HOME in place, once (the new task registered
 first, then the old one retired; the running agent is never stopped or
-started, and a task you disabled stays disabled). When the old name holds
+started, provided `Unregister-ScheduledTask` leaves the old task's running
+instance alone, which is not verified yet; a task you disabled stays disabled). When the old name holds
 another HOME's task, or neither name is registered, it registers this HOME's
 own task beside it (enabled, not started) and leaves the other one alone; an
 agent counts as checked only once its own task is read back. On macOS and

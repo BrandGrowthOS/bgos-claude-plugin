@@ -582,6 +582,66 @@ test('round 2 (verify): a launchctl print that FAILS after the old job\'s bootou
   assert.ok(a.state().tmux.includes(`hoai-${ID}`), 'its session was not ended for a job that may still run')
 })
 
+test('round 2 (verify 2): an old job that WENT at its bootout but can no longer be read back is loaded again from its own plist: never left with nothing loaded, and said', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  const runSh = join(a.owner, '.bgos-agent', ID, 'run.sh')
+  mkdirSync(dirname(runSh), { recursive: true })
+  const previous = '#!/usr/bin/env bash\n# 0.69.2 run.sh\nsock="hoai-$id"\n'
+  writeFileSync(runSh, previous)
+  a.setState((s) => {
+    // The bootout works (the fake unloads it), but every later read of the old label fails.
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 299, skip: 1 })
+    s.watch = runSh
+  })
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0, r.out)
+  assert.match(r.out, /could not be read back, so it may not be loaded/)
+  assert.deepEqual(Object.keys(a.state().launchd), [OLD_LABEL], 'the old job is loaded again, the new one booted out')
+  assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`])
+  const again = a.state().calls.filter((c) => c.cmd.startsWith('launchctl bootstrap') && c.cmd.endsWith(`${OLD_LABEL}.plist`))
+  assert.equal(again.length, 1, a.state().calls.map((c) => c.cmd).join('\n'))
+  assert.equal(again[0].watched, previous, 'on the run.sh it ran before')
+})
+
+test('round 2 (verify 2): a rollback whose new job cannot be booted out nor read back counts it as possibly loaded: both may be loaded, said, and the old job is never loaded again beside it', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  a.setState((s) => {
+    // The old job will not go; the new one will not go either, and after the rollback's bootout it cannot be
+    // read (prints of the new label: the install's read-back, the wait before its bootstrap, its read-back).
+    s.fail.push({ match: `launchctl bootout gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.fail.push({ match: `launchctl bootout gui/${s.uid}/${label(a.owner)}`, exact: true, code: 5, stderr: 'Boot-out failed: 5: Input/output error', times: 99 })
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${label(a.owner)}`, exact: true, code: 1, stderr: 'launchctl: XPC error', times: 299, skip: 3 })
+  })
+  const r = a.install(a.owner)
+  assert.notEqual(r.status, 0, r.out)
+  assert.match(r.out, /migration rolled back, but the new job .* could not be booted out again/)
+  // It says how to end it: until then both jobs share one run.sh and end each other's session in turn.
+  assert.match(r.out, new RegExp(`launchctl bootout gui/${a.state().uid}/${label(a.owner).replace(/\./g, '\\.')}`))
+  assert.deepEqual(Object.keys(a.state().launchd).sort(), [OLD_LABEL, label(a.owner)].sort(), 'both, as said')
+  assert.deepEqual(agentPlists(a.owner), [`${OLD_LABEL}.plist`], 'only the old plist loads at the next login')
+  assert.equal(a.state().calls.some((c) => c.cmd.startsWith('launchctl bootstrap') && c.cmd.endsWith(`${OLD_LABEL}.plist`)), false, 'the old job never loaded again beside it')
+})
+
+test('round 2 (verify 2): a launchctl print that says "Could not find service" is not listed whatever its rc, as #237\'s reader reads it: the rename goes through', SLOW, (t) => {
+  if (!ready(t)) return
+  const a = account('Darwin')
+  t.after(a.cleanup)
+  seedOldAgent(a, 'Darwin')
+  a.setState((s) => {
+    s.fail.push({ match: `launchctl print gui/${s.uid}/${OLD_LABEL}`, exact: true, code: 3, stderr: `Bad request.\nCould not find service "${OLD_LABEL}" in domain for user gui: ${s.uid}`, times: 299, skip: 1 })
+  })
+  const r = a.install(a.owner)
+  assert.equal(r.status, 0, r.out)
+  assert.deepEqual(Object.keys(a.state().launchd), [label(a.owner)])
+  assert.deepEqual(agentPlists(a.owner), [`${label(a.owner)}.plist`])
+})
+
 test('round 2 (review): an uninstall whose OLD job cannot be read back, with this HOME\'s old plist there, removes nothing (that job may be running)', SLOW, (t) => {
   if (!ready(t)) return
   const a = account('Darwin')
