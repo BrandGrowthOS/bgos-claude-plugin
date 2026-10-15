@@ -1,0 +1,22 @@
+{
+  "kind": "executable-vendor-pin-mutation",
+  "source": "lib/browser-profile-core/coordinator-client.js",
+  "sourceCommit": "901647978b666739575074c44c7e92160fe6bcf9",
+  "mutation": {
+    "before": "pendingRuntimePermissions(scope) { const current = scopeOf(scope); return this._request(\"GET\",",
+    "after": "pendingRuntimePermissions(scope) { const current = scopeOf(scope); return this._request(\"POST\",",
+    "changedLine": "pendingRuntimePermissions(scope) { const current = scopeOf(scope); return this._request(\"POST\", `runtime/permissions/pending/${current.assistantId}`, undefined, current); }"
+  },
+  "originalSha256": "0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d",
+  "restoredSha256": "0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d",
+  "red": {
+    "exitCode": 1,
+    "stdout": "✖ profile codecs ship exactly the pinned committed bytes and CommonJS boundary (3.4162ms)\nℹ tests 1\nℹ suites 0\nℹ pass 0\nℹ fail 1\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 156.512\n\n✖ failing tests:\n\ntest at test\\browser-profile-core.vendor.test.ts:11:1\n✖ profile codecs ship exactly the pinned committed bytes and CommonJS boundary (3.4162ms)\n  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  + actual - expected\n  \n  + 'f0d8c0d34902f4bbd7ebd00408ffae43241e17047ff483a90bd3fe448081bdde'\n  - '0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d'\n  \n      at TestContext.<anonymous> (file:///E:/bgos-worktrees/browser-profile-sync-plugin/test/browser-profile-core.vendor.test.ts:17:12)\n      at Test.runInAsyncScope (node:async_hooks:227:14)\n      at Test.run (node:internal/test_runner/test:1306:25)\n      at Test.start (node:internal/test_runner/test:1177:17)\n      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17) {\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: 'f0d8c0d34902f4bbd7ebd00408ffae43241e17047ff483a90bd3fe448081bdde',\n    expected: '0ad488fdcfe68cd0b54a3b09616d7bd272d913ff6965e277862cd87535d65c6d',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n",
+    "stderr": ""
+  },
+  "green": {
+    "exitCode": 0,
+    "stdout": "✔ profile codecs ship exactly the pinned committed bytes and CommonJS boundary (10.5547ms)\nℹ tests 1\nℹ suites 0\nℹ pass 1\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 151.8569\n",
+    "stderr": ""
+  }
+}
