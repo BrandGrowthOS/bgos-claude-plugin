@@ -6,16 +6,24 @@
  *
  *   run-agent.vbs           a HIDDEN console (window style 0, board row d133ddb2) running
  *                           node <plugin root>\bin\hoai-core.mjs --keep-alive in the
- *                           agent folder, waiting on it and handing back its exit code
+ *                           agent folder, USERPROFILE pinned to the HOME the task was
+ *                           installed from (board row d6198bb6), waiting on it and
+ *                           handing back its exit code
  *   install-agent-task.ps1  Register-ScheduledTask for the CURRENT user, unelevated
  *                           (the watcher's own pattern, lib/watcher-service.mjs):
  *                           AtLogOn, RestartCount 999, RestartInterval 1 minute,
  *                           ExecutionTimeLimit 0, MultipleInstances IgnoreNew,
- *                           action wscript.exe //B <statedir>\run-agent.vbs
+ *                           action wscript.exe //B <statedir>\run-agent.vbs, the
+ *                           description naming the HOME, and the read-only probes
+ *                           (probe, probe-legacy) every runner reads back first
  *   supervisor-generation   2 (design 4 generation stamp)
  *
- * The runners go through an injected exec + fs; nothing here runs schtasks or
- * PowerShell for real.
+ * The task is "HOAI Agent <id> home-<hid>" (the HOME it was installed from, the
+ * watcher's watcherHomeId); the old "HOAI Agent <id>" is its legacy name.
+ *
+ * The runners go through an injected exec + fs: test/helpers/fake-agent-tasks.ts,
+ * which answers the generated script's actions as a real Task Scheduler would.
+ * Nothing here runs schtasks or PowerShell for real.
  *
  * Run: npx tsx --test test/agent-task-win32.test.ts
  */
@@ -32,6 +40,7 @@ import {
 } from '../lib/agent-task-win32.mjs'
 import { AGENT_TASK_LAUNCHER_FILE_NAME, agentTaskName, resolveAgentSupervisor } from '../lib/agent-inventory.mjs'
 import { memoryFs } from './helpers/memory-fs.ts'
+import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = 'C:\\Users\\kc'
 const NODE = 'C:\\Program Files\\nodejs\\node.exe'
@@ -43,21 +52,29 @@ function spec() {
   return agentTaskSpec({ assistantId: '912', home: HOME, nodePath: NODE, pluginRoot: ROOT, cwd: CWD })
 }
 
-function recordingExec(codes: Record<string, number> = {}) {
-  const calls: Array<{ file: string; args: string[] }> = []
-  const exec = async (file: string, args: readonly string[]) => {
-    calls.push({ file, args: [...args] })
-    const key = Object.keys(codes).find((k) => `${file} ${args.join(' ')}`.includes(k))
-    const code = key ? codes[key]! : 0
-    return { code, stdout: code === 0 ? 'ok' : '', stderr: code === 0 ? '' : 'Access is denied.', error: null, timedOut: false }
-  }
-  return { calls, exec }
-}
+// The HOME id of HOME C:\Users\kc: watcherHomeId(HOME, 'win32') = 66ede649 (hashed as c:\users\kc),
+// pinned as a literal: a change to it is a rename of every installed task.
+const HOME_ID = '66ede649'
+const TASK = `HOAI Agent 912 home-${HOME_ID}`
+const OLD_TASK = 'HOAI Agent 912'
+const SCRIPT = `${STATE}\\install-agent-task.ps1`
+/** The PowerShell -File arguments of one task script action, as every runner emits them. */
+const psArgs = (action: string) => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', SCRIPT, '-Action', action]
+/** One emitted command line, as test/helpers/fake-agent-tasks.ts records it. */
+const ps = (action: string) => `powershell.exe ${psArgs(action).join(' ')}`
+const schtasksRun = (name: string) => `schtasks.exe /Run /TN ${name}`
+/** This HOME's own task, as installAgentTask registers it (what the read-back finds). */
+const OWN_TASK = { description: `HOAI agent 912, installed from home=${HOME}`, action: `wscript.exe //B "${STATE}\\run-agent.vbs"` }
 
-test('agentTaskSpec: names and paths (task "HOAI Agent <id>", files in the agent state dir)', () => {
+test('agentTaskSpec: names and paths (task "HOAI Agent <id> home-<hid>", the old "HOAI Agent <id>" as its legacy name, files in the agent state dir)', () => {
   const s = spec()
-  assert.equal(s.taskName, 'HOAI Agent 912')
-  assert.equal(s.taskName, agentTaskName('912'))
+  assert.equal(s.taskName, 'HOAI Agent 912 home-66ede649')
+  assert.equal(s.label, s.taskName)
+  assert.equal(s.home, HOME)
+  assert.equal(s.homeId, HOME_ID)
+  // agentTaskName (id only) is the OLD name: the one an agent not renamed yet still has.
+  assert.equal(s.legacy.label, 'HOAI Agent 912')
+  assert.equal(s.legacy.label, agentTaskName('912'))
   assert.equal(s.stateDir, STATE)
   assert.equal(s.launcherPath, `${STATE}\\${AGENT_TASK_LAUNCHER_FILE_NAME}`)
   assert.equal(s.scriptPath, `${STATE}\\${AGENT_TASK_SCRIPT_FILE_NAME}`)
@@ -65,18 +82,20 @@ test('agentTaskSpec: names and paths (task "HOAI Agent <id>", files in the agent
   assert.equal(s.files[2].content, '2\n')
 })
 
-test('run-agent.vbs: exact text, a HIDDEN console (style 0, never 7 minimized) running hoai-core --keep-alive in the agent folder, unattended as this agent, waiting, exit code handed back', () => {
+test('run-agent.vbs: exact text, a HIDDEN console (style 0, never 7 minimized) running hoai-core --keep-alive in the agent folder, unattended as this agent, USERPROFILE pinned to the HOME it was installed from, waiting, exit code handed back', () => {
   const vbs = spec().files[0].content
   assert.equal(
     vbs,
     [
-      "' HOAI Agent 912: run this agent's hoai launcher (--keep-alive) in a hidden console (no window).",
-      "' Generated by lib/agent-task-win32.mjs; the Scheduled Task 'HOAI Agent 912' runs this at logon.",
+      "' HOAI Agent 912 home-66ede649: run this agent's hoai launcher (--keep-alive) in a hidden console (no window).",
+      "' Generated by lib/agent-task-win32.mjs; the Scheduled Task 'HOAI Agent 912 home-66ede649' runs this at logon.",
       'Set shell = CreateObject("WScript.Shell")',
       "' Unattended, and for this agent only (bin/hoai-core.mjs SUPERVISED_ENV), exactly as run.sh launches it.",
       'Set env = shell.Environment("PROCESS")',
       'env("HOAI_SUPERVISED") = "1"',
       'env("HOAI_SUPERVISED_ASSISTANT_ID") = "912"',
+      "' The HOME this task was installed from (node's os.homedir() reads USERPROFILE on Windows).",
+      'shell.Environment("Process")("USERPROFILE") = "C:\\Users\\kc"',
       'shell.CurrentDirectory = "C:\\Users\\kc\\hoai-agents\\ava"',
       'WScript.Quit shell.Run("""C:\\Program Files\\nodejs\\node.exe"" ""C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.0\\bin\\hoai-core.mjs"" --keep-alive", 0, True)',
       '',
@@ -84,39 +103,62 @@ test('run-agent.vbs: exact text, a HIDDEN console (style 0, never 7 minimized) r
   )
 })
 
-test('install-agent-task.ps1: exact text, unelevated Register-ScheduledTask with the design 4 settings', () => {
+test('install-agent-task.ps1: exact text, unelevated Register-ScheduledTask with the design 4 settings, the HOME in the description, the read-only probes and the retire of the old name', () => {
   const ps1 = spec().files[1].content
   assert.equal(
     ps1,
     [
-      '# HOAI Agent 912: logon task that keeps this agent running (generated by lib/agent-task-win32.mjs).',
-      'param([Parameter(Mandatory = $true)][ValidateSet("install", "run", "uninstall", "status")][string]$Action)',
-      "$name = 'HOAI Agent 912'",
+      '# HOAI Agent 912 home-66ede649: logon task that keeps this agent running (generated by lib/agent-task-win32.mjs).',
+      'param([Parameter(Mandatory = $true)][ValidateSet("install", "install-disabled", "run", "uninstall", "status", "probe", "probe-legacy", "retire-legacy-task")][string]$Action)',
+      "$name = 'HOAI Agent 912 home-66ede649'",
+      "$legacyName = 'HOAI Agent 912'",
+      "$description = 'HOAI agent 912, installed from home=C:\\Users\\kc'",
       "$vbs = 'C:\\Users\\kc\\.bgos-agent\\912\\run-agent.vbs'",
-      'function Register-Task {',
+      'function Register-Task([bool]$disabled) {',
       '  $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B `"$vbs`""',
       '  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME',
-      '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew',
+      '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -Disable:$disabled',
       '  $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited',
-      '  Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null',
+      '  Register-ScheduledTask -TaskName $name -Description $description -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null',
+      '}',
+      'function Encode-Text([string]$text) {',
+      "  if ([string]::IsNullOrEmpty($text)) { return '-' }",
+      '  return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))',
+      '}',
+      'function Write-Probe([string]$taskName) {',
+      "  $task = Get-ScheduledTask -TaskPath '\\' -TaskName $taskName -ErrorAction SilentlyContinue",
+      '  if ($task) {',
+      '    $actions = ($task.Actions | ForEach-Object { [string]$_.Execute + " " + [string]$_.Arguments }) -join "`n"',
+      '    Write-Output ("task present " + [string]$task.State + " " + (Encode-Text ([string]$task.Description)) + " " + (Encode-Text $actions))',
+      '  } else { Write-Output "task absent" }',
       '}',
       'switch ($Action) {',
       '  "install" {',
-      '    try { Register-Task; Write-Output "task registered"; exit 0 }',
+      '    try { Register-Task $false; Write-Output "task registered"; exit 0 }',
+      '    catch { Write-Output ("task registration refused: " + $_.Exception.Message); exit 1 }',
+      '  }',
+      '  "install-disabled" {',
+      '    try { Register-Task $true; Write-Output "task registered (disabled)"; exit 0 }',
       '    catch { Write-Output ("task registration refused: " + $_.Exception.Message); exit 1 }',
       '  }',
       '  "run" {',
-      '    try { Start-ScheduledTask -TaskName $name -ErrorAction Stop; Write-Output "task started"; exit 0 }',
+      "    try { Start-ScheduledTask -TaskPath '\\' -TaskName $name -ErrorAction Stop; Write-Output \"task started\"; exit 0 }",
       '    catch { Write-Output ("task start refused: " + $_.Exception.Message); exit 1 }',
       '  }',
       '  "uninstall" {',
-      '    try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop } catch {}',
+      "    try { Unregister-ScheduledTask -TaskPath '\\' -TaskName $name -Confirm:$false -ErrorAction Stop } catch {}",
       '    Write-Output "unregistered"; exit 0',
       '  }',
       '  "status" {',
-      '    $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue',
+      "    $task = Get-ScheduledTask -TaskPath '\\' -TaskName $name -ErrorAction SilentlyContinue",
       '    if ($task) { Write-Output ("task " + $task.State); exit 0 }',
       '    Write-Output "not registered"; exit 1',
+      '  }',
+      '  "probe" { Write-Probe $name; exit 0 }',
+      '  "probe-legacy" { Write-Probe $legacyName; exit 0 }',
+      '  "retire-legacy-task" {',
+      "    try { Unregister-ScheduledTask -TaskPath '\\' -TaskName $legacyName -Confirm:$false -ErrorAction Stop; Write-Output \"legacy task unregistered\"; exit 0 }",
+      '    catch { Write-Output ("legacy task not unregistered: " + $_.Exception.Message); exit 1 }',
       '  }',
       '}',
       '',
@@ -167,19 +209,32 @@ test('agentTaskSpec: a non-ASCII profile, agent folder, plugin root or node path
   const run = vbsLines.find((l) => l.startsWith('WScript.Quit shell.Run('))!
   const runExpr = /^WScript\.Quit shell\.Run\((.*), 0, True\)$/.exec(run)![1]!
   assert.equal(evalVbs(runExpr), `"${node}" "${root}\\bin\\hoai-core.mjs" --keep-alive`)
+  // The HOME the task was installed from, pinned for hoai-core (USERPROFILE) and recorded in the description.
+  const profile = vbsLines.find((l) => l.startsWith('shell.Environment("Process")("USERPROFILE") = '))!
+  assert.equal(evalVbs(profile.slice('shell.Environment("Process")("USERPROFILE") = '.length)), home)
   const vbsDecl = s.files[1]!.content.split('\r\n').find((l) => l.startsWith('$vbs = '))!
   assert.equal(evalPs(vbsDecl.slice('$vbs = '.length)), `${home}\\.bgos-agent\\912\\run-agent.vbs`)
+  const descDecl = s.files[1]!.content.split('\r\n').find((l) => l.startsWith('$description = '))!
+  assert.equal(evalPs(descDecl.slice('$description = '.length)), `HOAI agent 912, installed from home=${home}`)
   // An ASCII path is byte for byte what it always was (the exact-text tests above).
   assert.equal(evalVbs('"C:\\x\\""y"'), 'C:\\x\\"y')
 })
 
-test('agentTaskSpec: commands (PowerShell -File for install/uninstall/status, schtasks /Run /TN for a start)', () => {
+test('agentTaskSpec: commands (PowerShell -File for install/uninstall/status and the read-only probes, schtasks /Run /TN for a start; the old name probed, retired or started only through its own commands)', () => {
   const s = spec()
-  const ps = (action: string) => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', s.scriptPath, '-Action', action] })
-  assert.deepEqual(s.installCommands, [ps('install')])
-  assert.deepEqual(s.uninstallCommands, [ps('uninstall')])
-  assert.deepEqual(s.statusCommands, [ps('status')])
-  assert.deepEqual(s.runCommands, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }])
+  const psCommand = (action: string) => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', s.scriptPath, '-Action', action] })
+  assert.deepEqual(s.probeCommand, psCommand('probe'))
+  assert.deepEqual(s.installCommands, [psCommand('install')])
+  assert.deepEqual(s.installDisabledCommands, [psCommand('install-disabled')])
+  assert.deepEqual(s.uninstallCommands, [psCommand('uninstall')])
+  assert.deepEqual(s.statusCommands, [psCommand('status')])
+  assert.deepEqual(s.runCommands, [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912 home-66ede649'] }])
+  assert.deepEqual(s.legacy, {
+    label: 'HOAI Agent 912',
+    probeCommand: psCommand('probe-legacy'),
+    retire: { task: psCommand('retire-legacy-task') },
+    runCommands: [{ file: 'schtasks.exe', args: ['/Run', '/TN', 'HOAI Agent 912'] }],
+  })
 })
 
 test('agentTaskSpec: a quote in any embedded path, a junk id or a missing path throws before anything is written', () => {
@@ -198,48 +253,73 @@ test('agentTaskSpec: a quote in any embedded path, a junk id or a missing path t
   }
 })
 
-test('installAgentTask: writes the three files, registers, then starts only when asked; the inventory then sees a canonical service', async () => {
+test('installAgentTask: writes the three files, reads both names back, registers, then starts only when asked; the inventory then sees a canonical service', async () => {
   const fs = memoryFs()
-  const rec = recordingExec()
+  const host = fakeAgentTasks({ fs })
   const s = spec()
-  const res = await installAgentTask(s, { exec: rec.exec, fs, start: true })
+  const res = await installAgentTask(s, { exec: host.exec, fs, start: true })
   assert.equal(res.ok, true)
-  assert.deepEqual(rec.calls.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
-  assert.deepEqual(rec.calls[0]!.args.slice(-2), ['-Action', 'install'])
+  assert.equal(res.message, 'task registered and started')
+  assert.deepEqual(res.notes, [])
+  assert.deepEqual(res.legacy, { label: OLD_TASK, state: 'absent', home: null })
+  // A fresh host: neither this HOME's task nor the old one is registered, so the install proceeds.
+  assert.deepEqual(host.calls, [ps('probe'), ps('probe-legacy'), ps('install'), schtasksRun(TASK)])
   for (const f of s.files) assert.equal(fs.files.get(f.path), f.content)
+  assert.deepEqual(host.tasks.get(TASK), { ...OWN_TASK, state: 'Running' })
   const resolved = resolveAgentSupervisor({ platform: 'win32', home: HOME, assistantId: '912', exists: fs.exists, readFile: fs.readFile, pidAlive: () => false })
   assert.equal(resolved.service?.kind, 'schtasks')
+  assert.equal(resolved.service?.handle, TASK)
   // Not started when the agent may be running by hand: never a second session.
-  const quiet = recordingExec()
-  await installAgentTask(s, { exec: quiet.exec, fs: memoryFs(), start: false })
-  assert.deepEqual(quiet.calls.map((c) => c.file), ['powershell.exe'])
+  const quietFs = memoryFs()
+  const quiet = fakeAgentTasks({ fs: quietFs })
+  await installAgentTask(s, { exec: quiet.exec, fs: quietFs, start: false })
+  assert.deepEqual(quiet.calls, [ps('probe'), ps('probe-legacy'), ps('install')])
+  assert.deepEqual(quiet.running(), {})
 })
 
 test('installAgentTask: a refused registration is a named failure and starts nothing', async () => {
-  const rec = recordingExec({ '-Action install': 1 })
-  const res = await installAgentTask(spec(), { exec: rec.exec, fs: memoryFs(), start: true })
+  const fs = memoryFs()
+  const host = fakeAgentTasks({ fs, fail: [{ match: '-Action install', code: 1, stderr: 'Access is denied.' }] })
+  const res = await installAgentTask(spec(), { exec: host.exec, fs, start: true })
   assert.equal(res.ok, false)
   assert.match(res.message, /install-agent-task\.ps1 -Action install failed \(rc 1\): Access is denied\./)
-  assert.equal(rec.calls.length, 1)
+  assert.deepEqual(host.calls, [ps('probe'), ps('probe-legacy'), ps('install')])
+  assert.equal(host.tasks.size, 0)
 })
 
-test('runAgentTask: schtasks /Run /TN "HOAI Agent <id>", a non-zero rc is a named failure', async () => {
-  const rec = recordingExec()
-  assert.deepEqual(await runAgentTask(spec(), { exec: rec.exec }), { ok: true, message: 'schtasks.exe /Run /TN HOAI Agent 912 ok' })
-  const bad = recordingExec({ '/Run': 1 })
-  const res = await runAgentTask(spec(), { exec: bad.exec })
+test('runAgentTask: reads this HOME\'s task back, then schtasks /Run /TN "HOAI Agent <id> home-<hid>"; a non-zero rc is a named failure', async () => {
+  const fs = memoryFs()
+  const host = fakeAgentTasks({ fs })
+  host.seed.task(TASK, `${STATE}\\run-agent.vbs`, { description: OWN_TASK.description })
+  assert.deepEqual(await runAgentTask(spec(), { exec: host.exec, fs }), {
+    ok: true,
+    message: 'schtasks.exe /Run /TN HOAI Agent 912 home-66ede649 ok',
+    name: TASK,
+    ran: [
+      { file: 'powershell.exe', args: psArgs('probe'), code: 0, ignored: true },
+      { file: 'schtasks.exe', args: ['/Run', '/TN', TASK], code: 0 },
+    ],
+    notes: [],
+  })
+  const badFs = memoryFs()
+  const bad = fakeAgentTasks({ fs: badFs, fail: [{ match: '/Run', code: 1, stderr: 'Access is denied.' }] })
+  bad.seed.task(TASK, `${STATE}\\run-agent.vbs`, { description: OWN_TASK.description })
+  const res = await runAgentTask(spec(), { exec: bad.exec, fs: badFs })
   assert.equal(res.ok, false)
-  assert.match(res.message, /rc 1/)
+  assert.equal(res.message, 'schtasks.exe /Run /TN HOAI Agent 912 home-66ede649 failed (rc 1): Access is denied.')
 })
 
 test('uninstallAgentTask: unregisters and removes only its own files (the session pin stays)', async () => {
   const s = spec()
   const fs = memoryFs({ [`${STATE}\\session-id`]: 'pin' })
-  await installAgentTask(s, { exec: recordingExec().exec, fs, start: false })
-  const rec = recordingExec()
-  const res = await uninstallAgentTask(s, { exec: rec.exec, fs })
+  const host = fakeAgentTasks({ fs })
+  await installAgentTask(s, { exec: host.exec, fs, start: false })
+  const before = host.calls.length
+  const res = await uninstallAgentTask(s, { exec: host.exec, fs })
   assert.equal(res.ok, true)
-  assert.deepEqual(rec.calls[0]!.args.slice(-2), ['-Action', 'uninstall'])
+  // Read back first: the task is this HOME's (as installed above), so it is unregistered; the old name is absent.
+  assert.deepEqual(host.calls.slice(before), [ps('probe'), ps('uninstall'), ps('probe-legacy')])
+  assert.equal(host.tasks.has(TASK), false)
   for (const f of s.files) assert.equal(fs.files.has(f.path), false)
   assert.equal(fs.files.get(`${STATE}\\session-id`), 'pin')
 })

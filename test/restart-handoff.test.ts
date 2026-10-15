@@ -19,6 +19,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { restartAgent } from '../lib/agent-restart.mjs'
+import { fakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const MISSING =
   'lib/restart-handoff.mjs is missing: nothing carries out a restart the hoai launcher refused (bin/hoai-core.mjs:2295-2299), ' +
@@ -47,6 +48,10 @@ const CWD = 'C:\\agents\\vera'
 const ROOT = 'C:\\plugins\\bgos-claude-plugin'
 const NODE = 'C:\\Program Files\\nodejs\\node.exe'
 const PIN = '0f0e0d0c-1111-4222-8333-444455556666'
+// The agent task as lib/agent-inventory.mjs names it (board row d6198bb6): this HOME's name, the old
+// one carried for the read-back. 66ede649 = watcherHomeId('C:\\Users\\kc', 'win32') (hashed as c:\users\kc).
+const TASK_NAME = 'HOAI Agent 909 home-66ede649'
+const LEGACY_TASK_NAME = 'HOAI Agent 909'
 const MARKER_TEXT = '{"reason":"proof","requestedBy":"mark"}'
 
 const LAUNCHER = 48480
@@ -130,7 +135,7 @@ function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wr
     cwd: CWD,
     recipe: opts.recipe === false ? null : { cwd: CWD, node: NODE, pluginRoot: 'C:\\checkouts\\0.66.1', argv: [] },
     supervisor: opts.task ? 'service' : live ? 'launcher-live' : 'none',
-    service: opts.task ? { kind: 'schtasks', handle: 'HOAI Agent 909', via: 'canonical-file', file: TASK_VBS } : null,
+    service: opts.task ? { kind: 'schtasks', handle: TASK_NAME, legacyHandle: LEGACY_TASK_NAME, via: 'canonical-file', file: TASK_VBS } : null,
     keepalive: null,
     launcherLive: live,
     stateDir: STATE,
@@ -193,7 +198,8 @@ function world(opts: { keepAlive?: boolean; task?: boolean; recipe?: boolean; wr
       if (!flags.noReturn) bringBack()
       return { ok: true, how: r.service?.kind === 'schtasks' ? 'task' : 'recipe-hidden', message: 'started' }
     },
-    restartDeps: { exec: async () => ({ code: 0, stdout: '', stderr: '' }), spawnDetached: () => ({ pid: 1 }), fs: { writeFile: (p: string, t: string) => put(p, t), readFile: (p: string) => files.get(p)?.text ?? null, exists: (p: string) => files.has(p) } },
+    // mkdir: the task tier writes its task script into the state dir before it reads the task back (directories are implicit here).
+    restartDeps: { exec: async () => ({ code: 0, stdout: '', stderr: '' }), spawnDetached: () => ({ pid: 1 }), fs: { writeFile: (p: string, t: string) => put(p, t), readFile: (p: string) => files.get(p)?.text ?? null, exists: (p: string) => files.has(p), mkdir: () => {} } },
   }
   const params = {
     assistantId: '909', kind: 'stranded', markerMtimeMs: T0 - 20_000, bootAtMs: T0 - 599_000, daemonPid: DAEMON, claudePid: CLAUDE,
@@ -249,16 +255,30 @@ test('the REAL ladder: the hidden recipe launch runs the current root\'s hoai-co
 })
 
 test('the REAL ladder, task route: schtasks /Run /TN "HOAI Agent 909" when the task is registered in the same folder', async () => {
-  const w = world({ task: true })
-  const execs: string[][] = []
-  w.deps.restartAgent = (row: any, d: any) => restartAgent(row, d)
-  w.deps.restartDeps.exec = async (file: string, args: string[]) => {
-    execs.push([file, ...args])
-    return { code: 0, stdout: '', stderr: '' }
+  // The ladder reads the task back first (lib/agent-task-win32.mjs runAgentTask, the task script's
+  // probe), on a faked Task Scheduler that answers from the script it writes: this HOME's task under
+  // its own name (as the current install registers it), and an agent not renamed yet whose task is
+  // still the old "HOAI Agent 909" this HOME registered (0.69.2: no description, its launcher in this
+  // HOME's state dir).
+  const probe = (action: string) => ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `${STATE}\\install-agent-task.ps1`, '-Action', action]
+  const cases: Array<[string, string, string, string[][]]> = [
+    ['this HOME\'s task', TASK_NAME, `HOAI agent 909, installed from home=${HOME}`, [probe('probe'), ['schtasks.exe', '/Run', '/TN', TASK_NAME]]],
+    ['not renamed yet', LEGACY_TASK_NAME, '', [probe('probe'), probe('probe-legacy'), ['schtasks.exe', '/Run', '/TN', LEGACY_TASK_NAME]]],
+  ]
+  for (const [name, taskName, description, expected] of cases) {
+    const w = world({ task: true })
+    const tasks = fakeAgentTasks({ fs: { readFile: (p: string) => w.files.get(p)?.text ?? null } as any })
+    tasks.seed.task(taskName, TASK_VBS, { description })
+    const execs: string[][] = []
+    w.deps.restartAgent = (row: any, d: any) => restartAgent(row, d)
+    w.deps.restartDeps.exec = async (file: string, args: string[]) => {
+      execs.push([file, ...args])
+      return tasks.exec(file, args)
+    }
+    const out = await run(w)
+    assert.deepEqual(execs, expected, `${name}: ${w.logs.join('\n')}`)
+    assert.notEqual(out.outcome, 'launcher_live_again', name)
   }
-  const out = await run(w)
-  assert.deepEqual(execs, [['schtasks.exe', '/Run', '/TN', 'HOAI Agent 909']], w.logs.join('\n'))
-  assert.notEqual(out.outcome, 'launcher_live_again')
 })
 
 test('keep-alive launcher: it relaunches the pinned session by itself; the helper starts nothing', async () => {

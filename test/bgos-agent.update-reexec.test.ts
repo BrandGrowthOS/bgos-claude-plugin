@@ -11,17 +11,23 @@
  * cmd_update. If the update does not hand over to the new file after the pull,
  * that line never prints.
  *
+ * The agents' service names carry the HOME id (board row d6198bb6), which the
+ * update computes with bin/hoai-agent-service.mjs on bun or node. When neither
+ * answers, the update has still succeeded: it completes, restarts no service by
+ * any name, and says for each agent why it was not restarted.
+ *
  * Run: npx tsx --test test/bgos-agent.update-reexec.test.ts
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import { resolvePosixBash } from './helpers/posix-bash.ts'
+import { watcherHomeId } from '../lib/watcher-service.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BASH = process.platform === 'win32' ? null : resolvePosixBash()
@@ -57,6 +63,12 @@ function fixture(scriptForCheckout: string) {
   mkdirSync(join(work, 'bin'), { recursive: true })
   writeFileSync(join(work, 'package.json'), JSON.stringify({ name: 'hoai', version: '1.0.0' }))
   writeFileSync(join(work, 'bin', 'bgos-daemon-wrapper.mjs'), '// stub\n')
+  // Every agent service name carries the HOME id (board row d6198bb6), which the update computes
+  // before it looks for installed agents, with bin/hoai-agent-service.mjs and the lib it imports
+  // (on bun or node: the bun stub prints nothing for it, so the node on PATH answers). A plugin
+  // checkout carries both.
+  cpSync(join(repoRoot, 'bin', 'hoai-agent-service.mjs'), join(work, 'bin', 'hoai-agent-service.mjs'))
+  cpSync(join(repoRoot, 'lib'), join(work, 'lib'), { recursive: true })
   const git = (c: string) => sh(work, `git ${c}`, { HOME: home, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' })
   git('init -q -b main')
   writeFileSync(join(work, 'bin', 'bgos-agent'), scriptForCheckout)
@@ -117,4 +129,84 @@ test('the hand-over is not a loop: an update that is already the re-executed one
   assert.equal(res.status, 0, out)
   assert.doesNotMatch(out, /Fetching origin/, 'the flag says the pull is done')
   assert.match(out, /0\.9\.0 -> 1\.0\.0/, 'the starting version comes from the environment')
+})
+
+test('an update whose HOME id helper cannot answer still completes: it restarts nothing by name and says why, for each agent', { skip: SKIP }, () => {
+  const current = readFileSync(join(repoRoot, 'bin', 'bgos-agent'), 'utf8')
+  const OS = process.platform === 'darwin' ? 'Darwin' : 'Linux'
+  // [name, argv, is agent 42's service file the one named after this HOME (renamed) or its OLD one]
+  const legs: Array<[string, string[], boolean]> = [
+    // Every agent: an OLD (0.69.2) service file of this HOME, an agent not renamed yet.
+    ['all agents, an agent not renamed yet', ['update'], false],
+    // Every agent: only the file under this HOME's own name, an agent already renamed. With no HOME id
+    // its name cannot be computed, but the file is still found (by its home-<hid> pattern), so the
+    // update says why it was not restarted rather than that no agent service is installed.
+    ['all agents, an agent already renamed', ['update'], true],
+    // One agent by id: its service under this HOME's own name.
+    ['one agent by id, its service under this HOME\'s name', ['update', '--assistant', '42'], true],
+  ]
+  for (const [name, args, renamed] of legs) {
+    const f = fixture(current)
+    // Neither runtime answers bin/hoai-agent-service.mjs (the bun stub prints nothing for it; this
+    // node fails on it, as a node too old for it does), so no HOME id: node runs everything else.
+    writeFileSync(
+      join(f.stubs, 'node'),
+      `#!/bin/bash\ncase "$1" in *hoai-agent-service.mjs) echo "SyntaxError: Unexpected token '.'" >&2; exit 1 ;; esac\nexec '${process.execPath}' "$@"\n`,
+    )
+    chmodSync(join(f.stubs, 'node'), 0o755)
+    // The service managers and tmux record every call and touch nothing real.
+    const log = join(f.home, 'service-calls.log')
+    for (const tool of ['launchctl', 'systemctl', 'loginctl', 'tmux']) {
+      writeFileSync(join(f.stubs, tool), `#!/bin/sh\n{ printf '%s' '${tool}'; for a in "$@"; do printf ' %s' "$a"; done; printf '\\n'; } >> '${log}'\nexit 0\n`)
+      chmodSync(join(f.stubs, tool), 0o755)
+    }
+    const state = join(f.home, '.bgos-agent', '42')
+    mkdirSync(state, { recursive: true })
+    writeFileSync(join(state, 'run.sh'), '#!/bin/bash\n')
+    const hid = watcherHomeId(f.home, OS === 'Darwin' ? 'darwin' : 'linux')
+    assert.match(hid, /^[0-9a-f]{8}$/)
+    const byId = args.includes('--assistant')
+    const label = renamed ? `ai.bgos.agent.42.home-${hid}` : 'ai.bgos.agent.42'
+    const unit = renamed ? `bgos-agent-42-home-${hid}` : 'bgos-agent-42'
+    const file = OS === 'Darwin' ? join(f.home, 'Library', 'LaunchAgents', `${label}.plist`) : join(f.home, '.config', 'systemd', 'user', `${unit}.service`)
+    const content =
+      OS === 'Darwin'
+        ? `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n  <key>Label</key><string>${label}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>/bin/bash</string>\n    <string>${state}/run.sh</string>\n  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>HOME</key><string>${f.home}</string>\n  </dict>\n</dict>\n</plist>\n`
+        : `[Unit]\nDescription=BGOS Claude Code agent 42\n\n[Service]\nType=simple\nExecStart=/bin/bash "${state}/run.sh"\nEnvironment=HOME=${f.home}\n\n[Install]\nWantedBy=default.target\n`
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, content)
+    const res = spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), ...args], {
+      cwd: f.work,
+      encoding: 'utf8',
+      env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude') },
+    })
+    const out = `${res.stdout}\n${res.stderr}`
+    assert.equal(res.status, 0, `${name}: the update itself completes\n${out}`)
+    assert.match(out, /plugin updated: 1\.0\.0 -> 2\.0\.0/, name)
+    // The all-agents loop ran to its end (the marker sits right after it); by id the update returns before it.
+    if (byId) assert.doesNotMatch(out, new RegExp(NEW_MARKER), name)
+    else assert.match(out, new RegExp(NEW_MARKER), `${name}: the rest of cmd_update ran to its end`)
+    const why = `agent 42 was not restarted: its service is named after this HOME and the HOME id could not be computed (${f.work}/bin/hoai-agent-service.mjs runs on bun or node); quit and relaunch Claude Code`
+    assert.equal(out.split('\n').filter((l) => l.includes('was not restarted')).map((l) => l.replace(/^.*?agent 42/, 'agent 42')).join('\n'), why, `${name}: says why, once`)
+    assert.doesNotMatch(out, /restarted agent 42|could not restart agent 42|no installed agent services found|service-name:home-id-unavailable/, name)
+    const calls = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []
+    assert.deepEqual(calls, [], `${name}: no service or tmux command at all, so nothing restarted by any name`)
+    assert.equal(readFileSync(file, 'utf8'), content, `${name}: the service file is left as it is`)
+    if (renamed && !byId) {
+      // `is-installed` with no HOME id finds the renamed file the same way (a file test): installed.
+      const isInstalled = (id: string) =>
+        spawnSync(BASH!, [join(f.work, 'bin', 'bgos-agent'), 'is-installed', '--assistant', id], {
+          cwd: f.work,
+          encoding: 'utf8',
+          env: { ...process.env, HOME: f.home, PATH: `${f.stubs}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: join(f.home, '.claude') },
+        })
+      const yes = isInstalled('42')
+      assert.equal(yes.status, 0, `${name}: is-installed --assistant 42 sees the renamed service file\n${yes.stdout}\n${yes.stderr}`)
+      // Nothing else makes it answer yes: an agent with no service file at all is not installed.
+      const no = isInstalled('43')
+      assert.equal(no.status, 1, `${name}: is-installed --assistant 43 (no service file)\n${no.stdout}\n${no.stderr}`)
+      assert.deepEqual(existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [], [], `${name}: is-installed asks no service manager`)
+      assert.equal(readFileSync(file, 'utf8'), content, name)
+    }
+  }
 })

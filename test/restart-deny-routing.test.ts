@@ -49,6 +49,10 @@ function runRefresh(t: TestContext, workdir: string): string | null {
     'PLUGIN_DIR=/stub/plugin',
     'plist_for() { echo "/stub/missing.plist"; }',
     'unitfile_for() { echo "/stub/missing.service"; }',
+    // The OLD names' files (board row d6198bb6): the workspace is read off this HOME's own
+    // service file, else the old one's (an agent not renamed yet). Missing here too.
+    'legacy_plist_for() { echo "/stub/missing-legacy.plist"; }',
+    'legacy_unitfile_for() { echo "/stub/missing-legacy.service"; }',
     `default_workdir_for() { printf '%s\\n' ${shq(bashPath(workdir))}; }`,
     'plugin_cache_key() { :; }',
     'install_hook_entries() { echo "RAN:hooks"; }',
@@ -67,6 +71,9 @@ function runRefresh(t: TestContext, workdir: string): string | null {
   writeFileSync(script, harness)
   const out = spawnSync(bash, [bashPath(script)], { encoding: 'utf8', windowsHide: true })
   assert.equal(out.status, 0, `harness failed: ${out.stderr}`)
+  // Everything the function calls is defined above: a call the harness does not stub would only
+  // print "command not found" and go on, so the routing would be judged on a half-run function.
+  assert.doesNotMatch(out.stderr, /command not found/, `the harness is missing a stub: ${out.stderr}`)
   return out.stdout
 }
 

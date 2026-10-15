@@ -261,10 +261,21 @@ test('both supervisors run claude in the workspace, which is what loads that .mc
  * MUTATION PROOF (applied to bin/bgos-agent, confirmed red, restored): the
  * `refresh_hook_entries "$id"` line removed from restart_after_update -> this
  * case red, 2 of 10 with the baseline Windows red (bash -n) beside it.
+ *
+ * Since board row d6198bb6 the service names carry the HOME id, so the restart
+ * first computes it (`compute_home_id`; without it the agent is not restarted
+ * by name and the update still succeeds), then refreshes the hooks, then reads
+ * the service back before it restarts it. The service file the hooks are read
+ * off is this HOME's own name's, else the OLD name's (an agent not renamed yet).
  */
 test('update re-registers a clone workspace\'s hooks (the floor hook included) before it restarts the agent', () => {
   const restart = sh.slice(sh.indexOf('restart_after_update() {'), sh.indexOf('\n}\n', sh.indexOf('restart_after_update() {')))
-  assert.match(restart, /^restart_after_update\(\) \{ # \$1 assistant id\n  local id="\$1"\n  refresh_hook_entries "\$id"\n/)
+  assert.match(restart, /^restart_after_update\(\) \{ # \$1 assistant id\n  local id="\$1"\n/)
+  // In this order: the HOME id, the hook refresh, then the read-back before any restart.
+  const homeAt = restart.indexOf('  if ! compute_home_id; then\n')
+  const refreshAt = restart.indexOf('\n  refresh_hook_entries "$id"\n')
+  const readBackAt = restart.indexOf('resolve_target "$id" warn')
+  assert.ok(homeAt > 0 && refreshAt > homeAt && readBackAt > refreshAt, restart)
   const refresh = sh.slice(sh.indexOf('refresh_hook_entries() {'), sh.indexOf('\n}\n', sh.indexOf('refresh_hook_entries() {')))
   assert.ok(refresh.length > 0, 'refresh_hook_entries is defined')
   // The workspace is read off the service each supervisor was installed with.

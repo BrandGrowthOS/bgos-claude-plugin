@@ -29,6 +29,7 @@ import { normalize } from 'node:path'
 import {
   INSTALL_TIMEOUT_MS,
   KEEP_ONLINE_TICK_MS,
+  TASK_CHECK_RETRY_MS,
   hookSpoolPathFor,
   installProductSupervisor,
   keepAliveCachePath,
@@ -44,6 +45,7 @@ import { agentTaskSpec } from '../lib/agent-task-win32.mjs'
 import { RESTART_EXEC_TIMEOUT_MS } from '../lib/agent-restart.mjs'
 import { buildKeepAliveCache } from '../lib/keepalive-plan.mjs'
 import { memoryFs, type MemoryFs } from './helpers/memory-fs.ts'
+import { fakeAgentTasks, type FakeAgentTaskOptions, type FakeAgentTasks } from './helpers/fake-agent-tasks.ts'
 
 const HOME = '/Users/kc'
 const CONFIG = `${HOME}/.claude`
@@ -53,6 +55,14 @@ const T0 = Date.parse('2026-10-06T19:00:00.000Z')
 const MIN = 60_000
 const AVA = `${HOME}/hoai-agents/ava`
 const GURU = `${HOME}/hoai-agents/guru`
+// The HOME ids the per-agent service names carry (board row d6198bb6): watcherHomeId in
+// lib/watcher-service.mjs, the first 8 hex of sha256 of the canonical HOME, computed once and
+// pinned here so a change to that hashing fails by name. '/Users/kc' (darwin, linux) -> 5156882f;
+// 'C:\Users\kc' (win32, hashed as c:\users\kc) -> 66ede649.
+const HID = '5156882f'
+const WHID = '66ede649'
+/** The Windows HOME the win32 tests run in (its id is WHID). */
+const WHOME = 'C:\\Users\\kc'
 
 /**
  * Every test here is bounded. node:test's default timeout is INFINITE, so a
@@ -123,7 +133,13 @@ function stateBody(id: string, at: number, overrides: Record<string, unknown> = 
 const BGOS_AGENT_V2 = '#!/usr/bin/env bash\nprintf "%s\\n" "$SUPERVISOR_GENERATION" > "$statedir/supervisor-generation"\n'
 const BGOS_AGENT_V1 = '#!/usr/bin/env bash\nwrite_run_expect "$statedir/run.expect"\n'
 
-function machine(agents: AgentSpec[], opts: { platform?: string; installedVersion?: string; lastUpdated?: string; bgosAgent?: string } = {}): MemoryFs {
+/**
+ * A canonical service is written under the OLD names by default (ai.bgos.agent.<id>,
+ * bgos-agent-<id>: an agent 0.69.2 installed, not renamed yet, which the sweep still supervises
+ * under that name); `scoped` writes the names bin/bgos-agent installs now, which carry this
+ * HOME's id (ai.bgos.agent.<id>.home-<hid>, bgos-agent-<id>-home-<hid>).
+ */
+function machine(agents: AgentSpec[], opts: { platform?: string; installedVersion?: string; lastUpdated?: string; bgosAgent?: string; scoped?: boolean } = {}): MemoryFs {
   const files: Record<string, string> = {
     [`${ROOT}/bin/bgos-agent`]: opts.bgosAgent ?? BGOS_AGENT_V2,
     [`${HOME}/.bgos-agent/watcher/manifest.json`]: JSON.stringify({ version: '0.62.1', fingerprint: 'f', installedAt: 'x', pluginRoot: OLD_ROOT, files: [] }),
@@ -143,8 +159,12 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
       dirs.push(a.cwd)
     }
     if (a.service === 'canonical') {
-      if (opts.platform === 'linux') files[`${HOME}/.config/systemd/user/bgos-agent-${a.id}.service`] = '[Service]\n'
-      else files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}.plist`] = '<plist/>'
+      // As bin/bgos-agent writes it, the unit records the HOME it was installed from and this
+      // agent's run.sh: what the read back before a restart judges, with its fragment path.
+      if (opts.platform === 'linux') {
+        files[`${HOME}/.config/systemd/user/bgos-agent-${a.id}${opts.scoped ? `-home-${HID}` : ''}.service`] =
+          `[Service]\nWorkingDirectory=${a.cwd ?? HOME}\nExecStart=/bin/bash "${HOME}/.bgos-agent/${a.id}/run.sh"\nEnvironment=HOME=${HOME}\n`
+      } else files[`${HOME}/Library/LaunchAgents/ai.bgos.agent.${a.id}${opts.scoped ? `.home-${HID}` : ''}.plist`] = '<plist/>'
       if (a.generation !== null) files[`${HOME}/.bgos-agent/${a.id}/supervisor-generation`] = `${a.generation ?? '2'}\n`
     }
     if (a.state) files[`${HOME}/.bgos-plugin-state/${a.id}/agent-state.json`] = stateBody(a.id, T0, a.state)
@@ -157,17 +177,110 @@ function machine(agents: AgentSpec[], opts: { platform?: string; installedVersio
 
 const psLine = (pid: number, ppid: number, cmd: string, start = 'Tue Oct  6 18:00:00 2026', uid = 501) => ` ${pid} ${ppid} ${uid} ${start} ${cmd}`
 
-function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null } = {}) {
+/**
+ * The Windows agents whose logon task this HOME (C:\Users\kc) has registered in the default
+ * win32 world (`recorder()`'s `win32Task: 'own'`): agent 912, and agent 913 of the "two crashed
+ * together" test. Each is seeded exactly as lib/agent-task-win32.mjs registers it from this HOME
+ * (board row d6198bb6): the name carrying WHID, the description naming the HOME, the action
+ * running that HOME's run-agent.vbs. Literals, never derived from the script a test probes.
+ */
+const WIN32_AGENT_IDS = ['912', '913']
+
+/** What this HOME's Task Scheduler holds for one agent, by the `win32Task` the recorder was given. */
+function seedWin32Task(tasks: FakeAgentTasks, id: string, world: 'own' | 'absent' | 'legacy') {
+  const vbs = `${WHOME}\\.bgos-agent\\${id}\\run-agent.vbs`
+  // This HOME's task under its own name, as 0.69.3 registers it.
+  if (world === 'own') tasks.seed.task(`HOAI Agent ${id} home-${WHID}`, vbs, { description: `HOAI agent ${id}, installed from home=${WHOME}` })
+  // This HOME's task as 0.69.2 registered it: the old name, no description, the same launcher.
+  if (world === 'legacy') tasks.seed.task(`HOAI Agent ${id}`, vbs)
+}
+
+/** `launchctl print gui/<uid>/<label>` of a job loaded from THIS HOME's plist (the shape test/helpers/fake-service-host.ts prints). */
+function ownLaunchdPrint(target: string) {
+  const label = target.split('/').slice(2).join('/')
+  const id = /^ai\.bgos\.agent\.(\d+)/.exec(label)?.[1] ?? ''
+  return [
+    `${target} = {`,
+    '\tactive count = 1',
+    `\tpath = ${HOME}/Library/LaunchAgents/${label}.plist`,
+    '\ttype = LaunchAgent',
+    '\tstate = running',
+    '',
+    '\tprogram = /bin/bash',
+    '\targuments = {',
+    '\t\t/bin/bash',
+    `\t\t${HOME}/.bgos-agent/${id}/run.sh`,
+    '\t}',
+    '',
+    '\tenvironment = {',
+    `\t\tHOME => ${HOME}`,
+    `\t\tXPC_SERVICE_NAME => ${label}`,
+    '\t}',
+    '}',
+    '',
+  ].join('\n')
+}
+
+/** `systemctl --user show --property=LoadState,...` of a loaded unit whose fragment is THIS HOME's unit file. */
+function ownUnitShow(unit: string) {
+  return [`Environment=HOME=${HOME}`, 'WorkingDirectory=', `FragmentPath=${HOME}/.config/systemd/user/${unit}.service`, 'LoadState=loaded', 'ActiveState=active'].join('\n') + '\n'
+}
+
+/** The read-only probes every act now makes first (board row d6198bb6): no act of its own. */
+const readOnlyProbe = (c: { file: string; args: string[] }) =>
+  (c.file === 'powershell.exe' && c.args.includes('-File') && ['probe', 'probe-legacy'].includes(c.args[c.args.length - 1] ?? '')) ||
+  (c.file === 'launchctl' && c.args[0] === 'print') ||
+  (c.file === 'systemctl' && c.args.some((a) => a.startsWith('--property=LoadState')))
+
+/**
+ * The recording exec. Every act on an agent service reads the registration back first (board row
+ * d6198bb6); the recorder answers those read-only probes as a real host answers them, so the act
+ * under test proceeds:
+ *   - win32: the task script's actions (`powershell.exe ... -File <install-agent-task.ps1> -Action
+ *     <a>`) and `schtasks.exe /Run` go to a faked Task Scheduler (test/helpers/fake-agent-tasks.ts)
+ *     bound to the machine's fs (`useTaskHost`, which windowsCtx calls). It reads $name,
+ *     $legacyName, $vbs and $description from the script on disk when the command runs, and
+ *     answers `-Action probe` / `probe-legacy` only for a task registered under THAT name: this
+ *     HOME's tasks for WIN32_AGENT_IDS (`win32Task: 'own'`, the default), none (`'absent'`: none
+ *     until the script's `-Action install` registers one), or the old 0.69.2 ones (`'legacy'`).
+ *     A script that probes another name, or another HOME's, is answered "task absent". `fail`
+ *     makes a task command fail as the faked Task Scheduler's own `fail` entries do ({ match,
+ *     code, stderr, times }, matched as a substring of the command line).
+ *   - `launchctl print` the job of this HOME's plist, `systemctl --user show
+ *     --property=LoadState,...` a loaded unit from this HOME's unit file. With the user bus down
+ *     (`systemctlShow` null) every `systemctl --user show` fails alike, the read back included.
+ */
+function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number | null; bashCode?: number; launchctlCode?: number; win32Ps?: string; systemctlShow?: string | null; win32Task?: 'own' | 'absent' | 'legacy'; fail?: FakeAgentTaskOptions['fail'] } = {}) {
   const calls: Array<{ file: string; args: string[]; opts: any }> = []
+  let tasks: FakeAgentTasks | null = null
+  let tasksFs: MemoryFs | null = null
+  /** Bind the faked Task Scheduler to the machine whose task scripts it reads (once per recorder). */
+  const useTaskHost = (fs: MemoryFs) => {
+    if (tasksFs === fs) return tasks!
+    if (tasksFs) throw new Error('recorder: its task host is already bound to another machine')
+    tasksFs = fs
+    tasks = fakeAgentTasks({ fs, fail: opts.fail })
+    for (const id of WIN32_AGENT_IDS) seedWin32Task(tasks, id, opts.win32Task ?? 'own')
+    return tasks
+  }
+  const busDown = { code: 1, stdout: '', stderr: 'Failed to connect to bus', error: null, timedOut: false }
   const exec = async (file: string, args: readonly string[], o: any = {}) => {
     calls.push({ file, args: [...args], opts: o })
+    if ((file === 'powershell.exe' && args.includes('-File')) || file === 'schtasks.exe') {
+      if (!tasks) return { code: 1, stdout: '', stderr: 'recorder: no task host bound (windowsCtx binds one to the machine fs)', error: null, timedOut: false }
+      return tasks.exec(file, args)
+    }
     if (file === 'powershell.exe' && args.includes('-Command') && opts.win32Ps != null) return { code: 0, stdout: opts.win32Ps, stderr: '', error: null, timedOut: false }
     if (file === 'ps') return opts.ps == null ? { code: 1, stdout: '', stderr: 'ps: denied', error: null, timedOut: false } : { code: 0, stdout: opts.ps, stderr: '', error: null, timedOut: false }
     if (file === 'lsof') return { code: opts.lsofCode === undefined ? 0 : opts.lsofCode, stdout: opts.lsof ?? '', stderr: '', error: null, timedOut: opts.lsofCode === null }
     if (file === 'bash') return { code: opts.bashCode ?? 0, stdout: '', stderr: opts.bashCode ? `x  no .mcp.json in ${GURU} and no creds given` : '', error: null, timedOut: false }
+    if (file === 'launchctl' && args[0] === 'print') return { code: 0, stdout: ownLaunchdPrint(String(args[1])), stderr: '', error: null, timedOut: false }
     if (file === 'launchctl') return { code: opts.launchctlCode ?? 0, stdout: '', stderr: '', error: null, timedOut: false }
     if (file === 'systemctl' && args.includes('show')) {
-      return opts.systemctlShow == null ? { code: 1, stdout: '', stderr: 'Failed to connect to bus', error: null, timedOut: false } : { code: 0, stdout: opts.systemctlShow, stderr: '', error: null, timedOut: false }
+      // The user bus down fails every show alike: the cgroup read and the read back.
+      if (opts.systemctlShow == null) return busDown
+      if (args.some((a) => a.startsWith('--property=LoadState'))) return { code: 0, stdout: ownUnitShow(String(args[args.length - 1])), stderr: '', error: null, timedOut: false }
+      return { code: 0, stdout: opts.systemctlShow, stderr: '', error: null, timedOut: false }
     }
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
@@ -181,7 +294,7 @@ function recorder(opts: { ps?: string | null; lsof?: string; lsofCode?: number |
     spawns.push({ file, args: [...args] })
     return { pid: 1 }
   }
-  return { calls, exec, kills, kill, spawns, spawnDetached }
+  return { calls, exec, kills, kill, spawns, spawnDetached, useTaskHost }
 }
 
 /** listAgents' sync probes: no loaded jobs; `ps -o comm=` answers from a table, `ps -A` (the keepalive check's table) from `procs`. */
@@ -247,6 +360,12 @@ function answerProbes(fs: MemoryFs, clock: ReturnType<typeof fakeClock>, ids: st
     }
   })
 }
+
+/**
+ * A canonical launchd restart of agent 912 (the plist machine() writes, under its OLD label): its
+ * registration is read back first (`launchctl print`, read only; board row d6198bb6), then kicked.
+ */
+const KICKSTART_912 = [['print', 'gui/501/ai.bgos.agent.912'], ['kickstart', '-k', 'gui/501/ai.bgos.agent.912']]
 
 const IDLE_PS = [psLine(1, 0, '/sbin/launchd'), psLine(5912, 4100, 'claude --dangerously-skip-permissions'), psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`)].join('\n')
 const JOB_PS = `${IDLE_PS}\n${psLine(6000, 5912, `/bin/zsh -c source ${HOME}/.claude/shell-snapshots/snapshot-zsh-1.sh && eval 'python monitor.py'`)}\n${psLine(6001, 6000, 'python monitor.py')}`
@@ -339,24 +458,51 @@ test('consent: the owner Show agent windows setting rides the sweep report wheth
 // -- supervise -----------------------------------------------------------------------------------
 
 test('installProductSupervisor (shared by the sweep and create_agent): win32 registers the agent task (hidden launcher) and starts it only when asked; posix runs bgos-agent install --always-on from the given root, node dirs first on PATH; no root is a named failure', async () => {
-  const calls: Array<{ file: string; args: string[]; opts: any }> = []
-  const exec = async (file: string, args: readonly string[], opts: any) => {
-    calls.push({ file, args: [...args], opts })
-    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
-  }
+  // No task registered yet: the read back finds none under either name, then the install registers it.
+  const rec = recorder({ win32Task: 'absent' })
+  const { calls, exec } = rec
   const fs = memoryFs()
+  const host = rec.useTaskHost(fs)
   const base = { assistantId: '55', home: 'C:\\Users\\kc', env: { PATH: 'C:\\Windows' }, fs, exec, nodePath: 'C:\\Program Files\\nodejs\\node.exe', pluginRoot: 'C:\\root', cwd: 'C:\\Users\\kc\\hoai-agents\\wolf' }
-  const started = await installProductSupervisor({ ...base, platform: 'win32', start: true } as any)
+  // `run` is how the sweep keeps the watcher online through the install: the win32 install goes
+  // through it once, as the posix one does.
+  let wrapped = 0
+  const run = (w: Promise<unknown>) => (wrapped++, w)
+  /** The task script's action (powershell.exe ... -Action <a>) or schtasks' verb, to name a command in a message. */
+  const actionOf = (c: { file: string; args: string[] }) => `${c.file} ${c.file === 'schtasks.exe' ? c.args[0] : c.args[c.args.length - 1]}`
+  const started = await installProductSupervisor({ ...base, platform: 'win32', start: true, run } as any)
   assert.equal(started.ok, true, started.message)
-  assert.deepEqual(calls.map((c) => c.file), ['powershell.exe', 'schtasks.exe'])
+  // Read back first (this HOME's name, then the old one), then registered and started under this HOME's name.
+  assert.deepEqual(calls.map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['powershell.exe', 'install'],
+    ['schtasks.exe', `HOAI Agent 55 home-${WHID}`],
+  ])
+  // Every one of those commands is bounded on its own, and the install as a whole went through `run`.
+  for (const c of calls) assert.equal(c.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `${actionOf(c)} is bounded`)
+  assert.equal(wrapped, 1, 'the win32 install (start) runs inside run, once')
+  // The one task now registered is this HOME's, started: its name carries WHID, its description
+  // names C:\Users\kc, its action runs that HOME's launcher. The result names it for the sweep's record.
+  assert.deepEqual([...host.tasks], [
+    [`HOAI Agent 55 home-${WHID}`, { description: 'HOAI agent 55, installed from home=C:\\Users\\kc', action: 'wscript.exe //B "C:\\Users\\kc\\.bgos-agent\\55\\run-agent.vbs"', state: 'Running' }],
+  ])
+  // (The cast: installProductSupervisor's JSDoc @returns is { ok, message } only, which is the type
+  // tsc gives `started`; its win32 branch returns installAgentTask's result, whose @returns does
+  // list taskName.)
+  assert.equal((started as { taskName?: string }).taskName, `HOAI Agent 55 home-${WHID}`)
   assert.match(fs.files.get('C:\\Users\\kc\\.bgos-agent\\55\\run-agent.vbs')!, /--keep-alive", 0, True\)\r\n$/)
   calls.length = 0
-  const registered = await installProductSupervisor({ ...base, platform: 'win32', start: false } as any)
+  wrapped = 0
+  const registered = await installProductSupervisor({ ...base, platform: 'win32', start: false, run } as any)
   assert.equal(registered.ok, true)
-  assert.deepEqual(calls.map((c) => c.file), ['powershell.exe'], 'registered, not started')
+  assert.deepEqual(calls.map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']], 'registered, not started')
+  for (const c of calls) assert.equal(c.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `${actionOf(c)} is bounded (no start)`)
+  assert.equal(wrapped, 1, 'the win32 install (no start) runs inside run, once')
   calls.length = 0
   const posix = await installProductSupervisor({ ...base, platform: 'darwin', home: '/Users/kc', env: { PATH: '/usr/bin' }, nodePath: '/opt/homebrew/bin/node', pluginRoot: '/root', cwd: '/Users/kc/hoai-agents/wolf' } as any)
-  assert.deepEqual(posix, { ok: true, message: 'installed' })
+  // bgos-agent printed no `service note:` line: no notes ride out.
+  assert.deepEqual(posix, { ok: true, message: 'installed', notes: [] })
   assert.deepEqual(calls.map((c) => [c.file, ...c.args]), [['bash', '/root/bin/bgos-agent', 'install', '--assistant', '55', '--dir', '/Users/kc/hoai-agents/wolf', '--always-on', '--no-clone']])
   assert.equal(calls[0]!.opts.env.PATH, '/opt/homebrew/bin:/usr/bin')
   assert.equal(calls[0]!.opts.timeoutMs, INSTALL_TIMEOUT_MS)
@@ -504,7 +650,7 @@ test('safe moment: a turn flag that has been quiet for 3 h with no job under cla
   answerProbes(fs, clock, ['912'])
   const { ctx } = ctxFor(fs, rec, clock)
   const report = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.deepEqual(rec.kills, [])
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
   // The same flag with a job still running under claude is a live turn.
@@ -540,7 +686,7 @@ test('restart: idle + update_pending => restart through the canonical service, t
   answerProbes(fs, clock, ['912'])
   const { ctx } = ctxFor(fs, rec, clock)
   const report = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`), true, 'the boot hello probe was asked for')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
   const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME))!)
@@ -548,6 +694,15 @@ test('restart: idle + update_pending => restart through the canonical service, t
   assert.equal(saved.agents['912'].target, '0.62.1')
   assert.equal(saved.agents['912'].lastRestartAt, new Date(T0).toISOString())
   assert.deepEqual(rec.kills, [])
+  // The job bin/bgos-agent installs now carries this HOME's id (board row d6198bb6): the same
+  // restart, read back and kicked under that label.
+  const scoped = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { scoped: true })
+  const scopedRec = recorder({ ps: IDLE_PS })
+  const scopedClock = fakeClock()
+  answerProbes(scoped, scopedClock, ['912'])
+  const scopedReport = await runKeepAliveSweep(ctxFor(scoped, scopedRec, scopedClock).ctx as any)
+  assert.deepEqual(scopedRec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['print', `gui/501/ai.bgos.agent.912.home-${HID}`], ['kickstart', '-k', `gui/501/ai.bgos.agent.912.home-${HID}`]])
+  assert.deepEqual(scopedReport.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
 /** run.sh's singleton wait, as it rewrites launch-status every 5 s (bin/bgos-agent). */
@@ -587,10 +742,32 @@ test('restart (design): the canonical v2 service\'s OWN live hoai is restarted t
   const clock = fakeClock()
   answerProbes(fs, clock, ['912'])
   const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.equal(fs.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false)
   assert.equal(rec.calls.filter((c) => c.file === 'ps').length, 1, 'the sweep hands its own listing to the ladder')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // The job bin/bgos-agent installs now carries this HOME's id, and so does the tmux socket and
+  // session its run.sh starts hoai on (board row d6198bb6). HID is watcherHomeId('/Users/kc',
+  // 'darwin'), pinned as the literal 5156882f: the sweep judges the socket for the ROW's platform
+  // (launcherIsServiceChild takes it), whatever host runs this file. The same own live hoai is
+  // read back and kicked under that label, never only its claude.
+  const scoped = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { scoped: true })
+  scoped.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const scopedPs = [
+    psLine(1, 0, '/sbin/launchd'),
+    psLine(2900, 1, `tmux -L hoai-912-home-5156882f new-session -d -s hoai-912-home-5156882f -x 200 -y 50 -c ${AVA} /usr/bin/env HOAI_SUPERVISED=1 node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(3000, 2900, `node ${OLD_ROOT}/bin/hoai-core.mjs`),
+    psLine(5912, 3000, 'claude --resume 8c1f0000-0000-4000-8000-000000000001'),
+    psLine(4912, 5912, `node ${OLD_ROOT}/server.ts`),
+  ].join('\n')
+  const scopedRec = recorder({ ps: scopedPs })
+  const scopedClock = fakeClock()
+  answerProbes(scoped, scopedClock, ['912'])
+  const scopedReport = await runKeepAliveSweep(ctxFor(scoped, scopedRec, scopedClock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(scopedRec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['print', 'gui/501/ai.bgos.agent.912.home-5156882f'], ['kickstart', '-k', 'gui/501/ai.bgos.agent.912.home-5156882f']])
+  assert.equal(scoped.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false, 'scoped: no marker')
+  assert.equal(scopedRec.calls.filter((c) => c.file === 'ps').length, 1, 'scoped: the sweep hands its own listing to the ladder')
+  assert.deepEqual(scopedReport.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
 test('restart (design): a job the agent started on its OWN tmux server (`tmux new-session -d`, outside claude\'s tree) keeps the marker: the service restart would kill that server, and the job with it', async () => {
@@ -658,7 +835,7 @@ test('restart (D4): a launch-status that is not a FRESH wait does not hold the r
     const clock = fakeClock()
     answerProbes(fs, clock, ['912'])
     const report = await runKeepAliveSweep(ctxFor(fs, rec, clock).ctx as any)
-    assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']], name)
+    assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912, name)
     assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']], name)
   }
 })
@@ -744,7 +921,7 @@ test('restart: a daemon too old to publish its state is judged by time (claude f
   const { ctx } = ctxFor(fs, rec, clock)
   const report = await runKeepAliveSweep(ctx as any)
   assert.deepEqual(rec.calls.filter((c) => c.file === 'lsof').map((c) => c.args), [['-a', '-d', 'cwd', '-p', '5912', '-Fn']])
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
@@ -808,7 +985,7 @@ test('state (F8): an act is persisted BEFORE its verify, so a watcher killed mid
   const running = runKeepAliveSweep(ctx as any)
   try {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r))
-    assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1, 'the restart happened')
+    assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912, 'the restart happened (read back, then kicked)')
     const saved = JSON.parse(fs.files.get(keepAliveStatePath(HOME)) ?? '{}')
     assert.equal(saved.agents?.['912']?.attempts, 1, 'the attempt is on disk while verify runs')
     assert.equal(saved.agents?.['912']?.lastRestartAt, new Date(T0).toISOString())
@@ -889,11 +1066,11 @@ test('online (F8): a long sweep keeps the watcher online: keepOnline between age
   answerProbes(fs, clock, [])
   const { ctx } = ctxFor(fs, rec, clock, { exec, keepOnline, verifyTimeoutMs: 120_000, fetchKeepAlive: consent({ enabled: true, enabledAt: 'e', assistantIds: [7, 912] }).fetchKeepAlive })
   clock.onSleep(() => {
-    phase = rec.calls.some((c) => c.file === 'launchctl') ? 'verify' : rec.calls.some((c) => c.file === 'bash') ? 'install' : 'start'
+    phase = rec.calls.some((c) => c.file === 'launchctl' && c.args[0] === 'kickstart') ? 'verify' : rec.calls.some((c) => c.file === 'bash') ? 'install' : 'start'
   })
   await runKeepAliveSweep(ctx as any)
   assert.equal(rec.calls.filter((c) => c.file === 'bash').length, 1)
-  assert.equal(rec.calls.filter((c) => c.file === 'launchctl').length, 1)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   const during = (name: string) => touches.filter(([p]) => p === name).length
   assert.ok(during('install') >= 5, `touched through the 5 min install (${during('install')})`)
   assert.ok(during('verify') >= 1, `touched through the 2 min verify (${during('verify')})`)
@@ -934,37 +1111,59 @@ test('online (F8): a service restart that takes long (systemd stopping a slow cg
   const fs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }])
   const rec = recorder({ ps: IDLE_PS })
   const clock = fakeClock()
-  // The kickstart returns 100 s (fake) after it started, or, for a sweep that
-  // never ticks the clock while it waits (the defect), after a real 200 ms, so
-  // the defect fails this test instead of hanging it.
-  let restartDone: () => void = () => {}
-  let restartAt = 0
+  // The read back (launchctl print) and then the kickstart each return 100 s
+  // (fake) after they started, or, for a sweep that never ticks the clock while
+  // it waits (the defect), after a real 200 ms, so the defect fails this test
+  // instead of hanging it. Both run inside one keep-online wait (the restart's),
+  // whose bound must cover both: a bound of one command's time limit (7 ticks of
+  // 20 s) stops ticking 40 s into the kickstart.
+  let release: (() => void) | null = null
+  let commandAt = 0
   clock.onSleep((_ms, at) => {
-    if (restartAt && at - restartAt >= 100_000) restartDone()
+    if (release && at - commandAt >= 100_000) release()
   })
-  const exec = async (file: string, args: readonly string[], o: any = {}) => {
-    if (file !== 'launchctl') return rec.exec(file, args, o)
-    rec.calls.push({ file, args: [...args], opts: o })
-    restartAt = clock.now()
+  /** When each slow command started and returned, on the fake clock. */
+  const spans: Record<string, { from: number; to: number }> = {}
+  const slow = async (name: string) => {
+    commandAt = clock.now()
     await new Promise<void>((resolve) => {
-      restartDone = resolve
+      release = resolve
       setTimeout(resolve, 200)
     })
+    release = null
+    spans[name] = { from: commandAt, to: clock.now() }
+  }
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (file === 'launchctl' && args[0] === 'print') {
+      await slow('print')
+      // Then answered (and recorded) as the recorder answers it: this HOME's own job.
+      return rec.exec(file, args, o)
+    }
+    if (file !== 'launchctl' || args[0] !== 'kickstart') return rec.exec(file, args, o)
+    rec.calls.push({ file, args: [...args], opts: o })
+    await slow('kickstart')
     return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
   }
-  let inRestart = false
-  let touchesInRestart = 0
+  const touches: number[] = []
   const keepOnline = async () => {
-    if (inRestart) touchesInRestart += 1
+    touches.push(clock.now())
   }
-  clock.onSleep(() => {
-    inRestart = restartAt > 0 && !fs.files.has(`${HOME}/.bgos-agent/912/probe-requested.json`)
-  })
   answerProbes(fs, clock, ['912'])
   const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { exec, keepOnline }).ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
-  assert.equal(rec.calls.find((c) => c.file === 'launchctl')!.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, 'the command itself is bounded')
-  assert.ok(touchesInRestart >= 4, `touched every 20 s through the 100 s restart (${touchesInRestart})`)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
+  // Every command of the restart is bounded on its own: the read back (launchctl print) and the kickstart.
+  for (const c of rec.calls.filter((c) => c.file === 'launchctl')) assert.equal(c.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `launchctl ${c.args[0]} is bounded`)
+  const { print, kickstart } = spans
+  assert.ok(print && kickstart, `both commands ran slow (${JSON.stringify(spans)})`)
+  const within = (from: number, to: number) => touches.filter((at) => at > from && at <= to).length
+  const inPrint = within(print.from, kickstart.from)
+  const inKick = within(kickstart.from, kickstart.to)
+  assert.ok(inPrint + inKick >= 9, `touched through both commands, about 200 s (${inPrint} + ${inKick})`)
+  assert.ok(inPrint >= 4, `touched every 20 s through the 100 s read back (${inPrint})`)
+  assert.ok(inKick >= 4, `touched every 20 s through the 100 s kickstart (${inKick})`)
+  // Each one took its 100 s on the fake clock: the sweep kept ticking through both.
+  assert.ok(print.to - print.from >= 100_000, `the read back took its 100 s (${print.to - print.from} ms)`)
+  assert.ok(kickstart.to - kickstart.from >= 100_000, `the kickstart took its 100 s (${kickstart.to - kickstart.from} ms)`)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
@@ -1084,7 +1283,29 @@ test('F5 (linux): a background job orphaned out of claude\'s tree but still in t
   answerProbes(quiet, clock, ['912'])
   const done = await runKeepAliveSweep(ctxFor(quiet, ok, clock, { platform: 'linux' }).ctx as any)
   assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl' && c.args.includes('restart')).map((c) => c.args), [['--user', 'restart', 'bgos-agent-912']])
+  // Its cgroup is read, then its registration is read back (read only, board row d6198bb6), then it restarts.
+  assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl').map((c) => c.args), [
+    ['--user', 'show', '-p', 'MainPID', '-p', 'ControlGroup', 'bgos-agent-912'],
+    ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', 'bgos-agent-912'],
+    ['--user', 'restart', 'bgos-agent-912'],
+  ])
   assert.deepEqual(done.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // The unit bin/bgos-agent installs now carries this HOME's id (board row d6198bb6), and so does
+  // the tmux socket its run.sh starts hoai on: the same cgroup read, read back and restart, under that name.
+  const SCOPED_CGROUP = `/user.slice/user-501.slice/user@501.service/app.slice/bgos-agent-912-home-${HID}.service`
+  const scopedTable = unitTable(false, `tmux: server (/tmp/tmux-501/hoai-912-home-${HID})`)
+  const scopedFs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux', scoped: true })
+  scopedFs.writeFile(`/sys/fs/cgroup${SCOPED_CGROUP}/cgroup.procs`, scopedTable.procs)
+  const scopedRec = recorder({ ps: scopedTable.ps, systemctlShow: `MainPID=1000\nControlGroup=${SCOPED_CGROUP}\n` })
+  const scopedClock = fakeClock()
+  answerProbes(scopedFs, scopedClock, ['912'])
+  const scopedDone = await runKeepAliveSweep(ctxFor(scopedFs, scopedRec, scopedClock, { platform: 'linux' }).ctx as any)
+  assert.deepEqual(scopedRec.calls.filter((c) => c.file === 'systemctl').map((c) => c.args), [
+    ['--user', 'show', '-p', 'MainPID', '-p', 'ControlGroup', `bgos-agent-912-home-${HID}`],
+    ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', `bgos-agent-912-home-${HID}`],
+    ['--user', 'restart', `bgos-agent-912-home-${HID}`],
+  ])
+  assert.deepEqual(scopedDone.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
   // A tmux whose title says nothing about its socket is still claude's ancestor in the group: accounted, not a job.
   const plain = unitTable(false, 'tmux')
   const plainFs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux' })
@@ -1115,6 +1336,9 @@ test('F5 (linux): a generation 1 unit is not reinstalled (its active unit restar
   const noBus = recorder({ ps: unitTable(false).ps, systemctlShow: null })
   const unread = await runKeepAliveSweep(ctxFor(blind, noBus, fakeClock(), { platform: 'linux' }).ctx as any)
   assert.equal(noBus.calls.some((c) => c.file === 'systemctl' && c.args.includes('restart')), false)
+  // The bus is down for every `systemctl --user show` (the recorder fails the read back too): the
+  // cgroup read is the one systemctl call, and its failure alone holds the restart.
+  assert.deepEqual(noBus.calls.filter((c) => c.file === 'systemctl').map((c) => c.args), [['--user', 'show', '-p', 'MainPID', '-p', 'ControlGroup', 'bgos-agent-912']])
   assert.deepEqual(unread.agents.map((a: any) => [a.state, a.reason]), [['waiting_idle', 'process_tree_unreadable']])
 })
 
@@ -1146,6 +1370,41 @@ test('F5 (linux): a stray in the cgroup of a unit whose OWN hoai is live restart
   const done = await runKeepAliveSweep(ctxFor(quiet, ok, okClock, { platform: 'linux', pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
   assert.deepEqual(ok.calls.filter((c) => c.file === 'systemctl' && c.args.includes('restart')).map((c) => c.args), [['--user', 'restart', 'bgos-agent-912']])
   assert.deepEqual(done.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
+  // The unit bin/bgos-agent installs now carries this HOME's id, and so does the tmux socket its
+  // run.sh starts hoai on (board row d6198bb6). The hid 5156882f is watcherHomeId('/Users/kc',
+  // 'linux'), pinned as a literal: the sweep judges the socket for the ROW's platform
+  // (launcherIsServiceChild takes it), whatever host runs this file. The same two cases, under that name.
+  const SCOPED_UNIT = 'bgos-agent-912-home-5156882f'
+  const SCOPED_CGROUP = `/user.slice/user-501.slice/user@501.service/app.slice/${SCOPED_UNIT}.service`
+  const SCOPED_TMUX = 'tmux: server (/tmp/tmux-501/hoai-912-home-5156882f)'
+  const scopedBusy = unitTable(true, SCOPED_TMUX)
+  const scopedFs = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux', scoped: true })
+  scopedFs.writeFile(`/sys/fs/cgroup${SCOPED_CGROUP}/cgroup.procs`, scopedBusy.procs)
+  scopedFs.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const scopedRec = recorder({ ps: scopedBusy.ps, systemctlShow: `MainPID=1000\nControlGroup=${SCOPED_CGROUP}\n` })
+  const scopedClock = fakeClock()
+  answerProbes(scopedFs, scopedClock, ['912'])
+  const scopedReport = await runKeepAliveSweep(ctxFor(scopedFs, scopedRec, scopedClock, { platform: 'linux', pidAlive: (pid: number) => [3000, 4912, 5912, 7000].includes(pid) }).ctx as any)
+  // Its cgroup is read under the scoped name; the stray holds the service restart, so nothing is read back or restarted.
+  assert.deepEqual(scopedRec.calls.filter((c) => c.file === 'systemctl').map((c) => c.args), [['--user', 'show', '-p', 'MainPID', '-p', 'ControlGroup', SCOPED_UNIT]])
+  assert.equal(scopedFs.files.get(`${HOME}/.bgos-agent/912/restart-requested.json`), '{}', 'scoped: claude alone restarts')
+  assert.deepEqual(scopedRec.kills, [], 'scoped: the stray is never signalled')
+  assert.deepEqual(scopedReport.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'marker']])
+  const scopedIdle = unitTable(false, SCOPED_TMUX)
+  const scopedQuiet = machine([{ id: '912', cwd: AVA, service: 'canonical', state: {} }], { platform: 'linux', scoped: true })
+  scopedQuiet.writeFile(`/sys/fs/cgroup${SCOPED_CGROUP}/cgroup.procs`, scopedIdle.procs)
+  scopedQuiet.writeFile(`${HOME}/.bgos-agent/912/supervisor.json`, JSON.stringify({ pid: 3000, capabilities: ['relaunch'], startedAt: 'x' }))
+  const scopedOk = recorder({ ps: scopedIdle.ps, systemctlShow: `MainPID=1000\nControlGroup=${SCOPED_CGROUP}\n` })
+  const scopedOkClock = fakeClock()
+  answerProbes(scopedQuiet, scopedOkClock, ['912'])
+  const scopedDone = await runKeepAliveSweep(ctxFor(scopedQuiet, scopedOk, scopedOkClock, { platform: 'linux', pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
+  assert.deepEqual(scopedOk.calls.filter((c) => c.file === 'systemctl').map((c) => c.args), [
+    ['--user', 'show', '-p', 'MainPID', '-p', 'ControlGroup', SCOPED_UNIT],
+    ['--user', 'show', '--property=LoadState,ActiveState,FragmentPath,WorkingDirectory,Environment', SCOPED_UNIT],
+    ['--user', 'restart', SCOPED_UNIT],
+  ])
+  assert.equal(scopedQuiet.files.has(`${HOME}/.bgos-agent/912/restart-requested.json`), false, 'scoped: no marker')
+  assert.deepEqual(scopedDone.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
 
 // -- gates -------------------------------------------------------------------------------------------
@@ -1161,7 +1420,8 @@ test('gates: one restart per sweep; the second pending agent waits its turn', as
   answerProbes(fs, clock, ['912', '7'])
   const { ctx } = ctxFor(fs, rec, clock)
   const report = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args[2]), ['gui/501/ai.bgos.agent.7'])
+  // Agent 7 alone is read back and kicked; 912 is not even read back.
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['print', 'gui/501/ai.bgos.agent.7'], ['kickstart', '-k', 'gui/501/ai.bgos.agent.7']])
   assert.deepEqual(report.agents.map((a: any) => [a.id, a.state, a.reason]), [['7', 'restarted', 'service'], ['912', 'update_pending', 'one_restart_per_sweep']])
 })
 
@@ -1171,7 +1431,7 @@ test('gates: at most one restart per agent per 30 min, 3 attempts per target ver
   const clock = fakeClock()
   // The daemon never comes back on the new version: verify times out every time.
   const { ctx } = ctxFor(fs, rec, clock, { verifyTimeoutMs: 3_000 })
-  const kicks = () => rec.calls.filter((c) => c.file === 'launchctl').length
+  const kicks = () => rec.calls.filter((c) => c.file === 'launchctl' && c.args[0] === 'kickstart').length
   const sweepAt = async () => {
     fs.writeFile(`${HOME}/.bgos-plugin-state/912/agent-state.json`, stateBody('912', clock.now()))
     return runKeepAliveSweep(ctx as any)
@@ -1191,6 +1451,8 @@ test('gates: at most one restart per agent per 30 min, 3 attempts per target ver
   clock.advance(31 * MIN)
   const exhausted = await sweepAt()
   assert.equal(kicks(), 3, 'never a fourth attempt at the same target')
+  // Each attempt read its job back first; a limited or exhausted sweep runs no launchctl at all.
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args[0]), ['print', 'kickstart', 'print', 'kickstart', 'print', 'kickstart'])
   assert.deepEqual(exhausted.agents.map((a: any) => [a.state, a.reason]), [['failed', 'attempts_exhausted']])
 })
 
@@ -1224,7 +1486,6 @@ test('gates: once 3 attempts at a target are spent the row is failed attempts_ex
 
 // -- Windows ----------------------------------------------------------------------------------------
 
-const WHOME = 'C:\\Users\\kc'
 const WCWD = 'C:\\Users\\kc\\hoai-agents\\ava'
 const WROOT = 'C:\\Users\\kc\\.claude\\plugins\\cache\\hoai\\hoai\\0.62.1'
 const WSTATE = 'C:\\Users\\kc\\.bgos-agent\\912'
@@ -1247,7 +1508,9 @@ function windowsMachine(extra: Record<string, string> = {}) {
   )
 }
 
+/** A win32 sweep's context; the recorder's faked Task Scheduler reads this machine's task scripts. */
 function windowsCtx(fs: MemoryFs, rec: ReturnType<typeof recorder>, extra: Record<string, unknown> = {}) {
+  rec.useTaskHost(fs)
   return ctxFor(fs, rec, fakeClock(), {
     home: WHOME,
     platform: 'win32',
@@ -1259,25 +1522,99 @@ function windowsCtx(fs: MemoryFs, rec: ReturnType<typeof recorder>, extra: Recor
 }
 
 const notListing = (c: { file: string; args: string[] }) => c.file !== 'powershell.exe' || !c.args.includes('-Command')
+/** What acts on the task: neither the process listing nor the read-only read back (the task script's probe, probe-legacy). */
+const acting = (c: { file: string; args: string[] }) => notListing(c) && !readOnlyProbe(c)
+/** This HOME's task name for agent 912 (board row d6198bb6; WHID is the id of C:\Users\kc). */
+const WTASK = `HOAI Agent 912 home-${WHID}`
 
 test('win32: a cleared agent with no supervisor gets the HOAI Agent <id> logon task (files + Register-ScheduledTask), started when it is not running', async () => {
   const fs = windowsMachine()
-  const rec = recorder()
+  // No task registered yet (no supervisor): the read back finds none under either name.
+  const rec = recorder({ win32Task: 'absent' })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec) as any)
   assert.equal(fs.files.get(`${WHOME}\\.bgos-agent\\912\\supervisor-generation`), '2\n')
   assert.ok(fs.files.get(`${WHOME}\\.bgos-agent\\912\\run-agent.vbs`)!.includes(`${WROOT}\\bin\\hoai-core.mjs"" --keep-alive`))
+  // Read back first (this HOME's name, then the old one), then registered and started under this HOME's name.
   assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
     ['powershell.exe', 'install'],
-    ['schtasks.exe', 'HOAI Agent 912'],
+    ['schtasks.exe', WTASK],
   ])
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
 })
 
 test('win32: the task is registered but NOT started while the agent may be running by hand (fresh state); never a second session', async () => {
   const fs = windowsMachine({ ['C:\\Users\\kc\\.bgos-plugin-state\\912\\agent-state.json']: stateBody('912', T0) })
-  const rec = recorder()
+  const rec = recorder({ win32Task: 'absent' })
   await runKeepAliveSweep(windowsCtx(fs, rec) as any)
-  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'install']])
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']])
+})
+
+test('win32 (board row d6198bb6): a task the sweep\'s own install registered is recorded by name, so the next sweep reads nothing back (no task script runs at all)', async () => {
+  const fs = windowsMachine()
+  const rec = recorder({ win32Task: 'absent' })
+  const clock = fakeClock()
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => pid === 777 })
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(first.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['powershell.exe', 'install'],
+    ['schtasks.exe', WTASK],
+  ])
+  // The install read this HOME's name back on the way: the once-per-agent check is done.
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK)
+  // The launcher that /Run started is up by the next sweep.
+  fs.writeFile(`${WSTATE}\\supervisor.json`, JSON.stringify({ pid: 777, capabilities: ['relaunch'] }))
+  clock.advance(5 * MIN)
+  rec.calls.length = 0
+  const second = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'powershell.exe' && c.args.includes('-File')), [], 'no probe, probe-legacy or install on the next sweep')
+  assert.deepEqual(rec.calls.filter(notListing), [], 'nothing acts on the task either')
+  assert.deepEqual(second.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK, 'the name stays on the record')
+})
+
+test('win32 (board row d6198bb6): a sweep install whose read back of the OLD name failed records no task name (that old task may be this HOME\'s): a sweep after TASK_CHECK_RETRY_MS reads both names back again and records the name once the old one answers', async () => {
+  const fs = windowsMachine()
+  // No task registered yet, and the install's read back of the old name "HOAI Agent 912" fails once.
+  const rec = recorder({ win32Task: 'absent', fail: [{ match: '-Action probe-legacy', code: 1, stderr: 'Get-ScheduledTask : Access is denied.', times: 1 }] })
+  const clock = fakeClock()
+  const logs: string[] = []
+  const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => pid === 777, log: (l: string) => logs.push(l) })
+  const record = () => JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912']
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(first.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
+  // This HOME's own name is free, so the install registers and starts it; the old one is left alone, said.
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['powershell.exe', 'install'],
+    ['schtasks.exe', WTASK],
+  ])
+  assert.ok(logs.some((l) => l.includes('left the Scheduled Task "HOAI Agent 912" alone: its record could not be read')), logs.join('\n'))
+  assert.equal(record().taskName, undefined, 'the old task could not be read back: the once-per-agent check is not done')
+  // The launcher that /Run started is up; the next sweep is an hour on.
+  fs.writeFile(`${WSTATE}\\supervisor.json`, JSON.stringify({ pid: 777, capabilities: ['relaunch'] }))
+  clock.advance(TASK_CHECK_RETRY_MS)
+  rec.calls.length = 0
+  const second = await runKeepAliveSweep(ctx as any)
+  // The check reads both names back again: this HOME's task is kept as it is (nothing registered
+  // again, nothing started), and the old name now answers (no task under it).
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+  ])
+  assert.deepEqual(second.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
+  assert.equal(record().taskName, WTASK, 'checked: the name is on the record')
+  assert.equal(record().lastTaskCheckError, null)
+  // Done: the sweep after it reads nothing back.
+  clock.advance(5 * MIN)
+  rec.calls.length = 0
+  await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'powershell.exe' && c.args.includes('-File')), [], 'no probe, probe-legacy or install once the name is recorded')
 })
 
 test('win32: a canonical task whose launcher is dead and agent stopped is started (schtasks /Run); its launcher follows the CURRENT plugin root', async () => {
@@ -1285,7 +1622,15 @@ test('win32: a canonical task whose launcher is dead and agent stopped is starte
   const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: stale, [`${WSTATE}\\supervisor-generation`]: '2\n' })
   const rec = recorder()
   const report = await runKeepAliveSweep(windowsCtx(fs, rec) as any)
-  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, ...c.args]), [['schtasks.exe', '/Run', '/TN', 'HOAI Agent 912']])
+  assert.deepEqual(rec.calls.filter(acting).map((c) => [c.file, ...c.args]), [['schtasks.exe', '/Run', '/TN', WTASK]])
+  // Board row d6198bb6: the sweep's once-per-agent check reads the task back (this HOME's own, so it
+  // is kept as it is: nothing registered again), and the start reads it back again right before /Run.
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['powershell.exe', 'probe'],
+    ['schtasks.exe', WTASK],
+  ])
   assert.ok(fs.files.get(`${WSTATE}\\run-agent.vbs`)!.includes(`${WROOT}\\bin\\hoai-core.mjs`), 'the vbs was rewritten for the current root')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
   // A live launcher is left alone.
@@ -1295,36 +1640,76 @@ test('win32: a canonical task whose launcher is dead and agent stopped is starte
   assert.equal(quiet.calls.some((c) => c.file === 'schtasks.exe'), false)
 })
 
-test('online (F8, win32): a task start is kept online through its command like a service restart', async () => {
+test('online (F8, win32): a task start is kept online through its read backs and its command like a service restart', async () => {
   const fs = windowsMachine({ [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n", [`${WSTATE}\\supervisor-generation`]: '2\n' })
-  const rec = recorder()
-  // schtasks /Run returns after three keepOnline ticks, or (a sweep that never
-  // ticks while it waits) after a real 200 ms, so the defect fails, never hangs.
-  let starting = false
-  let ticks = 0
-  let release: () => void = () => {}
-  const sleep = async () => {
-    ticks += 1
-    if (ticks >= 3) release()
-  }
-  const exec = async (file: string, args: readonly string[], o: any = {}) => {
-    if (file !== 'schtasks.exe' || args[0] !== '/Run') return rec.exec(file, args, o)
-    rec.calls.push({ file, args: [...args], opts: o })
-    starting = true
+  // This HOME's task under its OLD name (an agent 0.69.2 installed, not renamed yet). The sweep's
+  // once-per-agent rename check failed ten minutes ago (the old task's record could not be read
+  // then), so this sweep does not repeat it (TASK_CHECK_RETRY_MS): the start reads both names back
+  // itself, this HOME's own (none yet), then the old one (this HOME's now), and starts that.
+  fs.writeFile(
+    keepAliveStatePath(WHOME),
+    JSON.stringify({ schemaVersion: 1, enabled: true, agents: { '912': { lastTaskCheckAt: new Date(T0 - 10 * MIN).toISOString(), lastTaskCheckError: 'old task "HOAI Agent 912" could not be read back' } } }),
+  )
+  const rec = recorder({ win32Task: 'legacy' })
+  const clock = fakeClock()
+  // Each read back (probe, then probe-legacy) returns 100 s (fake) after it
+  // started and schtasks /Run 60 s (three ticks), or, for a sweep that never
+  // ticks the clock while it waits (the defect), after a real 200 ms, so the
+  // defect fails this test instead of hanging it. All three run inside one
+  // keep-online wait (the start's), whose bound must cover all three: a bound
+  // of one command's time limit (7 ticks of 20 s) stops ticking 40 s into the
+  // second read back.
+  let release: (() => void) | null = null
+  let commandAt = 0
+  let takes = 0
+  clock.onSleep((_ms, at) => {
+    if (release && at - commandAt >= takes) release()
+  })
+  /** When each slow command started and returned, on the fake clock, in order. */
+  const spans: Array<{ name: string; from: number; to: number }> = []
+  const slow = async (name: string, ms: number) => {
+    commandAt = clock.now()
+    takes = ms
     await new Promise<void>((resolve) => {
       release = resolve
       setTimeout(resolve, 200)
     })
-    starting = false
-    return { code: 0, stdout: '', stderr: '', error: null, timedOut: false }
+    release = null
+    spans.push({ name, from: commandAt, to: clock.now() })
   }
-  let touchesInStart = 0
+  const exec = async (file: string, args: readonly string[], o: any = {}) => {
+    if (readOnlyProbe({ file, args: [...args] })) await slow(String(args[args.length - 1]), 100_000)
+    else if (file === 'schtasks.exe' && args[0] === '/Run') await slow('/Run', 60_000)
+    // Then answered (and recorded) by the faked Task Scheduler.
+    return rec.exec(file, args, o)
+  }
+  const touches: number[] = []
   const keepOnline = async () => {
-    if (starting) touchesInStart += 1
+    touches.push(clock.now())
   }
-  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { exec, sleep, keepOnline }) as any)
-  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, ...c.args]), [['schtasks.exe', '/Run', '/TN', 'HOAI Agent 912']])
-  assert.ok(touchesInStart >= 2, `touched while schtasks ran (${touchesInStart})`)
+  const report = await runKeepAliveSweep(windowsCtx(fs, rec, { exec, now: clock.now, sleep: clock.sleep, keepOnline }) as any)
+  // No rename check this sweep: only the start's read backs, then the old task started by its name.
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['schtasks.exe', 'HOAI Agent 912'],
+  ])
+  assert.deepEqual(rec.calls.filter(acting).map((c) => [c.file, ...c.args]), [['schtasks.exe', '/Run', '/TN', 'HOAI Agent 912']])
+  // Every command of the start is bounded on its own.
+  for (const c of rec.calls.filter(notListing)) assert.equal(c.opts?.timeoutMs, RESTART_EXEC_TIMEOUT_MS, `${c.file} ${c.args[c.args.length - 1]} is bounded`)
+  assert.deepEqual(spans.map((s) => s.name), ['probe', 'probe-legacy', '/Run'])
+  const [probe, legacy, run] = spans
+  const within = (from: number, to: number) => touches.filter((at) => at > from && at <= to).length
+  const inProbe = within(probe.from, legacy.from)
+  const inLegacy = within(legacy.from, run.from)
+  const inRun = within(run.from, run.to)
+  assert.ok(inProbe + inLegacy >= 9, `touched through both read backs, about 200 s (${inProbe} + ${inLegacy})`)
+  assert.ok(inProbe >= 4, `touched every 20 s through the 100 s probe (${inProbe})`)
+  assert.ok(inLegacy >= 4, `touched every 20 s through the 100 s probe-legacy (${inLegacy})`)
+  assert.ok(inRun >= 2, `touched while schtasks ran (${inRun})`)
+  // Each one took its time on the fake clock: the sweep kept ticking through all three.
+  assert.ok(probe.to - probe.from >= 100_000 && legacy.to - legacy.from >= 100_000, `the read backs took their 100 s (${JSON.stringify(spans)})`)
+  assert.ok(run.to - run.from >= 60_000, `schtasks /Run took its 60 s (${run.to - run.from} ms)`)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
 })
 
@@ -1521,9 +1906,9 @@ test('F4 (win32): a daemon too old to publish state but holding the pairing lock
   const lock = { ['C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock']: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 3_000 }) }
   // No task yet: registered for the next logon, not started.
   const fresh = windowsMachine(lock)
-  const rec = recorder({ win32Ps: winListing(false) })
+  const rec = recorder({ win32Ps: winListing(false), win32Task: 'absent' })
   const report = await runKeepAliveSweep(windowsCtx(fresh, rec, { pidAlive: (pid: number) => [4912, 5912].includes(pid) }) as any)
-  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'install']])
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']])
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
   // Task installed, launcher dead: still not started.
   const installed = windowsMachine({ ...lock, [`${WSTATE}\\run-agent.vbs`]: "' launcher\r\n", [`${WSTATE}\\supervisor-generation`]: '2\n' })
@@ -1545,12 +1930,59 @@ const WLOCK = 'C:\\Users\\kc\\.bgos-agent\\credentials-912.json.lock'
 const WNODE = 'C:\\Program Files\\nodejs\\node.exe'
 
 /**
+ * The install-agent-task.ps1 0.69.2 wrote beside an agent's launcher (byte for byte what
+ * test/agent-task-win32.test.ts pinned at v0.69.2): four actions, the old unscoped name, no probe.
+ * A HOME upgraded from 0.69.2 holds it until the first act on the task rewrites it.
+ */
+function taskScript0692(id: string) {
+  return [
+    `# HOAI Agent ${id}: logon task that keeps this agent running (generated by lib/agent-task-win32.mjs).`,
+    'param([Parameter(Mandatory = $true)][ValidateSet("install", "run", "uninstall", "status")][string]$Action)',
+    `$name = 'HOAI Agent ${id}'`,
+    `$vbs = 'C:\\Users\\kc\\.bgos-agent\\${id}\\run-agent.vbs'`,
+    'function Register-Task {',
+    '  $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B `"$vbs`""',
+    '  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME',
+    '  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew',
+    '  $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited',
+    '  Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null',
+    '}',
+    'switch ($Action) {',
+    '  "install" {',
+    '    try { Register-Task; Write-Output "task registered"; exit 0 }',
+    '    catch { Write-Output ("task registration refused: " + $_.Exception.Message); exit 1 }',
+    '  }',
+    '  "run" {',
+    '    try { Start-ScheduledTask -TaskName $name -ErrorAction Stop; Write-Output "task started"; exit 0 }',
+    '    catch { Write-Output ("task start refused: " + $_.Exception.Message); exit 1 }',
+    '  }',
+    '  "uninstall" {',
+    '    try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop } catch {}',
+    '    Write-Output "unregistered"; exit 0',
+    '  }',
+    '  "status" {',
+    '    $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue',
+    '    if ($task) { Write-Output ("task " + $task.State); exit 0 }',
+    '    Write-Output "not registered"; exit 1',
+    '  }',
+    '}',
+    '',
+  ].join('\r\n')
+}
+
+/**
  * Agent 1078 on AlienAres, 2026-10-11 07:54:15Z, as agent 912 here: its task is installed (and its
  * launcher file current), its launcher (a plain hoai, pid 777) exited with claude, and the daemon
  * (pid 4912) died with them. Its last state, its pairing lock and its transcript were all written a
  * minute ago, so by the activity stamps it "was active a minute ago".
+ *
+ * `world` is the recorder's `win32Task` the machine goes with, and the task script beside the
+ * launcher is the one that world's task was registered with: 'own' (the default, as the recorder's)
+ * this HOME's task as 0.69.3 registers it, so the current install-agent-task.ps1; 'legacy' the old
+ * task 0.69.2 registered, so the 0.69.2 script (taskScript0692), which a HOME upgraded from 0.69.2
+ * holds until the first act on the task rewrites it.
  */
-function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?: number; id?: string; cwd?: string; pin?: string } = {}) {
+function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?: number; id?: string; cwd?: string; pin?: string; world?: 'own' | 'legacy' } = {}) {
   const id = opts.id ?? '912'
   const cwd = opts.cwd ?? WCWD
   const pin = opts.pin ?? PIN
@@ -1562,6 +1994,10 @@ function crashedMachine(extra: Record<string, string> = {}, opts: { activityAt?:
     [`${state}\\launch.json`]: JSON.stringify(buildLaunchRecipe({ assistantId: id, cwd, argv: [], installMethod: 'marketplace', pluginRoot: WROOT, node: 'node', startedAt: 'x', pid: null })),
     [`${cwd}\\.bgos-agent-id`]: `${id}\n`,
     [spec.files[0].path]: spec.files[0].content,
+    // The task script of the world's registration (see above): every act on the task rewrites it
+    // before its read back, so in the 'legacy' world the first one after the upgrade changes this
+    // file (and only this one); in the 'own' world it rewrites the same bytes.
+    [spec.files[1].path]: (opts.world ?? 'own') === 'legacy' ? taskScript0692(id) : spec.files[1].content,
     [`${state}\\supervisor-generation`]: '2\n',
     [`${state}\\supervisor.json`]: JSON.stringify({ pid: 777, capabilities: ['relaunch'] }),
     [`${state}\\session-id`]: `${pin}\n`,
@@ -1591,14 +2027,62 @@ const starts = (rec: ReturnType<typeof recorder>) => rec.calls.filter((c) => c.f
 test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder dead, no claude of its own listed, activity a minute ago) is started in the SAME sweep', async () => {
   const fs = crashedMachine()
   const before = new Map(fs.files)
+  /** Every path the sweep writes outside the watcher's own folder, in order (a rewrite of the same bytes too). */
+  const recordWrites = (machine: MemoryFs) => {
+    const writes: string[] = []
+    const write = machine.writeFile
+    machine.writeFile = (path, text, o) => {
+      if (!path.startsWith(`${WHOME}\\.bgos-agent\\watcher\\`)) writes.push(path)
+      write(path, text, o)
+    }
+    return writes
+  }
+  const writes = recordWrites(fs)
   const rec = recorder({ win32Ps: listed() })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
-  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'started now, not 30 minutes after its own last writes')
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'started now, not 30 minutes after its own last writes')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
   assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskStarts, 1, 'the start is counted')
-  // Nothing outside the watcher's own folder is written.
+  // This HOME's task was registered by 0.69.3 (the 'own' world), and its files are the current ones.
+  // What the sweep writes outside the watcher's own folder: the once-per-agent check
+  // (installAgentTask, keep) writes the task script before its read back, then the launcher and the
+  // generation stamp once the read back allows it (and registers nothing: the task is this HOME's
+  // own); the start (runAgentTask) writes the task script again before its own read back. Every one
+  // of those writes is the same bytes as on disk, so nothing outside the watcher's folder changed.
+  const script = `${WSTATE}\\install-agent-task.ps1`
+  assert.deepEqual(writes, [script, `${WSTATE}\\run-agent.vbs`, `${WSTATE}\\supervisor-generation`, script])
   const changed = [...fs.files.keys()].filter((p) => before.get(p) !== fs.files.get(p))
-  assert.deepEqual(changed.filter((p) => !p.startsWith(`${WHOME}\\.bgos-agent\\watcher\\`)), [])
+  assert.deepEqual(changed.filter((p) => !p.startsWith(`${WHOME}\\.bgos-agent\\watcher\\`)), [], 'no file outside the watcher folder changed')
+  assert.equal(fs.files.get(script), agentTaskSpec({ assistantId: '912', home: WHOME, nodePath: WNODE, pluginRoot: WROOT, cwd: WCWD }).files[1].content)
+  // The same crash in a HOME 0.69.2 left as it was, its task too (the old name, no description,
+  // this HOME's launcher): the sweep's once-per-agent check renames it in place (the new task
+  // registered, then the old one retired, the agent neither stopped nor started), then the start
+  // reads the new one back and starts it, in the same sweep. Only the task script changed.
+  const upgraded = crashedMachine({}, { world: 'legacy' })
+  const upgradedBefore = new Map(upgraded.files)
+  assert.equal(upgradedBefore.get(script), taskScript0692('912'), 'it held the 0.69.2 script')
+  const upgradedWrites = recordWrites(upgraded)
+  const upgradedRec = recorder({ win32Ps: listed(), win32Task: 'legacy' })
+  const upgradedReport = await runKeepAliveSweep(windowsCtx(upgraded, upgradedRec, { pidAlive: aliveIn() }) as any)
+  assert.deepEqual(upgradedRec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+    ['powershell.exe', 'install'],
+    ['powershell.exe', 'retire-legacy-task'],
+    ['powershell.exe', 'probe'],
+    ['schtasks.exe', WTASK],
+  ])
+  const host = upgradedRec.useTaskHost(upgraded)
+  assert.equal(host.tasks.has('HOAI Agent 912'), false, 'the old task is retired')
+  assert.deepEqual(host.tasks.get(WTASK), { description: 'HOAI agent 912, installed from home=C:\\Users\\kc', action: `wscript.exe //B "${WSTATE}\\run-agent.vbs"`, state: 'Running' })
+  assert.deepEqual(upgradedReport.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
+  assert.equal(JSON.parse(upgraded.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK, 'renamed: the check is not repeated')
+  // The same writes as in the 'own' world (the check's script, launcher and stamp, the start's
+  // script); the rename itself is the Task Scheduler's, no file.
+  assert.deepEqual(upgradedWrites, [script, `${WSTATE}\\run-agent.vbs`, `${WSTATE}\\supervisor-generation`, script])
+  const upgradedChanged = [...upgraded.files.keys()].filter((p) => upgradedBefore.get(p) !== upgraded.files.get(p))
+  assert.deepEqual(upgradedChanged.filter((p) => !p.startsWith(`${WHOME}\\.bgos-agent\\watcher\\`)), [script])
+  assert.equal(upgraded.files.get(script), agentTaskSpec({ assistantId: '912', home: WHOME, nodePath: WNODE, pluginRoot: WROOT, cwd: WCWD }).files[1].content, 'now the current script')
 })
 
 test('board row 69337efa (win32): a live claude carrying the agent\'s pinned session id still blocks the start (its daemon dead, recent activity or none)', async () => {
@@ -1638,7 +2122,7 @@ test('board row 69337efa (win32): a live pairing lock holder still blocks the st
   const gone = crashedMachine({ ...oldState, [WLOCK]: JSON.stringify({ pid: 4912, heartbeatAt: T0 - 10 * MIN }) })
   const goneRec = recorder({ win32Ps: listed(reused) })
   await runKeepAliveSweep(windowsCtx(gone, goneRec, { pidAlive: aliveIn(reused) }) as any)
-  assert.deepEqual(starts(goneRec), ['/Run /TN HOAI Agent 912'])
+  assert.deepEqual(starts(goneRec), [`/Run /TN ${WTASK}`])
 })
 
 test('board row 69337efa (win32): an update for an agent whose launcher died waits (session_without_launcher) for a claude its last state named, though its daemon is gone: never a schtasks /Run beside it', async () => {
@@ -1659,7 +2143,7 @@ test('board row 69337efa (win32): an agent whose folder holds the claude install
   const fs = crashedMachine({}, { cwd: WHOME })
   const rec = recorder({ win32Ps: listed() })
   const report = await runKeepAliveSweep(windowsCtx(fs, rec, { pidAlive: aliveIn() }) as any)
-  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'C:\\Users\\kc\\.local\\bin\\claude.exe is not a claude run in C:\\Users\\kc')
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'C:\\Users\\kc\\.local\\bin\\claude.exe is not a claude run in C:\\Users\\kc')
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
 })
 
@@ -1682,7 +2166,7 @@ test('board row 69337efa (win32): a lock holder that still runs as itself with n
   const quiet = crashedMachine(stale(T0 - 40 * MIN), { activityAt: T0 - 40 * MIN })
   const quietRec = recorder({ win32Ps: listed(daemon) })
   await runKeepAliveSweep(windowsCtx(quiet, quietRec, { pidAlive: aliveIn(daemon) }) as any)
-  assert.deepEqual(starts(quietRec), ['/Run /TN HOAI Agent 912'])
+  assert.deepEqual(starts(quietRec), [`/Run /TN ${WTASK}`])
 })
 
 test('board row 69337efa (win32): a process table that cannot be read keeps the 30 min quiet window, reported as waiting_idle quiet_window with restartAt', async () => {
@@ -1700,7 +2184,7 @@ test('board row 69337efa (win32): a process table that cannot be read keeps the 
   assert.deepEqual(starts(rec), [])
   clock.advance(1 * MIN)
   const started = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'], 'started when the window it named ends')
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`], 'started when the window it named ends')
   assert.deepEqual(started.agents, [{ id: '912', state: 'supervised', reason: 'task_started', since: new Date(clock.now()).toISOString() }], 'no stale restartAt')
 })
 
@@ -1743,11 +2227,11 @@ test('board row 69337efa (win32): one start per sweep: two agents that crashed t
   const fetchKeepAlive = consent({ enabled: true, enabledAt: 'e', assistantIds: [912, 913] }).fetchKeepAlive
   const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: aliveIn(), fetchKeepAlive })
   const first = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912'])
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`])
   assert.deepEqual(first.agents.map((a: any) => [a.id, a.state, a.reason]), [['912', 'supervised', 'task_started'], ['913', 'waiting_idle', 'one_restart_per_sweep']])
   clock.advance(1 * MIN)
   await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(starts(rec), ['/Run /TN HOAI Agent 912', '/Run /TN HOAI Agent 913'])
+  assert.deepEqual(starts(rec), [`/Run /TN ${WTASK}`, `/Run /TN HOAI Agent 913 home-${WHID}`])
 })
 
 // -- the report --------------------------------------------------------------------------------------
@@ -2079,6 +2563,6 @@ test('off the marker tier a marker on disk never blocks the restart (a canonical
   const clock = fakeClock()
   answerProbes(fs, clock, ['912'])
   const report = await runKeepAliveSweep(ctxFor(fs, rec, clock, { pidAlive: (pid: number) => [3000, 4912, 5912].includes(pid) }).ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), [['kickstart', '-k', 'gui/501/ai.bgos.agent.912']])
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'launchctl').map((c) => c.args), KICKSTART_912)
   assert.deepEqual(report.agents.map((a: any) => [a.state, a.reason]), [['restarted', 'service']])
 })
