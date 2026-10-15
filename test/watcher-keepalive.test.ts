@@ -1551,7 +1551,7 @@ test('win32: the task is registered but NOT started while the agent may be runni
   assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [['powershell.exe', 'probe'], ['powershell.exe', 'probe-legacy'], ['powershell.exe', 'install']])
 })
 
-test('win32 (board row d6198bb6): a task the sweep\'s own install registered is recorded by name, so the next sweep reads nothing back (no task script runs at all)', async () => {
+test('win32 (board row d6198bb6): a task the sweep\'s own install registered is recorded by name once a read back proves it (round 2 H1): the next sweep reads both names back once, and the sweep after reads nothing back (no task script runs at all)', async () => {
   const fs = windowsMachine()
   const rec = recorder({ win32Task: 'absent' })
   const clock = fakeClock()
@@ -1564,20 +1564,28 @@ test('win32 (board row d6198bb6): a task the sweep\'s own install registered is 
     ['powershell.exe', 'install'],
     ['schtasks.exe', WTASK],
   ])
-  // The install read this HOME's name back on the way: the once-per-agent check is done.
-  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK)
+  // The install read nothing back after it registered: the once-per-agent check is not done yet.
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, undefined)
   // The launcher that /Run started is up by the next sweep.
   fs.writeFile(`${WSTATE}\\supervisor.json`, JSON.stringify({ pid: 777, capabilities: ['relaunch'] }))
   clock.advance(5 * MIN)
   rec.calls.length = 0
   const second = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(rec.calls.filter((c) => c.file === 'powershell.exe' && c.args.includes('-File')), [], 'no probe, probe-legacy or install on the next sweep')
-  assert.deepEqual(rec.calls.filter(notListing), [], 'nothing acts on the task either')
+  // The check reads this HOME's task back (kept as it is: nothing registered again, nothing started).
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+  ])
   assert.deepEqual(second.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'canonical']])
-  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK, 'the name stays on the record')
+  assert.equal(JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912'].taskName, WTASK, 'checked: the name is on the record')
+  clock.advance(5 * MIN)
+  rec.calls.length = 0
+  await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(rec.calls.filter((c) => c.file === 'powershell.exe' && c.args.includes('-File')), [], 'no probe, probe-legacy or install once the name is recorded')
+  assert.deepEqual(rec.calls.filter(notListing), [], 'nothing acts on the task either')
 })
 
-test('win32 (board row d6198bb6): a sweep install whose read back of the OLD name failed records no task name (that old task may be this HOME\'s): a sweep after TASK_CHECK_RETRY_MS reads both names back again and records the name once the old one answers', async () => {
+test('win32 (board row d6198bb6, round 2 M2): a sweep install whose read back of the OLD name failed registers NOTHING (that old task may be this HOME\'s): refused by name, tried again after the install hour, and the name recorded only once a read back proves this HOME\'s task', async () => {
   const fs = windowsMachine()
   // No task registered yet, and the install's read back of the old name "HOAI Agent 912" fails once.
   const rec = recorder({ win32Task: 'absent', fail: [{ match: '-Action probe-legacy', code: 1, stderr: 'Get-ScheduledTask : Access is denied.', times: 1 }] })
@@ -1586,23 +1594,33 @@ test('win32 (board row d6198bb6): a sweep install whose read back of the OLD nam
   const ctx = windowsCtx(fs, rec, { now: clock.now, sleep: clock.sleep, pidAlive: (pid: number) => pid === 777, log: (l: string) => logs.push(l) })
   const record = () => JSON.parse(fs.files.get(keepAliveStatePath(WHOME))!).agents['912']
   const first = await runKeepAliveSweep(ctx as any)
-  assert.deepEqual(first.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
-  // This HOME's own name is free, so the install registers and starts it; the old one is left alone, said.
+  // A second task beside an old one that may be this HOME's could start the agent twice: nothing is registered.
+  assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
+    ['powershell.exe', 'probe'],
+    ['powershell.exe', 'probe-legacy'],
+  ])
+  assert.equal(first.agents[0].state, 'failed')
+  assert.match(first.agents[0].reason, /^install_failed:refused: the old Scheduled Task "HOAI Agent 912" could not be read back/)
+  assert.equal(record().taskName, undefined, 'the old task could not be read back: the once-per-agent check is not done')
+  // An hour on, the old name answers (no task under it): this HOME's task is registered and started.
+  clock.advance(TASK_CHECK_RETRY_MS)
+  rec.calls.length = 0
+  const retried = await runKeepAliveSweep(ctx as any)
+  assert.deepEqual(retried.agents.map((a: any) => [a.state, a.reason]), [['installing', 'installed']])
   assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
     ['powershell.exe', 'probe'],
     ['powershell.exe', 'probe-legacy'],
     ['powershell.exe', 'install'],
     ['schtasks.exe', WTASK],
   ])
-  assert.ok(logs.some((l) => l.includes('left the Scheduled Task "HOAI Agent 912" alone: its record could not be read')), logs.join('\n'))
-  assert.equal(record().taskName, undefined, 'the old task could not be read back: the once-per-agent check is not done')
-  // The launcher that /Run started is up; the next sweep is an hour on.
+  assert.equal(record().taskName, undefined, 'the install read nothing back after it registered')
+  // The launcher that /Run started is up by the next sweep.
   fs.writeFile(`${WSTATE}\\supervisor.json`, JSON.stringify({ pid: 777, capabilities: ['relaunch'] }))
-  clock.advance(TASK_CHECK_RETRY_MS)
+  clock.advance(5 * MIN)
   rec.calls.length = 0
   const second = await runKeepAliveSweep(ctx as any)
-  // The check reads both names back again: this HOME's task is kept as it is (nothing registered
-  // again, nothing started), and the old name now answers (no task under it).
+  // The check reads both names back: this HOME's task is kept as it is (nothing registered again,
+  // nothing started), and the old name answers (no task under it).
   assert.deepEqual(rec.calls.filter(notListing).map((c) => [c.file, c.args[c.args.length - 1]]), [
     ['powershell.exe', 'probe'],
     ['powershell.exe', 'probe-legacy'],
@@ -2069,6 +2087,8 @@ test('board row 69337efa (win32): a crashed agent (launcher dead, lock holder de
     ['powershell.exe', 'probe-legacy'],
     ['powershell.exe', 'install'],
     ['powershell.exe', 'retire-legacy-task'],
+    // Round 2 H1: the check reads back what it registered before it records the agent as checked.
+    ['powershell.exe', 'probe'],
     ['powershell.exe', 'probe'],
     ['schtasks.exe', WTASK],
   ])

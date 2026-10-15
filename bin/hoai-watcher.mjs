@@ -328,7 +328,8 @@ async function commandStatus({ m, flags, home, env, platform, fs, exec, out }) {
     for (const a of agents) {
       if (a.service?.kind !== 'schtasks') continue
       try {
-        tasks.set(a.assistantId, await agentTaskStatus(agentTaskRegistration({ assistantId: a.assistantId, home }), { exec, fs }))
+        // Bounded like every other read-back: a hung CIM call is an unreadable task, never a hung status.
+        tasks.set(a.assistantId, await agentTaskStatus(agentTaskRegistration({ assistantId: a.assistantId, home }), { exec, fs, timeoutMs: 60_000 }))
       } catch (error) {
         tasks.set(a.assistantId, { state: 'unknown', label: null, line: `not read back: ${String(error?.message ?? error)}`, notes: [] })
       }

@@ -58,11 +58,22 @@ export type FakeAgentTaskOptions = {
   fs: MemoryFs
   /** Commands that fail, matched as a substring of `<file> <args joined by space>`. */
   fail?: Array<{ match: string; code?: number; stderr?: string; times?: number }>
+  /**
+   * A Get-ScheduledTask query that FAILS inside the script (a CIM timeout, access denied), for
+   * one probe action, `times` times. PowerShell itself does not fail: what comes out is what the
+   * script's own Write-Probe makes of the error, read from the script on disk. A probe that asks
+   * with `-ErrorAction SilentlyContinue` (0.69.2's, #237's) sees no task and prints `task absent`,
+   * exit 0; one that asks with `-ErrorAction Stop` and catches prints `probe failed: ...`, exit 2,
+   * unless the error is ObjectNotFound (only a real "no such task" is absent).
+   */
+  queryErrors?: Array<{ action: 'probe' | 'probe-legacy'; times?: number; after?: number; message?: string }>
 }
 
 export function fakeAgentTasks(options: FakeAgentTaskOptions) {
   const { fs } = options
   const failures = (options.fail ?? []).map((f) => ({ ...f, left: f.times ?? Infinity }))
+  // `after`: that many matching probes answer normally before the errors start.
+  const queryErrors = (options.queryErrors ?? []).map((q) => ({ ...q, left: q.times ?? Infinity, skip: q.after ?? 0 }))
   const tasks = new Map<string, Task>()
   /** task name -> its running instance (a launcher), at most one (IgnoreNew) */
   const instances = new Map<string, { stateDir: string }>()
@@ -114,6 +125,15 @@ export function fakeAgentTasks(options: FakeAgentTaskOptions) {
     const vbs = psVar(script, 'vbs')!
     const description = psVar(script, 'description') ?? ''
     const probe = (taskName: string | null) => {
+      const pending = queryErrors.find((q) => q.action === action && q.left > 0)
+      const queryError = pending && pending.skip-- <= 0 ? pending : null
+      if (queryError) {
+        queryError.left -= 1
+        const swallows = /Get-ScheduledTask -TaskPath '\\' -TaskName \$taskName -ErrorAction SilentlyContinue/.test(script)
+        if (swallows) return ok('task absent\r\n')
+        if (!/-ErrorAction Stop/.test(script) || !/ObjectNotFound/.test(script)) return bad(1, `fake agent tasks: the probe in ${file} is not one this fake knows`)
+        return { ...ok(`probe failed: ${queryError.message ?? 'The operation timed out (CIM).'}\r\n`), code: 2 }
+      }
       const task = taskName ? tasks.get(taskName) : undefined
       return ok(`${task ? `task present ${task.state} ${b64(task.description)} ${b64(task.action)}` : 'task absent'}\r\n`)
     }

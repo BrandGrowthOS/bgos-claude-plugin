@@ -54,9 +54,9 @@ function spec(home = OWNER, cwd = CWD) {
   return agentTaskSpec({ assistantId: ID, home, nodePath: NODE, pluginRoot: ROOT, cwd })
 }
 
-function world(opts: { fail?: Array<{ match: string; code?: number; stderr?: string; times?: number }> } = {}) {
+function world(opts: { fail?: Array<{ match: string; code?: number; stderr?: string; times?: number }>; queryErrors?: Array<{ action: 'probe' | 'probe-legacy'; times?: number; after?: number }> } = {}) {
   const fs = memoryFs()
-  const host = fakeAgentTasks({ fs, fail: opts.fail })
+  const host = fakeAgentTasks({ fs, fail: opts.fail, queryErrors: opts.queryErrors })
   return { fs, host }
 }
 
@@ -280,14 +280,86 @@ test('the watcher\'s rename keeps a task its owner DISABLED disabled: the new ta
   assert.equal(host.tasks.get(OWNER_TASK)!.state, 'Running')
 })
 
-test('keep registers nothing anew: with neither name registered (a task its owner removed by hand) the check only reads back', async () => {
+test('round 2 H1: the watcher\'s check registers this HOME\'s own task when the old name is ANOTHER HOME\'s (the 0.69.2 rig clobber): enabled, not started, verified; the foreign task left alone and named', async () => {
+  const { fs, host } = world()
+  fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
+  fs.writeFile(vbsOf(SCRATCH), "' the rig's 0.69.2 launcher\r\n")
+  host.seed.task(OLD_TASK, vbsOf(SCRATCH))
+  const foreign = snapshotOf(host, OLD_TASK)
+  const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false, keep: true })
+  assert.equal(host.tasks.get(OWNER_TASK)?.state, 'Ready', 'this HOME\'s own task is registered, enabled, nothing started')
+  assert.equal(result.ok, true, result.message)
+  assert.equal(result.verified, true, 'this HOME\'s task was read back after it was registered')
+  assert.equal(result.started, false)
+  assert.equal(host.tasks.get(OWNER_TASK)?.description, `HOAI agent ${ID}, installed from home=${OWNER}`)
+  assert.equal(snapshotOf(host, OLD_TASK), foreign, 'the other HOME\'s task, byte for byte')
+  assert.ok(result.notes.some((n: string) => n.startsWith(`left the Scheduled Task "${OLD_TASK}" alone: it was installed from another HOME (${SCRATCH})`)), result.notes.join('\n'))
+  assert.deepEqual(host.calls.map((c) => c.replace(/^.* -Action /, '')), ['probe', 'probe-legacy', 'install', 'probe'])
+})
+
+test('round 2 H1: with NEITHER name registered (a task removed, or renamed away by another HOME\'s 0.69.3), the check registers this HOME\'s own task and verifies it, so the agent is supervised again', async () => {
   const { fs, host } = world()
   fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
   const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false, keep: true })
+  assert.deepEqual([...host.tasks.keys()], [OWNER_TASK], 'this HOME\'s own task is registered')
   assert.equal(result.ok, true, result.message)
-  assert.equal(result.message, 'no task registered (left as it is)')
-  assert.equal(host.tasks.size, 0)
-  assert.deepEqual(host.calls.map((c) => c.replace(/^.* -Action /, '')), ['probe', 'probe-legacy'])
+  assert.equal(result.verified, true)
+  assert.deepEqual(host.calls.map((c) => c.replace(/^.* -Action /, '')), ['probe', 'probe-legacy', 'install', 'probe'])
+})
+
+test('round 2 H1: a registration the read-back cannot confirm is NOT verified (the sweep never records it as checked)', async () => {
+  // The own probe answers, the registration "succeeds", the verifying probe after it fails.
+  const { fs, host } = world({ queryErrors: [{ action: 'probe', after: 1, times: 1 }] })
+  fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
+  const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false, keep: true })
+  assert.equal(result.ok, false, 'not done: the registration was not read back')
+  assert.match(result.message, /could not be read back after it was registered/)
+  assert.equal(result.verified, false)
+})
+
+test('round 2 M2: a Get-ScheduledTask that fails inside the probe is UNKNOWN, never "task absent": this HOME\'s old task is not left unrenamed and marked checked, and no second task is registered beside it', async () => {
+  // The sweep's check: the old task is this HOME's, but the legacy probe's query fails once.
+  const check = world({ queryErrors: [{ action: 'probe-legacy', times: 1 }] })
+  seedOldTask(check.host, check.fs, OWNER, true)
+  const kept = await installAgentTask(spec(), { exec: check.host.exec, fs: check.fs, start: false, keep: true })
+  assert.equal(kept.ok, false, 'not done: the old task could not be read')
+  assert.equal(kept.verified, false)
+  assert.match(kept.message, /^refused: the old Scheduled Task "HOAI Agent 912" could not be read back/)
+  assert.deepEqual([...check.host.tasks.keys()], [OLD_TASK], 'nothing registered beside it')
+  // Read again (the query works now): renamed.
+  const again = await installAgentTask(spec(), { exec: check.host.exec, fs: check.fs, start: false, keep: true })
+  assert.equal(again.ok, true, again.message)
+  assert.deepEqual([...check.host.tasks.keys()], [OWNER_TASK])
+  // An explicit install (create_agent) with the same misread registers nothing either: never two AtLogOn tasks on one launcher.
+  const explicit = world({ queryErrors: [{ action: 'probe-legacy', times: 1 }] })
+  seedOldTask(explicit.host, explicit.fs, OWNER, false)
+  const installed = await installAgentTask(spec(), { exec: explicit.host.exec, fs: explicit.fs, start: true })
+  assert.equal(installed.ok, false)
+  assert.deepEqual([...explicit.host.tasks.keys()], [OLD_TASK])
+  assert.equal(explicit.host.calls.some((c) => c.endsWith('-Action install') || c.startsWith('schtasks.exe')), false)
+  // A failed query of this HOME's OWN name is unknown too: refused, nothing written or started.
+  const own = world({ queryErrors: [{ action: 'probe', times: 1 }] })
+  const refused = await installAgentTask(spec(), { exec: own.host.exec, fs: own.fs, start: true })
+  assert.equal(refused.ok, false)
+  assert.match(refused.message, /^refused: which HOME the Scheduled Task ".*" belongs to could not be read/)
+  assert.equal(own.host.tasks.size, 0)
+})
+
+test('round 2 M2: the generated probe asks with -ErrorAction Stop and calls only ObjectNotFound absent; anything else exits 2', () => {
+  const ps1 = spec().files[1].content
+  assert.match(ps1, /Get-ScheduledTask -TaskPath '\\' -TaskName \$taskName -ErrorAction Stop/)
+  assert.match(ps1, /\$_\.CategoryInfo\.Category -eq 'ObjectNotFound'/)
+  assert.match(ps1, /exit 2/)
+  assert.doesNotMatch(ps1, /-TaskName \$taskName -ErrorAction SilentlyContinue/)
+})
+
+test('round 2 L1: a rollback whose unregister fails says what is really registered (both), never "unregistered again"', async () => {
+  const { fs, host } = world({ fail: [{ match: 'retire-legacy-task', code: 1, stderr: 'Access is denied.' }, { match: '-Action uninstall', code: 1, stderr: 'Access is denied.' }] })
+  seedOldTask(host, fs, OWNER, false)
+  const result = await installAgentTask(spec(), { exec: host.exec, fs, start: false })
+  assert.equal(result.ok, false)
+  assert.match(result.message, new RegExp(`^the new task could not be unregistered again: both "${OLD_TASK}" and "${OWNER_TASK}" stay registered`))
+  assert.deepEqual([...host.tasks.keys()].sort(), [OLD_TASK, OWNER_TASK].sort())
 })
 
 test('a failed retire when this HOME\'s new task was already there says so: nothing is unregistered and both stay', async () => {
@@ -491,6 +563,44 @@ test('the watcher\'s check is not done while the old task cannot be read back: l
   await runKeepAliveSweep(ctx as any)
   const after = JSON.parse(fs.readFile(`${OWNER}\\.bgos-agent\\watcher\\keepalive-state.json`)!)
   assert.equal(after.agents[ID].taskName, OWNER_TASK)
+})
+
+test('round 2 H1 (the review\'s scenario): the owner\'s launcher is there and the old "HOAI Agent <id>" is a rig\'s: the sweep registers the owner\'s own task, records it only once verified, and starts THAT task when the launcher dies', async () => {
+  const { fs, host } = world()
+  sweepMachine(fs)
+  fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
+  fs.writeFile(vbsOf(SCRATCH), "' the rig's 0.69.2 launcher\r\n")
+  host.seed.task(OLD_TASK, vbsOf(SCRATCH))
+  const foreign = snapshotOf(host, OLD_TASK)
+  const logs: string[] = []
+  const clock = { at: T0 }
+  const ctx = sweepCtx(fs, host, logs, clock)
+  const first = await runKeepAliveSweep(ctx as any)
+  assert.ok(host.tasks.has(OWNER_TASK), logs.join('\n'))
+  assert.equal(snapshotOf(host, OLD_TASK), foreign, 'the rig\'s task, byte for byte')
+  assert.ok(logs.some((l) => l.includes(`left the Scheduled Task "${OLD_TASK}" alone: it was installed from another HOME (${SCRATCH})`)), logs.join('\n'))
+  assert.ok(host.calls.includes(`schtasks.exe /Run /TN ${OWNER_TASK}`), 'the dead launcher started under this HOME\'s own task')
+  assert.equal(host.calls.some((c) => c === `schtasks.exe /Run /TN ${OLD_TASK}`), false)
+  assert.deepEqual(first.agents.map((a: any) => [a.state, a.reason]), [['supervised', 'task_started']])
+  const state = JSON.parse(fs.readFile(`${OWNER}\\.bgos-agent\\watcher\\keepalive-state.json`)!)
+  assert.equal(state.agents[ID].taskName, OWNER_TASK)
+})
+
+test('round 2 L2: a task start refused before any act (the read-back says no task of this HOME) spends no start of the episode', async () => {
+  const { fs, host } = world()
+  sweepMachine(fs)
+  fs.writeFile(vbsOf(OWNER), "' launcher\r\n")
+  // This HOME's own name is held by a registration of ANOTHER HOME: every start is refused before /Run.
+  host.seed.task(OWNER_TASK, vbsOf(SCRATCH), { description: `HOAI agent ${ID}, installed from home=${SCRATCH}` })
+  const logs: string[] = []
+  const clock = { at: T0 }
+  const ctx = sweepCtx(fs, host, logs, clock)
+  const report = await runKeepAliveSweep(ctx as any)
+  assert.equal(host.calls.some((c) => c.startsWith('schtasks.exe')), false)
+  const state = JSON.parse(fs.readFile(`${OWNER}\\.bgos-agent\\watcher\\keepalive-state.json`)!)
+  assert.equal(state.agents[ID].taskStarts ?? 0, 0, 'a refusal is not a start')
+  assert.equal(report.agents[0].state, 'failed')
+  assert.match(report.agents[0].reason, /refused: the Scheduled Task "HOAI Agent 912 home-66ede649" records another HOME/)
 })
 
 test('the watcher in a scratch HOME leaves the owner\'s old task alone (logged), registers its own, and never starts the owner\'s', async () => {
