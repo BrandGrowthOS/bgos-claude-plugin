@@ -1,0 +1,229 @@
+{
+  "date": "2026-10-15",
+  "scope": "Synthetic empty native jars only, no websites, live accounts, HOAI activation or production access",
+  "sourceHashes": {
+    "frontend/electron-app/agent-browser/profile-sync/native-runtime.js": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+    "frontend/electron-app/agent-browser/__tests__/profile-sync-native-runtime.test.js": "62098b9d5c6c08958412b15384ee7b13f3392a378dc343b2e01b7e0e32f63585",
+    "frontend/electron-app/agent-browser/dev/profile-cookie-roundtrip.cjs": "6b4be74eb5a79c7879f71bcafdabf6948836e1baba8f351d59621179b211eeb8"
+  },
+  "pluginSourceHashes": {
+    "lib/browser-profile-core/native-runtime.js": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+    "test/browser-profile-runtime.test.ts": "eda93d0516a5ca5151ffcf43ab6250420c34b3d35c4e1fefeb987a9bae320024",
+    "scripts/probe-browser-profile-cookies.mjs": "06d330acb6851e96ba0ee69164d641d40f249113fc2bb9f374819ac62ea59d8c"
+  },
+  "hashBoundary": "Exact worktree bytes loaded by these probes; clean archive byte qualification is separately recorded after commit",
+  "native144": {
+    "kind": "Actual Electron CDP cookie import compatibility with synthetic values only",
+    "ok": true,
+    "versions": {
+      "electron": "40.4.1",
+      "chrome": "144.0.7559.173"
+    },
+    "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+    "cases": [
+      {
+        "domainCookie": false,
+        "secure": false,
+        "sourceScheme": "NonSecure",
+        "exact": true
+      },
+      {
+        "domainCookie": false,
+        "secure": false,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": false,
+        "secure": true,
+        "sourceScheme": "NonSecure",
+        "nativeInvalidRefused": true
+      },
+      {
+        "domainCookie": false,
+        "secure": true,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": false,
+        "sourceScheme": "NonSecure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": false,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": true,
+        "sourceScheme": "NonSecure",
+        "nativeInvalidRefused": true
+      },
+      {
+        "domainCookie": true,
+        "secure": true,
+        "sourceScheme": "Secure",
+        "exact": true
+      }
+    ],
+    "zeroRemainingWebContents": true
+  },
+  "native153": {
+    "kind": "Actual sandboxed Linux CDP cookie import compatibility with synthetic values only",
+    "ok": true,
+    "uid": 1000,
+    "version": "153.0.8010.12",
+    "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b",
+    "cases": [
+      {
+        "domainCookie": false,
+        "secure": false,
+        "sourceScheme": "NonSecure",
+        "exact": true
+      },
+      {
+        "domainCookie": false,
+        "secure": false,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": false,
+        "secure": true,
+        "sourceScheme": "NonSecure",
+        "nativeInvalidRefused": true
+      },
+      {
+        "domainCookie": false,
+        "secure": true,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": false,
+        "sourceScheme": "NonSecure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": false,
+        "sourceScheme": "Secure",
+        "exact": true
+      },
+      {
+        "domainCookie": true,
+        "secure": true,
+        "sourceScheme": "NonSecure",
+        "nativeInvalidRefused": true
+      },
+      {
+        "domainCookie": true,
+        "secure": true,
+        "sourceScheme": "Secure",
+        "exact": true
+      }
+    ],
+    "browserDisconnected": true
+  },
+  "mutation": {
+    "changedLine": 61,
+    "text": "  else result.url = `${row.sourceScheme === \"Secure\" ? \"https\" : \"http\"}://${row.domain}${row.sourcePort > 0 ? \":\" + row.sourcePort : \"\"}${row.path}`;",
+    "main": {
+      "ok": true,
+      "rows": [
+        {
+          "phase": "baseline",
+          "kind": "unit",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "baseline",
+          "kind": "native",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "mutant",
+          "kind": "unit",
+          "exit": 1,
+          "coreSha256": "fc6780cc563704f5a3d3acd039067c81f64743239f76321f752eabc9f987622a"
+        },
+        {
+          "phase": "mutant",
+          "kind": "native",
+          "exit": 1,
+          "coreSha256": "fc6780cc563704f5a3d3acd039067c81f64743239f76321f752eabc9f987622a"
+        },
+        {
+          "phase": "restored",
+          "kind": "unit",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "restored",
+          "kind": "native",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        }
+      ],
+      "exactRestore": true
+    },
+    "plugin": {
+      "ok": true,
+      "rows": [
+        {
+          "phase": "baseline",
+          "kind": "actual-native-153",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "baseline",
+          "kind": "unit",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "mutant",
+          "kind": "actual-native-153",
+          "exit": 1,
+          "coreSha256": "fc6780cc563704f5a3d3acd039067c81f64743239f76321f752eabc9f987622a"
+        },
+        {
+          "phase": "mutant",
+          "kind": "unit",
+          "exit": 1,
+          "coreSha256": "fc6780cc563704f5a3d3acd039067c81f64743239f76321f752eabc9f987622a"
+        },
+        {
+          "phase": "restored",
+          "kind": "actual-native-153",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        },
+        {
+          "phase": "restored",
+          "kind": "unit",
+          "exit": 0,
+          "coreSha256": "e14502a45cdc79bc1c923231e510cb90de4b85d1997fd438f3df0b2366e6ae7b"
+        }
+      ],
+      "exactRestore": true
+    },
+    "native144Failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n... Skipped lines\n\n  [\n    {\n      domain: 'fixture.invalid',\n      expires: -1,\n      httpOnly: true,\n...\n      sameSite: 'Lax',\n+     secure: true,\n-     secure: false,\n      session: true,\n      sourcePort: 62443,\n      sourceScheme: 'Secure',\n      value: 'DUMMY_ONLY'\n    }\n\n    at C:\\Users\\karim\\.codex\\worktrees\\browser-profile-sync-proposal\\0000 BGOS Final V2\\frontend\\electron-app\\agent-browser\\dev\\profile-cookie-roundtrip.cjs:10:841",
+    "native153Failure": "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n... Skipped lines\n\n  [\n    {\n      domain: 'fixture.invalid',\n      expires: -1,\n      httpOnly: true,\n...\n      sameSite: 'Lax',\n+     secure: true,\n-     secure: false,\n      session: true,\n      sourcePort: 62443,\n      sourceScheme: 'Secure',\n      value: 'DUMMY_ONLY'\n    }\n\n    at file:///proof/cookie-compat.Jci3QH/scripts/probe-browser-profile-cookies.mjs:10:709"
+  },
+  "touchedTests": {
+    "mainNativeRuntime": 37,
+    "pluginBrowserRuntime": 55,
+    "skipped": 0
+  },
+  "security": "Preserves the original Secure flag and independent sourceScheme/sourcePort. Does not drop strict cookie readback, expand credential grants or relax import activation. The HTTP-shaped import URL is only a CDP cookie parameter, never a network request."
+}

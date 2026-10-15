@@ -424,3 +424,18 @@ test('stopped-head import cannot replace the admitted exact new process authorit
   await assert.rejects(f.runtime.stageStoppedHead({ ...f.input, authorization }), { code: 'profile_stopped_head_stage_refused' })
   assert.equal(f.calls.includes('offline:true'), false); await f.runtime.dispose()
 })
+
+
+test('cookie import URL preserves Secure independently from source metadata', () => {
+  const require = createRequire(import.meta.url), { cookies, cookieParams } = require('../lib/browser-profile-core/native-runtime.js')
+  for (const secure of [false, true]) for (const sourceScheme of ['NonSecure', 'Secure']) {
+    const host = { name: 'synthetic', value: 'DUMMY_ONLY', domain: 'fixture.invalid', path: '/', expires: -1, httpOnly: true, secure, session: true, priority: 'Medium', sourceScheme, sourcePort: 62443 }
+    const params = cookieParams(cookies([host])[0])
+    assert.equal(params.url, `${secure ? 'https' : 'http'}://fixture.invalid:62443/`)
+    assert.equal(params.secure, secure); assert.equal(params.sourceScheme, sourceScheme)
+    assert.equal(params.sourcePort, 62443); assert.equal(params.domain, undefined)
+    const domain = cookieParams(cookies([{ ...host, domain: '.fixture.invalid' }])[0])
+    assert.equal(domain.url, undefined); assert.equal(domain.domain, '.fixture.invalid')
+    assert.equal(domain.secure, secure); assert.equal(domain.sourceScheme, sourceScheme)
+  }
+})
