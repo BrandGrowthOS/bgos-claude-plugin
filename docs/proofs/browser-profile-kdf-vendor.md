@@ -1,0 +1,11 @@
+# Aligned native key derivation in the shipped plugin
+
+The generated sixteen-module profile core now pins BGOS commit 27dd066da874a093cc9f4fb08ebf69693b985abb. Only checkpoint crypto, separate file crypto and the manifest changed. Each key derivation uses SHA-256 of its complete existing domain-separated context as its 32-byte HKDF info. The full original authenticated-encryption context and source signatures remain unchanged. Desktop active-backup crypto has the same separately reviewed repair and is outside this plugin's existing module inventory.
+
+These formats remain unpublished. Their consumers update together; old development packets refuse without compatibility fallback or automatic resend. This change addresses reproduced native HKDF limits. It does not identify the cause of an earlier real-provider sign-in error.
+
+Nine selected suites passed 106 tests with zero skips, including exact committed cross-tree verification, two new shipped-codec tests, file crypto consumers and Companion file hooks. The new cases seal/open maximum admitted checkpoint and file contexts, require the exact digest of every original context field and refuse a different acting person. Full plugin TypeScript checking also passed.
+
+Four isolated executable-copy drills restored raw HKDF info or replaced the complete context with only its domain, once for each shipped codec. Every drill printed its actual changed executable line, produced a direct assertion failure, restored the exact copied bytes and passed the same two tests. Shared source bytes never changed. The first raw-info trial ended in a plain caught codec error and is excluded; the final fixture explicitly asserts that valid sealing/opening succeeds, then all four drills passed the required red/restore/green sequence. An initial test-fixture field-name error and expected derivation-count correction are excluded baseline diagnostics.
+
+Actual Node/Electron interoperability is recorded in the BGOS file and context KDF proofs. This package check runs synthetic generated keys in Node and proves the exact shipped bytes. It does not launch Chromium, access a user profile, transfer a browser session or establish cross-machine file delivery. The next acceptance run uses a new immutable plugin image containing this committed refresh.
